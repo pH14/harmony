@@ -14,18 +14,13 @@
 //   * the seed-derived draw's top PREFIX_BITS bits == TARGET_PREFIX's top bits.
 //   * PREFIX_BITS dials the expected time-to-find: 8 bits ⇒ ~256 branches.
 //
-// Determinism: the run value is read from **RDRAND**, which the determinism
-// hypervisor intercepts and answers with the first word of
-// `SeededEntropy::new(EnvSpec.seed)` (the reference xorshift64* stream in
-// consonance/hypercall-proto) — NOT host randomness. That word IS the draw (no
-// extra hashing); the benchmark's `entropy_draw` replicates the identical
-// function, so the guest and the offline model agree bit-for-bit on which seeds
-// fire. A fixed branch draws identically every replay (the crash reproduces N/N)
-// while different branches (different EnvSpec seeds) draw different values, which
-// is what makes the rare-entropy search work. The RDRAND draw happens AFTER the
-// snapshot so the sealed base does not capture a fixed value. Build: static
-// (`cc -static -O2`), like campaign-super.c.
+// Determinism: the run value comes from the seeded /dev/harmony entropy
+// transaction after the base snapshot. The first eight-byte response is the
+// branch's first SeededEntropy word, without an extra hash. The device reports
+// errors explicitly; native RDRAND would instead read unreplayable host entropy.
+// Build: static (`cc -static -O2`), like campaign-super.c.
 
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -41,6 +36,9 @@
 // isa-debug-exit terminal. FAIL_CODE 0x63 tags "benchmark bug 3".
 #define ISA_DEBUG_EXIT_PORT 0xF4
 #define FAIL_CODE 0x63
+#ifndef HARMONY_DEVICE_PATH
+#define HARMONY_DEVICE_PATH "/dev/harmony"
+#endif
 // Post-READY operational-loop length + work cycle. On a NON-firing branch the
 // process runs this loop emitting the same bug-agnostic operational logs the
 // other supers do, giving the log-template signal a workload to read
@@ -49,7 +47,9 @@
 // apples-to-apples signal workload. A FIRING branch never reaches
 // the loop: it crashes at the prefix match, emitting the UUID_BUG marker well
 // before the deadline (marker-based certification, terminal-agnostic).
+#ifndef ITERS
 #define ITERS 200000000L
+#endif
 #define WORK_CYCLE 500000L
 // Pre-draw stabilization span (box calibration 2026-07-07). A
 // short bounded busy loop runs after UUID_READY and BEFORE the entropy draw so
@@ -104,27 +104,40 @@ static void announce_bug(void)
     }
 }
 
-// Draw the run's entropy from the VMM seeded-entropy service via **RDRAND**,
-// which the determinism hypervisor intercepts and answers with the per-branch
-// campaign seed (the same `gen_random_uuid()` path the workload uses). This MUST be drawn *after*
-// the snapshot (see `main`): a value baked into the process before the base seal
-// — e.g. `getenv("SEED")`, which an earlier draft used — is captured by the
-// snapshot, so branching with different EnvSpec seeds could never vary it and the
-// rare-entropy search was a no-op (the milestone-1 round-2 review's P1). RDRAND is
-// re-executed on every branch's run, so each branch's EnvSpec seed actually varies
-// the draw. Retries per Intel's RDRAND guidance; falls back to 0 (a definite
-// non-hit) only if the instruction never succeeds.
-static uint64_t draw_campaign_entropy(void)
+// Draw after the base snapshot so a branch's EnvSpec seed can select its own
+// value. The one-byte request and eight-byte response are the /dev/harmony
+// entropy ABI. A failed transaction cannot be interpreted as a non-hit.
+static int draw_campaign_entropy(uint64_t *draw)
 {
-    for (int i = 0; i < 10; i++) {
-        uint64_t v = 0;
-        unsigned char ok = 0;
-        // Inline asm (no -mrdrnd needed): rdrand into v, carry flag → ok.
-        __asm__ volatile("rdrand %0; setc %1" : "=r"(v), "=qm"(ok)::"cc");
-        if (ok) {
-            return v;
-        }
+    unsigned char request = 0;
+    unsigned char bytes[8];
+    int fd;
+    do {
+        fd = open(HARMONY_DEVICE_PATH, O_RDWR | O_CLOEXEC);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        return -1;
     }
+    ssize_t n;
+    do {
+        n = write(fd, &request, sizeof(request));
+    } while (n < 0 && errno == EINTR);
+    if (n != (ssize_t)sizeof(request)) {
+        close(fd);
+        return -1;
+    }
+    do {
+        n = read(fd, bytes, sizeof(bytes));
+    } while (n < 0 && errno == EINTR);
+    close(fd);
+    if (n != (ssize_t)sizeof(bytes)) {
+        return -1;
+    }
+    uint64_t value = 0;
+    for (size_t i = 0; i < sizeof(bytes); i++) {
+        value |= (uint64_t)bytes[i] << (i * 8);
+    }
+    *draw = value;
     return 0;
 }
 
@@ -149,8 +162,8 @@ int main(void)
     // The periodic console writes below are BOTH the bug-agnostic signal workload
     // (identical idiom to bugs 1/2) AND — crucially — the snapshottable boundaries
     // `seal_base` needs to land a base BEFORE the draw. A SILENT busy loop has no
-    // such boundary, so the seal's only landing point is the RDRAND intercept
-    // itself and it bakes the draw into the base (0 fires on the box; both the
+    // such boundary, so the seal can land only at the entropy device exit
+    // itself and bake the draw into the base (0 fires on the box; both the
     // silent-loop and no-loop variants confirmed this 2026-07-07). Each `fflush`
     // is a console-write exit the seal can land on. The draw is taken ONCE, at
     // iteration STABILIZE_ITERS — by then many checkpoint writes have given the
@@ -158,8 +171,7 @@ int main(void)
     // STABILIZE_ITERS is tuned (box smoke probe) so the post-seal draw lands within
     // the campaign deadline; a non-matching draw keeps the loop logging to the
     // deadline exactly like bugs 1/2 (the rare branch is dead code otherwise).
-    // No RDRAND runs in the loop except the single draw, so the seeded-entropy
-    // stream the model replicates is not advanced.
+    // No entropy transaction runs in the loop except the single draw.
     long last_phase = -1;
     for (long i = 0; i < ITERS; i++) {
         long work = i % WORK_CYCLE;
@@ -179,13 +191,18 @@ int main(void)
         }
 
         // Draw the seeded entropy ONCE, post-seal (earlier checkpoint writes gave
-        // the seal a landing point before here), from the VMM's RDRAND intercept —
-        // per-branch, NOT baked into the base. The RDRAND word IS the seeded draw
+        // the seal a landing point before here), from the seeded device —
+        // per-branch, NOT baked into the base. The response IS the seeded draw
         // (first word of `SeededEntropy::new(EnvSpec.seed)`); the offline model
         // `trigger::entropy_draw` replicates it. On a prefix match the rare branch
         // poisons a pointer and crashes (marker emitted FIRST for attribution).
         if (i == STABILIZE_ITERS) {
-            uint64_t draw = draw_campaign_entropy();
+            uint64_t draw;
+            if (draw_campaign_entropy(&draw) != 0) {
+                printf("UUID_ENTROPY_FAIL: seeded entropy unavailable\n");
+                fflush(stdout);
+                return 1;
+            }
             if (getenv("UUID_DEBUG")) {
                 printf("UUID_DRAW: draw=0x%llx prefix_bits=%d\n",
                        (unsigned long long)draw, PREFIX_BITS);
