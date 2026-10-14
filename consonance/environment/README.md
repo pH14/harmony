@@ -26,8 +26,8 @@ Integrations that probe a handler outside the channel can call
 `verify_handler_unchanged` with a prior handler snapshot to poison the channel
 if that probe changed its live handler.
 `handler_fingerprint` and `verify_handler_fingerprint_unchanged` make the same
-check against the handler alone without the recorded environment's aggregate
-snapshot-size limit. This lets a caller retire or replay an oversized live
+check against the handler alone without the recorded environment's snapshot
+size limits. This lets a caller retire or replay an oversized live
 recording while still detecting a shared handler changed during preparation.
 Restoring a captured handler checks both selectors on the factory result and
 again after loading its state. It also checks that a new capture exactly

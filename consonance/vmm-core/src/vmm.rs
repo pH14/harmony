@@ -1848,10 +1848,14 @@ where
     pub(crate) fn sdk_handler_fingerprint(
         &self,
     ) -> Result<Option<channel::HandlerFingerprint>, channel::ChannelError> {
-        self.sdk
-            .as_ref()
-            .map(|sdk| sdk.env.handler_fingerprint())
-            .transpose()
+        match self.sdk.as_ref() {
+            None => Ok(None),
+            Some(sdk) => match sdk.env.handler_fingerprint() {
+                Ok(fingerprint) => Ok(Some(fingerprint)),
+                Err(channel::ChannelError::Poisoned) => Ok(None),
+                Err(error) => Err(error),
+            },
+        }
     }
 
     pub(crate) fn verify_sdk_handler_unchanged(

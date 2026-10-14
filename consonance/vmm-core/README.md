@@ -111,7 +111,9 @@ This check relies on
 the handler snapshot covering all state that can affect future responses;
 service factories must not mutate external state outside that captured contract.
 Using the handler alone keeps replay and import available when an otherwise
-healthy live recording exceeds the aggregate SDK snapshot limit.
+healthy live recording exceeds the SDK snapshot size limits. An already-poisoned
+live channel has no valid state to protect and does not block recovery through
+replay or import.
 Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
 handle. The SDK hash chunk also binds its captured event history, including
