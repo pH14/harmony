@@ -179,7 +179,12 @@ after the guests, to the budget. It fails when one worker does not fit.
 allows one VM per process. `WorkerLauncher` starts the child with one end of a
 Unix socket pair, named by `HARMONY_SESSION_WORKER_FD`, and the child serves it
 with `serve_inherited`. The child re-executes the same binary, so it carries the
-same HVF entitlement and inherits the calling thread's CPU affinity. Each call is
+same HVF entitlement and inherits the calling thread's CPU affinity.
+`WorkerLauncher::current_exe` records the parent's loaded image identity and
+checks the spawned child's loaded image before sending the initialization request.
+Linux hashes the executable through `/proc/<pid>/exe`; macOS reads the process's
+code-directory hash. A replacement of the executable pathname cannot cause a
+different worker image to run under the parent's recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
