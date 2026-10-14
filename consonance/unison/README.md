@@ -14,11 +14,12 @@ machine for a seed. `state_hash` covers all architectural state. The separate
 `observable_digest` covers only guest-visible output, which lets callers test
 seed-sensitive output without confusing latent PRNG/device state for an
 observable difference.
-`run_to(t)` must report `ReachedTarget` only at work count `t`. Comparisons
-and bisection reject a subject that reports this outcome at another work count;
-equal state hashes cannot certify runs sampled at different work counts. A
-halted subject reports its actual work count, which comparison uses to detect
-halt-count mismatches.
+`run_to(t)` must report `ReachedTarget` only at work count `t` and must not
+advance past `t` while reporting `Halted`. Comparisons and bisection reject
+either inconsistency; equal state hashes cannot certify runs sampled at
+different work counts. An already-halted subject can report its existing work
+count above a requested target without advancing. Comparison uses the actual
+halt count to detect mismatches.
 
 `compare_runs` checks both machines immediately after spawn, then hashes them
 at a caller-selected interval until they halt or reach a limit. It reports

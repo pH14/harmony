@@ -8,11 +8,13 @@ use unison::{
 
 struct RoundedFactory {
     quantum: u64,
+    halt_at: Option<u64>,
 }
 
 struct RoundedSubject {
     quantum: u64,
     work: u64,
+    halt_at: Option<u64>,
 }
 
 impl SubjectFactory for RoundedFactory {
@@ -22,6 +24,7 @@ impl SubjectFactory for RoundedFactory {
         RoundedSubject {
             quantum: self.quantum,
             work: 0,
+            halt_at: self.halt_at,
         }
     }
 }
@@ -35,7 +38,13 @@ impl Subject for RoundedSubject {
             });
         }
         self.work = target.div_ceil(self.quantum) * self.quantum;
-        Ok(RunOutcome::ReachedTarget)
+        Ok(
+            if self.halt_at.is_some_and(|halt_at| self.work >= halt_at) {
+                RunOutcome::Halted
+            } else {
+                RunOutcome::ReachedTarget
+            },
+        )
     }
 
     fn work(&self) -> u64 {
@@ -53,8 +62,14 @@ impl Subject for RoundedSubject {
 
 #[test]
 fn comparison_refuses_a_subject_that_overshoots_its_reported_target() {
-    let exact = RoundedFactory { quantum: 1 };
-    let rounded = RoundedFactory { quantum: 3 };
+    let exact = RoundedFactory {
+        quantum: 1,
+        halt_at: None,
+    };
+    let rounded = RoundedFactory {
+        quantum: 3,
+        halt_at: None,
+    };
     assert!(matches!(
         compare_runs(&exact, &rounded, 0, 1, 1),
         Err(SubjectError::InconsistentWork {
@@ -69,6 +84,34 @@ fn comparison_refuses_a_subject_that_overshoots_its_reported_target() {
             target: 1,
             actual: 3,
             outcome: RunOutcome::ReachedTarget,
+        })
+    ));
+}
+
+#[test]
+fn comparison_refuses_a_subject_that_halts_after_the_requested_target() {
+    let exact = RoundedFactory {
+        quantum: 1,
+        halt_at: Some(3),
+    };
+    let rounded = RoundedFactory {
+        quantum: 3,
+        halt_at: Some(3),
+    };
+    assert!(matches!(
+        compare_runs(&exact, &rounded, 0, 1, 3),
+        Err(SubjectError::InconsistentWork {
+            target: 1,
+            actual: 3,
+            outcome: RunOutcome::Halted,
+        })
+    ));
+    assert!(matches!(
+        bisect_divergence(&exact, &rounded, 0, 0, 1),
+        Err(SubjectError::InconsistentWork {
+            target: 1,
+            actual: 3,
+            outcome: RunOutcome::Halted,
         })
     ));
 }
