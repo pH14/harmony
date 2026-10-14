@@ -4224,10 +4224,40 @@ mod tests {
             .resolve_process_credentials(&staged.rootfs)
             .unwrap();
         assert_eq!((credentials.uid, credentials.gid), (123, 456));
+        let assert_preparation_modes = || {
+            for path in ["etc", "usr"] {
+                let mode = std::fs::symlink_metadata(staged.rootfs.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777;
+                assert_eq!(mode, 0, "{path}");
+            }
+            std::fs::set_permissions(
+                staged.rootfs.join("etc"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            for path in ["etc/passwd", "etc/group"] {
+                let mode = std::fs::symlink_metadata(staged.rootfs.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777;
+                assert_eq!(mode, 0, "{path}");
+            }
+            std::fs::set_permissions(
+                staged.rootfs.join("etc"),
+                std::fs::Permissions::from_mode(0o0),
+            )
+            .unwrap();
+        };
+        assert_preparation_modes();
         let request = crate::bundle::LaunchRequest::new(vec!["/bin/true".into()]);
         let prepared = crate::bundle::prepare(&staged, &request).unwrap();
         assert_eq!((prepared.execution.uid, prepared.execution.gid), (123, 456));
         assert_eq!(prepared.rootfs_segment, packed);
+        assert_preparation_modes();
     }
 
     #[test]
