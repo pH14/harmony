@@ -41,6 +41,7 @@ pub struct SearchOptions {
     pub executions: u64,
     pub output: PathBuf,
     pub wall_seconds: Option<u64>,
+    pub checkpoint_owner: Option<String>,
 }
 #[derive(Clone, Debug, Default)]
 pub enum SearchStart {
@@ -224,6 +225,7 @@ where
                 every: std::num::NonZeroU64::new(100),
                 on_marks: false,
                 on_top_progress: false,
+                checkpoint_owner: options.checkpoint_owner.clone(),
             }),
             ..Default::default()
         },

@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v5";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v6";
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
@@ -45,11 +45,13 @@ pub struct CheckpointPlan {
     pub every: Option<NonZeroU64>,
     pub on_marks: bool,
     pub on_top_progress: bool,
+    pub checkpoint_owner: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct CheckpointHeader {
     pub format: String,
+    pub checkpoint_owner: Option<String>,
     pub reason: String,
     pub workload_identity_sha256: String,
     pub campaign_seed: u64,
@@ -181,6 +183,8 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         snapshots: impl Iterator<Item = (u64, &'a S)>,
         body: impl FnOnce(&mut dyn Write) -> Result<(), Box<dyn Error>>,
     ) -> Result<(), Box<dyn Error>> {
+        let mut header = header.clone();
+        header.checkpoint_owner = self.plan.checkpoint_owner.clone();
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
         let mut index = Vec::new();
@@ -234,7 +238,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
                 digest: Sha256::new(),
             },
         );
-        postcard::to_io(header, &mut out)?;
+        postcard::to_io(&header, &mut out)?;
         postcard::to_io(&index, &mut out)?;
         body(&mut out)?;
         out.flush()?;
@@ -441,6 +445,7 @@ mod tests {
             every: NonZeroU64::new(10),
             on_marks: true,
             on_top_progress: true,
+            checkpoint_owner: None,
         }
     }
 
@@ -459,6 +464,32 @@ mod tests {
         assert_eq!(writer.due(14, 1, Some(1)), None);
         assert_eq!(writer.due(20, 2, Some(3)), Some("milestone"));
         fs::remove_dir_all(&directory).expect("remove the directory");
+    }
+
+    #[test]
+    fn written_checkpoint_carries_the_run_owner() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-owner-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut plan = plan(directory.clone());
+        plan.checkpoint_owner = Some("saved-run-a".into());
+        let mut writer = CheckpointWriter::<u8>::create(plan, 0, None).expect("create");
+        writer
+            .write(
+                &header(1, "final"),
+                std::iter::empty::<(u64, &Vec<u8>)>(),
+                |out| Ok(postcard::to_io(&1_u64, out).map(|_| ())?),
+            )
+            .expect("write checkpoint");
+        let path = directory.join("000000000001-final.ckpt");
+        assert_eq!(
+            read_header(&path).expect("read header").checkpoint_owner,
+            Some("saved-run-a".into())
+        );
+        drop(writer);
+        fs::remove_dir_all(directory).expect("remove directory");
     }
 
     #[test]
@@ -596,6 +627,7 @@ mod tests {
     fn header(executions: u64, reason: &str) -> CheckpointHeader {
         CheckpointHeader {
             format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+            checkpoint_owner: None,
             reason: reason.to_owned(),
             workload_identity_sha256: String::new(),
             campaign_seed: 1,
@@ -772,6 +804,7 @@ mod tests {
             CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).expect("create");
         let header = CheckpointHeader {
             format: "dissonance-search-checkpoint-v2".to_owned(),
+            checkpoint_owner: None,
             reason: "interval".to_owned(),
             workload_identity_sha256: String::new(),
             campaign_seed: 1,

@@ -657,6 +657,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
                 every: NonZeroU64::new(300),
                 on_marks: true,
                 on_top_progress: true,
+                checkpoint_owner: None,
             }),
         );
         assert_eq!(
@@ -752,6 +753,7 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
             every: NonZeroU64::new(170),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     assert!(
@@ -816,6 +818,7 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
             every: NonZeroU64::new(100),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     let files = std::fs::read_dir(&directory)
@@ -860,6 +863,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     config.campaign_seed = 948;
@@ -909,6 +913,7 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     config.mixture = DrawMixture::Energy { scale: 6 };
@@ -954,6 +959,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     let checkpoint = directory.join("000000000300-interval.ckpt");
@@ -1000,6 +1006,7 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
             every: NonZeroU64::new(400),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     config.execution_budget = 1200;
@@ -1097,6 +1104,7 @@ fn campaign_counters_with_an_import_round_trip_through_postcard() {
 fn a_resume_refuses_a_changed_workload_policy() {
     let header = |key: &str| CheckpointHeader {
         format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+        checkpoint_owner: None,
         reason: "interval".to_owned(),
         workload_identity_sha256: String::new(),
         campaign_seed: 1,

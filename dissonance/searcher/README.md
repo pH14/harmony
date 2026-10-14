@@ -669,7 +669,12 @@ checkpoint of any other layout before it decodes the body. The
 archive stores its `SelectorAccounting` as JSON inside that body, so a counter
 added there, such as `tier_runs`, reads as empty from a checkpoint written
 before the counter existed.
-`CampaignOrigin::SearchCheckpoint` resumes one. The admission
+The header also carries the optional search owner supplied by `CheckpointPlan`.
+Harmony's saved-run manifest records that owner before search begins and checks
+it before resume, so a checkpoint from another run cannot impersonate the
+interrupted run's latest checkpoint. A completed saved run also binds the
+selected checkpoint's SHA-256. `CampaignOrigin::SearchCheckpoint` resumes one.
+The admission
 window, limits, workload identity and the workload policies that give stored
 inputs and keys their meaning must match. The mixture and retention
 policies, the selector, the continuation policy and the objective stop may

@@ -3905,6 +3905,7 @@ fn search_checkpoint_header<G: Workload>(
     }
     CheckpointHeader {
         format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+        checkpoint_owner: None,
         reason: reason.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
         campaign_seed: config.campaign_seed,
