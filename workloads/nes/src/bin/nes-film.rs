@@ -33,6 +33,7 @@ struct Args {
     rom_sha256: String,
     core_sha256: String,
     ai: Option<String>,
+    level: u8,
     input: PathBuf,
     evidence: PathBuf,
     out: PathBuf,
@@ -49,6 +50,7 @@ impl Args {
         let mut rom_sha256 = None;
         let mut core_sha256 = None;
         let mut ai = None;
+        let mut level = 0;
         let mut input = None;
         let mut evidence = None;
         let mut out = None;
@@ -73,6 +75,7 @@ impl Args {
                 "--rom-sha256" => rom_sha256 = Some(text()?),
                 "--core-sha256" => core_sha256 = Some(text()?),
                 "--ai" => ai = Some(text()?),
+                "--level" => level = text()?.parse()?,
                 "--input" => input = Some(PathBuf::from(&value)),
                 "--evidence" => evidence = Some(PathBuf::from(&value)),
                 "--out" => out = Some(PathBuf::from(&value)),
@@ -89,6 +92,7 @@ impl Args {
             rom_sha256: rom_sha256.ok_or("missing --rom-sha256")?,
             core_sha256: core_sha256.ok_or("missing --core-sha256")?,
             ai,
+            level,
             input: input.ok_or("missing --input")?,
             evidence: evidence.ok_or("missing --evidence")?,
             out: out.ok_or("missing --out")?,
@@ -263,7 +267,7 @@ fn main() -> Result<()> {
                 return Err("Famidash takes no ai option".into());
             }
             produce(
-                FamidashGame::new(&rom, &args.core, &args.core_sha256),
+                FamidashGame::new_at_level(&rom, &args.core, &args.core_sha256, args.level),
                 FamidashCampaignRun,
                 &args,
                 identity,

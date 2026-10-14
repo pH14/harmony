@@ -48,8 +48,11 @@ table, and stops at 99 until the level is complete.
 ## Declared workload
 
 Setup presses A at the title and at the menu to reach level select, presses A
-again to start Stereo Madness and waits 90 frames, 1,141 frames in all. The
-genesis check requires gameplay in level 0.
+again to start Stereo Madness and waits 90 frames, 1,141 frames in all. A
+request's `stage` starts another level instead: setup writes the level number
+at level select before the last A press, as the browser demo does, and the
+level is part of the emulator identity. The genesis check requires gameplay at
+0 percent in the chosen level.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
 6 to 40. A death bit is a terminal death. Game state 3 is the objective.
@@ -78,6 +81,7 @@ cargo run --release --manifest-path workloads/nes/Cargo.toml --bin nes-eval -- r
 
 Seeds 1 to 5 clear Stereo Madness in 6,800 to 9,000 executions, about 2
 seconds on 8 workers, and each victory witness replays. `nes-film` accepts
-`--game famidash` and renders the witness. The browser demo in
+`--game famidash` with `--level` for a run started at another level, and
+renders the witness. The browser demo in
 `demos/twin-dragons` runs the same workload and starts later levels by writing
 the level number at level select.

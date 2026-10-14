@@ -77,10 +77,13 @@ fn main() -> Result<()> {
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
             }
-            "twin-dragons" | "famidash"
+            "twin-dragons"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
+            }
+            "famidash" if request.ai.is_some() || request.whole_game => {
+                return Err("Famidash takes no ai or whole_game option".into());
             }
             _ => {}
         }
@@ -159,7 +162,7 @@ fn main() -> Result<()> {
                 started,
             ),
             "famidash" => evaluate(
-                FamidashGame::new(&rom, p, h),
+                FamidashGame::new_at_level(&rom, p, h, request.stage.unwrap_or(0)),
                 FamidashCampaignRun,
                 &request,
                 &out,

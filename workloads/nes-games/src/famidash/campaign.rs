@@ -66,12 +66,18 @@ impl<M: NesBackend<Vec<u8>>> FamidashGame<M> {
         rom: &[u8],
         core: &str,
         core_sha256: &str,
+        level: u8,
         targets: FamidashTargets<M>,
     ) -> Self {
+        let genesis = if level == 0 {
+            "famidash-stereo-madness-v1".to_owned()
+        } else {
+            format!("famidash-level-{level}-v1")
+        };
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
             identity: format!(
-                "{core};state=ppu-unused2-zero-v1;release={RELEASE};genesis=famidash-stereo-madness-v1;result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
+                "{core};state=ppu-unused2-zero-v1;release={RELEASE};genesis={genesis};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
             ),
             targets,
         }
@@ -87,6 +93,11 @@ impl<M: NesBackend<Vec<u8>>> FamidashGame<M> {
 impl FamidashGame<QuickNesMachine> {
     #[must_use]
     pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+        Self::new_at_level(rom, core_path, core_sha256, 0)
+    }
+
+    #[must_use]
+    pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: u8) -> Self {
         let core = format!(
             "quicknes-libretro:{};{};{}",
             machine::quicknes::QUICKNES_REVISION,
@@ -100,9 +111,15 @@ impl FamidashGame<QuickNesMachine> {
             rom,
             &core,
             core_sha256,
+            level,
             Box::new(move || {
-                FamidashTarget::from_rom_bytes_headless(&target_rom, &target_core, &target_sha256)
-                    .map_err(|error| error.to_string())
+                FamidashTarget::from_rom_bytes_headless(
+                    &target_rom,
+                    &target_core,
+                    &target_sha256,
+                    level,
+                )
+                .map_err(|error| error.to_string())
             }),
         )
     }
