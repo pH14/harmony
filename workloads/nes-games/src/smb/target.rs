@@ -28,7 +28,6 @@ const PLAYER_KILLED_STATE: u8 = 0x0b;
 const WORLD_NUMBER_OFFSET: usize = 0x075f;
 const LEVEL_NUMBER_OFFSET: usize = 0x075c;
 const FLAG_TASK_OFFSET: usize = 0x0746;
-const LEVEL_ADVANCED_FLAG_TASK: u8 = 0x05;
 pub const ROOM_IDENTITY_BYTES: [usize; 2] = [0x074e, 0x074f];
 
 pub type SmbInput = crate::search::archive::Input<ButtonChord>;
@@ -627,7 +626,7 @@ pub struct SmbProgressWatermark {
 #[must_use]
 pub fn smb_milestones_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMilestones {
     let world = wram[WORLD_NUMBER_OFFSET];
-    let level = smb_current_level(wram);
+    let level = wram[LEVEL_NUMBER_OFFSET];
     let in_1_1 = world == 0 && level == 0;
     let scroll_bucket = if in_1_1 { smb_scroll_bucket(wram) } else { 0 };
     SmbMilestones {
@@ -653,7 +652,7 @@ pub struct SmbMechanicalState {
 pub fn smb_mechanical_state_from_wram(wram: &[u8; WRAM_SIZE]) -> SmbMechanicalState {
     SmbMechanicalState {
         world: wram[WORLD_NUMBER_OFFSET],
-        level: smb_current_level(wram),
+        level: wram[LEVEL_NUMBER_OFFSET],
         progress: if smb_area_is_loading(wram) {
             0
         } else {
@@ -701,15 +700,6 @@ pub fn smb_area_is_loading(wram: &[u8; WRAM_SIZE]) -> bool {
 }
 
 const PLAYER_VERTICAL_PAGE_OFFSET: usize = 0x00b5;
-
-fn smb_current_level(wram: &[u8; WRAM_SIZE]) -> u8 {
-    let level = wram[LEVEL_NUMBER_OFFSET];
-    if wram[FLAG_TASK_OFFSET] == LEVEL_ADVANCED_FLAG_TASK {
-        level.saturating_sub(1)
-    } else {
-        level
-    }
-}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -760,6 +750,17 @@ mod tests {
         assert_eq!((decoded.world, decoded.level, decoded.progress), (2, 3, 66));
         assert_eq!(decoded.player_y_bucket, 3);
         assert_eq!(decoded.player_engine_state, 7);
+    }
+
+    #[test]
+    fn the_level_number_holds_through_the_last_flag_task() {
+        let mut wram = [0_u8; WRAM_SIZE];
+        wram[0x075f] = 2;
+        wram[0x075c] = 2;
+        wram[0x0746] = 5;
+        let decoded = smb_mechanical_state_from_wram(&wram);
+        assert_eq!((decoded.world, decoded.level), (2, 2));
+        assert!(decoded.flag_active);
     }
 
     #[test]

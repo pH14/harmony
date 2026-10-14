@@ -42,7 +42,7 @@ const near = campaignSearch(engine, identity, { seed: 5, root: engine.capture(),
 let crossing = null, jobs = 0;
 while (!crossing && jobs++ < 2000 && runCampaign(near, worker, { jobs: 1 })) {
   const trail = worker.trail(), rooms = new Set((trail ?? []).filter((_, index) => index % MOTION_STRIDE === 1));
-  if (worker.clears() && rooms.has(0) && rooms.has(1)) crossing = rooms;
+  if (worker.next_level() && rooms.has(0) && rooms.has(1)) crossing = rooms;
 }
 near.free();
 assert.ok(crossing?.has(NO_ROOM), "The level change must be sampled with its loading frames hidden");

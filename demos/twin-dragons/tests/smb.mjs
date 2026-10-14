@@ -43,6 +43,18 @@ const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds Mario");
 console.log("Level maps and the sprite sheet build from the ROM.");
 
+for (const room of [areaRoom(1, 41), areaRoom(5, 41)]) {
+  const intro = buildMap(engine, room);
+  assert.ok(intro.reached > 0, `The intro scene ${smb.areaMap(room).label} builds a map`);
+}
+engine.boot(13);
+const warping = engine.memory();
+warping[0x75f] = 4;
+warping[0x75c] = 0;
+warping[0x0e] = 3;
+assert.equal(smb.decode(warping).loading, true, "A pipe entry with the warp destination already written counts as loading");
+console.log("Intro scenes build, and a warp pipe entry reads as loading.");
+
 const root = engine.boot(0),
   identity = coreIdentity("browser"),
   worker = campaignWorker(engine, identity);
@@ -91,6 +103,17 @@ assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textConten
 assert.deepEqual(errors, []);
 console.log("Choosing the ROM in the game picker stores it and starts a Super Mario Bros. search.");
 
+await page.waitForFunction(() => document.querySelectorAll("#room-tabs button").length >= 2, null, { timeout: 300000 });
+const tab = page.locator('#room-tabs button:not([aria-pressed="true"])').first(),
+  pinnedRoom = await tab.getAttribute("data-map"),
+  pinnedLabel = await tab.innerText();
+await tab.click();
+await page.waitForTimeout(4000);
+const shown = await page.evaluate(() => ({ room: document.querySelector('#room-tabs [aria-pressed="true"]')?.dataset.map, label: document.querySelector("#map-label").textContent }));
+assert.ok(shown.room === pinnedRoom || !shown.label.toLowerCase().startsWith(pinnedLabel.split(" ").slice(0, 2).join(" ").toLowerCase()), `A clicked room tab holds the view while the search stays in that level: ${JSON.stringify(shown)}`);
+await page.locator('#level-strip [aria-pressed="true"]').click();
+console.log("A clicked room tab keeps the view on that room.");
+
 await page.mouse.move(2, 2);
 await page.locator("#level-strip .level-more").waitFor({ timeout: 300000 });
 const layout = () => page.evaluate(() => {
@@ -121,6 +144,8 @@ await page.locator("#level-strip .level-more").click();
 const expanded = await layout();
 assert.equal(await page.locator("#level-strip .level-more").getAttribute("aria-expanded"), "true");
 assert.ok(expanded.levels >= 4, "Expanding the level list shows the earlier levels");
+const route = await page.locator("#level-strip [data-level]").evaluateAll((buttons) => buttons.map((b) => Number(b.dataset.level)));
+assert.deepEqual(route, [...new Set(route)].sort((a, b) => a - b), `The level row lists the followed path once each, in order: ${route}`);
 assert.ok(expanded.page <= 0 && expanded.strip <= 0 && expanded.rows === 1, `The expanded level list scrolls in one row: ${JSON.stringify(expanded)}`);
 await page.setViewportSize({ width: 390, height: 900 });
 await page.waitForTimeout(300);

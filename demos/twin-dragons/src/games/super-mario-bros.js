@@ -11,6 +11,7 @@ const LEVEL_COUNT = 32,
   FLAG = 0x746,
   PLAY = 1,
   NORMAL = 8,
+  ENTRANCE = 7,
   START = 8,
   FLAGPOLE = 0x31,
   INTRO_WORLDS = [0, 1, 3, 6];
@@ -22,6 +23,8 @@ export const MAP_WIDTHS = [
 export const MAP_HEIGHT = 224;
 const HUD_ROWS = 24,
   AREA_POINTER = 0x750,
+  SCROLL_LOCK = 0x723,
+  ABOVE_SCREEN = 0xf0,
   ENTRANCE_PAGE = 0x751,
   AREA_SLOTS = 128,
   AREA_MAX_WIDTH = 8192,
@@ -104,7 +107,7 @@ function enterArea(engine, id) {
   ram[AREA_POINTER] = roomArea(id);
   ram[ENTRANCE_PAGE] = 0;
   ram[TASK] = 0;
-  idleUntil(engine, (r) => r[ENGINE] === NORMAL && !decode(r).loading && decode(r).level === id, 900, true);
+  idleUntil(engine, (r) => (r[ENGINE] === NORMAL || r[ENGINE] === ENTRANCE) && !decode(r).loading && decode(r).level === id, 900, true);
 }
 
 export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
@@ -117,12 +120,16 @@ export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
   let farthest = -1,
     ahead = decode(ram).x,
     still = 0,
-    lane = 0;
+    lane = 0,
+    above = false,
+    checkpoint = engine.capture();
   for (let frame = 0; frame < 8000 && still < 400; frame++) {
     const flying = ram[FLAG] === 0 && ram[ENGINE] === NORMAL;
+    if (flying && !above && frame % 30 === 0) checkpoint = engine.capture();
     if (flying) {
-      ram[0xce] = lanes[lane];
-      ram[0xb5] = 1;
+      ram[0xce] = above ? ABOVE_SCREEN : lanes[lane];
+      ram[0xb5] = above ? 0 : 1;
+      if (above) ram[SCROLL_LOCK] = 0;
       ram[0x9f] = 0;
       ram[0x79f] = 30;
       ram[0x7f8] = 4;
@@ -132,6 +139,12 @@ export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
     hideSprites(ram);
     engine.run(flying ? 0x82 : 0, 1, true);
     const o = decode(ram);
+    if (!above && id < LEVEL_COUNT && o.loading && levelId(o) === level) {
+      engine.restore(checkpoint);
+      above = true;
+      continue;
+    }
+    if (o.loading) continue;
     if (ram[MODE] !== PLAY || levelId(o) !== level || (!o.loading && o.level !== id)) break;
     const left = camera(ram);
     if (id >= LEVEL_COUNT && farthest >= 0 && left > farthest + 64) break;
@@ -150,13 +163,17 @@ export function buildMap(engine, id, width = MAP_WIDTHS[id] ?? AREA_MAX_WIDTH) {
         new Uint32Array(data.buffer, 0, HUD_ROWS * width).fill(backdrop);
       }
       farthest = left;
+      if (farthest + 256 >= width) break;
     }
     if (o.x > ahead) {
       ahead = o.x;
       still = 0;
-    } else if (flying && ++still % 12 === 0) lane = (lane + 1) % lanes.length;
+    } else if (flying && ++still % 12 === 0) {
+      lane = (lane + 1) % lanes.length;
+      above ||= id < LEVEL_COUNT && still >= 12 * lanes.length;
+    }
   }
-  const reached = farthest + 256;
+  const reached = Math.min(width, farthest + 256);
   if (id >= LEVEL_COUNT && reached < width) {
     const cropped = new Uint8ClampedArray(reached * MAP_HEIGHT * 4);
     for (let y = 0; y < MAP_HEIGHT; y++) cropped.set(data.subarray(y * width * 4, (y * width + reached) * 4), y * reached * 4);

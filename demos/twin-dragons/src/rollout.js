@@ -28,7 +28,7 @@ export function runRollout(engine, snapshot, actions, out, offset, record) {
   const ram = engine.ramView();
   const samples = record ? [0, ...game.motion(ram)] : null;
   const clearedBefore = game.decode(ram).cleared;
-  let frame = 0, steps = 0, ended = false, transition = [];
+  let frame = 0, steps = 0, ended = false, transition = [], nextLevel = 0;
   for (const packed of actions) {
     const buttons = packed >> 8, frames = packed & 255;
     if (samples)
@@ -44,6 +44,7 @@ export function runRollout(engine, snapshot, actions, out, offset, record) {
     out.set(ram, at);
     engine.captureInto(out.subarray(at + ramBytes, at + stride));
     steps++;
+    if (!nextLevel && game.decode(ram).cleared > clearedBefore) nextLevel = game.decode(ram).cleared;
     if (game.ended(ram)) {
       if (game.levelComplete?.(ram)) {
         transition = game.transition(engine);
@@ -57,7 +58,8 @@ export function runRollout(engine, snapshot, actions, out, offset, record) {
     }
   }
   const trail = samples && samples.length > MOTION_STRIDE ? new Uint16Array(samples) : null;
-  return { steps, trail, transition, clears: game.decode(ram).cleared > clearedBefore, points: steps - (ended && !transition.length ? 1 : 0) };
+  if (!nextLevel && game.decode(ram).cleared > clearedBefore) nextLevel = game.decode(ram).cleared;
+  return { steps, trail, transition, nextLevel, points: steps - (ended && !transition.length ? 1 : 0) };
 }
 
 export function runPlan(engines, explorer, jobs, record = false) {

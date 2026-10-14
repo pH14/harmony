@@ -19,7 +19,7 @@ async function handle({ data }) {
     }
     if (data.type === "job") {
       const outcome = campaign.run(new Uint8Array(data.job)), trail = campaign.trail() ?? null;
-      channel.postMessage({ type: "done", chunk: data.chunk, outcome: outcome.buffer, reservation: campaign.reservation(), trail, clears: campaign.clears() },
+      channel.postMessage({ type: "done", chunk: data.chunk, outcome: outcome.buffer, reservation: campaign.reservation(), trail, nextLevel: campaign.next_level() },
         [outcome.buffer, ...(trail ? [trail.buffer] : [])]);
       return;
     }
@@ -29,18 +29,18 @@ async function handle({ data }) {
     data.added.forEach((key, i) => parents.set(key, snapshots.slice(i * size, (i + 1) * size)));
     let total = 0;
     for (const job of data.jobs) total += rolloutBytes(engine, job.actions);
-    const out = new Uint8Array(total), steps = [], trails = [], transitions = [], clears = [];
+    const out = new Uint8Array(total), steps = [], trails = [], transitions = [], nextLevels = [];
     let offset = 0;
     for (const job of data.jobs) {
       const result = runRollout(engine, parents.get(job.key), job.actions, out, offset, job.record);
       steps.push(result.steps);
       trails.push(result.trail);
       transitions.push(result.transition);
-      clears.push(result.clears);
+      nextLevels.push(result.nextLevel);
       offset += rolloutBytes(engine, job.actions);
     }
     for (const key of data.evicted) parents.delete(key);
-    channel.postMessage({ type: "done", chunk: data.chunk, buffer: out.buffer, steps, trails, transitions, clears },
+    channel.postMessage({ type: "done", chunk: data.chunk, buffer: out.buffer, steps, trails, transitions, nextLevels },
       [out.buffer, ...trails.filter(Boolean).map((t) => t.buffer)]);
   } catch (e) {
     channel.postMessage({ type: "error", message: String(e?.message || e) });

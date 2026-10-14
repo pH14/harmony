@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
-  followDiscovery,
+  finishedLevel,
+  followExit,
   project,
   completedLevels,
   mergeProgress,
@@ -52,10 +53,17 @@ test("level loading, deaths and unknown levels are not map evidence", () => {
   assert.equal(isMapEvidence({ ...gameplay, level: 3 }, levels), false);
 });
 
-test("a next-level discovery follows a clear even when the preceding level was inspected", () => {
-  const clear = new Set([0]);
-  assert.equal(followDiscovery({ level: 1 }, true, 0, true, clear), true);
-  assert.equal(followDiscovery({ level: 0 }, true, 0, true, clear), false);
-  assert.equal(followDiscovery({ level: 1 }, true, 0, true, new Set()), false);
-  assert.equal(followDiscovery({ level: 1 }, false, 0, true, clear), false);
+test("the followed path moves only along exits from the level it is on", () => {
+  const levels = Array.from({ length: 32 }, (_, id) => ({ id }));
+  const path = { level: 1, levels: [0, 1] };
+  assert.equal(followExit(path, 4, 5, levels), false, "an exit from another lineage's level leaves the path alone");
+  assert.equal(followExit(path, 1, 12, levels), true, "a warp exit moves the path straight to its destination");
+  assert.deepEqual(path, { level: 12, levels: [0, 1, 12] });
+  assert.equal(followExit(path, 12, 40, levels), false, "an exit past the last level is ignored");
+  assert.equal(followExit(path, 12, 12, levels), false);
+});
+test("a state finishes only its own level", () => {
+  assert.equal(finishedLevel({ cleared: 2 }, 1), 1);
+  assert.equal(finishedLevel({ cleared: 12 }, 12), null, "a warp arrival does not finish the levels it skipped");
+  assert.equal(finishedLevel({ cleared: 3 }, null), null);
 });
