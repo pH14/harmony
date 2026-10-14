@@ -1239,10 +1239,9 @@ impl Live {
         let branch_started = started();
         let result = self
             .session
-            .branch_with_service(parent.snap, config, Vec::new(), Vec::new())
-            .map_err(|error| format!("branch: {error}"));
+            .branch_with_service(parent.snap, config, Vec::new(), Vec::new());
         self.telemetry.branches.since(branch_started);
-        result
+        result.map_err(|error| self.abandon("branch", error.as_ref()))
     }
 
     fn run_action(
@@ -1524,9 +1523,9 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct TimedOutReplay;
+    struct TimedOutRestore;
 
-    impl SearchSession for TimedOutReplay {
+    impl SearchSession for TimedOutRestore {
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 0)
         }
@@ -1587,7 +1586,7 @@ mod tests {
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
         ) -> Result<(), Box<dyn Error>> {
-            unreachable!()
+            Err(SessionError::Hung(WALL_LIMIT).into())
         }
 
         fn run_until(&mut self, _: u64) -> Result<StopReason, Box<dyn Error>> {
@@ -1609,12 +1608,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn replay_timeout_is_a_recoverable_watchdog_cutoff() {
-        let mut live = Live {
+    fn timed_out_live() -> Live {
+        Live {
             key: [0; 32],
             holder: 0,
-            session: Box::new(TimedOutReplay),
+            session: Box::new(TimedOutRestore),
             base_identity: [0; 32],
             setup: SnapId(1),
             windows: ActionWindows { root_seal: 0 },
@@ -1629,10 +1627,41 @@ mod tests {
             horizons_run: 0,
             abandoned: false,
             telemetry: LiveTelemetry::default(),
-        };
+        }
+    }
+
+    #[test]
+    fn replay_timeout_is_a_recoverable_watchdog_cutoff() {
+        let mut live = timed_out_live();
         let error = live.replay(SnapId(1)).unwrap_err();
         assert!(error.starts_with(WATCHDOG_CUTOFF));
         assert!(live.abandoned);
+    }
+
+    #[test]
+    fn branch_restore_timeout_is_a_recoverable_watchdog_cutoff() {
+        let mut live = timed_out_live();
+        let error = live
+            .branch(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                &[],
+            )
+            .unwrap_err();
+        assert!(error.starts_with(WATCHDOG_CUTOFF));
+        assert!(live.abandoned);
+
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+        };
+        target.finish_restore(&snapshot, Err(error)).unwrap();
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(target.last_action_observations()[0].watchdog_cutoff);
     }
 
     #[test]

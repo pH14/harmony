@@ -318,6 +318,15 @@ impl UmlSession {
             .take()
             .map(|session| session.console_tail())
             .unwrap_or_default();
+        if let uml::SessionError::Boot {
+            error: boot_error,
+            console,
+        } = &error
+            && matches!(boot_error.as_ref(), uml::SessionError::Hung(_))
+            && !console.is_empty()
+        {
+            eprintln!("UML restore boot watchdog console:\n{console}");
+        }
         let hung = match &error {
             uml::SessionError::Hung(limit) => Some(*limit),
             uml::SessionError::Boot { error, .. } => match error.as_ref() {
