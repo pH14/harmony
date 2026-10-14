@@ -1124,6 +1124,13 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             .position(|byte| *byte == b'=')
             .ok_or_else(malformed)?;
         let (key, value) = record.split_at(equals);
+        if key.is_empty()
+            || key
+                .iter()
+                .any(|byte| *byte == 0 || byte.is_ascii_whitespace())
+        {
+            return Err(malformed());
+        }
         let value = &value[1..];
         let value = value.strip_suffix(b"\n").ok_or_else(malformed)?;
         match key {
@@ -2933,6 +2940,9 @@ mod tests {
             ("plus-uid", b"+10 uid=1\n".as_slice()),
             ("plus-size", b"+11 size=4\n".as_slice()),
             ("missing-newline", b"9 uid=123".as_slice()),
+            ("extra-space", b"14  path=Evil\n".as_slice()),
+            ("extra-tab", b"14 \tpath=Evil\n".as_slice()),
+            ("nul-key", b"15 path\0x=Evil\n".as_slice()),
         ] {
             let body = [
                 raw_member(b"PaxHeaders/0", b'x', "", record),
