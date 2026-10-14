@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "a86835217",
+    "commit": "23a5c517f",
     "build": "locally verified static build",
-    "checks": "Production build, the Mega Man 2, Super Mario Bros., Metroid, browser and level-finish browser checks in Chrome, and the unit tests on the source branch.",
-    "asset_manifest_sha256": "26e9c86885160ca034f53e528807869c7d287c7dbfb04723950dd5015c47ce86"
+    "checks": "Production build, the browser and Super Mario Bros. browser checks in Chrome, and the unit tests on the source branch.",
+    "asset_manifest_sha256": "6e02559729a02ebdc2e6f9a0a3db47a2641ce7c7cccc9b036092c5148fd2fad1"
   }
 }
