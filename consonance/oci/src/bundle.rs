@@ -2,12 +2,11 @@
 
 use super::cpio::{CpioError, Writer};
 use super::exact;
-use super::image::{ImageError, Ownership, StagedImage};
+use super::image::{ImageError, Ownership, StagedImage, with_host_read_access};
 use execution_proto::{ExecutionSpec, SpecError, VERSION};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 pub const CONTROL_ROOT: &str = "/harmony-oci";
@@ -139,6 +138,17 @@ pub fn prepare(
 ) -> Result<PreparedExecution, BundleError> {
     image.config.validate()?;
     let external_inputs = validate_external_inputs(&request.external_inputs)?;
+    with_host_read_access(&image.rootfs, |original_modes| {
+        prepare_readable(image, request, &external_inputs, original_modes)
+    })
+}
+
+fn prepare_readable(
+    image: &StagedImage,
+    request: &LaunchRequest,
+    external_inputs: &[ValidatedExternalInput],
+    original_modes: &BTreeMap<PathBuf, u32>,
+) -> Result<PreparedExecution, BundleError> {
     for destination in [
         "/proc",
         "/dev",
@@ -155,13 +165,14 @@ pub fn prepare(
     ] {
         validate_mount_path(&image.rootfs, destination)?;
     }
-    for input in &external_inputs {
+    for input in external_inputs {
         validate_mount_path(&image.rootfs, &input.destination)?;
     }
     if request.kvm {
         validate_mount_path(&image.rootfs, KVM_DEVICE)?;
     }
-    let credentials = image.config.resolve_process_credentials(&image.rootfs)?;
+    let credentials = super::credentials::resolve(image.config.user.as_deref(), &image.rootfs)
+        .map_err(ImageError::from)?;
     let execution = ExecutionSpec {
         version: VERSION,
         argv: argv(&image.config, &request.command),
@@ -173,9 +184,10 @@ pub fn prepare(
         bundle: request.bundle.clone(),
     };
     execution.validate()?;
-    let rootfs_segment = build_rootfs_segment(&image.rootfs, &image.owners)?;
+    let rootfs_segment =
+        build_rootfs_segment_readable(&image.rootfs, &image.owners, original_modes)?;
     let control_segment =
-        build_control_segment_validated(&execution, &external_inputs, request.kvm)?;
+        build_control_segment_validated(&execution, external_inputs, request.kvm)?;
     let identity = execution_identity(&rootfs_segment, &control_segment, &execution)?;
     Ok(PreparedExecution {
         rootfs_segment,
@@ -211,75 +223,37 @@ fn validate_mount_path(rootfs: &Path, destination: &str) -> Result<(), BundleErr
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn build_rootfs_segment(
     rootfs: &Path,
     owners: &Ownership,
 ) -> Result<Vec<u8>, BundleError> {
+    with_host_read_access(rootfs, |original_modes| {
+        build_rootfs_segment_readable(rootfs, owners, original_modes)
+    })
+}
+
+fn build_rootfs_segment_readable(
+    rootfs: &Path,
+    owners: &Ownership,
+    original_modes: &BTreeMap<PathBuf, u32>,
+) -> Result<Vec<u8>, BundleError> {
     let mut writer = Writer::new();
     writer.dir("harmony-oci", 0o755);
     writer.dir("harmony-oci/rootfs", 0o755);
-    let mut changed = Vec::new();
-    let built = (|| {
-        allow_tree_reads(rootfs, &mut changed)?;
-        let original_modes: BTreeMap<_, _> = changed.iter().cloned().collect();
-        writer.tree_owned_with_modes(
-            rootfs,
-            "harmony-oci/rootfs",
-            &|path| owners.owner_of(path),
-            &|path, staged_mode| {
-                let original = original_modes
-                    .get(&rootfs.join(path))
-                    .copied()
-                    .unwrap_or(staged_mode);
-                owners.mode_of(path, original)
-            },
-        )?;
-        Ok::<(), BundleError>(())
-    })();
-    let restored = restore_tree_modes(changed);
-    match (built, restored) {
-        (Err(error), _) => return Err(error),
-        (Ok(()), Err(error)) => return Err(error.into()),
-        (Ok(()), Ok(())) => {}
-    }
+    writer.tree_owned_with_modes(
+        rootfs,
+        "harmony-oci/rootfs",
+        &|path| owners.owner_of(path),
+        &|path, staged_mode| {
+            let original = original_modes
+                .get(&rootfs.join(path))
+                .copied()
+                .unwrap_or(staged_mode);
+            owners.mode_of(path, original)
+        },
+    )?;
     Ok(gzip(&writer.finish()))
-}
-
-fn allow_tree_reads(path: &Path, changed: &mut Vec<(PathBuf, u32)>) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
-    let needed = if meta.is_dir() {
-        0o500
-    } else if meta.is_file() {
-        0o400
-    } else {
-        return Ok(());
-    };
-    let mode = meta.permissions().mode() & 0o7777;
-    if mode & needed != needed {
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | needed))?;
-        changed.push((path.to_path_buf(), mode));
-    }
-    if meta.is_dir() {
-        let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
-        entries.sort_by_key(std::fs::DirEntry::file_name);
-        for entry in entries {
-            allow_tree_reads(&entry.path(), changed)?;
-        }
-    }
-    Ok(())
-}
-
-fn restore_tree_modes(changed: Vec<(PathBuf, u32)>) -> std::io::Result<()> {
-    let mut error = None;
-    for (path, mode) in changed.into_iter().rev() {
-        if let Err(failed) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
-            error.get_or_insert(failed);
-        }
-    }
-    match error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
 }
 
 #[cfg(test)]

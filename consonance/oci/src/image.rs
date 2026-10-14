@@ -111,7 +111,18 @@ impl RuntimeConfig {
         rootfs: &Path,
     ) -> Result<ProcessCredentials, ImageError> {
         self.validate()?;
-        Ok(credentials::resolve(self.user.as_deref(), rootfs)?)
+        match credentials::resolve(self.user.as_deref(), rootfs) {
+            Ok(credentials) => Ok(credentials),
+            Err(
+                CredentialsError::Rootfs { source, .. }
+                | CredentialsError::AccountFile { source, .. },
+            ) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                with_host_read_access(rootfs, |_| {
+                    credentials::resolve(self.user.as_deref(), rootfs).map_err(ImageError::from)
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -402,6 +413,64 @@ pub fn resolve_process_credentials(
     rootfs: &Path,
 ) -> Result<ProcessCredentials, ImageError> {
     config.resolve_process_credentials(rootfs)
+}
+
+pub(crate) fn with_host_read_access<T, E>(
+    rootfs: &Path,
+    action: impl FnOnce(&BTreeMap<PathBuf, u32>) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<std::io::Error>,
+{
+    let mut changed = Vec::new();
+    let prepared = allow_tree_reads(rootfs, &mut changed);
+    let original_modes = changed.iter().cloned().collect();
+    let result = prepared
+        .map_err(E::from)
+        .and_then(|_| action(&original_modes));
+    let restored = restore_tree_modes(changed);
+    match (result, restored) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+fn allow_tree_reads(path: &Path, changed: &mut Vec<(PathBuf, u32)>) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    let needed = if meta.is_dir() {
+        0o500
+    } else if meta.is_file() {
+        0o400
+    } else {
+        return Ok(());
+    };
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & needed != needed {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | needed))?;
+        changed.push((path.to_path_buf(), mode));
+    }
+    if meta.is_dir() {
+        let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            allow_tree_reads(&entry.path(), changed)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_tree_modes(changed: Vec<(PathBuf, u32)>) -> std::io::Result<()> {
+    let mut error = None;
+    for (path, mode) in changed.into_iter().rev() {
+        if let Err(failed) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            error.get_or_insert(failed);
+        }
+    }
+    match error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 fn check_relative(path: &Path) -> Result<(), ImageError> {
@@ -4086,7 +4155,7 @@ mod tests {
     }
 
     #[test]
-    fn rootfs_segment_can_read_an_unreadable_guest_file() {
+    fn preparation_reads_unreadable_guest_paths_without_changing_modes() {
         let dir = tempfile::tempdir().unwrap();
         let layout = dir.path().join("layout");
         std::fs::create_dir(&layout).unwrap();
@@ -4095,11 +4164,22 @@ mod tests {
             br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
         )
         .unwrap();
-        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{"User":"svc"}}"#).unwrap();
         let body = [
             raw_member_with_mode(b"secret", b'0', "", b"data", Owner::ROOT, 0),
             raw_member_with_mode(b"sealed/", b'5', "", b"", Owner::ROOT, 0),
             raw_member_with_mode(b"sealed/secret", b'0', "", b"hidden", Owner::ROOT, 0),
+            raw_member_with_mode(b"etc/", b'5', "", b"", Owner::ROOT, 0),
+            raw_member_with_mode(
+                b"etc/passwd",
+                b'0',
+                "",
+                b"svc:x:123:456::/home/svc:/bin/sh\n",
+                Owner::ROOT,
+                0,
+            ),
+            raw_member_with_mode(b"etc/group", b'0', "", b"svc:x:456:\n", Owner::ROOT, 0),
+            raw_member_with_mode(b"usr/", b'5', "", b"", Owner::ROOT, 0),
         ]
         .concat();
         write_archive(&layout, "layer.tar", &body);
@@ -4139,6 +4219,15 @@ mod tests {
             packed,
             crate::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap()
         );
+        let credentials = staged
+            .config
+            .resolve_process_credentials(&staged.rootfs)
+            .unwrap();
+        assert_eq!((credentials.uid, credentials.gid), (123, 456));
+        let request = crate::bundle::LaunchRequest::new(vec!["/bin/true".into()]);
+        let prepared = crate::bundle::prepare(&staged, &request).unwrap();
+        assert_eq!((prepared.execution.uid, prepared.execution.gid), (123, 456));
+        assert_eq!(prepared.rootfs_segment, packed);
     }
 
     #[test]
