@@ -51,7 +51,8 @@ fn run_checked<M: Subject>(machine: &mut M, target: u64) -> Result<RunOutcome, S
     let before = machine.work();
     let outcome = machine.run_to(target)?;
     let actual = machine.work();
-    if (outcome == RunOutcome::ReachedTarget && actual != target)
+    if actual < before
+        || (outcome == RunOutcome::ReachedTarget && actual != target)
         || (outcome == RunOutcome::Halted && actual > target && actual > before)
     {
         return Err(SubjectError::InconsistentWork {
