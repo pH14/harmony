@@ -7,6 +7,7 @@ description = "Deterministic supplies, opaque service channels, and input reprod
 
 [dependencies]
 hypercall-proto = { path = "../hypercall-proto", version = "=0.1.0" }
+sha2 = "0.10"
 thiserror = "2"
 
 [lints]

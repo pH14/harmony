@@ -110,7 +110,10 @@ pub fn decide_service<H: ServiceHandler + Clone>(
     let question = service_question(payload)?;
     let mut candidate = env.clone();
     candidate.set_moment(moment);
-    let outcome = match candidate.decide(&question).map_err(|_| Status::Internal)? {
+    let outcome = match candidate.decide(&question).map_err(|error| match error {
+        crate::channel::ChannelError::RequestIdentityMismatch => Status::BadRequest,
+        _ => Status::Internal,
+    })? {
         ServiceResponse::Answered(answer) => {
             ServiceOutcome::Answered(answer_bytes(&answer).ok_or(Status::Internal)?)
         }
@@ -305,6 +308,37 @@ mod tests {
                 question.payload()
             ),
             (9, 7, &b"ask"[..])
+        );
+    }
+
+    #[test]
+    fn recorded_service_answer_binds_the_first_request_payload() {
+        let mut env = RecordedEnv::nominal(7);
+        env.record_service_request(4, 9, 7, Answer::Data(vec![42]));
+        let request = |body: &[u8]| {
+            let mut payload = 9_u16.to_le_bytes().to_vec();
+            payload.extend(7_u64.to_le_bytes());
+            payload.extend(body);
+            payload
+        };
+        assert_eq!(
+            decide_service(&mut env, 4, &request(b"first")),
+            Ok(ServiceOutcome::Answered(vec![1, 42]))
+        );
+        assert_eq!(
+            decide_service(&mut env, 4, &request(b"second")),
+            Err(Status::BadRequest)
+        );
+        assert_eq!(
+            decide_service(&mut env, 4, &request(b"first")),
+            Ok(ServiceOutcome::Answered(vec![1, 42]))
+        );
+        let state = RecordedState::decode(&env.snapshot_state().unwrap().encode()).unwrap();
+        let mut replay = RecordedEnv::nominal(7);
+        state.restore_into(&mut replay).unwrap();
+        assert_eq!(
+            decide_service(&mut replay, 4, &request(b"second")),
+            Err(Status::BadRequest)
         );
     }
 
