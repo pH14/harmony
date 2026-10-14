@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# AA-4(c) level-2: the static exclusive-opcode scan. Scan loaded executable
-# sections and executable-segment gaps for load/store-EXCLUSIVE instructions.
+# AA-4(c) level-2: scan every mapped executable user page for
+# load/store-EXCLUSIVE instructions. The owned kernel uses a separate mode
+# because its runtime page tables do not use the vmlinux PT_LOAD flags.
 #
 # The LL/SC exclusive family (monitor-based): LDXR/LDXRB/LDXRH/LDAXR.., STXR/STLXR..,
 # LDXP/STXP/LDAXP/STLXP. These and LSE CASP share the broad encoding class
@@ -12,8 +13,7 @@
 # monitor and are deterministic, so an LSE-only build is clean by construction.
 #
 # The scan operates on raw ELF bytes and cross-checks objdump wherever it renders
-# an instruction. Known non-executable data sections in a PF_X segment are excluded
-# from AA-4 because ordinary data can match the broad exclusive opcode mask.
+# an instruction. User ELF section labels never remove bytes from the scan.
 import bisect
 import re
 import struct
@@ -74,7 +74,48 @@ def reviewed_data_section(name: str) -> bool:
     return name in REVIEWED_DATA_SECTIONS
 
 
-def executable_words(path: str, include_segment_data: bool = False):
+def kernel_runtime_exec_ranges(path: str, entry: int):
+    names = (
+        "_text", "_stext", "_etext", "__start_rodata", "__inittext_begin",
+        "__inittext_end", "__initdata_begin", "__initdata_end", "_data", "_end",
+    )
+    try:
+        listing = subprocess.run(
+            ["nm", "--defined-only", path], capture_output=True, text=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f"SCANNER KERNEL ERROR for {path}: cannot read linker symbols: {error}")
+    symbols = {}
+    for line in listing.splitlines():
+        parts = line.split()
+        if len(parts) != 3 or parts[2] not in names:
+            continue
+        name = parts[2]
+        if name in symbols:
+            raise SystemExit(f"SCANNER KERNEL ERROR for {path}: duplicate {name}")
+        try:
+            symbols[name] = int(parts[0], 16)
+        except ValueError:
+            raise SystemExit(f"SCANNER KERNEL ERROR for {path}: invalid {name}")
+    missing = [name for name in names if name not in symbols]
+    if missing:
+        raise SystemExit(f"SCANNER KERNEL ERROR for {path}: missing {', '.join(missing)}")
+    if entry != symbols["_text"]:
+        raise SystemExit(f"SCANNER KERNEL ERROR for {path}: unexpected entrypoint")
+    ordered = [symbols[name] for name in names]
+    if any(value % GUEST_PAGE_BYTES for value in ordered):
+        raise SystemExit(f"SCANNER KERNEL ERROR for {path}: unaligned linker boundary")
+    if not (
+        ordered[0] < ordered[1] < ordered[2] == ordered[3]
+        < ordered[4] < ordered[5] == ordered[6] < ordered[7] == ordered[8]
+        < ordered[9]
+    ):
+        raise SystemExit(f"SCANNER KERNEL ERROR for {path}: unexpected linker layout")
+    return ((symbols["_stext"], symbols["_etext"]),
+            (symbols["__inittext_begin"], symbols["__inittext_end"]))
+
+
+def executable_words(path: str, kernel_image: bool = False):
     data = Path(path).read_bytes()
     elf_header = "<16sHHIQQQIHHHHHH"
     section_header = "<IIQQQQIIQQ"
@@ -258,11 +299,12 @@ def executable_words(path: str, include_segment_data: bool = False):
         if previous[1] > current[0]:
             raise SystemExit(f"SCANNER ELF ERROR for {path}: overlapping loaded sections {previous[2]} and {current[2]}")
 
-    # The segment walk covers gaps and bypassed section flags. AA-4 skips reviewed
-    # non-X data ranges because real kernel and user images contain incidental
-    # exclusive-shaped data. AA-5 requests every PF_X word for its narrower mask.
+    # The segment walk covers every byte on a user executable page, including
+    # reviewed data sections. Only the owned kernel may exclude data in ranges
+    # that its linker-bound page tables actually map non-executable.
     data_ranges.sort()
     _data_starts = [lo for lo, _ in data_ranges]
+    kernel_exec_ranges = kernel_runtime_exec_ranges(path, _entry) if kernel_image else ()
 
     def _in_data_section(addr):
         i = bisect.bisect_right(_data_starts, addr) - 1
@@ -280,7 +322,8 @@ def executable_words(path: str, include_segment_data: bool = False):
             word_address = mapped_address + file_offset - page_offset
             if word_address in addresses:
                 continue
-            if not include_segment_data and _in_data_section(word_address):
+            if (kernel_image and _in_data_section(word_address)
+                    and not any(lo <= word_address < hi for lo, hi in kernel_exec_ranges)):
                 continue
             addresses.add(word_address)
             word = int.from_bytes(data[file_offset : file_offset + 4].ljust(4, b"\0"), "little")
@@ -332,8 +375,8 @@ def disassembly_cross_check(path: str):
     return decoded
 
 
-def scan(path: str):
-    words = executable_words(path)
+def scan(path: str, kernel_image: bool = False):
+    words = executable_words(path, kernel_image=kernel_image)
     decoded = disassembly_cross_check(path)
     raw_by_address = {address: word for address, word, _section in words}
     raw_mismatches = [
@@ -357,10 +400,14 @@ def scan(path: str):
 def main():
     self_test_mask()
     if len(sys.argv) < 2:
-        raise SystemExit("usage: aa4-exclusive-scan.py <aarch64-elf> [<elf> ...]")
+        raise SystemExit("usage: aa4-exclusive-scan.py [--kernel-vmlinux] <aarch64-elf> [<elf> ...]")
+    kernel_image = sys.argv[1] == "--kernel-vmlinux"
+    paths = sys.argv[2:] if kernel_image else sys.argv[1:]
+    if kernel_image and len(paths) != 1:
+        raise SystemExit("usage: aa4-exclusive-scan.py --kernel-vmlinux <vmlinux>")
     any_hits = False
-    for path in sys.argv[1:]:
-        hits = scan(path)
+    for path in paths:
+        hits = scan(path, kernel_image=kernel_image)
         name = path.split("/")[-1]
         if hits:
             any_hits = True

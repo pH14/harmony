@@ -74,6 +74,13 @@ binary as `build/aarch64/runc`. Its vendored build uses Go 1.25.0 locally with
 `netgo`, `osusergo`, and `urfave_cli_no_docs`; `seccomp` and `libpathrs` are
 omitted because their native ARM dependencies are not part of the platform
 closure, and the generated runtime requests neither feature.
+ARM user images link code and read-only data into separate page-aligned load
+segments. AA-4 scans every byte on executable user pages for LL/SC words,
+including metadata labeled as non-executable by ELF section headers. The
+kernel is qualified separately against its linker-range page map: its
+`.altinstructions` table and unwind metadata reside on non-executable init
+data pages. The scanner does not enforce the cooperative contract against
+later JIT code, executable remapping, or file mutation.
 
 ## Supported x86 guest lifecycle
 

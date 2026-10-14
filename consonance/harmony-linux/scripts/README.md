@@ -14,20 +14,22 @@ leaving `PT_LOAD` executable and must still be rejected.
 The arm64 AA-4 and AA-5 scanners compare loaded section addresses and file
 offsets with their executable `PT_LOAD` mapping. They reject overlapping
 executable segments, duplicate or overlapping loaded sections, a non-executable
-`.text`, an entrypoint in data, and unreviewed data-section names. AA-5 checks
-every aligned word in the 4 KiB page-rounded file mapping of a `PF_X` load
+`.text`, an entrypoint in data, and unreviewed data-section names. Both AA-4
+and AA-5 check every aligned word in the 4 KiB page-rounded file mapping of a `PF_X` load
 segment, including words labeled as data or lying outside its declared
 `p_filesz`. The scanners reject load segments whose file or virtual pages
 overlap an executable load's pages, so a separate data segment cannot supply
 an executable alias through Linux's page rounding.
-AA-4 excludes reviewed non-X data sections because real kernel and user images
-contain incidental words matching its broad exclusive-instruction mask.
-The pinned arm64 runc keeps Go's `.typelink`, `.itablink`, and `.gopclntab`
-metadata in the executable load segment; these names are reviewed data under
-the same rule. The pinned kernel's `__modver` is also reviewed metadata.
-Executing instructions from those data sections is a remaining admission gap
-tracked in [issue #618](https://github.com/pH14/harmony/issues/618). The static
-scan does not provide a runtime execute guard.
+ARM user binaries link their read-only data into page-separated non-executable
+`PT_LOAD` segments so incidental exclusive-shaped metadata remains usable.
+The pinned `vmlinux` has a different mapping: its own page tables execute
+`_stext.._etext` and `__inittext_begin..__inittext_end`, not every `PF_X`
+program-header byte. The explicit `--kernel-vmlinux` AA-4 mode validates those
+linker boundaries and excludes reviewed data only outside the runtime
+executable ranges. The arm64 linker patch places `.altinstructions` and unwind
+metadata on NX init-data pages. The vDSO uses ordinary user-page scanning.
+These are static artifact checks; they do not trap later executable mappings,
+`mprotect`, generated code, or writes to executable files.
 
 The counter scanner also rejects physical and virtual timer-value reads
 (`CNTP_TVAL_EL0` and `CNTV_TVAL_EL0`). These expose a remaining interval derived

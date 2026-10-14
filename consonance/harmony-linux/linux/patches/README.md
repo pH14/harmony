@@ -44,6 +44,9 @@ virtual clock event, fixed counter and cache topology, interrupt handling,
 canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
+The series moves alternative and unwind metadata after `__initdata_begin`, so
+the pinned kernel maps those tables NX rather than leaving data within its
+executable init-text range. The artifact scan uses the same linker boundaries.
 With the Harmony clock, the kernel's virtual timer shutdown uses only the MMIO
 clockevent, and the physical timer paths stop if reached. This removes all
 architected timer control instructions from the shipped arm64 image so the

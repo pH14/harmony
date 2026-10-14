@@ -90,7 +90,7 @@ def executable_words(path: str):
         raise SystemExit(f"SCANNER ELF ERROR: cannot load {parser_path}")
     parser = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(parser)
-    return parser.executable_words(path, include_segment_data=True)
+    return parser.executable_words(path)
 
 
 def scan(path: str):
