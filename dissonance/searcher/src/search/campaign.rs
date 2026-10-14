@@ -1270,10 +1270,18 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignJobResult<G> {
     }
 }
 
-fn verify_selector_annotation(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
+fn verify_selector_annotation(
+    draw: &SelectorDraw,
+    archive_entry_limit: usize,
+) -> Result<(), Box<dyn Error>> {
     match (draw.path, draw.tier_rank) {
         (SelectorPath::Tiers | SelectorPath::Recent, None) => {
             Err("tier draw is missing its rank".into())
+        }
+        (SelectorPath::Tiers | SelectorPath::Recent, Some(rank))
+            if usize::from(rank) >= archive_entry_limit =>
+        {
+            Err("tier rank exceeds the archive population limit".into())
         }
         (SelectorPath::Continuation, Some(_)) => {
             Err("continuation draw carries a tier rank".into())
@@ -4688,7 +4696,7 @@ where
                 if skip.selector.path == SelectorPath::Continuation {
                     return Err("continuations cannot be recorded skips".into());
                 }
-                verify_selector_annotation(&skip.selector)?;
+                verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
@@ -4969,7 +4977,7 @@ where
                     return Err("replay adaptive duration state exceeds its memory reserve".into());
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
-                verify_selector_annotation(&job.selector)?;
+                verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
