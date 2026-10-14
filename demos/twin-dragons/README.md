@@ -256,7 +256,9 @@ state there, so the page never shows a level the search has already left. New
 rooms in levels behind the shown one never move the map back. The automatic
 replay pick skips states outside the shown level. Showing a level also builds
 the next level's map in the background, so the map is ready when the search
-arrives.
+arrives. In a game whose maps are built in the browser, a search starts once
+the map of its starting level is ready, so rollouts never play over a blank
+view.
 
 On a first visit the camera opens at 1.3 times the close-up, follows for 1.5
 seconds, then eases to the close-up over 0.8 seconds. Returning and
@@ -429,10 +431,12 @@ health full, clears enemies, hides sprites and rolls back to a snapshot on
 death. When he stops moving it moves him forward. It copies a camera frame into
 the map whenever the camera is still in the expected room. It finds a room's
 exit by trying a grid of positions with the exit's direction held, with
-rendering off. The Wily 2, 3 and 6 maps stop partway, because the builder
-does not yet find some of their exits. Seed 3 climbs about 420 pixels of Crash
-Man's stage in 3,000 rollouts. `tests/mm2.mjs` reads the ROM from `MM2_ROM` or
-`~/workspace/roms/mm2.nes` and skips when it is absent.
+rendering off. A try ends once Mega Man stands still for 30 frames. Crash
+Man's map takes about 2 seconds to build. The Wily 2, 3 and 6 maps stop
+partway, because the builder does not yet find some of their exits. Seed 3
+climbs about 420 pixels of Crash Man's stage in 3,000 rollouts. `tests/mm2.mjs`
+reads the ROM from `MM2_ROM` or `~/workspace/roms/mm2.nes` and skips when it is
+absent.
 
 ### Metroid
 
@@ -532,8 +536,9 @@ the level strip moves the view in both. `tests/smb.mjs` also checks that
 cleared levels collapse into the +N button and that nothing scrolls sideways
 at 1,280 and 390 pixels wide. `tests/mm2.mjs` boots every stage, builds three
 maps, replays a Crash Man state exactly, compares the Rust and browser
-decoders, and checks that the stage map and the top and bottom edge chevrons
-move the view.
+decoders, checks that the stage map is drawn when the first rollouts appear,
+and checks that the stage map and the top and bottom edge chevrons move the
+view.
 `tests/metroid.mjs` does the same for Metroid's five area maps.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the

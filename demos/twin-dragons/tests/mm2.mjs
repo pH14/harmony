@@ -74,6 +74,15 @@ assert.match(await page.locator("#rom-message").innerText(), /Choose your Mega M
 const chooser = page.waitForEvent("filechooser");
 await page.locator("#game-choice button", { hasText: "Mega Man 2" }).click();
 await (await chooser).setFiles(path);
+const drawn = await (await page.waitForFunction(() => {
+  const strip = document.querySelector('.level-overview[data-map="0"]');
+  if (document.documentElement.dataset.game !== "mega-man-2" || !strip || !(Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 0)) return null;
+  const data = strip.getContext("2d").getImageData(0, 0, strip.width, strip.height).data, [r, g, b] = data;
+  let differ = 0;
+  for (let i = 0; i < data.length; i += 4) if (Math.abs(data[i] - r) + Math.abs(data[i + 1] - g) + Math.abs(data[i + 2] - b) > 24) differ++;
+  return differ / (data.length / 4);
+}, null, { timeout: 60000, polling: "raf" })).jsonValue();
+assert.ok(drawn > 0.05, `The stage map is drawn when the first rollouts appear (${(drawn * 100).toFixed(1)}% of the strip)`);
 await page.waitForFunction(() => document.documentElement.dataset.game === "mega-man-2" && Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 200, null, { timeout: 60000 });
 assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textContent(), "Crash Man");
 const strip = page.locator('.level-overview[data-map="0"]'), view = page.locator('.area-map[data-map="0"]');

@@ -337,13 +337,16 @@ export function buildMap(engine, id) {
       ram[PLAYER_Y] = y;
       ram[SCREEN] = info.last;
       if (state >= 0) ram[PLAYER_STATE] = state;
-      for (let f = 0; f < frames; f++) {
+      for (let f = 0, still = 0; f < frames; f++) {
+        const before = ram[PLAYER_X];
         ram[HEALTH] = FULL;
         clearEnemies();
         engine.run(f < land ? 0 : key, 1, false);
         if (ram[PLAYER_STATE] === DYING) ram[PLAYER_STATE] = AIRBORNE;
         if (ram[ROOM] === want && ram[CAMERA_STATE] === 0) return true;
         if (state === LADDER && f > 30 && ram[PLAYER_STATE] !== LADDER && ram[PLAYER_STATE] !== LADDER_TOP) return false;
+        still = f >= land && ram[PLAYER_STATE] === STANDING && ram[PLAYER_X] === before ? still + 1 : 0;
+        if (still > 30) return false;
       }
       return false;
     };

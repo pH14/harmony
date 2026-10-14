@@ -837,7 +837,7 @@ function mapURL(level) {
   url.searchParams.set("v", "level-data-1");
   return url.href;
 }
-const builtMaps = { worker: null, ready: false, queue: [], busy: false, wanted: null };
+const builtMaps = { worker: null, ready: false, queue: [], busy: false, wanted: null, waiting: new Map() };
 function imageCanvas({ width, height, data }) {
   const image = document.createElement("canvas");
   image.width = width;
@@ -869,6 +869,8 @@ function tiledMap({ width, height, tiles }) {
 function showBuiltMap(level, image) {
   (image.tiles ? tiledMap(image) : createImageBitmap(image)).then((bitmap) => {
     panoramas.set(level, bitmap);
+    for (const resolve of builtMaps.waiting.get(level) || []) resolve();
+    builtMaps.waiting.delete(level);
     addAreaMap(level, bitmap);
     for (const preview of document.querySelectorAll(`canvas.level-preview[data-level="${level}"]`)) drawLevelPreview(preview, bitmap);
   });
@@ -900,6 +902,10 @@ async function buildMapInBrowser(level) {
   startMapWorker();
   builtMaps.queue.push(level);
   nextBuiltMap();
+}
+function mapBuilt(level) {
+  if (panorama(level)) return Promise.resolve();
+  return new Promise((resolve) => builtMaps.waiting.set(level, [...(builtMaps.waiting.get(level) || []), resolve]));
 }
 function prefetchNextMap(level) {
   const next = catalog.levels[levelIndex(level) + 1]?.rooms[0];
@@ -1606,7 +1612,10 @@ function startSearch(level = bootLevel) {
       fail(e);
     }
   };
-  worker.postMessage({ type: "init", base: base.href, game: game.id, rom: engineInputs.rom, seed, budget, pace, ports, boot_level: bootLevel }, ports);
+  const init = { type: "init", base: base.href, game: game.id, rom: engineInputs.rom, seed, budget, pace, ports, boot_level: bootLevel };
+  if (!game.buildMap) return worker.postMessage(init, ports);
+  const starting = worker;
+  mapBuilt(bootLevel).then(() => starting.postMessage(init, ports));
 }
 function updateSearchControl() {
   heat.setRunning(ready && !paused && !stats.stopped, performance.now());
