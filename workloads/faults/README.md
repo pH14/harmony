@@ -237,10 +237,12 @@ identity, host architecture, physical processor, CPU model and CPU feature flags
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest
-boot, so that identity always names the profile the session pins. The UML
-identity hashes kernel arguments with their lengths, preserving the argument
-boundaries used at boot when a live session or cache entry is reused. Search
-admits one processor from the selected coordinator placement for the whole campaign.
+boot. The staged initramfs is checked against the requested image, then the
+sealed bytes are checked again before boot, so the identity names the image the
+session actually runs. The UML identity hashes kernel arguments with their
+lengths, preserving the boundaries used at boot when a live session or cache
+entry is reused. Search admits one processor from the selected coordinator
+placement for the whole campaign.
 Host worker threads still run on their assigned cores, while every UML guest
 child is pinned to the admitted processor; this prevents guest-visible CPUID
 or MIDR differences from entering snapshots passed between workers, at the

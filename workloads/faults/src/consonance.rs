@@ -367,7 +367,13 @@ fn uml_launch(
     let path = guest
         .work_parent
         .join(format!("harmony-initramfs-{digest:x}.cpio"));
-    if !path.exists() {
+    if path.exists() {
+        let staged =
+            std::fs::read(&path).map_err(|error| format!("read staged initramfs: {error}"))?;
+        if staged != initramfs {
+            return Err("staged initramfs differs from the requested image".into());
+        }
+    } else {
         let mut staged = tempfile::NamedTempFile::new_in(&guest.work_parent)
             .map_err(|error| format!("stage initramfs: {error}"))?;
         std::io::Write::write_all(&mut staged, initramfs)
@@ -381,6 +387,7 @@ fn uml_launch(
         expected_profile_identity_sha256: guest.profile_identity_sha256.clone(),
         expected_host: guest.host.clone(),
         initramfs: path,
+        expected_initramfs_sha256: digest.into(),
         memory_mib: config.ram_mib,
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
         work_parent: guest.work_parent.clone(),
@@ -1434,7 +1441,9 @@ mod tests {
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
         assert_eq!(launch.expected_host, guest.host);
-        assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
+        assert_eq!(std::fs::read(&launch.initramfs).unwrap(), b"initramfs");
+        std::fs::write(&launch.initramfs, b"stale initramfs").unwrap();
+        assert!(uml_launch(&guest, b"initramfs", &config).is_err());
     }
 
     #[test]

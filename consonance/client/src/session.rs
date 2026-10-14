@@ -764,6 +764,7 @@ pub struct UmlLaunch {
     pub expected_profile_identity_sha256: String,
     pub expected_host: ::uml::HostIdentity,
     pub initramfs: std::path::PathBuf,
+    pub expected_initramfs_sha256: [u8; 32],
     pub memory_mib: u32,
     pub kernel_arguments: Vec<String>,
     pub work_parent: std::path::PathBuf,
