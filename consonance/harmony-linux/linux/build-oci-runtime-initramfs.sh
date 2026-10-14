@@ -116,6 +116,13 @@ if [ -n "$busybox_cflags" ]; then
     sed "s/^CONFIG_EXTRA_CFLAGS=\"\"$/CONFIG_EXTRA_CFLAGS=\"$busybox_cflags\"/" \
         "$busybox_obj/.config" >"$busybox_obj/.config.tmp"
     mv "$busybox_obj/.config.tmp" "$busybox_obj/.config"
+    grep -qxF 'CONFIG_EXTRA_LDFLAGS=""' "$busybox_obj/.config" || {
+        echo "FAIL: BusyBox default linker flags changed" >&2
+        exit 1
+    }
+    sed 's/^CONFIG_EXTRA_LDFLAGS=""$/CONFIG_EXTRA_LDFLAGS="-Wl,-z,separate-code"/' \
+        "$busybox_obj/.config" >"$busybox_obj/.config.tmp"
+    mv "$busybox_obj/.config.tmp" "$busybox_obj/.config"
 fi
 set +o pipefail
 yes '' | make -C "$BBSRC" O="$busybox_obj" oldconfig >/dev/null
@@ -134,6 +141,10 @@ done
 if [ -n "$busybox_cflags" ]; then
     grep -qxF "CONFIG_EXTRA_CFLAGS=\"$busybox_cflags\"" "$busybox_obj/.config" || {
         echo "FAIL: arm64 BusyBox lost its LSE-only compiler flags" >&2
+        exit 1
+    }
+    grep -qxF 'CONFIG_EXTRA_LDFLAGS="-Wl,-z,separate-code"' "$busybox_obj/.config" || {
+        echo "FAIL: BusyBox lost separate-code linker flags" >&2
         exit 1
     }
 fi
@@ -167,6 +178,7 @@ install -m 0755 "$runtime_supervisor" "$oci_root/usr/lib/harmony/supervisor"
 if [ "$runtime_arch" = aarch64 ]; then
     install -m 0755 "$LINUX_DIR/arm64-oci-init.sh" "$oci_root/init"
     "$busybox_cc" -static -Os "${busybox_flag_args[@]}" -Wall -Wextra -Werror \
+        -Wl,-z,separate-code \
         "$LINUX_DIR/arm64-mmio-console.c" -o "$oci_root/usr/bin/mmio-console"
 else
     install -m 0755 "$LINUX_DIR/oci-init.sh" "$oci_root/init"

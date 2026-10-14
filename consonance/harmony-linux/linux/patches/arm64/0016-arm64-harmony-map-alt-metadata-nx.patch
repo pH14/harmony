@@ -1,0 +1,31 @@
+arm64: place alternative metadata outside executable init pages
+
+The Harmony LSE-only kernel keeps alternative metadata for CPU features. Its
+table contains words that decode as LL/SC instructions, and the default arm64
+linker script places the table between exit text and __inittext_end. Those
+pages are executable even though the ELF section lacks SHF_EXECINSTR.
+
+Move the alternative and unwind metadata after __initdata_begin so the
+kernel's linker-range page mappings mark those pages non-executable. This
+lets the artifact scan cover every word on actual executable kernel pages.
+
+--- a/arch/arm64/kernel/vmlinux.lds.S
++++ b/arch/arm64/kernel/vmlinux.lds.S
+@@ -248,0 +249,8 @@
++	. = ALIGN(SEGMENT_ALIGN);
++	__inittext_end = .;
++	__initdata_begin = .;
++
++	__pi_init_idmap_pg_dir = .;
++	. += INIT_IDMAP_DIR_SIZE;
++	__pi_init_idmap_pg_end = .;
++
+@@ -257,8 +264,0 @@
+-
+-	. = ALIGN(SEGMENT_ALIGN);
+-	__inittext_end = .;
+-	__initdata_begin = .;
+-
+-	__pi_init_idmap_pg_dir = .;
+-	. += INIT_IDMAP_DIR_SIZE;
+-	__pi_init_idmap_pg_end = .;

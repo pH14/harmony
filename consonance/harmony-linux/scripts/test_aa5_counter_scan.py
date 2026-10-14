@@ -192,18 +192,29 @@ class CounterScanTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "entrypoint in data section"):
                 exclusive.executable_words(str(path))
 
-    def test_reviewed_data_does_not_trigger_exclusive_false_positive(self):
+    def test_kernel_nx_data_does_not_trigger_exclusive_false_positive(self):
         ret = (0xD65F03C0).to_bytes(4, "little")
         ldxr_shaped_data = (0x885F7C20).to_bytes(4, "little")
         data = elf_sections(((".text", 6, ret), (".rodata", 2, ldxr_shaped_data)), 0)
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "reviewed-data"
             path.write_bytes(data)
-            words = exclusive.executable_words(str(path))
+            with patch.object(exclusive, "kernel_runtime_exec_ranges", return_value=((0x1000, 0x1004),)):
+                words = exclusive.executable_words(str(path), kernel_image=True)
         self.assertIn((0x1000, 0xD65F03C0, ".text"), words)
         self.assertNotIn(0x885F7C20, [word for _address, word, _name in words])
 
-    def test_pinned_go_runtime_metadata_in_executable_segment_is_reviewed_data(self):
+    def test_user_executable_rodata_cannot_hide_exclusive(self):
+        branch = (0x14000001).to_bytes(4, "little")
+        ldxr = (0x885F7C20).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, branch), (".rodata", 2, ldxr)), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "branched-rodata"
+            path.write_bytes(data)
+            words = exclusive.executable_words(str(path))
+        self.assertIn((0x1004, 0x885F7C20, "<exec-segment 0>"), words)
+
+    def test_user_go_runtime_metadata_in_executable_segment_is_scanned(self):
         ret = (0xD65F03C0).to_bytes(4, "little")
         ldxr_shaped_data = (0x885F7C20).to_bytes(4, "little")
         sections = ((".text", 6, ret),) + tuple(
@@ -217,7 +228,10 @@ class CounterScanTests(unittest.TestCase):
             exclusive_words = exclusive.executable_words(str(path))
             counter_words = scan.executable_words(str(path))
         self.assertIn((0x1000, 0xD65F03C0, ".text"), exclusive_words)
-        self.assertNotIn(0x885F7C20, [word for _address, word, _name in exclusive_words])
+        self.assertEqual(
+            [word for _address, word, _name in exclusive_words if word == 0x885F7C20],
+            [0x885F7C20] * 3,
+        )
         self.assertEqual(
             [word for _address, word, _name in counter_words if word == 0x885F7C20],
             [0x885F7C20] * 3,
@@ -230,8 +244,42 @@ class CounterScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "kernel-modver"
             path.write_bytes(data)
-            words = exclusive.executable_words(str(path))
+            with patch.object(exclusive, "kernel_runtime_exec_ranges", return_value=((0x1000, 0x1004),)):
+                words = exclusive.executable_words(str(path), kernel_image=True)
         self.assertNotIn(0x885F7C20, [word for _address, word, _name in words])
+
+    def test_kernel_data_label_inside_executable_runtime_range_is_scanned(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        ldxr = (0x885F7C20).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret), (".rodata", 2, ldxr)), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "kernel-executable-data"
+            path.write_bytes(data)
+            with patch.object(exclusive, "kernel_runtime_exec_ranges", return_value=((0x1000, 0x1008),)):
+                words = exclusive.executable_words(str(path), kernel_image=True)
+        self.assertIn((0x1004, 0x885F7C20, "<exec-segment 0>"), words)
+
+    def test_kernel_linker_ranges_require_aligned_known_layout(self):
+        names = (
+            "_text", "_stext", "_etext", "__start_rodata", "__inittext_begin",
+            "__inittext_end", "__initdata_begin", "__initdata_end", "_data", "_end",
+        )
+        values = (0x1000, 0x2000, 0x3000, 0x3000, 0x4000,
+                  0x5000, 0x5000, 0x6000, 0x6000, 0x7000)
+
+        def read_ranges(addresses, entry=0x1000):
+            listing = "".join(f"{value:016x} T {name}\n" for name, value in zip(names, addresses))
+            result = subprocess.CompletedProcess([], 0, stdout=listing)
+            with patch.object(exclusive.subprocess, "run", return_value=result):
+                return exclusive.kernel_runtime_exec_ranges("vmlinux", entry)
+
+        self.assertEqual(read_ranges(values), ((0x2000, 0x3000), (0x4000, 0x5000)))
+        with self.assertRaisesRegex(SystemExit, "unexpected entrypoint"):
+            read_ranges(values, entry=0x2000)
+        with self.assertRaisesRegex(SystemExit, "unaligned linker boundary"):
+            read_ranges(values[:4] + (0x4004,) + values[5:])
+        with self.assertRaisesRegex(SystemExit, "unexpected linker layout"):
+            read_ranges(values[:3] + (0x4000,) + values[4:])
 
     def test_page_rounded_executable_mapping_rejects_counter_in_other_segment(self):
         data = executable_page_alias()

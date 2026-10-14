@@ -99,11 +99,11 @@ rm -f "$runc_output"
     cd "$runc_source"
     go test -p=4 -mod=vendor -trimpath -buildvcs=false \
         -tags 'netgo osusergo urfave_cli_no_docs' \
-        -ldflags '-linkmode external -extldflags -static -buildid=' \
+        -ldflags '-linkmode external -extldflags "-static -Wl,-z,separate-code" -buildid=' \
         ./libcontainer -run '^TestHarmonyReexecEagerBinding$' -count=1
     go build -p=4 -mod=vendor -trimpath -buildvcs=false \
         -tags 'netgo osusergo urfave_cli_no_docs' \
-        -ldflags '-linkmode external -extldflags -static -buildid=' \
+        -ldflags '-linkmode external -extldflags "-static -Wl,-z,separate-code" -buildid=' \
         -o "$runc_output"
 )
 

@@ -68,6 +68,8 @@ root. Both workloads fail before launch when their required contract is absent,
 and retain the privileges needed for nested namespaces, cgroups, network
 devices, and netfilter rules. The ARM PostgreSQL image is built natively with
 its LSE-only binary scans; a native ARM host is required for that recipe.
+Its PostgreSQL and BusyBox links keep read-only metadata in page-separated
+non-executable load segments so AA-4 can scan every executable page.
 
 The K3s image deliberately omits `/usr/lib/libvoidstar.so`. The pinned K3s
 binary includes the Antithesis Go SDK, which probes that path and calls `dlopen`

@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_aarch64
-require_tools cc make flex bison bc xz gzip patch objdump python3
+require_tools cc make flex bison bc xz gzip patch objdump nm python3
 
 # The standard runtime configuration is the only production profile. The
 # traps-off image remains a deliberate platform negative control with a
@@ -209,8 +209,34 @@ if ! grep -q '^\[BANNED\].*: 2 LL/SC exclusive instruction(s)$' "$exclusive_prob
     exit 1
 fi
 echo "ok: scanner rejected the planted LDXR/STXR probe"
-python3 "$exclusive_scan" \
-    "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+exclusive_data_probe=$BUILD_ROOT/aa4-exclusive-data-probe.S
+exclusive_data_elf=$BUILD_ROOT/aa4-exclusive-data-probe
+cat >"$exclusive_data_probe" <<'EOF'
+.section .text,"ax"
+.global _start
+_start:
+	b hidden
+.section .rodata,"a"
+.align 2
+hidden:
+	ldxr w0, [x1]
+	mov x8, #93
+	svc #0
+EOF
+cc -nostdlib -static -Wl,-e,_start -Wl,-z,noseparate-code \
+    -o "$exclusive_data_elf" "$exclusive_data_probe"
+if python3 "$exclusive_scan" "$exclusive_data_elf" >"$exclusive_probe_log" 2>&1; then
+    echo "FAIL: AA-4 exclusive scanner accepted executable .rodata LDXR" >&2
+    exit 1
+fi
+if ! grep -q '^\[BANNED\].*: 1 LL/SC exclusive instruction(s)$' "$exclusive_probe_log"; then
+    echo "FAIL: AA-4 exclusive scanner did not identify executable .rodata LDXR" >&2
+    cat "$exclusive_probe_log" >&2
+    exit 1
+fi
+echo "ok: scanner rejected the executable .rodata LDXR probe"
+python3 "$exclusive_scan" --kernel-vmlinux "$arm64_object_root/vmlinux"
+python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
 
 install -m 0644 "$arm64_object_root/arch/arm64/boot/Image" "$ARM64_ART_DIR/$arm64_output"
 echo "ok: $ARM64_ART_DIR/$arm64_output"

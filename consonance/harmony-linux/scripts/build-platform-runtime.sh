@@ -50,6 +50,7 @@ if [ "$runtime_arch" = aarch64 ]; then
     }
     flags+=(-C "target-feature=+lse,-outline-atomics" -C link-self-contained=no
             -C "link-arg=-L$ARM64_MUSL_PREFIX/lib"
+            -C "link-arg=-Wl,-z,separate-code"
             -C "link-arg=-L$runtime_sysroot/lib/rustlib/$runtime_target/lib/self-contained")
     export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$ARM64_MUSL_PREFIX/bin/musl-gcc"
     cargo_options+=(-Z "build-std=std,panic_abort")
