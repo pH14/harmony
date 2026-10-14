@@ -118,9 +118,13 @@ prefix while GNU tar ignores it and extracts a different name. Exact GNU
 headers may use the early bytes for timestamps and remain accepted, but their
 sparse-map, extension, and real-size fields must be empty: macOS tar can apply
 them even to ordinary files while GNU tar ignores them.
-Tar timestamps must be valid nonnegative numbers, even though the staged rootfs
-does not preserve them: macOS and GNU tar disagree on malformed or negative
-timestamp headers.
+Tar header timestamps must be valid nonnegative numbers within the signed
+64-bit range: macOS and GNU tar disagree on malformed, negative, or larger
+header timestamps. PAX `mtime`, `atime`, and `ctime` records require signed
+decimal values within that range, with an optional fractional part. The
+rootfs CPIO writer sets file timestamps to zero instead of preserving the
+extracted times, but malformed PAX times can still make GNU tar fail where
+macOS tar succeeds.
 All tar numeric fields require octal digits with only space or NUL padding, or
 a nonnegative base-256 value. An empty space-only field, a leading plus sign,
 newline, or bytes after the NUL terminator can be interpreted differently by

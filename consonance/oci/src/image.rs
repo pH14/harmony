@@ -828,7 +828,8 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
             ));
         }
         let size = parse_octal(&block[124..136])?;
-        parse_octal(&block[136..148])?;
+        i64::try_from(parse_octal(&block[136..148])?)
+            .map_err(|_| ImageError::Tar("tar timestamp is too large".into()))?;
         match block[156] {
             b'L' => {
                 let mut data = header_data(&mut stream, size)?;
@@ -1143,6 +1144,7 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
                     pax.gid = Some(id);
                 }
             }
+            b"mtime" | b"atime" | b"ctime" => check_pax_timestamp(value)?,
             b"SCHILY.fflags" => {
                 return Err(ImageError::Tar(
                     "archive carries platform-specific file flags".into(),
@@ -1164,6 +1166,37 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             _ => {}
         }
         rest = &rest[length..];
+    }
+    Ok(())
+}
+
+fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
+    let invalid = || ImageError::Tar("invalid pax timestamp".into());
+    let (whole, fraction) = match value.iter().position(|byte| *byte == b'.') {
+        Some(at) => (&value[..at], Some(&value[at + 1..])),
+        None => (value, None),
+    };
+    let (negative, whole) = match whole.strip_prefix(b"-") {
+        Some(digits) => (true, digits),
+        None => (false, whole),
+    };
+    if whole.is_empty()
+        || !whole.iter().all(u8::is_ascii_digit)
+        || fraction.is_some_and(|digits| !digits.iter().all(u8::is_ascii_digit))
+    {
+        return Err(invalid());
+    }
+    let seconds = std::str::from_utf8(whole)
+        .map_err(|_| invalid())?
+        .parse::<u64>()
+        .map_err(|_| invalid())?;
+    let limit = i64::MAX as u64 + u64::from(negative);
+    if seconds > limit
+        || (negative
+            && seconds == limit
+            && fraction.is_some_and(|digits| digits.iter().any(|digit| *digit != b'0')))
+    {
+        return Err(invalid());
     }
     Ok(())
 }
@@ -2775,6 +2808,78 @@ mod tests {
                 Err(ImageError::Tar(_))
             ));
             assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn out_of_range_binary_tar_timestamp_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        let mut timestamp = [0u8; 12];
+        timestamp[0] = 0x80;
+        timestamp[4] = 0x80;
+        member[136..148].copy_from_slice(&timestamp);
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "huge-mtime.tar", &member);
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn nonportable_pax_timestamps_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for key in ["mtime", "atime", "ctime"] {
+            for (label, value) in [
+                ("invalid", "abc"),
+                ("plus", "+1"),
+                ("spaces", " "),
+                ("missing-integer", ".5"),
+                ("too-large", "99999999999999999999"),
+                ("too-negative", "-9223372036854775808.9"),
+            ] {
+                let body = [
+                    raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                    raw_member(b"payload", b'0', "", b"data"),
+                ]
+                .concat();
+                let case = format!("{key}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &body);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn portable_pax_timestamps_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        for value in ["0", "-1.5", "123.456789", "0.", "9223372036854775807.9"] {
+            let body = [
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("mtime", value).as_bytes(),
+                ),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("valid-mtime-{value}.tar"), &body);
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
         }
     }
 
