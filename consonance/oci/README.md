@@ -156,6 +156,9 @@ host tar implementations.
 Base UID and GID fields must also be valid and fit 32 bits when a PAX owner
 record overrides them: GNU tar can report an error on an invalid base field
 after macOS tar has accepted the same member.
+The base member size must be below the signed 64-bit maximum even when a PAX
+size overrides it: macOS tar reports overflow at that exact value while GNU
+tar extracts the PAX-sized payload.
 Device-major and device-minor header fields must have portable numeric syntax
 even on ordinary files. macOS tar rejects malformed fields that GNU tar ignores;
 empty space-filled fields and base-256 encodings that both hosts accept remain
