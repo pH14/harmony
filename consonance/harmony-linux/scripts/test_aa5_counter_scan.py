@@ -30,7 +30,7 @@ def elf_sections(sections, entry):
     name_offsets[".shstrtab"] = len(names)
     names.extend(b".shstrtab\0")
     code = b"".join(body for _name, _flags, body in sections)
-    code_offset = 1024
+    code_offset = 4096
     section_table_offset = 256
     data = bytearray(code_offset + len(code) + len(names))
     ident = b"\x7fELF\x02\x01\x01" + bytes(9)
@@ -59,6 +59,23 @@ def elf_sections(sections, entry):
     )
     data[code_offset : code_offset + len(code)] = code
     data[code_offset + len(code) :] = names
+    return data
+
+
+def executable_page_alias():
+    branch = (0x14000001).to_bytes(4, "little")
+    counter = (0xD53BE040).to_bytes(4, "little")
+    exit_syscall = (0xD2800BA8).to_bytes(4, "little") + (0xD4000001).to_bytes(4, "little")
+    data = elf_sections(((".text", 6, branch),
+                         (".data", 3, counter + exit_syscall)), 0)
+    struct.pack_into("<Q", data, 24, 0x401000)
+    struct.pack_into("<H", data, 56, 2)
+    struct.pack_into("<IIQQQQQQ", data, 64,
+                     1, 5, 0, 0x400000, 0x400000, 4100, 4100, 4096)
+    struct.pack_into("<IIQQQQQQ", data, 120,
+                     1, 6, 4100, 0x402004, 0x402004, 12, 12, 4096)
+    struct.pack_into("<Q", data, 256 + 64 + 16, 0x401000)
+    struct.pack_into("<Q", data, 256 + 2 * 64 + 16, 0x402004)
     return data
 
 
@@ -128,7 +145,7 @@ class CounterScanTests(unittest.TestCase):
         counter = (0xD53BE040).to_bytes(4, "little")
         ret = (0xD65F03C0).to_bytes(4, "little")
         data = elf_sections(((".text", 6, counter), (".safe", 6, ret)), 0)
-        struct.pack_into("<Q", data, 256 + 64 + 24, 1028)
+        struct.pack_into("<Q", data, 256 + 64 + 24, 4100)
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "misdirected-text"
             path.write_bytes(data)
@@ -183,7 +200,8 @@ class CounterScanTests(unittest.TestCase):
             path = Path(temporary) / "reviewed-data"
             path.write_bytes(data)
             words = exclusive.executable_words(str(path))
-        self.assertEqual(words, [(0x1000, 0xD65F03C0, ".text")])
+        self.assertIn((0x1000, 0xD65F03C0, ".text"), words)
+        self.assertNotIn(0x885F7C20, [word for _address, word, _name in words])
 
     def test_pinned_go_runtime_metadata_in_executable_segment_is_reviewed_data(self):
         ret = (0xD65F03C0).to_bytes(4, "little")
@@ -198,8 +216,64 @@ class CounterScanTests(unittest.TestCase):
             path.write_bytes(data)
             exclusive_words = exclusive.executable_words(str(path))
             counter_words = scan.executable_words(str(path))
-        self.assertEqual(exclusive_words, [(0x1000, 0xD65F03C0, ".text")])
-        self.assertEqual(len(counter_words), 4)
+        self.assertIn((0x1000, 0xD65F03C0, ".text"), exclusive_words)
+        self.assertNotIn(0x885F7C20, [word for _address, word, _name in exclusive_words])
+        self.assertEqual(
+            [word for _address, word, _name in counter_words if word == 0x885F7C20],
+            [0x885F7C20] * 3,
+        )
+
+    def test_pinned_kernel_module_version_metadata_is_reviewed_data(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        ldxr_shaped_data = (0x885F7C20).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret), ("__modver", 2, ldxr_shaped_data)), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "kernel-modver"
+            path.write_bytes(data)
+            words = exclusive.executable_words(str(path))
+        self.assertNotIn(0x885F7C20, [word for _address, word, _name in words])
+
+    def test_page_rounded_executable_mapping_rejects_counter_in_other_segment(self):
+        data = executable_page_alias()
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "page-alias"
+            path.write_bytes(data)
+            with self.assertRaisesRegex(SystemExit, "executable page alias"):
+                exclusive.executable_words(str(path))
+            with self.assertRaisesRegex(SystemExit, "executable page alias"):
+                scan.executable_words(str(path))
+
+    def test_overlapping_executable_and_data_virtual_pages_are_rejected(self):
+        data = executable_page_alias()
+        counter = bytes(data[4100:4112])
+        data[4100:4112] = bytes(12)
+        data.extend(bytes(8208 - len(data)))
+        data[8196:8208] = counter
+        struct.pack_into("<Q", data, 120 + 8, 8196)
+        struct.pack_into("<Q", data, 120 + 16, 0x401004)
+        struct.pack_into("<Q", data, 120 + 24, 0x401004)
+        struct.pack_into("<Q", data, 256 + 2 * 64 + 16, 0x401004)
+        struct.pack_into("<Q", data, 256 + 2 * 64 + 24, 8196)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "virtual-page-alias"
+            path.write_bytes(data)
+            with self.assertRaisesRegex(SystemExit, "executable page alias"):
+                exclusive.executable_words(str(path))
+
+    def test_page_tail_words_outside_executable_filesz_are_scanned(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        for word, reader in ((0x885F7C20, exclusive.executable_words),
+                             (0xD53BE040, scan.executable_words)):
+            with self.subTest(word=hex(word)):
+                data = elf_sections(((".text", 6, ret),
+                                     (".padding", 0, word.to_bytes(4, "little"))), 0)
+                struct.pack_into("<Q", data, 64 + 32, 4)
+                struct.pack_into("<Q", data, 64 + 40, 4)
+                with tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "executable-page-tail"
+                    path.write_bytes(data)
+                    words = reader(str(path))
+                self.assertIn((0x1004, word, "<exec-segment 0>"), words)
 
     def test_overlapping_executable_segments_are_rejected(self):
         ret = (0xD65F03C0).to_bytes(4, "little")
@@ -207,7 +281,7 @@ class CounterScanTests(unittest.TestCase):
                              (".safe", 6, ret)), 0)
         struct.pack_into("<H", data, 56, 2)
         struct.pack_into("<IIQQQQQQ", data, 120,
-                         1, 5, 1028, 0x1004, 0x1004, 4, 4, 4)
+                         1, 5, 4100, 0x1004, 0x1004, 4, 4, 4)
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "overlapping-segments"
             path.write_bytes(data)
@@ -219,7 +293,7 @@ class CounterScanTests(unittest.TestCase):
         data = elf_sections(((".text", 6, ret), (".rodata", 2, ret),
                              (".safe", 6, ret)), 2)
         struct.pack_into("<Q", data, 256 + 2 * 64 + 16, 0x1000)
-        struct.pack_into("<Q", data, 256 + 2 * 64 + 24, 1024)
+        struct.pack_into("<Q", data, 256 + 2 * 64 + 24, 4096)
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "overlapping-loaded-sections"
             path.write_bytes(data)

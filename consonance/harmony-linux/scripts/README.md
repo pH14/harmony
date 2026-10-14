@@ -15,12 +15,16 @@ The arm64 AA-4 and AA-5 scanners compare loaded section addresses and file
 offsets with their executable `PT_LOAD` mapping. They reject overlapping
 executable segments, duplicate or overlapping loaded sections, a non-executable
 `.text`, an entrypoint in data, and unreviewed data-section names. AA-5 checks
-every aligned word in a `PF_X` load segment, including words labeled as data.
+every aligned word in the 4 KiB page-rounded file mapping of a `PF_X` load
+segment, including words labeled as data or lying outside its declared
+`p_filesz`. The scanners reject load segments whose file or virtual pages
+overlap an executable load's pages, so a separate data segment cannot supply
+an executable alias through Linux's page rounding.
 AA-4 excludes reviewed non-X data sections because real kernel and user images
 contain incidental words matching its broad exclusive-instruction mask.
 The pinned arm64 runc keeps Go's `.typelink`, `.itablink`, and `.gopclntab`
 metadata in the executable load segment; these names are reviewed data under
-the same rule.
+the same rule. The pinned kernel's `__modver` is also reviewed metadata.
 Executing instructions from those data sections is a remaining admission gap
 tracked in [issue #618](https://github.com/pH14/harmony/issues/618). The static
 scan does not provide a runtime execute guard.

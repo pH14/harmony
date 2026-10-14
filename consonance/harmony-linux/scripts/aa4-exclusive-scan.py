@@ -23,6 +23,7 @@ from pathlib import Path
 
 EXCL_MASK = 0x3F800000
 EXCL_MATCH = 0x08000000
+GUEST_PAGE_BYTES = 4096
 
 
 def is_llsc_exclusive(word: int) -> bool:
@@ -64,7 +65,7 @@ REVIEWED_DATA_SECTIONS = {
     ".note", ".note.ABI-tag", ".note.gnu.build-id", ".note.gnu.property",
     ".notes", ".rela.dyn", ".rela.plt", ".rodata", ".stapsdt.base",
     ".typelink",
-    "__ex_table", "__param", "runtime_ptr_dentry_hashtable",
+    "__ex_table", "__modver", "__param", "runtime_ptr_dentry_hashtable",
     "runtime_shift_d_hash_shift",
 }
 
@@ -134,27 +135,55 @@ def executable_words(path: str, include_segment_data: bool = False):
     program_table_size = program_count * program_entry_size
     if program_offset > len(data) or program_table_size > len(data) - program_offset:
         raise SystemExit(f"SCANNER ELF ERROR for {path}: program table outside file")
+    load_segments = []
     executable_segments = []
     for index in range(program_count):
         off = program_offset + index * program_entry_size
         p_type, p_flags, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _align = struct.unpack_from(
             program_header, data, off
         )
-        if p_type != 1 or p_flags & 0x1 == 0:
+        if p_type != 1:
             continue
-        if p_vaddr % 4 != 0 or p_filesz % 4 != 0:
-            raise SystemExit(f"SCANNER ELF ERROR for {path}: unaligned executable segment {index}")
         if p_offset > len(data) or p_filesz > len(data) - p_offset:
-            raise SystemExit(f"SCANNER ELF ERROR for {path}: executable segment {index} outside file")
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: load segment {index} outside file")
         if p_filesz > p_memsz or p_memsz > (1 << 64) - p_vaddr:
-            raise SystemExit(f"SCANNER ELF ERROR for {path}: executable segment {index} wraps")
-        executable_segments.append((index, p_flags, p_offset, p_vaddr, p_filesz))
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: load segment {index} wraps")
+        if p_offset % GUEST_PAGE_BYTES != p_vaddr % GUEST_PAGE_BYTES:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: load segment {index} page mapping disagrees")
+        load_segments.append((index, p_flags, p_offset, p_vaddr, p_filesz, p_memsz))
+        if p_flags & 0x1:
+            if p_vaddr % 4 != 0 or p_filesz % 4 != 0:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: unaligned executable segment {index}")
+            executable_segments.append((index, p_flags, p_offset, p_vaddr, p_filesz))
     if not executable_segments:
         raise SystemExit(f"SCANNER ELF ERROR for {path}: no executable load segment")
     ordered_segments = sorted(executable_segments, key=lambda segment: segment[3])
     for previous, current in zip(ordered_segments, ordered_segments[1:]):
         if previous[3] + previous[4] > current[3]:
             raise SystemExit(f"SCANNER ELF ERROR for {path}: overlapping executable segments")
+
+    def page_span(start, size):
+        if not size:
+            return None
+        return (start // GUEST_PAGE_BYTES,
+                (start + size + GUEST_PAGE_BYTES - 1) // GUEST_PAGE_BYTES)
+
+    def overlaps(first, second):
+        return first is not None and second is not None and first[0] < second[1] and second[0] < first[1]
+
+    load_memsz = {segment[0]: segment[5] for segment in load_segments}
+    for ex_index, _flags, ex_offset, ex_vaddr, ex_filesz in executable_segments:
+        ex_memsz = load_memsz[ex_index]
+        ex_file_pages = page_span(ex_offset, ex_filesz)
+        ex_virtual_pages = page_span(ex_vaddr, ex_memsz)
+        for other_index, _other_flags, other_offset, other_vaddr, other_filesz, other_memsz in load_segments:
+            if other_index == ex_index:
+                continue
+            if (overlaps(ex_file_pages, page_span(other_offset, other_filesz))
+                    or overlaps(ex_virtual_pages, page_span(other_vaddr, other_memsz))):
+                raise SystemExit(
+                    f"SCANNER ELF ERROR for {path}: executable page alias between loads {ex_index} and {other_index}"
+                )
 
     words = []
     addresses = set()
@@ -240,16 +269,21 @@ def executable_words(path: str, include_segment_data: bool = False):
         return i >= 0 and data_ranges[i][0] <= addr < data_ranges[i][1]
 
     for index, _p_flags, p_offset, p_vaddr, p_filesz in executable_segments:
-        segment = data[p_offset : p_offset + p_filesz]
+        if not p_filesz:
+            continue
+        page_offset = p_offset - p_offset % GUEST_PAGE_BYTES
+        page_end = ((p_offset + p_filesz + GUEST_PAGE_BYTES - 1)
+                    // GUEST_PAGE_BYTES * GUEST_PAGE_BYTES)
+        mapped_address = p_vaddr - p_offset % GUEST_PAGE_BYTES
         label = f"<exec-segment {index}>"
-        for word_offset in range(0, p_filesz, 4):
-            word_address = p_vaddr + word_offset
+        for file_offset in range(page_offset, page_end, 4):
+            word_address = mapped_address + file_offset - page_offset
             if word_address in addresses:
                 continue
             if not include_segment_data and _in_data_section(word_address):
                 continue
             addresses.add(word_address)
-            word = int.from_bytes(segment[word_offset : word_offset + 4], "little")
+            word = int.from_bytes(data[file_offset : file_offset + 4].ljust(4, b"\0"), "little")
             words.append((word_address, word, label))
 
     if not words:
