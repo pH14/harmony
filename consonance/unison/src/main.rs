@@ -75,7 +75,7 @@ fn factories(
 
 fn exit_for_verdict(v: &Verdict) -> ExitCode {
     match v {
-        Verdict::Identical => ExitCode::SUCCESS,
+        Verdict::MatchingCheckpoints => ExitCode::SUCCESS,
         Verdict::Diverged { .. }
         | Verdict::TerminalDiverged { .. }
         | Verdict::HaltMismatch { .. } => ExitCode::from(2),

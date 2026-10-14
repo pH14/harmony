@@ -203,7 +203,7 @@ fn falling_off_program_has_one_state_at_each_work_count() {
 
     for limit in [0, 1, 100] {
         let report = compare_runs(&empty, &empty, 3, 1, limit).unwrap();
-        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
         assert_eq!(report.halted_at, Some(0));
         assert!(!report.limit_reached);
     }
@@ -218,7 +218,7 @@ fn falling_off_program_has_one_state_at_each_work_count() {
     };
     for interval in [1, 2] {
         let report = compare_runs(&one, &flaky, 3, interval, 10).unwrap();
-        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
         assert_eq!(report.halted_at, Some(1));
     }
 }
@@ -228,13 +228,13 @@ fn no_divergence_path() {
     let (toy, flaky) = pair(21, u64::MAX, Perturbation::XorPrng { mask: 0xBAD });
 
     let report = compare_runs(&toy, &flaky, 13, 64, 800).unwrap();
-    assert_eq!(report.verdict, Verdict::Identical);
+    assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
     assert!(report.limit_reached);
     assert_eq!(report.halted_at, None);
 
     let halt = generate_program(21, MIN_WORK).work_to_halt;
     let report = compare_runs(&toy, &flaky, 13, 64, halt + 100).unwrap();
-    assert_eq!(report.verdict, Verdict::Identical);
+    assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
     assert!(!report.limit_reached);
     assert_eq!(report.halted_at, Some(halt));
 

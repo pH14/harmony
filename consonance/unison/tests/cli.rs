@@ -40,7 +40,7 @@ fn toy_compare_detects_divergence_with_exit_code_2() {
 }
 
 #[test]
-fn toy_compare_identical_with_exit_code_0() {
+fn toy_compare_matching_checkpoints_with_exit_code_0() {
     let (code, json) = run(&[
         "toy-compare",
         "--seed",
@@ -53,7 +53,7 @@ fn toy_compare_identical_with_exit_code_0() {
         "1000",
     ]);
     assert_eq!(code, Some(0));
-    assert_eq!(json["verdict"], serde_json::json!("identical"));
+    assert_eq!(json["verdict"], serde_json::json!("matching_checkpoints"));
     assert_eq!(json["limit_reached"], serde_json::json!(true));
 }
 
@@ -92,7 +92,10 @@ fn toy_bisect_without_divergence_reports_null_point() {
     ]);
     assert_eq!(code, Some(0));
     assert_eq!(json["point"], serde_json::Value::Null);
-    assert_eq!(json["compare"]["verdict"], serde_json::json!("identical"));
+    assert_eq!(
+        json["compare"]["verdict"],
+        serde_json::json!("matching_checkpoints")
+    );
 }
 
 #[test]
