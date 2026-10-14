@@ -1,0 +1,92 @@
+Require the admitted host auxiliary vector at UML startup
+
+UML imports host hardware capabilities and the platform string during boot.
+The launcher binds those values to the replay identity. Refuse a child whose
+initial auxiliary vector differs, including a pre-exec alteration after the
+launcher's final host check.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/main.c
++++ b/arch/um/os-Linux/main.c
+@@ -12,6 +12,7 @@
+ #include <string.h>
+ #include <sys/resource.h>
+ #include <sys/personality.h>
++#include <link.h>
+ #include <as-layout.h>
+ #include <init.h>
+ #include <kern_util.h>
+@@ -21,6 +22,60 @@
+ 
+ #define STACKSIZE (8 * 1024 * 1024)
+ 
++#ifndef AT_MINSIGSTKSZ
++#define AT_MINSIGSTKSZ 51
++#endif
++
++static void __init require_pinned_auxv_value(const char *name,
++					      unsigned long value)
++{
++	const char *expected = getenv(name);
++	char actual[32];
++
++	if (snprintf(actual, sizeof(actual), "%lu", value) >= sizeof(actual) ||
++	    expected == NULL || strcmp(expected, actual) != 0) {
++		fprintf(stderr, "Harmony host auxiliary vector mismatch: %s\n", name);
++		exit(1);
++	}
++}
++
++static void __init require_pinned_auxv(char **envp)
++{
++	const char *expected = getenv("HARMONY_UML_PLATFORM");
++	const char *platform = NULL;
++	unsigned long hwcap = 0, hwcap2 = 0, minsigstksz = 0;
++	ElfW(auxv_t) *auxv;
++
++	while (*envp++ != NULL)
++		;
++	for (auxv = (ElfW(auxv_t) *)envp; auxv->a_type != AT_NULL; auxv++) {
++		switch (auxv->a_type) {
++		case AT_HWCAP:
++			hwcap = auxv->a_un.a_val;
++			break;
++		case AT_HWCAP2:
++			hwcap2 = auxv->a_un.a_val;
++			break;
++		case AT_MINSIGSTKSZ:
++			minsigstksz = auxv->a_un.a_val;
++			break;
++		case AT_PLATFORM:
++			platform = (const char *)auxv->a_un.a_val;
++			break;
++		}
++	}
++
++	require_pinned_auxv_value("HARMONY_UML_HWCAP", hwcap);
++	require_pinned_auxv_value("HARMONY_UML_HWCAP2", hwcap2);
++	require_pinned_auxv_value("HARMONY_UML_MINSIGSTKSZ",
++				   minsigstksz);
++	if (expected == NULL || platform == NULL ||
++	    strcmp(expected, platform) != 0) {
++		fprintf(stderr, "Harmony host auxiliary vector mismatch: AT_PLATFORM\n");
++		exit(1);
++	}
++}
++
+ static void __init set_stklim(void)
+ {
+ 	struct rlimit lim;
+@@ -146,6 +201,8 @@
+ 	 */
+ 	install_fatal_handler(SIGINT);
+ 	install_fatal_handler(SIGTERM);
++
++	require_pinned_auxv(envp);
+ 
+ 	scan_elf_aux(envp);
+ 

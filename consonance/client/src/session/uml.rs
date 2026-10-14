@@ -641,7 +641,7 @@ mod tests {
             ),
         };
         let profile = Profile {
-            schema: 3,
+            schema: 4,
             architecture: std::env::consts::ARCH.into(),
             kernel_version: String::new(),
             userspace: "seccomp".into(),
@@ -675,6 +675,7 @@ mod tests {
             cpu_model: "model".into(),
             cpu_features: "features".into(),
             boot_cpuinfo: "flags: features\n".into(),
+            auxv: uml::HostAuxv::default(),
         }
     }
 

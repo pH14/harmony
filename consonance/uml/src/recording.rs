@@ -8,7 +8,7 @@ use crate::bridge::{Bridge, Event, event_hash};
 use crate::launch::{Launch, LaunchError};
 use crate::profile::{HostIdentity, VerifiedProfile};
 
-const SCHEMA: u32 = 3;
+const SCHEMA: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -138,7 +138,7 @@ mod tests {
         VerifiedProfile::for_test(
             PathBuf::from("/profile"),
             Profile {
-                schema: 3,
+                schema: 4,
                 architecture: "x86_64".to_owned(),
                 kernel_version: "6.18.35".to_owned(),
                 userspace: "seccomp".to_owned(),
@@ -163,6 +163,7 @@ mod tests {
             cpu_model: model.to_owned(),
             cpu_features: "fpu tsc".to_owned(),
             boot_cpuinfo: "flags: fpu tsc\n".to_owned(),
+            auxv: crate::profile::HostAuxv::default(),
         }
     }
 
@@ -178,7 +179,7 @@ mod tests {
         launch.bridge = Some(Bridge::new(9));
         let recording =
             Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events).unwrap();
-        assert_eq!(recording.schema, 3);
+        assert_eq!(recording.schema, 4);
         assert!(
             recording
                 .check_with_host(&profile("a"), &host("model=1"))

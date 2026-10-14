@@ -18,7 +18,7 @@ pub use launch::{Exit, ExitReason, Guest, Launch, LaunchError};
 pub use memory::{Checkpoints, MemoryError};
 pub use process::group_members;
 pub use profile::{
-    Artifact, HostIdentity, Profile, ProfileError, VerifiedProfile, VirtualTimeCosts,
+    Artifact, HostAuxv, HostIdentity, Profile, ProfileError, VerifiedProfile, VirtualTimeCosts,
 };
 pub use recording::{Recording, ReplayRefused};
 #[cfg(target_os = "linux")]

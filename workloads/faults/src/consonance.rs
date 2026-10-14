@@ -63,7 +63,7 @@ pub struct FaultConfig {
 pub enum GuestBackend {
     #[default]
     Vm,
-    Uml(UmlGuest),
+    Uml(Box<UmlGuest>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -147,7 +147,7 @@ impl FaultConfig {
     pub fn uml(&self) -> Option<&UmlGuest> {
         match &self.backend {
             GuestBackend::Vm => None,
-            GuestBackend::Uml(guest) => Some(guest),
+            GuestBackend::Uml(guest) => Some(guest.as_ref()),
         }
     }
 
@@ -1419,6 +1419,7 @@ mod tests {
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
                 boot_cpuinfo: "flags: features\n".into(),
+                auxv: uml::HostAuxv::default(),
             },
             identity: "admitted-host".into(),
             work_parent: directory.path().to_path_buf(),
@@ -1426,7 +1427,7 @@ mod tests {
         let config = FaultConfig {
             knobs: Vec::new(),
             ram_mib: DEFAULT_RAM_MIB,
-            backend: GuestBackend::Uml(guest.clone()),
+            backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
@@ -1454,6 +1455,7 @@ mod tests {
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
                 boot_cpuinfo: "flags: features\n".into(),
+                auxv: uml::HostAuxv::default(),
             },
             identity: "admitted-host".into(),
             work_parent: PathBuf::from("work"),
@@ -1461,7 +1463,7 @@ mod tests {
         let mut joined = FaultConfig {
             knobs: vec!["foo=bar root=/dev/ram0".into()],
             ram_mib: DEFAULT_RAM_MIB,
-            backend: GuestBackend::Uml(guest),
+            backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
         };
         let split = FaultConfig {

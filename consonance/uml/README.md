@@ -24,8 +24,12 @@
   kernel consumes lines containing `flags` or `cache_alignment` until it has
   seen two matches; those lines may belong to processors other than the one
   running the guest. On arm64, it consumes leading `cache_alignment` lines
-  before the first ordinary line, then uses host auxiliary-vector features.
-  `HostIdentity::identity_sha256` binds all recorded fields with lengths. Each
+  before the first ordinary line. The identity also records the host
+  auxiliary-vector hardware capabilities, minimum signal-stack size, and
+  platform string, which UML reads at boot. It reads the platform string's
+  bytes from the parent process, rather than recording its process-specific
+  pointer. `HostIdentity::identity_sha256` binds all recorded fields with
+  lengths. Each
   `Launch` admits one processor and host identity on first use and shares that
   admission with its clones;
   moving an ordinary launch to a thread that excludes that processor refuses
@@ -39,15 +43,19 @@
   identity is checked before spawn. At the final check, `Guest::start` passes
   the admitted parser-input lines through `HARMONY_UML_CPUINFO`; the owned UML
   kernel consumes those bytes instead of reopening `/proc/cpuinfo`. A changed
-  host CPU-info file after the check cannot alter the boot import. Profiles
-  from before this pinned-import contract have schema 2 and are refused;
-  schema 3 profiles require the matching owned kernel patch.
+  host CPU-info file after the check cannot alter the boot import. Schema 4
+  profiles require the matching owned kernel patches for the CPU-info import
+  and auxiliary-vector check: the launcher passes the admitted values
+  at spawn, and the kernel refuses a child whose initial vector differs before
+  it imports guest-visible features. Missing or malformed pinned values refuse
+  boot on both x86 and arm64.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
   per-launch work directory for
   `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR`,
-  `GLIBC_TUNABLES`, and the pinned boot CPU-info passed at `Guest::start`.
+  `GLIBC_TUNABLES`, and the pinned boot CPU-info and auxiliary-vector values
+  passed at `Guest::start`.
   With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
   It refuses extra kernel arguments that would replace these settings or
   attach host files, disks, consoles or network devices, because a
@@ -132,7 +140,7 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` schema 3 names the profile, full host identity, seed, memory,
+- `Recording` schema 4 names the profile, full host identity, seed, memory,
   boot arguments, event count and event hash of a run. Earlier schemas are
   refused.
   It derives the seed from the live launch's
