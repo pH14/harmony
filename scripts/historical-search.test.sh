@@ -21,6 +21,7 @@ cp "$FAKE_REPORT" "$out/report.json"
 cp "$FAKE_SUMMARY" "$out/campaign-summary.json"
 count=$(jq -r '(.bugs // []) | length' "$FAKE_REPORT")
 for ((index=1; index<=count; index++)); do
+    if [[ ${FAKE_OMIT_BUG:-} == "$index" ]]; then continue; fi
     jq --argjson index "$index" '.bugs[$index - 1]' "$FAKE_REPORT" >"$out/bug-${index}.json"
 done
 exit "${FAKE_EXIT_STATUS:-0}"
@@ -50,6 +51,14 @@ jq -cn '{watchdog_cutoffs:0, execution_failures:1, executions:2,
 jq -cn '{mode:"search", package:"faults", executions:2,
     execution_ticks:2, execution_failures:0, bug_found:false, bugs:[]}' \
     >"${work}/miss-report.json"
+jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", executions:2,
+    execution_ticks:2, execution_failures:0, bug_found:true,
+    bugs:[($bug | .replay.actions_applied=0)]}' \
+    >"${work}/bad-replay-report.json"
+jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", workers:2,
+    executions:2, execution_ticks:2, execution_failures:0, bug_found:true,
+    bugs:[($bug | .replay.settle_actions=[])]}' \
+    >"${work}/invalid-findings-report.json"
 
 run_search() {
     local exit_status=${1:-0}
@@ -136,7 +145,58 @@ if (
     printf 'FAIL search reported a miss as success\n'
     exit 1
 fi
-jq -e '.oracle == "fail: search-miss" and .execution_status == "completed_with_watchdog_cutoffs"' \
+jq -e '.oracle == "fail: search-miss" and .execution_status == "completed_with_watchdog_cutoffs"
+    and .finding == null and .reproducer == null' \
+    "${work}/reports/pgcic.search/panel-status.json" >/dev/null
+
+if (
+    cd "${work}"
+    export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
+    export FAKE_REPORT="${work}/bad-replay-report.json" FAKE_SUMMARY="${work}/summary.json"
+    export GITHUB_STEP_SUMMARY="${work}/summary.md"
+    "${here}/historical-search.sh"
+); then
+    printf 'FAIL search accepted a finding with incomplete replay evidence\n'
+    exit 1
+fi
+jq -e '.finding == null and .reproducer == null and .oracle == "fail: replay-mismatch"' \
+    "${work}/reports/pgcic.search/panel-status.json" >/dev/null
+
+if (
+    cd "${work}"
+    export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
+    export FAKE_REPORT="${work}/invalid-findings-report.json" FAKE_SUMMARY="${work}/summary.json"
+    export GITHUB_STEP_SUMMARY="${work}/summary.md"
+    "${here}/historical-search.sh"
+); then
+    printf 'FAIL search accepted malformed findings\n'
+    exit 1
+fi
+jq -e '.finding == null and .reproducer == null and .execution_status == "infra_failure"
+    and (.oracle | startswith("fail: infra-failure"))' \
+    "${work}/reports/pgcic.search/panel-status.json" >/dev/null
+
+if (
+    cd "${work}"
+    export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
+    export FAKE_REPORT="${work}/report.json" FAKE_SUMMARY="${work}/summary.json"
+    export FAKE_OMIT_BUG=1 GITHUB_STEP_SUMMARY="${work}/summary.md"
+    "${here}/historical-search.sh"
+); then
+    printf 'FAIL search accepted a missing selected bug report\n'
+    exit 1
+fi
+jq -e '.finding == null and .reproducer == null and .execution_status == "infra_failure"
+    and (.oracle | startswith("fail: infra-failure"))' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
 
 printf 'historical search status checks passed\n'

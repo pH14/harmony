@@ -161,18 +161,26 @@ fi
 if [[ -n "${CASE_DIR:-}" && -s "${CASE_DIR}/case.json" ]]; then
     cp "${CASE_DIR}/case.json" "${out}/case.json"
 fi
-finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" \
-    -f "$(dirname "$0")/historical-confirmed-finding.jq" "$report") || {
+finding=
+if ! finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" \
+    -f "$(dirname "$0")/historical-confirmed-finding.jq" "$report"); then
     echo 'historical-search: infra-failure (could not select a confirmed case finding)' >&2
-    exit 1
-}
+    outcome='fail: infra-failure (could not select a confirmed case finding)'
+    execution_status=infra_failure
+    verdict=1
+    finding=
+fi
 reproducer=
 if [[ "$finding" =~ ^[1-9][0-9]*$ ]]; then
     reproducer="${out}/bug-${finding}.json"
-    [[ -s "$reproducer" ]] || {
+    if [[ ! -s "$reproducer" ]]; then
         echo "historical-search: infra-failure (missing selected bug report ${reproducer})" >&2
-        exit 1
-    }
+        outcome="fail: infra-failure (missing selected bug report ${reproducer})"
+        execution_status=infra_failure
+        verdict=1
+        finding=
+        reproducer=
+    fi
 fi
 jq -n \
     --arg case_id "${CASE_ID}" --arg software "${SOFTWARE_NAME}" \
