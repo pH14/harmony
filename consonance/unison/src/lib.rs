@@ -90,6 +90,17 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
             limit_reached: false,
         });
     }
+    if initial_a == RunOutcome::Halted && ma.work() != mb.work() {
+        return Ok(CompareReport {
+            verdict: Verdict::HaltMismatch {
+                a: Some(ma.work()),
+                b: Some(mb.work()),
+            },
+            checkpoints_compared,
+            halted_at: None,
+            limit_reached: false,
+        });
+    }
     if ma.state_hash()? != mb.state_hash()? {
         return Ok(CompareReport {
             verdict: Verdict::Diverged {
@@ -98,6 +109,14 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
             },
             checkpoints_compared,
             halted_at: None,
+            limit_reached: false,
+        });
+    }
+    if initial_a == RunOutcome::Halted {
+        return Ok(CompareReport {
+            verdict: Verdict::Identical,
+            checkpoints_compared,
+            halted_at: Some(ma.work()),
             limit_reached: false,
         });
     }
@@ -383,6 +402,20 @@ mod tests {
         assert_eq!(r.checkpoints_compared, 0);
         assert_eq!(r.halted_at, None);
         assert!(r.limit_reached);
+    }
+
+    #[test]
+    fn zero_limit_reports_an_initial_halt_as_termination() {
+        let halted = FlakyFactory {
+            inner: factory(),
+            diverge_at: 0,
+            perturb: Perturbation::ForceHalt,
+        };
+        let report = compare_runs(&halted, &halted, 3, 10, 0).unwrap();
+        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.checkpoints_compared, 0);
+        assert_eq!(report.halted_at, Some(0));
+        assert!(!report.limit_reached);
     }
 
     #[test]
