@@ -4086,6 +4086,62 @@ mod tests {
     }
 
     #[test]
+    fn rootfs_segment_can_read_an_unreadable_guest_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let body = [
+            raw_member_with_mode(b"secret", b'0', "", b"data", Owner::ROOT, 0),
+            raw_member_with_mode(b"sealed/", b'5', "", b"", Owner::ROOT, 0),
+            raw_member_with_mode(b"sealed/secret", b'0', "", b"hidden", Owner::ROOT, 0),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let stage_dir = dir.path().join("stage");
+        std::fs::create_dir(&stage_dir).unwrap();
+        let staged = stage(layout.to_str().unwrap(), &stage_dir).unwrap();
+        assert_eq!(staged.owners.mode_of(Path::new("secret"), 0o644), 0);
+        assert_eq!(staged.owners.mode_of(Path::new("sealed"), 0o755), 0);
+        let packed = crate::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap();
+        for path in ["secret", "sealed"] {
+            let staged_path = staged.rootfs.join(path);
+            let mode = std::fs::symlink_metadata(staged_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, 0, "{path}");
+        }
+        std::fs::set_permissions(
+            staged.rootfs.join("sealed"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(staged.rootfs.join("sealed/secret"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0
+        );
+        for path in ["secret", "sealed", "sealed/secret"] {
+            let staged_path = staged.rootfs.join(path);
+            std::fs::set_permissions(staged_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(
+            packed,
+            crate::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap()
+        );
+    }
+
+    #[test]
     fn apply_layer_replaces_earlier_entries() {
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
