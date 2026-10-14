@@ -429,6 +429,27 @@ class CounterScanCoverage(unittest.TestCase):
                             expected_tag = "vmlinux:intel64" if tag == "vmlinux" else f"{tag}:.text:intel64"
                             self.assertIn(expected_tag, result.stderr)
 
+            for far_mnemonic, modrm in (("ljmpw", "2c"), ("lcallw", "1c")):
+                far_branch = root / f"symbol-restart-{far_mnemonic}.s"
+                far_branch.write_text(
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
+                    '.global reset_decode\nreset_decode:\n'
+                    f'.byte 0x90,0x90,0x90,0xb0,0x66,0xff,0x{modrm},0x24,0xc3\n'
+                )
+                obj = root / f"symbol-restart-{far_mnemonic}.o"
+                far_branch_elf = root / f"symbol-restart-{far_mnemonic}.elf"
+                run("as", "--64", "-o", str(obj), str(far_branch))
+                run("ld", "-nostdlib", "-e", "_start", "-o", str(far_branch_elf), str(obj))
+                for target, tag in ((kernel, "vmlinux"), (decompressor, "decompressor")):
+                    kernel.write_bytes(safe_bytes)
+                    setup.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_bytes)
+                    target.write_bytes(far_branch_elf.read_bytes())
+                    with self.subTest(mode=far_mnemonic, target=tag):
+                        result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("unresolved branch", result.stderr)
+
             tail = root / "symbol-tail-restart.s"
             tail.write_text(
                 '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb0\n'
