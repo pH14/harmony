@@ -1448,3 +1448,55 @@ fn replay_rejects_forged_post_admission_skip_suffix_limits() {
             .to_string();
     assert!(error.contains("skip suffix limit diverged"), "{error}");
 }
+
+#[test]
+fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let job_at = |reservation| {
+        lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| {
+                let record: serde_json::Value = serde_json::from_str(line).unwrap();
+                record["event"] == "job" && record["reservation"] == reservation
+            })
+            .map(|(index, line)| {
+                (
+                    index,
+                    serde_json::from_str::<serde_json::Value>(line).unwrap(),
+                )
+            })
+            .unwrap()
+    };
+    let (_, sibling) = job_at(60);
+    let (index, mut selected) = job_at(65);
+    assert_eq!(sibling["parent_id"], selected["parent_id"]);
+    assert_eq!(sibling["suffix_limit"], 2);
+    assert_eq!(selected["suffix_limit"], 1);
+    assert!(60 + config.window > 65);
+    assert!(sibling["sequence"].as_u64().unwrap() > 65 - config.window as u64);
+    selected["suffix_limit"] = serde_json::json!(2);
+    lines[index] = serde_json::to_string(&selected).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay accepted a long sibling still in flight")
+            .to_string();
+    assert!(
+        error.contains("suffix limit diverged at reservation"),
+        "{error}"
+    );
+}

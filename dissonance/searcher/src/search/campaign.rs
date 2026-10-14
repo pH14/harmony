@@ -6269,6 +6269,7 @@ mod tests {
         )
         .expect("live campaign");
         assert_eq!(live.executions_completed, 5);
+        assert_eq!(live.bootstrap_execution_work, 0);
         assert!(live.objectives_reached > 0);
         config.stop_campaign_on_objective = true;
         let mut stopped_stream = Vec::new();
@@ -6377,8 +6378,16 @@ mod tests {
     #[test]
     fn replay_rejects_reservations_after_its_work_budget() {
         let (workload, mut lines) = five_job_campaign_stream();
+        let first_job_work = lines
+            .iter()
+            .find_map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                (value["event"] == "job").then(|| value["execution_work"].as_u64().unwrap())
+            })
+            .unwrap();
+        assert!(first_job_work > 0);
         let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
-        header["work_budget"] = serde_json::json!(1);
+        header["work_budget"] = serde_json::json!(first_job_work);
         lines[0] = serde_json::to_string(&header).unwrap();
         let error =
             replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
@@ -6445,7 +6454,7 @@ mod tests {
             .unwrap();
         let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
         assert_eq!(job["selector"]["tier_rank"], 0);
-        job["selector"]["tier_rank"] = serde_json::json!(200);
+        job["selector"]["tier_rank"] = serde_json::json!(1);
         lines[first_job] = serde_json::to_string(&job).unwrap();
         let error =
             replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
@@ -6464,7 +6473,7 @@ mod tests {
             })
             .unwrap();
         let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
-        job["selector"]["best_preference"] = serde_json::json!(255);
+        job["selector"]["best_preference"] = serde_json::json!(0);
         lines[first_job] = serde_json::to_string(&job).unwrap();
         let error =
             replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
