@@ -476,8 +476,15 @@ impl Store {
     }
 
     pub fn verify_snapshot_pages(&self, snap: SnapshotId) -> Result<(), StoreError> {
-        self.live_layer(snap)?;
-        self.verified_snapshot_pages(snap)?;
+        self.verify_snapshots(&[snap])
+    }
+
+    pub fn verify_snapshots(&self, snaps: &[SnapshotId]) -> Result<(), StoreError> {
+        let mut verified_pages = BTreeSet::new();
+        for &snap in snaps {
+            self.live_layer(snap)?;
+            self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
+        }
         Ok(())
     }
 
@@ -485,8 +492,17 @@ impl Store {
         &self,
         snap: SnapshotId,
     ) -> Result<BTreeSet<NonZeroUsize>, StoreError> {
-        let mut seen_gfns = BTreeSet::new();
         let mut verified_pages = BTreeSet::new();
+        self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
+        Ok(verified_pages)
+    }
+
+    fn verify_snapshot_pages_into(
+        &self,
+        snap: SnapshotId,
+        verified_pages: &mut BTreeSet<NonZeroUsize>,
+    ) -> Result<(), StoreError> {
+        let mut seen_gfns = BTreeSet::new();
         let mut current = Some(snap.0);
         while let Some(id) = current {
             let layer = self
@@ -497,11 +513,11 @@ impl Store {
                 if !seen_gfns.insert(gfn) {
                     continue;
                 }
-                self.page_entry(page, gfn, &mut verified_pages)?;
+                self.page_entry(page, gfn, verified_pages)?;
             }
             current = layer.parent;
         }
-        Ok(verified_pages)
+        Ok(())
     }
 
     fn changed_gfns(
@@ -1949,6 +1965,25 @@ mod tests {
         assert!(matches!(
             store.verify_snapshot_pages(child),
             Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
+    fn multiple_snapshot_verification_checks_pages_unique_to_target() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let target = snap_with(&mut store, base, &[(1, 0x22)]);
+        store.verify_snapshots(&[base, target]).unwrap();
+
+        let PageRef::Data(id) = store.resolve(target.0, 1) else {
+            panic!("expected target resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        assert!(matches!(
+            store.verify_snapshots(&[base, target]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
         ));
     }
 

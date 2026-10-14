@@ -90,6 +90,8 @@ dominates the additional byte comparison on each index hit.
 `verify_snapshot_pages` applies the same distinct-page check to a complete
 resolved snapshot, including inherited pages. Sparse archive consumers use it
 before trusting a cached base-RAM digest; implicit zero pages need no read.
+`verify_snapshots` checks multiple resolved snapshots with one set of verified
+resident pages, so content shared by the base and target is hashed once.
 
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
