@@ -32,6 +32,7 @@ kvm-ioctls = "0.25"
 # CPUID / MSR ioctls; kvm-ioctls already enables it, declared here for clarity.
 kvm-bindings = { version = "0.14", features = ["fam-wrappers"] }
 libc = "0.2"
+rustix = { version = "1", features = ["thread"] }
 
 [dev-dependencies]
 proptest = "1"

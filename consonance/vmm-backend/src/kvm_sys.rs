@@ -1239,6 +1239,60 @@ mod xsave_diagnostic {
     };
 
     #[test]
+    #[ignore = "live KVM affinity boundary; requires /dev/kvm"]
+    fn changed_affinity_refuses_cpu_operations_without_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        backend
+            .set_policy(&X86Policy {
+                cpuid: CpuidModel::default(),
+                msr_filter: MsrFilter {
+                    allow_inkernel: vec![MsrRange {
+                        base: 0x174,
+                        count: 3,
+                    }],
+                },
+            })
+            .unwrap();
+        let before = backend.save().unwrap();
+        let original = std::mem::replace(
+            &mut backend.host_affinity,
+            crate::kvm_affinity::HostAffinity::Reported {
+                allowed: Default::default(),
+            },
+        );
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.restore(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.drain_dirty_pages(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.complete_read(0),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.finish_exit(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        backend.host_affinity = original;
+        assert_eq!(backend.save().unwrap(), before);
+    }
+
+    #[test]
     #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
     fn snapshot_preparation_preserves_state_except_raw_presence() {
         check_snapshot_preparation(false);
