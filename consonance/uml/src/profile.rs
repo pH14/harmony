@@ -66,6 +66,7 @@ pub struct HostIdentity {
     pub processor: usize,
     pub cpu_model: String,
     pub cpu_features: String,
+    pub boot_cpuinfo: String,
 }
 
 #[derive(Clone, Debug)]
@@ -426,6 +427,22 @@ fn pin_path(path: &Path, name: &std::ffi::CStr, executable: bool) -> io::Result<
 }
 
 impl HostIdentity {
+    pub fn identity_sha256(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"harmony-uml-host-v1\0");
+        digest.update((self.processor as u64).to_le_bytes());
+        for field in [
+            &self.architecture,
+            &self.cpu_model,
+            &self.cpu_features,
+            &self.boot_cpuinfo,
+        ] {
+            digest.update((field.len() as u64).to_le_bytes());
+            digest.update(field.as_bytes());
+        }
+        hex(&digest.finalize())
+    }
+
     pub fn current() -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         let selected = Some(selected_processor()?);
@@ -486,8 +503,42 @@ impl HostIdentity {
                 .collect::<Vec<_>>()
                 .join(";"),
             cpu_features: value(features_key).unwrap_or_default(),
+            boot_cpuinfo: boot_cpuinfo(cpuinfo),
         })
     }
+}
+
+fn boot_cpuinfo(cpuinfo: &str) -> String {
+    let mut imported = String::new();
+    #[cfg(target_arch = "x86_64")]
+    let mut matches = 0;
+    for line in cpuinfo.split_inclusive('\n') {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let flags = line.contains("flags");
+            let cache = line.contains("cache_alignment");
+            if flags || cache {
+                imported.push_str(line);
+                matches += usize::from(flags) + usize::from(cache);
+                if matches > 1 {
+                    break;
+                }
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if line.contains("cache_alignment") {
+                imported.push_str(line);
+            } else {
+                break;
+            }
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            let _ = line;
+        }
+    }
+    imported
 }
 
 #[cfg(target_os = "linux")]
@@ -792,5 +843,44 @@ mod tests {
             assert_ne!(first.cpu_model, second.cpu_model);
         }
         assert!(HostIdentity::from_cpuinfo(text, Some(1)).is_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn host_identity_tracks_uml_boot_cpuinfo_ingress() {
+        let base =
+            "processor: 0\nflags: fpu tsc\n\nprocessor: 1\nflags: fpu tsc\nmodel name: CPU\n";
+        let other_flags = "processor: 0\nflags: fpu tsc avx512f\n\nprocessor: 1\nflags: fpu tsc\nmodel name: CPU\n";
+        let other_cache = "processor: 0\nflags: fpu tsc\ncache_alignment: 128\n\nprocessor: 1\nflags: fpu tsc\nmodel name: CPU\n";
+        let admitted = HostIdentity::from_cpuinfo(base, Some(1)).unwrap();
+        assert_ne!(
+            admitted,
+            HostIdentity::from_cpuinfo(other_flags, Some(1)).unwrap()
+        );
+        assert_ne!(
+            admitted,
+            HostIdentity::from_cpuinfo(other_cache, Some(1)).unwrap()
+        );
+        let irrelevant = base.replace("model name: CPU", "model name: CPU\ncpu MHz: 1000");
+        assert_eq!(
+            admitted,
+            HostIdentity::from_cpuinfo(&irrelevant, Some(1)).unwrap()
+        );
+        let late_cache = base.replace("model name: CPU", "model name: CPU\ncache_alignment: 128");
+        assert_eq!(
+            admitted,
+            HostIdentity::from_cpuinfo(&late_cache, Some(1)).unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn host_identity_tracks_arm_uml_boot_cache_alignment() {
+        let base = "cache_alignment: 64\nprocessor: 0\nFeatures: fp asimd\n";
+        let changed = "cache_alignment: 128\nprocessor: 0\nFeatures: fp asimd\n";
+        assert_ne!(
+            HostIdentity::from_cpuinfo(base, Some(0)).unwrap(),
+            HostIdentity::from_cpuinfo(changed, Some(0)).unwrap()
+        );
     }
 }

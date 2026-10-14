@@ -8,7 +8,7 @@ use crate::bridge::{Bridge, Event, event_hash};
 use crate::launch::{Launch, LaunchError};
 use crate::profile::{HostIdentity, VerifiedProfile};
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -162,6 +162,7 @@ mod tests {
             processor: 0,
             cpu_model: model.to_owned(),
             cpu_features: "fpu tsc".to_owned(),
+            boot_cpuinfo: "flags: fpu tsc\n".to_owned(),
         }
     }
 
@@ -177,17 +178,17 @@ mod tests {
         launch.bridge = Some(Bridge::new(9));
         let recording =
             Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events).unwrap();
-        assert_eq!(recording.schema, 2);
+        assert_eq!(recording.schema, 3);
         assert!(
             recording
                 .check_with_host(&profile("a"), &host("model=1"))
                 .is_ok()
         );
         let mut old_schema = recording.clone();
-        old_schema.schema = 1;
+        old_schema.schema = 2;
         assert!(matches!(
             old_schema.check_with_host(&profile("a"), &host("model=1")),
-            Err(ReplayRefused::Schema(1))
+            Err(ReplayRefused::Schema(2))
         ));
         assert!(matches!(
             recording.check_with_host(&profile("b"), &host("model=1")),
@@ -201,6 +202,12 @@ mod tests {
         features.cpu_features.push_str(" avx512f");
         assert!(matches!(
             recording.check_with_host(&profile("a"), &features),
+            Err(ReplayRefused::Host { .. })
+        ));
+        let mut boot_cpuinfo = host("model=1");
+        boot_cpuinfo.boot_cpuinfo.push_str("cache_alignment: 128\n");
+        assert!(matches!(
+            recording.check_with_host(&profile("a"), &boot_cpuinfo),
             Err(ReplayRefused::Host { .. })
         ));
         let mut processor = host("model=1");

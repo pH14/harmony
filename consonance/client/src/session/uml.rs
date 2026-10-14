@@ -55,13 +55,9 @@ fn root_identity(
     initramfs: &[u8],
 ) -> [u8; 32] {
     let mut identity = Sha256::new();
-    identity.update(b"harmony-uml-root-v3\0");
+    identity.update(b"harmony-uml-root-v4\0");
     identity.update(profile.identity_sha256().as_bytes());
-    for field in [&host.architecture, &host.cpu_model, &host.cpu_features] {
-        identity.update((field.len() as u64).to_le_bytes());
-        identity.update(field.as_bytes());
-    }
-    identity.update((host.processor as u64).to_le_bytes());
+    identity.update(host.identity_sha256().as_bytes());
     identity.update(config.seed.to_le_bytes());
     identity.update(config.memory_mib.to_le_bytes());
     identity.update(config.setup_budget.to_le_bytes());
@@ -678,6 +674,7 @@ mod tests {
             processor: 0,
             cpu_model: "model".into(),
             cpu_features: "features".into(),
+            boot_cpuinfo: "flags: features\n".into(),
         }
     }
 
@@ -949,6 +946,12 @@ mod tests {
         foreign_host.processor ^= 1;
         let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs");
         assert_ne!(local, foreign);
+        let mut foreign_boot = host.clone();
+        foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
+        assert_ne!(
+            local,
+            root_identity(&config, &profile, &foreign_boot, b"initramfs")
+        );
 
         let index = LocalIndex::new(1 << 20);
         let mut session = unbooted_session();

@@ -1186,6 +1186,7 @@ mod tests {
                     processor: 0,
                     cpu_model: identity.to_owned(),
                     cpu_features: String::new(),
+                    boot_cpuinfo: String::new(),
                 },
                 identity: identity.to_owned(),
                 work_parent: "work".into(),
