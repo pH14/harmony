@@ -132,12 +132,13 @@ workers. Rollouts already sent for a search still merge into it after a
 switch. The advancing search gets the global budget minus the bytes the others hold, with
 a 2 MiB floor.
 
-The coordinator sends at most 85 rollouts per second, so a viewer can follow
-the search. Winning the game takes 9,700 to 15,600 rollouts across 18 seeds, so
+The coordinator sends at most 85 rollouts per second for Twin Dragons, 120 for
+Tobu Tobu Girl and 300 for the Nintendo games, so a viewer can follow the
+search. Winning the game takes 9,700 to 15,600 rollouts across 18 seeds, so
 a paced search finishes in about 2 to 3 minutes on any device that keeps up.
 The `pace` URL parameter sets the starting rate in rollouts per second, and
-`pace=0` removes the limit. The Search speed slider under Details changes the
-rate while the search runs: 10, 30, the game's pace, 300, 1,000 or unlimited.
+`pace=0` removes the limit. The Timelines per second slider at the top of
+Details changes the rate while the search runs: 10, 30, the game's pace, 300, 1,000 or unlimited.
 The browser tests run with `pace=0`, and the throughput
 figures below are unpaced.
 

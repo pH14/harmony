@@ -323,7 +323,7 @@ export default {
   grid: true,
   route: routeOrder,
   entry,
-  pace: 120,
+  pace: 300,
   system: "NES",
   assets: "",
   screen: { width: 256, height: 240 },

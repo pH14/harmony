@@ -433,7 +433,7 @@ export default {
   grid: true,
   route: routeOrder,
   entry,
-  pace: 120,
+  pace: 300,
   maxActionFrames: 255,
   menuButtons: true,
   system: "NES",
