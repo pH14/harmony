@@ -207,6 +207,29 @@ fn read_console(
     }
 }
 
+fn drain_console(
+    reader: &mut io::PipeReader,
+    block: &mut [u8],
+    console: &Mutex<ConsoleTail>,
+    over_limit: &AtomicBool,
+    limit: u64,
+) -> io::Result<()> {
+    loop {
+        match read_console(reader, block, console, over_limit, limit)? {
+            ConsoleRead::Bytes => {}
+            ConsoleRead::Idle => {
+                console
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .clear_bytes();
+                return Ok(());
+            }
+            ConsoleRead::Closed => return Err(io::ErrorKind::BrokenPipe.into()),
+            ConsoleRead::Limit => return Err(io::Error::other("console limit reached")),
+        }
+    }
+}
+
 impl Launch {
     pub fn new(work_parent: PathBuf) -> Self {
         Self {
@@ -526,31 +549,13 @@ impl Guest {
                             let Ok(ack) = resets.recv() else {
                                 return reader;
                             };
-                            let result = loop {
-                                match read_console(
-                                    &mut reader,
-                                    &mut block,
-                                    &console,
-                                    &over_limit,
-                                    limit,
-                                ) {
-                                    Ok(ConsoleRead::Bytes) => {}
-                                    Ok(ConsoleRead::Idle) => {
-                                        console
-                                            .lock()
-                                            .unwrap_or_else(PoisonError::into_inner)
-                                            .clear_bytes();
-                                        break Ok(());
-                                    }
-                                    Ok(ConsoleRead::Closed) => {
-                                        break Err(io::Error::from(io::ErrorKind::BrokenPipe));
-                                    }
-                                    Ok(ConsoleRead::Limit) => {
-                                        break Err(io::Error::other("console limit reached"));
-                                    }
-                                    Err(error) => break Err(error),
-                                }
-                            };
+                            let result = drain_console(
+                                &mut reader,
+                                &mut block,
+                                &console,
+                                &over_limit,
+                                limit,
+                            );
                             let stopped = result.is_err();
                             let _ = ack.send(result);
                             if stopped {
@@ -1389,6 +1394,30 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]).process_group(0);
         Guest::start(command, work, launch).unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn reset_drains_pending_console_pipe_bytes() {
+        let (mut reader, mut writer) = io::pipe().unwrap();
+        let flags = rustix::fs::fcntl_getfl(&reader).unwrap();
+        rustix::fs::fcntl_setfl(&reader, flags | rustix::fs::OFlags::NONBLOCK).unwrap();
+        let console = Mutex::new(ConsoleTail::new(64));
+        let over_limit = AtomicBool::new(false);
+        console.lock().unwrap().push(b"already collected");
+        writer.write_all(b"pending pipe bytes").unwrap();
+
+        drain_console(&mut reader, &mut [0; 4], &console, &over_limit, 64).unwrap();
+        assert_eq!(console.lock().unwrap().bytes(), b"");
+        assert_eq!(console.lock().unwrap().total(), 35);
+        assert!(!over_limit.load(Ordering::Acquire));
+
+        writer.write_all(b"new branch").unwrap();
+        assert!(matches!(
+            read_console(&mut reader, &mut [0; 64], &console, &over_limit, 64,),
+            Ok(ConsoleRead::Bytes)
+        ));
+        assert_eq!(console.lock().unwrap().bytes(), b"new branch");
     }
 
     #[test]
