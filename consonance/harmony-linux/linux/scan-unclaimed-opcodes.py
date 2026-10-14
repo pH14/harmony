@@ -277,8 +277,8 @@ def scan_symbol_restarts(data, sections, tag, path):
                                 and not truncated_instruction(ordinary[1]):
                             rejoined = True
                             break
-                        if mnemonic.startswith(("j", "loop", "call")) \
-                                or mnemonic in ("lcall", "ljmp", "xbegin"):
+                        if mnemonic.startswith(("j", "loop", "call", "lcall", "ljmp")) \
+                                or mnemonic == "xbegin":
                             raise ValueError(
                                 f"unresolved branch in {tag}:{name}:{mode} symbol restart at 0x{site:x}"
                             )
