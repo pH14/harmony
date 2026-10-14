@@ -14,6 +14,8 @@ printf '%s\n' \
     'set -euo pipefail' \
     'out=' \
     'finding=' \
+    'run=' \
+    'if [[ ${1:-} == debug && ${2:-} == replay ]]; then run=${3:-}; fi' \
     'while (($#)); do' \
     '  if [[ "$1" == --out ]]; then out=$2; shift 2' \
     '  elif [[ "$1" == --finding ]]; then finding=$2; shift 2' \
@@ -21,6 +23,9 @@ printf '%s\n' \
     'done' \
     'if [[ -n ${FAKE_EXPECT_FINDING:-} && "$finding" != "$FAKE_EXPECT_FINDING" ]]; then' \
     '  printf "wrong finding: %s\n" "$finding"; exit 42' \
+    'fi' \
+    'if [[ -n ${FAKE_EXPECT_RUN_DIRECTORY:-} && "$run" != "$FAKE_EXPECT_RUN_DIRECTORY" ]]; then' \
+    '  printf "wrong run directory: %s\n" "$run"; exit 43' \
     'fi' \
     'mkdir -p "$out"' \
     'cp "$FAKE_REPORT" "$out/report.json"' \
@@ -43,10 +48,15 @@ chmod +x "${work}/guest/uml/harmony-uml-qualify"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf '[{"Wait":50}]\n' >"${work}/input.json"
 mkdir -p "${work}/search"
-jq -cn '{mode:"search",bugs:[
-    {confirmed:false,actions:[1,2],violations:["case-assertion"],sometimes:["case-evidence"]},
-    {confirmed:true,actions:[1,2,3],violations:["other-assertion"],sometimes:["case-evidence"]},
-    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"]}]}' \
+finding_replay=$(jq -cn '{bug:true,violations:["case-assertion"],
+    sometimes:["case-evidence"],guest_horizons:1,actions_applied:1,
+    settle_actions:0,settle_ticks:0}')
+jq -cn --argjson replay "$finding_replay" '{mode:"search",bugs:[
+    {confirmed:false,actions:[1,2],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay},
+    {confirmed:true,actions:[1,2,3],violations:["other-assertion"],sometimes:["case-evidence"],replay:$replay},
+    {confirmed:true,actions:[1,2],violations:["case-assertion"],sometimes:[],replay:$replay},
+    {confirmed:true,actions:[1,2],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .sometimes=[])},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay}]}' \
     >"${work}/search/report.json"
 reproducer="${work}/search/report.json"
 
@@ -94,11 +104,13 @@ jq -cn --argjson run "$uml_run" '{mode:"replay",replays:[$run,$run]}' \
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/uml-report.json" FAKE_EXIT_STATUS=2
     export FAKE_OUTPUT='error: full UML state identity is unavailable'
-    export FAKE_EXPECT_FINDING=3
+    export FAKE_EXPECT_FINDING=5
+    export FAKE_EXPECT_RUN_DIRECTORY="${work}/search"
     export GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" reproduce "${reproducer}"
 )
-jq -e '.cli_exit_status == 2 and .state_hash_count == "unavailable"
+jq -e '.cli_exit_status == 2 and .finding == 5 and .actions == 1
+    and .state_hash_count == "unavailable"
     and (.oracle | startswith("pass: observed replay"))' \
     "${work}/reports/pgcic.reproduce-report/panel-status.json" >/dev/null
 

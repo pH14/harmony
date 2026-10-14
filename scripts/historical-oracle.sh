@@ -74,20 +74,12 @@ case "${mode}" in
         # The package's campaign already performs one fresh replay for each
         # recorded bug. Its summary must carry the same detector evidence and
         # prove that no cached prefix answered it.
-        verified=$(jq -r --arg assertion "${assertion}" \
-            --arg evidence "${evidence}" '
-            any(.bugs[]?;
-                .confirmed == true
-                and ((.violations // []) | index($assertion)) != null
-                and ((.sometimes // []) | index($evidence)) != null
-                and (.replay != null)
-                and (.replay.bug == true)
-                and (((.replay.violations // []) | index($assertion)) != null)
-                and (((.replay.sometimes // []) | index($evidence)) != null)
-                and (.replay.guest_horizons == (.replay.actions_applied + .replay.settle_actions))
-                and (.replay.settle_ticks >= .replay.settle_actions)
-            )' "${report}")
-        [[ "${verified}" == true ]] && { echo pass; exit 0; }
+        if jq -e --arg assertion "${assertion}" --arg evidence "${evidence}" \
+            -f "$(dirname "$0")/historical-confirmed-finding.jq" "${report}" \
+            >/dev/null 2>&1; then
+            echo pass
+            exit 0
+        fi
 
         replayed=$(jq -r --arg assertion "${assertion}" '
             any(.bugs[]?;
