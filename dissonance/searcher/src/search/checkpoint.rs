@@ -96,17 +96,21 @@ struct StoredRange {
     listings: u64,
 }
 
-fn sha256_reader(reader: &mut impl Read) -> io::Result<[u8; 32]> {
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 1 << 16];
-    loop {
-        let read = reader.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
+struct HashWriter<W> {
+    inner: W,
+    digest: Sha256,
+}
+
+impl<W: Write> Write for HashWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        self.digest.update(&buf[..written]);
+        Ok(written)
     }
-    Ok(digest.finalize().into())
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.inner.flush()
+    }
 }
 
 pub(crate) struct CheckpointWriter<P> {
@@ -223,14 +227,20 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         let path = self.plan.directory.join(&name);
         let partial = self.plan.directory.join(format!("{name}.partial"));
         let file = File::create(&partial)?;
-        let mut out = BufWriter::with_capacity(1 << 22, file);
+        let mut out = BufWriter::with_capacity(
+            1 << 22,
+            HashWriter {
+                inner: file,
+                digest: Sha256::new(),
+            },
+        );
         postcard::to_io(header, &mut out)?;
         postcard::to_io(&index, &mut out)?;
         body(&mut out)?;
         out.flush()?;
-        let mut file = out.into_inner().map_err(|error| error.into_error())?;
-        file.sync_data()?;
-        let checksum = sha256_reader(&mut File::open(&partial)?)?;
+        let hashing = out.into_inner().map_err(|error| error.into_error())?;
+        let checksum = hashing.digest.finalize();
+        let mut file = hashing.inner;
         file.write_all(&checksum)?;
         file.sync_data()?;
         let checkpoint_bytes = file.metadata()?.len();
@@ -355,6 +365,10 @@ pub(crate) struct CheckpointReader {
 impl CheckpointReader {
     pub(crate) fn open(path: &Path) -> Result<Self, Box<dyn Error>> {
         let mut bytes = fs::read(path)?;
+        let (format, _): (String, _) = postcard::take_from_bytes(&bytes)?;
+        if format != SEARCH_CHECKPOINT_FORMAT {
+            return Err("search checkpoint format is not recognized".into());
+        }
         let payload_len = bytes
             .len()
             .checked_sub(32)
@@ -366,9 +380,6 @@ impl CheckpointReader {
         let file_sha256 = format!("{:x}", Sha256::digest(&bytes));
         bytes.truncate(payload_len);
         let (header, rest): (CheckpointHeader, _) = postcard::take_from_bytes(&bytes)?;
-        if header.format != SEARCH_CHECKPOINT_FORMAT {
-            return Err("search checkpoint format is not recognized".into());
-        }
         let (index, rest): (Vec<StoredSnapshot>, _) = postcard::take_from_bytes(rest)?;
         let cursor = bytes.len() - rest.len();
         let store = path
@@ -557,6 +568,28 @@ mod tests {
         fs::write(&store_path, bytes).unwrap();
         let reader = CheckpointReader::open(&directory.join("000000000010-interval.ckpt")).unwrap();
         assert!(reader.snapshots::<Vec<u8>>().is_err());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn older_checkpoint_reports_unsupported_format() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-old-format-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir(&directory).unwrap();
+        let mut old = header(10, "interval");
+        old.format = "dissonance-search-checkpoint-v4".into();
+        let path = directory.join("old.ckpt");
+        fs::write(&path, postcard::to_allocvec(&old).unwrap()).unwrap();
+        assert!(
+            CheckpointReader::open(&path)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("format is not recognized")
+        );
         fs::remove_dir_all(&directory).unwrap();
     }
 
