@@ -1845,6 +1845,26 @@ where
             .transpose()
     }
 
+    pub(crate) fn sdk_handler_snapshot(
+        &self,
+    ) -> Result<Option<channel::HandlerSnapshot>, channel::ChannelError> {
+        self.sdk
+            .as_ref()
+            .map(|sdk| Ok(sdk.env.snapshot_state()?.handler().clone()))
+            .transpose()
+    }
+
+    pub(crate) fn verify_sdk_handler_unchanged(
+        &self,
+        before: &channel::HandlerSnapshot,
+    ) -> Result<(), channel::ChannelError> {
+        self.sdk
+            .as_ref()
+            .ok_or(channel::ChannelError::Poisoned)?
+            .env
+            .verify_handler_unchanged(before)
+    }
+
     pub fn sdk_snapshot_after_answer(
         &self,
         moment: u64,
