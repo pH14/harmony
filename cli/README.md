@@ -259,7 +259,9 @@ Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
-the search report's stream digest and runs from the verified bytes.
+the search report's stream digest and runs from the verified bytes. Its kernel
+and initramfs are checked against the source recording when finally loaded,
+before inheritance can copy a later version of either file.
 
 ## Developer qualification
 
