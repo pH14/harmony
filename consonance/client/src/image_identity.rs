@@ -3,11 +3,36 @@
 use std::io;
 
 #[cfg(target_os = "linux")]
-pub fn loaded_executable_identity(pid: u32) -> io::Result<String> {
+pub fn loaded_executable_identity_self() -> io::Result<String> {
+    digest_executable("/proc/self/exe")
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn loaded_executable_identity_for_child(pid: u32) -> io::Result<String> {
+    let status = std::fs::read_to_string("/proc/self/status")?;
+    if !procfs_matches_pid_namespace(&status, std::process::id()) {
+        return Err(io::Error::other(
+            "procfs PID namespace differs from session worker PID namespace",
+        ));
+    }
+    digest_executable(format!("/proc/{pid}/exe"))
+}
+
+#[cfg(target_os = "linux")]
+fn procfs_matches_pid_namespace(status: &str, current_pid: u32) -> bool {
+    let Some(line) = status.lines().find_map(|line| line.strip_prefix("NStgid:")) else {
+        return false;
+    };
+    let mut pids = line.split_whitespace();
+    matches!((pids.next(), pids.next()), (Some(pid), None) if pid.parse() == Ok(current_pid))
+}
+
+#[cfg(target_os = "linux")]
+fn digest_executable(path: impl AsRef<std::path::Path>) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     use std::io::Read as _;
 
-    let mut executable = std::fs::File::open(format!("/proc/{pid}/exe"))?;
+    let mut executable = std::fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 65536];
     loop {
@@ -31,7 +56,12 @@ unsafe extern "C" {
 }
 
 #[cfg(target_os = "macos")]
-pub fn loaded_executable_identity(pid: u32) -> io::Result<String> {
+pub fn loaded_executable_identity_self() -> io::Result<String> {
+    loaded_executable_identity_for_child(std::process::id())
+}
+
+#[cfg(target_os = "macos")]
+pub(crate) fn loaded_executable_identity_for_child(pid: u32) -> io::Result<String> {
     let pid = std::ffi::c_int::try_from(pid)
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid process ID"))?;
     loaded_executable_identity_from_csops(pid, csops)
@@ -68,7 +98,7 @@ fn loaded_executable_identity_from_csops(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub fn loaded_executable_identity(_: u32) -> io::Result<String> {
+pub fn loaded_executable_identity_self() -> io::Result<String> {
     Err(io::Error::other(
         "cannot identify the loaded executable on this host",
     ))
@@ -98,5 +128,24 @@ mod tests {
             loaded_executable_identity_from_csops(7, mock_csops).unwrap(),
             format!("macos-cdhash-v1:{}", "42".repeat(20))
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    #[test]
+    fn foreign_procfs_pid_namespace_is_never_used_for_child_identity() {
+        assert!(procfs_matches_pid_namespace(
+            "Name:\tworker\nNStgid:\t41\n",
+            41
+        ));
+        assert!(!procfs_matches_pid_namespace(
+            "Name:\tworker\nNStgid:\t3841\t41\n",
+            41
+        ));
+        assert!(!procfs_matches_pid_namespace("Name:\tworker\n", 41));
+        assert!(!procfs_matches_pid_namespace("NStgid:\t42\n", 41));
     }
 }

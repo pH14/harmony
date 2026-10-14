@@ -183,7 +183,8 @@ with `serve_inherited`. The child re-executes the same binary, so it carries the
 same HVF entitlement and inherits the calling thread's CPU affinity.
 `WorkerLauncher::current_exe` records the parent's loaded image identity and
 checks the spawned child's loaded image before sending the initialization request.
-Linux hashes the executable through `/proc/<pid>/exe`; macOS reads the process's
+Linux hashes the parent through `/proc/self/exe` and checks procfs's PID
+namespace before reading `/proc/<child-pid>/exe`; macOS reads each process's
 code-directory hash. A replacement of the executable pathname cannot cause a
 different worker image to run under the parent's recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
