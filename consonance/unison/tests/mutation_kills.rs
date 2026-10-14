@@ -61,13 +61,15 @@ fn bisect_checks_initial_state_before_claiming_the_first_step() {
 #[test]
 fn deserialize_accepts_uppercase_hex() {
     let json = format!(
-        r#"{{"first_divergent_work":7,"hash_a":"{a}","hash_b":"{b}","runs_executed":4}}"#,
+        r#"{{"first_divergent_work":7,"hash_a":"{a}","hash_b":"{b}","observable_digest_a":"{a}","observable_digest_b":"{b}","runs_executed":4}}"#,
         a = "AB".repeat(32),
         b = "EF".repeat(32),
     );
     let p: DivergencePoint = serde_json::from_str(&json).unwrap();
     assert_eq!(p.hash_a, [0xAB; 32]);
     assert_eq!(p.hash_b, [0xEF; 32]);
+    assert_eq!(p.observable_digest_a, [0xAB; 32]);
+    assert_eq!(p.observable_digest_b, [0xEF; 32]);
     assert_eq!(p.first_divergent_work, 7);
     assert_eq!(p.runs_executed, 4);
 }

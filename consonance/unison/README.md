@@ -14,6 +14,10 @@ machine for a seed. `state_hash` covers all architectural state. The separate
 `observable_digest` covers only guest-visible output, which lets callers test
 seed-sensitive output without confusing latent PRNG/device state for an
 observable difference.
+Comparison and bisection compare both values. An output-only mismatch is a
+divergence even when the architectural state hashes agree; `DivergencePoint`
+reports both state hashes and both observable digests so that case remains
+visible to callers.
 `run_to(t)` must report `ReachedTarget` only at work count `t` and must not
 advance past `t` while reporting `Halted`, or move the work counter backward.
 Comparisons and bisection reject these inconsistencies; equal state hashes cannot certify runs sampled at
@@ -21,8 +25,9 @@ different work counts. An already-halted subject can report its existing work
 count above a requested target without advancing. Comparison uses the actual
 halt count to detect mismatches.
 
-`compare_runs` checks both machines immediately after spawn, then hashes them
-at a caller-selected interval until they halt or reach a limit. It reports
+`compare_runs` checks both machines immediately after spawn, then compares their
+state hashes and output digests at a caller-selected interval until they halt or
+reach a limit. It reports
 identical runs, a checkpoint bracket, or a halt-count mismatch, and records
 whether the limit—not termination—ended the
 comparison. A zero-work mismatch is reported even when the limit is zero.
