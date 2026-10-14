@@ -189,7 +189,9 @@ impl Package for Nes {
                 .try_into()?,
             output: out.join("package"),
             wall_seconds: m.config.search.wall_seconds,
+            checkpoint_owner: m.checkpoint_owner.clone(),
         };
+        m.store(&out, "search-origin-input.json", br#"{"actions":[]}"#)?;
         let result = if m.config.runner.kind == "quicknes" {
             let runner: crate::runners::Quicknes =
                 toml::Value::Table(m.config.runner.options.clone()).try_into()?;
@@ -225,7 +227,8 @@ impl Package for Nes {
                 Err("the NES guest adapter requires Linux".into())
             }
         };
-        let result = result.and_then(|()| collect_search(&out, &search.output, &mut m));
+        let result =
+            result.and_then(|evidence| collect_search(&out, &search.output, &evidence, &mut m));
         finish(&out, &mut m, result)
     }
 }
@@ -329,6 +332,31 @@ fn saved(request: Request) -> Result<u8> {
                 return Err("repeat must be positive".into());
             }
             original.verify(&path)?;
+            if request.operation == Operation::Replay {
+                let expected = &original.payload["witness"];
+                let victory = expected["victory"]
+                    .as_bool()
+                    .ok_or("this recording has no saved victory witness to replay")?;
+                if original.payload["repeats"]
+                    .as_array()
+                    .is_some_and(|repeats| {
+                        repeats.is_empty() || repeats.iter().any(|repeat| repeat != expected)
+                    })
+                {
+                    return Err(
+                        "saved NES repeats disagree; exact replay cannot be verified".into(),
+                    );
+                }
+                if selection.finding.is_some() && !victory {
+                    return Err("this finding was not confirmed by its saved witness".into());
+                }
+                if original.payload["finding"].as_bool() != Some(victory) {
+                    return Err("saved NES finding and witness disagree".into());
+                }
+                if original.status != "complete" {
+                    return Err("a failed NES recording cannot certify exact replay".into());
+                }
+            }
             let mut input = original.payload["input"].clone();
             if request.operation == Operation::Branch {
                 if request.exec.is_some() || request.exec_file.is_some() || request.shell {
@@ -395,6 +423,43 @@ fn finish(path: &Path, m: &mut Manifest, result: Result<u8>) -> Result<u8> {
     result
 }
 
+fn checkpoint_origin_input(parent: &Path, manifest: &Manifest) -> Result<serde_json::Value> {
+    let expected = manifest
+        .artifacts
+        .get("search-origin-input.json")
+        .ok_or("this search has no recorded origin input; its checkpoint cannot be resumed")?;
+    let bytes = fs::read(parent.join("artifacts/search-origin-input.json"))?;
+    if crate::runtime::digest(&bytes) != *expected {
+        return Err("recorded search origin input changed during resume".into());
+    }
+    let saved: serde_json::Value = serde_json::from_slice(&bytes)?;
+    let observed: serde_json::Value =
+        serde_json::from_slice(&fs::read(parent.join("package/origin-input.json"))?)?;
+    if saved != observed {
+        return Err("search origin input differs from saved artifact".into());
+    }
+    Ok(saved)
+}
+
+fn rooted_search_start(
+    original: &Manifest,
+    point: &crate::selection::Point,
+) -> Result<nes_workload::package::SearchStart> {
+    let mut input = original.payload["input"].clone();
+    let actions = input["actions"]
+        .as_array_mut()
+        .ok_or("execution has no input")?;
+    if point.rewind_time.is_some() {
+        return Err("this recording has no virtual-time boundaries; use --step or --rewind".into());
+    }
+    let boundaries = (0..=actions.len()).map(|n| (n, 0)).collect::<Vec<_>>();
+    let cut = point.resolve(&boundaries, actions.len())?;
+    actions.truncate(cut);
+    Ok(nes_workload::package::SearchStart::Actions(
+        nes_workload::package::canonical_origin_input(input)?,
+    ))
+}
+
 fn continue_search(request: Request) -> Result<u8> {
     use nes_workload::package::{SearchOptions, SearchStart};
     let selection = request.selection.ok_or("select a search or branch")?;
@@ -413,7 +478,8 @@ fn continue_search(request: Request) -> Result<u8> {
         if original.mode != "search" {
             return Err("search --resume requires a saved search".into());
         }
-        let (checkpoint, completed) = crate::runs::checkpoint_record(&parent.join("package"))?;
+        let (checkpoint, completed) =
+            crate::runs::checkpoint_record_verified(&parent.join("package"), &original)?;
         let additional =
             request
                 .budget
@@ -428,25 +494,23 @@ fn continue_search(request: Request) -> Result<u8> {
             .ok_or("execution budget overflow")?;
         config.search.wall_seconds = request.budget.wall_seconds;
         config.validate()?;
-        SearchStart::Checkpoint(checkpoint)
-    } else {
-        let mut input = original.payload["input"].clone();
-        let actions = input["actions"]
-            .as_array_mut()
-            .ok_or("execution has no input")?;
-        if request.point.rewind_time.is_some() {
-            return Err(
-                "this recording has no virtual-time boundaries; use --step or --rewind".into(),
-            );
+        SearchStart::Checkpoint {
+            checkpoint,
+            origin_input: checkpoint_origin_input(&parent, &original)?,
         }
-        let boundaries = (0..=actions.len()).map(|n| (n, 0)).collect::<Vec<_>>();
-        let cut = request.point.resolve(&boundaries, actions.len())?;
-        actions.truncate(cut);
-        SearchStart::Actions(input)
+    } else {
+        rooted_search_start(&original, &request.point)?
     };
     let out = request.destination.create()?;
     let mut m = original.inherit(&parent, &out, "search")?;
     m.config = config;
+    if let SearchStart::Actions(input) = &start {
+        m.store(
+            &out,
+            "search-origin-input.json",
+            &serde_json::to_vec(input)?,
+        )?;
+    }
     m.save(&out)?;
     let options = SearchOptions {
         seed: m.config.search.seed,
@@ -456,6 +520,7 @@ fn continue_search(request: Request) -> Result<u8> {
             .try_into()?,
         output: out.join("package"),
         wall_seconds: m.config.search.wall_seconds,
+        checkpoint_owner: m.checkpoint_owner.clone(),
     };
     let rom = fs::read(out.join("artifacts/input"))?;
     let result = if m.config.runner.kind == "quicknes" {
@@ -476,22 +541,40 @@ fn continue_search(request: Request) -> Result<u8> {
             Err("the NES guest adapter requires Linux".into())
         }
     };
-    let result = result.and_then(|()| collect_search(&out, &options.output, &mut m));
+    let result =
+        result.and_then(|evidence| collect_search(&out, &options.output, &evidence, &mut m));
     finish(&out, &mut m, result)
 }
 
-fn collect_search(out: &Path, package: &Path, m: &mut Manifest) -> Result<u8> {
+fn collect_search(
+    out: &Path,
+    package: &Path,
+    evidence: &nes_workload::package::SearchEvidence,
+    m: &mut Manifest,
+) -> Result<u8> {
     for entry in fs::read_dir(package)? {
         let entry = entry?;
         if entry.file_type()?.is_file() && entry.file_name() != "origin-input.json" {
             fs::rename(entry.path(), out.join(entry.file_name()))?;
         }
     }
-    let input: serde_json::Value =
-        serde_json::from_slice(&fs::read(out.join("witness-input.json"))?)?;
-    let report: serde_json::Value = serde_json::from_slice(&fs::read(out.join("result.json"))?)?;
-    m.payload =
-        serde_json::json!({"input":input,"witness":report["witness"],"finding":report["solved"]});
+    if fs::read(out.join("witness-input.json"))? != evidence.witness_input
+        || fs::read(out.join("result.json"))? != evidence.result
+    {
+        return Err("NES search evidence differs from the returned result".into());
+    }
+    let input: serde_json::Value = serde_json::from_slice(&evidence.witness_input)?;
+    let report: serde_json::Value = serde_json::from_slice(&evidence.result)?;
+    let solved = report["solved"]
+        .as_bool()
+        .ok_or("NES search result has no solved outcome")?;
+    let replayed = report["witness"]["victory"]
+        .as_bool()
+        .ok_or("NES search result has no fresh replay victory outcome")?;
+    if solved != replayed {
+        return Err("NES search result disagrees with its fresh replay witness".into());
+    }
+    m.payload = serde_json::json!({"input":input,"witness":report["witness"],"finding":replayed});
     Ok(0)
 }
 fn record_witness(
@@ -515,6 +598,278 @@ fn record_witness(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use searcher::search::checkpoint::{
+        CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
+    };
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn rooted_search_records_the_canonical_accepted_input() {
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "branch").unwrap();
+        manifest.payload = serde_json::json!({
+            "input": {
+                "actions": [{"buttons": 1, "hold_frames": 2, "note": "ignored"}],
+                "note": "ignored"
+            }
+        });
+        let nes_workload::package::SearchStart::Actions(input) =
+            rooted_search_start(&manifest, &crate::selection::Point::default()).unwrap()
+        else {
+            panic!("rooted search must begin with actions")
+        };
+        assert_eq!(
+            input,
+            serde_json::json!({"actions": [{"buttons": 1, "hold_frames": 2}]})
+        );
+    }
+
+    #[test]
+    fn resumed_search_refuses_a_replaced_origin_input() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("resumed");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest
+            .store(
+                source.path(),
+                "search-origin-input.json",
+                br#"{"actions":[]}"#,
+            )
+            .unwrap();
+        manifest.save(source.path()).unwrap();
+        let package = source.path().join("package");
+        let checkpoints = package.join("checkpoints");
+        fs::create_dir_all(&checkpoints).unwrap();
+        fs::write(package.join("origin-input.json"), br#"{"actions":[1]}"#).unwrap();
+        let header = CheckpointHeader {
+            format: SEARCH_CHECKPOINT_FORMAT.into(),
+            checkpoint_owner: manifest.checkpoint_owner.clone(),
+            reason: "interval".into(),
+            workload_identity_sha256: String::new(),
+            campaign_seed: 0,
+            window: 1,
+            archive_entry_limit: 8,
+            memory_budget_mib: None,
+            policies: Default::default(),
+            executions: 1,
+            reserved: 1,
+            admitted: 0,
+            planned_clock: 0,
+        };
+        let mut bytes = postcard::to_allocvec(&header).unwrap();
+        bytes.extend(postcard::to_allocvec(&Vec::<StoredSnapshot>::new()).unwrap());
+        bytes.extend_from_slice(&Sha256::digest(&bytes));
+        let name = "000000000001-interval.ckpt";
+        let checkpoint = checkpoints.join(name);
+        fs::write(&checkpoint, bytes).unwrap();
+        let checksum = crate::runs::file_digest(&checkpoint).unwrap();
+        fs::write(
+            checkpoints.join("checkpoints.jsonl"),
+            format!("{{\"file\":\"{name}\",\"executions\":1,\"reserved\":1,\"checkpoint_sha256\":\"{checksum}\"}}\n"),
+        )
+        .unwrap();
+        let request = Request {
+            operation: Operation::Resume,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = continue_search(request).unwrap_err().to_string();
+        assert!(error.contains("search origin input differs"), "{error}");
+        assert!(!destination.exists());
+        fs::write(package.join("origin-input.json"), br#"{"actions":[]}"#).unwrap();
+        assert_eq!(
+            checkpoint_origin_input(source.path(), &manifest).unwrap(),
+            serde_json::json!({"actions":[]})
+        );
+    }
+
+    #[test]
+    fn replay_refuses_a_failed_run_with_disagreeing_saved_repeats() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("replay");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "run").unwrap();
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest.status = "failed".into();
+        manifest.payload = serde_json::json!({
+            "input":{"actions":[]},"finding":false,
+            "witness":{"victory":false,"snapshot_sha256":"second"},
+            "repeats":[
+                {"victory":true,"snapshot_sha256":"first"},
+                {"victory":false,"snapshot_sha256":"second"}
+            ]
+        });
+        manifest.save(source.path()).unwrap();
+        let request = Request {
+            operation: Operation::Replay,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = saved(request).unwrap_err().to_string();
+        assert!(error.contains("saved NES repeats disagree"), "{error}");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn replay_refuses_a_finding_without_saved_victory() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("replay");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest.status = "complete".into();
+        manifest.payload = serde_json::json!({
+            "input":{"actions":[]},"finding":true,
+            "witness":{"victory":false,"snapshot_sha256":"missed"}
+        });
+        manifest.save(source.path()).unwrap();
+        let request = Request {
+            operation: Operation::Replay,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: Some(1),
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = saved(request).unwrap_err().to_string();
+        assert!(error.contains("finding was not confirmed"), "{error}");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn search_rejects_result_or_input_replaced_after_package_return() {
+        for artifact in ["result.json", "witness-input.json"] {
+            let out = tempfile::tempdir().unwrap();
+            let package = out.path().join("package");
+            fs::create_dir(&package).unwrap();
+            let input = serde_json::json!({"actions":[]});
+            let produced = serde_json::json!({
+                "format":"harmony-search-result-v1",
+                "backend":"native",
+                "solved":false,
+                "witness":{"victory":false,"snapshot_sha256":"original"},
+                "endpoint":{"snapshot_sha256":"original"}
+            });
+            let evidence = nes_workload::package::SearchEvidence {
+                witness_input: serde_json::to_vec(&input).unwrap(),
+                result: serde_json::to_vec(&produced).unwrap(),
+            };
+            fs::write(package.join("witness-input.json"), &evidence.witness_input).unwrap();
+            fs::write(package.join("result.json"), &evidence.result).unwrap();
+            let replacement = if artifact == "result.json" {
+                serde_json::json!({
+                    "format":"harmony-search-result-v1",
+                    "backend":"native",
+                    "solved":true,
+                    "witness":{"victory":true,"snapshot_sha256":"forged"},
+                    "endpoint":{"snapshot_sha256":"forged"}
+                })
+            } else {
+                serde_json::json!({"actions":[{"buttons":1,"hold_frames":2}]})
+            };
+            fs::write(
+                package.join(artifact),
+                serde_json::to_vec(&replacement).unwrap(),
+            )
+            .unwrap();
+
+            let mut config = Config::default();
+            config.workload.package = "nes".into();
+            config.runner.kind = "quicknes".into();
+            let mut manifest = Manifest::new(config, "search").unwrap();
+            let result = collect_search(out.path(), &package, &evidence, &mut manifest);
+            assert!(finish(out.path(), &mut manifest, result).is_err());
+            let saved = Manifest::read(out.path()).unwrap();
+            assert_eq!(saved.status, "failed");
+            assert_ne!(saved.payload["finding"], true);
+        }
+    }
+
+    #[test]
+    fn search_accepts_unchanged_package_evidence() {
+        let out = tempfile::tempdir().unwrap();
+        let package = out.path().join("package");
+        fs::create_dir(&package).unwrap();
+        let evidence = nes_workload::package::SearchEvidence {
+            witness_input: serde_json::to_vec(&serde_json::json!({"actions":[]})).unwrap(),
+            result: serde_json::to_vec(&serde_json::json!({
+                "solved":false,"witness":{"victory":false,"snapshot_sha256":"original"}
+            }))
+            .unwrap(),
+        };
+        fs::write(package.join("witness-input.json"), &evidence.witness_input).unwrap();
+        fs::write(package.join("result.json"), &evidence.result).unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        assert_eq!(
+            collect_search(out.path(), &package, &evidence, &mut manifest).unwrap(),
+            0
+        );
+        assert_eq!(manifest.payload["finding"], false);
+    }
+
+    #[test]
+    fn search_rejects_a_claimed_solution_without_fresh_replay_victory() {
+        let out = tempfile::tempdir().unwrap();
+        let package = out.path().join("package");
+        fs::create_dir(&package).unwrap();
+        let evidence = nes_workload::package::SearchEvidence {
+            witness_input: serde_json::to_vec(&serde_json::json!({"actions":[]})).unwrap(),
+            result: serde_json::to_vec(&serde_json::json!({
+                "format":"harmony-search-result-v1",
+                "backend":"native",
+                "solved":true,
+                "witness":{"victory":false,"snapshot_sha256":"fresh"},
+                "endpoint":{"snapshot_sha256":"fresh"}
+            }))
+            .unwrap(),
+        };
+        fs::write(package.join("witness-input.json"), &evidence.witness_input).unwrap();
+        fs::write(package.join("result.json"), &evidence.result).unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        let result = collect_search(out.path(), &package, &evidence, &mut manifest);
+        assert!(finish(out.path(), &mut manifest, result).is_err());
+        let saved = Manifest::read(out.path()).unwrap();
+        assert_eq!(saved.status, "failed");
+        assert_ne!(saved.payload["finding"], true);
+    }
+
     #[test]
     fn repeats_preserve_observed_divergence_and_inheritance_clears_results() {
         let mut c = Config::default();

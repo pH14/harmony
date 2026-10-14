@@ -659,7 +659,7 @@ the format name first, then checks the checksum before decoding the rest of the
 header or body, so byte changes that remain valid postcard data fail closed
 instead of changing the continuation. These
 checks detect corruption, not deliberate rewriting of a checkpoint and its
-checksum. `checkpoints.jsonl` records write time and sizes:
+checksum. `checkpoints.jsonl` records each checkpoint's SHA-256, write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
 kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
 what the write's pruning released. The
@@ -669,7 +669,14 @@ checkpoint of any other layout before it decodes the body. The
 archive stores its `SelectorAccounting` as JSON inside that body, so a counter
 added there, such as `tier_runs`, reads as empty from a checkpoint written
 before the counter existed.
-`CampaignOrigin::SearchCheckpoint` resumes one. The admission
+The header also carries the optional search owner supplied by `CheckpointPlan`.
+Harmony's saved-run manifest records that owner before search begins and checks
+it before resume, so a checkpoint from another run cannot impersonate the
+interrupted run's latest checkpoint. A completed saved run also binds the
+selected checkpoint's SHA-256. `CampaignOrigin::SearchCheckpoint` resumes one.
+When that origin carries a selected SHA-256, replay compares it with the exact
+checkpoint bytes opened for resume before restoring state.
+The admission
 window, limits, workload identity and the workload policies that give stored
 inputs and keys their meaning must match. The mixture and retention
 policies, the selector, the continuation policy and the objective stop may

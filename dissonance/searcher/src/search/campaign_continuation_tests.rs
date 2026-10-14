@@ -657,6 +657,7 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
                 every: NonZeroU64::new(300),
                 on_marks: true,
                 on_top_progress: true,
+                checkpoint_owner: None,
             }),
         );
         assert_eq!(
@@ -679,8 +680,14 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
             let resume_at: u64 = path.file_name().unwrap().to_str().unwrap()[..12]
                 .parse()
                 .unwrap();
-            let (resumed, resumed_progress) =
-                run_with_checkpoints(&config, &CampaignOrigin::SearchCheckpoint { path }, None);
+            let (resumed, resumed_progress) = run_with_checkpoints(
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path,
+                    expected_sha256: None,
+                },
+                None,
+            );
             assert_eq!(
                 progress_lines_after(&resumed_progress, resume_at),
                 progress_lines_after(&original_progress, resume_at),
@@ -696,6 +703,67 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
         }
         std::fs::remove_dir_all(&directory).unwrap();
     }
+}
+
+#[test]
+fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
+    let directory = checkpoint_directory("pinned-swap");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 320;
+    run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: directory.clone(),
+            every: NonZeroU64::new(100),
+            on_marks: false,
+            on_top_progress: false,
+            checkpoint_owner: Some("saved-run-a".into()),
+        }),
+    );
+    let selected = directory.join("000000000320-final.ckpt");
+    let older = directory.join("000000000300-interval.ckpt");
+    assert!(selected.is_file());
+    assert!(older.is_file());
+    let selected_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&selected).unwrap()));
+    config.execution_budget = 360;
+    let mut stream = Vec::new();
+    assert!(
+        run_campaign_checkpointed_with_options(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path: selected.clone(),
+                expected_sha256: Some(selected_sha256.clone()),
+            },
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .is_ok()
+    );
+    std::fs::copy(&older, &selected).unwrap();
+    assert_ne!(
+        selected_sha256,
+        format!("{:x}", Sha256::digest(std::fs::read(&selected).unwrap()))
+    );
+    stream.clear();
+    assert!(
+        run_campaign_checkpointed_with_options(
+            &TestWorkload,
+            &config,
+            &CampaignOrigin::SearchCheckpoint {
+                path: selected,
+                expected_sha256: Some(selected_sha256),
+            },
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .is_err()
+    );
+    std::fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]
@@ -752,6 +820,7 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
             every: NonZeroU64::new(170),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     assert!(
@@ -787,7 +856,10 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
             config.workers = workers;
             let (resumed, resumed_progress) = run_with_checkpoints(
                 &config,
-                &CampaignOrigin::SearchCheckpoint { path: path.clone() },
+                &CampaignOrigin::SearchCheckpoint {
+                    path: path.clone(),
+                    expected_sha256: None,
+                },
                 None,
             );
             assert_eq!(
@@ -816,6 +888,7 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
             every: NonZeroU64::new(100),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     let files = std::fs::read_dir(&directory)
@@ -838,6 +911,7 @@ fn a_short_campaign_finishes_with_a_checkpoint_that_can_extend_its_budget() {
     config.execution_budget = 20;
     let origin = CampaignOrigin::SearchCheckpoint {
         path: files[0].clone(),
+        expected_sha256: None,
     };
     let (second, _) = run_with_checkpoints(&config, &origin, None);
     let (repeated, _) = run_with_checkpoints(&config, &origin, None);
@@ -860,6 +934,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     config.campaign_seed = 948;
@@ -867,6 +942,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
         &config,
         &CampaignOrigin::SearchCheckpoint {
             path: directory.join("000000000300-interval.ckpt"),
+            expected_sha256: None,
         },
         None,
     );
@@ -885,6 +961,7 @@ fn a_reseeded_resume_continues_from_the_checkpoint_with_new_draws() {
         &config,
         &CampaignOrigin::SearchCheckpoint {
             path: directory.join("000000000300-interval.ckpt"),
+            expected_sha256: None,
         },
         None,
     );
@@ -909,6 +986,7 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     config.mixture = DrawMixture::Energy { scale: 6 };
@@ -916,6 +994,7 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
         &config,
         &CampaignOrigin::SearchCheckpoint {
             path: directory.join("000000000300-interval.ckpt"),
+            expected_sha256: None,
         },
         None,
     );
@@ -954,6 +1033,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
             every: NonZeroU64::new(300),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     let checkpoint = directory.join("000000000300-interval.ckpt");
@@ -971,6 +1051,7 @@ fn a_resume_accepts_and_records_each_rebuildable_policy_change() {
             &config,
             &CampaignOrigin::SearchCheckpoint {
                 path: checkpoint.clone(),
+                expected_sha256: None,
             },
             None,
         );
@@ -1000,6 +1081,7 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
             every: NonZeroU64::new(400),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     config.execution_budget = 1200;
@@ -1008,6 +1090,7 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
         &config,
         &CampaignOrigin::SearchCheckpoint {
             path: directory.join("000000000800-interval.ckpt"),
+            expected_sha256: None,
         },
         None,
     );
@@ -1039,6 +1122,7 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
             every: NonZeroU64::new(2),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     let checkpoint = source.join("000000000014-interval.ckpt");
@@ -1046,12 +1130,16 @@ fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
     config.execution_budget = 25;
     let (resumed, _) = run_with_checkpoints(
         &config,
-        &CampaignOrigin::SearchCheckpoint { path: checkpoint },
+        &CampaignOrigin::SearchCheckpoint {
+            path: checkpoint,
+            expected_sha256: None,
+        },
         Some(CheckpointPlan {
             directory: resumed_directory.clone(),
             every: NonZeroU64::new(1),
             on_marks: false,
             on_top_progress: false,
+            checkpoint_owner: None,
         }),
     );
     assert_eq!(resumed.0.executions_completed, 25);
@@ -1097,6 +1185,7 @@ fn campaign_counters_with_an_import_round_trip_through_postcard() {
 fn a_resume_refuses_a_changed_workload_policy() {
     let header = |key: &str| CheckpointHeader {
         format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+        checkpoint_owner: None,
         reason: "interval".to_owned(),
         workload_identity_sha256: String::new(),
         campaign_seed: 1,

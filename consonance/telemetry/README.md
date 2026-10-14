@@ -17,7 +17,10 @@ without requiring consumers to assume a closed set. `to_ndjson` and
 `Observer::emit` receives a shared event after an exit has been serviced.
 `NullObserver` is the no-op default. `NdjsonRecorder` writes one lossless NDJSON
 line per event; write failures are retained for the caller to inspect after the
-run and do not panic from `emit`.
+run and do not panic from `emit`. A write or flush failure permanently stops
+the recorder, even if the caller takes the error, because the last line or
+buffer may be incomplete. Later flushes also fail instead of certifying an
+incomplete recording.
 
 `LiveSink` is a cloneable, bounded, never-blocking observer for live display.
 When full it drops and counts events, then emits a synthetic `Dropped` notice

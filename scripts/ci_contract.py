@@ -420,6 +420,8 @@ CONSONANCE_HARDWARE = Workflow(
                     "pae_pdpt_reload_preserves_snapshot_continuation",
                     "pae_cached_pdptrs_survive_full_vmm_snapshot_restore",
                     "amd_default_npt_pae_guest_write_observations",
+                    "amd_pae_capture_refuses_and_retires_public_paths",
+                    "long_mode_capture_preserves_continuation",
                     "xsave_guest_bytes_survive_cold_continuation",
                     "xsave_live_registers_survive_cold_continuation",
                 )

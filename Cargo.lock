@@ -449,6 +449,7 @@ dependencies = [
  "environment",
  "faults-workload",
  "flate2",
+ "getrandom 0.3.4",
  "nes-workload",
  "nested-driver",
  "oci-support",

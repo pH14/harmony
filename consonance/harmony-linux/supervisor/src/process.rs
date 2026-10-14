@@ -282,13 +282,13 @@ pub fn node_exit_record(violation: Option<(u16, &str)>) -> String {
     ) + "\n"
 }
 
-pub fn write_record(path: &std::path::Path, record: &str) -> io::Result<()> {
-    use std::io::Write;
-    std::fs::OpenOptions::new()
-        .append(true)
-        .create(true)
-        .open(path)?
-        .write_all(record.as_bytes())
+#[cfg(unix)]
+pub fn open_record_sink(path: &std::path::Path) -> io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().append(true).open(path)
+}
+
+pub fn write_record(output: &mut impl io::Write, record: &str) -> io::Result<()> {
+    output.write_all(record.as_bytes())
 }
 
 #[must_use]
@@ -400,6 +400,27 @@ mod tests {
         prepare_antithesis_output(&dir, &device).unwrap();
         prepare_antithesis_output(&dir, &device).unwrap();
         assert_eq!(std::fs::read_link(dir.join("sdk.jsonl")).unwrap(), device);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn node_exit_record_stays_bound_to_the_device_after_the_link_is_removed() {
+        let root = std::env::temp_dir().join(format!("hs-assertion-sink-{}", std::process::id()));
+        let dir = root.join("antithesis");
+        let device = root.join("device");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&device, b"").unwrap();
+        prepare_antithesis_output(&dir, &device).unwrap();
+        let sink = dir.join("sdk.jsonl");
+        let mut output = open_record_sink(&sink).unwrap();
+        std::fs::remove_file(&sink).unwrap();
+        assert!(open_record_sink(&sink).is_err());
+        let record = node_exit_record(Some((0, "signal 11")));
+        write_record(&mut output, &record).unwrap();
+        assert_eq!(std::fs::read(&device).unwrap(), record.as_bytes());
+        assert!(!sink.exists());
+        drop(output);
         std::fs::remove_dir_all(&root).unwrap();
     }
 

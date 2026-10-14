@@ -224,9 +224,27 @@ permits 5,000 new executions, in addition to finishing any work already queued a
 removes the previous execution ceiling. Checkpoints are written periodically and
 at completion; an interrupted search can retain an earlier checkpoint. NES retains
 its checkpoint journal and origin input under `package/`. A new seed intentionally
-changes the draw sequence. The journal identifies the latest retained checkpoint;
-the additional execution budget uses its verified header's reserved count, so a
-stale journal count cannot change the continuation budget.
+changes the draw sequence. The journal identifies the latest retained checkpoint
+and binds its bytes with SHA-256. Resume refuses a missing or changed latest
+checkpoint or an unjournaled retained checkpoint, including after an
+interruption. Journal execution counts must be monotonic and agree with each
+generated filename and the selected checkpoint header, so reversing two retained
+records cannot select an older continuation. The additional execution budget
+uses the verified header's reserved count, so a stale journal count cannot
+change the continuation budget.
+An interrupted write can leave an unjournaled newer checkpoint; resume refuses
+that ambiguous state even if an older checkpoint remains. NES records the
+package's canonical controller origin, so accepted extra JSON fields in an
+action file do not prevent a later resume.
+Each search records a fresh owner in its initial manifest and checkpoint
+headers. Resume refuses a checkpoint from another saved search, including after
+an interrupted run. A completed search also records the selected checkpoint's
+SHA-256 in its manifest and refuses changed checkpoint bytes, even when they
+remain valid for the same workload. The selected journal digest is carried to
+the searcher and compared with the checkpoint bytes it actually opens, closing
+the gap between selection and resume. Both NES and faults resume compare the
+selected checkpoint with the manifest already verified at command start; a
+replacement manifest cannot authorize a later checkpoint swap.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
@@ -272,7 +290,9 @@ in-memory result before recording its outcome. A replaced or missing report
 cannot become a completed search, replay, or branch result. Command replay
 and standalone command runs likewise bind the record built by the execution
 producer before completion.
-UML also pins the exact physical processor identity selected by the fastest
+Derived runs also verify the bytes copied from each source artifact against its
+recorded hash, so a replacement between source verification and inheritance is
+rejected. UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
 same processor. Standalone command runs and replays bind that saved identity
 before launching the guest. KVM and HVF application replay compare final state,
@@ -281,7 +301,11 @@ assertions, actions and recovery evidence but cannot establish full-state
 identity. Plain UML command replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness
-and snapshot digest. Removing a saved directory removes its saved evidence.
+and snapshot digest; failed recordings and disagreeing saved repeats cannot
+certify exact replay. NES search binds the saved witness input and result to the
+bytes returned by the package, then saves a finding only when the search result
+and its fresh replay witness agree on victory. Removing a saved directory
+removes its saved evidence.
 
 Exit 0 means successful operation, including verified reproduction of a finding.
 Application search exits 1 for findings or unmet reachability assertions; a failed

@@ -562,6 +562,7 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
     },
     SearchCheckpoint {
         path: PathBuf,
+        expected_sha256: Option<String>,
     },
 }
 
@@ -1890,7 +1891,7 @@ fn resolve_origin<G: Workload>(
     origin: &CampaignOrigin<G>,
     search_checkpoint: Option<&CheckpointReader>,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
-    if let CampaignOrigin::SearchCheckpoint { path } = origin {
+    if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
         let checkpoint_policy_changes = search_checkpoint_policy_changes(
             &reader.header,
@@ -3014,6 +3015,7 @@ fn search_checkpoint_header<G: Workload>(
     }
     CheckpointHeader {
         format: SEARCH_CHECKPOINT_FORMAT.to_owned(),
+        checkpoint_owner: None,
         reason: reason.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
         campaign_seed: config.campaign_seed,

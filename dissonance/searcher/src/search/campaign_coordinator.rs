@@ -161,7 +161,19 @@ where
             }
         }
         let search_checkpoint = match origin {
-            CampaignOrigin::SearchCheckpoint { path } => Some(CheckpointReader::open(path)?),
+            CampaignOrigin::SearchCheckpoint {
+                path,
+                expected_sha256,
+            } => {
+                let reader = CheckpointReader::open(path)?;
+                if expected_sha256
+                    .as_deref()
+                    .is_some_and(|expected| expected != reader.file_sha256.as_str())
+                {
+                    return Err("selected search checkpoint changed before resume".into());
+                }
+                Some(reader)
+            }
             _ => None,
         };
         let origin_record = resolve_origin(workload, config, origin, search_checkpoint.as_ref())?;

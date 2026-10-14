@@ -162,6 +162,20 @@ Further entry, preparation, capture and restore fail; a deleted slot cannot
 be reused after an incomplete reload. Portable fault injection exercises each
 slot-removal/replacement error and the final nested-state installation boundary.
 
+On AMD-compatible KVM with NPT, full capture after a guest has entered 32-bit
+PAE paging has changed the guest's cached PDPTR continuation. The guard applies
+to AMD-compatible KVM regardless of NPT mode. Both snapshot
+preparation and direct vCPU capture inspect the returned SREGS2 paging mode.
+If that mode is active after guest entry, they report `AmdPaeSnapshotUnsafe`
+and poison the backend. SREGS2 inspection cannot certify that hidden state is
+unchanged, so the source vCPU cannot be resumed or reused for restore. No CPU record
+or snapshot is published. A failed AMD SREGS2 read after guest entry likewise
+retires the vCPU because the current paging mode is unknown. An unentered entry
+template remains readable, and a successful restore starts a new entry epoch.
+Intel and non-PAE captures retain
+their normal behavior. The underlying AMD continuation discrepancy remains
+tracked in [#314](https://github.com/pH14/harmony/issues/314).
+
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
 PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write

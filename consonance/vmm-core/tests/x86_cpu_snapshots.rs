@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86, X86Policy};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use vmm_core::control::{ControlServer, ServeError, server_caps};
 use vmm_core::vendor::x86::contract;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use vmm_core::vendor::x86::contract_vclock_config;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use vmm_core::vmm::Step;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use vmm_core::vmm::VmmError;
 use vmm_core::vmm::{GuestRam, TerminalReason, Vmm};
 
 const PAGE_SIZE: usize = 4096;
@@ -1073,6 +1077,161 @@ mod live_kvm {
             state_hash: vmm.state_hash().expect("hash guest-authored endpoint"),
             effective_vns: vmm.effective_vns(),
         }
+    }
+
+    #[test]
+    #[ignore = "live AMD KVM NPT; guest-written PAE PDPT must refuse capture"]
+    fn amd_pae_capture_refuses_and_retires_public_paths() {
+        require_kvm();
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").expect("read /proc/cpuinfo");
+        assert!(cpuinfo.contains("AuthenticAMD"), "requires an AMD host");
+        let npt = std::fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+            .expect("read kvm_amd NPT setting");
+        assert!(matches!(npt.trim(), "Y" | "1"), "NPT must be enabled");
+
+        let mut vmm = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut vmm);
+        assert!(
+            vmm.save_vm_state().is_ok(),
+            "an unentered PAE entry template remains capturable"
+        );
+        run_guest_pdpt_warmup(&mut vmm);
+        let error = vmm
+            .save_vm_state()
+            .expect_err("AMD PAE capture must refuse");
+        assert!(matches!(
+            error,
+            VmmError::Backend(vmm_backend::BackendError::AmdPaeSnapshotUnsafe)
+        ));
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+        assert!(matches!(
+            vmm.step(),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(
+                "backend state mutation failed"
+            )))
+        ));
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+
+        let mut vmm = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut vmm);
+        run_guest_pdpt_warmup(&mut vmm);
+        let error = vmm
+            .vcpu_record()
+            .expect_err("raw vCPU record must refuse unsafe AMD PAE reads");
+        assert!(matches!(
+            error,
+            VmmError::Backend(vmm_backend::BackendError::AmdPaeSnapshotUnsafe)
+        ));
+        assert!(matches!(
+            vmm.step(),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(
+                "backend state mutation failed"
+            )))
+        ));
+
+        let mut vmm = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut vmm);
+        run_guest_pdpt_warmup(&mut vmm);
+        let factory = Box::new(|| {
+            let mut fresh = fresh_guest_pdpt_vmm(true);
+            wire_snapshot_path(&mut fresh);
+            Ok(fresh)
+        });
+        let mut server = ControlServer::new(vmm, factory);
+        assert!(
+            server
+                .handle(&control_proto::Request::Hello(server_caps()))
+                .unwrap()
+                .is_ok()
+        );
+        let error = server
+            .handle(&control_proto::Request::Snapshot)
+            .expect_err("control capture must refuse");
+        assert!(matches!(
+            error,
+            ServeError::Vmm(VmmError::Backend(
+                vmm_backend::BackendError::AmdPaeSnapshotUnsafe
+            ))
+        ));
+        assert_eq!(server.snapshot_store_stats().snapshots, 0);
+        let retry = server.handle(&control_proto::Request::Run {
+            until: control_proto::StopConditions::default(),
+            resolve: None,
+        });
+        assert!(matches!(
+            retry,
+            Err(ServeError::Vmm(VmmError::Backend(
+                vmm_backend::BackendError::Internal("backend state mutation failed")
+            )))
+        ));
+    }
+
+    fn fresh_long_mode_vmm() -> Vmm<KvmBackend> {
+        let mut ram = guest_ram_image();
+        let bytes = ram.as_mut_bytes();
+        put_bytes(
+            bytes,
+            CODE_GPA,
+            &[
+                0xBA,
+                0xF8,
+                0x03,
+                0x00,
+                0x00,
+                0xB0,
+                WARMUP_MARKER,
+                0xEE,
+                0xF4,
+            ],
+        );
+        put_u64(bytes, 0x3000, PDPT_GPA as u64 | 3);
+        put_u64(bytes, PDPT_GPA, PD_A_GPA as u64 | 3);
+        put_u64(bytes, PD_A_GPA, 0x83);
+        let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
+        let mut vmm = compose(ram, backend, |backend| {
+            install_pae_entry(backend);
+            let mut state = backend.save().expect("save long-mode entry template");
+            state.sregs.cr3 = 0x3000;
+            state.sregs.efer = (1 << 8) | (1 << 10);
+            state.sregs.cs.l = 1;
+            state.sregs.cs.db = 0;
+            state.sregs.flags = 0;
+            state.sregs.pdptrs = [0; 4];
+            state.msrs.insert(IA32_EFER, state.sregs.efer);
+            backend
+                .restore(&state)
+                .expect("restore long-mode entry state");
+        });
+        wire_snapshot_path(&mut vmm);
+        vmm
+    }
+
+    #[test]
+    #[ignore = "live KVM; long-mode capture and continuation on every x86 host"]
+    fn long_mode_capture_preserves_continuation() {
+        require_kvm();
+        let mut source = fresh_long_mode_vmm();
+        assert_eq!(
+            source.step().expect("run long-mode UART warmup"),
+            Step::Continued
+        );
+        assert_eq!(source.serial(), &[WARMUP_MARKER]);
+        let boundary = source
+            .save_vm_state()
+            .expect("capture running long-mode VM");
+        assert_eq!(
+            source.step().expect("continue long-mode source"),
+            Step::Terminal(TerminalReason::Idle)
+        );
+        let mut cold = fresh_long_mode_vmm();
+        cold.restore_vm_state(&boundary)
+            .expect("restore long-mode VM");
+        assert_eq!(cold.serial(), &[WARMUP_MARKER]);
+        assert_eq!(
+            cold.step().expect("continue restored long-mode VM"),
+            Step::Terminal(TerminalReason::Idle)
+        );
+        assert_eq!(cold.serial(), source.serial());
     }
 
     #[test]

@@ -880,7 +880,7 @@ pub fn run_fault_campaign_with_plan(
     checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
     let mut generic = config.generic();
-    if let CampaignOrigin::SearchCheckpoint { path } = origin {
+    if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         generic.window = searcher::search::checkpoint::read_header(path)?.window;
         generic.stop_campaign_on_objective = false;
     }

@@ -9,7 +9,7 @@ pub enum Action {
     Kill(u16),
     Stop(u16),
     Cont(u16),
-    Start(u16),
+    Start { node: u16, after_fault: bool },
     RunHook(u32),
     ArmEventKill(u16, u8),
     DisarmEventKill(u16),
@@ -24,7 +24,7 @@ impl Action {
             Action::Kill(node) => format!("kill node {node}"),
             Action::Stop(node) => format!("pause node {node}"),
             Action::Cont(node) => format!("resume node {node}"),
-            Action::Start(node) => format!("start node {node}"),
+            Action::Start { node, .. } => format!("start node {node}"),
             Action::RunHook(id) => format!("run hook {id}"),
             Action::ArmEventKill(node, rarity) => {
                 format!("arm event kill node {node} rarity {rarity}")
@@ -79,6 +79,7 @@ struct NodeState {
     paused: bool,
     expected_down: bool,
     event_kill_death: bool,
+    restart_after_fault: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -106,6 +107,7 @@ impl ProcessSupervisor {
                     paused: false,
                     expected_down: false,
                     event_kill_death: false,
+                    restart_after_fault: false,
                 };
                 node_count
             ],
@@ -140,6 +142,7 @@ impl ProcessSupervisor {
                     continue;
                 }
                 let natural = !state.expected_down && !event_kill_death;
+                state.restart_after_fault = state.expected_down || event_kill_death;
                 state.alive = false;
                 state.paused = false;
                 natural
@@ -170,6 +173,7 @@ impl ProcessSupervisor {
                     actions.push(Action::Kill(node));
                     state.alive = false;
                     state.paused = false;
+                    state.restart_after_fault = true;
                 }
                 state.expected_down = true;
             }
@@ -210,11 +214,15 @@ impl ProcessSupervisor {
                 }
             }
             if !now.restart && was.restart && !now.kill && !state.alive {
-                actions.push(Action::Start(node));
+                actions.push(Action::Start {
+                    node,
+                    after_fault: state.restart_after_fault,
+                });
                 state.alive = true;
                 state.paused = false;
                 state.expected_down = false;
                 state.event_kill_death = false;
+                state.restart_after_fault = false;
                 self.counters.restarts += 1;
                 if let Some(window) = now_event_kill {
                     actions.push(Action::ArmEventKill(node, window.rarity));
@@ -237,10 +245,14 @@ impl ProcessSupervisor {
             if state.alive || state.expected_down || active.node(node).any() {
                 continue;
             }
-            actions.push(Action::Start(node));
+            actions.push(Action::Start {
+                node,
+                after_fault: self.nodes[index].restart_after_fault,
+            });
             self.nodes[index].alive = true;
             self.nodes[index].paused = false;
             self.nodes[index].event_kill_death = false;
+            self.nodes[index].restart_after_fault = false;
             self.counters.restarts += 1;
             if let Some(window) = self.event_kill_selected[index] {
                 actions.push(Action::ArmEventKill(node, window.rarity));
@@ -540,7 +552,13 @@ mod tests {
     fn a_death_before_the_bundle_is_ready_again_is_not_natural() {
         let mut sup = Supervisor::new(1);
         sup.note_recovery_pending(true);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[0]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: false
+            }]
+        );
         assert!(sup.take_natural_deaths().is_empty());
         assert_eq!(sup.snapshot().unexpected_deaths, 1);
         sup.note_recovery_pending(false);
@@ -583,10 +601,31 @@ mod tests {
         assert_eq!(sup.tick(&restart, &[]), [Action::Kill(0)]);
         assert_eq!(sup.alive_bitmap(), 0);
         assert_eq!(sup.tick(&restart, &[0]), []);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
         assert_eq!(sup.alive_bitmap(), 1);
         assert_eq!(sup.counters().restarts, 1);
         assert_eq!(sup.counters().unexpected_deaths, 0);
+    }
+
+    #[test]
+    fn a_death_reaped_before_the_restart_decision_does_not_make_recovery_fault_caused() {
+        let mut sup = Supervisor::new(1);
+        let restart = active(&[(0, ProcessAction::Restart)]);
+        assert_eq!(sup.tick(&restart, &[0]), []);
+        assert_eq!(sup.take_natural_deaths(), [0]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: false,
+            }]
+        );
     }
 
     #[test]
@@ -606,7 +645,13 @@ mod tests {
         let paused = active(&[(0, ProcessAction::Pause(1))]);
         assert_eq!(sup.tick(&paused, &[]), [Action::Stop(0)]);
         assert_eq!(sup.tick(&paused, &[0]), []);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: false
+            }]
+        );
         assert_eq!(sup.counters().unexpected_deaths, 1);
         assert_eq!(sup.counters().restarts, 1);
     }
@@ -614,11 +659,23 @@ mod tests {
     #[test]
     fn an_unexpected_death_is_counted_and_restarted_next_tick() {
         let mut sup = Supervisor::new(2);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[1]), [Action::Start(1)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[1]),
+            [Action::Start {
+                node: 1,
+                after_fault: false
+            }]
+        );
         assert_eq!(sup.alive_bitmap(), 0b11);
         assert_eq!(sup.counters().unexpected_deaths, 1);
         assert_eq!(sup.counters().restarts, 1);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[1, 1]), [Action::Start(1)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[1, 1]),
+            [Action::Start {
+                node: 1,
+                after_fault: false
+            }]
+        );
         assert_eq!(sup.counters().unexpected_deaths, 2);
     }
 
@@ -629,7 +686,13 @@ mod tests {
         sup.tick(&paused, &[]);
         assert_eq!(sup.tick(&paused, &[0]), []);
         assert_eq!(sup.tick(&paused, &[]), []);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: false
+            }]
+        );
     }
 
     #[test]
@@ -727,7 +790,13 @@ mod tests {
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
         assert_eq!(
             sup.tick(&event, &[0]),
-            [Action::Start(0), Action::ArmEventKill(0, 0)]
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: false
+                },
+                Action::ArmEventKill(0, 0)
+            ]
         );
         assert_eq!(sup.counters().unexpected_deaths, 1);
 
@@ -735,7 +804,13 @@ mod tests {
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 0)]);
         sup.note_event_kill_armed(0, 0, 0);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
-        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
         assert_eq!(sup.counters().unexpected_deaths, 0);
         assert_eq!(sup.counters().event_kill_fires, 1);
         assert_eq!(sup.counters().event_kill_site, 0xfeed);
@@ -749,7 +824,13 @@ mod tests {
         sup.note_event_kill_armed(0, 0, 0);
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(sup.tick(&event, &[]), []);
-        assert_eq!(sup.tick(&event, &[0]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&event, &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
         assert_eq!(sup.counters().unexpected_deaths, 0);
     }
 
@@ -762,8 +843,20 @@ mod tests {
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         let restart = active(&[(0, ProcessAction::Restart)]);
         assert_eq!(sup.tick(&restart, &[]), [Action::Kill(0)]);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[]), [Action::Start(0)]);
-        assert_eq!(sup.tick(&ActiveWindows::new(), &[0]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
+        assert_eq!(
+            sup.tick(&ActiveWindows::new(), &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: false
+            }]
+        );
         assert_eq!(sup.counters().unexpected_deaths, 1);
     }
 
@@ -779,14 +872,26 @@ mod tests {
         assert!(sup.note_event_kill(0, 0, 0, 0xfeed));
         assert_eq!(
             sup.tick(&events, &[0]),
-            [Action::Start(0), Action::ArmEventKill(0, 0)]
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: true
+                },
+                Action::ArmEventKill(0, 0)
+            ]
         );
         assert_eq!(sup.event_kill_start(0, 0), Some(500_000_000));
         assert_eq!(sup.pending_faults(), 1);
 
         sup.note_event_kill_armed(0, 0, 500_000_000);
         assert!(sup.note_event_kill(0, 0, 500_000_000, 0xcafe));
-        assert_eq!(sup.tick(&events, &[0]), [Action::Start(0)]);
+        assert_eq!(
+            sup.tick(&events, &[0]),
+            [Action::Start {
+                node: 0,
+                after_fault: true
+            }]
+        );
         assert_eq!(sup.pending_faults(), 0);
         assert_eq!(sup.counters().event_kill_fires, 2);
     }
@@ -798,7 +903,13 @@ mod tests {
         assert_eq!(sup.tick(&event, &[]), [Action::ArmEventKill(0, 1)]);
         assert_eq!(
             sup.tick(&event, &[0]),
-            [Action::Start(0), Action::ArmEventKill(0, 1)]
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: false
+                },
+                Action::ArmEventKill(0, 1)
+            ]
         );
     }
 
@@ -810,7 +921,13 @@ mod tests {
         assert!(!sup.note_event_kill(0, 4, 9, 0x10));
         assert_eq!(
             sup.tick(&event, &[0]),
-            [Action::Start(0), Action::ArmEventKill(0, 4)]
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: false
+                },
+                Action::ArmEventKill(0, 4)
+            ]
         );
         assert_eq!(sup.counters().event_kill_fires, 0);
         assert_eq!(sup.counters().unexpected_deaths, 1);
@@ -908,7 +1025,10 @@ mod tests {
                 Action::Stop(0),
                 Action::Kill(1),
                 Action::RunHook(3),
-                Action::Start(2),
+                Action::Start {
+                    node: 2,
+                    after_fault: false
+                },
             ]
         );
     }
@@ -990,7 +1110,13 @@ mod tests {
         assert_eq!(sup.snapshot().event_kill_armed, 0);
         assert_eq!(
             sup.tick(&kill, &[]),
-            [Action::Start(0), Action::ArmEventKill(0, 0)]
+            [
+                Action::Start {
+                    node: 0,
+                    after_fault: false
+                },
+                Action::ArmEventKill(0, 0)
+            ]
         );
     }
 
@@ -1132,7 +1258,14 @@ mod tests {
         assert_eq!(Action::Kill(2).describe(), "kill node 2");
         assert_eq!(Action::Stop(0).describe(), "pause node 0");
         assert_eq!(Action::Cont(0).describe(), "resume node 0");
-        assert_eq!(Action::Start(1).describe(), "start node 1");
+        assert_eq!(
+            Action::Start {
+                node: 1,
+                after_fault: false
+            }
+            .describe(),
+            "start node 1"
+        );
         assert_eq!(Action::RunHook(5).describe(), "run hook 5");
         assert_eq!(
             Action::ArmEventKill(0, 3).describe(),

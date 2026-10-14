@@ -397,7 +397,8 @@ search checkpoint. Prefix origins replay before capturing a root. Findings
 retain that prefix, so confirmation still executes the complete history from
 boot. Search checkpoints persist workload evidence as well as the generic
 coordinator state. The package writes periodic checkpoints every 100 admissions
-and a final checkpoint at shutdown.
+and a final checkpoint at shutdown. A CLI-selected checkpoint carries its
+journal digest into the searcher, which rejects a file swapped after selection.
 
 Fresh scenario executions retain `ReplaySummary::timeline`: the observation,
 recorded action including coverage quantum, and console evidence at each action

@@ -142,6 +142,7 @@ mod runtime {
         decode_report,
     };
     use std::collections::VecDeque;
+    use std::fs::File;
     use std::io::{ErrorKind, Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::os::unix::net::UnixStream;
@@ -573,6 +574,15 @@ mod runtime {
             }
             loop {
                 if self.report_len == self.report_buf.len() {
+                    if let Ok(EventReport::Kill(report)) = decode_report(&self.report_buf)
+                        && self.kill_armed != Some(report.rarity)
+                        && self.pending.as_ref().is_some_and(|(command, _, _)| {
+                            matches!(command, EventCommand::ArmKill { rarity, .. } if *rarity == report.rarity)
+                        })
+                        && !self.poll_pending(node, supervisor, tick, process_dead)
+                    {
+                        return;
+                    }
                     match decode_report(&self.report_buf) {
                         Ok(EventReport::Hello) if !self.retired && !process_dead => {
                             if !self.ready {
@@ -640,6 +650,7 @@ mod runtime {
     }
 
     struct HookRuntime {
+        assertion_output: File,
         hooks: Vec<Hook>,
         recovery: RecoveryReadiness,
         recovery_probe: Option<RecoveryProbe>,
@@ -651,8 +662,9 @@ mod runtime {
     }
 
     impl HookRuntime {
-        fn new() -> Self {
+        fn new(assertion_output: File) -> Self {
             Self {
+                assertion_output,
                 hooks: Vec::new(),
                 recovery: RecoveryReadiness::initially_ready(),
                 recovery_probe: None,
@@ -681,7 +693,9 @@ mod runtime {
             Path::new("/dev/harmony"),
         )
         .map_err(|error| format!("{}: {error}", harmony_supervisor::ANTITHESIS_OUTPUT_DIR))?;
-        process::write_record(&sdk_output(), &process::node_exit_record(None))
+        let mut assertion_output = process::open_record_sink(&sdk_output())
+            .map_err(|error| format!("node exit output: {error}"))?;
+        process::write_record(&mut assertion_output, &process::node_exit_record(None))
             .map_err(|error| format!("node exit declaration: {error}"))?;
         let mut nodes: Vec<Node> = bundle
             .nodes
@@ -705,7 +719,14 @@ mod runtime {
         log(0, "setup complete");
 
         let mut supervisor = Supervisor::new(nodes.len());
-        let result = poll_loop(spec, &bundle, &mut nodes, &mut sdk, &mut supervisor);
+        let result = poll_loop(
+            spec,
+            &bundle,
+            &mut nodes,
+            &mut sdk,
+            &mut supervisor,
+            assertion_output,
+        );
         let Err(error) = result else {
             return Ok(());
         };
@@ -858,10 +879,11 @@ mod runtime {
         nodes: &mut [Node],
         sdk: &mut GuestSdk,
         supervisor: &mut Supervisor,
+        assertion_output: File,
     ) -> Result<(), String> {
         supervisor.set_check_enabled(bundle.check.is_some());
         let mut registers = Registers::new();
-        let mut runtime = HookRuntime::new();
+        let mut runtime = HookRuntime::new(assertion_output);
         let mut debug = harmony_supervisor::debug::Terminal::default();
         let mut debug_status = None;
         let mut buffer = [0_u8; MAX_PAYLOAD];
@@ -930,14 +952,14 @@ mod runtime {
                 sdk,
                 supervisor,
             )?;
-            supervisor.note_recovery_pending(runtime.recovery.is_pending());
+            supervisor.note_recovery_pending(runtime.recovery.is_fault_pending());
             let actions = supervisor.tick(&active, &deaths);
             report_node_exits(
                 supervisor,
                 &exits,
-                runtime.recovery.is_pending(),
+                runtime.recovery.is_fault_pending(),
                 tick,
-                &sdk_output(),
+                &mut runtime.assertion_output,
             )?;
             for action in actions {
                 log(tick, &action.describe());
@@ -1036,7 +1058,7 @@ mod runtime {
         deaths: &[(u16, Option<ExitStatus>)],
         recovery_pending: bool,
         tick: u64,
-        output: &Path,
+        output: &mut File,
     ) -> Result<(), String> {
         for (node, exit) in node_exit_violations(supervisor, deaths, recovery_pending) {
             log(tick, &format!("node {node} ended on its own: {exit}"));
@@ -1163,7 +1185,7 @@ mod runtime {
                     supervisor.note_process_transition();
                 }
             }
-            Action::Start(node) => {
+            Action::Start { node, after_fault } => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
                     return Ok(());
                 };
@@ -1175,9 +1197,9 @@ mod runtime {
                         &mut child,
                         supervisor,
                         node,
-                        runtime.recovery.is_pending(),
+                        runtime.recovery.is_fault_pending(),
                         tick,
-                        &sdk_output(),
+                        &mut runtime.assertion_output,
                     )?;
                 }
                 let spawned = spawn_node(spec, &entry.spec)?;
@@ -1191,7 +1213,7 @@ mod runtime {
                     }
                     runtime
                         .recovery
-                        .restarted()
+                        .restarted(after_fault)
                         .map_err(|error| format!("recovery: {error}"))?;
                 }
             }
@@ -1248,7 +1270,7 @@ mod runtime {
         node: u16,
         recovery_pending: bool,
         tick: u64,
-        output: &Path,
+        output: &mut File,
     ) -> Result<(), String> {
         let status = if let Some(status) = child
             .try_wait()
@@ -1479,6 +1501,7 @@ mod runtime {
             Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events,
             inherit_event_fd, node_exit_violations, retire_node_child,
         };
+        use harmony_supervisor::recovery::RecoveryReadiness;
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
@@ -1522,10 +1545,51 @@ mod runtime {
             recovering.note_recovery_pending(true);
             assert_eq!(
                 recovering.tick(&ActiveWindows::new(), &[0]),
-                [Action::Start(0)]
+                [Action::Start {
+                    node: 0,
+                    after_fault: false,
+                }]
             );
             let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
             assert!(node_exit_violations(&mut recovering, &exits, true).is_empty());
+        }
+
+        #[test]
+        fn natural_restart_readiness_does_not_hide_a_later_crash() {
+            let mut supervisor = Supervisor::new(1);
+            let mut recovery = RecoveryReadiness::initially_ready();
+            let no_faults = ActiveWindows::new();
+            assert_eq!(
+                supervisor.tick(&no_faults, &[0]),
+                [Action::Start {
+                    node: 0,
+                    after_fault: false,
+                }]
+            );
+            assert!(
+                node_exit_violations(
+                    &mut supervisor,
+                    &[(0, Some(ExitStatus::from_raw(0)))],
+                    recovery.is_pending()
+                )
+                .is_empty()
+            );
+            recovery.restarted(false).unwrap();
+            assert!(recovery.is_pending());
+
+            supervisor.note_recovery_pending(recovery.is_fault_pending());
+            assert_eq!(
+                supervisor.tick(&no_faults, &[0]),
+                [Action::Start {
+                    node: 0,
+                    after_fault: false,
+                }]
+            );
+            let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
+            assert_eq!(
+                node_exit_violations(&mut supervisor, &exits, recovery.is_fault_pending()),
+                [(0, format!("signal {}", libc::SIGSEGV))]
+            );
         }
 
         #[test]
@@ -1540,8 +1604,21 @@ mod runtime {
             let output =
                 std::env::temp_dir().join(format!("hs-replaced-node-exit-{}", std::process::id()));
             let _ = std::fs::remove_file(&output);
+            let mut assertion_output = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&output)
+                .unwrap();
             let mut supervisor = Supervisor::new(1);
-            retire_node_child(&mut child, &mut supervisor, 0, false, 1, &output).unwrap();
+            retire_node_child(
+                &mut child,
+                &mut supervisor,
+                0,
+                false,
+                1,
+                &mut assertion_output,
+            )
+            .unwrap();
             let recorded = std::fs::read_to_string(&output).unwrap();
             assert!(recorded.contains(r#""hit":true"#));
             assert!(recorded.contains(r#""exit":"exit status 37""#));
@@ -1827,6 +1904,43 @@ mod runtime {
                 1,
                 "death between reap and drive must retain buffered report"
             );
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn kill_report_waits_for_its_arm_acknowledgement() {
+            let (control, mut child_control) = UnixStream::pair().unwrap();
+            let (report, mut child_report) = UnixStream::pair().unwrap();
+            let mut channel = EventChannel::new(control, report).unwrap();
+            let mut supervisor = Supervisor::new(1);
+            let command = EventCommand::ArmKill {
+                rarity: 0,
+                start: 17,
+            };
+            channel.ready = true;
+            channel.queue(command);
+            channel.drive(0, &mut supervisor, 1);
+
+            let mut request = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            child_control.read_exact(&mut request).unwrap();
+            let reply = events::encode_command(command);
+            child_control.write_all(&reply[..8]).unwrap();
+            child_report
+                .write_all(&events::encode_kill_report(events::KillReport {
+                    rarity: 0,
+                    site: 0xfeed,
+                }))
+                .unwrap();
+
+            channel.drain_reports(0, &mut supervisor, 1, false);
+            assert_eq!(supervisor.counters().event_kill_fires, 0);
+            assert_eq!(channel.report_len, events::EVENT_REPORT_SIZE);
+
+            child_control.write_all(&reply[8..]).unwrap();
+            channel.drain_reports(0, &mut supervisor, 2, false);
+            assert_eq!(supervisor.counters().event_kill_fires, 1);
+            assert_eq!(supervisor.counters().event_kill_site, 0xfeed);
+            assert_eq!(channel.report_len, 0);
         }
 
         #[test]
