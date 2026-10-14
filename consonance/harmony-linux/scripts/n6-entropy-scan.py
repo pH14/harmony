@@ -1,30 +1,31 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Reject untrusted entropy instructions from executable ELF sections."""
+"""Reject untrusted entropy instructions from executable ELF load segments."""
 
 from __future__ import annotations
 
 import struct
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 ELF_HEADER = "<16sHHIQQQIHHHHHH"
-SECTION_HEADER = "<IIQQQQIIQQ"
-SHF_EXECINSTR = 0x4
-SHT_NOBITS = 8
+PROGRAM_HEADER = "<IIQQQQQQ"
+PT_LOAD = 1
+PF_X = 1
 EM_X86_64 = 62
 EM_AARCH64 = 183
 RNDR = 0xD53B2400
 RNDRRS = 0xD53B2420
 
 
-def executable_sections(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
-    """Return every executable section after strict ELF bounds checks."""
+def executable_segments(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
+    """Return the file-backed bytes mapped executable by the ELF loader."""
     data = path.read_bytes()
     header_size = struct.calcsize(ELF_HEADER)
-    section_size = struct.calcsize(SECTION_HEADER)
+    program_size = struct.calcsize(PROGRAM_HEADER)
     if len(data) < header_size:
         raise ValueError("truncated ELF header")
     (
@@ -33,15 +34,15 @@ def executable_sections(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
         machine,
         version,
         _entry,
-        _program_offset,
-        section_offset,
+        program_offset,
+        _section_offset,
         _flags,
         elf_header_size,
-        _program_entry_size,
-        _program_count,
-        section_entry_size,
-        section_count,
-        string_index,
+        program_entry_size,
+        program_count,
+        _section_entry_size,
+        _section_count,
+        _string_index,
     ) = struct.unpack_from(ELF_HEADER, data)
     if ident[:4] != b"\x7fELF" or ident[4:7] != b"\x02\x01\x01":
         raise ValueError("require ELF64 little-endian version 1")
@@ -49,52 +50,37 @@ def executable_sections(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
         raise ValueError("invalid ELF version/header size")
     if machine not in (EM_X86_64, EM_AARCH64):
         raise ValueError(f"unsupported ELF machine {machine}")
-    if section_count == 0 or string_index >= section_count:
-        raise ValueError("missing/extended section table unsupported")
-    if section_entry_size < section_size:
-        raise ValueError("short section entry")
-    table_bytes = section_count * section_entry_size
-    if section_offset > len(data) or table_bytes > len(data) - section_offset:
-        raise ValueError("section table outside file")
-
-    def section(index: int):
-        return struct.unpack_from(
-            SECTION_HEADER, data, section_offset + index * section_entry_size
-        )
-
-    strings = section(string_index)
-    if strings[1] != 3 or strings[4] > len(data) or strings[5] > len(data) - strings[4]:
-        raise ValueError("invalid section-name table")
-    names = data[strings[4] : strings[4] + strings[5]]
-
-    def name_at(offset: int) -> str:
-        if offset >= len(names):
-            raise ValueError("section-name offset outside table")
-        end = names.find(b"\0", offset)
-        if end < 0:
-            raise ValueError("unterminated section name")
-        return names[offset:end].decode("ascii", errors="strict")
+    if program_count == 0 or program_entry_size < program_size:
+        raise ValueError("missing or short program table")
+    table_bytes = program_count * program_entry_size
+    if program_offset > len(data) or table_bytes > len(data) - program_offset:
+        raise ValueError("program table outside file")
 
     found: list[tuple[str, int, bytes]] = []
-    for index in range(section_count):
-        name_offset, kind, flags, address, offset, size, *_rest = section(index)
-        if flags & SHF_EXECINSTR == 0 or size == 0:
+    for index in range(program_count):
+        kind, flags, offset, address, _physical, size, memory_size, _align = (
+            struct.unpack_from(
+                PROGRAM_HEADER, data, program_offset + index * program_entry_size
+            )
+        )
+        if kind != PT_LOAD or flags & PF_X == 0:
             continue
-        name = name_at(name_offset)
-        if kind == SHT_NOBITS:
-            raise ValueError(f"executable NOBITS section {name}")
+        if size == 0 or size > memory_size or size >= (1 << 64) - address:
+            raise ValueError(f"invalid executable segment {index} size")
+        if machine == EM_AARCH64 and address % 4 != 0:
+            raise ValueError(f"unaligned AArch64 executable segment {index}")
         if offset > len(data) or size > len(data) - offset:
-            raise ValueError(f"executable section {name} outside file")
-        found.append((name, address, data[offset : offset + size]))
+            raise ValueError(f"executable segment {index} outside file")
+        found.append((f"<exec-segment {index}>", address, data[offset : offset + size]))
     if not found:
-        raise ValueError("no executable sections")
+        raise ValueError("no executable load segments")
     return machine, found
 
 
 def arm64_hits(data: bytes) -> list[tuple[int, str]]:
     """Find RNDR/RNDRRS MRS words, ignoring the destination register."""
     if len(data) % 4 != 0:
-        raise ValueError("unaligned AArch64 executable section")
+        raise ValueError("unaligned AArch64 executable segment")
     hits: list[tuple[int, str]] = []
     for offset in range(0, len(data), 4):
         word = int.from_bytes(data[offset : offset + 4], "little") & ~0x1F
@@ -105,68 +91,70 @@ def arm64_hits(data: bytes) -> list[tuple[int, str]]:
     return hits
 
 
-def x86_hits(path: Path, sections: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
-    """Find decoded RDRAND/RDSEED instructions at real x86 boundaries."""
-    bases = {name: address for name, address, _data in sections}
-    try:
-        output = subprocess.run(
-            ["objdump", "-d", str(path)],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as error:
-        raise ValueError(f"objdump failed: {error}") from error
-
-    current: str | None = None
+def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
+    """Decode each executable load segment without consulting section headers."""
     hits: list[tuple[str, int, str]] = []
     parsed = 0
-    for line in output.splitlines():
-        if line.startswith("Disassembly of section ") and line.endswith(":"):
-            current = line.removeprefix("Disassembly of section ")[:-1]
-            continue
-        if current not in bases or ":" not in line:
-            continue
-        address_text, remainder = line.split(":", 1)
-        try:
-            address = int(address_text.strip(), 16)
-        except ValueError:
-            continue
-        fields = remainder.split("\t")
-        if len(fields) < 2:
-            continue
-        mnemonic_fields = " ".join(fields[1:]).strip().split()
-        if not mnemonic_fields:
-            continue
-        parsed += 1
-        mnemonic = next(
-            (
-                base
-                for field in mnemonic_fields
-                for base in ("rdrand", "rdseed")
-                if field.lower() == base
-                or field.lower() in (f"{base}w", f"{base}l", f"{base}q")
-            ),
-            None,
-        )
-        if mnemonic is not None:
-            offset = address - bases[current]
-            if offset < 0:
-                raise ValueError(f"objdump address before section base for {current}")
-            hits.append((current, offset, mnemonic.upper()))
+    with tempfile.TemporaryDirectory() as temporary:
+        segment_path = Path(temporary) / "segment"
+        for label, base, data in segments:
+            segment_path.write_bytes(data)
+            try:
+                output = subprocess.run(
+                    [
+                        "objdump", "-D", "-b", "binary", "-m", "i386:x86-64",
+                        f"--adjust-vma=0x{base:x}", str(segment_path),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout
+            except (OSError, subprocess.CalledProcessError) as error:
+                raise ValueError(f"objdump failed: {error}") from error
+            for line in output.splitlines():
+                if ":" not in line:
+                    continue
+                address_text, remainder = line.split(":", 1)
+                try:
+                    address = int(address_text.strip(), 16)
+                except ValueError:
+                    continue
+                if not base <= address < base + len(data):
+                    raise ValueError(f"objdump address outside {label}")
+                fields = remainder.split("\t")
+                if len(fields) < 2:
+                    continue
+                mnemonic_fields = " ".join(fields[1:]).strip().split()
+                if not mnemonic_fields:
+                    continue
+                parsed += 1
+                mnemonic = next(
+                    (
+                        instruction
+                        for field in mnemonic_fields
+                        for instruction in ("rdrand", "rdseed")
+                        if field.lower() == instruction
+                        or field.lower() in (
+                            f"{instruction}w", f"{instruction}l", f"{instruction}q"
+                        )
+                    ),
+                    None,
+                )
+                if mnemonic is not None:
+                    hits.append((label, address - base, mnemonic.upper()))
     if parsed == 0:
         raise ValueError("objdump parsed zero executable instructions")
     return hits
 
 
 def scan(path: Path) -> list[tuple[str, int, str]]:
-    """Return entropy-opcode hits with section-relative offsets."""
-    machine, sections = executable_sections(path)
+    """Return entropy-opcode hits with segment-relative offsets."""
+    machine, segments = executable_segments(path)
     if machine == EM_X86_64:
-        return x86_hits(path, sections)
+        return x86_hits(segments)
     return [
-        (section, offset, mnemonic)
-        for section, _address, data in sections
+        (segment, offset, mnemonic)
+        for segment, _address, data in segments
         for offset, mnemonic in arm64_hits(data)
     ]
 

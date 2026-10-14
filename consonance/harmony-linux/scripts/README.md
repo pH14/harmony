@@ -1,7 +1,11 @@
 # Platform scripts
 
 The instruction scanners reject unsupported instructions in shipped guest
-executables. Their planted negative controls must continue to fail.
+executables. Their planted negative controls must continue to fail. The N6
+entropy scanner reads executable ELF load segments, because section headers can
+mislabel code without changing the bytes or permissions the guest loader maps.
+Its hidden-section negative control clears the `.text` executable flag while
+leaving `PT_LOAD` executable and must still be rejected.
 
 The counter scanner also rejects physical and virtual timer-value reads
 (`CNTP_TVAL_EL0` and `CNTV_TVAL_EL0`). These expose a remaining interval derived

@@ -117,6 +117,7 @@ jobs:
           bash consonance/harmony-linux/linux/test-xsave-canonical.sh
           python3 consonance/harmony-linux/scripts/test_x86_xstate_admission.py -v
           python3 consonance/harmony-linux/scripts/test_aa5_counter_scan.py -v
+          python3 consonance/harmony-linux/scripts/test_n6_entropy_scan.py -v
           python3 consonance/harmony-linux/scripts/test_nix_runtime_artifacts.py -v
           python3 workloads/guest-images/test_verify_prepared_admission.py -v
       - name: Determinism model self-tests
