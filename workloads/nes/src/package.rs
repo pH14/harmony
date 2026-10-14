@@ -48,7 +48,10 @@ pub enum SearchStart {
     #[default]
     Genesis,
     Actions(serde_json::Value),
-    Checkpoint(searcher::search::checkpoint::PinnedCheckpoint),
+    Checkpoint {
+        checkpoint: searcher::search::checkpoint::PinnedCheckpoint,
+        origin_input: serde_json::Value,
+    },
 }
 #[derive(Clone, Debug)]
 pub struct SearchEvidence {
@@ -150,7 +153,7 @@ where
         host: "harmony-search".into(),
         wall_budget: options.wall_seconds.map(std::time::Duration::from_secs),
         stop_rollout_on_objective: true,
-        stop_campaign_on_objective: !matches!(start, SearchStart::Checkpoint(_)),
+        stop_campaign_on_objective: !matches!(start, SearchStart::Checkpoint { .. }),
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         window: default_window(options.workers),
         memory_budget_mib: None,
@@ -166,14 +169,9 @@ where
     let prefix: searcher::search::archive::Input<G::Action> = match start {
         SearchStart::Genesis => Default::default(),
         SearchStart::Actions(value) => serde_json::from_value(value.clone())?,
-        SearchStart::Checkpoint(checkpoint) => serde_json::from_slice(&fs::read(
-            checkpoint
-                .path
-                .parent()
-                .and_then(Path::parent)
-                .ok_or("checkpoint has no run directory")?
-                .join("origin-input.json"),
-        )?)?,
+        SearchStart::Checkpoint { origin_input, .. } => {
+            serde_json::from_value(origin_input.clone())?
+        }
     };
     fs::write(
         options.output.join("origin-input.json"),
@@ -181,7 +179,7 @@ where
     )?;
     let origin = match start {
         SearchStart::Genesis => CampaignOrigin::Genesis,
-        SearchStart::Checkpoint(checkpoint) => CampaignOrigin::SearchCheckpoint {
+        SearchStart::Checkpoint { checkpoint, .. } => CampaignOrigin::SearchCheckpoint {
             path: checkpoint.path.clone(),
             expected_sha256: Some(checkpoint.sha256.clone()),
         },

@@ -259,5 +259,8 @@ Search origins include genesis, a recorded input prefix and a retained whole-sea
 checkpoint. The package uses existing searcher snapshot-root and checkpoint APIs,
 retains final checkpoints and preserves native/controller action types internally.
 A CLI-selected checkpoint carries its journal digest into the searcher so a
-file changed after selection cannot resume under the earlier identity.
+file changed after selection cannot resume under the earlier identity. The
+checkpoint's origin input comes from a saved, verified run artifact and is
+passed to the package as pinned data; the package does not reopen the mutable
+parent path to reconstruct that input.
 See the [CLI README](../../cli/README.md) for named runs and investigation.
