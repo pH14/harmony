@@ -569,6 +569,7 @@ fn arm64_virtual_time_pvclock_registration_is_exact_and_stamps_guest_ram() {
             size,
             write,
         })]);
+        bad.enable_pvclock();
         assert!(format!("{}", bad.step().unwrap_err()).contains("protocol fault"));
         assert_eq!(bad.pvclock_registration(), None);
     }
