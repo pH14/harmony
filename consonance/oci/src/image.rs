@@ -1523,6 +1523,7 @@ fn resolve_under(
 
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
     let out = Command::new("sh")
+        .env_remove("TAR_OPTIONS")
         .arg("-c")
         .arg("umask 022; exec tar \"$@\"")
         .arg("tar")
@@ -3735,6 +3736,51 @@ mod tests {
             Err(ImageError::Tar(_))
         ));
         assert!(!dir.path().join("file").exists());
+    }
+
+    #[test]
+    fn extraction_ignores_inherited_tar_options() {
+        if std::env::var_os("HARMONY_OCI_TAR_OPTIONS_TEST_CHILD").is_some() {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("layout");
+            std::fs::create_dir(&dest).unwrap();
+            let archive = write_archive(
+                dir.path(),
+                "nested.tar",
+                &raw_member(b"a/file", b'0', "", b"data"),
+            );
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("a/file")).unwrap(), b"data");
+            assert!(!dest.join("file").exists());
+            return;
+        }
+        let wrapper = tempfile::tempdir().unwrap();
+        let tar = wrapper.path().join("tar");
+        std::fs::write(
+            &tar,
+            b"#!/bin/sh\nif [ \"${TAR_OPTIONS+x}\" = x ]; then exit 47; fi\nexec /usr/bin/tar \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tar, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let mut path = wrapper.path().as_os_str().to_os_string();
+        path.push(":");
+        path.push(std::env::var_os("PATH").unwrap_or_default());
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::extraction_ignores_inherited_tar_options",
+            ])
+            .env("HARMONY_OCI_TAR_OPTIONS_TEST_CHILD", "1")
+            .env("TAR_OPTIONS", "--strip-components=1")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

@@ -156,6 +156,9 @@ host tar implementations.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
 reports failure despite both tools writing the member bytes.
+Layer extraction clears `TAR_OPTIONS` from the child environment. GNU tar
+honors options such as `--strip-components=1` there while macOS tar ignores
+them, which would otherwise change the extracted path after admission.
 An entry whose name ends in `/` must carry the directory typeflag; some host
 tar tools otherwise treat a regular file as a directory and parse its payload
 as additional members that admission never saw. Empty effective member names,
