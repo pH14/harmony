@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use crate::exact;
 use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const MAX_ACCOUNT_FILE_BYTES: u64 = 1 << 20;
 const PASSWD: &str = "etc/passwd";
@@ -19,6 +20,8 @@ pub enum CredentialsError {
     Rootfs { path: PathBuf, source: io::Error },
     #[error("account path escapes the staged rootfs: {0}")]
     UnsafePath(PathBuf),
+    #[error("account path is a symlink: {0}")]
+    AccountPathSymlink(PathBuf),
     #[error("cannot read account file {path}: {source}")]
     AccountFile { path: PathBuf, source: io::Error },
     #[error("required account file is missing: {0}")]
@@ -225,11 +228,52 @@ fn resolve_deepest(rootfs: &Path, relative: &Path) -> Result<PathBuf, Credential
     }
 }
 
+fn account_path_has_exact_components(
+    rootfs: &Path,
+    relative: &Path,
+) -> Result<bool, CredentialsError> {
+    let mut cursor = rootfs.to_path_buf();
+    for component in relative.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        let next = match exact::entry(&cursor, part) {
+            Ok(Some(found)) => found,
+            Ok(None) => return Ok(false),
+            Err(source) if source.kind() == io::ErrorKind::NotFound => return Ok(false),
+            Err(source) => {
+                return Err(CredentialsError::AccountFile {
+                    path: cursor.join(part),
+                    source,
+                });
+            }
+        };
+        let metadata =
+            fs::symlink_metadata(&next).map_err(|source| CredentialsError::AccountFile {
+                path: next.clone(),
+                source,
+            })?;
+        if metadata.file_type().is_symlink() {
+            let _ = resolve_deepest(rootfs, relative)?;
+            return Err(CredentialsError::AccountPathSymlink(next));
+        }
+        cursor = next;
+    }
+    Ok(true)
+}
+
 fn read_account_file(
     rootfs: &Path,
     relative: &str,
     required: bool,
 ) -> Result<Option<(PathBuf, Vec<u8>)>, CredentialsError> {
+    if !account_path_has_exact_components(rootfs, Path::new(relative))? {
+        let path = rootfs.join(relative);
+        if required {
+            return Err(CredentialsError::MissingAccountFile(path));
+        }
+        return Ok(None);
+    }
     let path = resolve_deepest(rootfs, Path::new(relative))?;
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
@@ -537,6 +581,21 @@ mod tests {
         assert_eq!(got.uid, 42);
         assert_eq!(got.gid, 84);
         assert!(got.supplementary_gids().is_empty());
+    }
+
+    #[test]
+    fn account_files_require_exact_component_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("ETC")).unwrap();
+        std::fs::write(
+            dir.path().join("ETC/passwd"),
+            b"app:x:1000:84:App:/home/app:/bin/sh\n",
+        )
+        .unwrap();
+
+        let got = resolve(Some("1000"), dir.path()).unwrap();
+        assert_eq!(got.uid, 1000);
+        assert_eq!(got.gid, 0);
     }
 
     #[test]

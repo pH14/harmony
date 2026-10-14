@@ -41,6 +41,9 @@ failed restores leave the dispatcher unchanged.
 `SeededEntropy` supplies the reference xorshift64* stream and serializes its
 non-zero state for snapshots. The network service carries environment answer
 bytes opaquely; this crate does not depend on the environment catalog.
+`MemBlockDevice` binds its saved state to the SHA-256 digest of its immutable
+sectors. Restoring onto different backing bytes fails before a later block read
+can return data from the wrong medium.
 
 Golden, protocol, and stateful tests cover frame canonicalization,
 service routing, state restoration, and client-side bounds. The crate is

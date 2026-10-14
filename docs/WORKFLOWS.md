@@ -393,12 +393,20 @@ captured no snapshot or restored none. The same job then replays the search's
 This preserves the recorded UML host identity and executable artifact modes.
 The UML search wall is capped at 280 minutes within a 360-minute job, reserving
 20 minutes for search shutdown, 50 for finding replay and 10 for setup and uploads.
-Every replay must
-violate the case's assertion with its evidence and reach one state digest.
+Every replay must violate the case's assertion with its evidence. KVM replays
+must also reach one state digest. UML has no canonical full-state hash yet:
+its exact-replay command records the observations and exits 2, and this
+workflow recognizes that specific refusal only when every reported hash is
+explicitly unavailable. The oracle then checks observed evidence, reports
+`state identity unavailable`, and does not claim whole-state equivalence.
 
 The language workflow also builds a pinned UML profile for `UML Command Replay`.
-That bounded check runs a plain OCI command and fresh replays as an ordinary
-user, compares application and bridge evidence, and rejects a planted divergence.
+That bounded check rejects the reviewed hardware-entropy sites in the Bookworm
+C image, then runs a small image without those sites and fresh replays as an
+ordinary user. It compares application and bridge evidence and rejects a
+planted divergence. Current Bookworm historical case images have the same
+reviewed sites, so the manually dispatched UML campaign refuses them at image
+admission until they are rebuilt without those instructions.
 
 ## Repository maintenance
 

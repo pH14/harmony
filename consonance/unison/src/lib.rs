@@ -78,6 +78,48 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     let mut last_match: Option<u64> = None;
     let mut checkpoints_compared = 0u64;
     let mut t = 0u64;
+    let (initial_a, initial_b) = (ma.run_to(0)?, mb.run_to(0)?);
+    if initial_a != initial_b {
+        return Ok(CompareReport {
+            verdict: Verdict::HaltMismatch {
+                a: (initial_a == RunOutcome::Halted).then_some(ma.work()),
+                b: (initial_b == RunOutcome::Halted).then_some(mb.work()),
+            },
+            checkpoints_compared,
+            halted_at: None,
+            limit_reached: false,
+        });
+    }
+    if initial_a == RunOutcome::Halted && ma.work() != mb.work() {
+        return Ok(CompareReport {
+            verdict: Verdict::HaltMismatch {
+                a: Some(ma.work()),
+                b: Some(mb.work()),
+            },
+            checkpoints_compared,
+            halted_at: None,
+            limit_reached: false,
+        });
+    }
+    if ma.state_hash()? != mb.state_hash()? {
+        return Ok(CompareReport {
+            verdict: Verdict::Diverged {
+                last_match: None,
+                first_mismatch: 0,
+            },
+            checkpoints_compared,
+            halted_at: None,
+            limit_reached: false,
+        });
+    }
+    if initial_a == RunOutcome::Halted {
+        return Ok(CompareReport {
+            verdict: Verdict::Identical,
+            checkpoints_compared,
+            halted_at: Some(ma.work()),
+            limit_reached: false,
+        });
+    }
     while t < limit {
         t = t.saturating_add(checkpoint_every).min(limit);
         let oa = ma.run_to(t)?;
@@ -176,7 +218,7 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
     lo: u64,
     hi: u64,
 ) -> Result<DivergencePoint, SubjectError> {
-    if lo >= hi {
+    if lo > hi || (lo == hi && lo != 0) {
         return Err(SubjectError::EmptyInterval { lo, hi });
     }
     let mut runs_executed = 0u64;
@@ -189,6 +231,17 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
         runs_executed += 1;
         Ok((ma.state_hash()?, mb.state_hash()?))
     };
+    if lo == 0 {
+        let (hash_a, hash_b) = probe(0)?;
+        if hash_a != hash_b {
+            return Ok(DivergencePoint {
+                first_divergent_work: 0,
+                hash_a,
+                hash_b,
+                runs_executed,
+            });
+        }
+    }
     let (mut hash_a, mut hash_b) = probe(hi)?;
     if hash_a == hash_b {
         return Err(SubjectError::NoDivergence { hi });
@@ -264,7 +317,7 @@ mod hex32 {
 mod tests {
     use super::*;
     use crate::flaky::{FlakyFactory, Perturbation};
-    use crate::toy::{ToyFactory, generate_program};
+    use crate::toy::{ToyFactory, asm, generate_program};
 
     fn factory() -> ToyFactory {
         ToyFactory {
@@ -272,15 +325,17 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     struct WhollyObservableMachine {
         hash: [u8; 32],
+        work: u64,
     }
     impl Subject for WhollyObservableMachine {
         fn run_to(&mut self, _target: u64) -> Result<RunOutcome, SubjectError> {
             Ok(RunOutcome::Halted)
         }
         fn work(&self) -> u64 {
-            0
+            self.work
         }
         fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
             Ok(self.hash)
@@ -289,13 +344,25 @@ mod tests {
             self.hash
         }
     }
+    impl SubjectFactory for WhollyObservableMachine {
+        type M = Self;
+        fn spawn(&self, _: u64) -> Self {
+            self.clone()
+        }
+    }
 
     #[test]
     fn a_wholly_observable_machine_states_that_its_digests_coincide() {
-        let a = WhollyObservableMachine { hash: [7u8; 32] };
+        let a = WhollyObservableMachine {
+            hash: [7u8; 32],
+            work: 0,
+        };
         assert_eq!(a.observable_digest(), a.state_hash().unwrap());
         assert_eq!(a.observable_digest(), [7u8; 32]);
-        let b = WhollyObservableMachine { hash: [9u8; 32] };
+        let b = WhollyObservableMachine {
+            hash: [9u8; 32],
+            work: 0,
+        };
         assert_ne!(a.observable_digest(), b.observable_digest());
     }
 
@@ -342,13 +409,125 @@ mod tests {
     }
 
     #[test]
-    fn zero_limit_compares_nothing() {
+    fn zero_limit_checks_only_initial_state() {
         let f = factory();
         let r = compare_runs(&f, &f, 3, 10, 0).unwrap();
         assert_eq!(r.verdict, Verdict::Identical);
         assert_eq!(r.checkpoints_compared, 0);
         assert_eq!(r.halted_at, None);
         assert!(r.limit_reached);
+    }
+
+    #[test]
+    fn initial_halt_reports_termination_for_any_limit() {
+        let halted = FlakyFactory {
+            inner: factory(),
+            diverge_at: 0,
+            perturb: Perturbation::ForceHalt,
+        };
+        for limit in [0, 10] {
+            let report = compare_runs(&halted, &halted, 3, 10, limit).unwrap();
+            assert_eq!(report.verdict, Verdict::Identical);
+            assert_eq!(report.checkpoints_compared, 0);
+            assert_eq!(report.halted_at, Some(0));
+            assert!(!report.limit_reached);
+        }
+    }
+
+    #[test]
+    fn unequal_initial_halt_counts_are_not_identical() {
+        let a = WhollyObservableMachine {
+            hash: [7u8; 32],
+            work: 1,
+        };
+        let b = WhollyObservableMachine {
+            hash: [7u8; 32],
+            work: 2,
+        };
+        assert_eq!(
+            compare_runs(&a, &b, 3, 10, 0).unwrap().verdict,
+            Verdict::HaltMismatch {
+                a: Some(1),
+                b: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn different_programs_diverge_at_initial_checkpoint() {
+        let a = ToyFactory {
+            program: vec![asm::loadi(0, 1), asm::halt()],
+        };
+        let b = ToyFactory {
+            program: vec![asm::loadi(0, 2), asm::halt()],
+        };
+        let report = compare_runs(&a, &b, 3, 1, 0).unwrap();
+        assert_eq!(
+            report.verdict,
+            Verdict::Diverged {
+                last_match: None,
+                first_mismatch: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn initial_state_difference_is_reported_at_work_zero() {
+        let f = factory();
+        let flaky = FlakyFactory {
+            inner: factory(),
+            diverge_at: 0,
+            perturb: Perturbation::XorPrng { mask: 1 },
+        };
+        for limit in [0, 10] {
+            let report = compare_runs(&f, &flaky, 3, 5, limit).unwrap();
+            assert_eq!(
+                report.verdict,
+                Verdict::Diverged {
+                    last_match: None,
+                    first_mismatch: 0,
+                }
+            );
+            assert_eq!(report.checkpoints_compared, 0);
+            assert!(!report.limit_reached);
+        }
+    }
+
+    #[test]
+    fn halt_at_spawn_is_reported_as_a_halt_mismatch() {
+        let f = factory();
+        let halted = FlakyFactory {
+            inner: factory(),
+            diverge_at: 0,
+            perturb: Perturbation::ForceHalt,
+        };
+        for limit in [0, 10] {
+            let report = compare_runs(&f, &halted, 3, 5, limit).unwrap();
+            assert_eq!(
+                report.verdict,
+                Verdict::HaltMismatch {
+                    a: None,
+                    b: Some(0),
+                }
+            );
+            assert_eq!(report.checkpoints_compared, 0);
+            assert!(!report.limit_reached);
+        }
+    }
+
+    #[test]
+    fn bisector_locates_a_difference_present_at_spawn() {
+        let f = factory();
+        let flaky = FlakyFactory {
+            inner: factory(),
+            diverge_at: 0,
+            perturb: Perturbation::XorPrng { mask: 1 },
+        };
+        for hi in [0, 10] {
+            let point = bisect_divergence(&f, &flaky, 3, 0, hi).unwrap();
+            assert_eq!(point.first_divergent_work, 0);
+            assert_ne!(point.hash_a, point.hash_b);
+        }
     }
 
     #[test]

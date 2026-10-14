@@ -208,10 +208,12 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "uml",
  "vmm-backend",
  "vmm-core",
+ "vtime",
 ]
 
 [[package]]
@@ -449,8 +451,10 @@ dependencies = [
  "nes-workload",
  "nested-driver",
  "oci-support",
+ "postcard",
  "process-proto",
  "rustix",
+ "searcher",
  "serde",
  "serde_json",
  "sha2",
@@ -497,6 +501,7 @@ version = "0.1.0"
 dependencies = [
  "proptest",
  "proptest-state-machine",
+ "sha2",
  "thiserror",
 ]
 
@@ -687,9 +692,11 @@ version = "0.1.0"
 dependencies = [
  "consonance-client",
  "control-proto",
+ "crc32fast",
  "environment",
  "execution-proto",
  "guest-image",
+ "miniz_oxide",
  "process-proto",
  "serde",
  "serde_json",
@@ -1099,9 +1106,11 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 name = "uml"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "environment",
  "hypercall-proto",
  "libc",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -1170,6 +1179,7 @@ dependencies = [
 name = "vmm-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "control-proto",
  "environment",
  "gicv3",

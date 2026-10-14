@@ -30,9 +30,12 @@ const OMIT_HOST_MEMORY: u64 = 1;
 const CONTROL_LEN: usize = 16;
 const POLL: Duration = Duration::from_millis(5);
 const RESTORE_ARGUMENT: &str = "harmony_restore";
-const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP2";
+const SIDECAR_MAGIC: &[u8; 8] = b"HUMLCKP3";
 
-fn checked_sidecar(sidecar: &[u8]) -> Result<(u64, Reader<'_>), SessionError> {
+fn checked_sidecar(
+    sidecar: &[u8],
+    expected_physical_bytes: u64,
+) -> Result<(u64, Reader<'_>), SessionError> {
     let mut reader = Reader(
         sidecar
             .strip_prefix(SIDECAR_MAGIC)
@@ -41,6 +44,14 @@ fn checked_sidecar(sidecar: &[u8]) -> Result<(u64, Reader<'_>), SessionError> {
     let image_bytes = reader.u64().map_err(SessionError::Protocol)?;
     if image_bytes > crate::memory::IMAGE_BYTES as u64 {
         return Err(MemoryError::ImageTooLarge(image_bytes).into());
+    }
+    let physical_bytes = reader.u64().map_err(SessionError::Protocol)?;
+    if physical_bytes != expected_physical_bytes {
+        return Err(MemoryError::ImportedMemorySize {
+            got: physical_bytes,
+            expected: expected_physical_bytes,
+        }
+        .into());
     }
     Ok((image_bytes, reader))
 }
@@ -87,6 +98,8 @@ pub enum SessionError {
     Behind(usize),
     #[error("the guest stopped: {0:?}")]
     Stopped(ExitReason),
+    #[error("UML state hash is unavailable: guest memory has no canonical cross-process digest")]
+    StateHashUnavailable,
     #[error("bridge protocol: {0}")]
     Protocol(String),
     #[error("the guest refused the {operation}: errno {errno}")]
@@ -159,7 +172,7 @@ impl Checkpoint {
 
     pub fn digest(&self) -> Result<[u8; 32], SessionError> {
         let mut digest = Sha256::new();
-        digest.update(b"harmony-uml-checkpoint-v1\0");
+        digest.update(b"harmony-uml-checkpoint-v2\0");
         self.memory.digest(&mut digest)?;
         digest.update(self.sidecar()?);
         Ok(digest.finalize().into())
@@ -168,9 +181,10 @@ impl Checkpoint {
     pub fn sidecar(&self) -> Result<Vec<u8>, SessionError> {
         let services = self.services.encode().map_err(SessionError::Protocol)?;
         let mut out =
-            Vec::with_capacity(SIDECAR_MAGIC.len() + 24 + services.len() + self.request.len());
+            Vec::with_capacity(SIDECAR_MAGIC.len() + 32 + services.len() + self.request.len());
         out.extend_from_slice(SIDECAR_MAGIC);
         out.extend_from_slice(&self.bytes().to_le_bytes());
+        out.extend_from_slice(&self.memory.physmem_bytes()?.to_le_bytes());
         out.extend_from_slice(&(services.len() as u64).to_le_bytes());
         out.extend_from_slice(&services);
         out.extend_from_slice(&(self.request.len() as u64).to_le_bytes());
@@ -185,6 +199,7 @@ impl Checkpoints {
         target: &Checkpoint,
         use_pages: impl FnOnce(&[(u64, &PageHash, &[u8; PAGE_SIZE])]) -> R,
     ) -> Result<R, SessionError> {
+        self.require_owned_snapshot(&target.memory)?;
         let zero = self.zero()?;
         Ok(self.delta_pages(&zero, None, &target.memory, |delta| {
             use_pages(&delta.changed)
@@ -198,7 +213,9 @@ impl Checkpoints {
         sidecar: &[u8],
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
-        checked_sidecar(sidecar)?;
+        self.require_owned_snapshot(&near.memory)?;
+        let expected_physical_bytes = self.held()?.physmem_bytes as u64;
+        checked_sidecar(sidecar, expected_physical_bytes)?;
         let base = Checkpoint {
             memory: self.zero()?,
             services: near.services.clone(),
@@ -230,8 +247,11 @@ impl Checkpoints {
         sidecar: &[u8],
         factory: &ServiceFactory,
     ) -> Result<Checkpoint, SessionError> {
+        self.require_owned_snapshot(&base.memory)?;
+        self.require_owned_snapshot(&near.memory)?;
         let malformed = |what: &str| SessionError::Protocol(format!("checkpoint sidecar: {what}"));
-        let (image_bytes, mut reader) = checked_sidecar(sidecar)?;
+        let expected_physical_bytes = self.held()?.physmem_bytes as u64;
+        let (image_bytes, mut reader) = checked_sidecar(sidecar, expected_physical_bytes)?;
         let length = |reader: &mut Reader<'_>| {
             reader
                 .u64()
@@ -281,6 +301,9 @@ impl Session {
         checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
     ) -> Result<Self, SessionError> {
+        if let Some(checkpoint) = restore {
+            checkpoints.require_owned_snapshot(&checkpoint.memory)?;
+        }
         let bridge = launch.bridge.ok_or(SessionError::NoBridge)?;
         let memory = GuestMemory::new()?;
         command.arg(format!("harmony_physmem={PHYSMEM_FD}"));
@@ -383,8 +406,12 @@ impl Session {
     }
 
     pub fn state_hash(&self) -> Result<[u8; 32], SessionError> {
+        Err(SessionError::StateHashUnavailable)
+    }
+
+    pub fn bridge_state_digest(&self) -> Result<[u8; 32], SessionError> {
         let mut digest = Sha256::new();
-        digest.update(b"harmony-uml-session-state-v1\0");
+        digest.update(b"harmony-uml-bridge-state-v1\0");
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
         if let Some(request) = &self.pending {
             digest.update(request);
@@ -407,6 +434,39 @@ impl Session {
 
     pub fn kill(mut self) -> Result<Exit, SessionError> {
         self.finish(ExitReason::Killed)
+    }
+
+    pub fn settle_terminal_console(
+        &mut self,
+        reason: Option<ExitReason>,
+        limit: Duration,
+    ) -> Result<ExitReason, SessionError> {
+        let reason = match reason {
+            Some(reason) => reason,
+            None => {
+                let waited = now();
+                loop {
+                    match self.guest.stopped()? {
+                        Some(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_))) => {
+                            break reason;
+                        }
+                        Some(reason) => return Err(SessionError::Stopped(reason)),
+                        None if waited.elapsed() >= limit => {
+                            return Err(SessionError::Hung(limit));
+                        }
+                        None => std::thread::sleep(POLL),
+                    }
+                }
+            }
+        };
+        let exit = self.guest.finish(reason)?;
+        if !exit.leftovers.is_empty() {
+            return Err(SessionError::Protocol(format!(
+                "guest left {} host processes after terminal stop",
+                exit.leftovers.len()
+            )));
+        }
+        Ok(exit.reason)
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
@@ -510,6 +570,8 @@ impl Session {
     }
 
     fn restore_from(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
+        self.checkpoints
+            .require_owned_snapshot(&checkpoint.memory)?;
         let physmem_bytes = self.memory.map()?;
         let checkpoints = self.checkpoints.clone();
         let target = checkpoint.memory.id();
@@ -589,6 +651,7 @@ impl Session {
         };
         self.services = checkpoint.services.clone();
         self.pending = Some(checkpoint.request.clone());
+        self.guest.reset_console()?;
         Ok(())
     }
 
@@ -641,6 +704,14 @@ impl Session {
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
+        if let Some(moment) = self.pending.as_deref().and_then(stamp)
+            && matches!(
+                until,
+                Until::Moment(deadline) | Until::SnapshotPoint(deadline) if moment >= deadline
+            )
+        {
+            return Ok(Stop::Deadline(moment));
+        }
         let mut held = self.pending.take();
         let mut due = None;
         let mut snapshot_point = false;
@@ -977,6 +1048,32 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn dropping_checkpoints_during_delta_callbacks_releases_snapshots() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        let target = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(1, 2)]),
+            5,
+            Some(120),
+        );
+        let temporary = checkpoint(snapshot(&checkpoints, None, &[(2, 3)]), 5, Some(120));
+        let shared = target.with_bridge_of(&target);
+
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 4);
+        checkpoints
+            .delta(&base, None, &target, |_, _| drop(temporary))
+            .unwrap();
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 3);
+        checkpoints
+            .delta(&base, None, &target, |_, _| drop(shared))
+            .unwrap();
+        drop(target);
+        drop(base);
+        assert_eq!(checkpoints.stats().unwrap().snapshots, 1);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn checkpoints_report_their_moment_events_and_image() {
         let checkpoints = Checkpoints::new();
         let stamped = checkpoint(snapshot(&checkpoints, None, &[(1, 1)]), 5, Some(120));
@@ -1094,6 +1191,182 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore)]
+    fn import_rejects_corrupted_pages_even_when_near_has_the_claimed_hash() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        let target = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(1, 2)]),
+            5,
+            Some(120),
+        );
+        let sidecar = target.sidecar().unwrap();
+        let mut rows = owned_delta(&checkpoints, &base, &target);
+        assert_eq!(rows.len(), 1);
+        rows[0].2[0] ^= 1;
+        let borrowed: Vec<_> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let before = checkpoints.stats().unwrap();
+
+        for near in [&target, &base] {
+            assert!(matches!(
+                checkpoints.import(&base, near, &borrowed, &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::Store(
+                    snapshot_store::StoreError::PageIntegrity { gfn: 1 }
+                )))
+            ));
+            assert_eq!(checkpoints.stats().unwrap(), before);
+        }
+
+        let valid_rows = owned_delta(&checkpoints, &base, &target);
+        let valid: Vec<_> = valid_rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let imported = checkpoints
+            .import(&base, &target, &valid, &sidecar, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported.digest().unwrap(), target.digest().unwrap());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn import_rejects_malformed_page_rows_without_creating_a_snapshot() {
+        let checkpoints = Checkpoints::new();
+        let base = checkpoint(
+            snapshot(&checkpoints, None, &[(0, 1), (1, 1)]),
+            5,
+            Some(120),
+        );
+        let near = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(1, 2)]),
+            5,
+            Some(120),
+        );
+        let target = checkpoint(
+            snapshot(&checkpoints, Some(&base.memory), &[(0, 0), (1, 3)]),
+            5,
+            Some(120),
+        );
+        let rows = owned_delta(&checkpoints, &base, &target);
+        assert_eq!(rows.iter().map(|row| row.0).collect::<Vec<_>>(), [0, 1]);
+        let valid: Vec<_> = rows
+            .iter()
+            .map(|(gfn, hash, data)| (*gfn, hash, data))
+            .collect();
+        let reordered = [valid[1], valid[0]];
+        let duplicate = [valid[0], valid[0]];
+        let out_of_range = [(IMAGE_PAGES + 4, valid[0].1, valid[0].2)];
+        let sidecar = target.sidecar().unwrap();
+        let before = checkpoints.stats().unwrap();
+        let base_digest = base.digest().unwrap();
+        let near_digest = near.digest().unwrap();
+
+        for pages in [&reordered[..], &duplicate[..]] {
+            assert!(matches!(
+                checkpoints.import(&base, &near, pages, &sidecar, &nominal_factory()),
+                Err(SessionError::Memory(MemoryError::Store(
+                    snapshot_store::StoreError::TargetPageOrder { .. }
+                )))
+            ));
+            assert_eq!(checkpoints.stats().unwrap(), before);
+            assert_eq!(base.digest().unwrap(), base_digest);
+            assert_eq!(near.digest().unwrap(), near_digest);
+        }
+        assert!(matches!(
+            checkpoints.import(&base, &near, &out_of_range, &sidecar, &nominal_factory()),
+            Err(SessionError::Memory(MemoryError::Store(
+                snapshot_store::StoreError::GfnOutOfRange { .. }
+            )))
+        ));
+        assert_eq!(checkpoints.stats().unwrap(), before);
+        assert_eq!(base.digest().unwrap(), base_digest);
+        assert_eq!(near.digest().unwrap(), near_digest);
+
+        let imported = checkpoints
+            .import(&base, &near, &valid, &sidecar, &nominal_factory())
+            .unwrap();
+        assert_eq!(imported.digest().unwrap(), target.digest().unwrap());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn checkpoint_operations_reject_foreign_owner_before_changing_the_store() {
+        let first = Checkpoints::new();
+        let foreign = checkpoint(snapshot(&first, None, &[(0, 1)]), 5, Some(120));
+        let second = Checkpoints::new();
+        let local = checkpoint(snapshot(&second, None, &[(0, 2)]), 5, Some(120));
+        assert_ne!(foreign.memory.id(), local.memory.id());
+        assert_ne!(foreign.digest().unwrap(), local.digest().unwrap());
+        let before = second.stats().unwrap();
+        let sidecar = local.sidecar().unwrap();
+
+        assert!(matches!(
+            second.full(&foreign, |_| ()),
+            Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+        ));
+        for result in [
+            second.delta(&foreign, None, &local, |_, _| ()),
+            second.delta(&local, Some(&foreign), &local, |_, _| ()),
+            second.delta(&local, None, &foreign, |_, _| ()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+            ));
+        }
+        for result in [
+            second.import(&foreign, &local, &[], &sidecar, &nominal_factory()),
+            second.import(&local, &foreign, &[], &sidecar, &nominal_factory()),
+            second.import_full(&foreign, &[], &sidecar, &nominal_factory()),
+        ] {
+            assert!(matches!(
+                result,
+                Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+            ));
+        }
+        assert_eq!(second.stats().unwrap(), before);
+        assert_ne!(foreign.digest().unwrap(), local.digest().unwrap());
+
+        let exported = second
+            .clone()
+            .full(&local, |pages| {
+                pages
+                    .iter()
+                    .map(|(gfn, _, data)| (*gfn, data[0]))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(exported, vec![(0, 2)]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn start_rejects_foreign_checkpoint_before_launch() {
+        let first = Checkpoints::new();
+        let foreign = checkpoint(snapshot(&first, None, &[(0, 1)]), 5, Some(120));
+        let second = Checkpoints::new();
+        let mut launch = Launch::new(std::env::temp_dir());
+        launch.memory_mib = 1;
+        launch.console_tail_bytes = 0;
+        launch.console_limit_bytes = 0;
+        launch.wall_limit = Duration::from_secs(1);
+        assert!(matches!(
+            Session::start(
+                Command::new("false"),
+                tempfile::tempdir().unwrap(),
+                &launch,
+                &second,
+                Some(&foreign),
+            ),
+            Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+        ));
+        assert!(second.stats().is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn import_bounds_the_private_image_before_storing_pages() {
         let checkpoints = Checkpoints::new();
         let base = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
@@ -1129,6 +1402,109 @@ mod tests {
             .unwrap();
         assert_eq!(imported_full.bytes(), crate::memory::IMAGE_BYTES as u64);
         assert_eq!(checkpoints.stats().unwrap().snapshots, before + 2);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn pending_deadline_does_not_answer_the_held_event() {
+        use std::os::unix::process::CommandExt;
+
+        if std::env::var_os("HARMONY_UML_DEADLINE_CHILD").is_some() {
+            use hypercall_proto::{ServiceId, encode_request};
+
+            // SAFETY: the launcher's bridge setup passes the guest socket at fd 3.
+            let socket = unsafe { OwnedFd::from_raw_fd(3) };
+            for moment in [100_u64, 200] {
+                let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
+                request[..STAMP_LEN].copy_from_slice(&moment.to_le_bytes());
+                let length = encode_request(
+                    ServiceId::Event,
+                    1,
+                    7,
+                    b"\x00\x00\x00\x00{}",
+                    &mut request[STAMP_LEN..],
+                )
+                .unwrap();
+                bridge::send(&socket, &request[..STAMP_LEN + length]).unwrap();
+                let mut response = vec![0_u8; MAX_FRAME];
+                bridge::receive(&socket, &mut response).unwrap();
+            }
+            return;
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(crate::bridge::Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::tests::pending_deadline_does_not_answer_the_held_event --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_DEADLINE_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start(command, work, &launch, &checkpoints, None).unwrap();
+        let first = session.run_until(0).unwrap();
+        let zero_hash = session.bridge_state_digest().unwrap();
+        assert!(matches!(
+            session.state_hash(),
+            Err(SessionError::StateHashUnavailable)
+        ));
+        let zero_events = session.events().len();
+        let second = session.run_until(100).unwrap();
+        let second_hash = session.bridge_state_digest().unwrap();
+        let second_events = session.events().len();
+        let continued = session.run_until(150).unwrap();
+        let continued_hash = session.bridge_state_digest().unwrap();
+        let continued_events = session.events().len();
+        session.kill().unwrap();
+
+        assert_eq!(first, Stop::Deadline(100));
+        assert_eq!(zero_events, 0);
+        assert_eq!(second, Stop::Deadline(100));
+        assert_eq!(second_events, 0);
+        assert_eq!(second_hash, zero_hash);
+        assert_eq!(continued, Stop::Deadline(200));
+        assert_eq!(continued_events, 1);
+        assert_ne!(continued_hash, zero_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn import_rejects_a_different_physical_memory_size_before_storing_pages() {
+        let publisher = Checkpoints::new();
+        let source = checkpoint(snapshot(&publisher, None, &[(0, 1)]), 5, Some(120));
+        let sidecar = source.sidecar().unwrap();
+
+        let destination = Checkpoints::new();
+        let mut held = destination.pages(PHYSMEM_BYTES + PAGE_SIZE).unwrap();
+        let root = held.root;
+        let mut builder = held.store.derive(root).unwrap();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        let id = builder.seal(image_state(24));
+        drop(held);
+        let near = checkpoint(destination.adopt(id), 5, Some(120));
+        assert_ne!(source.digest().unwrap(), near.digest().unwrap());
+        let before = destination.stats().unwrap();
+        let digest = near.digest().unwrap();
+
+        for full in [false, true] {
+            let result = if full {
+                destination.import_full(&near, &[], &sidecar, &nominal_factory())
+            } else {
+                destination.import(&near, &near, &[], &sidecar, &nominal_factory())
+            };
+            assert!(matches!(
+                result,
+                Err(SessionError::Memory(MemoryError::ImportedMemorySize { got, expected }))
+                    if got == PHYSMEM_BYTES as u64
+                        && expected == (PHYSMEM_BYTES + PAGE_SIZE) as u64
+            ));
+            assert_eq!(destination.stats().unwrap(), before);
+            assert_eq!(near.digest().unwrap(), digest);
+        }
     }
 
     #[test]

@@ -4,8 +4,8 @@ mod state;
 
 pub use state::{
     ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64CoreRegs, Arm64DebugState,
-    Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
-    Arm64VtimerState,
+    Arm64GicIdleState, Arm64GicState, Arm64InterruptState, Arm64SimdFpState, Arm64SysregFile,
+    Arm64VcpuState, Arm64VtimerState,
 };
 pub(crate) use state::{canonicalize_core_regs, has_noncanonical_core_regs};
 
@@ -96,6 +96,20 @@ pub struct SysregTrapPolicy {
 pub struct Arm64Caps {
     pub in_kernel_gic: bool,
     pub asid_bits: Arm64AsidBits,
+    pub smccc_workaround_levels: [u64; 3],
+    pub psci_profile: Arm64PsciProfile,
+    pub gic_ctlr_fixed_bits: u64,
+}
+
+impl Arm64Caps {
+    pub const FIXED_SMCCC_WORKAROUND_LEVELS: [u64; 3] = [2, 0, 1];
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum Arm64PsciProfile {
+    HvfSingleVcpu = 1,
+    KvmPsci10 = 2,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

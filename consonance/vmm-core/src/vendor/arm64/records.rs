@@ -141,9 +141,16 @@ pub(crate) fn gic_from_backend(s: &Arm64GicState) -> gicv3::GicState {
         pending: s.pending,
         active: s.active,
         line_level: s.line_level,
+        config: s.config,
         priority: s.priority,
         pmr: s.pmr,
+        bpr0: s.bpr0,
+        bpr1: s.bpr1,
+        ctlr: s.ctlr,
+        igrpen0: s.igrpen0,
         igrpen1: s.igrpen1,
+        ap0r: s.ap0r,
+        ap1r: s.ap1r,
         cntv_ctl: s.cntv_ctl,
         cntv_cval: s.cntv_cval,
         timer_fired: s.timer_fired,
@@ -162,9 +169,16 @@ pub(crate) fn gic_to_backend(s: &gicv3::GicState) -> Arm64GicState {
         pending: s.pending,
         active: s.active,
         line_level: s.line_level,
+        config: s.config,
         priority: s.priority,
         pmr: s.pmr,
+        bpr0: s.bpr0,
+        bpr1: s.bpr1,
+        ctlr: s.ctlr,
+        igrpen0: s.igrpen0,
         igrpen1: s.igrpen1,
+        ap0r: s.ap0r,
+        ap1r: s.ap1r,
         cntv_ctl: s.cntv_ctl,
         cntv_cval: s.cntv_cval,
         timer_fired: s.timer_fired,
@@ -202,7 +216,7 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
-const DEVICE_BLOB_VERSION: u16 = 14;
+const DEVICE_BLOB_VERSION: u16 = 16;
 const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -262,9 +276,21 @@ pub(crate) fn encode_gic_state(out: &mut Vec<u8>, s: &gicv3::GicState) {
             put_u32(out, *w);
         }
     }
+    for word in s.config {
+        put_u32(out, word);
+    }
     out.extend_from_slice(&s.priority);
     out.push(s.pmr);
+    out.push(s.bpr0);
+    out.push(s.bpr1);
+    out.extend_from_slice(&s.ctlr.to_le_bytes());
+    out.push(u8::from(s.igrpen0));
     out.push(u8::from(s.igrpen1));
+    for file in [&s.ap0r, &s.ap1r] {
+        for value in file {
+            put_u32(out, *value);
+        }
+    }
     out.extend_from_slice(&s.cntv_ctl.to_le_bytes());
     out.extend_from_slice(&s.cntv_cval.to_le_bytes());
     out.push(u8::from(s.timer_fired));
@@ -283,14 +309,33 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         }
     }
     let [group, enable, pending, active, line_level] = files;
+    let mut config = [0; 64];
+    for word in &mut config {
+        *word = c.u32()?;
+    }
     let mut priority = [0u8; 1020];
     priority.copy_from_slice(c.take(1020)?);
     let pmr_byte = c.take(1)?[0];
+    let bpr0 = c.take(1)?[0];
+    let bpr1 = c.take(1)?[0];
+    let ctlr = c.u64()?;
+    let igrpen0 = match c.take(1)?[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(SnapshotError::DeviceBlob("bad igrpen0 flag")),
+    };
     let igrpen1 = match c.take(1)?[0] {
         0 => false,
         1 => true,
         _ => return Err(SnapshotError::DeviceBlob("bad igrpen1 flag")),
     };
+    let mut ap0r = [0; 4];
+    let mut ap1r = [0; 4];
+    for file in [&mut ap0r, &mut ap1r] {
+        for value in file {
+            *value = c.u32()?;
+        }
+    }
     let cntv_ctl = c.u64()?;
     let cntv_cval = c.u64()?;
     let timer_fired = match c.take(1)?[0] {
@@ -309,9 +354,16 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         pending,
         active,
         line_level,
+        config,
         priority,
         pmr: pmr_byte,
+        bpr0,
+        bpr1,
+        ctlr,
+        igrpen0,
         igrpen1,
+        ap0r,
+        ap1r,
         cntv_ctl,
         cntv_cval,
         timer_fired,
@@ -561,11 +613,20 @@ mod tests {
         })
         .unwrap();
         gic.raise(40).unwrap();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x0c08, 0x20000, 0)
+            .unwrap();
         gic.set_pmr(0x80);
         gic.write_cntv_cval(125);
         gic.write_cntv_ctl(gicv3::CNTV_CTL_ENABLE);
+        let mut gic_state = gic.snapshot();
+        gic_state.bpr0 = 7;
+        gic_state.bpr1 = 6;
+        gic_state.ctlr = 0x8402;
+        gic_state.igrpen0 = true;
+        gic_state.ap0r[0] = 0x1234;
+        gic_state.ap1r[0] = 0x5678;
         Arm64DeviceState {
-            gic: Some(gic.snapshot()),
+            gic: Some(gic_state),
             ..sample()
         }
     }

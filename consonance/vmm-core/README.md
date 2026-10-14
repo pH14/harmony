@@ -25,6 +25,11 @@ operation. Timer deadlines are applied at exit boundaries. An idle guest can
 advance to the next deterministic deadline through the same clock; no host
 clock is consulted. A guest idling in its polling loop writes the idle register
 (arm64) or idle port (x86), which advances the clock the same way as a halt.
+Control `Run` and `Exec` set their own idle wake from the active deadline before
+each guest step, so a preceding request cannot alter a replayed command's idle
+continuation.
+An `Exec` request made while an external SDK service answer is pending is
+rejected before its command reaches serial input or changes the control state.
 
 The run loop also times each backend run and each exit it services, keyed by
 exit reason, address or port, and direction. `ControlServer::host_telemetry`
@@ -43,6 +48,8 @@ intentionally changes the VCPU identity.
 Dirty-page drains and resets distinguish unsupported tracking from backend
 errors. Unsupported tracking permits a full capture; an operational error
 retires the live VMM and fails the snapshot instead of publishing partial state.
+Register, event-injection, and component observations also surface backend CPU
+read errors instead of reporting a fabricated default state.
 
 Snapshots can be restored into a copy-on-write memory mapping. In-place restore
 combines the snapshot difference and the guest dirty set before loading page
@@ -53,7 +60,7 @@ copies each selected page directly into guest RAM. Page-write validation sorts
 small address/reference records, rejects duplicates and invalid ranges before
 any write, then coalesces instruction-cache invalidation ranges in the same pass
 that copies the pages. It does not sort or allocate temporary page payloads. Portable format
-6 preserves pending SDK stops, unanswered service requests, response sequences,
+7 preserves pending SDK stops, unanswered service requests, response sequences,
 pending host effects and reseeds, the recorded input prefix, schedule failure,
 and command nonce. Replay restores these without reseeding or reapplying consumed
 inputs; an explicit branch selects a new plan and retains the command nonce.
@@ -65,10 +72,58 @@ pending stop, pending snapshot flag, and coverage thresholds are restored from
 the borrowed snapshot. Branches install their new environment plan while
 preserving the same captured SDK metadata. The stored snapshot remains owned by
 the server and reusable; the restored VM owns the state it can mutate.
+Seeded branches require a wired entropy stream. A branch into a VM without one
+is rejected before the live VM is replaced, leaving the session usable.
+The branch preparation also checks the service identity and configuration after
+the decode seed zero and both branch handler reseeds. A handler that changes its
+advertised contract is rejected before CPU or RAM restore, leaving the live
+execution intact.
+Control-server imports require both SDK and control-state sections because every
+control snapshot captures both; missing sections are rejected before minting a
+handle. The SDK hash chunk also binds its captured event history, including
+payloads, so replayed `SdkEvents` cannot differ under the same whole-state hash.
+The version-7 envelope pins this expanded identity and rejects older versions.
+Import reconstructs the hash suffix from validated VM-state,
+SDK, and control records. A full import checks its claimed whole-state hash
+against RAM and that suffix; a sparse import compares the reconstructed suffix
+with its sidecar before deriving pages or minting a handle. Both imports verify
+that the installed service factory can instantiate the recorded policy and
+restore the captured handler state before committing the snapshot. Sparse
+sidecars also carry the source base snapshot's RAM digest. Export and import
+compute that digest once per base snapshot and cache it, verifying every
+distinct resident base page before reusing the cached digest. Sparse exports
+also verify every distinct resident target page, including inherited pages
+omitted from a delta. Pages shared by the base and target are hashed once per
+export when the base digest is cached; delta export performs this check before
+encoding its sidecar and does not repeat it there. The first base-digest
+calculation still reads the base pages to compute its SHA-256 identity. A
+release microbenchmark on Apple silicon measured 30.11 ms per
+base-only check for 8,192 distinct 4 KiB pages (32 MiB) and 0.45 ms when
+those frames shared one interned page. Checking that base together with a
+target that replaced one quarter of its pages measured 35.90 ms with distinct
+content and 1.07 ms with interned content. These checks hash each distinct
+resident page once. Cache deltas use setup
+as their base. Imports compare the local base digest before deriving pages or a
+delta from a nearer snapshot. This rejects an outer archive whose identity was
+rewritten to pair source pages with different setup RAM. Sparse validation does
+not materialize guest RAM for each import.
+The complete portable format is version 7, and the sparse sidecar is version 8;
+older sparse sidecars are rejected. A sparse sidecar does not carry a target RAM
+hash, so independently recomposing both its source-base digest and the outer
+archive identity is outside this snapshot identity check. Use a complete
+portable snapshot when the imported target's whole-state hash must be verified.
+Control seals and imports require VM-state
+hashing so every restored VM record participates in identity. Standalone VMM
+hashing remains optional. A mapped x86 doorbell cannot seal because the
+x86 VM-state record has no dedicated doorbell pages; the production dedicated
+mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
-duplicate-input rejection. Writers always emit the current format, and readers
-reject older envelopes. Complete reads allocate incrementally from received
-bytes, and sparse section lengths are bounded by the supplied input.
+duplicate-input rejection. A tainted control timeline also contributes a
+dedicated hash chunk, so an imported artifact cannot clear the taint and make
+`RecordedEnv` available under the same claimed identity. Writers always emit
+the current format, and readers reject older envelopes. Complete reads
+allocate incrementally from received bytes, and sparse section lengths are
+bounded by the supplied input.
 Whole-VM capture preserves pending SDK stops and is side-effect-free for a
 pending pvclock registration, carrying its GPA, `armed = false` state, and page
 bytes so the next handshake resumes from the same state.
@@ -86,7 +141,10 @@ selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
 the unread queue even when full snapshot hashing is disabled. The x86 device
 identity also includes the UART divisor high byte independently of the DLAB
-register window.
+register window. Restore rejects a device record whose saved DLAB flag
+disagrees with the UART line control register before applying device state.
+An enabled, unmasked serial interrupt keeps an interruptible
+idle guest runnable while its input remains queued.
 
 The architecture-neutral engine record preserves terminal reasons and deferred
 SDK reentry state in the current VM-state container. A terminal restore does not
@@ -117,6 +175,18 @@ vendor traits. `vendor/x86` supplies the x86 CPU policy, loaders, device
 dispatch, and records. `vendor/arm64` supplies the arm64 Image/DTB boot path,
 board devices, policy, and records. The arm64 vendor is also used to exercise
 the additive architecture seam on portable mocks and QEMU.
+
+The x86 xAPIC MMIO page accepts only 4-byte register accesses. Other widths
+fail before advancing virtual time or changing the modeled LAPIC, so a wider
+write cannot be silently truncated into a register transaction.
+Misaligned xAPIC offsets and rejected x86 I/O port accesses also fail before
+advancing virtual time. Supported ports keep the same assigned durations once
+their ownership and any explicit width constraint have been validated.
+The modeled 8259 master and slave command and interrupt-mask ports accept only
+byte reads and writes; other widths fail before changing masks or virtual time.
+The virtual-time LAPIC trace records both the timer deadline and interrupt
+vector. Reprogramming either value replaces the active schedule, so a vector
+rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
 Each architecture supplies a guest machine policy; the backend supplies the
@@ -397,8 +467,9 @@ store. `import_sparse_delta(setup, near, pages, sidecar)` takes a complete
 page list over the setup snapshot and derives the imported snapshot from `near`,
 writing only the pages where the two differ. Once `near`'s chain reaches the
 maximum chain length, the import derives from `setup` instead, so repeated
-imports keep the same chain bound as seals. Each page must match its hash, so a
-changed page is refused before a handle is minted.
+imports keep the same chain bound as seals. Every supplied page must match its
+hash, including a page reused from `near`; a mismatch is refused before a
+handle is minted.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
@@ -440,6 +511,9 @@ published. The wire encoding and hashed bytes are unchanged. The SDK record is
 encoded directly into the hash suffix; its two nested length fields are filled
 from the resulting byte ranges. This avoids temporary record and chunk buffers
 while preserving the same framing and independently owned retained SDK state.
+When the backend declares a state unsupported for capture, Snapshot, whole-VM
+Hash, and Regs reply with `SnapshotRefused` and leave the session available;
+unexpected backend failures remain fatal.
 
 A control snapshot encodes its recorded inputs, pending effects/reseeds, failure
 state, and execution nonce once. It appends these encoded bytes to the canonical

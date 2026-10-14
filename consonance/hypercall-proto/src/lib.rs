@@ -607,6 +607,7 @@ pub use guest::{Client, ClientError, Transport};
 #[cfg(feature = "host")]
 mod host {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     pub trait Service {
         fn handle(
@@ -873,6 +874,7 @@ mod host {
     #[derive(Clone, Debug, Eq, PartialEq)]
     pub struct MemBlockDevice {
         data: Vec<u8>,
+        identity: [u8; 32],
     }
 
     impl MemBlockDevice {
@@ -880,7 +882,8 @@ mod host {
             if !data.len().is_multiple_of(SECTOR_SIZE) {
                 return Err(ProtoError::BadPayload);
             }
-            Ok(Self { data })
+            let identity = Sha256::digest(&data).into();
+            Ok(Self { data, identity })
         }
 
         pub fn sector_count(&self) -> u64 {
@@ -947,11 +950,11 @@ mod host {
         }
 
         fn save_state(&self) -> Vec<u8> {
-            Vec::new()
+            self.identity.to_vec()
         }
 
         fn restore_state(&mut self, state: &[u8]) -> Result<(), ProtoError> {
-            if state.is_empty() {
+            if state == self.identity {
                 Ok(())
             } else {
                 Err(ProtoError::BadState)

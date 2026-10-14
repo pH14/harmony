@@ -6,7 +6,10 @@ use vtime::VClockConfig;
 
 use crate::snapshot::SnapshotError;
 use crate::vendor::x86::contract::{self, MsrDisposition};
-use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
+use crate::vendor::x86::devices::{
+    ISA_DEBUG_EXIT_PORT, LegacyPlatform, PIC_MASTER_COMMAND, PIC_MASTER_DATA, PIC_SLAVE_COMMAND,
+    PIC_SLAVE_DATA, REPORT_PORT, Uart8250,
+};
 use crate::vendor::x86::records::{self, DeviceState, LegacyState, UartState};
 use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
@@ -195,23 +198,34 @@ impl<B: Backend<A = X86>> Vmm<B> {
             self.advance_virtual_time_for_port(port)?;
             return self.on_idle();
         }
+        if port == ISA_DEBUG_EXIT_PORT || Uart8250::owns(port) {
+            require_byte_io("OUT", port, size)?;
+        } else if port == REPORT_PORT || port == DOORBELL_PORT {
+            require_dword_io("OUT", port, size)?;
+        } else if self.devices.legacy.is_none() || !LegacyPlatform::owns(port) {
+            return Err(VmmError::ContractViolation(format!(
+                "unmodeled OUT to port {port:#06x} value {value:#x} (size {size})"
+            )));
+        }
+        if matches!(
+            port,
+            PIC_MASTER_COMMAND | PIC_MASTER_DATA | PIC_SLAVE_COMMAND | PIC_SLAVE_DATA
+        ) {
+            require_byte_io("OUT", port, size)?;
+        }
         self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
-            require_byte_io("OUT", port, size)?;
             return Ok(self.terminate(TerminalReason::DebugExit { code: value as u8 }));
         }
         if Uart8250::owns(port) {
-            require_byte_io("OUT", port, size)?;
             self.devices.uart.write(port, value as u8);
             return Ok(Step::Continued);
         }
         if port == REPORT_PORT {
-            require_dword_io("OUT", port, size)?;
             self.report_stream.push(value);
             return Ok(Step::Continued);
         }
         if port == DOORBELL_PORT {
-            require_dword_io("OUT", DOORBELL_PORT, size)?;
             return self.service_doorbell(value);
         }
         if let Some(legacy) = self.devices.legacy.as_mut()
@@ -232,13 +246,25 @@ impl<B: Backend<A = X86>> Vmm<B> {
                  ports are write-only"
             )));
         }
-        self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port) {
             require_byte_io("IN", port, size)?;
-            if let Some(byte) = self.devices.uart.read_in(port) {
-                self.backend.complete_read(u64::from(byte))?;
-                return Ok(Step::Continued);
-            }
+        } else if self.devices.legacy.is_none() || !LegacyPlatform::owns(port) {
+            return Err(VmmError::ContractViolation(format!(
+                "unmodeled IN from port {port:#06x} (size {size})"
+            )));
+        }
+        if matches!(
+            port,
+            PIC_MASTER_COMMAND | PIC_MASTER_DATA | PIC_SLAVE_COMMAND | PIC_SLAVE_DATA
+        ) {
+            require_byte_io("IN", port, size)?;
+        }
+        self.advance_virtual_time_for_port(port)?;
+        if Uart8250::owns(port)
+            && let Some(byte) = self.devices.uart.read_in(port)
+        {
+            self.backend.complete_read(u64::from(byte))?;
+            return Ok(Step::Continued);
         }
         if let Some(legacy) = self.devices.legacy.as_ref()
             && LegacyPlatform::owns(port)
@@ -267,13 +293,21 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 gpa.0
             )));
         }
+        if size != 4 {
+            return Err(VmmError::ContractViolation(format!(
+                "xAPIC MMIO at {:#x} has size {size}; only 4-byte register accesses are modeled",
+                gpa.0
+            )));
+        }
+        let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
+        lapic::Lapic::validate_mmio_offset(offset)
+            .map_err(|e| VmmError::ContractViolation(format!("xAPIC access {offset:#x}: {e}")))?;
         if self.virtual_time_vtime_enabled() {
             self.advance_virtual_time_vtime(
                 contract::virtual_time_timing().interrupt_controller_mmio_vns,
             )?;
         }
         let now_vns = self.now_vns()?;
-        let offset = (gpa.0 - APIC_MMIO_BASE) as u32;
         match write {
             None => {
                 let lapic = self
@@ -288,25 +322,28 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             Some(v) => {
-                let (deadline_before, deadline_after, timer_id) = {
+                let (schedule_before, schedule_after) = {
                     let lapic = self
                         .devices
                         .lapic
                         .as_mut()
                         .expect("in_apic_page implies wired");
-                    let before = lapic.next_timer_deadline();
+                    let before = lapic
+                        .next_timer_deadline()
+                        .map(|deadline| (deadline, u32::from(lapic.timer_vector())));
                     lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
                         VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
                     })?;
                     (
                         before,
-                        lapic.next_timer_deadline(),
-                        u32::from(lapic.timer_vector()),
+                        lapic
+                            .next_timer_deadline()
+                            .map(|deadline| (deadline, u32::from(lapic.timer_vector()))),
                     )
                 };
-                if deadline_after != deadline_before {
-                    match deadline_after {
-                        Some(deadline_vns) => {
+                if schedule_after != schedule_before {
+                    match schedule_after {
+                        Some((deadline_vns, timer_id)) => {
                             self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
                         }
                         None => self.trace_clockevent_cancel()?,
@@ -675,9 +712,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
 fn require_byte_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
     if size != 1 {
         return Err(VmmError::ContractViolation(format!(
-            "{dir} to modeled byte port {port:#06x} with size {size} != 1 — the 8250 UART and \
-             isa-debug-exit are byte-addressed; a wider access is unmodeled (fail closed, not a \
-             truncation)"
+            "{dir} to modeled byte port {port:#06x} with size {size} != 1 — a wider access is \
+             unmodeled (fail closed, not a truncation)"
         )));
     }
     Ok(())

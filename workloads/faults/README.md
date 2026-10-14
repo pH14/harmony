@@ -46,17 +46,37 @@ before it builds the guest image ([`admission`](src/admission.rs)). It rejects:
   ([format](../languages/reviewed/README.md));
 - a review entry that matches no instruction in the image.
 
+For User-mode Linux, preparation rejects all four scanned hardware entropy
+instructions even when reviewed. UML runs guest user instructions natively, so
+the VM's hidden feature bits do not protect a guarded call site. This admission
+check walks the bytes of executable load segments in the staged image. Section
+headers do not determine what the guest loader executes. The scan boundary
+still requires cooperative workloads: dynamically generated code and
+instructions hidden inside another instruction's operand bytes are outside its
+guarantee.
+The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
+entropy sites, so UML refuses those images even if a particular workload
+would not call them. Build a UML image without the sites before searching or
+running it; the review entries remain valid for VM execution. Saved UML runs
+created before this admission rule cannot be replayed or branched because their
+guest initramfs has no admission evidence.
+
 Each line of `/symbols/harmony-instrumented-events` holds a SHA-256 and an
 absolute image path, and must match that file. Event actions are enabled when
 this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
 a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
-The scan catches entropy instructions that compilers and assemblers emit. It
-decodes each executable section from its start, and it requires an executable
-section inside every executable segment. A binary built to hide an instruction
-can still pass: for example, inside the operand bytes of another instruction,
-or in segment bytes outside the scanned sections.
+The scan catches entropy instructions that compilers and assemblers emit. On
+x86 it decodes each allocated section inside an executable load segment from
+its start, regardless of the section's executable flag, and separately decodes
+the gaps between sections. This preserves instruction alignment when a segment
+begins with headers or other data without reporting an instruction assembled
+across a section boundary. On arm64 it checks aligned instruction words across
+the whole executable load segment, ignoring a trailing partial word that cannot
+hold an instruction, so odd-length data sections are harmless. A
+binary built to hide an x86 instruction inside another instruction's operand
+bytes can still pass.
 
 `harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
@@ -213,10 +233,19 @@ User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
 replaces `runner.options.kernel`, and each session runs in the search thread. The profile
-identity, host architecture, CPU model and CPU feature flags join the
+identity, host architecture, physical processor, CPU model and CPU feature flags join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
-VM state. Each snapshot is a full guest image of about the guest's RAM, so a
+VM state. A profile changed after workload admission is rejected before guest
+boot, so that identity always names the profile the session pins. Search admits
+one processor from the selected coordinator placement for the whole campaign.
+Host worker threads still run on their assigned cores, while every UML guest
+child is pinned to the admitted processor; this prevents guest-visible CPUID
+or MIDR differences from entering snapshots passed between workers, at the
+cost of contention among concurrent guests. Standalone debug and replay use
+the same coordinator selection, so they do not switch guest processors when
+they leave the search worker pool. Each snapshot
+is a full guest image of about the guest's RAM, so a
 worker's store fills its budget faster than under KVM.
 
 ## Running it
@@ -248,9 +277,16 @@ either the bugs found or the replay outcomes.
 
 New replay outcomes encode the engine's 32-byte state digest directly as
 lowercase hex and mark it with `state_hash_encoding: "engine_digest"`.
+UML outcomes instead have an empty `state_hash` and
+`state_hash_encoding: "unavailable"`: their guest memory has no canonical
+cross-process state digest. Search still confirms a bug when the fresh replay
+reproduces its recorded assertion or stop evidence. `harmony debug replay`
+records the new observations but refuses to call two UML outcomes an exact
+reproduction without a full-state identity.
 Reports written by earlier versions omit that marker and contain SHA-256 of
 the digest; readers default a missing marker to the legacy interpretation.
-The marker is additive, so older readers continue to parse the report shape.
+Earlier UML `engine_digest` values covered only bridge state and cannot prove
+full-state replay equivalence.
 
 The search report and `campaign-summary.json` also record
 `watchdog_cutoffs`, the number of guest action runs ended by the session's
@@ -301,8 +337,9 @@ count as a rediscovery.
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
-([`report`](src/report.rs)); each of those carries the action list and the
-encoded window list that reproduces it.
+([`report`](src/report.rs)). Each `bug-N.json` carries the action list and the
+encoded window list used by the guest, including windows inherited from a
+branch root. `first-bug-input.json` carries the selected action list.
 
 `FaultArchiveKey` has a place, a progress, and a holder identity. The place is
 the passed assertion set and every lifecycle count except liveness, plus two
@@ -362,10 +399,13 @@ arm64 MMIO console wrapper.
 
 The package can prepare a recorded prefix for guest debugging and export the
 resulting state as a durable root. A root binds the prepared boot identity to a
-cache extent containing pages and device/service sidecars. Import validates that
+cache extent containing pages and device/service sidecars, plus the standing
+fault windows still active at its snapshot moment. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
 All workers start from the imported root, and later action prefixes/checkpoints
-are relative to it. Commands and interactive input are diagnostic evidence, not
+are relative to it. A continuation retains inherited standing windows, including
+an unfired event kill armed before the root, while it adds its new action windows.
+Commands and interactive input are diagnostic evidence, not
 an instruction to execute those commands again during restoration.
 
 The CLI exposes this through `branch --exec`, `branch --exec-file` and

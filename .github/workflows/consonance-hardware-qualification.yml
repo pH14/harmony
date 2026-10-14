@@ -647,7 +647,7 @@ jobs:
             -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee snapshot-report/snapshot-restore-drain.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/snapshot-restore-drain.log
-      - name: Require MXCSR to survive capture and restore
+      - name: Require MXCSR restore admission and natural AVX identity
         if: ${{ !cancelled() && steps.host.outcome == 'success' }}
         env:
           XSAVE_ENTRY_LONG_MODE: "1"
@@ -655,7 +655,7 @@ jobs:
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           for test in \
-            ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore \
+            ymm_without_sse_noninit_mxcsr_restore_rejects_atomically \
             natural_avx_mxcsr_survives_capture_and_restore; do
             XSAVE_MXCSR_REPORT_DIR="$PWD/snapshot-report/mxcsr-$test" \
               timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p vmm-backend --lib \

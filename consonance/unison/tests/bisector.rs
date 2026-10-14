@@ -3,7 +3,9 @@
 use proptest::prelude::*;
 use unison::flaky::{FlakyFactory, Perturbation};
 use unison::toy::{ToyFactory, asm, generate_program};
-use unison::{SubjectError, Verdict, bisect_divergence, compare_runs};
+use unison::{
+    RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
+};
 
 const MIN_WORK: u64 = 1024;
 
@@ -187,6 +189,42 @@ fn forced_early_halt_yields_halt_mismatch() {
             b: Some(37)
         }
     );
+}
+
+#[test]
+fn falling_off_program_has_one_state_at_each_work_count() {
+    let empty = ToyFactory { program: vec![] };
+    let mut at_zero = empty.spawn(3);
+    let mut past_zero = empty.spawn(3);
+    assert_eq!(at_zero.run_to(0).unwrap(), RunOutcome::Halted);
+    assert_eq!(past_zero.run_to(1).unwrap(), RunOutcome::Halted);
+    assert_eq!(at_zero.work(), 0);
+    assert_eq!(past_zero.work(), 0);
+    assert_eq!(
+        at_zero.state_hash().unwrap(),
+        past_zero.state_hash().unwrap()
+    );
+
+    for limit in [0, 1, 100] {
+        let report = compare_runs(&empty, &empty, 3, 1, limit).unwrap();
+        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.halted_at, Some(0));
+        assert!(!report.limit_reached);
+    }
+
+    let one = ToyFactory {
+        program: vec![asm::loadi(0, 1)],
+    };
+    let flaky = FlakyFactory {
+        inner: one.clone(),
+        diverge_at: 1,
+        perturb: Perturbation::ForceHalt,
+    };
+    for interval in [1, 2] {
+        let report = compare_runs(&one, &flaky, 3, interval, 10).unwrap();
+        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.halted_at, Some(1));
+    }
 }
 
 #[test]

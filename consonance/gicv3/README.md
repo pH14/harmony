@@ -12,11 +12,25 @@ priority masking, and the virtual timer's compare value. Arbitration selects
 the highest-priority deliverable interrupt and breaks ties by lowest INTID.
 Timer deadlines are converted between counter ticks and V-time with integer
 arithmetic.
+The distributor's SPI trigger configuration is readable and writable through
+`GICD_ICFGR`; an edge input latches on a low-to-high transition, while a level
+input stays pending while asserted. Redistributor SGI/PPI trigger configuration
+is read-only. SGIs start edge-triggered; PPIs and SPIs start level-triggered.
+The initial SPI level behavior remains until the guest programs an edge trigger.
 
 `GicState` is the complete fixed-size snapshot record. Restore validates the
-configuration and clears state beyond the configured SPI limit. The firing
+configuration and clears state beyond the configured SPI limit. It retains the
+trigger configuration for every implemented INTID. The firing
 deadline is derived from the current V-time and timer registers rather than
 stored in the state record.
+The record also carries the GIC CPU-interface binary points, control, group
+enables, and active-priority registers needed by KVM's in-kernel controller.
+The userspace controller's current Group-1 arbitration uses its own PMR and
+active INTID state; these additional CPU-interface fields remain zero on HVF.
+`input_unmasked` checks the individual input's distributor, redistributor,
+group, active, and PMR conditions without applying the userspace model's running
+priority. `vmm-core` uses that check before applying KVM's active-priority and
+binary-point state to its clockevent idle decision.
 
 The model covers SGIs, PPIs, and configured SPIs for one security state and one
 redistributor. Group 0/FIQ, LPIs, interrupt routing, SGI generation through

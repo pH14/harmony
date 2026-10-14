@@ -15,20 +15,31 @@ machine for a seed. `state_hash` covers all architectural state. The separate
 seed-sensitive output without confusing latent PRNG/device state for an
 observable difference.
 
-`compare_runs` hashes both machines at a caller-selected interval until they
-halt or reach a limit. It reports identical runs, a checkpoint bracket, or a
-halt-count mismatch, and records whether the limit—not termination—ended the
-comparison. `bisect_divergence` verifies the bracket endpoints and binary
-searches fresh executions in `O(log(hi - lo))` probes. Its first-divergence
-claim assumes the observed difference remains persistent within the bracket.
+`compare_runs` checks both machines immediately after spawn, then hashes them
+at a caller-selected interval until they halt or reach a limit. It reports
+identical runs, a checkpoint bracket, or a halt-count mismatch, and records
+whether the limit—not termination—ended the
+comparison. A zero-work mismatch is reported even when the limit is zero.
+If both machines have already halted at the same work count, the report records
+termination for any limit without comparing another checkpoint.
+`bisect_divergence` checks the initial state when the lower bound is zero,
+returns zero if the machines already differ there, and otherwise verifies the
+bracket endpoints and binary searches fresh executions in `O(log(hi - lo))`
+probes. Its first-divergence claim assumes the observed difference remains
+persistent within the bracket.
 
 ## Reference machines
 
 `ToyMachine` is a tiny deterministic register VM with eight registers, 64 KiB
 of memory, a program counter, output log, seeded xorshift64* state, and one work
-unit per retired instruction. Its instruction set and state-hash layout are
-stable and fully exercised by the harness tests. `ToyFactory` and
-`generate_program` create repeatable programs for bounded comparisons.
+unit per retired instruction. An empty program halts at work zero; falling past
+the final instruction or jumping beyond the program halts at that instruction's
+work boundary. Its state hash also includes the complete
+instruction program, so two machines with identical registers and memory but
+different future instructions differ at work zero. Its instruction set and
+state-hash layout are stable and fully exercised by the harness tests.
+`ToyFactory` and `generate_program` create repeatable programs for bounded
+comparisons.
 
 `FlakyFactory` wraps a `Perturbable` machine and applies one selected
 `Perturbation` at a work boundary. It supports register/PRNG XOR and forced

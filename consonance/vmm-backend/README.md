@@ -63,6 +63,59 @@ stateful MSR block. Restore rejects mismatched copies during preflight, before
 retiring a staged write completion or changing KVM state; otherwise the later
 MSR write silently replaces the special-register value. Coherent copies remain
 restorable and read back with the same values.
+SYSENTER CS is a 32-bit VMCS field, while SYSENTER ESP and EIP are virtual
+addresses. KVM can accept wider values through `KVM_SET_MSRS` but return a
+truncated or sign-extended value on the next save. Restore preflight rejects a
+nonzero upper half of CS and noncanonical ESP or EIP values before changing
+the vCPU. KVM canonicalizes ESP and EIP at its host LA57 capability width,
+independent of the guest CPUID width. SVM also discards their upper halves for
+AMD-compatible guests. To cover older kernels, preflight requires 32-bit
+values on SVM unless the guest advertises the GenuineIntel vendor.
+CR8 holds a four-bit task-priority value. KVM also accepts larger values in
+`KVM_SET_SREGS2` but reads them back changed, so restore rejects those values
+during preflight.
+RFLAGS bit 1 is fixed at one, while bits 3, 5, 15, and 22 through 63 are
+reserved. KVM accepts a cleared bit 1 through `KVM_SET_REGS` and reads it
+back set. It also accepts reserved bits but rejects guest entry with them set.
+Restore preflight rejects both cases before applying any vCPU state.
+The VM flag is valid only for virtual-8086 execution in protected mode; KVM
+accepts it in real or long mode but fails the next guest entry. Preflight
+rejects those mode combinations before restore.
+CR4.PCIDE requires IA-32e paging: CR0.PG, CR4.PAE, and EFER.LMA must all be
+set. KVM accepts PCIDE without that mode in `KVM_SET_SREGS2`, then fails the
+next VM entry before the guest executes. Restore rejects the combination
+during preflight; a valid long-mode PCIDE state remains restorable.
+Segment type and DPL fields have four-bit and two-bit encodings. KVM accepts
+larger values through `KVM_SET_SREGS2` and silently truncates them on the next
+save. Restore checks all eight segments before applying any vCPU state.
+The present, DB, S, L, G, AVL, and unusable flags are one-bit fields and receive
+the same preflight check; KVM otherwise accepts larger values and reads them
+back changed.
+A segment with the present flag clear must be marked unusable. An unusable
+segment keeps only its base and selector; its other fields are zero. KVM
+normalizes other combinations during save, so restore checks this shape first.
+The XSAVE header's reserved bytes 528 through 575 must be zero. KVM rejects a
+nonzero byte at `KVM_SET_XSAVE` after earlier restore writes, so preflight
+checks that range before changing the vCPU.
+KVM restore also requires standard XSAVE layout, state bits from its supported
+CPUID mask, and no reserved MXCSR bits. These inputs likewise fail at
+`KVM_SET_XSAVE` after earlier writes, so preflight checks them first. The pure
+XSAVE image helper can retain a compacted image for non-KVM callers; the KVM
+restore path rejects it because its ioctl accepts standard layout only.
+The vCPU event validity flags sent to KVM must match the flags KVM reports
+for the VM. The restore adapter always adds the payload-valid bit. Without it,
+KVM drops a pending exception and its payload; a typed snapshot may omit that
+selector while retaining the same event state. Preflight compares the
+effective KVM write mask before any state write.
+Event preflight also requires zero software-interrupt and SIPI fields that KVM
+never reports, an interrupt shadow using only the STI and MOV-SS bits, at most
+two pending NMIs, and canonical one-bit event fields. It also rejects a triple
+fault when the VM lacks that event capability. KVM otherwise accepts some of
+these values and changes them on the next save.
+KVM clears an exception payload marker when no exception is pending and ignores
+an inside-NMI marker outside SMM. This backend uses a userspace LAPIC, so KVM
+cannot retain a latched INIT event either. Preflight rejects those event forms
+before any restore write and accepts KVM-captured canonical events.
 A nested-host restore first installs the vendor's inactive nested state.
 The live vCPU may be in L2 or in VMX operation, and KVM leaves nested
 operation by loading VMCS12 host state or switching to VMCB01. Doing that
@@ -101,9 +154,10 @@ The inner process and VM remain allocated. Ordinary guests use the kernel
 bitmap directly. Portable tests and Miri cover payload and mapping preservation,
 preflight before mutation, operation order and stopping on errors. The live
 matrix checks all RAM bytes, while recorded search exercises longer histories.
-Any error during a nested dirty drain, including its read/validation prefix,
-or during CPU-state mutation poisons that backend. A drain may already have
-cleared part of the dirty log when a later operation fails.
+Any error during an x86 KVM dirty drain, including a nested-state read or
+validation failure, poisons that backend. A later slot failure may leave earlier
+dirty bits cleared, so retrying cannot recover the complete page set. Errors
+during any x86 CPU-state restore mutation also poison the backend.
 Further entry, preparation, capture and restore fail; a deleted slot cannot
 be reused after an incomplete reload. Portable fault injection exercises each
 slot-removal/replacement error and the final nested-state installation boundary.
@@ -127,6 +181,11 @@ required by the same instruction. Callers service these continuations until `fin
 `None` before exposing a stopped execution. No completion entry executes the
 successor instruction or injects an interrupt. An MSR fault queues its
 exception without executing the handler.
+The live serviced-exit regressions require exact CPU state at the stopped
+completion boundary. After guest continuation, they compare logical XSAVE
+presence alongside every CPU field; the MMIO and MSR cases also compare guest
+RAM bytewise. KVM can change raw presence bits for init-valued x87/SSE
+components on entry without changing their state.
 
 KVM construction enables the exception-payload API so pending exceptions remain
 distinct from injected ones and restores replace the complete exception record.
@@ -148,15 +207,32 @@ captured registers are past the access and a restore never leaves a completion
 to land on the restored registers. The backend counts and times those entries
 and reports the totals through `Backend::store_completions`, since they are
 host cost the exit table cannot see.
+HVF rejects a restore with PSTATE bits above bit 31 before changing registers:
+its CPSR setter accepts those bits but discards them on the next capture.
+Its FPCR and FPSR setters likewise discard bits above bit 31, so restore
+preflight rejects those values before changing the vCPU.
 
 `Backend::read_irq_mask` optionally reads the CPU's architectural IRQ mask
 without capturing a complete snapshot. `Some(true)` means the mask is set;
 `None` means the caller must obtain it from full state. This query does not
 enter the guest, acknowledge an IRQ, or test the interrupt controller's pending
 state. Errors propagate rather than falling back to another read. HVF reads
-`PSTATE.I` through one CPSR access and rejects pending completions before the
-read, as its snapshot capture does. Other backends currently return `None`.
+`PSTATE.I` through one CPSR access. ARM KVM completes any owed MMIO access and
+then reads PSTATE through one register ioctl instead of capturing the GIC and
+the rest of the vCPU. Both reject pending completions before the read. Other
+backends currently return `None`.
 The boxed backend forwards the query so live sessions use the same path.
+
+`Backend::read_arm64_gic_idle_state` reads only the in-kernel GIC fields needed
+to decide whether a selected PPI can wake an idle ARM guest: distributor Group
+1 enable, that PPI's group, enable, active, and priority fields, and the CPU
+interface's mask, Group 1 enable, binary point, control, and active-priority
+registers. ARM KVM uses this read after settling an owed MMIO access. It does
+not capture a vCPU or scan SPI routes. Snapshot capture continues to reject
+pending or asserted SPIs and nonzero SPI routes, while idle can still inspect
+the clockevent PPI in those guest states. The boxed backend forwards the
+targeted read, the ARM mock projects its held GIC state, and HVF and x86
+backends return no in-kernel GIC state.
 
 The ignored HVF `irq_mask_polling_matches_full_capture` comparison alternates
 full capture and direct reads in one binary, both alone and after each exit of
@@ -223,9 +299,18 @@ the guest runs, so a save taken after a restore reports a later value than the
 one restored, and it stays out of the state hash and the divergence components
 for that reason.
 
+The owned ARM guest cannot program its architected virtual timer controls.
+Both backends set `CNTV_CTL_EL0` to zero before guest entry and reject an
+enabled timer during capture or restore. This keeps a restored checkpoint from
+arming a host-time interrupt outside the Harmony clockevent path.
+
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.
+ARM KVM also rejects later guest entry, capture, restore and state observation
+if a register or GIC write fails during restore: a partially changed vCPU must
+not be reused as a coherent replay state. Shape rejection before the write
+sequence leaves the backend usable.
 
 `HvfBackend::set_policy` reads HVF's own value of each `ID_AA64*` feature
 register before the first policy writes it, and fails with
@@ -246,6 +331,70 @@ KVM leaves `MMFR0.ASIDBits` out of its writable ID register mask and fails
 `KVM_SET_ONE_REG` with `EINVAL` for any value other than the host's, so
 `LiveKvm::new` reads the vCPU's `ID_AA64MMFR0_EL1` after `KVM_ARM_VCPU_INIT` and
 reports that width.
+
+HVF answers `SMCCC_ARCH_FEATURES(ARCH_WORKAROUND_1/2/3)` as `1/-1/0`.
+ARM KVM's responses to these three queries depend on the host's Spectre-v2,
+Spectre-v4, and BHB states even when optional firmware bitmaps are disabled.
+After applying the guest ID-register policy, ARM KVM reads its three firmware
+workaround pseudo-registers and exposes their measured levels as backend
+capabilities. HVF exposes the equivalent fixed levels `2/0/1`. Hosts with other
+levels can boot, but the VMM binds those levels into snapshot compatibility and
+state identity so different firmware answers cannot share a replay state. The
+shared `arm64_sysreg_snapshot` hardware test executes all three queries in a
+guest and compares their responses with the exposed levels on both hosts. The
+owned arm64 Linux guest treats workaround 2's `-2` as unaffected by Spectre-v4
+but `-1` as vulnerable; its frozen CPU identity has no SSBS feature, so this
+answer controls retained mitigation state.
+
+ARM KVM handles PSCI 1.0 HVCs in-kernel. HVF implements its own single-vCPU
+PSCI handler. Their guest-visible answers differ: for example,
+`PSCI_FEATURES(CPU_SUSPEND)` returns `0` on KVM and `-1` on HVF, and
+`AFFINITY_INFO` for CPU 0 returns `0` on KVM and `-7` on HVF. Both backends
+expose an explicit PSCI profile capability. The shared
+`arm64_sysreg_snapshot` hardware test checks each profile against live guest
+HVC results. This profile is a replay compatibility boundary, not a claim that
+the two PSCI implementations have equal behavior.
+
+ARM KVM captures and restores the GIC CPU interface through the VGIC device
+registers: priority mask, both binary point registers, `ICC_CTLR_EL1`, both
+group enables, and every available Group-0 and Group-1 active-priority register.
+The number of active-priority registers follows the host's `PriBits` field.
+KVM cannot expose all active-priority slots when the host reports eight
+priority bits, so policy setup rejects that host before guest execution.
+Restore checks the immutable `ICC_CTLR_EL1` fields before changing vCPU state;
+those fields also enter the runtime contract. Full vCPU capture rejects
+`ICC_CTLR_EL1.CBPR=1`, because KVM does not expose the independent Group-1
+binary point hidden by that mode. This also makes run-end capture and state
+hashing fail closed if a guest sets CBPR. The ignored
+`guest_gic_cpu_interface_survives_fresh_restore` ARM KVM test exercises guest
+writes, cold restore, and this fail-closed boundary.
+The VGIC record also retains distributor SPI trigger configuration. Restore
+checks the immutable redistributor SGI/PPI configuration before changing vCPU
+state, then writes SPI configuration before the remaining distributor state.
+Policy setup programs KVM's initially edge-triggered SPIs to the common level
+baseline before first guest entry and verifies the device accepted the writes.
+The fixed SGI/PPI configuration is edge/level, respectively, on the measured
+ARM KVM host and in the userspace model.
+The ignored `guest_gic_spi_trigger_survives_fresh_restore` ARM KVM test compares
+guest readback of that baseline and of a programmed edge after uninterrupted
+execution and cold restore.
+The single-vCPU machine supports SPI routing only to affinity zero. The
+userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
+write inside its in-kernel VGIC, so capture reads both 32-bit KVM device-attribute
+words of every implemented SPI's 64-bit route and refuses a snapshot if either
+word is nonzero. Restore clears
+and verifies all SPI routes, including on a reused target that previously ran
+a guest with a nonzero route. The ignored
+`guest_nonzero_spi_route_rejects_capture_and_zero_route_restores` test checks
+guest readback, refusal, reused-target reset, and cold restore.
+KVM's VGIC can retain a pending SPI outside its vCPU delivery queue after a
+guest routes the SPI away, pends it, and routes it back. The same captured VGIC
+registers can then report different `ICC_HPPIR1_EL1` results. KVM capture and
+state hashing therefore refuse any pending SPI or asserted SPI input line, and
+restore rejects such a KVM GIC record before changing the target. The userspace
+GIC retains its own pending-SPI state. The ignored
+`routed_away_pending_spi_refuses_capture_and_restore` ARM KVM test compares the
+two live routing histories and verifies both refusal paths.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
@@ -452,16 +601,15 @@ is preserved. The original restore bitmap remains separately bound. This does
 not assert that raw guest XSAVE buffers with both bits absent are returned
 unchanged by the host UABI.
 
-The ignored `ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore` KVM regression
-round trips a valid YMM-present/SSE-absent state with MXCSR=0x3f80, captures raw
-KVM images, checks capture/restore byte preservation, and compares guest STMXCSR
-after continued and cold-restored runs. The guest value is reported, not assumed
-to match the imported MXCSR: a host may retain nondefault bytes in its KVM UABI
-yet initialize live MXCSR on guest entry when SSE presence is absent.
-It requires AVX and a fresh `XSAVE_MXCSR_REPORT_DIR`. `XSAVE_ENTRY_LONG_MODE=1`
-selects the production-mode SIB-addressed STMXCSR instruction; otherwise it uses
-the fixture's 16-bit real mode. This is a valid-state KVM round trip,
-not a claim that every host naturally emits that presence bitmap.
+KVM rejects a YMM-present/SSE-absent image with non-init MXCSR when publishing
+a snapshot or before restoring the vCPU. Ordinary register reads and guest
+execution remain available. A host using compacted restore can retain
+MXCSR=0x3f80 in its KVM UABI buffer while guest entry
+initializes live MXCSR to 0x1f80. A host using standard XRSTOR may restore that
+state locally, but the snapshot would not be portable to a compacted host. The
+ignored `ymm_without_sse_noninit_mxcsr_restore_rejects_atomically` regression checks
+that admission boundary on a live KVM vCPU. It requires AVX. Images with init
+MXCSR or SSE presence remain admissible.
 
 `natural_avx_mxcsr_survives_capture_and_restore` requires long mode. The guest
 sets nonzero YMM upper lanes with zero XMM lanes, loads MXCSR=0x3f80, and stops
@@ -469,9 +617,11 @@ at completed port I/O before capture. Both continued and cold-restored STMXCSR
 results must equal 0x3f80. The observed raw presence bitmap is retained rather
 than asserted to exclude SSE on every host.
 
-The imported-case observation is consistent with a compacted host restore:
+The rejected imported-case observation is consistent with a compacted host restore:
 [Intel SDM volume 1, sections 13.8.2, 13.11 and 13.12](https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf)
-specifies that compacted restore initializes MXCSR when SSE presence is clear.
+specifies that compacted restore initializes MXCSR when SSE presence is clear,
+while standard XRSTOR loads it when YMM is requested even if SSE presence is
+clear.
 Compacted save includes SSE presence for nondefault MXCSR. On ms02, host boot
 metadata confirms compacted FPU format; the natural test reports presence 6.
 The imported presence-4 case therefore does not establish naturally occurring

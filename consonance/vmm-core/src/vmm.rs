@@ -745,16 +745,20 @@ where
         <B::A as Vendor>::serial_capture(&self.devices)
     }
 
-    pub fn inspect_vcpu(&mut self) -> VcpuOf<B> {
+    pub fn inspect_vcpu(&mut self) -> Result<VcpuOf<B>, VmmError> {
         self.current_vcpu()
     }
 
-    pub fn has_inflight_event_injection(&mut self) -> bool {
-        <B::A as Vendor>::vcpu_has_inflight_injection(&self.current_vcpu())
+    pub fn has_inflight_event_injection(&mut self) -> Result<bool, VmmError> {
+        Ok(<B::A as Vendor>::vcpu_has_inflight_injection(
+            &self.current_vcpu()?,
+        ))
     }
 
-    pub fn has_active_event_injection(&mut self) -> bool {
-        <B::A as Vendor>::vcpu_has_active_injection(&self.current_vcpu())
+    pub fn has_active_event_injection(&mut self) -> Result<bool, VmmError> {
+        Ok(<B::A as Vendor>::vcpu_has_active_injection(
+            &self.current_vcpu()?,
+        ))
     }
 
     pub fn restore_guest_memory(&mut self, image: &[u8]) -> Result<(), VmmError> {
@@ -864,14 +868,7 @@ where
     }
 
     pub fn save_vm_state(&mut self) -> Result<<B::A as Vendor>::Snapshot, VmmError> {
-        self.ensure_snapshot_ready()?;
-        let vcpu = match &self.saved_state {
-            Some(s) => s.clone(),
-            None => self.backend.save()?,
-        };
-        <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
-        self.check_guest_mode(&vcpu)?;
-        self.build_snapshot_state(&vcpu)
+        self.capture_vm_state().map(|(snapshot, _)| snapshot)
     }
 
     pub(crate) fn capture_vm_state(
@@ -882,9 +879,19 @@ where
             Some(s) => s.clone(),
             None => self.backend.save()?,
         };
+        self.backend.validate_snapshot_state(&vcpu)?;
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
         self.check_guest_mode(&vcpu)?;
         let snapshot = self.build_snapshot_state(&vcpu)?;
+        if self.doorbell_pages.is_some()
+            && <B::A as Vendor>::project_snapshot_hash_parts(&snapshot)?
+                .doorbell
+                .is_none()
+        {
+            return Err(VmmError::ContractViolation(
+                "save_vm_state: mapped doorbell pages are absent from the VM state".into(),
+            ));
+        }
         Ok((snapshot, vcpu))
     }
 
@@ -976,13 +983,6 @@ where
             vendor: prep,
             vtime: vtime_commit,
         })
-    }
-
-    pub(crate) fn preflight_restore_vm_state(
-        &self,
-        s: &<B::A as Vendor>::Snapshot,
-    ) -> Result<(), VmmError> {
-        self.prepare_restore_vm_state(s).map(|_| ())
     }
 
     pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
@@ -1264,6 +1264,9 @@ where
             put_chunk(&mut out, b"VTIM", &encode_vtime(vt));
         }
         <B::A as Vendor>::hash_device_chunks(&vcpu, &self.devices, &mut out);
+        if let Some(contract) = <B::A as Vendor>::contract_identity_hash(self) {
+            put_chunk(&mut out, b"CNTR", &contract);
+        }
         if let Some(sdk) = &self.sdk {
             append_sdk_channel(&mut out, sdk, sdk_recorded)?;
         }
@@ -1292,20 +1295,80 @@ where
         Ok(out)
     }
 
+    pub(crate) fn project_state_blob_suffix_from_snapshot(
+        &self,
+        snapshot: &<B::A as Vendor>::Snapshot,
+        sdk: &SdkSnapshot,
+    ) -> Result<Vec<u8>, VmmError> {
+        let prepared = self.prepare_restore_vm_state(snapshot)?;
+        let parts = <B::A as Vendor>::project_snapshot_hash_parts(snapshot)?;
+        if self.doorbell_pages.is_some() != parts.doorbell.is_some() {
+            return Err(VmmError::ContractViolation(
+                "restore_vm_state: mapped doorbell pages have no matching snapshot state".into(),
+            ));
+        }
+        let vcpu = <B::A as Vendor>::logical_identity_vcpu(&prepared.vcpu)?;
+        let mut out = Vec::new();
+        if let Some(doorbell) = parts.doorbell {
+            put_chunk(&mut out, b"DOOR", &doorbell);
+        }
+        put_chunk(
+            &mut out,
+            b"VCPU",
+            &<B::A as Vendor>::encode_vcpu_chunk(&vcpu),
+        );
+        put_chunk(&mut out, b"SERL", &parts.serial);
+        let mut device = parts.device;
+        append_terminal(&mut device, prepared.engine_state.terminal);
+        put_chunk(&mut out, b"DEV\0", &device);
+        if self.vtime.is_some() {
+            put_chunk(
+                &mut out,
+                b"VTIM",
+                &encode_vtime_parts(
+                    snapshot.vtime().guest_hz,
+                    snapshot.vtime().guest_base,
+                    parts.clock_offset,
+                    snapshot.vtime().snapshot_vns,
+                    snapshot.entropy_bytes(),
+                ),
+            );
+        }
+        out.extend_from_slice(&parts.vendor_chunks);
+        if let Some(contract) = <B::A as Vendor>::contract_identity_hash(self) {
+            put_chunk(&mut out, b"CNTR", &contract);
+        }
+        append_sdk_snapshot(&mut out, sdk);
+        if let Some(pvclock) = parts.pvclock {
+            let mut bytes = 1_u64.to_le_bytes().to_vec();
+            match pvclock.gpa {
+                Some(gpa) => {
+                    bytes.push(1);
+                    bytes.extend_from_slice(&gpa.to_le_bytes());
+                }
+                None => bytes.push(0),
+            }
+            bytes.push(u8::from(pvclock.registrable));
+            bytes.push(u8::from(pvclock.armed));
+            put_chunk(&mut out, b"PVCK", &bytes);
+        }
+        if prepared.engine_state.sdk_snapshot_reentry_required {
+            put_chunk(&mut out, b"SDRE", &[1]);
+        }
+        if self.snapshot_hashing {
+            let mut logical_snapshot = snapshot.clone();
+            <B::A as Vendor>::project_logical_snapshot(&mut logical_snapshot, &vcpu);
+            let bytes =
+                <<B::A as Vendor>::Snapshot as SnapshotRecords>::encode_for_hash(&logical_snapshot)
+                    .map_err(SnapshotError::from)?;
+            put_chunk(&mut out, b"VMST", &bytes);
+        }
+        Ok(out)
+    }
+
     fn encode_device_terminal(&self) -> Vec<u8> {
         let mut v = <B::A as Vendor>::encode_device_state(&self.devices);
-        match self.terminal {
-            None => v.push(0),
-            Some(TerminalReason::DebugExit { code }) => {
-                v.push(1);
-                v.push(code);
-            }
-            Some(TerminalReason::Idle) => v.push(2),
-            Some(TerminalReason::Shutdown) => v.push(3),
-            Some(TerminalReason::SdkStop) => {
-                unreachable!("SdkStop never latches as the VM terminal")
-            }
-        }
+        append_terminal(&mut v, self.terminal);
         v
     }
 
@@ -1324,13 +1387,13 @@ where
         Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
     }
 
-    pub fn state_components(&mut self) -> Vec<(&'static str, [u8; 32])> {
+    pub fn state_components(&mut self) -> Result<Vec<(&'static str, [u8; 32])>, VmmError> {
         fn dig(bytes: &[u8]) -> [u8; 32] {
             let mut h = Sha256::new();
             h.update(bytes);
             h.finalize().into()
         }
-        let vcpu = self.current_vcpu();
+        let vcpu = self.current_vcpu()?;
         let mut out: Vec<(&'static str, [u8; 32])> = Vec::new();
 
         let ram = self.ram.as_bytes();
@@ -1355,6 +1418,9 @@ where
         ));
         out.push(("dev", dig(&self.encode_device_terminal())));
         <B::A as Vendor>::device_components(&vcpu, &self.devices, &mut out);
+        if let Some(contract) = <B::A as Vendor>::contract_identity_hash(self) {
+            out.push(("contract", contract));
+        }
         if let Some(vt) = &self.vtime {
             let mut cfg = 1_u64.to_le_bytes().to_vec();
             for x in [vt.cfg.guest_hz, vt.cfg.guest_base, vt.guest_clock_offset] {
@@ -1364,7 +1430,7 @@ where
             out.push(("vtim:eff-vns", dig(&vt.clock.vns().to_le_bytes())));
             out.push(("vtim:entropy", dig(&vt.entropy.save_state())));
         }
-        out
+        Ok(out)
     }
 
     pub fn report_stream(&self) -> &[u32] {
@@ -1652,7 +1718,7 @@ where
         Ok(())
     }
 
-    pub(crate) fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
+    pub(crate) fn pvclock_registration_status(&self, gpa: u64) -> (Status, Option<u32>) {
         if !self.pvclock_available() {
             return (Status::UnknownService, None);
         }
@@ -1662,9 +1728,17 @@ where
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
+        (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION))
+    }
+
+    pub(crate) fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
+        let result = self.pvclock_registration_status(gpa);
+        if result.0 != Status::Ok {
+            return result;
+        }
         let pv = self.pvclock.as_mut().expect("checked above");
         pv.gpa = Some(gpa);
-        (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION))
+        result
     }
 
     fn pvclock_stamp(&mut self, kind: StampKind) -> Result<(), VmmError> {
@@ -2409,7 +2483,7 @@ where
         if <B::A as Vendor>::pending_deliverable_interrupt(self)? {
             return Ok(IdleAction::DeliverPending);
         }
-        let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self);
+        let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self)?;
         let wake = match (timer, self.idle_wake_vns) {
             (Some(timer), Some(host)) => Some(timer.min(host)),
             (Some(timer), None) => Some(timer),
@@ -2447,10 +2521,10 @@ where
         self.vtime.as_ref().map(VtimeWiring::virtual_time_vns)
     }
 
-    pub(crate) fn current_vcpu(&mut self) -> VcpuOf<B> {
+    pub(crate) fn current_vcpu(&mut self) -> Result<VcpuOf<B>, VmmError> {
         match &self.saved_state {
-            Some(s) => s.clone(),
-            None => self.backend.save().unwrap_or_default(),
+            Some(s) => Ok(s.clone()),
+            None => Ok(self.backend.save()?),
         }
     }
 }
@@ -2469,15 +2543,46 @@ pub(crate) fn put_chunk(out: &mut Vec<u8>, tag: &[u8; 4], bytes: &[u8]) {
 }
 
 fn encode_vtime(vt: &VtimeWiring) -> Vec<u8> {
+    encode_vtime_parts(
+        vt.cfg.guest_hz,
+        vt.cfg.guest_base,
+        vt.guest_clock_offset,
+        vt.clock.vns(),
+        &vt.entropy.save_state(),
+    )
+}
+
+fn encode_vtime_parts(
+    guest_hz: u64,
+    guest_base: u64,
+    clock_offset: u64,
+    vns: u64,
+    entropy: &[u8],
+) -> Vec<u8> {
     let mut v = Vec::new();
     v.push(1);
     v.extend_from_slice(&1_u64.to_le_bytes());
-    for x in [vt.cfg.guest_hz, vt.cfg.guest_base, vt.guest_clock_offset] {
+    for x in [guest_hz, guest_base, clock_offset] {
         v.extend_from_slice(&x.to_le_bytes());
     }
-    v.extend_from_slice(&vt.clock.vns().to_le_bytes());
-    v.extend_from_slice(&vt.entropy.save_state());
+    v.extend_from_slice(&vns.to_le_bytes());
+    v.extend_from_slice(entropy);
     v
+}
+
+fn append_terminal(out: &mut Vec<u8>, terminal: Option<TerminalReason>) {
+    match terminal {
+        None => out.push(0),
+        Some(TerminalReason::DebugExit { code }) => {
+            out.push(1);
+            out.push(code);
+        }
+        Some(TerminalReason::Idle) => out.push(2),
+        Some(TerminalReason::Shutdown) => out.push(3),
+        Some(TerminalReason::SdkStop) => {
+            unreachable!("SdkStop never latches as the VM terminal")
+        }
+    }
 }
 
 fn append_sdk_channel(
@@ -2493,6 +2598,36 @@ fn append_sdk_channel(
             &captured
         }
     };
+    append_sdk_hash_channel(
+        v,
+        recorded,
+        &sdk.events,
+        sdk.pending_stop.as_ref(),
+        sdk.pending_snapshot,
+        &sdk.coverage_thresholds,
+    );
+    Ok(())
+}
+
+fn append_sdk_snapshot(v: &mut Vec<u8>, sdk: &SdkSnapshot) {
+    append_sdk_hash_channel(
+        v,
+        &sdk.recorded,
+        &sdk.events,
+        sdk.pending_stop.as_ref(),
+        sdk.pending_snapshot,
+        &sdk.coverage_thresholds,
+    );
+}
+
+fn append_sdk_hash_channel(
+    v: &mut Vec<u8>,
+    recorded: &channel::RecordedState,
+    events: &[(u64, u32, Vec<u8>)],
+    pending_stop: Option<&SdkStop>,
+    pending_snapshot: bool,
+    coverage_thresholds: &BTreeMap<u32, u64>,
+) {
     v.extend_from_slice(b"SDK\0");
     let chunk_length = v.len();
     v.extend_from_slice(&0_u64.to_le_bytes());
@@ -2502,7 +2637,7 @@ fn append_sdk_channel(
     recorded.encode_into(v);
     let recorded_len = v.len() - recorded_start;
     v[chunk_start..recorded_start].copy_from_slice(&(recorded_len as u64).to_le_bytes());
-    match &sdk.pending_stop {
+    match pending_stop {
         None => v.push(0),
         Some(SdkStop::Assertion { id, data }) => {
             v.push(1);
@@ -2525,19 +2660,28 @@ fn append_sdk_channel(
             v.extend_from_slice(question.payload());
         }
     }
-    v.push(u8::from(sdk.pending_snapshot));
-    if !sdk.coverage_thresholds.is_empty() {
+    v.push(u8::from(pending_snapshot));
+    if !coverage_thresholds.is_empty() {
         v.extend_from_slice(b"COVR");
-        let count = u64::try_from(sdk.coverage_thresholds.len()).unwrap_or(u64::MAX);
+        let count = u64::try_from(coverage_thresholds.len()).unwrap_or(u64::MAX);
         v.extend_from_slice(&count.to_le_bytes());
-        for (thread, threshold) in &sdk.coverage_thresholds {
+        for (thread, threshold) in coverage_thresholds {
             v.extend_from_slice(&thread.to_le_bytes());
             v.extend_from_slice(&threshold.to_le_bytes());
         }
     }
+    if !events.is_empty() {
+        v.extend_from_slice(b"EVTS");
+        v.extend_from_slice(&(events.len() as u64).to_le_bytes());
+        for (moment, local, payload) in events {
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&local.to_le_bytes());
+            v.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            v.extend_from_slice(payload);
+        }
+    }
     let chunk_len = v.len() - chunk_start;
     v[chunk_length..chunk_start].copy_from_slice(&(chunk_len as u64).to_le_bytes());
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2617,6 +2761,110 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn imported_hash_projection_matches_live_x86_chunks() {
+        for snapshot_hashing in [false, true] {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 37).unwrap());
+            vmm.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            vmm.enable_pvclock();
+            enable_nominal(&mut vmm, 37);
+            if snapshot_hashing {
+                vmm.wire_snapshot_hashing();
+            }
+            vmm.devices.uart.write(0x3f8, b'x');
+            vmm.devices.uart.write(0x3fb, 0x80);
+            vmm.devices.uart.write(0x3f9, 0x5a);
+            vmm.inject_serial_input(b"queued");
+            let mut vcpu = vmm.backend.save().unwrap();
+            vcpu.events = vmm_backend::VcpuEvents {
+                exception_pending: 1,
+                exception_nr: 14,
+                exception_has_error_code: 1,
+                exception_error_code: 0xcafe,
+                ..Default::default()
+            };
+            vmm.backend.set_state(vcpu);
+            vmm.sdk_snapshot_reentry_required = true;
+            let sdk = vmm.sdk.as_mut().unwrap();
+            sdk.events.push((39, 7, vec![4, 5, 6]));
+            sdk.pending_snapshot = true;
+            sdk.pending_stop = Some(SdkStop::Decision {
+                moment: 41,
+                seq: 2,
+                question: channel::Question::with_request_id(7, 9, vec![1, 2]).unwrap(),
+            });
+            sdk.coverage_thresholds.insert(3, 17);
+            let (snapshot, vcpu) = vmm.capture_vm_state().unwrap();
+            let sdk = vmm.sdk_snapshot().unwrap().unwrap();
+            let live = vmm
+                .state_blob_suffix_from_vcpu(&vcpu, Some(&sdk.recorded))
+                .unwrap();
+            let projected = vmm
+                .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
+                .unwrap();
+            assert_eq!(projected, live);
+        }
+    }
+
+    #[test]
+    fn imported_hash_projection_matches_live_arm_chunks() {
+        use vmm_backend::{Arm64Policy, MockArm64Backend};
+
+        for snapshot_hashing in [false, true] {
+            let mut backend = MockArm64Backend::new();
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(TEST_RAM).unwrap());
+            vmm.ram_base_gpa = crate::vendor::arm64::board::RAM_BASE;
+            vmm.map_doorbell_pages().unwrap();
+            vmm.doorbell_pages.as_mut().unwrap().as_mut_bytes()[0] = 0x5a;
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 37).unwrap());
+            vmm.enable_pvclock();
+            vmm.devices.gic = Some(crate::vendor::arm64::board::new_gic());
+            vmm.devices.clockevent.deadline = Some(113);
+            vmm.enable_sdk(nominal_env(37), &ServiceConfig::default());
+            if snapshot_hashing {
+                vmm.wire_snapshot_hashing();
+            }
+            vmm.devices.uart.write(0, u32::from(b'x'));
+            vmm.inject_serial_input(b"queued");
+            let mut vcpu = vmm.backend.save().unwrap();
+            vcpu.sysregs.tpidr_el1 = 0x1234_5678;
+            vcpu.vtimer.counter = 0x9abc_def0;
+            vmm.backend.set_state(vcpu);
+            vmm.sdk_snapshot_reentry_required = true;
+            let sdk = vmm.sdk.as_mut().unwrap();
+            sdk.events.push((39, 7, vec![4, 5, 6]));
+            sdk.pending_snapshot = true;
+            sdk.pending_stop = Some(SdkStop::Assertion {
+                id: 41,
+                data: vec![1, 2],
+            });
+            sdk.coverage_thresholds.insert(3, 17);
+            let (snapshot, vcpu) = vmm.capture_vm_state().unwrap();
+            let sdk = vmm.sdk_snapshot().unwrap().unwrap();
+            let live = vmm
+                .state_blob_suffix_from_vcpu(&vcpu, Some(&sdk.recorded))
+                .unwrap();
+            let projected = vmm
+                .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
+                .unwrap();
+            assert_eq!(projected, live);
+            let mut mismatched = snapshot.clone();
+            mismatched.contract_hash[0] ^= 1;
+            assert!(matches!(
+                vmm.project_state_blob_suffix_from_snapshot(&mismatched, &sdk),
+                Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+            ));
         }
     }
 
@@ -3596,6 +3844,18 @@ mod tests {
     }
 
     #[test]
+    fn x86_mapped_doorbell_cannot_seal_without_a_device_record() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        vmm.ram_base_gpa = 0x4000_0000;
+        vmm.map_doorbell_pages().unwrap();
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::ContractViolation(reason))
+                if reason == "save_vm_state: mapped doorbell pages are absent from the VM state"
+        ));
+    }
+
+    #[test]
     fn state_components_localizes_a_doorbell_only_divergence() {
         let make = || {
             let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -3609,8 +3869,8 @@ mod tests {
 
         assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
-        let ca = a.state_components();
-        let cb = b.state_components();
+        let ca = a.state_components().unwrap();
+        let cb = b.state_components().unwrap();
         let da = ca
             .iter()
             .find(|(l, _)| *l == "doorbell")
@@ -3636,6 +3896,7 @@ mod tests {
         assert!(
             !plain
                 .state_components()
+                .unwrap()
                 .iter()
                 .any(|(l, _)| *l == "doorbell")
         );
@@ -4142,11 +4403,15 @@ mod tests {
 
         vmm.backend.set_state(resumed_state.clone());
         assert_eq!(
-            vmm.current_vcpu(),
+            vmm.current_vcpu().unwrap(),
             resumed_state,
             "state_blob reads the live resumed vCPU, not the stale stop snapshot"
         );
-        assert_ne!(vmm.current_vcpu(), stop_state, "not the stop-time vCPU");
+        assert_ne!(
+            vmm.current_vcpu().unwrap(),
+            stop_state,
+            "not the stop-time vCPU"
+        );
     }
 
     #[test]
@@ -4328,7 +4593,7 @@ mod tests {
     #[test]
     fn restore_vtime_does_not_touch_backend_save() {
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![])),
+            SaveFailBackend(configured_mock(vec![]), false),
             GuestRam::new(0x1000).unwrap(),
         );
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
@@ -4745,8 +5010,12 @@ mod tests {
     #[test]
     fn state_components_breakdown_is_stable_and_covers_state() {
         let mut v = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        let comps = v.state_components();
-        assert_eq!(comps, v.state_components(), "pure: two calls agree");
+        let comps = v.state_components().unwrap();
+        assert_eq!(
+            comps,
+            v.state_components().unwrap(),
+            "pure: two calls agree"
+        );
         let labels: Vec<&str> = comps.iter().map(|(l, _)| *l).collect();
         for expect in [
             "RAM:0..64K",
@@ -4771,15 +5040,26 @@ mod tests {
         );
         let mut w = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         w.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
-        let wlabels: Vec<&str> = w.state_components().iter().map(|(l, _)| *l).collect();
+        let wlabels: Vec<&str> = w
+            .state_components()
+            .unwrap()
+            .iter()
+            .map(|(l, _)| *l)
+            .collect();
         for expect in ["vtim:cfg", "vtim:eff-vns", "vtim:entropy"] {
             assert!(wlabels.contains(&expect), "missing {expect}: {wlabels:?}");
         }
         let mut v2 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
-        assert_eq!(v.state_components(), v2.state_components());
+        assert_eq!(
+            v.state_components().unwrap(),
+            v2.state_components().unwrap()
+        );
         let mut v3 = Vmm::new(configured_mock(vec![]), GuestRam::new(0x1000).unwrap());
         v3.report_stream = vec![0xDEAD_BEEF];
-        assert_eq!(v.state_components(), v3.state_components());
+        assert_eq!(
+            v.state_components().unwrap(),
+            v3.state_components().unwrap()
+        );
 
         let mut raw_backend = configured_mock(vec![]);
         let raw_state = VcpuState {
@@ -4790,6 +5070,7 @@ mod tests {
         let mut raw = Vmm::new(raw_backend, GuestRam::new(0x1000).unwrap());
         assert!(
             raw.state_components()
+                .unwrap()
                 .iter()
                 .any(|(label, _)| *label == "xsave-restore-bv")
         );
@@ -4801,6 +5082,7 @@ mod tests {
         let mut raw_two = Vmm::new(raw_two_backend, GuestRam::new(0x1000).unwrap());
         let component = |vmm: &mut Vmm<MockBackend>, name| {
             vmm.state_components()
+                .unwrap()
                 .into_iter()
                 .find(|(label, _)| *label == name)
                 .unwrap_or_else(|| panic!("missing diagnostic component {name}"))
@@ -4910,6 +5192,128 @@ mod tests {
         );
         assert!(!stock.lapic_wired(), "stock Vmm has no xAPIC wired");
         assert!(matches!(stock.step(), Err(VmmError::ContractViolation(_))));
+    }
+
+    #[test]
+    fn xapic_rejects_non_dword_accesses_before_changing_device_state() {
+        for size in [8, 1, 2, 0] {
+            for write in [None, Some(0x1_0000_0020)] {
+                let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_TPR)),
+                    size,
+                    write,
+                })]);
+                v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+                let before = v.devices.lapic.as_ref().unwrap().snapshot();
+                let before_vns = v.now_vns().unwrap();
+                assert!(
+                    matches!(v.step(), Err(VmmError::ContractViolation(_))),
+                    "xAPIC size {size}, write {write:?} should fail closed"
+                );
+                assert_eq!(v.devices.lapic.as_ref().unwrap().snapshot(), before);
+                assert_eq!(v.now_vns().unwrap(), before_vns);
+            }
+        }
+
+        let mut valid = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_TPR)),
+            size: 4,
+            write: Some(0x20),
+        })]);
+        valid.step().unwrap();
+        assert_eq!(valid.devices.lapic.as_ref().unwrap().snapshot().tpr, 0x20);
+    }
+
+    #[test]
+    fn rejected_x86_port_accesses_do_not_advance_virtual_time() {
+        let rejected = [
+            X86Exit::Io {
+                port: 0x3F8,
+                size: 2,
+                write: Some(u32::from(b'A')),
+            },
+            X86Exit::Io {
+                port: 0x3F8,
+                size: 2,
+                write: None,
+            },
+            X86Exit::Io {
+                port: 0x1337,
+                size: 1,
+                write: Some(1),
+            },
+            X86Exit::Io {
+                port: 0x1337,
+                size: 1,
+                write: None,
+            },
+        ];
+        for exit in rejected {
+            let mut v = linux_vmm(vec![Exit::Arch(exit)]);
+            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+            let before = v.now_vns().unwrap();
+            assert!(matches!(v.step(), Err(VmmError::ContractViolation(_))));
+            assert_eq!(v.now_vns().unwrap(), before, "exit {exit:?}");
+        }
+    }
+
+    #[test]
+    fn legacy_pic_ports_reject_non_byte_io_before_state_or_time_changes() {
+        for (port, valid_read) in [(0x0020, 0), (0x0021, 0xFE), (0x00A0, 0), (0x00A1, 0xFE)] {
+            for size in [2, 4, 8, 0] {
+                let wide_value = if valid_read == 0 { 0xEF00 } else { 0xEF };
+                for write in [Some(wide_value), None] {
+                    let mut v = linux_vmm(vec![Exit::Arch(X86Exit::Io { port, size, write })]);
+                    v.wire_vtime(
+                        VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap(),
+                    );
+                    let before_vns = v.now_vns().unwrap();
+                    let before_imr = v.devices.legacy.as_ref().unwrap().pic_imr();
+                    assert!(
+                        matches!(v.step(), Err(VmmError::ContractViolation(_))),
+                        "PIC port {port:#06x}, size {size}, write {write:?} must fail closed"
+                    );
+                    assert_eq!(v.now_vns().unwrap(), before_vns);
+                    assert_eq!(v.devices.legacy.as_ref().unwrap().pic_imr(), before_imr);
+                    assert!(v.backend.completions().is_empty());
+                }
+            }
+
+            let mut valid = linux_vmm(vec![
+                Exit::Arch(X86Exit::Io {
+                    port,
+                    size: 1,
+                    write: Some(0xFE),
+                }),
+                Exit::Arch(X86Exit::Io {
+                    port,
+                    size: 1,
+                    write: None,
+                }),
+                Exit::Common(CommonExit::Idle),
+            ]);
+            valid.run().unwrap();
+            assert_eq!(valid.backend.completions(), &[Completion::Read(valid_read)]);
+        }
+    }
+
+    #[test]
+    fn rejected_xapic_offsets_do_not_advance_virtual_time() {
+        for offset in [0x004, 0xFF4] {
+            for write in [None, Some(0x20)] {
+                let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(APIC_MMIO_BASE + offset),
+                    size: 4,
+                    write,
+                })]);
+                v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+                let before = v.now_vns().unwrap();
+                let lapic = v.devices.lapic.as_ref().unwrap().snapshot();
+                assert!(matches!(v.step(), Err(VmmError::ContractViolation(_))));
+                assert_eq!(v.now_vns().unwrap(), before, "offset {offset:#x}");
+                assert_eq!(v.devices.lapic.as_ref().unwrap().snapshot(), lapic);
+            }
+        }
     }
 
     #[test]
@@ -5202,6 +5606,36 @@ mod tests {
     });
 
     #[test]
+    fn pending_serial_input_keeps_interruptible_idle_guest_runnable() {
+        let mut mock = configured_mock(vec![
+            UNMASK_IRQ4,
+            Exit::Arch(X86Exit::Io {
+                port: 0x03F9,
+                size: 1,
+                write: Some(0x01),
+            }),
+            Exit::Common(CommonExit::Idle),
+        ]);
+        mock.set_defer_accept(true);
+        mock.set_state(VcpuState {
+            regs: vmm_backend::VcpuRegs {
+                rflags: RFLAGS_IF | 0x2,
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let mut v = lapic_vmm(mock);
+        v.inject_serial_input(b"x");
+
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.pending_serial_vector(), Some(COM1_IRQ_VECTOR));
+        assert_eq!(v.step().unwrap(), Step::Continued);
+        assert_eq!(v.backend.pending_irq(), Some(COM1_IRQ_VECTOR));
+        assert!(v.terminal.is_none());
+    }
+
+    #[test]
     fn serial_thre_interrupt_injects_com1_vector() {
         let mut mock = configured_mock(vec![
             UNMASK_IRQ4,
@@ -5358,6 +5792,43 @@ mod tests {
             vec![3],
             "fired inside the crossing (ISR-read) event"
         );
+    }
+
+    #[test]
+    fn changing_lapic_timer_vector_retags_the_live_schedule() {
+        let mut exits = arm_timer_exits(1000);
+        exits.push(Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_LVT_TIMER)),
+            size: 4,
+            write: Some(0x41),
+        }));
+        exits.push(Exit::Common(CommonExit::Idle));
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        mock.set_defer_accept(true);
+        let mut v = virtual_time_lapic_vmm(mock);
+        v.run().expect("run");
+
+        assert_eq!(v.backend.pending_irq(), Some(0x41));
+        let trace = v.virtual_time_trace().expect("virtual_time trace wired");
+        let schedule = trace.schedule();
+        assert_eq!(schedule.len(), 2, "vector rewrite replaces the schedule");
+        assert_eq!(schedule[0].interrupt_id, 0x40);
+        assert_eq!(schedule[0].canceled_at_event, Some(3));
+        assert_eq!(schedule[1].interrupt_id, 0x41);
+        assert_eq!(schedule[1].armed_for_event, 3);
+        assert_eq!(schedule[1].deadline_vns, schedule[0].deadline_vns);
+        let deliveries: Vec<_> = trace
+            .normalized_log()
+            .events
+            .iter()
+            .flat_map(|event| &event.interrupts)
+            .collect();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].interrupt_id, 0x41);
+        crate::virtual_time::check_delivery_placement(schedule, trace.normalized_log())
+            .expect("the retagged vector is delivered at its unchanged deadline");
     }
 
     #[test]
@@ -5541,7 +6012,10 @@ mod tests {
         exits.push(Exit::Common(CommonExit::Idle));
         let mut inner = configured_mock(exits);
         inner.set_state(if_set_state());
-        let mut v = Vmm::new(SaveFailBackend(inner), GuestRam::new(0x1000).unwrap());
+        let mut v = Vmm::new(
+            SaveFailBackend(inner, false),
+            GuestRam::new(0x1000).unwrap(),
+        );
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -5894,7 +6368,7 @@ mod tests {
         ));
     }
 
-    struct SaveFailBackend(MockBackend);
+    struct SaveFailBackend(MockBackend, bool);
     impl Backend for SaveFailBackend {
         type A = vmm_backend::X86;
 
@@ -5934,7 +6408,13 @@ mod tests {
             self.0.complete_arch(c)
         }
         fn save(&mut self) -> vmm_backend::Result<VcpuState> {
-            Err(vmm_backend::BackendError::Memory("induced save failure"))
+            if self.1 {
+                Err(vmm_backend::BackendError::Unsupported {
+                    what: "induced capture refusal",
+                })
+            } else {
+                Err(vmm_backend::BackendError::Memory("induced save failure"))
+            }
         }
         fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
             self.0.restore(s)
@@ -5954,6 +6434,7 @@ mod tests {
         inner: MockBackend,
         save_calls: std::cell::Cell<usize>,
         fail_after: usize,
+        reject_snapshot: bool,
     }
 
     impl Backend for CountSaveBackend {
@@ -6004,6 +6485,13 @@ mod tests {
             }
             self.inner.save()
         }
+        fn validate_snapshot_state(&self, _state: &VcpuState) -> vmm_backend::Result<()> {
+            if self.reject_snapshot {
+                Err(vmm_backend::BackendError::NonportableXsaveMxcsr)
+            } else {
+                Ok(())
+            }
+        }
         fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
             self.inner.restore(s)
         }
@@ -6027,6 +6515,7 @@ mod tests {
             inner: configured_mock(Vec::new()),
             save_calls: std::cell::Cell::new(0),
             fail_after: usize::MAX,
+            reject_snapshot: false,
         };
         let mut vmm = Vmm::new(backend, GuestRam::new(4096).unwrap());
         vmm.wire_snapshot_hashing();
@@ -6649,6 +7138,7 @@ mod tests {
                 inner: configured_mock(exits()),
                 save_calls: std::cell::Cell::new(0),
                 fail_after: 1,
+                reject_snapshot: false,
             },
             GuestRam::new(0x2000).unwrap(),
         );
@@ -6685,6 +7175,7 @@ mod tests {
                 inner: configured_mock(exits()),
                 save_calls: std::cell::Cell::new(0),
                 fail_after: 1,
+                reject_snapshot: false,
             },
             GuestRam::new(0x2000).unwrap(),
         );
@@ -6728,7 +7219,7 @@ mod tests {
     #[test]
     fn save_vm_state_fails_closed_on_backend_save_error() {
         let mut v = Vmm::new(
-            SaveFailBackend(configured_mock(vec![])),
+            SaveFailBackend(configured_mock(vec![]), false),
             GuestRam::new(0x1000).unwrap(),
         );
         assert!(
@@ -6739,6 +7230,110 @@ mod tests {
             matches!(v.state_hash(), Err(VmmError::Backend(_))),
             "a failing register read must not produce a hash of default CPU state"
         );
+    }
+
+    #[test]
+    fn rejected_snapshot_preserves_guest_execution_and_state_hashing() {
+        let backend = Box::new(CountSaveBackend {
+            inner: configured_mock(vec![Exit::Common(CommonExit::Shutdown)]),
+            save_calls: std::cell::Cell::new(0),
+            fail_after: usize::MAX,
+            reject_snapshot: true,
+        });
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        assert_eq!(vmm.run().unwrap().reason, TerminalReason::Shutdown);
+        assert!(vmm.state_hash().is_ok());
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::NonportableXsaveMxcsr
+            ))
+        ));
+    }
+
+    #[test]
+    fn cpu_observations_fail_closed_on_backend_save_error() {
+        let mut v = Vmm::new(
+            SaveFailBackend(configured_mock(vec![]), false),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        assert!(matches!(v.inspect_vcpu(), Err(VmmError::Backend(_))));
+        assert!(matches!(
+            v.has_inflight_event_injection(),
+            Err(VmmError::Backend(_))
+        ));
+        assert!(matches!(
+            v.has_active_event_injection(),
+            Err(VmmError::Backend(_))
+        ));
+        assert!(matches!(v.state_components(), Err(VmmError::Backend(_))));
+
+        let captured = nonzero_state();
+        v.saved_state = Some(captured.clone());
+        assert_eq!(v.inspect_vcpu().unwrap(), captured);
+        assert!(!v.has_inflight_event_injection().unwrap());
+        assert!(!v.has_active_event_injection().unwrap());
+        assert!(v.state_components().is_ok());
+    }
+
+    #[test]
+    fn regs_request_fails_closed_on_backend_save_error() {
+        use crate::control::{ControlServer, ServeError, server_caps};
+        use control_proto::Request;
+
+        let mut backend = configured_mock(vec![]);
+        let mut state = VcpuState::default();
+        state.regs.rip = 0x1234;
+        backend.set_state(state);
+        let vmm = Vmm::new(
+            SaveFailBackend(backend, false),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        let mut server = ControlServer::new(vmm, Box::new(|| panic!("unused factory")));
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let reply = server.handle(&Request::Regs);
+        assert!(
+            matches!(reply, Err(ServeError::Vmm(VmmError::Backend(_)))),
+            "{reply:?}"
+        );
+    }
+
+    #[test]
+    fn unsupported_capture_refuses_observations_without_ending_the_session() {
+        use crate::control::{ControlServer, server_caps};
+        use control_proto::{ControlError, HashScope, Reply, Request};
+
+        let mut vmm = Vmm::new(
+            SaveFailBackend(configured_mock(vec![]), true),
+            GuestRam::new(0x1000).unwrap(),
+        );
+        vmm.wire_snapshot_hashing();
+        let mut server = ControlServer::new(vmm, Box::new(|| panic!("unused factory")));
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        for request in [
+            Request::Regs,
+            Request::Hash {
+                scope: HashScope::Whole,
+            },
+            Request::Snapshot,
+        ] {
+            assert!(matches!(
+                server.handle(&request).unwrap(),
+                Err(ControlError::SnapshotRefused { reason })
+                    if reason == "induced capture refusal"
+            ));
+            assert_eq!(server.latest_snapshot(), None);
+        }
+        assert!(matches!(
+            server.handle(&Request::Read { gpa: 0, len: 1 }).unwrap(),
+            Ok(Reply::Bytes(bytes)) if bytes.len() == 1
+        ));
     }
 
     #[test]
@@ -7431,7 +8026,7 @@ mod tests {
     fn has_inflight_event_injection_reflects_the_live_vcpu() {
         let mut quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
-            !quiescent.has_inflight_event_injection(),
+            !quiescent.has_inflight_event_injection().unwrap(),
             "a quiescent vCPU is not a non-quiescent point"
         );
         let mut st = nonzero_state();
@@ -7439,7 +8034,7 @@ mod tests {
         st.events.interrupt_nr = 0x34;
         let mut in_flight = full_vmm(st, vec![], 0, 1);
         assert!(
-            in_flight.has_inflight_event_injection(),
+            in_flight.has_inflight_event_injection().unwrap(),
             "an injected-but-undelivered interrupt is a non-quiescent point"
         );
     }
@@ -7448,18 +8043,18 @@ mod tests {
     fn has_active_event_injection_reflects_the_live_vcpu() {
         let mut quiescent = full_vmm(nonzero_state(), vec![], 0, 1);
         assert!(
-            !quiescent.has_active_event_injection(),
+            !quiescent.has_active_event_injection().unwrap(),
             "a quiescent vCPU carries no active event"
         );
         let mut residual = nonzero_state();
         residual.events.interrupt_nr = 0x34;
         let mut residual_vmm = full_vmm(residual, vec![], 0, 1);
         assert!(
-            residual_vmm.has_inflight_event_injection(),
+            residual_vmm.has_inflight_event_injection().unwrap(),
             "an inert residual is still a would-reject point"
         );
         assert!(
-            !residual_vmm.has_active_event_injection(),
+            !residual_vmm.has_active_event_injection().unwrap(),
             "but an inert residual is NOT a genuine active injection — never seal here"
         );
         let mut st = nonzero_state();
@@ -7467,7 +8062,7 @@ mod tests {
         st.events.interrupt_nr = 0x34;
         let mut in_flight = full_vmm(st, vec![], 0, 1);
         assert!(
-            in_flight.has_active_event_injection(),
+            in_flight.has_active_event_injection().unwrap(),
             "an injected-but-undelivered interrupt is a genuine active injection"
         );
     }

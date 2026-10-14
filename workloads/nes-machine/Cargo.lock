@@ -214,6 +214,7 @@ dependencies = [
 name = "hypercall-proto"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "thiserror",
 ]
 
@@ -515,6 +516,7 @@ dependencies = [
 name = "vmm-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "control-proto",
  "environment",
  "gicv3",

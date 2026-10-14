@@ -271,6 +271,28 @@ pub struct HandlerSnapshot {
     state: Vec<u8>,
 }
 
+fn check_handler_contract(
+    handler: &dyn ServiceHandler,
+    identity: &[u8],
+    configuration: &[u8],
+) -> Result<(), ChannelError> {
+    if handler.identity() != identity || handler.configuration() != configuration {
+        return Err(ChannelError::Handler(
+            "handler identity or configuration differs from the snapshot".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_handler_state(handler: &dyn ServiceHandler, state: &[u8]) -> Result<(), ChannelError> {
+    if handler.snapshot_state()? != state {
+        return Err(ChannelError::Handler(
+            "handler state differs from the snapshot after restore".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 impl HandlerSnapshot {
     pub fn capture(handler: &dyn ServiceHandler) -> Result<Self, ChannelError> {
         let identity = handler.identity().to_vec();
@@ -291,7 +313,10 @@ impl HandlerSnapshot {
         factory: &F,
     ) -> Result<F::Handler, ChannelError> {
         let mut handler = factory.build(&self.identity, &self.configuration)?;
+        check_handler_contract(&handler, &self.identity, &self.configuration)?;
         handler.restore_state(&self.state)?;
+        check_handler_contract(&handler, &self.identity, &self.configuration)?;
+        check_handler_state(&handler, &self.state)?;
         Ok(handler)
     }
 
@@ -464,15 +489,19 @@ impl RecordedState {
         &self,
         environment: &mut RecordedEnv<H>,
     ) -> Result<(), ChannelError> {
-        if environment.handler.identity() != self.handler.identity
-            || environment.handler.configuration() != self.handler.configuration
-        {
-            return Err(ChannelError::Handler(
-                "handler identity or configuration differs from the snapshot".to_owned(),
-            ));
-        }
+        check_handler_contract(
+            &environment.handler,
+            &self.handler.identity,
+            &self.handler.configuration,
+        )?;
         let mut handler = environment.handler.clone();
         handler.restore_state(&self.handler.state)?;
+        check_handler_contract(
+            &handler,
+            &self.handler.identity,
+            &self.handler.configuration,
+        )?;
+        check_handler_state(&handler, &self.handler.state)?;
         environment.handler = handler;
         environment.stream_state = self.stream_state;
         environment.moment = self.moment;
@@ -666,6 +695,13 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         if let ServiceResponse::Answered(answer) = &response {
             if let Answer::Data(bytes) = answer {
                 check_len(bytes.len())?;
+            }
+            if candidate.identity() != self.handler.identity()
+                || candidate.configuration() != self.handler.configuration()
+            {
+                return Err(ChannelError::Handler(
+                    "handler identity or configuration changed while answering".to_owned(),
+                ));
             }
             self.handler = candidate;
         }
@@ -1002,6 +1038,224 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ChangingContractHandler {
+        identity: Vec<u8>,
+        configuration: Vec<u8>,
+        state: Vec<u8>,
+        respond_change: Option<bool>,
+    }
+
+    impl ChangingContractHandler {
+        fn new(identity: u8, configuration: u8, state: [u8; 2]) -> Self {
+            Self {
+                identity: vec![identity],
+                configuration: vec![configuration],
+                state: state.to_vec(),
+                respond_change: None,
+            }
+        }
+    }
+
+    impl ServiceHandler for ChangingContractHandler {
+        fn identity(&self) -> &[u8] {
+            &self.identity
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &self.configuration
+        }
+
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            if question.service() == 19 {
+                match self.respond_change {
+                    Some(true) => self.identity = vec![9],
+                    Some(false) => self.configuration = vec![9],
+                    None => {}
+                }
+            }
+            Ok(ServiceResponse::Answered(Answer::Data(
+                self.configuration.clone(),
+            )))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(self.state.clone())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [identity, configuration] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.identity = vec![*identity];
+            self.configuration = vec![*configuration];
+            self.state = state.to_vec();
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    struct ChangingContractFactory {
+        identity: u8,
+        configuration: u8,
+    }
+
+    impl ServiceHandlerFactory for ChangingContractFactory {
+        type Handler = ChangingContractHandler;
+
+        fn build(
+            &self,
+            _identity: &[u8],
+            _configuration: &[u8],
+        ) -> Result<Self::Handler, ChannelError> {
+            Ok(ChangingContractHandler::new(
+                self.identity,
+                self.configuration,
+                [0, 0],
+            ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct IgnoringStateHandler(u8);
+
+    impl ServiceHandler for IgnoringStateHandler {
+        fn identity(&self) -> &[u8] {
+            b"ignoring-state-handler"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b"fixed"
+        }
+
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Data(vec![self.0])))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [_] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    struct IgnoringStateFactory(u8);
+
+    impl ServiceHandlerFactory for IgnoringStateFactory {
+        type Handler = IgnoringStateHandler;
+
+        fn build(
+            &self,
+            _identity: &[u8],
+            _configuration: &[u8],
+        ) -> Result<Self::Handler, ChannelError> {
+            Ok(IgnoringStateHandler(self.0))
+        }
+    }
+
+    #[test]
+    fn recorded_restore_rejects_contract_mutation_without_changing_environment() {
+        let source = RecordedEnv::new(1, ChangingContractHandler::new(1, 2, [3, 4]));
+        let saved = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(9, ChangingContractHandler::new(1, 2, [1, 2]));
+        let before = target.snapshot_state().unwrap().encode();
+        assert!(saved.restore_into(&mut target).is_err());
+        assert_eq!(target.snapshot_state().unwrap().encode(), before);
+        assert_eq!(target.handler().identity(), &[1]);
+        assert_eq!(target.handler().configuration(), &[2]);
+        assert_eq!(
+            target
+                .decide(&Question::new(7, Vec::new()).unwrap())
+                .unwrap(),
+            ServiceResponse::Answered(Answer::Data(vec![2]))
+        );
+    }
+
+    #[test]
+    fn handler_snapshot_rejects_factory_contract_before_restore() {
+        let snapshot =
+            HandlerSnapshot::capture(&ChangingContractHandler::new(1, 2, [1, 2])).unwrap();
+        for factory in [
+            ChangingContractFactory {
+                identity: 9,
+                configuration: 2,
+            },
+            ChangingContractFactory {
+                identity: 1,
+                configuration: 9,
+            },
+        ] {
+            assert!(snapshot.restore(&factory).is_err());
+        }
+        let handler = snapshot
+            .restore(&ChangingContractFactory {
+                identity: 1,
+                configuration: 2,
+            })
+            .unwrap();
+        assert_eq!(handler.identity(), &[1]);
+        assert_eq!(handler.configuration(), &[2]);
+        assert_eq!(handler.snapshot_state().unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn handler_snapshot_rejects_contract_mutation_after_restore() {
+        let snapshot =
+            HandlerSnapshot::capture(&ChangingContractHandler::new(1, 2, [3, 4])).unwrap();
+        assert!(
+            snapshot
+                .restore(&ChangingContractFactory {
+                    identity: 1,
+                    configuration: 2,
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn recorded_restore_rejects_ignored_handler_state_without_changing_environment() {
+        let source = RecordedEnv::new(1, IgnoringStateHandler(7));
+        let saved = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(9, IgnoringStateHandler(9));
+        let before = target.snapshot_state().unwrap().encode();
+        assert!(saved.restore_into(&mut target).is_err());
+        assert_eq!(target.snapshot_state().unwrap().encode(), before);
+        assert_eq!(
+            target
+                .decide(&Question::new(7, Vec::new()).unwrap())
+                .unwrap(),
+            ServiceResponse::Answered(Answer::Data(vec![9]))
+        );
+    }
+
+    #[test]
+    fn handler_snapshot_rejects_ignored_state_after_restore() {
+        let snapshot = HandlerSnapshot::capture(&IgnoringStateHandler(7)).unwrap();
+        assert!(snapshot.restore(&IgnoringStateFactory(9)).is_err());
+        let handler = snapshot.restore(&IgnoringStateFactory(7)).unwrap();
+        assert_eq!(handler.snapshot_state().unwrap(), snapshot.state());
+    }
+
     #[test]
     fn opaque_handler_state_round_trips_and_factory_checks_identity() {
         let question = Question::new(7, vec![1, 2]).unwrap();
@@ -1167,6 +1421,27 @@ mod tests {
         let question = Question::new(u16::MAX, vec![]).unwrap();
         assert!(env.decide(&question).is_err());
         assert_eq!(env.handler().counter, 0);
+    }
+
+    #[test]
+    fn answered_request_rejects_handler_contract_drift_without_committing() {
+        for change_identity in [true, false] {
+            let mut handler = ChangingContractHandler::new(1, 2, [3, 4]);
+            handler.respond_change = Some(change_identity);
+            let mut env = RecordedEnv::new(17, handler);
+            let before = env.snapshot_state().unwrap().encode();
+            assert!(matches!(
+                env.decide(&Question::new(19, Vec::new()).unwrap()),
+                Err(ChannelError::Handler(_))
+            ));
+            assert_eq!(env.snapshot_state().unwrap().encode(), before);
+            assert_eq!(env.handler().identity(), &[1]);
+            assert_eq!(env.handler().configuration(), &[2]);
+            assert_eq!(
+                env.decide(&Question::new(20, Vec::new()).unwrap()),
+                Ok(ServiceResponse::Answered(Answer::Data(vec![2])))
+            );
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 use sha2::{Digest, Sha256};
 use std::sync::OnceLock;
-use vmm_backend::{Arm64AsidBits, Arm64Policy, IdRegModel, SysregTrapPolicy};
+use vmm_backend::{Arm64AsidBits, Arm64Caps, Arm64Policy, IdRegModel, SysregTrapPolicy};
 
 use crate::virtual_time::VirtualTimeTiming;
 
@@ -80,6 +80,18 @@ pub fn contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
     *hash.get_or_init(|| compute_contract_hash(asid_bits))
 }
 
+pub fn runtime_contract_hash(caps: Arm64Caps) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"harmony-arm64-runtime-contract-v3\0");
+    h.update(contract_hash(caps.asid_bits));
+    for level in caps.smccc_workaround_levels {
+        h.update(level.to_le_bytes());
+    }
+    h.update([caps.psci_profile as u8]);
+    h.update(caps.gic_ctlr_fixed_bits.to_le_bytes());
+    h.finalize().into()
+}
+
 fn compute_contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
     let p = policy(asid_bits);
     let mut h = Sha256::new();
@@ -116,6 +128,20 @@ fn compute_contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kvm_gic_cpu_interface_identity_changes_runtime_contract() {
+        use vmm_backend::Backend;
+
+        let mut caps = vmm_backend::MockArm64Backend::new().capabilities().arch;
+        caps.psci_profile = vmm_backend::Arm64PsciProfile::KvmPsci10;
+        caps.in_kernel_gic = true;
+        caps.gic_ctlr_fixed_bits = 0x8400;
+        let baseline = runtime_contract_hash(caps);
+        assert_eq!(baseline, runtime_contract_hash(caps));
+        caps.gic_ctlr_fixed_bits ^= 1 << 8;
+        assert_ne!(baseline, runtime_contract_hash(caps));
+    }
 
     #[test]
     fn policy_contains_the_sorted_cross_host_identity_and_empty_trap_table() {

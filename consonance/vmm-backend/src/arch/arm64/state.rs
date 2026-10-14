@@ -29,6 +29,8 @@ pub struct Arm64VcpuState {
 
 pub const ARM64_GIC_BITMAP_WORDS: usize = 32;
 
+pub const ARM64_GIC_CONFIG_WORDS: usize = 64;
+
 pub const ARM64_GIC_PRIORITY_BYTES: usize = 1020;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,18 +45,62 @@ pub struct Arm64GicState {
     pub pending: [u32; ARM64_GIC_BITMAP_WORDS],
     pub active: [u32; ARM64_GIC_BITMAP_WORDS],
     pub line_level: [u32; ARM64_GIC_BITMAP_WORDS],
+    pub config: [u32; ARM64_GIC_CONFIG_WORDS],
     pub priority: [u8; ARM64_GIC_PRIORITY_BYTES],
     pub pmr: u8,
+    pub bpr0: u8,
+    pub bpr1: u8,
+    pub ctlr: u64,
+    pub igrpen0: bool,
     pub igrpen1: bool,
+    pub ap0r: [u32; 4],
+    pub ap1r: [u32; 4],
     pub cntv_ctl: u64,
     pub cntv_cval: u64,
     pub timer_fired: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Arm64GicIdleState {
+    pub distributor_group1_enabled: bool,
+    pub group1: bool,
+    pub enabled: bool,
+    pub active: bool,
+    pub priority: u8,
+    pub pmr: u8,
+    pub bpr1: u8,
+    pub ctlr: u64,
+    pub igrpen1: bool,
+    pub ap0r: [u32; 4],
+    pub ap1r: [u32; 4],
+}
+
+impl Arm64GicIdleState {
+    pub fn from_gic(gic: &Arm64GicState, intid: u32) -> Option<Self> {
+        if !(16..32).contains(&intid) {
+            return None;
+        }
+        let mask = 1u32 << intid;
+        Some(Self {
+            distributor_group1_enabled: gic.gicd_ctlr & 2 != 0,
+            group1: gic.group[0] & mask != 0,
+            enabled: gic.enable[0] & mask != 0,
+            active: gic.active[0] & mask != 0,
+            priority: gic.priority[intid as usize],
+            pmr: gic.pmr,
+            bpr1: gic.bpr1,
+            ctlr: gic.ctlr,
+            igrpen1: gic.igrpen1,
+            ap0r: gic.ap0r,
+            ap1r: gic.ap1r,
+        })
+    }
+}
+
 impl Default for Arm64GicState {
     fn default() -> Self {
         Self {
-            version: 3,
+            version: 5,
             impl_spis: 0,
             timer_hz: 0,
             timer_intid: 0,
@@ -64,9 +110,16 @@ impl Default for Arm64GicState {
             pending: [0; ARM64_GIC_BITMAP_WORDS],
             active: [0; ARM64_GIC_BITMAP_WORDS],
             line_level: [0; ARM64_GIC_BITMAP_WORDS],
+            config: [0; ARM64_GIC_CONFIG_WORDS],
             priority: [0; ARM64_GIC_PRIORITY_BYTES],
             pmr: 0,
+            bpr0: 0,
+            bpr1: 0,
+            ctlr: 0,
+            igrpen0: false,
             igrpen1: false,
+            ap0r: [0; 4],
+            ap1r: [0; 4],
             cntv_ctl: 0,
             cntv_cval: 0,
             timer_fired: false,

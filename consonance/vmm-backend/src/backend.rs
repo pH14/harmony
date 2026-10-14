@@ -60,6 +60,13 @@ pub trait Backend {
         Ok(None)
     }
 
+    fn read_arm64_gic_idle_state(
+        &mut self,
+        _intid: u32,
+    ) -> Result<Option<crate::arch::arm64::Arm64GicIdleState>> {
+        Ok(None)
+    }
+
     fn complete_read(&mut self, value: u64) -> Result<()>;
 
     fn complete_fault(&mut self) -> Result<()>;
@@ -85,6 +92,10 @@ pub trait Backend {
     }
 
     fn save(&mut self) -> Result<<Self::A as Arch>::VcpuState>;
+
+    fn validate_snapshot_state(&self, _state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        Ok(())
+    }
 
     fn validate_restore_state(&self, _state: &<Self::A as Arch>::VcpuState) -> Result<()> {
         Ok(())
@@ -158,6 +169,13 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).read_irq_mask()
     }
 
+    fn read_arm64_gic_idle_state(
+        &mut self,
+        intid: u32,
+    ) -> Result<Option<crate::arch::arm64::Arm64GicIdleState>> {
+        (**self).read_arm64_gic_idle_state(intid)
+    }
+
     fn complete_read(&mut self, value: u64) -> Result<()> {
         (**self).complete_read(value)
     }
@@ -192,6 +210,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn save(&mut self) -> Result<<Self::A as Arch>::VcpuState> {
         (**self).save()
+    }
+
+    fn validate_snapshot_state(&self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        (**self).validate_snapshot_state(state)
     }
 
     fn validate_restore_state(&self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {

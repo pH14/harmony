@@ -23,19 +23,29 @@ pub enum MemoryError {
     Store(#[from] snapshot_store::StoreError),
     #[error("guest memory is {got} bytes, the checkpoints hold {expected}")]
     Size { got: usize, expected: usize },
+    #[error("imported checkpoint has {got} bytes of physical memory, destination has {expected}")]
+    ImportedMemorySize { got: u64, expected: u64 },
     #[error("the private image is {0} bytes, more than {IMAGE_BYTES}")]
     ImageTooLarge(u64),
     #[error("the checkpoints hold no guest memory yet")]
     Empty,
+    #[error("snapshot belongs to another checkpoint store")]
+    ForeignSnapshot,
+}
+
+#[derive(Default)]
+struct CheckpointStore {
+    pages: RefCell<Option<Pages>>,
+    pending_releases: RefCell<Vec<SnapshotId>>,
 }
 
 #[derive(Clone, Default)]
-pub struct Checkpoints(Rc<RefCell<Option<Pages>>>);
+pub struct Checkpoints(Rc<CheckpointStore>);
 
 pub(crate) struct Pages {
     pub(crate) store: Store,
     pub(crate) root: SnapshotId,
-    physmem_bytes: usize,
+    pub(crate) physmem_bytes: usize,
 }
 
 pub(crate) struct Snapshot {
@@ -70,14 +80,18 @@ impl Checkpoints {
     }
 
     pub fn stats(&self) -> Option<StoreStats> {
-        self.0
-            .borrow()
-            .as_ref()
-            .map(|pages| pages.store.store_stats())
+        let mut pages = self.0.pages.borrow_mut();
+        pages.as_mut().map(|pages| {
+            self.collect_releases(pages);
+            pages.store.store_stats()
+        })
     }
 
     pub(crate) fn pages(&self, physmem_bytes: usize) -> Result<RefMut<'_, Pages>, MemoryError> {
-        let mut pages = self.0.borrow_mut();
+        let mut pages = self.0.pages.borrow_mut();
+        if let Some(held) = pages.as_mut() {
+            self.collect_releases(held);
+        }
         match pages.as_ref() {
             Some(held) if held.physmem_bytes != physmem_bytes => {
                 return Err(MemoryError::Size {
@@ -104,13 +118,39 @@ impl Checkpoints {
     }
 
     pub(crate) fn held(&self) -> Result<RefMut<'_, Pages>, MemoryError> {
-        RefMut::filter_map(self.0.borrow_mut(), Option::as_mut).map_err(|_| MemoryError::Empty)
+        let mut pages = self.0.pages.borrow_mut();
+        if let Some(held) = pages.as_mut() {
+            self.collect_releases(held);
+        }
+        RefMut::filter_map(pages, Option::as_mut).map_err(|_| MemoryError::Empty)
+    }
+
+    fn collect_releases(&self, pages: &mut Pages) {
+        let mut pending = self.0.pending_releases.borrow_mut();
+        if pending.is_empty() {
+            return;
+        }
+        for id in pending.drain(..) {
+            pages
+                .store
+                .release(id)
+                .expect("a dropped checkpoint has a live snapshot");
+        }
+        pages.store.gc();
     }
 
     pub(crate) fn adopt(&self, id: SnapshotId) -> Snapshot {
         Snapshot {
             checkpoints: self.clone(),
             id,
+        }
+    }
+
+    pub(crate) fn require_owned_snapshot(&self, snapshot: &Snapshot) -> Result<(), MemoryError> {
+        if Rc::ptr_eq(&self.0, &snapshot.checkpoints.0) {
+            Ok(())
+        } else {
+            Err(MemoryError::ForeignSnapshot)
         }
     }
 
@@ -129,6 +169,11 @@ impl Checkpoints {
         target: &Snapshot,
         use_delta: impl FnOnce(&PageDelta<'_>) -> R,
     ) -> Result<R, MemoryError> {
+        self.require_owned_snapshot(base)?;
+        if let Some(parent) = parent {
+            self.require_owned_snapshot(parent)?;
+        }
+        self.require_owned_snapshot(target)?;
         let pages = self.held()?;
         let delta = pages
             .store
@@ -143,6 +188,8 @@ impl Checkpoints {
         rows: &[(u64, &PageHash, &[u8; PAGE_SIZE])],
         image_bytes: u64,
     ) -> Result<Snapshot, MemoryError> {
+        self.require_owned_snapshot(base)?;
+        self.require_owned_snapshot(near)?;
         let mut pages = self.held()?;
         let near = if pages
             .store
@@ -155,6 +202,14 @@ impl Checkpoints {
         };
         let hashes: Vec<_> = rows.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
         let rebase = pages.store.rebase(base.id, near, &hashes)?;
+        let mut keep = rebase.keep.iter().copied().peekable();
+        for (index, &(gfn, hash, data)) in rows.iter().enumerate() {
+            if keep.peek().copied() == Some(index) {
+                keep.next();
+            } else if blake3::hash(data).as_bytes() != hash {
+                return Err(snapshot_store::StoreError::PageIntegrity { gfn }.into());
+            }
+        }
         let mut merged: Vec<(u64, &PageHash, &[u8; PAGE_SIZE])> = rebase
             .keep
             .iter()
@@ -232,6 +287,10 @@ impl Snapshot {
             .unwrap_or(0)
     }
 
+    pub(crate) fn physmem_bytes(&self) -> Result<u64, MemoryError> {
+        Ok(self.checkpoints.held()?.physmem_bytes as u64)
+    }
+
     pub(crate) fn digest(&self, digest: &mut Sha256) -> Result<(), MemoryError> {
         let pages = self.checkpoints.held()?;
         let delta = pages.store.page_delta(pages.root, None, self.id)?;
@@ -240,6 +299,7 @@ impl Snapshot {
             digest.update(hash);
         }
         digest.update(pages.image_bytes(self.id)?.to_le_bytes());
+        digest.update((pages.physmem_bytes as u64).to_le_bytes());
         Ok(())
     }
 
@@ -259,11 +319,15 @@ impl std::fmt::Debug for Snapshot {
 
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        if let Ok(mut pages) = self.checkpoints.0.try_borrow_mut()
+        self.checkpoints
+            .0
+            .pending_releases
+            .borrow_mut()
+            .push(self.id);
+        if let Ok(mut pages) = self.checkpoints.0.pages.try_borrow_mut()
             && let Some(pages) = pages.as_mut()
-            && pages.store.release(self.id).is_ok()
         {
-            pages.store.gc();
+            self.checkpoints.collect_releases(pages);
         }
     }
 }
@@ -662,6 +726,25 @@ mod tests {
     }
 
     #[test]
+    fn digests_distinguish_guest_physical_memory_sizes() {
+        fn sized_snapshot(physmem_bytes: usize) -> Snapshot {
+            let checkpoints = Checkpoints::new();
+            let mut held = checkpoints.pages(physmem_bytes).unwrap();
+            let root = held.root;
+            let mut builder = held.store.derive(root).unwrap();
+            builder.write_page(1, &page(3)).unwrap();
+            builder.write_page(IMAGE_PAGES, &page(7)).unwrap();
+            let id = builder.seal(image_state(24));
+            drop(held);
+            checkpoints.adopt(id)
+        }
+
+        let small = sized_snapshot(PAGE_SIZE);
+        let large = sized_snapshot(2 * PAGE_SIZE);
+        assert_ne!(digest(&small), digest(&large));
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore)]
     fn imported_deltas_reproduce_the_published_snapshot() {
         let publisher = Checkpoints::new();
@@ -716,11 +799,11 @@ mod tests {
 
         assert!(matches!(
             Checkpoints::new().delta_pages(&base, None, &target, |_| ()),
-            Err(MemoryError::Empty)
+            Err(MemoryError::ForeignSnapshot)
         ));
         assert!(matches!(
             Checkpoints::new().import_pages(&base, &base, &borrowed, 50),
-            Err(MemoryError::Empty)
+            Err(MemoryError::ForeignSnapshot)
         ));
     }
 

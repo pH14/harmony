@@ -184,7 +184,18 @@ impl Services {
         handler: Box<dyn ServiceHandler>,
         payloads: Vec<Vec<u8>>,
     ) -> Result<(), String> {
+        let identity = handler.identity().to_vec();
+        let configuration = handler.configuration().to_vec();
+        let decode_env = RecordedEnv::new(0, handler.clone());
+        if decode_env.handler().identity() != identity
+            || decode_env.handler().configuration() != configuration
+        {
+            return Err("service handler identity or configuration changed on reseed".to_owned());
+        }
         let mut env = RecordedEnv::new(seed, handler);
+        if env.handler().identity() != identity || env.handler().configuration() != configuration {
+            return Err("service handler identity or configuration changed on reseed".to_owned());
+        }
         env.set_payloads(Some(payloads))
             .map_err(|error| format!("payload tape: {error}"))?;
         self.env = env;
@@ -458,6 +469,14 @@ impl<'a> Reader<'a> {
 }
 
 pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> BridgeLog {
+    if bridge.cut == Some(0) {
+        state.store(CUT, Ordering::Release);
+        return BridgeLog {
+            events: Vec::new(),
+            failure: None,
+            socket,
+        };
+    }
     let mut services = Services::new(bridge.seed);
     let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
     let mut response = vec![0_u8; MAX_FRAME];
@@ -497,7 +516,111 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
+    use environment::channel::{Answer, ChannelError, Question, ServiceResponse};
     use hypercall_proto::encode_request;
+
+    #[derive(Clone)]
+    struct ReseedContractHandler {
+        identity: Vec<u8>,
+        configuration: Vec<u8>,
+        change_identity: bool,
+        zero_only: bool,
+    }
+
+    impl ReseedContractHandler {
+        fn new(change_identity: bool) -> Self {
+            Self {
+                identity: b"before-identity".to_vec(),
+                configuration: b"before-configuration".to_vec(),
+                change_identity,
+                zero_only: false,
+            }
+        }
+    }
+
+    impl ServiceHandler for ReseedContractHandler {
+        fn identity(&self) -> &[u8] {
+            &self.identity
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &self.configuration
+        }
+
+        fn respond(
+            &mut self,
+            _moment: u64,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(ChannelError::Malformed)
+            }
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            if self.change_identity {
+                self.identity = if self.zero_only == (seed == 0) {
+                    b"after-identity".to_vec()
+                } else {
+                    b"before-identity".to_vec()
+                };
+            } else {
+                self.configuration = if self.zero_only == (seed == 0) {
+                    b"after-configuration".to_vec()
+                } else {
+                    b"before-configuration".to_vec()
+                };
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn branch_rejects_reseed_contract_drift_before_replacing_services() {
+        for (change_identity, zero_only) in
+            [(true, false), (false, false), (true, true), (false, true)]
+        {
+            let handler = ReseedContractHandler {
+                zero_only,
+                ..ReseedContractHandler::new(change_identity)
+            };
+            let mut source = Services::new(1);
+            source.env = RecordedEnv::new(7, Box::new(handler.clone()) as Box<dyn ServiceHandler>);
+            let encoded = source.encode().unwrap();
+            let factory: ServiceFactory = Arc::new(move |config| {
+                Ok(Box::new(ReseedContractHandler {
+                    identity: config.identity.clone(),
+                    configuration: config.configuration.clone(),
+                    change_identity,
+                    zero_only,
+                }))
+            });
+            assert!(Services::decode(&encoded, &factory).is_err());
+
+            let mut services = Services::new(1);
+            let before = services.env.snapshot_state().unwrap().encode();
+            assert!(services.branch(7, Box::new(handler), Vec::new()).is_err());
+            assert_eq!(services.env.snapshot_state().unwrap().encode(), before);
+            assert!(
+                services
+                    .branch(7, Box::new(NominalHandler), Vec::new())
+                    .is_ok()
+            );
+        }
+    }
 
     fn exchange(guest: &OwnedFd, moment: u64, service: ServiceId, payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![0_u8; STAMP_LEN + MAX_FRAME];
@@ -579,6 +702,44 @@ mod tests {
         let log = thread.join().unwrap();
         assert_eq!(state.load(Ordering::Acquire), CUT);
         assert_eq!(log.events.len(), 2);
+        assert!(log.failure.is_none());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn zero_event_cut_stops_before_the_first_request() {
+        let (host, guest) = socket_pair().unwrap();
+        let state = Arc::new(AtomicU8::new(RUNNING));
+        let worker_state = Arc::clone(&state);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            sender
+                .send(serve(
+                    host,
+                    Bridge {
+                        seed: 1,
+                        cut: Some(0),
+                    },
+                    worker_state,
+                ))
+                .unwrap();
+        });
+        let first = receiver.recv_timeout(std::time::Duration::from_secs(5));
+        let stopped_without_request = first.is_ok();
+        drop(guest);
+        let log = match first {
+            Ok(log) => log,
+            Err(_) => receiver
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap(),
+        };
+        worker.join().unwrap();
+        assert!(
+            stopped_without_request,
+            "zero-event cut waited for a guest request"
+        );
+        assert_eq!(state.load(Ordering::Acquire), CUT);
+        assert!(log.events.is_empty());
         assert!(log.failure.is_none());
     }
 

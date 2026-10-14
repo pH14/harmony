@@ -17,8 +17,8 @@ use vmm_backend::{Backend, Exit, Gpa, X86, X86Exit};
 
 pub use dispatch::{X86Devices, contract_vclock_config};
 
-use crate::vendor::Vendor;
 use crate::vendor::x86::linux_loader::{LAPIC_MMIO_PAGE, LAPIC_MMIO_PAGE_LEN};
+use crate::vendor::{SnapshotHashParts, Vendor};
 use crate::vmm::{Step, Vmm, VmmError};
 
 impl Vendor for X86 {
@@ -111,7 +111,8 @@ impl Vendor for X86 {
             .devices()
             .lapic
             .as_ref()
-            .is_some_and(|l| l.peek_interrupt().is_some()))
+            .is_some_and(|l| l.peek_interrupt().is_some())
+            || vmm.pending_serial_vector().is_some())
     }
 
     fn next_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
@@ -126,11 +127,14 @@ impl Vendor for X86 {
         ))
     }
 
-    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
-        let lapic = vmm.devices().lapic.as_ref()?;
-        lapic
-            .next_timer_deadline()
-            .filter(|_| lapic.armed_timer_deliverable())
+    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
+        vmm: &mut Vmm<B>,
+    ) -> Result<Option<u64>, VmmError> {
+        Ok(vmm.devices().lapic.as_ref().and_then(|lapic| {
+            lapic
+                .next_timer_deadline()
+                .filter(|_| lapic.armed_timer_deliverable())
+        }))
     }
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
@@ -191,6 +195,40 @@ impl Vendor for X86 {
             legy.extend_from_slice(&legacy.pic_imr());
             crate::vmm::put_chunk(out, b"LEGY", &legy);
         }
+    }
+
+    fn project_snapshot_hash_parts(snapshot: &VmState) -> Result<SnapshotHashParts, VmmError> {
+        let state = records::decode_device_blob(&snapshot.devices.0)?;
+        let mut device = state.uart.regs.to_vec();
+        device.push(u8::from(state.uart.dlab));
+        device.push(state.uart.dlm);
+        device.extend_from_slice(&(state.uart.input.len() as u64).to_le_bytes());
+        device.extend_from_slice(&state.uart.input);
+        let mut vendor_chunks = Vec::new();
+        if let Some(lapic) = &state.lapic {
+            crate::vmm::put_chunk(
+                &mut vendor_chunks,
+                b"LAPC",
+                &dispatch::encode_lapic_state(lapic),
+            );
+        }
+        if let Some(legacy) = state.legacy {
+            let mut bytes = legacy.config_address.to_le_bytes().to_vec();
+            bytes.extend_from_slice(&[legacy.master_imr, legacy.slave_imr]);
+            crate::vmm::put_chunk(&mut vendor_chunks, b"LEGY", &bytes);
+        }
+        Ok(SnapshotHashParts {
+            doorbell: None,
+            serial: state.uart.capture,
+            device,
+            vendor_chunks,
+            clock_offset: state.tsc_adjust,
+            pvclock: state.pvclock,
+        })
+    }
+
+    fn project_logical_snapshot(snapshot: &mut VmState, vcpu: &vmm_backend::VcpuState) {
+        records::fill_vcpu_state(snapshot, vcpu);
     }
 
     fn regs_view(vcpu: &vmm_backend::VcpuState) -> RegsView {

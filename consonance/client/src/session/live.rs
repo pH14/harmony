@@ -29,6 +29,7 @@ use super::*;
 use crate::Client;
 
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
+const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HMSESS01";
 
 pub struct Session {
     client: Server,
@@ -65,6 +66,16 @@ impl Session {
         super::identity_with_config(kernel, initramfs, config)
     }
 
+    #[must_use]
+    pub fn identity_with_config_and_payloads(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+        setup_payloads: &[Vec<u8>],
+    ) -> String {
+        super::identity_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
+    }
+
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, Box<dyn Error>> {
         Self::new_with_config(kernel, initramfs, SessionConfig::default())
     }
@@ -84,7 +95,12 @@ impl Session {
         setup_payloads: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
-        let image_identity = super::image_identity_with_config(kernel, initramfs, &config);
+        let image_identity = super::image_identity_with_config_and_payloads(
+            kernel,
+            initramfs,
+            &config,
+            &setup_payloads,
+        );
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
@@ -282,16 +298,34 @@ impl Session {
             .transport()
             .export_sparse_delta(self.setup, parent, target)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
-        let len = extent_len(delta.pages.len(), delta.reverted.len(), delta.sidecar.len())
+        let sidecar_len = CACHE_SIDECAR_MAGIC
+            .len()
+            .checked_add(self.image_identity.len())
+            .and_then(|len| len.checked_add(delta.sidecar.len()))
+            .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
+        let mut sidecar = Vec::with_capacity(sidecar_len);
+        sidecar.extend_from_slice(&CACHE_SIDECAR_MAGIC);
+        sidecar.extend_from_slice(&self.image_identity);
+        sidecar.extend_from_slice(&delta.sidecar);
+        let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
         let mut out = allocate(len)?;
-        write_extent(
-            bytes(&mut out),
-            &delta.pages,
-            &delta.reverted,
-            &delta.sidecar,
-        )?;
+        write_extent(bytes(&mut out), &delta.pages, &delta.reverted, &sidecar)?;
         Ok(out)
+    }
+
+    fn checked_cache_sidecar<'a>(&self, sidecar: &'a [u8]) -> Result<&'a [u8], Box<dyn Error>> {
+        if sidecar.len() < CACHE_SIDECAR_MAGIC.len() + 32
+            || sidecar[..CACHE_SIDECAR_MAGIC.len()] != CACHE_SIDECAR_MAGIC
+        {
+            return Err(SessionError::Portable("cached snapshot sidecar differs".into()).into());
+        }
+        let identity_start = CACHE_SIDECAR_MAGIC.len();
+        let identity_end = identity_start + 32;
+        if sidecar[identity_start..identity_end] != self.image_identity {
+            return Err(SessionError::Portable("cached snapshot identity differs".into()).into());
+        }
+        Ok(&sidecar[identity_end..])
     }
 
     pub fn import_cached(
@@ -310,10 +344,13 @@ impl Session {
         extents: &[&[u8]],
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
-        let deltas = extents
+        let mut deltas = extents
             .iter()
             .map(|extent| read_extent(extent))
             .collect::<Result<Vec<_>, _>>()?;
+        for delta in &mut deltas {
+            delta.sidecar = self.checked_cache_sidecar(delta.sidecar)?;
+        }
         let resolved = resolve(&deltas)?;
         let receipt = self
             .client
@@ -844,6 +881,393 @@ pub fn host_minor_faults() -> Option<u64> {
 mod tests {
     use super::*;
     use std::io;
+
+    #[cfg(target_arch = "aarch64")]
+    fn mock_arm_session(config: SessionConfig, image: &[u8]) -> Session {
+        mock_arm_session_with_payloads(config, image, None)
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    fn mock_arm_session_with_payloads(
+        config: SessionConfig,
+        image: &[u8],
+        setup_payloads: Option<Vec<Vec<u8>>>,
+    ) -> Session {
+        use vmm_backend::MockArm64Backend;
+        use vmm_core::vendor::arm64::{board, bringup};
+        use vmm_core::vmm::{Vmm, VmmError, VtimeWiring};
+
+        let image_identity = image_identity_with_config_and_payloads(
+            image,
+            b"",
+            &config,
+            setup_payloads.as_deref().unwrap_or(&[]),
+        );
+        let boot_config = config.clone();
+        let boot_image = image.to_vec();
+        let boot = move || -> Result<Vmm<Box<dyn Backend<A = HostArch>>>, VmmError> {
+            let backend: Box<dyn Backend<A = HostArch>> = Box::new(MockArm64Backend::new());
+            let mut vmm = bringup::boot(
+                backend,
+                &boot_image,
+                &boot_config.cmdline,
+                boot_config.ram_bytes,
+            )?;
+            vmm.wire_gic(board::new_gic());
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(
+                vtime::VClockConfig {
+                    guest_hz: board::CNTFRQ_HZ,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                boot_config.seed,
+            )?);
+            vmm.enable_pvclock();
+            vmm.wire_snapshot_hashing();
+            Ok(vmm)
+        };
+        let live = boot().unwrap();
+        let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> = Box::new(boot);
+        let mut client = Client::connect(ControlServer::new(live, factory), server_caps()).unwrap();
+        if let Some(payloads) = setup_payloads {
+            let genesis = snapshot_handle(&mut client, "genesis snapshot").unwrap();
+            branch_payload(&mut client, genesis.id, payloads, config.seed).unwrap();
+        }
+        let setup = snapshot_handle(&mut client, "setup snapshot").unwrap();
+        Session {
+            client,
+            setup: setup.id,
+            setup_at: setup.at,
+            image_identity,
+            config,
+            snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
+            abandoned: false,
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn tagged_sparse_import_rejects_foreign_setup_ram_before_mutation() {
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let source_config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
+            .with_identity_tag("same-workload");
+        let mut destination_config = source_config.clone();
+        destination_config.cmdline.push_str(" debug");
+        let mut source = mock_arm_session(source_config, &image);
+        let mut destination = mock_arm_session(destination_config, &image);
+        assert_eq!(source.setup, destination.setup);
+        assert_ne!(source.image_identity(), destination.image_identity());
+
+        let source_base = source.client.transport().vmm().unwrap().guest_memory();
+        let destination_base = destination.client.transport().vmm().unwrap().guest_memory();
+        let different_base_gfns: Vec<_> = source_base
+            .chunks_exact(PAGE_SIZE)
+            .zip(destination_base.chunks_exact(PAGE_SIZE))
+            .enumerate()
+            .filter_map(|(gfn, (left, right))| (left != right).then_some(gfn as u64))
+            .collect();
+        assert!(!different_base_gfns.is_empty());
+
+        let mut changed = source_base.to_vec();
+        changed[10 * PAGE_SIZE..11 * PAGE_SIZE].fill(0xa5);
+        source
+            .client
+            .transport_mut()
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&changed)
+            .unwrap();
+        let (target, _) = source.snapshot().unwrap();
+        let source_hash = source.state_hash().unwrap();
+        let sparse = source.export_sparse_snapshot(target, None).unwrap();
+        assert!(
+            different_base_gfns
+                .iter()
+                .any(|gfn| !sparse.pages().iter().any(|(changed, _)| changed == gfn))
+        );
+
+        let destination_hash = destination.state_hash().unwrap();
+        let destination_store = destination.store_bytes();
+        assert!(destination.import_sparse_snapshot(&sparse).is_err());
+        assert_eq!(destination.store_bytes(), destination_store);
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+
+        let mut matched = mock_arm_session(source.config.clone(), &image);
+        let imported = matched.import_sparse_snapshot(&sparse).unwrap();
+        matched.replay_snapshot(imported).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+
+        let mut different_seed = source.config.clone();
+        different_seed.seed += 1;
+        let mut different_ram = source.config.clone();
+        different_ram.ram_bytes += PAGE_SIZE;
+        let mut different_budget = source.config.clone();
+        different_budget.run_budget += 1;
+        for config in [different_seed, different_ram, different_budget] {
+            let mut foreign = mock_arm_session(config, &image);
+            assert_eq!(source.setup, foreign.setup);
+            assert_ne!(source.image_identity(), foreign.image_identity());
+            let before_hash = foreign.state_hash().unwrap();
+            let before_store = foreign.store_bytes();
+            assert!(foreign.import_sparse_snapshot(&sparse).is_err());
+            assert_eq!(foreign.store_bytes(), before_store);
+            assert_eq!(foreign.state_hash().unwrap(), before_hash);
+            foreign.replay_snapshot(foreign.setup).unwrap();
+            assert_eq!(foreign.state_hash().unwrap(), before_hash);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn rewritten_outer_identity_cannot_import_a_foreign_sparse_base() {
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let source_config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
+            .with_identity_tag("same-workload");
+        let mut destination_config = source_config.clone();
+        destination_config.cmdline.push_str(" debug");
+        let mut source = mock_arm_session(source_config, &image);
+        let mut destination = mock_arm_session(destination_config, &image);
+        let source_base = source
+            .client
+            .transport()
+            .vmm()
+            .unwrap()
+            .guest_memory()
+            .to_vec();
+        let destination_base = destination.client.transport().vmm().unwrap().guest_memory();
+        assert_ne!(source_base, destination_base);
+        let mut changed = source_base;
+        changed[10 * PAGE_SIZE..11 * PAGE_SIZE].fill(0xa5);
+        source
+            .client
+            .transport_mut()
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&changed)
+            .unwrap();
+        let (target, _) = source.snapshot().unwrap();
+        let source_hash = source.state_hash().unwrap();
+        let sparse = source.export_sparse_snapshot(target, None).unwrap();
+        assert_ne!(sparse.image_identity(), destination.image_identity());
+        let mut serialized = serde_json::to_value(&sparse).unwrap();
+        serialized["image_identity"] = serde_json::json!(destination.image_identity());
+        let forged: SparseSnapshot = serde_json::from_value(serialized).unwrap();
+        let before_hash = destination.state_hash().unwrap();
+        let before_store = destination.store_bytes();
+        assert!(destination.import_sparse_snapshot(&forged).is_err());
+        assert_eq!(destination.store_bytes(), before_store);
+        assert_eq!(destination.state_hash().unwrap(), before_hash);
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), before_hash);
+
+        let mut matched = mock_arm_session(source.config.clone(), &image);
+        let imported = matched.import_sparse_snapshot(&sparse).unwrap();
+        matched.replay_snapshot(imported).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn foreign_cached_extent_rejects_image_identity_before_mutation() {
+        use crate::cache::{CacheIndex, LocalIndex, Namespace};
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let source_config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut destination_config = source_config.clone();
+        destination_config.seed = 8;
+        let mut source = mock_arm_session(source_config, &image);
+        let mut destination = mock_arm_session(destination_config, &image);
+        assert_ne!(source.image_identity(), destination.image_identity());
+        assert_eq!(
+            source.client.transport().vmm().unwrap().guest_memory(),
+            destination.client.transport().vmm().unwrap().guest_memory()
+        );
+        let source_hash = source.state_hash().unwrap();
+        let destination_hash = destination.state_hash().unwrap();
+        assert_ne!(source_hash, destination_hash);
+        let (target, _) = source.snapshot().unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"source"]);
+        let lease = source
+            .publish_snapshot(&index, namespace, b"key", None, target, 1)
+            .unwrap();
+        let before_store = destination.store_bytes();
+        let before_handles = destination.snapshot_times.len();
+        let rejected = destination
+            .import_cached(&index, &lease, destination.setup)
+            .unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_eq!(destination.store_bytes(), before_store);
+        assert_eq!(destination.snapshot_times.len(), before_handles);
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+        assert_eq!(destination.client.transport().recorded_env().seed(), 8);
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+
+        let (destination_target, _) = destination.snapshot().unwrap();
+        let child_lease = destination
+            .publish_snapshot(
+                &index,
+                namespace,
+                b"key-child",
+                Some((destination.setup, &lease)),
+                destination_target,
+                1,
+            )
+            .unwrap();
+        let child_store = destination.store_bytes();
+        let child_handles = destination.snapshot_times.len();
+        let rejected = destination
+            .import_cached(&index, &child_lease, destination.setup)
+            .unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_eq!(destination.store_bytes(), child_store);
+        assert_eq!(destination.snapshot_times.len(), child_handles);
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+        index.release(child_lease);
+
+        let mut matched = mock_arm_session(source.config.clone(), &image);
+        let (imported, _) = matched
+            .import_cached(&index, &lease, matched.setup)
+            .unwrap();
+        matched.replay_snapshot(imported).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+        assert_eq!(matched.client.transport().recorded_env().seed(), 7);
+
+        let (source_child_target, _) = source.snapshot().unwrap();
+        let source_child_lease = source
+            .publish_snapshot(
+                &index,
+                namespace,
+                b"key-source-child",
+                Some((target, &lease)),
+                source_child_target,
+                1,
+            )
+            .unwrap();
+        let (imported_child, _) = matched
+            .import_cached(&index, &source_child_lease, matched.setup)
+            .unwrap();
+        matched.replay_snapshot(imported_child).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+        index.release(source_child_lease);
+        index.release(lease);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn setup_payload_identity_rejects_foreign_cached_extent() {
+        use crate::cache::{LocalIndex, Namespace};
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut source = mock_arm_session_with_payloads(
+            config.clone(),
+            &image,
+            Some(vec![b"alpha setup payload".to_vec()]),
+        );
+        let mut destination = mock_arm_session_with_payloads(
+            config,
+            &image,
+            Some(vec![b"beta setup payload".to_vec()]),
+        );
+        assert_eq!(source.setup, destination.setup);
+        assert_eq!(
+            source.client.transport().vmm().unwrap().guest_memory(),
+            destination.client.transport().vmm().unwrap().guest_memory()
+        );
+        let source_hash = source.state_hash().unwrap();
+        let destination_hash = destination.state_hash().unwrap();
+        let source_payloads = source
+            .client
+            .transport()
+            .recorded_env()
+            .payloads()
+            .map(|entries| entries.to_vec());
+        let destination_payloads = destination
+            .client
+            .transport()
+            .recorded_env()
+            .payloads()
+            .map(|entries| entries.to_vec());
+        assert_ne!(source_hash, destination_hash);
+        assert_ne!(source_payloads, destination_payloads);
+        let (target, _) = source.snapshot().unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let lease = source
+            .publish_snapshot(
+                &index,
+                Namespace::new(&[b"payload-probe"]),
+                b"source",
+                None,
+                target,
+                1,
+            )
+            .unwrap();
+        let before_store = destination.store_bytes();
+        let before_handles = destination.snapshot_times.len();
+        let rejected = destination
+            .import_cached(&index, &lease, destination.setup)
+            .unwrap_err();
+        assert!(
+            rejected
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_ne!(source.image_identity(), destination.image_identity());
+        assert_eq!(destination.store_bytes(), before_store);
+        assert_eq!(destination.snapshot_times.len(), before_handles);
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+        assert_eq!(
+            destination
+                .client
+                .transport()
+                .recorded_env()
+                .payloads()
+                .map(|entries| entries.to_vec()),
+            destination_payloads
+        );
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), destination_hash);
+
+        let mut matched = mock_arm_session_with_payloads(
+            source.config.clone(),
+            &image,
+            Some(vec![b"alpha setup payload".to_vec()]),
+        );
+        assert_eq!(source.image_identity(), matched.image_identity());
+        let (imported, _) = matched
+            .import_cached(&index, &lease, matched.setup)
+            .unwrap();
+        matched.replay_snapshot(imported).unwrap();
+        assert_eq!(matched.state_hash().unwrap(), source_hash);
+        assert_eq!(
+            matched
+                .client
+                .transport()
+                .recorded_env()
+                .payloads()
+                .map(|entries| entries.to_vec()),
+            source_payloads
+        );
+        index.release(lease);
+    }
 
     #[test]
     fn cleanup_attempts_every_handle_and_preserves_primary_error() {

@@ -6,12 +6,13 @@ license.workspace = true
 
 [features]
 default = ["host"]
-host = ["std", "dep:thiserror"]
+host = ["std", "dep:thiserror", "dep:sha2"]
 guest = []
 std = []
 
 [dependencies]
 thiserror = { version = "2", optional = true }
+sha2 = { version = "0.10", default-features = false, optional = true }
 
 [dev-dependencies]
 proptest = "1"

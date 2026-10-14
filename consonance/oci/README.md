@@ -62,21 +62,95 @@ outer cgroup hierarchy or widening the parent device policy.
 
 Rootfs and control-segment assembly are internal to `bundle::prepare`, which
 validates their combined mount layout before producing executable bytes.
+Both segments use a fixed gzip header and a pinned Rust DEFLATE encoder. The
+prepared bytes and identity therefore do not depend on the host's `gzip`
+implementation or version.
 
-Layers are extracted with `tar -p --no-same-owner`: each entry takes the mode
-its header recorded, whatever the host umask, and belongs to the staging user
-even when that user is root. The owner each header recorded is kept in
-`image::Ownership` beside the tree rather than on it. Whiteouts and replaced
-entries update the map the way they update the tree, and the rootfs segment
-records the mapped owner in every entry, which the guest kernel applies when it
-unpacks the initramfs. An image that hands its data to a service account, such
-as a database cluster owned by its own uid, is therefore readable by that
-account in the guest and by nobody else.
+Layers are extracted with `tar -p --no-same-owner`: ordinary file and directory
+modes come from the archive rather than the host umask, and files belong to the
+staging user even when that user is root. The owner and mode each header
+recorded are kept in `image::Ownership` beside the tree. This matters because
+macOS may strip setuid and setgid bits during extraction even when Linux
+retains them. Whiteouts and replaced entries update these maps the way they
+update the tree. The rootfs segment records the mapped owner and mode in each
+entry, which the guest kernel applies when it unpacks the initramfs. An image
+that hands its data to a service account, such as a database cluster owned by
+its own uid, is therefore readable by that account in the guest and by nobody
+else.
 
-A layer that ships a child without an entry for its parent directory gives the
-implicit parent mode 0755, regardless of the host process's umask. The merge
-applies that mode over the lower layer's. Explicit directory modes still come
-from the layer header.
+Archive path components must be ASCII. Admission checks their case-folded
+prefixes before extraction and rejects names that differ only by ASCII case,
+including collisions between layers. This bounds staging to names whose byte
+identity has the same meaning on case-sensitive Linux filesystems and the
+case-insensitive, Unicode-normalizing filesystems common on macOS. A Unicode
+normalization pass alone would not cover arbitrary non-UTF-8 Linux names or
+every host filesystem's case rules, so non-ASCII archive paths fail closed.
+Existing Harmony workload images use ASCII paths.
+Whiteout targets must match the spelling of the lower name they remove; after
+an exact whiteout, a new entry may reuse that path with different case. Whiteout
+lookups never follow a staged symlink parent. OCI control-file, mount, and
+account-file lookups match each existing path component exactly rather than
+using host case-folding; account paths cannot use symlinks. OCI layouts may
+reuse a blob through a relative symlink whose target resolves, component by
+component, to exact names inside that layout.
+Local layout and archive paths also require exact spelling at every component;
+symlink targets are checked component by component, including dangling links.
+Relative targets are resolved from the link's parent, so readable ancestors
+above that directory are not required. Explicit case-aliased host paths and
+exact-name symlinks with invalid targets are rejected before staging.
+An unqualified image name remains a container-tool reference unless its local
+path has an exact match; an exact-name symlink with an invalid target is
+rejected instead of falling through to the container tool. Absolute and
+dot-relative paths explicitly select a local input and reject aliases.
+Hardlink targets must name an earlier member of the same archive with the
+exact same spelling. Hardlink, symlink, and directory members cannot carry
+data in either their tar header or a pax size override. This also excludes
+archives that only extract because a host resolves a hardlink target
+case-insensitively or interprets a non-file payload differently.
+An entry whose name ends in `/` must carry the directory typeflag; some host
+tar tools otherwise treat a regular file as a directory and parse its payload
+as additional members that admission never saw. Empty effective member names,
+including empty pax or GNU name overrides, are also rejected.
+Members cannot combine GNU and pax overrides for a name or link target because
+macOS and GNU tar choose different values when both are present.
+A member also cannot have multiple pax headers, which those tar tools handle
+differently.
+An archive cannot change the member type at the same path: a symlink followed
+by a regular file produces different final entries under macOS and GNU tar.
+Repeated symlinks at one path are also rejected because macOS keeps the last
+target while GNU tar can keep the first. Repeated ordinary files remain allowed.
+Filesystem members are limited to ordinary files, directories, symlinks, and
+hardlinks. Other tar typeflags are rejected before extraction because host tar
+tools disagree on unknown members and special-file creation.
+The hardlink inherits that earlier entry's owner and mode because both paths
+name the same inode when the layer is extracted.
+
+PAX `SCHILY.fflags` records are rejected before extraction: macOS tar can apply
+immutable file flags that prevent staging, while GNU tar ignores the record.
+PAX `SCHILY.acl.*` records are rejected for the same reason: macOS can enforce
+an ACL that blocks the layer merge, while GNU tar ignores it without `--acls`.
+PAX `SCHILY.realsize` is rejected as an unsupported sparse-file size record:
+macOS tar expands the extracted file to that size while GNU tar ignores it.
+PAX `SUN.holesdata` is also rejected: macOS tar applies its sparse map to file
+contents while GNU tar ignores it.
+Layer extraction disables extended-attribute restoration. macOS tar otherwise
+tries to restore protected PAX xattrs and can fail where GNU tar succeeds;
+extended attributes are not represented in the guest CPIO image.
+Archive members with a `._`-prefixed path component are also rejected before
+extraction. macOS tar can consume an AppleDouble member as metadata for a later
+file, while GNU tar preserves it as a separate rootfs file.
+Set `COPYFILE_DISABLE=1` when creating a layer with macOS tar so host metadata
+does not introduce AppleDouble members.
+
+A layer that ships a child without an entry for its parent directory preserves
+an existing lower-layer directory's mode and ownership. A newly created
+implicit parent has mode 0755 and root ownership, regardless of the host
+process's umask. An explicit directory entry applies its header's mode and
+ownership over the lower layer's. An opaque whiteout removes lower-layer
+children while retaining the directory's metadata. Whiteout removal temporarily
+grants owner read, write, and search access only to affected lower directories,
+then restores their modes. Read-only lower directories therefore behave the
+same under ordinary and privileged host users.
 
 `RuntimeConfig::user` retains the image `Config.User` value. The supported
 Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and

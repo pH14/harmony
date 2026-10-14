@@ -4,7 +4,7 @@ use super::runs::Manifest;
 use crate::{config::Result, runs::Destination};
 use faults_workload::{
     FaultAction,
-    package::{self, ReplaySummary, Report},
+    package::{self, ReplaySummary, Report, StateHashEncoding},
 };
 use std::{fs, path::Path};
 
@@ -60,7 +60,9 @@ fn witness(path: &Path, bug: Option<usize>) -> Result<ReplaySummary> {
 }
 
 fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
-    expected.state_hash == actual.state_hash
+    expected.state_hash_encoding != StateHashEncoding::Unavailable
+        && actual.state_hash_encoding != StateHashEncoding::Unavailable
+        && expected.state_hash == actual.state_hash
         && expected.state_hash_encoding == actual.state_hash_encoding
         && expected.stop == actual.stop
         && expected.violations == actual.violations
@@ -103,6 +105,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
             let artifacts = manifest.fault_artifacts(&out)?;
             crate::oci::execute(
                 &c.runtime(),
+                &manifest.runner_identity,
                 c.seed,
                 &c.knobs,
                 c.wall_seconds,
@@ -131,7 +134,14 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 &manifest.options(&out),
                 original.settle,
             )?;
-            if replay
+            if expected.state_hash_encoding == StateHashEncoding::Unavailable
+                || replay
+                    .replays
+                    .iter()
+                    .any(|actual| actual.state_hash_encoding == StateHashEncoding::Unavailable)
+            {
+                Err("full UML state identity is unavailable; replay observations were recorded for inspection, but exact reproduction cannot be verified".into())
+            } else if replay
                 .replays
                 .iter()
                 .all(|actual| equivalent(&expected, actual))
@@ -326,7 +336,11 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
                 replay["actions_applied"],
                 replay["settle_actions"],
                 replay["stop"],
-                replay["state_hash"]
+                if replay["state_hash_encoding"] == "unavailable" {
+                    "unavailable".to_owned()
+                } else {
+                    replay["state_hash"].to_string()
+                }
             );
             for violation in replay["violations"].as_array().into_iter().flatten() {
                 println!("  violation: {}", violation.as_str().unwrap_or_default());
@@ -502,7 +516,7 @@ mod tests {
             target::{FaultObservations, FaultStop},
         };
         let mut replay =
-            ReplaySummary::from_observation(&FaultObservations::default(), [0; 32], 1, 0);
+            ReplaySummary::from_observation(&FaultObservations::default(), Some([0; 32]), 1, 0);
         replay.settle_actions = 2;
         replay.timeline = (0..=3)
             .map(|step| ReplayStep {
@@ -535,5 +549,17 @@ mod tests {
             .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn unavailable_state_hash_never_verifies_full_replay() {
+        use faults_workload::target::FaultObservations;
+
+        let observation = FaultObservations::default();
+        let known = ReplaySummary::from_observation(&observation, Some([7; 32]), 1, 1);
+        let unknown = ReplaySummary::from_observation(&observation, None, 1, 1);
+        assert!(equivalent(&known, &known));
+        assert!(!equivalent(&unknown, &unknown));
+        assert!(!equivalent(&known, &unknown));
     }
 }

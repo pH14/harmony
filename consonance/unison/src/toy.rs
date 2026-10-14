@@ -84,6 +84,7 @@ pub struct ToyMachine {
 
 impl ToyMachine {
     pub fn new(program: Vec<Instr>, seed: u64) -> Self {
+        let halted = program.is_empty();
         Self {
             program,
             regs: [0; 8],
@@ -91,7 +92,7 @@ impl ToyMachine {
             pc: 0,
             out_log: Vec::new(),
             prng: if seed == 0 { ZERO_SEED_STATE } else { seed },
-            halted: false,
+            halted,
             work: 0,
         }
     }
@@ -137,6 +138,10 @@ impl ToyMachine {
             }
             Instr::Halt => self.halted = true,
         }
+        self.halted |= self
+            .program
+            .get(usize::try_from(self.pc).unwrap_or(usize::MAX))
+            .is_none();
     }
 }
 
@@ -164,7 +169,28 @@ impl Subject for ToyMachine {
 
     fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
         let mut h = Sha256::new();
-        h.update(b"unison-toy-v1");
+        h.update(b"unison-toy-v2");
+        h.update((self.program.len() as u64).to_le_bytes());
+        for instr in &self.program {
+            match instr {
+                Instr::Loadi { rd, imm } => {
+                    h.update([0, *rd]);
+                    h.update(imm.to_le_bytes());
+                }
+                Instr::Add { rd, rs } => h.update([1, *rd, *rs]),
+                Instr::Sub { rd, rs } => h.update([2, *rd, *rs]),
+                Instr::Xor { rd, rs } => h.update([3, *rd, *rs]),
+                Instr::Load { rd, rs } => h.update([4, *rd, *rs]),
+                Instr::Store { rd, rs } => h.update([5, *rd, *rs]),
+                Instr::Jnz { rs, target } => {
+                    h.update([6, *rs]);
+                    h.update(target.to_le_bytes());
+                }
+                Instr::Rand { rd } => h.update([7, *rd]),
+                Instr::Out { rs } => h.update([8, *rs]),
+                Instr::Halt => h.update([9]),
+            }
+        }
         for r in &self.regs {
             h.update(r.to_le_bytes());
         }

@@ -68,35 +68,67 @@ pub enum GuestBackend {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UmlGuest {
-    pub profile: PathBuf,
-    pub identity: String,
-    pub work_parent: PathBuf,
+    pub(crate) profile: PathBuf,
+    pub(crate) profile_identity_sha256: String,
+    pub(crate) host: uml::HostIdentity,
+    pub(crate) identity: String,
+    pub(crate) work_parent: PathBuf,
 }
 
 impl UmlGuest {
     pub fn load(profile: &Path, work_parent: PathBuf) -> Result<Self, String> {
         let verified = uml::Profile::load(profile)
             .map_err(|error| format!("User-mode Linux profile: {error}"))?;
-        let host = uml::HostIdentity::current()
-            .map_err(|error| format!("User-mode Linux host identity: {error}"))?;
-        let identity = format!(
-            "profile={};architecture={};cpu={};features={:x}",
-            verified.identity_sha256,
-            host.architecture,
-            host.cpu_model,
-            Sha256::digest(host.cpu_features.as_bytes())
-        );
+        let host = Self::default_host()?;
+        let identity = Self::identity(verified.identity_sha256(), &host);
         Ok(Self {
             profile: profile.to_path_buf(),
+            profile_identity_sha256: verified.identity_sha256().to_owned(),
+            host,
             identity,
             work_parent,
         })
     }
 
-    pub fn executable(profile: &Path) -> Result<PathBuf, String> {
-        uml::Profile::load(profile)
-            .map(|verified| verified.executable())
-            .map_err(|error| format!("User-mode Linux profile: {error}"))
+    fn default_host() -> Result<uml::HostIdentity, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let pool = consonance_client::placement::CorePool::detect()?;
+            let processor = pool
+                .plan(1)?
+                .coordinator
+                .ok_or("User-mode Linux needs a coordinator processor")?;
+            uml::HostIdentity::for_processor(processor)
+                .map_err(|error| format!("User-mode Linux host identity: {error}"))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            uml::HostIdentity::current()
+                .map_err(|error| format!("User-mode Linux host identity: {error}"))
+        }
+    }
+
+    fn identity(profile: &str, host: &uml::HostIdentity) -> String {
+        format!(
+            "profile={profile};architecture={};processor={};cpu={};features={:x}",
+            host.architecture,
+            host.processor,
+            host.cpu_model,
+            Sha256::digest(host.cpu_features.as_bytes())
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(crate) fn verify_processor(&self, processor: usize) -> Result<(), String> {
+        let current = uml::HostIdentity::for_processor(processor)
+            .map_err(|error| format!("User-mode Linux host processor {processor}: {error}"))?;
+        if current != self.host {
+            return Err(format!(
+                "User-mode Linux host identity changed after admission: expected {:?}, current {current:?}",
+                self.host
+            ));
+        }
+        Ok(())
     }
 
     fn kernel_arguments(knobs: &[String]) -> Vec<String> {
@@ -137,7 +169,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v6";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v7";
 
 type CoverageWindow = (u64, u64, std::num::NonZeroU16);
 const COVERAGE_WINDOW_BYTES: usize = 18;
@@ -291,12 +323,15 @@ pub fn service_factory() -> ServiceFactory {
 
 fn branch_config(
     windows: ActionWindows,
+    inherited: &[StandingWindow],
     actions: &[FaultAction],
 ) -> Result<ServiceConfig, Box<dyn Error>> {
+    let mut standing = inherited.to_vec();
+    standing.extend(standing_windows(windows, actions)?);
     Ok(ServiceConfig {
         identity: SERVICE_IDENTITY.to_vec(),
         configuration: encode_configuration(
-            &encode_windows(&standing_windows(windows, actions)?)?,
+            &encode_windows(&standing)?,
             &actions
                 .iter()
                 .enumerate()
@@ -343,6 +378,8 @@ fn uml_launch(
     }
     Ok(UmlLaunch {
         profile: guest.profile.clone(),
+        expected_profile_identity_sha256: guest.profile_identity_sha256.clone(),
+        expected_host: guest.host.clone(),
         initramfs: path,
         memory_mib: config.ram_mib,
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
@@ -408,6 +445,7 @@ struct Live {
     base_identity: [u8; 32],
     setup: SnapId,
     windows: ActionWindows,
+    inherited: Vec<StandingWindow>,
     chain: Chain,
     horizons_run: u64,
     abandoned: bool,
@@ -612,7 +650,8 @@ impl FaultTarget {
         }
         let (progress, observation) = with_live(&self.config, |live| {
             let (snapshot, at) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let standing = branch_config(live.windows, &self.actions).map_err(|e| e.to_string())?;
+            let standing = branch_config(live.windows, &live.inherited, &self.actions)
+                .map_err(|e| e.to_string())?;
             let service =
                 debug_configuration(&standing.configuration, message).map_err(|e| e.to_string())?;
             live.session
@@ -649,9 +688,17 @@ impl FaultTarget {
 
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
         with_live(&self.config, |live| {
-            let (snapshot, _) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let result = export_root(live.session.as_mut(), snapshot, live.base_identity)
-                .map_err(|e| e.to_string());
+            let (snapshot, moment) = live.session.snapshot().map_err(|e| e.to_string())?;
+            let result = active_root_windows(&live.inherited, live.windows, &self.actions, moment)
+                .and_then(|standing| {
+                    export_root(
+                        live.session.as_mut(),
+                        snapshot,
+                        live.base_identity,
+                        &standing,
+                    )
+                    .map_err(|e| e.to_string())
+                });
             live.session
                 .drop_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
@@ -885,8 +932,10 @@ impl Live {
             Self::open(config).map_err(|error| format!("fault guest boot failed: {error}"))?;
         let base_identity = session.root_identity().map_err(|e| e.to_string())?;
         let (mut setup, mut root_seal) = session.setup_handle();
+        let mut inherited = Vec::new();
         if let Some(root) = &config.root {
-            (setup, root_seal) = import_root(session.as_mut(), root).map_err(|e| e.to_string())?;
+            (setup, root_seal, inherited) =
+                import_root(session.as_mut(), root).map_err(|e| e.to_string())?;
             session.replay_snapshot(setup).map_err(|e| e.to_string())?;
         }
         let shared = match &config.cache {
@@ -910,6 +959,7 @@ impl Live {
             session,
             setup,
             windows: ActionWindows { root_seal },
+            inherited,
             chain: Chain::new(
                 Point {
                     snap: setup,
@@ -1180,7 +1230,7 @@ impl Live {
     }
 
     fn branch(&mut self, parent: Point, actions: &[FaultAction]) -> Result<(), String> {
-        let config = branch_config(self.windows, actions)
+        let config = branch_config(self.windows, &self.inherited, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
         let branch_started = started();
         let result = self
@@ -1322,7 +1372,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Strin
         return format!(
             "faults-uml-v1;{};executable={:x};initramfs={:x};memory_mib={};arguments={};\
              seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
-             action=standing-fault-delta-v3;snapshot=uml-checkpoint-v1",
+             action=standing-fault-delta-v4;snapshot=uml-checkpoint-v2",
             guest.identity,
             Sha256::digest(kernel),
             Sha256::digest(initramfs),
@@ -1332,7 +1382,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Strin
     }
     format!(
         "faults-consonance-whole-vm-v2;session={};\
-         action=standing-fault-delta-v3;snapshot=portable-prefix-to-vm-snapshot-v1",
+         action=standing-fault-delta-v4;snapshot=portable-prefix-to-vm-snapshot-v2",
         identity_with_config(kernel, initramfs, &config.session_config()),
     )
 }
@@ -1351,6 +1401,45 @@ pub fn from_paths(
 mod tests {
     use super::*;
     use crate::target::FaultOperation;
+
+    #[test]
+    fn uml_launch_carries_the_admitted_profile_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let guest = UmlGuest {
+            profile: directory.path().join("profile"),
+            profile_identity_sha256: "admitted-profile".into(),
+            host: uml::HostIdentity {
+                architecture: "x86_64".into(),
+                processor: 0,
+                cpu_model: "model".into(),
+                cpu_features: "features".into(),
+            },
+            identity: "admitted-host".into(),
+            work_parent: directory.path().to_path_buf(),
+        };
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Uml(guest.clone()),
+            root: None,
+        };
+        let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
+        assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
+        assert_eq!(launch.expected_host, guest.host);
+        assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn uml_replay_and_search_admit_the_same_coordinator_processor() {
+        let pool = consonance_client::placement::CorePool::detect().unwrap();
+        let replay = UmlGuest::default_host().unwrap();
+        for workers in 1..=pool.max_workers() {
+            let planned = pool.plan(workers as u32).unwrap();
+            assert_eq!(planned.coordinator, Some(replay.processor));
+        }
+    }
 
     fn unbooted_target() -> FaultTarget {
         FaultTarget {
@@ -1383,7 +1472,7 @@ mod tests {
 
     #[test]
     fn debug_service_is_portable_and_root_identity_includes_saved_state() {
-        let standing = branch_config(ActionWindows { root_seal: 1000 }, &[]).unwrap();
+        let standing = branch_config(ActionWindows { root_seal: 1000 }, &[], &[]).unwrap();
         let message = process_proto::debug::Message {
             id: 9,
             operation: process_proto::debug::Operation::Input,
@@ -1501,7 +1590,7 @@ mod tests {
             ),
         ];
         let windows = ActionWindows { root_seal: 1_000 };
-        let configuration = branch_config(windows, &actions).unwrap();
+        let configuration = branch_config(windows, &[], &actions).unwrap();
         let mut handler =
             StandingHandler::from_configuration(&configuration.configuration).unwrap();
         let question = Question::with_request_id(
@@ -1527,6 +1616,58 @@ mod tests {
         assert!(StandingHandler::from_configuration(&gap).is_err());
         let truncated = &configuration.configuration[..configuration.configuration.len() - 1];
         assert!(StandingHandler::from_configuration(truncated).is_err());
+    }
+
+    #[test]
+    fn root_continuation_keeps_an_unfired_event_kill_window() {
+        let root = ActionWindows { root_seal: 1_000 };
+        let prefix = [FaultAction::from(FaultOperation::EventKill {
+            node: 0,
+            rarity: 1,
+            ticks: std::num::NonZeroU16::new(2).unwrap(),
+        })];
+        let moment = root.window(&prefix, 0).unwrap().1;
+        let original = branch_config(root, &[], &prefix).unwrap();
+        let active = active_root_windows(&[], root, &prefix, moment).unwrap();
+        let payload = encode_root_payload([7; 32], &active, b"snapshot").unwrap();
+        let decoded = decode_root_payload(&payload, [7; 32]).unwrap();
+        assert_eq!(decoded.snapshot, b"snapshot");
+        assert_eq!(root_standing(&payload).unwrap(), active);
+        let continuation =
+            branch_config(ActionWindows { root_seal: moment }, &decoded.standing, &[]).unwrap();
+        let mut original = StandingHandler::from_configuration(&original.configuration).unwrap();
+        let mut continuation =
+            StandingHandler::from_configuration(&continuation.configuration).unwrap();
+        let question = Question::with_request_id(1, STANDING_NAMESPACE, Vec::new()).unwrap();
+        assert_eq!(
+            original.respond(moment, &question).unwrap(),
+            continuation.respond(moment, &question).unwrap()
+        );
+        let rooted = ActionWindows { root_seal: moment };
+        let suffix = [FaultAction::from(FaultOperation::Wait(
+            std::num::NonZeroU16::MIN,
+        ))];
+        let nested_moment = rooted.window(&suffix, 0).unwrap().1;
+        let nested_active =
+            active_root_windows(&decoded.standing, rooted, &suffix, nested_moment).unwrap();
+        let nested_payload = encode_root_payload([7; 32], &nested_active, b"nested").unwrap();
+        let nested = decode_root_payload(&nested_payload, [7; 32]).unwrap();
+        let nested_config = branch_config(
+            ActionWindows {
+                root_seal: nested_moment,
+            },
+            &nested.standing,
+            &[],
+        )
+        .unwrap();
+        let mut nested = StandingHandler::from_configuration(&nested_config.configuration).unwrap();
+        assert_eq!(
+            original.respond(nested_moment, &question).unwrap(),
+            nested.respond(nested_moment, &question).unwrap()
+        );
+        assert!(decode_root_payload(&payload, [8; 32]).is_err());
+        assert!(decode_root_payload(&payload[..payload.len() - 8], [7; 32]).is_err());
+        assert!(decode_root_payload(&payload[..payload.len() - 9], [7; 32]).is_err());
     }
 
     #[test]
@@ -1558,6 +1699,7 @@ fn export_root(
     session: &mut dyn SearchSession,
     snapshot: SnapId,
     identity: [u8; 32],
+    standing: &[StandingWindow],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     use consonance_client::cache::LocalIndex;
     let index = LocalIndex::new(usize::MAX);
@@ -1566,27 +1708,92 @@ fn export_root(
     if chain.len() != 1 {
         return Err("branch root must be a complete snapshot extent".into());
     }
-    let mut bytes = b"HMROOT01".to_vec();
-    bytes.extend_from_slice(&identity);
-    bytes.extend_from_slice(chain[0].bytes());
-    Ok(bytes)
+    encode_root_payload(identity, standing, chain[0].bytes())
 }
+
+fn active_root_windows(
+    inherited: &[StandingWindow],
+    windows: ActionWindows,
+    actions: &[FaultAction],
+    moment: u64,
+) -> Result<Vec<StandingWindow>, String> {
+    let mut standing = inherited.to_vec();
+    standing.extend(standing_windows(windows, actions)?);
+    standing.retain(|window| window.contains(moment));
+    Ok(standing)
+}
+
 fn import_root(
     session: &mut dyn SearchSession,
     bytes: &[u8],
-) -> Result<(SnapId, u64), Box<dyn Error>> {
+) -> Result<(SnapId, u64, Vec<StandingWindow>), Box<dyn Error>> {
     use consonance_client::cache::LocalIndex;
-    if bytes.len() < 40 || &bytes[..8] != b"HMROOT01" {
+    let identity = session.root_identity()?;
+    let RootPayload { standing, snapshot } = decode_root_payload(bytes, identity)?;
+    let index = LocalIndex::new(usize::MAX);
+    let mut extent = index.extent(snapshot.len())?;
+    extent.bytes_mut().copy_from_slice(snapshot);
+    let lease = index.publish(Namespace::new(&[&identity]), b"root", None, extent, 1)?;
+    let (setup, moment) = session.import_root(&index, &lease)?;
+    if standing.iter().any(|window| !window.contains(moment)) {
+        return Err("branch root standing window is inactive at its snapshot moment".into());
+    }
+    Ok((setup, moment, standing))
+}
+
+fn encode_root_payload(
+    identity: [u8; 32],
+    standing: &[StandingWindow],
+    snapshot: &[u8],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let encoded = encode_windows(standing)?;
+    let length =
+        u32::try_from(encoded.len()).map_err(|_| "branch root standing list is too large")?;
+    let mut bytes = b"HMROOT02".to_vec();
+    bytes.extend_from_slice(&identity);
+    bytes.extend_from_slice(&length.to_le_bytes());
+    bytes.extend_from_slice(&encoded);
+    bytes.extend_from_slice(snapshot);
+    Ok(bytes)
+}
+
+pub(crate) fn root_standing(root: &[u8]) -> Result<Vec<StandingWindow>, Box<dyn Error>> {
+    let identity = root
+        .get(8..40)
+        .ok_or("invalid branch snapshot header")?
+        .try_into()?;
+    Ok(decode_root_payload(root, identity)?.standing)
+}
+
+struct RootPayload<'a> {
+    standing: Vec<StandingWindow>,
+    snapshot: &'a [u8],
+}
+
+fn decode_root_payload(
+    bytes: &[u8],
+    identity: [u8; 32],
+) -> Result<RootPayload<'_>, Box<dyn Error>> {
+    if bytes.len() < 44 || &bytes[..8] != b"HMROOT02" {
         return Err("invalid branch snapshot header".into());
     }
-    if bytes[8..40] != session.root_identity()? {
+    if bytes[8..40] != identity {
         return Err("branch snapshot setup identity differs".into());
     }
-    let index = LocalIndex::new(usize::MAX);
-    let mut extent = index.extent(bytes.len() - 40)?;
-    extent.bytes_mut().copy_from_slice(&bytes[40..]);
-    let lease = index.publish(Namespace::new(&[&bytes[8..40]]), b"root", None, extent, 1)?;
-    session.import_root(&index, &lease)
+    let length = usize::try_from(u32::from_le_bytes(bytes[40..44].try_into()?))?;
+    let end = 44_usize
+        .checked_add(length)
+        .ok_or("branch root standing length overflows")?;
+    let standing = fault_policy::decode_windows(
+        bytes
+            .get(44..end)
+            .ok_or("truncated branch root standing list")?,
+    )?;
+    let snapshot = bytes.get(end..).ok_or("missing branch root snapshot")?;
+    if snapshot.is_empty() {
+        return Err("missing branch root snapshot".into());
+    }
+    Ok(RootPayload { standing, snapshot })
 }
 
 #[derive(Debug)]

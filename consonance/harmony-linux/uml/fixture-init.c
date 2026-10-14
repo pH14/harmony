@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/auxv.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/mount.h>
 #include <sys/random.h>
@@ -499,6 +500,57 @@ static void orphans(void)
 	spin();
 }
 
+struct payload_header {
+	uint32_t magic;
+	uint16_t kind;
+	uint16_t service;
+	uint16_t opcode;
+	uint16_t status;
+	uint32_t sequence;
+	uint32_t length;
+	uint32_t reserved;
+} __attribute__((packed));
+
+struct payload_exchange {
+	uint64_t request;
+	uint64_t response;
+	uint32_t request_length;
+	uint32_t response_capacity;
+	uint32_t response_length;
+	uint32_t reserved;
+};
+
+static void console_branch(void)
+{
+	struct {
+		struct payload_header header;
+		uint32_t requested;
+	} request = {
+		.header = { .magic = 0x31504348, .kind = 1, .service = 8,
+			.opcode = 1, .sequence = 1, .length = 4 },
+		.requested = 1,
+	};
+	unsigned char response[64] = { 0 };
+	struct payload_exchange exchange = {
+		.request = (uint64_t)(uintptr_t)&request,
+		.response = (uint64_t)(uintptr_t)response,
+		.request_length = sizeof(request),
+		.response_capacity = sizeof(response),
+	};
+
+	emit("{\"uml\":\"console-setup\"}");
+	if (ioctl(harmony, _IOWR('H', 1, struct payload_exchange), &exchange) != 0 ||
+	    exchange.response_length != sizeof(struct payload_header) + 1 ||
+	    response[sizeof(struct payload_header)] < 'A')
+		fail("payload");
+	if (response[sizeof(struct payload_header)] == 'P')
+		say("Kernel panic: abandoned branch sentinel\n");
+	emitf("{\"uml\":\"console-choice\",\"value\":%u}",
+	      response[sizeof(struct payload_header)]);
+	emit("{\"uml\":\"console-barrier\"}");
+	finish("console_branch");
+}
+
 int main(void)
 {
 	const char *mode = getenv("harmony_fixture");
@@ -525,6 +577,8 @@ int main(void)
 		timers();
 	else if (strcmp(mode, "counter") == 0)
 		counters();
+	else if (strcmp(mode, "console_branch") == 0)
+		console_branch();
 	fail("unknown-mode");
 	return 1;
 }

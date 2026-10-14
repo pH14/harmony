@@ -471,6 +471,42 @@ pub(crate) fn cpuid_entries(model: &CpuidModel) -> Vec<kvm_cpuid_entry2> {
         .collect()
 }
 
+pub(crate) fn amd_compatible_vendor(ebx: u32, edx: u32, ecx: u32) -> bool {
+    let mut vendor = [0; 12];
+    vendor[..4].copy_from_slice(&ebx.to_le_bytes());
+    vendor[4..8].copy_from_slice(&edx.to_le_bytes());
+    vendor[8..].copy_from_slice(&ecx.to_le_bytes());
+    vendor == *b"AuthenticAMD" || vendor == *b"HygonGenuine"
+}
+
+pub(crate) fn guest_intel_vendor(model: &CpuidModel) -> bool {
+    model
+        .entries
+        .iter()
+        .find(|entry| entry.leaf == 0 && entry.subleaf == 0)
+        .is_some_and(|entry| {
+            entry.ebx == u32::from_le_bytes(*b"Genu")
+                && entry.edx == u32::from_le_bytes(*b"ineI")
+                && entry.ecx == u32::from_le_bytes(*b"ntel")
+        })
+}
+
+pub(crate) fn kvm_sysenter_virtual_bits(entries: &[kvm_cpuid_entry2]) -> u32 {
+    if entries
+        .iter()
+        .any(|entry| entry.function == 7 && entry.index == 0 && entry.ecx & (1 << 16) != 0)
+    {
+        57
+    } else {
+        48
+    }
+}
+
+fn canonical_address(address: u64, bits: u32) -> bool {
+    let shift = 64 - bits;
+    ((address << shift) as i64 >> shift) as u64 == address
+}
+
 pub(crate) fn ensure_full_msr_count(serviced: usize, requested: usize) -> Result<()> {
     if serviced != requested {
         return Err(BackendError::Internal(
@@ -508,10 +544,15 @@ pub(crate) fn validate_restore_shape(
     state: &VcpuState,
     filter: Option<&MsrFilter>,
     xsave_len: usize,
+    virtual_bits: u32,
+    sysenter_32bit: bool,
 ) -> Result<()> {
     const EFER: u32 = 0xc000_0080;
     const FS_BASE: u32 = 0xc000_0100;
     const GS_BASE: u32 = 0xc000_0101;
+    const SYSENTER_CS: u32 = 0x174;
+    const SYSENTER_ESP: u32 = 0x175;
+    const SYSENTER_EIP: u32 = 0x176;
 
     let mut expected: Vec<u32> = filter
         .map(|f| f.allow_indices().collect())
@@ -525,12 +566,80 @@ pub(crate) fn validate_restore_shape(
     if state.xsave.len() != xsave_len {
         return Err(BackendError::InvalidState);
     }
+    if state.regs.rflags & 2 == 0
+        || state.regs.rflags & 0xffff_ffff_ffc0_8028 != 0
+        || (state.regs.rflags & (1 << 17) != 0
+            && (state.sregs.cr0 & 1 == 0 || state.sregs.efer & (1 << 10) != 0))
+    {
+        return Err(BackendError::InvalidState);
+    }
+    if state.sregs.cr8 > 0x0f {
+        return Err(BackendError::InvalidState);
+    }
+    if state.sregs.cr4 & (1 << 17) != 0
+        && (state.sregs.cr0 & (1 << 31) == 0
+            || state.sregs.cr4 & (1 << 5) == 0
+            || state.sregs.efer & (1 << 10) == 0)
+    {
+        return Err(BackendError::InvalidState);
+    }
+    for segment in [
+        state.sregs.cs,
+        state.sregs.ds,
+        state.sregs.es,
+        state.sregs.fs,
+        state.sregs.gs,
+        state.sregs.ss,
+        state.sregs.tr,
+        state.sregs.ldt,
+    ] {
+        if segment.type_ > 0x0f
+            || segment.dpl > 3
+            || [
+                segment.present,
+                segment.db,
+                segment.s,
+                segment.l,
+                segment.g,
+                segment.avl,
+                segment.unusable,
+            ]
+            .into_iter()
+            .any(|value| value > 1)
+            || (segment.present == 0 && segment.unusable == 0)
+            || (segment.unusable == 1
+                && segment
+                    != Segment {
+                        base: segment.base,
+                        selector: segment.selector,
+                        unusable: 1,
+                        ..Segment::default()
+                    })
+        {
+            return Err(BackendError::InvalidState);
+        }
+    }
     for (index, value) in [
         (EFER, state.sregs.efer),
         (FS_BASE, state.sregs.fs.base),
         (GS_BASE, state.sregs.gs.base),
     ] {
         if state.msrs.get(&index).is_some_and(|&msr| msr != value) {
+            return Err(BackendError::InvalidState);
+        }
+    }
+    if state
+        .msrs
+        .get(&SYSENTER_CS)
+        .is_some_and(|&value| value > u64::from(u32::MAX))
+    {
+        return Err(BackendError::InvalidState);
+    }
+    for index in [SYSENTER_ESP, SYSENTER_EIP] {
+        if state.msrs.get(&index).is_some_and(|&value| {
+            (sysenter_32bit && value > u64::from(u32::MAX))
+                || !canonical_address(value, virtual_bits)
+        }) {
             return Err(BackendError::InvalidState);
         }
     }

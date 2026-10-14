@@ -761,6 +761,8 @@ pub use uml::UmlSession;
 #[derive(Clone, Debug)]
 pub struct UmlLaunch {
     pub profile: std::path::PathBuf,
+    pub expected_profile_identity_sha256: String,
+    pub expected_host: ::uml::HostIdentity,
     pub initramfs: std::path::PathBuf,
     pub memory_mib: u32,
     pub kernel_arguments: Vec<String>,
@@ -818,9 +820,24 @@ pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
 
 #[must_use]
 pub fn identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> String {
+    identity_with_config_and_payloads(kernel, initramfs, config, &[])
+}
+
+#[must_use]
+pub fn identity_with_config_and_payloads(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &SessionConfig,
+    setup_payloads: &[Vec<u8>],
+) -> String {
     format!(
         "consonance-session-v2;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
-        bytes_hex(&image_identity_with_config(kernel, initramfs, config)),
+        bytes_hex(&image_identity_with_config_and_payloads(
+            kernel,
+            initramfs,
+            config,
+            setup_payloads,
+        )),
         config.ram_bytes,
         config.seed,
         config.run_budget,
@@ -834,22 +851,36 @@ fn image_identity(kernel: &[u8], initramfs: &[u8]) -> [u8; 32] {
 }
 
 fn image_identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> [u8; 32] {
+    image_identity_with_config_and_payloads(kernel, initramfs, config, &[])
+}
+
+fn image_identity_with_config_and_payloads(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &SessionConfig,
+    setup_payloads: &[Vec<u8>],
+) -> [u8; 32] {
     let mut digest = Sha256::new();
-    if config.identity_tag.is_empty() {
-        digest.update(b"consonance-session-image-v2\0");
-        update_digest_field(&mut digest, kernel);
-        update_digest_field(&mut digest, initramfs);
-        digest.update(config.ram_bytes.to_le_bytes());
-        digest.update(config.seed.to_le_bytes());
-        digest.update(config.run_budget.to_le_bytes());
-        update_digest_field(&mut digest, config.cmdline.as_bytes());
-    } else {
-        digest.update(config.identity_tag.as_bytes());
-        update_digest_field(&mut digest, kernel);
-        update_digest_field(&mut digest, initramfs);
+    digest.update(b"consonance-session-image-v2\0");
+    update_digest_field(&mut digest, kernel);
+    update_digest_field(&mut digest, initramfs);
+    digest.update(config.ram_bytes.to_le_bytes());
+    digest.update(config.seed.to_le_bytes());
+    digest.update(config.run_budget.to_le_bytes());
+    update_digest_field(&mut digest, config.cmdline.as_bytes());
+    if !config.identity_tag.is_empty() {
+        digest.update(b"\0consonance-identity-tag-v1\0");
+        update_digest_field(&mut digest, config.identity_tag.as_bytes());
     }
     if config.guest_contract == GuestContract::NestedHost {
         digest.update(b"\0consonance-nested-host-v1\0");
+    }
+    if !setup_payloads.is_empty() {
+        digest.update(b"\0consonance-setup-payloads-v1\0");
+        digest.update((setup_payloads.len() as u64).to_le_bytes());
+        for payload in setup_payloads {
+            update_digest_field(&mut digest, payload);
+        }
     }
     digest.finalize().into()
 }
@@ -1274,6 +1305,90 @@ mod tests {
         assert_ne!(
             identity_with_config(b"kernel-a", b"initramfs", &tagged),
             identity_with_config(b"kernel-b", b"initramfs", &tagged)
+        );
+    }
+
+    #[test]
+    fn tagged_image_identity_includes_execution_setup() {
+        let base = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
+            .with_identity_tag("same-workload");
+        let identity = image_identity_with_config(b"kernel", b"initramfs", &base);
+        let mut changed = base.clone();
+        changed.cmdline.push_str(" debug");
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different command line changes the boot RAM base"
+        );
+        changed = base.clone();
+        changed.seed += 1;
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different seed changes setup state"
+        );
+        changed = base.clone();
+        changed.ram_bytes += PAGE_SIZE;
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different RAM size changes the sparse base"
+        );
+        changed = base.clone();
+        changed.run_budget += 1;
+        assert_ne!(
+            image_identity_with_config(b"kernel", b"initramfs", &changed),
+            identity,
+            "a different setup run budget can change setup state"
+        );
+    }
+
+    #[test]
+    fn setup_payload_identity_preserves_order_and_boundaries() {
+        let config = SessionConfig::default();
+        let base = image_identity_with_config(b"kernel", b"initramfs", &config);
+        let payloads = vec![b"a".to_vec(), b"bc".to_vec()];
+        let identity =
+            image_identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &payloads);
+        assert_eq!(
+            base,
+            image_identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &[])
+        );
+        assert_ne!(identity, base);
+        assert_ne!(
+            identity,
+            image_identity_with_config_and_payloads(
+                b"kernel",
+                b"initramfs",
+                &config,
+                &[b"ab".to_vec(), b"c".to_vec()],
+            )
+        );
+        assert_ne!(
+            identity,
+            image_identity_with_config_and_payloads(
+                b"kernel",
+                b"initramfs",
+                &config,
+                &[b"bc".to_vec(), b"a".to_vec()],
+            )
+        );
+        assert_ne!(
+            base,
+            image_identity_with_config_and_payloads(
+                b"kernel",
+                b"initramfs",
+                &config,
+                &[Vec::new()],
+            )
+        );
+        assert_eq!(
+            identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &[]),
+            identity_with_config(b"kernel", b"initramfs", &config)
+        );
+        assert!(
+            identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &payloads)
+                .contains(&bytes_hex(&identity))
         );
     }
 

@@ -56,7 +56,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 10;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 11;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -751,11 +751,19 @@ pub struct CampaignSkipRecord<C, K = ()> {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignEndRecord {
+    pub jobs: u64,
+    pub skips: u64,
+    pub executions_completed: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum CampaignStreamRecord<C, K = ()> {
     Job(CampaignJobRecord<C, K>),
     Skip(CampaignSkipRecord<C, K>),
+    End(CampaignEndRecord),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -3304,11 +3312,7 @@ where
                 }
                 pending.insert(job.reservation, job.pending);
             }
-            let prefill = if !pending.is_empty() {
-                0
-            } else {
-                pipeline_depth
-            };
+            let prefill = pipeline_depth.saturating_sub(pending.len());
             for _ in 0..prefill {
                 let selection_started = profile_now();
                 let selected = select(
@@ -3802,6 +3806,13 @@ where
             sink,
         )?;
     }
+    writer.write_line(
+        &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
+            jobs: reserved,
+            skips: counters.duplicates_skipped,
+            executions_completed: core.sequence,
+        }),
+    )?;
     let stream_sha256 = writer.finish()?;
     counters.draw_state_memory_bytes = workload
         .draw_state_memory_bytes(&draw_state)
@@ -4225,12 +4236,49 @@ fn initial_draw_state<G: Workload>(
     Ok((tables, Some(header)))
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn replay_campaign_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
     origin_report: Option<&G::ArchiveReport>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    replay_campaign_checkpointed_inner(
+        workload,
+        stream_bytes,
+        origin_report,
+        origin_checkpoint,
+        true,
+    )
+}
+
+pub fn replay_campaign_prefix_checkpointed<G: Workload>(
+    workload: &G,
+    stream_bytes: &[u8],
+    origin_report: Option<&G::ArchiveReport>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    replay_campaign_checkpointed_inner(
+        workload,
+        stream_bytes,
+        origin_report,
+        origin_checkpoint,
+        false,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+fn replay_campaign_checkpointed_inner<G: Workload>(
+    workload: &G,
+    stream_bytes: &[u8],
+    origin_report: Option<&G::ArchiveReport>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    require_terminal: bool,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
@@ -4276,7 +4324,20 @@ where
             "campaign replay execution-work unit does not match the recorded stream".into(),
         );
     }
-    let record_lines = lines.collect::<Vec<_>>();
+    let mut record_lines = lines.collect::<Vec<_>>();
+    let end = if require_terminal {
+        let end_line = record_lines
+            .pop()
+            .ok_or("campaign stream lacks a terminal record")?;
+        let end_record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
+            serde_json::from_str(end_line)?;
+        let CampaignStreamRecord::End(end) = end_record else {
+            return Err("campaign stream lacks a terminal record".into());
+        };
+        Some(end)
+    } else {
+        None
+    };
     let mut required_draw_versions = DrawVersionSchedule::default();
     let mut replay_job_reservations = BTreeMap::<u64, u64>::new();
     for (index, line) in record_lines.iter().enumerate() {
@@ -4293,6 +4354,9 @@ where
                 job.draw_checkpoint_before
             }
             CampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
+            CampaignStreamRecord::End(_) => {
+                return Err("campaign stream has a premature terminal record".into());
+            }
         };
         if let Some(before) = before {
             required_draw_versions.require(workload.draw_checkpoint_version(&before), index);
@@ -4966,7 +5030,17 @@ where
                     counters.note_first_objective(sequence);
                 }
             }
+            CampaignStreamRecord::End(_) => {
+                return Err("campaign stream has a premature terminal record".into());
+            }
         }
+    }
+    if let Some(end) = end
+        && (end.jobs != u64::try_from(replay_job_parents.len())?
+            || end.skips != counters.duplicates_skipped
+            || end.executions_completed != core.sequence)
+    {
+        return Err("campaign stream terminal counts diverged".into());
     }
     core.archive.preserve_inactive_snapshots(false)?;
     core.archive.compact_history_for_final_report()?;
@@ -4985,7 +5059,7 @@ where
     counters.draw_state_memory_bytes = workload
         .draw_state_memory_bytes(&draw_state)
         .saturating_add(duration_policies.memory_bytes());
-    Ok(build_report(
+    let mut outcome = build_report(
         workload,
         &header,
         origin,
@@ -4993,7 +5067,11 @@ where
         &counters,
         stream_sha256,
         true,
-    ))
+    );
+    if !require_terminal {
+        outcome.0.mode = "campaign-prefix".to_owned();
+    }
+    Ok(outcome)
 }
 
 #[cfg(test)]
@@ -5847,7 +5925,7 @@ mod tests {
         }
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":10,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -6823,6 +6901,7 @@ mod tests {
                 {
                     CampaignStreamRecord::Job(job) => Some((index, job)),
                     CampaignStreamRecord::Skip(_) => None,
+                    CampaignStreamRecord::End(_) => None,
                 }
             })
             .collect()
@@ -6862,6 +6941,51 @@ mod tests {
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn replay_rejects_stream_truncated_after_a_complete_record() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 4;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("campaign");
+        assert_eq!(live.0.executions_completed, 4);
+        let lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        assert!(lines.len() > 2);
+        let truncated = format!("{}\n", lines[..lines.len() - 1].join("\n"));
+        assert!(replay_campaign_checkpointed(&workload, truncated.as_bytes(), None, None).is_err());
+
+        let mut tampered = lines
+            .iter()
+            .map(|line| (*line).to_owned())
+            .collect::<Vec<_>>();
+        let mut end: serde_json::Value = serde_json::from_str(tampered.last().unwrap()).unwrap();
+        end["jobs"] = serde_json::json!(3);
+        *tampered.last_mut().unwrap() = serde_json::to_string(&end).unwrap();
+        let error = replay_campaign_checkpointed(
+            &workload,
+            format!("{}\n", tampered.join("\n")).as_bytes(),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("terminal counts diverged"));
     }
 
     #[test]

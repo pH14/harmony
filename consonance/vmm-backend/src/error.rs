@@ -28,6 +28,9 @@ pub enum BackendError {
     #[error("invalid vcpu state for restore")]
     InvalidState,
 
+    #[error("non-init MXCSR without SSE xstate presence is not portable across KVM hosts")]
+    NonportableXsaveMxcsr,
+
     #[error(
         "ID register {encoding:#06x} requests {requested:#018x}, above the host's {host:#018x}"
     )]

@@ -61,6 +61,8 @@ cat >"$negative" <<EOF
 _start:
 $negative_body
 ret
+.section .safe,"ax"
+ret
 EOF
 "$n6_cc" -nostdlib -static -Wl,-e,_start -o "$n6_root/n6-entropy-negative" "$negative"
 if python3 "$entropy_scan" "$n6_root/n6-entropy-negative" \
@@ -74,6 +76,48 @@ if ! grep -q '^N6_ENTROPY_REJECT .* hits=2$' "$n6_root/n6-entropy-negative.log";
     exit 1
 fi
 echo "ok: planted entropy opcodes rejected"
+
+hidden=$n6_root/n6-entropy-hidden-section
+cp "$n6_root/n6-entropy-negative" "$hidden"
+python3 - "$hidden" <<'PY'
+import struct
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+data = bytearray(path.read_bytes())
+section_offset = struct.unpack_from("<Q", data, 40)[0]
+section_size = struct.unpack_from("<H", data, 58)[0]
+section_count = struct.unpack_from("<H", data, 60)[0]
+string_index = struct.unpack_from("<H", data, 62)[0]
+strings_offset, strings_size = struct.unpack_from(
+    "<QQ", data, section_offset + string_index * section_size + 24
+)
+names = data[strings_offset : strings_offset + strings_size]
+for index in range(section_count):
+    entry = section_offset + index * section_size
+    name_offset = struct.unpack_from("<I", data, entry)[0]
+    name = names[name_offset : names.find(b"\0", name_offset)]
+    if name == b".text":
+        flags = struct.unpack_from("<Q", data, entry + 8)[0]
+        if flags & 4 == 0:
+            raise SystemExit(".text is not executable before the negative control")
+        struct.pack_into("<Q", data, entry + 8, flags & ~4)
+        path.write_bytes(data)
+        break
+else:
+    raise SystemExit("negative control has no .text section")
+PY
+if python3 "$entropy_scan" "$hidden" >"$hidden.log" 2>&1; then
+    echo "FAIL: entropy scanner accepted instructions hidden by section flags" >&2
+    exit 1
+fi
+if ! grep -q '^N6_ENTROPY_REJECT .* hits=2$' "$hidden.log"; then
+    echo "FAIL: entropy scanner did not inspect the executable load segment" >&2
+    cat "$hidden.log" >&2
+    exit 1
+fi
+echo "ok: mislabeled executable section still rejected"
 
 if [ "$arch" = x86_64 ]; then
     false_positive=$n6_root/n6-entropy-false-positive.S

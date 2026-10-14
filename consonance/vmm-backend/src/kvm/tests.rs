@@ -24,6 +24,21 @@ struct SynRun {
 
 const PIO_OFF: usize = 8192;
 
+fn set_usable_test_segments(state: &mut VcpuState) {
+    for segment in [
+        &mut state.sregs.cs,
+        &mut state.sregs.ds,
+        &mut state.sregs.es,
+        &mut state.sregs.fs,
+        &mut state.sregs.gs,
+        &mut state.sregs.ss,
+        &mut state.sregs.tr,
+        &mut state.sregs.ldt,
+    ] {
+        segment.present = 1;
+    }
+}
+
 impl SynRun {
     fn new() -> Self {
         let len = 16384;
@@ -750,30 +765,34 @@ fn validate_restore_shape_keys_and_xsave_len() {
         xsave: vec![0u8; 4096],
         ..Default::default()
     };
-    assert!(validate_restore_shape(&good, Some(&filter), 4096).is_ok());
+    good.regs.rflags = 2;
+    set_usable_test_segments(&mut good);
+    assert!(validate_restore_shape(&good, Some(&filter), 4096, 48, false).is_ok());
 
     good.msrs.remove(&0x175);
     assert!(matches!(
-        validate_restore_shape(&good, Some(&filter), 4096),
+        validate_restore_shape(&good, Some(&filter), 4096, 48, false),
         Err(BackendError::InvalidState)
     ));
     good.msrs.insert(0x175, 0);
 
     good.msrs.insert(0x200, 0);
-    assert!(validate_restore_shape(&good, Some(&filter), 4096).is_err());
+    assert!(validate_restore_shape(&good, Some(&filter), 4096, 48, false).is_err());
     good.msrs.remove(&0x200);
 
     assert!(matches!(
-        validate_restore_shape(&good, Some(&filter), 8192),
+        validate_restore_shape(&good, Some(&filter), 8192, 48, false),
         Err(BackendError::InvalidState)
     ));
 
-    let empty = VcpuState {
+    let mut empty = VcpuState {
         xsave: vec![0u8; 4096],
         ..Default::default()
     };
-    assert!(validate_restore_shape(&empty, None, 4096).is_ok());
-    assert!(validate_restore_shape(&good, None, 4096).is_err());
+    empty.regs.rflags = 2;
+    set_usable_test_segments(&mut empty);
+    assert!(validate_restore_shape(&empty, None, 4096, 48, false).is_ok());
+    assert!(validate_restore_shape(&good, None, 4096, 48, false).is_err());
 }
 
 #[test]
@@ -802,19 +821,340 @@ fn validate_restore_shape_requires_coherent_sregs_msr_aliases() {
         xsave: vec![0; 4096],
         ..Default::default()
     };
+    coherent.regs.rflags = 2;
+    set_usable_test_segments(&mut coherent);
     coherent.sregs.efer = coherent.msrs[&EFER];
     coherent.sregs.fs.base = coherent.msrs[&FS_BASE];
     coherent.sregs.gs.base = coherent.msrs[&GS_BASE];
-    assert!(validate_restore_shape(&coherent, Some(&filter), 4096).is_ok());
+    assert!(validate_restore_shape(&coherent, Some(&filter), 4096, 48, false).is_ok());
 
     for index in [EFER, FS_BASE, GS_BASE] {
         let mut inconsistent = coherent.clone();
         *inconsistent.msrs.get_mut(&index).unwrap() ^= 1;
         assert!(matches!(
-            validate_restore_shape(&inconsistent, Some(&filter), 4096),
+            validate_restore_shape(&inconsistent, Some(&filter), 4096, 48, false),
             Err(BackendError::InvalidState)
         ));
     }
+}
+
+#[test]
+fn validate_restore_shape_requires_preservable_sysenter_values() {
+    let filter = MsrFilter {
+        allow_inkernel: vec![MsrRange {
+            base: 0x174,
+            count: 3,
+        }],
+    };
+    let mut state = VcpuState {
+        msrs: BTreeMap::from([
+            (0x174, u64::from(u32::MAX)),
+            (0x175, 0x0000_7fff_ffff_ffff),
+            (0x176, 0xffff_8000_0000_0000),
+        ]),
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
+    assert!(validate_restore_shape(&state, Some(&filter), 4096, 48, false).is_ok());
+
+    for (index, value) in [
+        (0x174, 1 << 32),
+        (0x175, 0x0000_8000_0000_0000),
+        (0x176, 1 << 48),
+    ] {
+        let original = state.msrs.insert(index, value).unwrap();
+        assert!(matches!(
+            validate_restore_shape(&state, Some(&filter), 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+        state.msrs.insert(index, original);
+    }
+
+    state.msrs.insert(0x175, 1 << 48);
+    assert!(validate_restore_shape(&state, Some(&filter), 4096, 57, false).is_ok());
+    state.msrs.insert(0x175, 1 << 63);
+    assert!(matches!(
+        validate_restore_shape(&state, Some(&filter), 4096, 57, false),
+        Err(BackendError::InvalidState)
+    ));
+
+    state.msrs.insert(0x175, u64::from(u32::MAX));
+    state.msrs.insert(0x176, u64::from(u32::MAX));
+    assert!(validate_restore_shape(&state, Some(&filter), 4096, 48, true).is_ok());
+    for index in [0x175, 0x176] {
+        state.msrs.insert(index, 1 << 32);
+        assert!(matches!(
+            validate_restore_shape(&state, Some(&filter), 4096, 48, true),
+            Err(BackendError::InvalidState)
+        ));
+        state.msrs.insert(index, u64::from(u32::MAX));
+    }
+}
+
+#[test]
+fn validate_restore_shape_requires_four_bit_cr8() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
+    state.sregs.cr8 = 0x0f;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+    state.sregs.cr8 = 0x10;
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48, false),
+        Err(BackendError::InvalidState)
+    ));
+}
+
+#[test]
+fn validate_restore_shape_requires_architectural_rflags() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+    state.regs.rflags = 0;
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48, false),
+        Err(BackendError::InvalidState)
+    ));
+    for bit in [3, 5, 15, 22, 63] {
+        state.regs.rflags = 2 | (1 << bit);
+        assert!(matches!(
+            validate_restore_shape(&state, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+    }
+    state.regs.rflags = 3;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+}
+
+#[test]
+fn validate_restore_shape_requires_legal_virtual_8086_mode() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2 | (1 << 17);
+    set_usable_test_segments(&mut state);
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48, false),
+        Err(BackendError::InvalidState)
+    ));
+    state.sregs.cr0 |= 1;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+    state.sregs.efer |= 1 << 10;
+    assert!(matches!(
+        validate_restore_shape(&state, None, 4096, 48, false),
+        Err(BackendError::InvalidState)
+    ));
+    state.regs.rflags = 2;
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+}
+
+#[test]
+fn validate_restore_shape_requires_ia32e_paging_for_pcide() {
+    let mut state = VcpuState {
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    state.regs.rflags = 2;
+    set_usable_test_segments(&mut state);
+    state.sregs.cr4 = 1 << 17;
+    for (cr0, cr4, efer) in [
+        (0, 1 << 17, 0),
+        ((1 << 31) | 1, 1 << 17, (1 << 10) | (1 << 8)),
+        ((1 << 31) | 1, (1 << 17) | (1 << 5), 1 << 8),
+    ] {
+        state.sregs.cr0 = cr0;
+        state.sregs.cr4 = cr4;
+        state.sregs.efer = efer;
+        assert!(matches!(
+            validate_restore_shape(&state, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+    }
+    state.sregs.cr0 = (1 << 31) | 1;
+    state.sregs.cr4 = (1 << 17) | (1 << 5);
+    state.sregs.efer = (1 << 10) | (1 << 8);
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+}
+
+#[test]
+fn validate_restore_shape_requires_segment_encoding_widths() {
+    fn segment(state: &mut VcpuState, index: usize) -> &mut Segment {
+        match index {
+            0 => &mut state.sregs.cs,
+            1 => &mut state.sregs.ds,
+            2 => &mut state.sregs.es,
+            3 => &mut state.sregs.fs,
+            4 => &mut state.sregs.gs,
+            5 => &mut state.sregs.ss,
+            6 => &mut state.sregs.tr,
+            7 => &mut state.sregs.ldt,
+            _ => unreachable!(),
+        }
+    }
+
+    let mut state = VcpuState {
+        regs: VcpuRegs {
+            rflags: 2,
+            ..Default::default()
+        },
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    set_usable_test_segments(&mut state);
+    for index in 0..8 {
+        let mut candidate = state.clone();
+        segment(&mut candidate, index).type_ = 0x0f;
+        segment(&mut candidate, index).dpl = 3;
+        assert!(validate_restore_shape(&candidate, None, 4096, 48, false).is_ok());
+
+        segment(&mut candidate, index).type_ = 0x10;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+
+        segment(&mut candidate, index).type_ = 0x0f;
+        segment(&mut candidate, index).dpl = 4;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+    }
+}
+
+#[test]
+fn validate_restore_shape_requires_one_bit_segment_fields() {
+    for segment_index in 0..8 {
+        for field in 0..7 {
+            let mut state = VcpuState {
+                regs: VcpuRegs {
+                    rflags: 2,
+                    ..Default::default()
+                },
+                xsave: vec![0; 4096],
+                ..Default::default()
+            };
+            set_usable_test_segments(&mut state);
+            let segment = match segment_index {
+                0 => &mut state.sregs.cs,
+                1 => &mut state.sregs.ds,
+                2 => &mut state.sregs.es,
+                3 => &mut state.sregs.fs,
+                4 => &mut state.sregs.gs,
+                5 => &mut state.sregs.ss,
+                6 => &mut state.sregs.tr,
+                _ => &mut state.sregs.ldt,
+            };
+            match field {
+                0 => segment.present = 2,
+                1 => segment.db = 2,
+                2 => segment.s = 2,
+                3 => segment.l = 2,
+                4 => segment.g = 2,
+                5 => segment.avl = 2,
+                _ => segment.unusable = 2,
+            }
+            assert!(matches!(
+                validate_restore_shape(&state, None, 4096, 48, false),
+                Err(BackendError::InvalidState)
+            ));
+        }
+    }
+}
+
+#[test]
+fn validate_restore_shape_requires_canonical_unusable_segments() {
+    fn segment(state: &mut VcpuState, index: usize) -> &mut Segment {
+        match index {
+            0 => &mut state.sregs.cs,
+            1 => &mut state.sregs.ds,
+            2 => &mut state.sregs.es,
+            3 => &mut state.sregs.fs,
+            4 => &mut state.sregs.gs,
+            5 => &mut state.sregs.ss,
+            6 => &mut state.sregs.tr,
+            7 => &mut state.sregs.ldt,
+            _ => unreachable!(),
+        }
+    }
+
+    let mut state = VcpuState {
+        regs: VcpuRegs {
+            rflags: 2,
+            ..Default::default()
+        },
+        xsave: vec![0; 4096],
+        ..Default::default()
+    };
+    for index in 0..8 {
+        let segment = segment(&mut state, index);
+        segment.present = 1;
+        segment.type_ = 3;
+        segment.limit = 0xffff;
+    }
+    assert!(validate_restore_shape(&state, None, 4096, 48, false).is_ok());
+
+    for index in 0..8 {
+        let mut candidate = state.clone();
+        segment(&mut candidate, index).present = 0;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+
+        let mut candidate = state.clone();
+        segment(&mut candidate, index).unusable = 1;
+        assert!(matches!(
+            validate_restore_shape(&candidate, None, 4096, 48, false),
+            Err(BackendError::InvalidState)
+        ));
+
+        let mut candidate = state.clone();
+        *segment(&mut candidate, index) = Segment {
+            base: 0x1234,
+            selector: 3,
+            unusable: 1,
+            ..Segment::default()
+        };
+        assert!(validate_restore_shape(&candidate, None, 4096, 48, false).is_ok());
+    }
+}
+
+#[test]
+fn sysenter_policy_follows_host_la57_and_guest_vendor() {
+    assert_eq!(kvm_sysenter_virtual_bits(&[]), 48);
+    let mut la57 = kvm_cpuid_entry2 {
+        function: 7,
+        ecx: 1 << 16,
+        ..Default::default()
+    };
+    assert_eq!(kvm_sysenter_virtual_bits(&[la57]), 57);
+    la57.index = 1;
+    assert_eq!(kvm_sysenter_virtual_bits(&[la57]), 48);
+
+    let model = |vendor: &[u8; 12]| CpuidModel {
+        entries: vec![CpuidEntry {
+            leaf: 0,
+            ebx: u32::from_le_bytes(vendor[..4].try_into().unwrap()),
+            edx: u32::from_le_bytes(vendor[4..8].try_into().unwrap()),
+            ecx: u32::from_le_bytes(vendor[8..].try_into().unwrap()),
+            ..Default::default()
+        }],
+    };
+    assert!(!guest_intel_vendor(&model(b"AuthenticAMD")));
+    assert!(!guest_intel_vendor(&model(b"HygonGenuine")));
+    assert!(guest_intel_vendor(&model(b"GenuineIntel")));
+    assert!(!guest_intel_vendor(&CpuidModel::default()));
 }
 
 #[test]

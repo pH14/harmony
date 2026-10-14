@@ -10,7 +10,14 @@ and request identity. A handler can answer immediately or return `External` to
 stop the guest for a host-selected answer. Handler changes commit only after a
 valid answer; an external request preserves the handler state. Capturing and
 restoring handler state is fallible, so failed capture cannot produce a usable
-snapshot or state hash.
+snapshot or state hash. A handler's identity and configuration are immutable
+contract selectors. An answered request that changes either selector is
+rejected before its candidate state commits, leaving the live handler usable.
+Restoring a captured handler checks both selectors on the factory result and
+again after loading its state. It also checks that a new capture exactly
+reproduces the recorded state bytes. Restoring a recorded environment makes the
+same checks on a cloned handler before replacing the live one, so a rejected
+restore leaves the environment untouched.
 
 `RecordedState::encode_into` appends the same canonical snapshot encoding as
 `encode` to an existing byte vector, preserving any prefix. Framing owners can
@@ -26,6 +33,10 @@ count of its own.
 payloads, recorded answers, reseed points, and mechanical effects. Its versioned
 codec bounds lengths and validates ordering. Mechanical effects describe memory
 writes and memory XOR; packages choose when and why to use them. The VMM validates their machine addresses before applying them.
+
+`InputSpec::materialize` verifies the handler's identity and configuration both
+before and after the initial reseed. A reseed that changes either value rejects
+the input instead of returning an environment under a different service contract.
 
 `InputSpec` writes service configuration and effects directly into its output,
 filling each nested length after encoding. Standalone configuration and effect

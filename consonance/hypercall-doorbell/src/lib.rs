@@ -4,7 +4,11 @@
 #[cfg(feature = "linux-device")]
 extern crate std;
 
-use core::{mem::size_of, ptr};
+use core::{
+    mem::size_of,
+    ptr,
+    sync::atomic::{Ordering, fence},
+};
 
 use hypercall_proto::HEADER_LEN;
 
@@ -350,10 +354,12 @@ impl IoDoorbell for MmioDoorbell {
         if port != DOORBELL_PORT {
             return;
         }
+        fence(Ordering::Release);
         // SAFETY: the constructor requires a valid, aligned device mapping for
         // this register and the IoDoorbell caller guarantees it remains live
         // across this single atomic exchange. Volatile is required for MMIO.
         unsafe { ptr::write_volatile(self.register, req_len) };
+        fence(Ordering::SeqCst);
     }
 }
 
