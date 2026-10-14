@@ -24,7 +24,14 @@ planned-finish order and that reservations form a contiguous sequence. One coord
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Reserved jobs pin the snapshot they actually restore, including a
+for replay. Schema version 11 appends a terminal record only after the campaign
+has drained its jobs and finished successfully. Replay requires that record and
+checks its job, skip, and admission totals, so a stream cut after a complete
+JSON line cannot be certified as a finished campaign. Callers that deliberately
+rebuild an intermediate state use `replay_campaign_prefix_checkpointed`, whose
+report mode is `campaign-prefix` and is not a completed-campaign certificate.
+Reserved jobs pin the
+snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
 its memory stays charged until the last reservation is admitted. Live execution
 and serial replay release these pins at the same recorded boundary, independent
