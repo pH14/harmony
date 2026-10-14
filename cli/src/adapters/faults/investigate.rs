@@ -160,7 +160,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 &artifacts,
                 &manifest.actions,
                 repeat,
-                &manifest.options(&out),
+                &manifest.options(&out)?,
                 original.settle,
             )?;
             manifest.pin_outcome(&replay)?;
@@ -238,7 +238,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
         let mut target = package::prepare_debug(
             &manifest.fault_artifacts(&out)?,
             &actions[..cut],
-            &manifest.options(&out),
+            &manifest.options(&out)?,
         )?;
         if let Some(script) = &script {
             manifest.store(&out, "debug-script.sh", script)?;
@@ -258,7 +258,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
             &manifest.fault_artifacts(&out)?,
             &manifest.actions,
             1,
-            &manifest.options(&out),
+            &manifest.options(&out)?,
             !stop,
         )?;
         manifest.pin_outcome(&report)?;

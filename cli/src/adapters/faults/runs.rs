@@ -6,6 +6,7 @@ use std::{
     fs,
     ops::{Deref, DerefMut},
     path::Path,
+    sync::Arc,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -163,21 +164,29 @@ impl Manifest {
         child.expected_outcome = None;
         Ok(child)
     }
-    pub fn options(&self, path: &Path) -> faults_workload::Options {
-        faults_workload::Options {
+    pub fn options(&self, path: &Path) -> Result<faults_workload::Options> {
+        let root = self
+            .artifacts
+            .get("root")
+            .map(|expected| -> Result<_> {
+                let bytes = fs::read(path.join("artifacts/root"))?;
+                if crate::runtime::digest(&bytes) != *expected {
+                    return Err("recorded artifact root changed during load".into());
+                }
+                Ok(Arc::new(bytes))
+            })
+            .transpose()?;
+        Ok(faults_workload::Options {
             seed: self.config.seed,
             executions: self.config.executions,
             ram_mib: self.config.ram_mib,
             knobs: self.config.knobs.clone(),
             wall_seconds: self.config.wall_seconds,
             output: path.to_path_buf(),
-            root: self
-                .artifacts
-                .contains_key("root")
-                .then(|| path.join("artifacts/root")),
+            root,
             uml_profile: self.uml_host.as_ref().map(|_| path.join("artifacts/uml")),
             checkpoint_owner: self.record.checkpoint_owner.clone(),
-        }
+        })
     }
 
     pub fn fault_artifacts(&self, path: &Path) -> Result<faults_workload::Artifacts> {
@@ -219,6 +228,42 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loaded_root_bytes_must_match_the_verified_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.store(dir.path(), "root", b"original root").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(dir.path()).unwrap();
+        let manifest = Manifest::read(dir.path()).unwrap();
+        manifest.record.verify(dir.path()).unwrap();
+
+        fs::write(dir.path().join("artifacts/root"), b"other root").unwrap();
+        assert!(
+            manifest
+                .options(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("root changed during load")
+        );
+
+        fs::write(dir.path().join("artifacts/root"), b"original root").unwrap();
+        assert_eq!(
+            manifest
+                .options(dir.path())
+                .unwrap()
+                .root
+                .unwrap()
+                .as_slice(),
+            b"original root"
+        );
+    }
 
     #[test]
     fn loaded_runtime_bytes_must_match_the_verified_manifest() {

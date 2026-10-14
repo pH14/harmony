@@ -230,7 +230,7 @@ fn search_faults(
 ) -> Result<faults_workload::Report> {
     let artifacts = manifest.fault_artifacts(out)?;
     let vocabulary = read_vocabulary(out, manifest)?;
-    let options = manifest.options(out);
+    let options = manifest.options(out)?;
     let resources = package::resources(&options)?;
     let worker = if manifest.config.backend == Backend::Uml {
         None
@@ -287,7 +287,7 @@ pub fn run(
             &artifacts,
             &manifest.actions,
             repeat,
-            &manifest.options(&out),
+            &manifest.options(&out)?,
         )
         .and_then(|report| {
             manifest.pin_outcome(&report)?;
