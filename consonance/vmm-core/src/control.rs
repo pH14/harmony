@@ -1550,7 +1550,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             if !reseeds.is_empty() && !reseeds.contains_key(&restored_floor) {
                 plan.record_reseed(restored_floor, 0);
             }
-            if plan.try_encode_reproducer().is_err() {
+            let encoded = match plan.try_encode_reproducer() {
+                Ok(encoded) => encoded,
+                Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
+            };
+            let unbound = plan.answers().len() - plan.request_bindings().len();
+            if encoded
+                .len()
+                .saturating_add(unbound.saturating_mul(Sha256::output_size()))
+                > EnvSpec::MAX_REPRODUCER_BYTES
+            {
                 return Ok(Err(ControlError::MalformedEnvironment));
             }
         }
@@ -1583,7 +1592,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             {
                 return Ok(Err(ControlError::Unsupported));
             }
-            if prepared_env.snapshot_state().is_err() {
+            let prepared = match prepared_env.snapshot_state() {
+                Ok(prepared) => prepared,
+                Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
+            };
+            let unbound = prepared.answers().count() - prepared.request_bindings().count();
+            if prepared
+                .encoded_len()
+                .saturating_add(unbound.saturating_mul(Sha256::output_size()))
+                > environment::channel::MAX_RECORDED_STATE_BYTES
+            {
                 return Ok(Err(ControlError::MalformedEnvironment));
             }
         }
@@ -4584,6 +4602,104 @@ mod tests {
             Err(ControlError::MalformedEnvironment)
         );
         assert_eq!(hash(&mut server), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn branch_reserves_capacity_for_first_use_service_bindings() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let mut spec = EnvSpec::seeded(7);
+        spec.record_answer(at, 19, 77, environment::channel::Answer::Data(vec![42]))
+            .unwrap();
+        let mut payloads = vec![Vec::new(); 8];
+        spec.set_payloads(Some(payloads.clone()));
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 31 - spec.encode().len();
+        for payload in &mut payloads {
+            *payload = vec![0; payload_bytes / 8];
+        }
+        payloads[0].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 31);
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+
+        let mut payloads = spec.payloads().unwrap().to_vec();
+        payloads[0].pop();
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 32);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let mut request = 19_u16.to_le_bytes().to_vec();
+        request.extend(77_u64.to_le_bytes());
+        request.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &request,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::Continued
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(at)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        let exported = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(exported.bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES);
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
     }
 
     #[test]

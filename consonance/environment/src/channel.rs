@@ -382,7 +382,7 @@ impl RecordedState {
         Ok(state)
     }
 
-    fn encoded_len(&self) -> usize {
+    pub fn encoded_len(&self) -> usize {
         let mut size = 39usize;
         for record in self.overrides.values() {
             size = size.saturating_add(19);
