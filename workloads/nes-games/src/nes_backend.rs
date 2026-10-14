@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{cell::RefCell, fmt, ops::Range};
+#[cfg(unix)]
+use std::cell::RefCell;
+use std::{fmt, ops::Range};
 
-use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE, quicknes::QuickNesMachine};
+#[cfg(unix)]
+use machine::quicknes::QuickNesMachine;
+use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE};
 use serde::{Serialize, de::DeserializeOwned};
 
 pub trait SnapshotState:
@@ -107,6 +111,7 @@ pub trait NesMemory {
     fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError>;
 }
 
+#[cfg(unix)]
 impl NesMemory for QuickNesMachine {
     fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
         QuickNesMachine::read_wram(self)
@@ -133,11 +138,13 @@ impl NesMemory for QuickNesMachine {
     }
 }
 
+#[cfg(unix)]
 thread_local! {
     static QUICKNES_STATE: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
     static QUICKNES_PACKED: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(unix)]
 impl NesBackend<Vec<u8>> for QuickNesMachine {
     fn export_nes(
         &mut self,
@@ -171,6 +178,7 @@ impl NesBackend<Vec<u8>> for QuickNesMachine {
     }
 }
 
+#[cfg(unix)]
 fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
     let declared = u32::try_from(state.len())
         .map_err(|_| MachineError::Backend("snapshot is too large to compress".to_owned()))?;
@@ -184,6 +192,7 @@ fn pack_quicknes_state(state: &[u8]) -> Result<Vec<u8>, MachineError> {
     })
 }
 
+#[cfg(unix)]
 pub fn unpack_quicknes_state(
     machine: &QuickNesMachine,
     packed: &[u8],
@@ -193,6 +202,7 @@ pub fn unpack_quicknes_state(
     Ok(state)
 }
 
+#[cfg(unix)]
 fn unpack_quicknes_state_into(
     machine: &QuickNesMachine,
     packed: &[u8],
@@ -260,7 +270,7 @@ impl NesBackend<machine::consonance::ConsonancePortable>
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use machine::{Machine, quicknes::QuickNesMachine};
 

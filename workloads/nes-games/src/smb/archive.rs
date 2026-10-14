@@ -24,7 +24,7 @@ use crate::{
 pub type SmbArchive<P = Vec<u8>> =
     Archive<ButtonChord, SmbArchiveKey, SmbMilestones, SmbSnapshot<P>>;
 
-pub(crate) fn chord_time(action: &ButtonChord) -> u64 {
+pub fn chord_time(action: &ButtonChord) -> u64 {
     u64::from(action.bounded_hold_frames())
 }
 
@@ -175,7 +175,7 @@ pub struct SmbArchiveReport {
     pub selector: SelectorAccounting,
 }
 
-pub(crate) fn admission_is_viable<M, P>(
+pub fn admission_is_viable<M, P>(
     target: &mut SmbTarget<M, P>,
     snapshot: &SmbSnapshot<P>,
 ) -> Result<bool, Box<dyn Error>>
@@ -195,7 +195,7 @@ where
     Ok(viable)
 }
 
-pub(crate) fn merge_progress_watermark(
+pub fn merge_progress_watermark(
     watermark: &mut SmbProgressWatermark,
     observations: &[SmbObservations],
 ) {
@@ -209,7 +209,7 @@ pub(crate) fn merge_progress_watermark(
     }
 }
 
-pub(crate) fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
+pub fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
     let state = smb_mechanical_state_from_wram(wram);
     SmbArchiveKey {
         world: state.world,
@@ -238,7 +238,7 @@ fn game_clock(wram: &[u8; 2_048]) -> u16 {
         .fold(0, |clock, digit| clock * 10 + u16::from(*digit))
 }
 
-pub(crate) fn stamp_arrival_room(
+pub fn stamp_arrival_room(
     key: SmbArchiveKey,
     wram: &[u8],
 ) -> Result<SmbArchiveKey, Box<dyn Error>> {
@@ -251,7 +251,7 @@ pub(crate) fn stamp_arrival_room(
     stamp_arrival_room_identity(key, area)
 }
 
-pub(crate) fn stamp_arrival_room_identity(
+pub fn stamp_arrival_room_identity(
     mut key: SmbArchiveKey,
     area: [u8; 2],
 ) -> Result<SmbArchiveKey, Box<dyn Error>> {
@@ -280,7 +280,7 @@ pub const NES_RUN_THIRTEEN_BUTTON_MASKS: [u8; 13] = [
 
 pub const LONG_HOLD_FRAMES: (u8, u8) = (96, 120);
 
-pub(crate) fn merge_action_milestones<M, P>(
+pub fn merge_action_milestones<M, P>(
     milestones: &mut SmbMilestones,
     target: &SmbTarget<M, P>,
 ) -> Result<(), Box<dyn Error>>
@@ -299,7 +299,7 @@ where
     Ok(())
 }
 
-pub(crate) fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilestones) {
+pub fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilestones) {
     aggregate.max_1_1_scroll_bucket = aggregate
         .max_1_1_scroll_bucket
         .max(current.max_1_1_scroll_bucket);
@@ -308,7 +308,7 @@ pub(crate) fn merge_milestones(aggregate: &mut SmbMilestones, current: SmbMilest
     aggregate.reached_onward |= current.reached_onward;
 }
 
-pub(crate) fn update_first_inputs(
+pub fn update_first_inputs(
     times: &mut SmbMilestoneTimes,
     inputs: &mut SmbMilestoneInputs,
     current: SmbMilestones,
@@ -335,7 +335,7 @@ pub(crate) fn update_first_inputs(
     }
 }
 
-pub(crate) fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
+pub fn milestone_key(milestones: SmbMilestones) -> (bool, bool, bool, u16) {
     (
         milestones.reached_onward,
         milestones.reached_1_2,

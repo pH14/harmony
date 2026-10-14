@@ -51,6 +51,7 @@ workload_packages = [
     "workloads/faults",
     "workloads/languages/rust",
     "workloads/nes",
+    "workloads/nes-games",
     "workloads/tiny-worlds",
 ]
 composition_apps_tests = [

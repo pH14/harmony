@@ -912,4 +912,29 @@ mod tests {
             stb_result_sha256(&second).expect("changed digest"),
         );
     }
+
+    #[test]
+    fn campaign_suffix_continues_through_respawn_without_a_terminal_endpoint() {
+        use nes_games::stb::target::scripted::ScriptedMachine;
+        for stop_on_objective in [false, true] {
+            let mut target = StbTarget::from_machine(ScriptedMachine::respawn_timeline()).unwrap();
+            let result = execute_suffix(
+                &mut target,
+                StbMilestones::default(),
+                &[ButtonChord::new(1, 1), ButtonChord::new(2, 1)],
+                RetentionPolicy::Unprobed,
+                stop_on_objective,
+            )
+            .expect("respawn suffix");
+            assert_eq!(result.actions.len(), 2);
+            assert!(result.actions.iter().all(|action| {
+                action.outcome.disposition == ExecutionDisposition::Runnable
+                    && !action.outcome.objective_reached
+            }));
+            assert!(result.actions[0].candidate.is_none());
+            assert!(result.actions[1].candidate.is_some());
+            assert_eq!(result.actions[1].milestones.opponent_kos, 1);
+            assert_eq!(target.observe().frame_count, 2);
+        }
+    }
 }

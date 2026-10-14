@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-pub mod archive;
+pub use nes_games::mm2::{archive, progress};
 pub mod campaign;
-pub mod progress;
 pub mod target;

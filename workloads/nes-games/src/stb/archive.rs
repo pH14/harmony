@@ -98,13 +98,13 @@ impl ArchiveKey for StbArchiveKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct StbChampionKey {
+pub struct StbChampionKey {
     progress: (u8, u8, u8),
     preference: (u8, u8, u8, u8, u8),
 }
 
 impl StbArchiveKey {
-    pub(super) fn champion_key(self) -> StbChampionKey {
+    pub fn champion_key(self) -> StbChampionKey {
         StbChampionKey {
             progress: self.progress_key(),
             preference: self.preference(),

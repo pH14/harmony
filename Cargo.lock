@@ -623,6 +623,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "nes-games"
+version = "0.1.0"
+dependencies = [
+ "lz4_flex",
+ "machine",
+ "searcher",
+ "serde",
+]
+
+[[package]]
 name = "nes-protocol"
 version = "0.1.0"
 
@@ -634,6 +644,7 @@ dependencies = [
  "libc",
  "lz4_flex",
  "machine",
+ "nes-games",
  "oci-support",
  "postcard",
  "searcher",

@@ -14,6 +14,7 @@ exclude = [
   "consonance/harmony-linux",
   "dissonance",
   "workloads/nes",
+  "workloads/nes-games",
   "workloads/nes-machine",
   "workloads/nes-protocol",
   "workloads/nes-guest",

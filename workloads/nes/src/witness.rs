@@ -6,15 +6,37 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::search::{
-    archive::{Input, RetentionPolicy},
-    campaign::Workload,
-    rollout::ExecutionDisposition,
+use crate::{
+    metroid::target::MetroidSnapshot,
+    mm2::target::Mm2Snapshot,
+    nes_backend::SnapshotState,
+    search::{
+        archive::{Input, RetentionPolicy},
+        campaign::Workload,
+        rollout::ExecutionDisposition,
+    },
+    smb::target::SmbSnapshot,
+    stb::target::StbSnapshot,
+    twin_dragons::target::TwinDragonsSnapshot,
 };
 
 pub trait EndpointIdentity: Serialize {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
         postcard_sha256(self)
+    }
+}
+
+impl EndpointIdentity for MetroidSnapshot {}
+
+impl EndpointIdentity for Mm2Snapshot {}
+
+impl EndpointIdentity for StbSnapshot {}
+
+impl EndpointIdentity for TwinDragonsSnapshot {}
+
+impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
+    fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
+        postcard_sha256(&self.logical_identity()?)
     }
 }
 

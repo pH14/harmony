@@ -86,14 +86,14 @@ impl ArchiveKey for TwinDragonsArchiveKey {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) struct TwinDragonsChampionKey {
+pub struct TwinDragonsChampionKey {
     level: u8,
     x: i16,
     health: u8,
 }
 
 impl TwinDragonsArchiveKey {
-    pub(super) fn champion_key(self) -> TwinDragonsChampionKey {
+    pub fn champion_key(self) -> TwinDragonsChampionKey {
         TwinDragonsChampionKey {
             level: self.level,
             x: self.x,

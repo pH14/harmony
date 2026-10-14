@@ -2,9 +2,13 @@
 
 This standalone Rust workspace adapts SMB, Mega Man 2, Metroid, and Super Tilt Bro
 to Dissonance.
-It owns game interpretation, controller policies, campaign binaries, and workload
-reporting. Generic archive and campaign mechanisms come from `searcher`; emulator
-and guest execution support comes from `../nes-machine`. Consonance stages an
+It owns campaign drivers, binaries, films, evaluation and workload reporting.
+Game interpretation and controller policies come from
+[`../nes-games`](../nes-games/README.md). This package re-exports those modules
+under the same paths, so `nes_workload::mm2::target` names the Mega Man 2
+target, and its `target` modules make `QuickNesMachine` the default backend of
+each target type. Generic archive and campaign mechanisms come from `searcher`;
+emulator and guest execution support comes from `../nes-machine`. Consonance stages an
 OCI image through `oci-support`, injects the caller's ROM at `/game.nes`, and
 delegates process startup to the platform supervisor.
 
@@ -71,7 +75,7 @@ Tilt Bro campaign's own witness is checked.
 
 ## Chord draw
 
-`src/chord.rs` draws the controller chords for every game. An action is a chord
+`nes-games/src/chord.rs` draws the controller chords for every game. An action is a chord
 held for a short hold of 2–12 frames or a long hold, with equal odds. The long
 hold is 96–120 frames for SMB and 48–120 frames for the other games. Each game
 names its held chords and at most one tap button: Select for Metroid, Start for
@@ -89,7 +93,7 @@ before it and is drawn whole: a tap alone, or a held chord at random.
 ## Snapshots
 
 Every game stores its QuickNES snapshots through `NesBackend` in
-`src/nes_backend.rs`. A stored snapshot is the QuickNES state as an LZ4 block
+`nes-games/src/nes_backend.rs`. A stored snapshot is the QuickNES state as an LZ4 block
 with its length in front. A restore checks the declared length against the
 core's state size before it decompresses. The archive charges the compressed
 length plus the snapshot record, so a memory budget keeps more snapshots

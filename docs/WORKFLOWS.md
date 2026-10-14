@@ -101,6 +101,11 @@ the backend it runs, and the linter requires it to keep a bounded Checks
 workflow and a full Benchmarks workflow, and requires each workflow to actually
 run its registered backend.
 
+The `NES Adapter` job in `Checks / Harmony` lints and tests the host-side NES
+manifests, `workloads/nes-games` among them. It also checks that
+`workloads/nes-games` builds for `wasm32-unknown-unknown`, so the browser demo
+can use the same game logic as the native workload.
+
 `Checks / Consonance` and `Checks / Harmony Workloads / OCI` each start with an
 `Exact Runtime Artifacts` job. It runs the shared `exact-platform-runtime`
 action, which restores the guest runtime built from this source or builds it,
