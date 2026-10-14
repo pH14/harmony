@@ -208,7 +208,7 @@ ready /usr/bin/servicectl endpoint health
             std::fs::set_permissions(root.path().join(path), std::fs::Permissions::from_mode(0o0))
                 .unwrap();
         }
-        let prepared = prepare_staged(&staged, b"base", None).unwrap();
+        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
         assert_eq!(prepared.bundle, BUNDLE);
         for path in ["secret", "etc/harmony"] {
             let mode = std::fs::symlink_metadata(root.path().join(path))
