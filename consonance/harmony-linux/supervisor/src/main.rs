@@ -932,7 +932,13 @@ mod runtime {
             )?;
             supervisor.note_recovery_pending(runtime.recovery.is_pending());
             let actions = supervisor.tick(&active, &deaths);
-            report_node_exits(supervisor, &exits, runtime.recovery.is_pending(), tick)?;
+            report_node_exits(
+                supervisor,
+                &exits,
+                runtime.recovery.is_pending(),
+                tick,
+                &sdk_output(),
+            )?;
             for action in actions {
                 log(tick, &action.describe());
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
@@ -1030,14 +1036,12 @@ mod runtime {
         deaths: &[(u16, Option<ExitStatus>)],
         recovery_pending: bool,
         tick: u64,
+        output: &Path,
     ) -> Result<(), String> {
         for (node, exit) in node_exit_violations(supervisor, deaths, recovery_pending) {
             log(tick, &format!("node {node} ended on its own: {exit}"));
-            process::write_record(
-                &sdk_output(),
-                &process::node_exit_record(Some((node, &exit))),
-            )
-            .map_err(|error| format!("node exit record: {error}"))?;
+            process::write_record(output, &process::node_exit_record(Some((node, &exit))))
+                .map_err(|error| format!("node exit record: {error}"))?;
         }
         Ok(())
     }
@@ -1167,12 +1171,13 @@ mod runtime {
                     events.retire(node, supervisor, tick);
                 }
                 if let Some(mut child) = entry.child.take() {
-                    let status = retire_node_child(&mut child, node)?;
-                    report_node_exits(
+                    retire_node_child(
+                        &mut child,
                         supervisor,
-                        &[(node, Some(status))],
+                        node,
                         runtime.recovery.is_pending(),
                         tick,
+                        &sdk_output(),
                     )?;
                 }
                 let spawned = spawn_node(spec, &entry.spec)?;
@@ -1237,17 +1242,32 @@ mod runtime {
         Ok(())
     }
 
-    fn retire_node_child(child: &mut Child, node: u16) -> Result<ExitStatus, String> {
-        if let Some(status) = child
+    fn retire_node_child(
+        child: &mut Child,
+        supervisor: &mut Supervisor,
+        node: u16,
+        recovery_pending: bool,
+        tick: u64,
+        output: &Path,
+    ) -> Result<(), String> {
+        let status = if let Some(status) = child
             .try_wait()
             .map_err(|error| format!("check retired node {node}: {error}"))?
         {
-            return Ok(status);
-        }
-        let _ = process::signal_group(child.id(), libc::SIGKILL);
-        child
-            .wait()
-            .map_err(|error| format!("wait retired node {node}: {error}"))
+            status
+        } else {
+            let _ = process::signal_group(child.id(), libc::SIGKILL);
+            child
+                .wait()
+                .map_err(|error| format!("wait retired node {node}: {error}"))?
+        };
+        report_node_exits(
+            supervisor,
+            &[(node, Some(status))],
+            recovery_pending,
+            tick,
+            output,
+        )
     }
 
     fn poll_recovery(
@@ -1509,21 +1529,23 @@ mod runtime {
         }
 
         #[test]
-        fn replacing_a_completed_child_keeps_its_original_exit_status() {
+        fn replacing_a_completed_child_reports_its_original_exit_status() {
             let mut child = Command::new("/bin/sh")
                 .args(["-c", "exit 37"])
                 .process_group(0)
                 .spawn()
                 .unwrap();
             assert_eq!(child.wait().unwrap().code(), Some(37));
-            let status = retire_node_child(&mut child, 0).unwrap();
-            assert_eq!(status.code(), Some(37));
+            let output =
+                std::env::temp_dir().join(format!("hs-replaced-node-exit-{}", std::process::id()));
+            let _ = std::fs::remove_file(&output);
             let mut supervisor = Supervisor::new(1);
-            let exits = [(0, Some(status))];
-            assert_eq!(
-                node_exit_violations(&mut supervisor, &exits, false),
-                [(0, "exit status 37".to_owned())]
-            );
+            retire_node_child(&mut child, &mut supervisor, 0, false, 1, &output).unwrap();
+            let recorded = std::fs::read_to_string(&output).unwrap();
+            assert!(recorded.contains(r#""hit":true"#));
+            assert!(recorded.contains(r#""exit":"exit status 37""#));
+            assert_eq!(supervisor.counters().unexpected_deaths, 1);
+            std::fs::remove_file(output).unwrap();
         }
 
         #[test]
