@@ -48,7 +48,7 @@ pub enum SearchStart {
     #[default]
     Genesis,
     Actions(serde_json::Value),
-    Checkpoint(PathBuf),
+    Checkpoint(searcher::search::checkpoint::PinnedCheckpoint),
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchIdentity {
@@ -161,8 +161,10 @@ where
     let prefix: searcher::search::archive::Input<G::Action> = match start {
         SearchStart::Genesis => Default::default(),
         SearchStart::Actions(value) => serde_json::from_value(value.clone())?,
-        SearchStart::Checkpoint(path) => serde_json::from_slice(&fs::read(
-            path.parent()
+        SearchStart::Checkpoint(checkpoint) => serde_json::from_slice(&fs::read(
+            checkpoint
+                .path
+                .parent()
                 .and_then(Path::parent)
                 .ok_or("checkpoint has no run directory")?
                 .join("origin-input.json"),
@@ -174,7 +176,10 @@ where
     )?;
     let origin = match start {
         SearchStart::Genesis => CampaignOrigin::Genesis,
-        SearchStart::Checkpoint(path) => CampaignOrigin::SearchCheckpoint { path: path.clone() },
+        SearchStart::Checkpoint(checkpoint) => CampaignOrigin::SearchCheckpoint {
+            path: checkpoint.path.clone(),
+            expected_sha256: Some(checkpoint.sha256.clone()),
+        },
         SearchStart::Actions(value) => {
             let input: searcher::search::archive::Input<G::Action> =
                 serde_json::from_value(value.clone())?;

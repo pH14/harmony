@@ -118,12 +118,11 @@ impl Manifest {
         if self.mode == "search" && self.status == "complete" {
             for root in [path.to_path_buf(), path.join("package")] {
                 if root.join("checkpoints/checkpoints.jsonl").is_file() {
-                    let (checkpoint, _) = checkpoint_record_unbound(&root)?;
-                    let header = searcher::search::checkpoint::read_header(&checkpoint)?;
-                    if header.checkpoint_owner != self.checkpoint_owner {
+                    let checkpoint = checkpoint_record_unbound(&root)?;
+                    if checkpoint.owner != self.checkpoint_owner {
                         return Err("checkpoint belongs to a different saved search".into());
                     }
-                    saved.checkpoint_sha256 = Some(file_digest(&checkpoint)?);
+                    saved.checkpoint_sha256 = Some(checkpoint.sha256);
                     break;
                 }
             }
@@ -276,7 +275,14 @@ mod tests {
     }
 }
 
-fn checkpoint_record_unbound(path: &Path) -> Result<(PathBuf, u64)> {
+struct CheckpointRecord {
+    path: PathBuf,
+    reserved: u64,
+    sha256: String,
+    owner: Option<String>,
+}
+
+fn checkpoint_record_unbound(path: &Path) -> Result<CheckpointRecord> {
     let directory = path.join("checkpoints");
     let text = fs::read_to_string(directory.join("checkpoints.jsonl")).map_err(
         |_| "this recording has no whole-search checkpoint yet (written periodically and when a search completes)",
@@ -304,11 +310,16 @@ fn checkpoint_record_unbound(path: &Path) -> Result<(PathBuf, u64)> {
             let expected = record["checkpoint_sha256"]
                 .as_str()
                 .ok_or("checkpoint journal has no checkpoint SHA-256")?;
-            if file_digest(&candidate)? != expected {
+            let (header, sha256) = searcher::search::checkpoint::read_header_with_sha(&candidate)?;
+            if sha256 != expected {
                 return Err("checkpoint differs from its journal record".into());
             }
-            let reserved = searcher::search::checkpoint::read_header(&candidate)?.reserved;
-            selected = Some((candidate, reserved));
+            selected = Some(CheckpointRecord {
+                path: candidate,
+                reserved: header.reserved,
+                sha256,
+                owner: header.checkpoint_owner,
+            });
         }
     }
     let selected = selected.ok_or("no retained search checkpoint exists")?;
@@ -327,8 +338,10 @@ fn checkpoint_record_unbound(path: &Path) -> Result<(PathBuf, u64)> {
     Ok(selected)
 }
 
-pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
-    let (checkpoint, reserved) = checkpoint_record_unbound(path)?;
+pub fn checkpoint_record(
+    path: &Path,
+) -> Result<(searcher::search::checkpoint::PinnedCheckpoint, u64)> {
+    let checkpoint = checkpoint_record_unbound(path)?;
     let manifest_path = if path.join("manifest.json").is_file() {
         path
     } else {
@@ -341,11 +354,7 @@ pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
                 .checkpoint_owner
                 .as_deref()
                 .ok_or("saved search has no checkpoint owner")?;
-            if searcher::search::checkpoint::read_header(&checkpoint)?
-                .checkpoint_owner
-                .as_deref()
-                != Some(expected_owner)
-            {
+            if checkpoint.owner.as_deref() != Some(expected_owner) {
                 return Err("checkpoint belongs to a different saved search".into());
             }
         }
@@ -354,12 +363,18 @@ pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
                 .checkpoint_sha256
                 .as_deref()
                 .ok_or("completed search has no recorded checkpoint identity")?;
-            if file_digest(&checkpoint)? != expected {
+            if checkpoint.sha256 != expected {
                 return Err("checkpoint differs from the saved search".into());
             }
         }
     }
-    Ok((checkpoint, reserved))
+    Ok((
+        searcher::search::checkpoint::PinnedCheckpoint {
+            path: checkpoint.path,
+            sha256: checkpoint.sha256,
+        },
+        checkpoint.reserved,
+    ))
 }
 
 #[cfg(test)]
@@ -427,10 +442,10 @@ mod checkpoint_tests {
                 ),
             )
             .unwrap();
-            assert_eq!(
-                checkpoint_record(root.path()).unwrap(),
-                (checkpoint.clone(), 7)
-            );
+            let (selected, reserved) = checkpoint_record(root.path()).unwrap();
+            assert_eq!(selected.path, checkpoint);
+            assert_eq!(selected.sha256, checkpoint_sha256);
+            assert_eq!(reserved, 7);
         }
         write_journal(&directory, "checkpoint.bin", 4, 7);
         let first = fs::read_to_string(&journal).unwrap();
@@ -448,7 +463,9 @@ mod checkpoint_tests {
         let checkpoint = directory.join("checkpoint.ckpt");
         write_checkpoint(&checkpoint, 3, 3, 1, None);
         write_journal(&directory, "checkpoint.ckpt", 3, 7);
-        assert_eq!(checkpoint_record(root.path()).unwrap(), (checkpoint, 3));
+        let (selected, reserved) = checkpoint_record(root.path()).unwrap();
+        assert_eq!(selected.path, checkpoint);
+        assert_eq!(reserved, 3);
     }
 
     #[test]
@@ -471,7 +488,7 @@ mod checkpoint_tests {
             write_journal(&directory, "checkpoint.ckpt", 3, 3);
             manifest.status = "complete".into();
             manifest.save(root.path()).unwrap();
-            assert_eq!(checkpoint_record(&search).unwrap().0, checkpoint);
+            assert_eq!(checkpoint_record(&search).unwrap().0.path, checkpoint);
 
             write_checkpoint(&checkpoint, 3, 3, 17, owner.as_deref());
             write_journal(&directory, "checkpoint.ckpt", 3, 3);
@@ -498,7 +515,7 @@ mod checkpoint_tests {
         write_checkpoint(&checkpoint, 3, 3, 1, manifest.checkpoint_owner.as_deref());
         write_journal(&directory, "checkpoint.ckpt", 3, 3);
         manifest.save(root.path()).unwrap();
-        assert_eq!(checkpoint_record(root.path()).unwrap().0, checkpoint);
+        assert_eq!(checkpoint_record(root.path()).unwrap().0.path, checkpoint);
 
         write_checkpoint(&checkpoint, 3, 3, 17, foreign.checkpoint_owner.as_deref());
         write_journal(&directory, "checkpoint.ckpt", 3, 3);
@@ -532,7 +549,7 @@ mod checkpoint_tests {
         )
         .unwrap();
         manifest.save(root.path()).unwrap();
-        assert_eq!(checkpoint_record(root.path()).unwrap().0, latest);
+        assert_eq!(checkpoint_record(root.path()).unwrap().0.path, latest);
 
         fs::copy(&older, &latest).unwrap();
         assert!(

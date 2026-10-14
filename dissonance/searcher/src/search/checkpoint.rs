@@ -14,6 +14,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v6";
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PinnedCheckpoint {
+    pub path: PathBuf,
+    pub sha256: String,
+}
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
@@ -360,6 +366,11 @@ fn punch_hole(_: &File, _: u64, _: u64) -> std::io::Result<()> {
 
 pub fn read_header(path: &Path) -> Result<CheckpointHeader, Box<dyn Error>> {
     Ok(CheckpointReader::open(path)?.header)
+}
+
+pub fn read_header_with_sha(path: &Path) -> Result<(CheckpointHeader, String), Box<dyn Error>> {
+    let reader = CheckpointReader::open(path)?;
+    Ok((reader.header, reader.file_sha256))
 }
 
 pub(crate) struct CheckpointReader {

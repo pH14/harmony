@@ -559,6 +559,7 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
     },
     SearchCheckpoint {
         path: PathBuf,
+        expected_sha256: Option<String>,
     },
 }
 
@@ -1887,7 +1888,7 @@ fn resolve_origin<G: Workload>(
     origin: &CampaignOrigin<G>,
     search_checkpoint: Option<&CheckpointReader>,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
-    if let CampaignOrigin::SearchCheckpoint { path } = origin {
+    if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
         let checkpoint_policy_changes = search_checkpoint_policy_changes(
             &reader.header,
@@ -2846,7 +2847,19 @@ where
         }
     }
     let mut search_checkpoint = match origin {
-        CampaignOrigin::SearchCheckpoint { path } => Some(CheckpointReader::open(path)?),
+        CampaignOrigin::SearchCheckpoint {
+            path,
+            expected_sha256,
+        } => {
+            let reader = CheckpointReader::open(path)?;
+            if expected_sha256
+                .as_deref()
+                .is_some_and(|expected| expected != reader.file_sha256.as_str())
+            {
+                return Err("selected search checkpoint changed before resume".into());
+            }
+            Some(reader)
+        }
         _ => None,
     };
     let origin_record = resolve_origin(workload, config, origin, search_checkpoint.as_ref())?;
