@@ -63,6 +63,7 @@ fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
         && actual.state_hash_encoding != StateHashEncoding::Unavailable
         && expected.state_hash == actual.state_hash
         && expected.state_hash_encoding == actual.state_hash_encoding
+        && expected.bug == actual.bug
         && expected.stop == actual.stop
         && expected.violations == actual.violations
         && expected.sometimes == actual.sometimes
@@ -72,6 +73,7 @@ fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
         && expected.event_kill_fires == actual.event_kill_fires
         && expected.event_park_fires == actual.event_park_fires
         && expected.check == actual.check
+        && expected.timeline == actual.timeline
 }
 
 fn command_replay_matches(original: &Manifest, actual: serde_json::Value) -> bool {
@@ -517,6 +519,30 @@ mod tests {
     use super::*;
     use faults_workload::FaultOperation;
     use std::num::NonZeroU16;
+
+    #[test]
+    fn exact_replay_rejects_changed_timeline_and_console() {
+        use faults_workload::{package::ReplayStep, target::FaultObservations};
+        let mut expected =
+            ReplaySummary::from_observation(&FaultObservations::default(), Some([7; 32]), 0, 0);
+        expected.timeline = vec![ReplayStep {
+            step: 0,
+            action: None,
+            observation: FaultObservations::default(),
+            console: "ready".into(),
+            settlement: false,
+        }];
+        let mut actual = expected.clone();
+        actual.timeline[0].console = "different output".into();
+        assert!(!equivalent(&expected, &actual));
+        actual = expected.clone();
+        actual.timeline[0].observation.moment = 1;
+        assert!(!equivalent(&expected, &actual));
+        actual = expected.clone();
+        actual.run = 2;
+        actual.guest_horizons = 1;
+        assert!(equivalent(&expected, &actual));
+    }
 
     #[test]
     fn command_replay_uses_the_outcome_from_the_verified_manifest() {

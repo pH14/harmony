@@ -265,6 +265,11 @@ the search report's stream digest and runs from the verified bytes.
 
 Hidden `harmony debug run` executes a fixed action input or an OCI command;
 `harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
+For supervised runs it compares the final state and outcome as well as every
+recorded action boundary, including the action, observation, settlement marker,
+and bounded console evidence. The repeat ordinal and `guest_horizons` cache
+diagnostic are not replay invariants.
+
 Finding replay refuses an unconfirmed saved finding, because replay did not
 establish its reported failure. Branching can still inspect that evidence.
 These are developer qualification tools. Ordinary investigation uses a branch,
