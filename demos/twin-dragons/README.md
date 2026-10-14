@@ -259,20 +259,30 @@ With nothing live, the camera goes to the furthest heat cell in that order, or
 to `entry(level)`.
 
 The page shows one room at a time. When a level has several rooms, such as the
-Super Mario Bros. bonus areas, tabs above the view switch between them. Auto
-view moves to a room that has had 1.5 times as many live sprites as the shown
-room for 2.5 seconds. A newly found room in the shown level does not move the
-view by itself, so one rollout entering a bonus room leaves the view on the
-busy room. The level row
-above the map lists the levels the search has reached. Once it holds four or
+Super Mario Bros. bonus areas, tabs above the view switch between them. While a
+clearing rollout that started in the shown level plays, the view picks the one with the least
+time left and shows its room until that rollout ends, so it follows one rollout
+through intro scenes, exit pipes and warp zones. Otherwise the view moves to a room that has had 1.5
+times as many live sprites as the shown room for 2.5 seconds and then stays
+there for at least 10 seconds, and one rollout
+entering a bonus room leaves the view on the busy room. A tab click holds the
+view on that room until the visitor clicks the live level in the level row.
+The level row above the map lists the levels on the followed path in the order
+the view reached them. Once it holds four or
 more, all but the last two and the shown level collapse into a +N button that
-expands the full list. The row wraps instead of scrolling sideways.
+expands the full list. The row wraps instead of scrolling sideways. A check
+mark means a rollout finished that level.
 
-A rollout that raises the cleared-level count is a clearing rollout. The map
+A rollout that raises the cleared-level count is a clearing rollout, and the
+level it enters first is its exit. For Super Mario Bros. the exit of a warp
+pipe is the warp's destination. The view follows one path through the game: it
+moves to a level only when a clearing rollout that starts in the level the path
+is on arrives, and it moves to that rollout's exit at once. Levels that other
+lineages reach, such as the worlds past a warp zone the path did not take, do
+not move the view. When the path's level has had no live rollouts for 8 seconds
+while a deeper level has some, the path moves to the deepest such level. The map
 always draws clearing rollouts and the camera follows the one that leaves the
-level first. The map moves to the next level as soon as a clearing rollout or a
-state there arrives, so the page never shows a level the search has already left. New
-rooms in levels behind the shown one never move the map back. The automatic
+level first. The automatic
 replay pick skips states outside the shown level. Showing a level also builds
 the next level's map in the background, so the map is ready when the search
 arrives. In a game whose maps are built in the browser, a search starts once
@@ -441,14 +451,21 @@ level × 128 + area. The table of each level's main area lives in
 builds that area's map the first time the search enters it and shows it as
 another room of the level. The builder enters an area by writing `$0750` (area
 pointer) and `$0751` (entrance page) and setting `$0772` to 0. Pipe scenes and
-other non-play tasks count as loading. For a later level, `boot(level)` writes
+other non-play tasks count as loading. A frame where Mario enters a pipe also
+counts as loading, because a warp pipe writes the destination's world and level
+about 50 frames before the area changes, so those frames would read as the
+destination level holding the old area. An intro scene, such as the walk into World 1-2's
+pipe, never hands Mario control, so the builder starts on it once Mario appears. For a later level, `boot(level)` writes
 the world, level and area number on the title screen, presses Start and waits
 until Mario stands on the level.
 
 The page builds each map in a worker from the ROM. The builder holds Mario at
 a fixed height, hides sprites, clears enemies and loop checks, holds Right
 and B, and copies each newly scrolled column into the map. When Mario stops
-moving it tries the next height. It keeps the flag pole, so each map ends after
+moving it tries the next height. When Mario enters a pipe that leaves a level's
+main area, or every height stops him, the builder returns to its last
+checkpoint and holds him above the screen with the scroll lock (`$0723`)
+cleared, which draws the World 1-2 warp zone past the exit pipe. It keeps the flag pole, so each map ends after
 the flag sequence. Built maps are cached in IndexedDB by ROM hash. Maps build in a pool of
 one map worker per four cores, at most three, and the shown level's map
 builds first. Map widths
