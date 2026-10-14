@@ -64,4 +64,5 @@ PY
 status=0
 "$binary" debug replay "$evidence/original" --out "$evidence/diverged" > "$evidence/diverged.txt" 2>&1 || status=$?
 test "$status" -eq 2
-grep -q 'replay diverged' "$evidence/diverged.txt"
+grep -q 'recorded run.json has changed' "$evidence/diverged.txt"
+test ! -e "$evidence/diverged"
