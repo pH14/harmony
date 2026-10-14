@@ -522,7 +522,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
     let mut sites = Vec::new();
     let mut executable_segments = 0;
-    for header in elf.elf_program_headers() {
+    for (header_index, header) in elf.elf_program_headers().iter().enumerate() {
         let flags = header.p_flags(elf.endian());
         match header.p_type(elf.endian()) {
             object::elf::PT_GNU_STACK if flags & object::elf::PF_X != 0 => {
@@ -588,7 +588,76 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                     return Err("executable ELF segment without a mapped section".into());
                 }
                 if elf.architecture() == object::Architecture::Aarch64 {
-                    for (address, instruction) in scan_code(elf.architecture(), start, code)? {
+                    let page_bytes = 4096_u64;
+                    let offset = header.p_offset(elf.endian());
+                    if offset % page_bytes != start % page_bytes {
+                        return Err("unaligned AArch64 ELF load mapping".into());
+                    }
+                    let mapped_file_start = offset / page_bytes * page_bytes;
+                    let mapped_file_end = offset
+                        .checked_add(file_size)
+                        .and_then(|end| end.checked_add(page_bytes - 1))
+                        .ok_or("executable ELF file-page overflow")?
+                        / page_bytes
+                        * page_bytes;
+                    let mapped_address = start
+                        .checked_sub(offset - mapped_file_start)
+                        .ok_or("executable ELF page address underflow")?;
+                    let end_address = start
+                        .checked_add(header.p_memsz(elf.endian()))
+                        .and_then(|end| end.checked_add(page_bytes - 1))
+                        .ok_or("executable ELF memory-page overflow")?
+                        / page_bytes
+                        * page_bytes;
+                    for (other_index, other) in elf.elf_program_headers().iter().enumerate() {
+                        if other_index == header_index
+                            || other.p_type(elf.endian()) != object::elf::PT_LOAD
+                        {
+                            continue;
+                        }
+                        let other_offset = other.p_offset(elf.endian());
+                        let other_file_size = other.p_filesz(elf.endian());
+                        let other_file_start = other_offset / page_bytes * page_bytes;
+                        let other_file_end = if other_file_size == 0 {
+                            other_file_start
+                        } else {
+                            other_offset
+                                .checked_add(other_file_size)
+                                .and_then(|end| end.checked_add(page_bytes - 1))
+                                .ok_or("loaded ELF file-page overflow")?
+                                / page_bytes
+                                * page_bytes
+                        };
+                        let other_address = other.p_vaddr(elf.endian());
+                        if other_offset % page_bytes != other_address % page_bytes {
+                            return Err("unaligned loaded AArch64 ELF mapping".into());
+                        }
+                        let other_memory_size = other.p_memsz(elf.endian());
+                        let other_memory_start = other_address / page_bytes * page_bytes;
+                        let other_memory_end = if other_memory_size == 0 {
+                            other_memory_start
+                        } else {
+                            other_address
+                                .checked_add(other_memory_size)
+                                .and_then(|end| end.checked_add(page_bytes - 1))
+                                .ok_or("loaded ELF memory-page overflow")?
+                                / page_bytes
+                                * page_bytes
+                        };
+                        if (other_file_start < mapped_file_end
+                            && mapped_file_start < other_file_end)
+                            || (other_memory_start < end_address
+                                && mapped_address < other_memory_end)
+                        {
+                            return Err("executable AArch64 ELF page alias".into());
+                        }
+                    }
+                    let mapped_file_end = mapped_file_end.min(bytes.len() as u64);
+                    let mapped_bytes = &bytes
+                        [usize::try_from(mapped_file_start)?..usize::try_from(mapped_file_end)?];
+                    for (address, instruction) in
+                        scan_code(elf.architecture(), mapped_address, mapped_bytes)?
+                    {
                         sites.push(InstructionSite {
                             digest: digest.to_owned(),
                             address,
@@ -660,20 +729,25 @@ fn scan_code(
         }
         for (index, bytes) in data.chunks_exact(4).enumerate() {
             let word = u32::from_le_bytes(bytes.try_into()?);
+            let site = address
+                .checked_add((index as u64) * 4)
+                .ok_or("instruction address overflow")?;
+            if is_arm_llsc_exclusive(word) {
+                return Err(format!("unsupported AArch64 LL/SC instruction at 0x{site:x}").into());
+            }
             let name = match word & !0x1f {
                 0xd53b2400 => "RNDR",
                 0xd53b2420 => "RNDRRS",
                 _ => continue,
             };
-            sites.push((
-                address
-                    .checked_add((index as u64) * 4)
-                    .ok_or("instruction address overflow")?,
-                name,
-            ));
+            sites.push((site, name));
         }
     }
     Ok(sites)
+}
+
+fn is_arm_llsc_exclusive(word: u32) -> bool {
+    word & 0x3f80_0000 == 0x0800_0000 && (word & 0x0020_0000 == 0 || word >> 30 >= 2)
 }
 
 #[cfg(test)]
@@ -729,6 +803,113 @@ mod tests {
         bytes[368..376].copy_from_slice(&1_u64.to_le_bytes());
         bytes[384..384 + code.len()].copy_from_slice(code);
         bytes
+    }
+
+    fn arm_elf(code: &[u8], declared_size: usize) -> Vec<u8> {
+        let mut bytes = elf(code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        bytes.resize(4096 + code.len() + 1, 0);
+        bytes[4096..4096 + code.len()].copy_from_slice(code);
+        bytes[80..88].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&(declared_size as u64).to_le_bytes());
+        bytes[104..112].copy_from_slice(&(declared_size as u64).to_le_bytes());
+        bytes[280..288].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&(declared_size as u64).to_le_bytes());
+        bytes[344..352].copy_from_slice(&(4096_u64 + code.len() as u64).to_le_bytes());
+        bytes
+    }
+
+    fn arm_elf_with_data_load(mut bytes: Vec<u8>, offset: u64, address: u64) -> Vec<u8> {
+        bytes[120..124].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
+        bytes[124..128].copy_from_slice(&(object::elf::PF_R | object::elf::PF_W).to_le_bytes());
+        bytes[128..136].copy_from_slice(&offset.to_le_bytes());
+        bytes[136..144].copy_from_slice(&address.to_le_bytes());
+        bytes[144..152].copy_from_slice(&address.to_le_bytes());
+        bytes[152..160].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[160..168].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[168..176].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes.resize(bytes.len().max(offset as usize + 4), 0);
+        bytes
+    }
+
+    #[test]
+    fn arm_exclusive_retry_sequence_fails_public_vm_admission() {
+        let code = [0x885f7c20_u32, 0x88027c20, 0xd65f03c0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), arm_elf(&code, code.len())).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("LL/SC"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_exclusive_mask_keeps_lse_and_acquire_release_loads() {
+        for word in [0x885f7c20, 0x88027c20, 0x085f7c61, 0xc87f7c20] {
+            assert!(is_arm_llsc_exclusive(word), "{word:08x}");
+        }
+        for word in [0x48207c82, 0x4860fc82, 0xc8dffc00] {
+            assert!(!is_arm_llsc_exclusive(word), "{word:08x}");
+            assert!(
+                scan_code(object::Architecture::Aarch64, 0x1000, &word.to_le_bytes())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn arm_exclusive_in_executable_page_tail_fails_public_vm_admission() {
+        let code = [0xd65f03c0_u32, 0x885f7c20]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), arm_elf(&code, 4)).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("LL/SC"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_entropy_in_executable_page_tail_needs_review() {
+        let code = [0xd65f03c0_u32, 0xd53b2400]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), arm_elf(&code, 4)).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("RNDR"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_executable_pages_cannot_alias_a_loaded_data_page() {
+        let ret = 0xd65f03c0_u32.to_le_bytes();
+        for (offset, address) in [(4100, 0x3004), (8196, 0x1004)] {
+            let bytes = arm_elf_with_data_load(arm_elf(&ret, ret.len()), offset, address);
+            let error = scan_elf(&bytes, "probe").unwrap_err().to_string();
+            assert!(error.contains("page alias"), "{offset}: {error}");
+        }
     }
 
     #[test]
@@ -901,8 +1082,7 @@ mod tests {
             [(0x400, "RNDR"), (0x404, "RNDRRS")]
         );
         assert!(scan_code(object::Architecture::Aarch64, 1, &code).is_err());
-        let mut bytes = elf(&code, 5, 6);
-        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let bytes = arm_elf(&code, code.len());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
         assert_eq!(
             sites.iter().map(|site| site.address).collect::<Vec<_>>(),
@@ -1002,8 +1182,7 @@ mod tests {
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect();
-        let mut bytes = elf(&code, 5, 6);
-        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let mut bytes = arm_elf(&code, code.len());
         bytes[264..272].copy_from_slice(&2_u64.to_le_bytes());
         bytes[288..296].copy_from_slice(&3_u64.to_le_bytes());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
@@ -1017,8 +1196,7 @@ mod tests {
             .flat_map(u32::to_le_bytes)
             .collect();
         code.push(0xff);
-        let mut bytes = elf(&code, 5, 6);
-        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let bytes = arm_elf(&code, code.len());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
         assert_eq!(sites[0].instruction, "RNDR");
     }

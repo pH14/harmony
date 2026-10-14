@@ -56,6 +56,7 @@ The scan rejects:
 - a hardware entropy instruction (RDRAND, RDSEED, RNDR, RNDRRS) without a
   review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
+- an arm64 monitor-based LL/SC instruction, even if listed for review;
 - a review entry that matches no instruction in the image.
 
 For User-mode Linux, preparation rejects all four scanned hardware entropy
@@ -85,8 +86,11 @@ its start, regardless of the section's executable flag, and separately decodes
 the gaps between sections. This preserves instruction alignment when a segment
 begins with headers or other data without reporting an instruction assembled
 across a section boundary. On arm64 it checks aligned instruction words across
-the whole executable load segment, ignoring a trailing partial word that cannot
-hold an instruction, so odd-length data sections are harmless. A
+the complete 4 KiB page-rounded file mapping of each executable load, including
+bytes beyond the declared load size, and rejects another load segment that
+aliases an executable file or memory page. It ignores a trailing partial word
+that cannot hold an instruction. The LL/SC mask excludes LSE CASP and ordinary
+acquire/release loads, which do not use the reservation monitor. A
 binary built to hide an x86 instruction inside another instruction's operand
 bytes can still pass.
 
