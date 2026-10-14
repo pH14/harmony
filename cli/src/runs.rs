@@ -276,6 +276,10 @@ mod tests {
             let mut config = Config::default();
             config.runner.kind = "test".into();
             let manifest = Manifest::new(config, "search").unwrap();
+            assert_eq!(
+                manifest.binary_identity,
+                std::env::var("HARMONY_EXPECTED_IMAGE_IDENTITY").unwrap()
+            );
             manifest.verify(&directory).unwrap();
             return;
         }
@@ -294,6 +298,8 @@ mod tests {
             .write_all(b"changed-executable-file")
             .unwrap();
         let before = file_digest(&running).unwrap();
+        let expected_identity =
+            consonance_client::image_identity::loaded_executable_identity_self().unwrap();
         let mut child = std::process::Command::new(&running)
             .args([
                 "--exact",
@@ -301,6 +307,7 @@ mod tests {
                 "--nocapture",
             ])
             .env("HARMONY_IDENTITY_CHILD_DIRECTORY", directory.path())
+            .env("HARMONY_EXPECTED_IMAGE_IDENTITY", expected_identity)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
