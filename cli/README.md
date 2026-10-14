@@ -317,6 +317,8 @@ the same packed OCI rootfs segment that becomes the guest initramfs. UML search
 and command execution also check the loaded profile's
 identity against the verified recording before guest launch. The saved UML
 kernel digest must match that profile's executable before a run can complete.
+Nested replay and NES guest replay likewise compare their saved kernel and
+initramfs bytes with the recording at the final read before execution.
 UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
 same processor.
