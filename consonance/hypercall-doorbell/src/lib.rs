@@ -359,7 +359,7 @@ impl IoDoorbell for MmioDoorbell {
         // this register and the IoDoorbell caller guarantees it remains live
         // across this single atomic exchange. Volatile is required for MMIO.
         unsafe { ptr::write_volatile(self.register, req_len) };
-        fence(Ordering::Acquire);
+        fence(Ordering::SeqCst);
     }
 }
 
