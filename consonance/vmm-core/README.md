@@ -30,6 +30,10 @@ each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
+write that offset, and both full-VM snapshot restore and V-time-only restore
+reject a nonzero value before changing live state. This keeps an armed
+clockevent in the next-deadline and virtual-time trace schedules.
 
 The run loop also times each backend run and each exit it services, keyed by
 exit reason, address or port, and direction. `ControlServer::host_telemetry`

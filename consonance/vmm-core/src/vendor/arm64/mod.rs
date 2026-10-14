@@ -454,6 +454,15 @@ impl Vendor for Arm64 {
         Arm64Devices::new()
     }
 
+    fn validate_vtime_clock_offset(clock_offset: u64) -> Result<(), VmmError> {
+        if clock_offset != 0 {
+            return Err(VmmError::ContractViolation(
+                "arm64 virtual-time clock offset must be zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn mmio_holes() -> &'static [(u64, u64)] {
         &[]
     }
