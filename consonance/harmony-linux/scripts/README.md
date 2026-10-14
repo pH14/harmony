@@ -18,6 +18,9 @@ executable segments, duplicate or overlapping loaded sections, a non-executable
 every aligned word in a `PF_X` load segment, including words labeled as data.
 AA-4 excludes reviewed non-X data sections because real kernel and user images
 contain incidental words matching its broad exclusive-instruction mask.
+The pinned arm64 runc keeps Go's `.typelink`, `.itablink`, and `.gopclntab`
+metadata in the executable load segment; these names are reviewed data under
+the same rule.
 Executing instructions from those data sections is a remaining admission gap
 tracked in [issue #618](https://github.com/pH14/harmony/issues/618). The static
 scan does not provide a runtime execute guard.

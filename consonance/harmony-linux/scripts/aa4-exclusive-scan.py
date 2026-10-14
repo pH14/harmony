@@ -59,9 +59,11 @@ REVIEWED_DATA_SECTIONS = {
     ".altinstructions", ".data", ".data..percpu", ".dynamic", ".dynstr",
     ".dynsym", ".eh_frame", ".eh_frame_hdr", ".gnu.hash", ".gnu.version",
     ".gnu.version_d", ".gnu.version_r", ".got", ".got.plt", ".hash",
-    ".init.data", ".interp", ".mmuoff.data.read", ".mmuoff.data.write",
+    ".gopclntab", ".init.data", ".interp", ".itablink",
+    ".mmuoff.data.read", ".mmuoff.data.write",
     ".note", ".note.ABI-tag", ".note.gnu.build-id", ".note.gnu.property",
     ".notes", ".rela.dyn", ".rela.plt", ".rodata", ".stapsdt.base",
+    ".typelink",
     "__ex_table", "__param", "runtime_ptr_dentry_hashtable",
     "runtime_shift_d_hash_shift",
 }
@@ -333,7 +335,7 @@ def main():
                 print(f"    {addr}: {raw}  {asm}")
         else:
             print(f"[CLEAN]  {name}: no LL/SC exclusive instructions (mask self-check passed)")
-    # Exit 1 if any scanned image carries an exclusive -- a rescan-on-exec would reject it.
+    # Exit 1 if any scanned image carries an exclusive.
     sys.exit(1 if any_hits else 0)
 
 
