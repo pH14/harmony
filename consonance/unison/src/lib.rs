@@ -298,7 +298,7 @@ mod hex32 {
 mod tests {
     use super::*;
     use crate::flaky::{FlakyFactory, Perturbation};
-    use crate::toy::{ToyFactory, generate_program};
+    use crate::toy::{ToyFactory, asm, generate_program};
 
     fn factory() -> ToyFactory {
         ToyFactory {
@@ -383,6 +383,24 @@ mod tests {
         assert_eq!(r.checkpoints_compared, 0);
         assert_eq!(r.halted_at, None);
         assert!(r.limit_reached);
+    }
+
+    #[test]
+    fn different_programs_diverge_at_initial_checkpoint() {
+        let a = ToyFactory {
+            program: vec![asm::loadi(0, 1), asm::halt()],
+        };
+        let b = ToyFactory {
+            program: vec![asm::loadi(0, 2), asm::halt()],
+        };
+        let report = compare_runs(&a, &b, 3, 1, 0).unwrap();
+        assert_eq!(
+            report.verdict,
+            Verdict::Diverged {
+                last_match: None,
+                first_mismatch: 0,
+            }
+        );
     }
 
     #[test]
