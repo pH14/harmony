@@ -60,6 +60,7 @@ pub struct KvmBackend {
     supported_xsave_bv: u64,
     event_valid_flags: u32,
     host_amd_compatible: bool,
+    guest_run_attempted: bool,
     sysenter_32bit: bool,
     state_mutation_guard: crate::arch::x86::StateMutationGuard,
     regions: MemRegions,
@@ -142,6 +143,7 @@ impl KvmBackend {
             supported_xsave_bv,
             event_valid_flags,
             host_amd_compatible,
+            guest_run_attempted: false,
             sysenter_32bit: host_amd_compatible,
             state_mutation_guard: Default::default(),
             regions: MemRegions::new(),
@@ -369,6 +371,7 @@ impl KvmBackend {
                 }
                 IrqEntry::Run => {}
             }
+            self.guest_run_attempted = true;
             let rc = unsafe { raw_kvm_run(self.vcpu.as_raw_fd()) };
             if rc < 0 {
                 let err = std::io::Error::last_os_error();
@@ -765,12 +768,31 @@ impl KvmBackend {
         )
     }
 
+    fn read_sregs2_guarded(&mut self) -> Result<kvm_sregs2> {
+        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
+        let sregs = match unsafe { raw_get_sregs2(self.vcpu.as_raw_fd()) } {
+            Ok(sregs) => sregs,
+            Err(error) => {
+                if self.host_amd_compatible && self.guest_run_attempted {
+                    self.state_mutation_guard.poison();
+                }
+                return Err(error);
+            }
+        };
+        let legacy_pae =
+            sregs.cr0 & (1 << 31) != 0 && sregs.cr4 & (1 << 5) != 0 && sregs.efer & (1 << 10) == 0;
+        if self.host_amd_compatible && self.guest_run_attempted && legacy_pae {
+            self.state_mutation_guard.poison();
+            return Err(BackendError::AmdPaeSnapshotUnsafe);
+        }
+        Ok(sregs)
+    }
+
     fn run_guarded_entry(&mut self) -> Result<()> {
         self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         self.check_completion_clear()?;
-        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
-        let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let sregs = self.read_sregs2_guarded()?;
         let fd = self.vcpu.as_raw_fd();
         let continuation = prepare_snapshot_run(
             self.run_page(),
@@ -1038,9 +1060,7 @@ impl Backend for KvmBackend {
         self.state_mutation_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
-        // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
-        // `kvm_sregs2` (incl. flags/PDPTRs). Excluded under Miri.
-        let sregs2 = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let sregs2 = self.read_sregs2_guarded()?;
         let dregs = self.vcpu.get_debug_regs().map_err(kvm_err)?;
         let kevents = self.vcpu.get_vcpu_events().map_err(kvm_err)?;
         let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
@@ -1203,6 +1223,7 @@ impl Backend for KvmBackend {
         self.accepted_irq.clear();
         self.readiness_current = false;
         plan_irq_entry(self.run_page(), None, false, || Ok(false))?;
+        self.guest_run_attempted = false;
         Ok(())
     }
 

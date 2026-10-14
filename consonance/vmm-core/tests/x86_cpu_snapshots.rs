@@ -1091,6 +1091,10 @@ mod live_kvm {
 
         let mut vmm = fresh_guest_pdpt_vmm(true);
         wire_snapshot_path(&mut vmm);
+        assert!(
+            vmm.save_vm_state().is_ok(),
+            "an unentered PAE entry template remains capturable"
+        );
         run_guest_pdpt_warmup(&mut vmm);
         let error = vmm
             .save_vm_state()
@@ -1101,6 +1105,18 @@ mod live_kvm {
         ));
         assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
         assert!(vmm.step().is_err(), "capture must retire the source vCPU");
+
+        let mut vmm = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut vmm);
+        run_guest_pdpt_warmup(&mut vmm);
+        let error = vmm
+            .vcpu_record()
+            .expect_err("raw vCPU record must refuse unsafe AMD PAE reads");
+        assert!(matches!(
+            error,
+            VmmError::Backend(vmm_backend::BackendError::AmdPaeSnapshotUnsafe)
+        ));
+        assert!(vmm.step().is_err(), "raw read must retire the source vCPU");
 
         let mut vmm = fresh_guest_pdpt_vmm(true);
         wire_snapshot_path(&mut vmm);

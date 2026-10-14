@@ -15,6 +15,11 @@ pub(crate) struct StateMutationGuard {
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
 impl StateMutationGuard {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    pub(crate) fn poison(&self) {
+        self.poisoned.set(true);
+    }
+
     pub(crate) fn ensure_healthy(&self) -> Result<()> {
         if self.poisoned.get() {
             Err(BackendError::Internal("backend state mutation failed"))

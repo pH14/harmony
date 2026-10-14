@@ -165,8 +165,13 @@ guest-byte coverage remains required.
 Hardware continuation coverage depends on the backend and paging mode. AMD
 default NPT has an unresolved legacy 32-bit PAE capture divergence
 ([#314](https://github.com/pH14/harmony/issues/314)); unchanged stopped records
-alone do not prove an unchanged guest future. The separate same-seed XSAVE
-divergence remains tracked in [#307](https://github.com/pH14/harmony/issues/307).
+alone do not prove an unchanged guest future. After AMD KVM guest entry in that
+mode, VMM and control capture now fail fatally before publishing a snapshot,
+and the source vCPU cannot continue. Intel PAE and AMD long-mode capture stay
+supported. The hardware qualification requires the AMD refusal path and keeps
+Intel PAE continuation coverage; the original AMD NPT witness remains in #314.
+The separate same-seed XSAVE divergence remains tracked in
+[#307](https://github.com/pH14/harmony/issues/307).
 
 ## Architecture boundary
 
