@@ -121,6 +121,10 @@ them even to ordinary files while GNU tar ignores them.
 Tar timestamps must be valid nonnegative numbers, even though the staged rootfs
 does not preserve them: macOS and GNU tar disagree on malformed or negative
 timestamp headers.
+All tar numeric fields require octal digits with only space or NUL padding, or
+a nonnegative base-256 value. An empty space-only field, a leading plus sign,
+newline, or bytes after the NUL terminator can be interpreted differently by
+host tar implementations.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
 reports failure despite both tools writing the member bytes.
