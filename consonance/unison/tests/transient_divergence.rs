@@ -2,6 +2,7 @@
 
 use unison::{
     RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
+    first_divergence_from_report,
 };
 
 #[derive(Clone, Copy)]
@@ -67,4 +68,26 @@ fn first_mismatch_precedes_a_matching_checkpoint() {
     let point = bisect_divergence(&a, &b, 7, 0, 5).unwrap();
     assert_eq!(point.first_divergent_work, 1);
     assert_ne!(point.hash_a, point.hash_b);
+}
+
+#[test]
+fn a_later_matching_checkpoint_does_not_prove_no_earlier_difference() {
+    let a = Factory(false);
+    let b = Factory(true);
+    let report = compare_runs(&a, &b, 7, 4, 8).unwrap();
+    assert_eq!(
+        report.verdict,
+        Verdict::Diverged {
+            last_match: Some(4),
+            first_mismatch: 8,
+        }
+    );
+    let bracket = bisect_divergence(&a, &b, 7, 4, 8).unwrap();
+    assert_eq!(bracket.first_divergent_work, 5);
+    let from_start = bisect_divergence(&a, &b, 7, 0, 8).unwrap();
+    assert_eq!(from_start.first_divergent_work, 1);
+    let reported = first_divergence_from_report(&a, &b, 7, &report)
+        .unwrap()
+        .unwrap();
+    assert_eq!(reported.first_divergent_work, 1);
 }

@@ -9,9 +9,11 @@ O1 runs the same subject twice with the same seed and compares complete state at
 regular work checkpoints and at termination. It compares `state_hash` and run
 termination rather than final output alone.
 
-When a checkpoint differs, `unison` re-executes the subject and bisects the
-matching and mismatching interval to identify the first divergent work count. A
-bounded run is reported as identical only through its tested limit.
+When a checkpoint differs, `unison` re-executes the subject from work zero and
+probes each work count through the first mismatching checkpoint to identify the
+first divergent work count. A matching checkpoint cannot exclude an earlier
+transient difference. A bounded run is reported as identical only at its tested
+checkpoints through the limit.
 
 ## O2: conformance
 
