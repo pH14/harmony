@@ -103,8 +103,13 @@ prints the endpoint. With `trace` it prints the decoded state every frame. With
 the endpoint, keeping one branch per vertical position, velocity, mode and held
 button, and reports how many branches stay alive. "every continuation dies"
 means the endpoint is already lost whatever the player presses. `OUT.json`
-receives a surviving or completing input. `HARMONY_QUICKNES_CORE` names the
-core.
+receives a surviving or completing input. Above 4,096 branches it keeps an
+even spread of them. With `timing STRIDE HORIZON SAMPLES` it replays the input
+and, every STRIDE frames, draws SAMPLES random inputs of HORIZON frames from
+three vocabularies: the search's taps and holds, taps of 1 to 4 frames, and
+one random press or release per frame. It prints how many of each stay alive,
+and how many one- and two-frame shifts of a press boundary in the input keep
+it alive. `HARMONY_QUICKNES_CORE` names the core.
 
 The browser demo in
 `demos/twin-dragons` runs the same workload and starts later levels by writing

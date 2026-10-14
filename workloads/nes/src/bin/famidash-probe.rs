@@ -8,8 +8,7 @@ use nes_workload::famidash::target::{
 use nes_workload::target::Target;
 use sha2::{Digest, Sha256};
 
-const USAGE: &str =
-    "usage: famidash-probe ROM LEVEL [INPUT.json] [trace | frontier FRAMES [OUT.json]]";
+const USAGE: &str = "usage: famidash-probe ROM LEVEL [INPUT.json] [trace | frontier FRAMES [OUT.json] | timing STRIDE HORIZON SAMPLES]";
 const FRONTIER_LIMIT: usize = 4_096;
 
 type FrontierKey = (i32, i16, u8, bool, bool, bool, bool);
@@ -33,6 +32,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core)?));
     let mut target =
         FamidashTarget::from_rom_bytes_headless(&fs::read(&rom)?, &core, &core_sha256, level)?;
+    if args.get(3).map(String::as_str) == Some("timing") {
+        let stride: u64 = args.get(4).ok_or(USAGE)?.parse()?;
+        let horizon: u64 = args.get(5).ok_or(USAGE)?.parse()?;
+        let samples: u32 = args.get(6).ok_or(USAGE)?.parse()?;
+        return timing(&mut target, &input, stride, horizon, samples);
+    }
     let trace = args.get(3).map(String::as_str) == Some("trace");
     let mut frame = 0_u64;
     for action in &input.actions {
@@ -167,6 +172,185 @@ fn frontier(
         let mut actions = prefix.actions.clone();
         actions.extend(branch.frames.iter().map(|&b| ButtonChord::new(b, 1)));
         fs::write(path, serde_json::to_vec(&FamidashInput { actions })?)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum Vocabulary {
+    Search,
+    Taps,
+    Frames,
+}
+
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0
+    }
+
+    fn below(&mut self, bound: u64) -> u64 {
+        self.next() % bound
+    }
+}
+
+fn draw_chord(rng: &mut Rng, vocabulary: Vocabulary) -> ButtonChord {
+    let buttons = if rng.below(2) == 0 { 0 } else { A_BUTTON };
+    let hold = match vocabulary {
+        Vocabulary::Search if rng.below(2) == 0 => 1 + rng.below(4),
+        Vocabulary::Search => 6 + rng.below(35),
+        Vocabulary::Taps => 1 + rng.below(4),
+        Vocabulary::Frames => 1,
+    };
+    ButtonChord::new(buttons, u8::try_from(hold).unwrap_or(1))
+}
+
+fn alive_after(
+    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    actions: &[ButtonChord],
+    horizon: u64,
+) -> bool {
+    let mut frames = 0_u64;
+    for action in actions {
+        if frames >= horizon {
+            break;
+        }
+        let hold = u64::from(action.bounded_hold_frames()).min(horizon - frames);
+        target.apply(&ButtonChord::new(
+            action.buttons,
+            u8::try_from(hold).unwrap_or(1),
+        ));
+        frames += hold;
+        if target.is_terminal() {
+            return !target.mechanical_state().dead;
+        }
+    }
+    frames >= horizon
+}
+
+fn survival(
+    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    root: &FamidashSnapshot,
+    vocabulary: Vocabulary,
+    horizon: u64,
+    samples: u32,
+    rng: &mut Rng,
+) -> Result<u32, Box<dyn Error>> {
+    let mut alive = 0;
+    for _ in 0..samples {
+        let mut actions = Vec::new();
+        let mut frames = 0_u64;
+        while frames < horizon {
+            let chord = draw_chord(rng, vocabulary);
+            frames += u64::from(chord.bounded_hold_frames());
+            actions.push(chord);
+        }
+        target.restore(root)?;
+        if alive_after(target, &actions, horizon) {
+            alive += 1;
+        }
+    }
+    Ok(alive)
+}
+
+fn shifted_survival(
+    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    root: &FamidashSnapshot,
+    tail: &[ButtonChord],
+    horizon: u64,
+    shift: i64,
+) -> Result<(u32, u32), Box<dyn Error>> {
+    let (mut alive, mut tried) = (0, 0);
+    let mut start = 0_u64;
+    for index in 0..tail.len().saturating_sub(1) {
+        if start >= horizon {
+            break;
+        }
+        start += u64::from(tail[index].bounded_hold_frames());
+        if tail[index].buttons == tail[index + 1].buttons {
+            continue;
+        }
+        let first = i64::from(tail[index].bounded_hold_frames()) + shift;
+        let second = i64::from(tail[index + 1].bounded_hold_frames()) - shift;
+        if first < 1 || second < 1 {
+            continue;
+        }
+        let mut actions = tail.to_vec();
+        actions[index] = ButtonChord::new(actions[index].buttons, u8::try_from(first)?);
+        actions[index + 1] = ButtonChord::new(actions[index + 1].buttons, u8::try_from(second)?);
+        target.restore(root)?;
+        tried += 1;
+        if alive_after(target, &actions, horizon) {
+            alive += 1;
+        }
+    }
+    Ok((alive, tried))
+}
+
+fn timing(
+    target: &mut FamidashTarget<machine::quicknes::QuickNesMachine>,
+    input: &FamidashInput,
+    stride: u64,
+    horizon: u64,
+    samples: u32,
+) -> Result<(), Box<dyn Error>> {
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let mut points = Vec::new();
+    let mut frame = 0_u64;
+    let mut next_point = 0_u64;
+    for (index, action) in input.actions.iter().enumerate() {
+        if frame >= next_point && target.mechanical_state().playing() {
+            let snapshot = target.snapshot().ok_or("could not snapshot a point")?;
+            points.push((frame, index, snapshot));
+            next_point = frame + stride;
+        }
+        target.apply(action);
+        frame += u64::from(action.bounded_hold_frames());
+        if target.is_terminal() {
+            break;
+        }
+    }
+    println!("frame x mode level search taps frames shift1 shift2 of {samples}");
+    for (frame, index, snapshot) in points {
+        target.restore(&snapshot)?;
+        let state = target.mechanical_state();
+        let Some(gameplay) = state.gameplay else {
+            continue;
+        };
+        let tail = &input.actions[index..];
+        target.restore(&snapshot)?;
+        if !alive_after(target, tail, horizon) {
+            continue;
+        }
+        let mut counts = Vec::new();
+        for vocabulary in [Vocabulary::Search, Vocabulary::Taps, Vocabulary::Frames] {
+            counts.push(survival(target, &snapshot, vocabulary, horizon, samples, &mut rng)?);
+        }
+        let mut shifts = Vec::new();
+        for size in [1, 2] {
+            let (mut alive, mut tried) = (0, 0);
+            for shift in [-size, size] {
+                let (a, t) = shifted_survival(target, &snapshot, tail, horizon, shift)?;
+                alive += a;
+                tried += t;
+            }
+            shifts.push(format!("{alive}/{tried}"));
+        }
+        println!(
+            "{frame} {} {} {} {} {} {} {} {}",
+            gameplay.x,
+            gameplay.gamemode,
+            state.level,
+            counts[0],
+            counts[1],
+            counts[2],
+            shifts[0],
+            shifts[1]
+        );
     }
     Ok(())
 }
