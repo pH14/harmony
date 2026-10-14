@@ -474,7 +474,8 @@ pub fn logs(
             .map(str::to_owned)
             .collect()
     };
-    if path.join("serial.log").is_file() && selection.finding.is_none() {
+    if manifest.bundle.is_none() && path.join("serial.log").is_file() && selection.finding.is_none()
+    {
         if point.specified() {
             return Err("command logs have no action boundaries; omit point selectors".into());
         }
