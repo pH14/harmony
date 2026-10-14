@@ -25,4 +25,6 @@ from its own directory, so it keeps an identical copy in
 | libgcrypt | 2 RDRAND | Reached only after `_gcry_get_hw_features` reports `HWF_INTEL_RDRAND`, which comes from CPUID leaf 1 ECX bit 30 ([rndhw.c](https://github.com/gpg/libgcrypt/blob/libgcrypt-1.10.1/random/rndhw.c), [hwf-x86.c](https://github.com/gpg/libgcrypt/blob/libgcrypt-1.10.1/src/hwf-x86.c)) |
 | libstdc++ | 1 RDRAND, 4 RDSEED | `random_device` installs these helpers only after checking CPUID leaf 1 ECX bit 30 and leaf 7 EBX bit 18 ([random.cc](https://github.com/gcc-mirror/gcc/blob/releases/gcc-12.2.0/libstdc%2B%2B-v3/src/c%2B%2B11/random.cc)) |
 
-The guest's fixed CPUID clears both bits.
+The VM guest's fixed CPUID clears both bits. User-mode Linux executes CPUID and
+hardware entropy instructions on the host CPU. UML preparation therefore
+rejects these sites even with this review; the review applies to the VM backend.
