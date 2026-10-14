@@ -324,10 +324,32 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+struct HashingReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(bytes)?;
+        self.digest.update(&bytes[..read]);
+        Ok(read)
+    }
+}
+
 fn load_origin(
     origin_arg: &str,
     checkpoint_path: Option<&std::path::Path>,
     checkpoint_format: &str,
+) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
+    load_origin_with_source_hook(origin_arg, checkpoint_path, checkpoint_format, || {})
+}
+
+fn load_origin_with_source_hook(
+    origin_arg: &str,
+    checkpoint_path: Option<&std::path::Path>,
+    checkpoint_format: &str,
+    after_first_access: impl FnOnce(),
 ) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
     if origin_arg == "genesis" {
         if checkpoint_path.is_some() {
@@ -348,9 +370,13 @@ fn load_origin(
             )?,
         });
     }
-    let file_sha256 = sha256_file(Path::new(origin_arg))?;
-    let report: SmbArchiveReport =
-        serde_json::from_reader(BufReader::new(fs::File::open(origin_arg)?))?;
+    let mut reader = HashingReader {
+        inner: BufReader::new(fs::File::open(origin_arg)?),
+        digest: Sha256::new(),
+    };
+    after_first_access();
+    let report: SmbArchiveReport = serde_json::from_reader(&mut reader)?;
+    let file_sha256 = format!("{:x}", reader.digest.finalize());
     Ok(SmbCampaignOrigin::Archive {
         path: origin_arg.to_owned(),
         file_sha256,
@@ -466,5 +492,93 @@ fn parse_u64(value: &str) -> Result<u64, Box<dyn Error>> {
         Ok(u64::from_str_radix(hex, 16)?)
     } else {
         Ok(normalized.parse()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SmbArchiveReport, SmbCampaignOrigin, load_origin_with_source_hook};
+    use sha2::{Digest, Sha256};
+
+    fn archive_bytes(seed: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "seed": seed,
+            "executions": 0,
+            "milestones": {
+                "max_1_1_scroll_bucket": 0,
+                "reached_1_1_flag": false,
+                "reached_1_2": false,
+                "reached_onward": false
+            },
+            "first_reached": {
+                "progress_into_1_1": null,
+                "flag_1_1": null,
+                "level_1_2": null,
+                "onward": null
+            },
+            "first_inputs": {
+                "progress_into_1_1": null,
+                "flag_1_1": null,
+                "level_1_2": null,
+                "onward": null
+            },
+            "champion_input": {"actions": []},
+            "entries": [{
+                "id": 0,
+                "parent_id": null,
+                "created_execution": 0,
+                "input": {"actions": []},
+                "key": {
+                    "world": 0,
+                    "level": 0,
+                    "progress": 0,
+                    "player_y_bucket": 0,
+                    "loop_on_path": false,
+                    "clock": 0
+                },
+                "milestones": {
+                    "max_1_1_scroll_bucket": 0,
+                    "reached_1_1_flag": false,
+                    "reached_1_2": false,
+                    "reached_onward": false
+                }
+            }],
+            "progress_curve": [],
+            "retained": 1,
+            "rejected": 0,
+            "deaths": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn archive_origin_digest_names_the_parsed_bytes_after_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-archive.json");
+        let replacement_path = directory.path().join("replacement-archive.json");
+        let mut original = archive_bytes(7);
+        original.extend_from_slice(b" \n\t");
+        let replacement = archive_bytes(8);
+        let _: SmbArchiveReport = serde_json::from_slice(&original).unwrap();
+        let _: SmbArchiveReport = serde_json::from_slice(&replacement).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        let origin = load_origin_with_source_hook(path.to_str().unwrap(), None, "test", || {
+            std::fs::rename(&replacement_path, &path).unwrap();
+        })
+        .unwrap();
+        let SmbCampaignOrigin::Archive {
+            file_sha256,
+            report,
+            ..
+        } = origin
+        else {
+            panic!("expected archive origin");
+        };
+        assert_eq!(file_sha256, format!("{:x}", Sha256::digest(&original)));
+        assert_eq!(
+            report.seed, 7,
+            "archive loader parsed replaced source bytes"
+        );
     }
 }
