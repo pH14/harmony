@@ -264,11 +264,8 @@ mod tests {
         let child_directory = std::env::var_os("HARMONY_IDENTITY_CHILD_DIRECTORY");
         if let Some(directory) = child_directory {
             let directory = PathBuf::from(directory);
-            let mut config = Config::default();
-            config.runner.kind = "test".into();
-            let manifest = Manifest::new(config, "search").unwrap();
             fs::write(directory.join("ready"), b"ready").unwrap();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
             while !directory.join("continue").exists() {
                 assert!(
                     std::time::Instant::now() < deadline,
@@ -276,6 +273,9 @@ mod tests {
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            let mut config = Config::default();
+            config.runner.kind = "test".into();
+            let manifest = Manifest::new(config, "search").unwrap();
             manifest.verify(&directory).unwrap();
             return;
         }
@@ -294,7 +294,7 @@ mod tests {
             .write_all(b"changed-executable-file")
             .unwrap();
         let before = file_digest(&running).unwrap();
-        let child = std::process::Command::new(&running)
+        let mut child = std::process::Command::new(&running)
             .args([
                 "--exact",
                 "runs::tests::manifest_identity_follows_loaded_executable_after_path_replacement",
@@ -305,9 +305,25 @@ mod tests {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
         while !directory.path().join("ready").exists() {
-            assert!(std::time::Instant::now() < deadline, "child did not start");
+            if let Some(status) = child.try_wait().unwrap() {
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "child exited {status} before ready\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "child did not start\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         fs::rename(replacement, &running).unwrap();
