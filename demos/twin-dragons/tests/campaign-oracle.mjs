@@ -14,14 +14,14 @@ const demo = fileURLToPath(new URL("..", import.meta.url));
 const root = join(demo, "../..");
 const base = new URL("../public/", import.meta.url);
 const roms = `${homedir()}/workspace/roms`;
-const seed = Number(process.env.ORACLE_SEED || 1);
+const seedFor = (game) => Number(process.env.ORACLE_SEED || game.seed || 1);
 const memoryMiB = 1024;
 const CASES = [
   { id: "twin-dragons", rom: join(demo, "public/twin-dragons.nes"), executions: 600 },
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
-  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 10000, clears: 1 },
+  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 10000, seed: 2, clears: 1 },
 ];
 const selected = process.env.ORACLE_GAMES?.split(",");
 
@@ -43,7 +43,7 @@ const cargo = (bin, args) =>
     "run", "--quiet", "--release", "--locked", "--manifest-path", join(root, "workloads/nes/Cargo.toml"), "--bin", bin, "--", ...args,
   ], { stdio: ["ignore", "ignore", "inherit"] });
 
-function nativeStream(game, executions, out) {
+function nativeStream(game, seed, executions, out) {
   const core = nativeCore();
   if (!game.eval) {
     cargo("twin-dragons-campaign", [
@@ -70,7 +70,8 @@ for (const game of CASES) {
   const executions = Number(process.env.ORACLE_EXECUTIONS || game.executions);
   const out = mkdtempSync(join(tmpdir(), `${game.id}-campaign-`));
   try {
-    const native = records(nativeStream(game, executions, out));
+    const seed = seedFor(game);
+    const native = records(nativeStream(game, seed, executions, out));
     const end = JSON.parse(native.pop());
     assert.equal(end.event, "end", `the native ${game.id} stream ends with its end record`);
     const engine = await createEngine(base, GAMES.get(game.id), {

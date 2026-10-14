@@ -51,7 +51,7 @@ for (const level of [0, 13]) {
 
 {
   const root = engine.boot(0),
-    search = campaignSearch(engine, identity, { seed: 1, executions: 20000 });
+    search = campaignSearch(engine, identity, { seed: 1, executions: 30000 });
   let arrival = null;
   while (!arrival && runCampaign(search, worker, { jobs: 16 }))
     arrival = JSON.parse(search.take_batch()).points.find((point) => point.retained !== null && point.observation.level === 1) ?? null;
