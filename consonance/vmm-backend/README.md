@@ -481,11 +481,14 @@ The tentative supported execution requirement is a single host core type for all
 related boots, forks, and restores. On hybrid Intel Linux hosts, launch the worker
 under `taskset -c <pool>` or a cpuset containing only P-cores or only E-cores.
 Choose the same pool type for every process participating in a snapshot lineage.
-The backend checks the creating thread's affinity against Linux's `cpu_core/cpus`
-and `cpu_atom/cpus` masks and rejects mixed or uncovered masks when those masks
-are exposed. It does not choose a pool or change caller affinity. Preserve that
-affinity for the backend lifetime; externally changing affinity or CPU topology
-requires stopping and requalifying the worker. The check is admission-time only.
+The backend records the creating thread's affinity and Linux's `cpu_core/cpus`
+and `cpu_atom/cpus` masks, rejecting mixed or uncovered masks when exposed.
+It rechecks that exact affinity and topology before guest entries, staged
+completion drain, CPU capture and restore, policy installation, and dirty-page
+drain. A changed mask or topology refuses those operations before they mutate KVM
+state. It does not choose a pool or change caller affinity. Preserve affinity
+for the backend lifetime and prevent concurrent external affinity changes;
+an external change requires stopping and requalifying the worker.
 Hosts that hide hybrid topology, including nested VMs, require operator
 qualification of the underlying scheduling placement; absent masks do not prove
 homogeneity. Snapshot data does not yet encode a host core-type admission token,

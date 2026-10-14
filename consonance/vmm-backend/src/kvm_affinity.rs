@@ -4,6 +4,16 @@ use std::collections::BTreeSet;
 
 use crate::{BackendError, Result};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HostAffinity {
+    Unreported,
+    Reported {
+        core: Option<BTreeSet<u16>>,
+        atom: Option<BTreeSet<u16>>,
+        allowed: BTreeSet<u16>,
+    },
+}
+
 fn cpu_list(text: &str) -> Result<BTreeSet<u16>> {
     let invalid = || BackendError::Internal("invalid host CPU list");
     let mut cpus = BTreeSet::new();
@@ -19,12 +29,7 @@ fn cpu_list(text: &str) -> Result<BTreeSet<u16>> {
     Ok(cpus)
 }
 
-fn check_masks(allowed: &str, pools: &[String]) -> Result<()> {
-    let allowed = cpu_list(allowed)?;
-    let pools = pools
-        .iter()
-        .map(|pool| cpu_list(pool))
-        .collect::<Result<Vec<_>>>()?;
+fn check_allowed_masks(allowed: &BTreeSet<u16>, pools: &[&BTreeSet<u16>]) -> Result<()> {
     if pools.iter().any(|pool| allowed.is_subset(pool)) {
         Ok(())
     } else {
@@ -32,6 +37,16 @@ fn check_masks(allowed: &str, pools: &[String]) -> Result<()> {
             what: "mixed or unknown hybrid CPU affinity; use taskset/cpuset to select one core-type pool for all related executions and restores",
         })
     }
+}
+
+#[cfg(test)]
+fn check_masks(allowed: &str, pools: &[String]) -> Result<()> {
+    let allowed = cpu_list(allowed)?;
+    let pools = pools
+        .iter()
+        .map(|pool| cpu_list(pool))
+        .collect::<Result<Vec<_>>>()?;
+    check_allowed_masks(&allowed, &pools.iter().collect::<Vec<_>>())
 }
 
 fn read_affinity_file(path: &str) -> std::io::Result<String> {
@@ -42,26 +57,54 @@ fn read_affinity_file(path: &str) -> std::io::Result<String> {
     std::fs::read_to_string(path)
 }
 
-pub(crate) fn check_host_affinity() -> Result<()> {
-    let mut pools = Vec::new();
-    for kind in ["cpu_core", "cpu_atom"] {
-        let path = format!("/sys/bus/event_source/devices/{kind}/cpus");
-        match read_affinity_file(&path) {
-            Ok(pool) if !pool.trim().is_empty() => pools.push(pool),
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+fn read_pool(kind: &str) -> Result<Option<BTreeSet<u16>>> {
+    let path = format!("/sys/bus/event_source/devices/{kind}/cpus");
+    match read_affinity_file(&path) {
+        Ok(pool) if !pool.trim().is_empty() => Ok(Some(cpu_list(&pool)?)),
+        Ok(_) => Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
     }
-    if pools.is_empty() {
-        return Ok(());
+}
+
+pub(crate) fn check_host_affinity() -> Result<HostAffinity> {
+    let core = read_pool("cpu_core")?;
+    let atom = read_pool("cpu_atom")?;
+    if core.is_none() && atom.is_none() {
+        return Ok(HostAffinity::Unreported);
     }
     let status = read_affinity_file("/proc/thread-self/status")?;
     let allowed = status
         .lines()
         .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
         .ok_or(BackendError::Internal("missing thread CPU affinity"))?;
-    check_masks(allowed.trim(), &pools)
+    let allowed = cpu_list(allowed.trim())?;
+    let pools = [core.as_ref(), atom.as_ref()]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    check_allowed_masks(&allowed, &pools)?;
+    Ok(HostAffinity::Reported {
+        core,
+        atom,
+        allowed,
+    })
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) fn ensure_host_affinity(expected: &HostAffinity) -> Result<()> {
+    let current = check_host_affinity()?;
+    compare_host_affinity(expected, &current)
+}
+
+fn compare_host_affinity(expected: &HostAffinity, current: &HostAffinity) -> Result<()> {
+    if current == expected {
+        Ok(())
+    } else {
+        Err(BackendError::Unsupported {
+            what: "host CPU affinity or core-type topology changed after KVM backend creation",
+        })
+    }
 }
 
 #[cfg(test)]
@@ -91,7 +134,7 @@ mod tests {
         core: std::result::Result<&str, std::io::ErrorKind>,
         atom: std::result::Result<&str, std::io::ErrorKind>,
         status: Option<&str>,
-    ) -> Result<()> {
+    ) -> Result<HostAffinity> {
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
@@ -182,5 +225,31 @@ mod tests {
         }
         assert!(check_masks("0", &["0,2-3".to_owned()]).is_ok());
         assert!(check_masks("0-3", &["0,2-3".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn runtime_affinity_rejects_pool_mask_and_topology_changes() {
+        let pinned_core = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0")).unwrap();
+        let same = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0")).unwrap();
+        let changed_core = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 1")).unwrap();
+        let changed_pool = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 8")).unwrap();
+        let changed_topology =
+            with_files(Ok("0-6"), Ok("8-23"), Some("Cpus_allowed_list: 0")).unwrap();
+        let hidden = with_files(
+            Err(std::io::ErrorKind::NotFound),
+            Err(std::io::ErrorKind::NotFound),
+            None,
+        )
+        .unwrap();
+        assert!(compare_host_affinity(&pinned_core, &same).is_ok());
+        let range = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0-1")).unwrap();
+        let enumerated = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0,1")).unwrap();
+        assert!(compare_host_affinity(&range, &enumerated).is_ok());
+        for current in [changed_core, changed_pool, changed_topology, hidden] {
+            assert!(matches!(
+                compare_host_affinity(&pinned_core, &current),
+                Err(BackendError::Unsupported { .. })
+            ));
+        }
     }
 }
