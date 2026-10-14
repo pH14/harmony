@@ -90,11 +90,13 @@ normalization pass alone would not cover arbitrary non-UTF-8 Linux names or
 every host filesystem's case rules, so non-ASCII archive paths fail closed.
 Existing Harmony workload images use ASCII paths.
 Archive member paths and hardlink targets are limited to 768 bytes, and
-resolved staging roots to 254 bytes. The combined path then fits macOS's
+staging roots to 254 bytes in both their spelled and resolved forms. The
+combined path then fits macOS's
 1023-byte filesystem-call limit, including the separator, as well as Linux's.
 GNU and macOS tar can both extract a deeply nested longer name, but later
 rootfs traversal by absolute path fails only on macOS. The resolved staging
-root length includes expansions such as macOS's `/var` to `/private/var`.
+root length includes expansions such as macOS's `/var` to `/private/var`
+without overlooking long path spellings that resolve to shorter directories.
 Whiteout targets must match the spelling of the lower name they remove; after
 an exact whiteout, a new entry may reuse that path with different case. Whiteout
 lookups never follow a staged symlink parent. OCI control-file, mount, and
