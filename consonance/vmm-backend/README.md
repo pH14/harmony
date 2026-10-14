@@ -596,16 +596,13 @@ is preserved. The original restore bitmap remains separately bound. This does
 not assert that raw guest XSAVE buffers with both bits absent are returned
 unchanged by the host UABI.
 
-The ignored `ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore` KVM regression
-round trips a valid YMM-present/SSE-absent state with MXCSR=0x3f80, captures raw
-KVM images, checks capture/restore byte preservation, and compares guest STMXCSR
-after continued and cold-restored runs. The guest value is reported, not assumed
-to match the imported MXCSR: a host may retain nondefault bytes in its KVM UABI
-yet initialize live MXCSR on guest entry when SSE presence is absent.
-It requires AVX and a fresh `XSAVE_MXCSR_REPORT_DIR`. `XSAVE_ENTRY_LONG_MODE=1`
-selects the production-mode SIB-addressed STMXCSR instruction; otherwise it uses
-the fixture's 16-bit real mode. This is a valid-state KVM round trip,
-not a claim that every host naturally emits that presence bitmap.
+KVM restore rejects a YMM-present/SSE-absent image with non-init MXCSR before
+mutating the vCPU. KVM can retain MXCSR=0x3f80 in its UABI buffer while guest
+entry initializes live MXCSR to 0x1f80, so accepting that image would silently
+change the state the guest observes. The ignored
+`ymm_without_sse_noninit_mxcsr_restore_rejects_atomically` regression checks
+that admission boundary on a live KVM vCPU. It requires AVX. Images with init
+MXCSR or SSE presence remain admissible.
 
 `natural_avx_mxcsr_survives_capture_and_restore` requires long mode. The guest
 sets nonzero YMM upper lanes with zero XMM lanes, loads MXCSR=0x3f80, and stops
@@ -613,7 +610,7 @@ at completed port I/O before capture. Both continued and cold-restored STMXCSR
 results must equal 0x3f80. The observed raw presence bitmap is retained rather
 than asserted to exclude SSE on every host.
 
-The imported-case observation is consistent with a compacted host restore:
+The rejected imported-case observation is consistent with a compacted host restore:
 [Intel SDM volume 1, sections 13.8.2, 13.11 and 13.12](https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf)
 specifies that compacted restore initializes MXCSR when SSE presence is clear.
 Compacted save includes SSE presence for nondefault MXCSR. On ms02, host boot
