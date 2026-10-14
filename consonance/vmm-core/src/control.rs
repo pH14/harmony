@@ -28,7 +28,7 @@ use crate::host_telemetry::{Cost, HostTelemetry};
 use crate::portable_snapshot::{
     PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparseDelta,
     SparsePortableSidecarRef, SparsePortableSnapshot, SparsePortableSnapshotReceipt,
-    decode_sparse_sidecar, encode_sparse_sidecar,
+    decode_sparse_sidecar, encode_sparse_sidecar_with_target_pages,
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
@@ -105,6 +105,17 @@ fn sparse_page_order_error(previous: Option<u64>, current: u64) -> Option<Snapsh
         return Some(SnapshotError::SparsePageDuplicate { gfn: current });
     }
     None
+}
+
+fn sparse_target_pages_digest(pages: &[(u64, Arc<[u8; 4096]>)]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"consonance-sparse-target-pages-v1\0");
+    hasher.update((pages.len() as u64).to_le_bytes());
+    for (gfn, page) in pages {
+        hasher.update(gfn.to_le_bytes());
+        hasher.update(&page[..]);
+    }
+    hasher.finalize().into()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -467,12 +478,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(
-            base,
-            target,
-            target_id,
-            SparsePageVerification::BaseAndTarget(target_id),
-        )?;
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
@@ -480,6 +485,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 pages.push((gfn, Arc::new(*page)));
             }
         }
+        let sidecar = self.sparse_sidecar(
+            base,
+            target,
+            target_id,
+            SparsePageVerification::BaseAndTarget(target_id),
+            Some(sparse_target_pages_digest(&pages)),
+        )?;
         Ok(SparsePortableSnapshot { pages, sidecar })
     }
 
@@ -500,6 +512,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             target,
             target_id,
             SparsePageVerification::AlreadyVerified,
+            None,
         )?;
         let (mut cost, pages) = self.export_telemetry.get();
         cost.add(started.elapsed().as_nanos());
@@ -568,6 +581,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
         verification: SparsePageVerification,
+        target_pages_digest: Option<[u8; 32]>,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
         let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
         let meta = self
@@ -580,19 +594,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             ));
         }
         let vm_state = self.engine.vm_state_bytes(target_id)?;
-        encode_sparse_sidecar(&SparsePortableSidecarRef {
-            vm_state,
-            sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
-            policy: &meta.policy,
-            control_state: &meta.control_state,
-            at: meta.at,
-            sdk_events: meta.sdk_events,
-            trace_events: meta.trace_events,
-            trace_schedules: meta.trace_schedules,
-            tainted: meta.tainted,
-            base_ram_digest,
-            state_blob_suffix: &meta.state_blob_suffix,
-        })
+        encode_sparse_sidecar_with_target_pages(
+            &SparsePortableSidecarRef {
+                vm_state,
+                sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
+                policy: &meta.policy,
+                control_state: &meta.control_state,
+                at: meta.at,
+                sdk_events: meta.sdk_events,
+                trace_events: meta.trace_events,
+                trace_schedules: meta.trace_schedules,
+                tainted: meta.tainted,
+                base_ram_digest,
+                state_blob_suffix: &meta.state_blob_suffix,
+            },
+            target_pages_digest,
+        )
     }
 
     pub fn import_sparse_snapshot(
@@ -616,6 +633,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
+            Some(sparse_target_pages_digest(pages)),
             |engine, base_id, vm_state| {
                 let mut owned_pages = Vec::new();
                 owned_pages
@@ -651,6 +669,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
+            None,
             |engine, near_id, vm_state| {
                 let near_id = if engine
                     .stats(near_id)
@@ -700,6 +719,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         base: SnapId,
         gfns: impl Iterator<Item = u64>,
         sidecar: &[u8],
+        target_pages_digest: Option<[u8; 32]>,
         derive: impl FnOnce(
             &mut SnapshotEngine,
             snapshot_store::SnapshotId,
@@ -724,6 +744,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
+        if portable.target_pages_digest != target_pages_digest {
+            return Err(PortableSnapshotError::Malformed(
+                "sparse target pages differ",
+            ));
+        }
         let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
@@ -6070,19 +6095,22 @@ mod tests {
         );
         assert_eq!(hash(&mut destination), source_hash);
 
-        let sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &decoded.vm_state,
-            sdk: None,
-            policy: &decoded.policy,
-            control_state: &decoded.control_state,
-            at: decoded.at,
-            sdk_events: 0,
-            trace_events: decoded.trace_events,
-            trace_schedules: decoded.trace_schedules,
-            tainted: decoded.tainted,
-            base_ram_digest: decoded.base_ram_digest,
-            state_blob_suffix: &decoded.state_blob_suffix,
-        })
+        let sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &decoded.vm_state,
+                sdk: None,
+                policy: &decoded.policy,
+                control_state: &decoded.control_state,
+                at: decoded.at,
+                sdk_events: 0,
+                trace_events: decoded.trace_events,
+                trace_schedules: decoded.trace_schedules,
+                tainted: decoded.tainted,
+                base_ram_digest: decoded.base_ram_digest,
+                state_blob_suffix: &decoded.state_blob_suffix,
+            },
+            decoded.target_pages_digest,
+        )
         .unwrap();
         let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut destination);
@@ -6167,6 +6195,63 @@ mod tests {
         );
         assert_eq!(run_all(&mut source), run_all(&mut destination));
         assert_eq!(hash(&mut source), hash(&mut destination));
+    }
+
+    #[test]
+    fn sparse_import_rejects_changed_target_page_with_original_sidecar() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let source_base = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xa5);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let artifact = source.export_sparse_snapshot(source_base, target).unwrap();
+        assert_eq!(artifact.pages.len(), 1);
+        let mut changed = artifact.clone();
+        std::sync::Arc::make_mut(&mut changed.pages[0].1)[0] ^= 1;
+        let mut omitted = artifact.clone();
+        omitted.pages.clear();
+        let mut added = artifact.clone();
+        added.pages.push((2, std::sync::Arc::new([0x5a; 4096])));
+        let mut moved = artifact.clone();
+        moved.pages[0].0 = 2;
+        let mut missing_digest = artifact.clone();
+        missing_digest.sidecar[10] &= !4;
+        missing_digest.sidecar.drain(116..148);
+        assert_eq!(
+            super::decode_sparse_sidecar(&missing_digest.sidecar)
+                .unwrap()
+                .target_pages_digest,
+            None
+        );
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_base = snap(&mut destination);
+        destination
+            .import_sparse_snapshot(destination_base, artifact)
+            .unwrap();
+
+        for tampered in [changed, omitted, added, moved, missing_digest] {
+            let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+            hello(&mut destination);
+            let destination_base = snap(&mut destination);
+            let before = destination.snapshot_store_stats();
+            assert!(matches!(
+                destination.import_sparse_snapshot(destination_base, tampered),
+                Err(super::PortableSnapshotError::Malformed(
+                    "sparse target pages differ"
+                ))
+            ));
+            assert_eq!(destination.snapshot_store_stats(), before);
+            assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        }
     }
 
     #[test]
@@ -6546,19 +6631,22 @@ mod tests {
         assert_rejected(corrupted);
 
         let decoded = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
-        let malformed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &decoded.vm_state,
-            sdk: None,
-            policy: &decoded.policy,
-            control_state: &decoded.control_state,
-            at: decoded.at,
-            sdk_events: 1,
-            trace_events: decoded.trace_events,
-            trace_schedules: decoded.trace_schedules,
-            tainted: decoded.tainted,
-            base_ram_digest: decoded.base_ram_digest,
-            state_blob_suffix: &decoded.state_blob_suffix,
-        })
+        let malformed_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &decoded.vm_state,
+                sdk: None,
+                policy: &decoded.policy,
+                control_state: &decoded.control_state,
+                at: decoded.at,
+                sdk_events: 1,
+                trace_events: decoded.trace_events,
+                trace_schedules: decoded.trace_schedules,
+                tainted: decoded.tainted,
+                base_ram_digest: decoded.base_ram_digest,
+                state_blob_suffix: &decoded.state_blob_suffix,
+            },
+            decoded.target_pages_digest,
+        )
         .unwrap();
         let mut sdk_count_without_channel = exported.clone();
         sdk_count_without_channel.sidecar = malformed_sidecar;
@@ -6657,19 +6745,22 @@ mod tests {
         let sidecar = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
         let mut sdk = sidecar.sdk.unwrap();
         sdk.pending_snapshot = !sdk.pending_snapshot;
-        let altered_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &sidecar.vm_state,
-            sdk: Some(&sdk),
-            policy: &sidecar.policy,
-            control_state: &sidecar.control_state,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: sidecar.tainted,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-        })
+        let altered_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &sidecar.vm_state,
+                sdk: Some(&sdk),
+                policy: &sidecar.policy,
+                control_state: &sidecar.control_state,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: sidecar.tainted,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut destination);
@@ -6759,19 +6850,22 @@ mod tests {
         let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
         let mut sdk = sidecar.sdk.unwrap();
         sdk.events[0].2.push(0x5a);
-        let changed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &sidecar.vm_state,
-            sdk: Some(&sdk),
-            policy: &sidecar.policy,
-            control_state: &sidecar.control_state,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: sidecar.tainted,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-        })
+        let changed_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &sidecar.vm_state,
+                sdk: Some(&sdk),
+                policy: &sidecar.policy,
+                control_state: &sidecar.control_state,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: sidecar.tainted,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         let mut sparse_destination = seal_cut_server();
         hello(&mut sparse_destination);
@@ -6870,19 +6964,22 @@ mod tests {
         let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
         let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
         assert!(sidecar.tainted);
-        let cleared_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &sidecar.vm_state,
-            sdk: sidecar.sdk.as_ref(),
-            policy: &sidecar.policy,
-            control_state: &sidecar.control_state,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: false,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-        })
+        let cleared_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &sidecar.vm_state,
+                sdk: sidecar.sdk.as_ref(),
+                policy: &sidecar.policy,
+                control_state: &sidecar.control_state,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: false,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         let mut original_sparse = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut original_sparse);
@@ -7109,19 +7206,22 @@ mod tests {
         let mut state = VmState::decode(&sidecar.vm_state).unwrap();
         mutate(&mut state);
         let vm_state = state.encode().unwrap();
-        let sidecar_bytes = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &vm_state,
-            sdk: sidecar.sdk.as_ref(),
-            policy: &sidecar.policy,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: sidecar.tainted,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-            control_state: &sidecar.control_state,
-        })
+        let sidecar_bytes = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &vm_state,
+                sdk: sidecar.sdk.as_ref(),
+                policy: &sidecar.policy,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: sidecar.tainted,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+                control_state: &sidecar.control_state,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         super::SparsePortableSnapshot {
             pages: exported.pages,

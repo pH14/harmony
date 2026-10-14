@@ -131,11 +131,14 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 7, and the sparse sidecar is version 8;
-older sparse sidecars are rejected. A sparse sidecar does not carry a target RAM
-hash, so independently recomposing both its source-base digest and the outer
-archive identity is outside this snapshot identity check. Use a complete
-portable snapshot when the imported target's whole-state hash must be verified.
+The complete portable format is version 7, and the sparse sidecar is version 9;
+older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
+changed-page numbers and bytes to its sidecar; import verifies them before
+deriving pages or minting a handle. Cache deltas retain their per-page hashes.
+The sidecar does not carry a target RAM hash, so independently recomposing both
+its source-base digest and changed-page digest remains outside this snapshot
+identity check. Use a complete portable snapshot when the imported target's
+whole-state hash must be verified.
 Control seals and imports require VM-state
 hashing so every restored VM record participates in identity. Standalone VMM
 hashing remains optional. When KVM rejects a nonportable XSAVE MXCSR state,
