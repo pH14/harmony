@@ -108,7 +108,8 @@ boundaries on Intel hardware. ELF symbols can restart objdump inside an
 instruction, so the scanner also decodes the bounded path across every
 truncated instruction at a symbol boundary until it rejoins ordinary decoding
 or terminates. An unresolved branch or path fails admission. The section-boundary
-tail check also uses raw dual-mode decoding.
+tail check requires both raw and symbol-aware dual-mode decoding to end on a
+complete instruction.
 
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during
