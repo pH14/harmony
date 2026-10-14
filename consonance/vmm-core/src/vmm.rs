@@ -1845,24 +1845,24 @@ where
             .transpose()
     }
 
-    pub(crate) fn sdk_handler_snapshot(
+    pub(crate) fn sdk_handler_fingerprint(
         &self,
-    ) -> Result<Option<channel::HandlerSnapshot>, channel::ChannelError> {
+    ) -> Result<Option<channel::HandlerFingerprint>, channel::ChannelError> {
         self.sdk
             .as_ref()
-            .map(|sdk| Ok(sdk.env.snapshot_state()?.handler().clone()))
+            .map(|sdk| sdk.env.handler_fingerprint())
             .transpose()
     }
 
     pub(crate) fn verify_sdk_handler_unchanged(
         &self,
-        before: &channel::HandlerSnapshot,
+        before: &channel::HandlerFingerprint,
     ) -> Result<(), channel::ChannelError> {
         self.sdk
             .as_ref()
             .ok_or(channel::ChannelError::Poisoned)?
             .env
-            .verify_handler_unchanged(before)
+            .verify_handler_fingerprint_unchanged(before)
     }
 
     pub fn sdk_snapshot_after_answer(

@@ -283,6 +283,9 @@ pub struct HandlerSnapshot {
     state: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HandlerFingerprint([u8; 32]);
+
 fn check_handler_contract(
     handler: &dyn ServiceHandler,
     identity: &[u8],
@@ -830,6 +833,39 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn verify_handler_unchanged(&self, before: &HandlerSnapshot) -> Result<(), ChannelError> {
         if HandlerSnapshot::capture(&self.handler).as_ref() != Ok(before) {
+            self.poisoned.store(true, Ordering::Release);
+        }
+        self.ensure_healthy()
+    }
+
+    pub fn handler_fingerprint(&self) -> Result<HandlerFingerprint, ChannelError> {
+        self.ensure_healthy()?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"consonance-handler-fingerprint-v1\0");
+        for bytes in [self.handler.identity(), self.handler.configuration()] {
+            hasher.update(
+                u64::try_from(bytes.len())
+                    .map_err(|_| ChannelError::TooLarge)?
+                    .to_le_bytes(),
+            );
+            hasher.update(bytes);
+        }
+        let state = self.handler.snapshot_state()?;
+        hasher.update(
+            u64::try_from(state.len())
+                .map_err(|_| ChannelError::TooLarge)?
+                .to_le_bytes(),
+        );
+        hasher.update(&state);
+        self.ensure_healthy()?;
+        Ok(HandlerFingerprint(hasher.finalize().into()))
+    }
+
+    pub fn verify_handler_fingerprint_unchanged(
+        &self,
+        before: &HandlerFingerprint,
+    ) -> Result<(), ChannelError> {
+        if self.handler_fingerprint().as_ref() != Ok(before) {
             self.poisoned.store(true, Ordering::Release);
         }
         self.ensure_healthy()
