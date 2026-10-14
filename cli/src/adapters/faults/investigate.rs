@@ -82,6 +82,15 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
     let source = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&source)?;
     original.verify(&source)?;
+    if original.bundle.is_some()
+        && let Some(finding) = selection.finding
+    {
+        let recorded_report = report(&source)?;
+        let bug = &recorded_report.bugs[bug_index(finding, recorded_report.bugs.len())?];
+        if !bug.confirmed {
+            return Err("this finding was not confirmed by the saved replay".into());
+        }
+    }
     let recorded = if original.bundle.is_some() {
         Some((
             selected_actions(&source, &original, selection.finding)?,
@@ -509,6 +518,78 @@ mod tests {
     use super::*;
     use faults_workload::FaultOperation;
     use std::num::NonZeroU16;
+
+    #[test]
+    fn replay_does_not_certify_an_unconfirmed_finding() {
+        use faults_workload::{
+            package::{BugSummary, Report},
+            target::{FaultObservations, FaultStop},
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let options = faults_workload::Options {
+            seed: 0,
+            executions: 1,
+            ram_mib: 1024,
+            knobs: Vec::new(),
+            wall_seconds: None,
+            output: dir.path().to_path_buf(),
+            uml_profile: None,
+            root: None,
+        };
+        let mut report = Report::new(
+            "search",
+            &faults_workload::Artifacts {
+                kernel: Vec::new(),
+                initramfs: Vec::new(),
+            },
+            "runner".into(),
+            &options,
+            1,
+        );
+        report.bugs.push(BugSummary {
+            execution: 1,
+            actions: Vec::new(),
+            stop: FaultStop::Assertion { point: 2 },
+            violations: vec!["2".into()],
+            sometimes: Vec::new(),
+            state_hash: String::new(),
+            state_hash_encoding: StateHashEncoding::EngineDigest,
+            confirmed: false,
+            replay: Some(ReplaySummary::from_observation(
+                &FaultObservations::default(),
+                Some([7; 32]),
+                1,
+                1,
+            )),
+        });
+        report.write(dir.path()).unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
+            "outcome":serde_json::to_value(report).unwrap()
+        });
+        record.save(dir.path()).unwrap();
+
+        let error = replay(
+            Selection {
+                run: dir.path().display().to_string(),
+                finding: Some(1),
+            },
+            Destination {
+                out: Some(dir.path().join("child")),
+                name: None,
+            },
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("not confirmed"), "{error}");
+        assert!(!dir.path().join("child").exists());
+    }
     #[test]
     fn finding_anchor_includes_recovery_and_precedes_later_recorded_actions() {
         use faults_workload::{
