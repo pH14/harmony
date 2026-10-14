@@ -28,6 +28,7 @@
 set -euo pipefail
 
 VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux>}
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # KOBJ is vmlinux's build tree.
 KOBJ=$(dirname "$VMLINUX")
@@ -403,11 +404,16 @@ command -v objdump >/dev/null 2>&1 || {
     echo "FAIL: objdump not found (binutils required)" >&2
     exit 1
 }
+command -v python3 >/dev/null 2>&1 || {
+    echo "FAIL: python3 not found (ELF coverage check required)" >&2
+    exit 1
+}
 
 require_code_sections "$VMLINUX" vmlinux
 for artifact in "${RAW_ARTIFACTS[@]}"; do
     require_code_sections "${artifact#*=}" "${artifact%%=*}"
 done
+python3 "$SCRIPT_DIR/scan-unclaimed-opcodes.py" "vmlinux=$VMLINUX" "${RAW_ARTIFACTS[@]}"
 
 FOUND=$(all_sites)
 RNG_FOUND=$(all_sites '^(rdrand|rdseed)$')
