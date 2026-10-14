@@ -26,6 +26,9 @@ every back-edge would cost more than the loop body.
 When `/dev/harmony` does not exist, the thread stops exchanging. Any other
 transport error or an invalid threshold aborts the process, because continuing
 would leave a loop that never exits to the VM.
+Seeded entropy requests abort on device or transport failure, including a missing
+device. Zero is a valid seeded entropy word and is returned only when the device
+successfully supplies eight zero bytes.
 
 The library matches the Antithesis libvoidstar ABI:
 

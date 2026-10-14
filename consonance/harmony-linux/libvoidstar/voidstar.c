@@ -157,19 +157,21 @@ uint64_t fuzz_get_random(void)
     size_t index;
 
     if (device_lock() != 0)
-        return 0;
+        abort();
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
-    if (fd < 0)
-        goto out;
+    if (fd < 0) {
+        device_unlock();
+        abort();
+    }
     if (write_all(fd, &request, sizeof(request)) != 0 ||
         read_all(fd, bytes, sizeof(bytes)) != 0) {
         (void)HARMONY_CLOSE(fd);
-        goto out;
+        device_unlock();
+        abort();
     }
     (void)HARMONY_CLOSE(fd);
     for (index = 0; index < sizeof(bytes); index++)
         value |= (uint64_t)bytes[index] << (index * CHAR_BIT);
-out:
     device_unlock();
     return value;
 }
