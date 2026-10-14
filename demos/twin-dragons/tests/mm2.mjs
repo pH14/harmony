@@ -75,6 +75,7 @@ assert.equal(await page.locator("#playthrough").isVisible(), true, "The ROM page
 const chooser = page.waitForEvent("filechooser");
 await page.locator("#rom-drop").click();
 await (await chooser).setFiles(path);
+await page.locator("#level-grid:not([hidden]) button").first().click({ timeout: 60000 });
 const drawn = await (await page.waitForFunction(() => {
   const strip = document.querySelector('.level-overview[data-map="0"]');
   if (document.documentElement.dataset.game !== "mega-man-2" || !strip || !(Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 0)) return null;

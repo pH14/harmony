@@ -3343,7 +3343,10 @@ function youtubeApi() {
     document.head.append(script);
   }));
 }
-$("level-picker").addEventListener("close", closePlaythrough);
+$("level-picker").addEventListener("close", () => {
+  closePlaythrough();
+  if (!worker) startSearch();
+});
 async function acceptRom(choice, file, play) {
   const bytes = new Uint8Array(await file.arrayBuffer());
   $("rom-message").hidden = false;
@@ -3366,4 +3369,9 @@ createEngine(base, game, engineInputs)
     if (state) selectState(state, true).catch(fail);
   })
   .catch(fail);
-startSearch();
+const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
+if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
+else {
+  askedForRom = true;
+  $("new-search").onclick();
+}

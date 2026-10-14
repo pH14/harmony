@@ -72,6 +72,7 @@ assert.equal(await page.locator("#playthrough").isVisible(), true, "The ROM page
 const chooser = page.waitForEvent("filechooser");
 await page.locator("#rom-drop").click();
 await (await chooser).setFiles(path);
+await page.locator("#level-grid:not([hidden]) button").first().click({ timeout: 60000 });
 await page.mouse.move(2, 890);
 await page.waitForFunction(() => document.documentElement.dataset.game === "metroid" && Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 200, null, { timeout: 60000 });
 const strip = page.locator('.level-overview[data-map="0"]'), view = page.locator('.area-map[data-map="0"]');

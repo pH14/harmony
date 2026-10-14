@@ -6,7 +6,10 @@ parent selector to search it. The site plays three games: the NES game Twin
 Dragons on QuickNES, the Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and
 Super Mario Bros., Mega Man 2 and Metroid on QuickNES from ROMs the visitor
 supplies. The `game` URL
-parameter picks the game, and the level selector switches between them. Each
+parameter picks the game, and the level selector switches between them. The
+page opens the level selector and starts searching once a level is chosen, or
+from the first level if the selector is closed. A `level` URL parameter with a
+level id starts that level's search at once. Each
 game has one map per level. All execution happens on the visitor's computer,
 so hosting needs only static files.
 

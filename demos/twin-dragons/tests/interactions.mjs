@@ -27,7 +27,7 @@ async function open(options) {
       }
     };
   }, TOUR_KEY);
-  await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?workers=1&pace=0`);
+  await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?level=0&workers=1&pace=0`);
   await page.waitForFunction(() => window.tdReady && !document.querySelector('#pause').disabled);
   return page;
 }

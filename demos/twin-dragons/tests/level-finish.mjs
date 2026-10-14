@@ -27,7 +27,7 @@ async function open(query) {
   return { page, errors };
 }
 
-for (const query of ["?pace=300", "?game=tobu-tobu-girl&pace=0"]) {
+for (const query of ["?level=0&pace=300", "?game=tobu-tobu-girl&level=0&pace=0"]) {
   const { page, errors } = await open(query);
   await page.waitForFunction(() => document.querySelector('.map-row[data-current="true"]')?.dataset.map === "1", null, { timeout: 120000 });
   const switched = await page.evaluate(() => performance.now());
@@ -40,7 +40,7 @@ for (const query of ["?pace=300", "?game=tobu-tobu-girl&pace=0"]) {
 }
 console.log("The map moves to the next level as soon as the search clears the shown one.");
 
-const { page, errors } = await open("?game=tobu-tobu-girl&pace=0");
+const { page, errors } = await open("?game=tobu-tobu-girl&level=0&pace=0");
 const strip = page.locator('.level-overview[data-map="0"]');
 await strip.waitFor();
 await page.waitForFunction(() => Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 100, null, { timeout: 60000 });
@@ -56,7 +56,7 @@ console.log("Tobu Tobu Girl shows a whole-level strip that moves the view.");
 
 const wide = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 await wide.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
-await wide.goto(`${url}/?pace=300`);
+await wide.goto(`${url}/?level=0&pace=300`);
 const wideStrip = wide.locator('.level-overview[data-map="0"]');
 await wideStrip.waitFor();
 await wide.waitForFunction(() => Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 100, null, { timeout: 60000 });

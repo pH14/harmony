@@ -203,7 +203,7 @@ async function measurePlayback() {
   );
 }
 try {
-  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?workers=1&pace=0`);
+  await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?level=0&workers=1&pace=0`);
   await page.waitForFunction(
     () =>
       document.querySelector("#verification")?.textContent === "Original game",
