@@ -31,6 +31,9 @@ pub enum BackendError {
     #[error("non-init MXCSR without SSE xstate presence is not portable across KVM hosts")]
     NonportableXsaveMxcsr,
 
+    #[error("AMD KVM cannot safely capture or continue a running 32-bit PAE guest")]
+    AmdPaeSnapshotUnsafe,
+
     #[error(
         "ID register {encoding:#06x} requests {requested:#018x}, above the host's {host:#018x}"
     )]

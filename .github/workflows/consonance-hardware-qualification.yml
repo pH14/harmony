@@ -530,6 +530,9 @@ jobs:
             "MMIO_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/mmio-full-vmm" || failed=1
           run_exact vmm-core x86_cpu_snapshots live_kvm::pae_pdpt_reload_preserves_snapshot_continuation pae-reload \
             "PAE_RELOAD_REPORT_DIR=$PWD/snapshot-report/pae-reload" || failed=1
+          if [[ "$CPU_VENDOR" == AuthenticAMD ]]; then
+            run_exact vmm-core x86_cpu_snapshots live_kvm::amd_pae_capture_refuses_and_retires_public_paths amd-pae-refusal || failed=1
+          fi
           if [[ "$CPU_VENDOR" == GenuineIntel ]]; then
             run_exact vmm-core x86_cpu_snapshots live_kvm::pae_cached_pdptrs_survive_full_vmm_snapshot_restore pae-full-vmm || failed=1
           fi
