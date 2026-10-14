@@ -1341,7 +1341,14 @@ fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
 }
 
 fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
-    if path.canonicalize()?.as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT {
+    let resolved = path.canonicalize()?;
+    if path
+        .as_os_str()
+        .as_bytes()
+        .len()
+        .max(resolved.as_os_str().as_bytes().len())
+        > MAX_PORTABLE_STAGING_ROOT
+    {
         return Err(ImageError::Tar("archive staging path is too long".into()));
     }
     Ok(())
@@ -3702,6 +3709,32 @@ mod tests {
             Err(ImageError::Tar(_))
         ));
         assert_eq!(std::fs::read_dir(actual).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn staging_root_limit_also_uses_spelled_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("x")).unwrap();
+        let mut padded = dir.path().to_path_buf();
+        for _ in 0..60 {
+            padded.push("x");
+            padded.push("..");
+        }
+        assert!(padded.as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT);
+        assert!(
+            padded.canonicalize().unwrap().as_os_str().as_bytes().len()
+                <= MAX_PORTABLE_STAGING_ROOT
+        );
+        let archive = write_archive(
+            dir.path(),
+            "short-via-padding.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        assert!(matches!(
+            extract_checked(&archive, &padded),
+            Err(ImageError::Tar(_))
+        ));
+        assert!(!dir.path().join("file").exists());
     }
 
     #[test]
