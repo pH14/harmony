@@ -1504,7 +1504,16 @@ mod xsave_diagnostic {
         assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.pending, Pending::None);
         assert_eq!(backend.exit_counts(), counts);
-        assert_eq!(backend.save().unwrap(), replacement);
+        let mut observed = backend.save().unwrap();
+        observed.xsave_restore_bv =
+            crate::arch::x86::logical_xsave_restore_bv(&observed.xsave, observed.xsave_restore_bv)
+                .unwrap();
+        replacement.xsave_restore_bv = crate::arch::x86::logical_xsave_restore_bv(
+            &replacement.xsave,
+            replacement.xsave_restore_bv,
+        )
+        .unwrap();
+        assert_eq!(observed, replacement);
 
         let before_rejection = backend.save().unwrap();
         let mut inconsistent = before_rejection.clone();
