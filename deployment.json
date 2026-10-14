@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "1ae9f4053",
+    "commit": "0ba3228c2",
     "build": "locally verified static build",
-    "checks": "Runtime and production build, the full browser suite, core and campaign oracles and unit tests on the source branch, and the Famidash, Super Mario Bros. and browser checks in Chrome on this build.",
-    "asset_manifest_sha256": "fc077a5f67e1f4377f06bf801fc13b3decf4d7eb36526372cf8dd1e733ccecd3"
+    "checks": "npm test 61/61; browser famidash, arrow-pan, smb, levels-browser, interactions, room-cameras, level-finish, browser",
+    "asset_manifest_sha256": "88208529b8dd267ac91173e4589499ae811443c62bcf8a7f8beec9479f877a86"
   }
 }
