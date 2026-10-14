@@ -280,7 +280,7 @@ mod tests {
             .unwrap();
         record.store(dir.path(), "uml/rootfs", b"rootfs").unwrap();
         let profile = serde_json::json!({
-            "schema": 2,
+            "schema": 4,
             "architecture": std::env::consts::ARCH,
             "kernel_version": "test",
             "userspace": "seccomp",
