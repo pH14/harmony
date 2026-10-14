@@ -261,7 +261,8 @@ are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
 the search report's stream digest and runs from the verified bytes. Its kernel
 and initramfs are checked against the source recording when finally loaded,
-before inheritance can copy a later version of either file.
+before inheritance can copy a later version of either file. Each replay saves
+the same verified stream bytes, so a completed replay can itself be replayed.
 
 ## Developer qualification
 

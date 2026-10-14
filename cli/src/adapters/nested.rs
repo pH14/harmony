@@ -35,6 +35,23 @@ fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u
     Ok((read("kernel")?, read("initramfs")?))
 }
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn inherit_replay_stream(
+    source_path: &Path,
+    source: &Manifest,
+    out: &Path,
+    stream: &[u8],
+) -> Result<Manifest> {
+    use std::io::Write;
+    let child = source.inherit(source_path, out, "replay")?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out.join("stream.jsonl"))?
+        .write_all(stream)?;
+    Ok(child)
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn verified_report(
     path: &Path,
@@ -213,8 +230,8 @@ fn execute(mut request: Request) -> Result<u8> {
         return Ok(0);
     }
     let out = request.destination.create()?;
-    let mut m = if let Some((path, m, _)) = &original {
-        m.inherit(path, &out, "replay")?
+    let mut m = if let Some((path, m, stream)) = &original {
+        inherit_replay_stream(path, m, &out, stream)?
     } else {
         Manifest::new(request.config, "search")?
     };
@@ -261,6 +278,46 @@ fn execute(mut request: Request) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replay_child_retains_the_verified_stream_for_another_replay() {
+        let source = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let grandchild = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        let stream = b"recorded nested campaign";
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.payload = serde_json::json!({"stream_sha256":crate::runtime::digest(stream)});
+        manifest.store(source.path(), "kernel", b"kernel").unwrap();
+        manifest
+            .store(source.path(), "initramfs", b"initramfs")
+            .unwrap();
+        manifest.save(source.path()).unwrap();
+        fs::write(source.path().join("stream.jsonl"), stream).unwrap();
+
+        let source_manifest = Manifest::read(source.path()).unwrap();
+        source_manifest.verify(source.path()).unwrap();
+        let first = verified_replay_stream(source.path(), &source_manifest).unwrap();
+        fs::write(source.path().join("stream.jsonl"), b"changed campaign").unwrap();
+        let mut child_manifest =
+            inherit_replay_stream(source.path(), &source_manifest, child.path(), &first).unwrap();
+        child_manifest.payload = source_manifest.payload.clone();
+        child_manifest.status = "complete".into();
+        child_manifest.save(child.path()).unwrap();
+
+        let saved_child = Manifest::read(child.path()).unwrap();
+        saved_child.verify(child.path()).unwrap();
+        let second = verified_replay_stream(child.path(), &saved_child).unwrap();
+        let grandchild_manifest =
+            inherit_replay_stream(child.path(), &saved_child, grandchild.path(), &second).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(grandchild_manifest.mode, "replay");
+        assert_eq!(
+            fs::read(grandchild.path().join("stream.jsonl")).unwrap(),
+            stream
+        );
+    }
 
     #[test]
     fn nested_replay_refuses_a_temporary_source_artifact_swap() {
