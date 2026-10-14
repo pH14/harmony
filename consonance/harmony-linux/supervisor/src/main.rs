@@ -1529,6 +1529,7 @@ mod runtime {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support process spawning")]
         fn replacing_a_completed_child_reports_its_original_exit_status() {
             let mut child = Command::new("/bin/sh")
                 .args(["-c", "exit 37"])
