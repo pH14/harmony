@@ -22,6 +22,7 @@ static int reenter_during_exchange;
 static int reenter_during_entropy;
 static int entropy_failure;
 static int zero_entropy_response;
+static int json_failure;
 
 bool notify_coverage(size_t edge);
 
@@ -30,6 +31,10 @@ static int mock_open(const char *path, int flags)
     assert(strcmp(path, "/dev/harmony") == 0);
     assert((flags & O_CLOEXEC) != 0);
     if (entropy_failure == 1 && (flags & O_ACCMODE) == O_RDWR) {
+        errno = EIO;
+        return -1;
+    }
+    if (json_failure == 1 && (flags & O_ACCMODE) == O_WRONLY) {
         errno = EIO;
         return -1;
     }
@@ -61,6 +66,12 @@ static ssize_t mock_write(int fd, const void *data, size_t size)
         coverage_requested = 1;
         return (ssize_t)size;
     }
+    if (json_failure == 2) {
+        errno = EIO;
+        return -1;
+    }
+    if (json_failure == 3)
+        return 0;
     assert(captured_len + size <= sizeof(captured));
     memcpy(captured + captured_len, data, size);
     captured_len += size;
@@ -158,6 +169,42 @@ static void assert_entropy_failure_aborts(int failure)
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
 }
 
+static void assert_json_failure_aborts(int failure)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        static const char event[] = "{\"antithesis_assert\":{}}";
+        struct rlimit limit = {0, 0};
+        assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+        json_failure = failure;
+        fuzz_json_data(event, sizeof(event) - 1);
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void assert_invalid_json_aborts(bool null_data)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        static const char event[] = "{\"antithesis_assert\":{}}";
+        struct rlimit limit = {0, 0};
+        assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+        if (null_data)
+            fuzz_json_data(NULL, 1);
+        else
+            fuzz_json_data(event, SIZE_MAX);
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
 int main(void)
 {
     static const char event[] = "{\"antithesis_assert\":{}}";
@@ -246,5 +293,10 @@ int main(void)
     assert_entropy_failure_aborts(3);
     assert_entropy_failure_aborts(4);
     assert_entropy_failure_aborts(5);
+    assert_json_failure_aborts(1);
+    assert_json_failure_aborts(2);
+    assert_json_failure_aborts(3);
+    assert_invalid_json_aborts(true);
+    assert_invalid_json_aborts(false);
     return 0;
 }
