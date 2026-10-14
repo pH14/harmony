@@ -263,6 +263,8 @@ the search report's stream digest and runs from the verified bytes. Its kernel
 and initramfs are checked against the source recording when finally loaded,
 before inheritance can copy a later version of either file. Each replay saves
 the same verified stream bytes, so a completed replay can itself be replayed.
+Failed or incomplete saved campaigns cannot become replay sources, even if a
+producer wrote a report before the failure.
 
 ## Developer qualification
 
