@@ -284,7 +284,9 @@ in-memory result before recording its outcome. A replaced or missing report
 cannot become a completed search, replay, or branch result. Command replay
 and standalone command runs likewise bind the record built by the execution
 producer before completion.
-UML also pins the exact physical processor identity selected by the fastest
+Derived runs also verify the bytes copied from each source artifact against its
+recorded hash, so a replacement between source verification and inheritance is
+rejected. UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
 same processor. Standalone command runs and replays bind that saved identity
 before launching the guest. KVM and HVF application replay compare final state,
