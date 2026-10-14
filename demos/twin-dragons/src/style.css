@@ -1158,7 +1158,9 @@ dialog h2 {
 #level-picker { width: min(800px, calc(100% - 32px)); max-width: 800px; max-height: calc(100dvh - 32px); padding: 28px; border-radius: 16px; overscroll-behavior: contain; animation: sheet-in .2s ease-out; }
 .level-picker-heading h2 { margin: 0; font-size: 23px; }
 .level-picker-heading h2 { margin-bottom: 20px; }
-.game-choice { display: flex; margin: 0 0 16px; }
+.game-choice { display: grid; gap: 12px; margin: 0 0 16px; }
+.game-group h3 { margin: 0 0 6px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.game-group .segments { display: flex; }
 .game-choice button { flex: 1; font-size: 13px; padding: 9px 10px; }
 .rom-message { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
 .rom-panel h3 { margin: 4px 0 12px; font-size: 17px; font-weight: 600; }
@@ -1366,7 +1368,7 @@ dialog h2 {
 .search-details .metrics { flex-direction: column; gap: 6px; margin-top: 6px; }
 .timeline-collapsed .search-details { display: none; }
 .search-speed { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; color: var(--muted); font-size: 10px; }
-.search-speed > span:first-child { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; white-space: nowrap; }
+.search-speed > span:first-child { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; column-gap: 8px; }
 .search-speed output { color: var(--text); font: 11px ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .search-speed input { width: 100%; margin: 0; accent-color: var(--accent); }
 .search-speed-ends { display: flex; justify-content: space-between; font-size: 9px; opacity: .8; }

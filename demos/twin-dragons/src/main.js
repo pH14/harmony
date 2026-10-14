@@ -56,7 +56,7 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="segments game-choice" role="group" aria-label="Game"></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="game-choice"><section class="game-group" aria-labelledby="homebrew-title"><h3 id="homebrew-title">Homebrew</h3><div id="homebrew-games" class="segments" role="group" aria-labelledby="homebrew-title"></div></section><section class="game-group" aria-labelledby="byo-rom-title"><h3 id="byo-rom-title">Bring Your Own ROM</h3><div id="rom-games" class="segments" role="group" aria-labelledby="byo-rom-title"></div></section></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
   worker,
@@ -3194,7 +3194,7 @@ $("tour-open").onclick = beginTour;
 $("new-search").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
-  $("game-choice").replaceChildren(...[...GAMES.values()].map((choice) => {
+  const buttons = [...GAMES.values()].map((choice) => {
     const button = document.createElement("button");
     button.textContent = choice.title;
     button.setAttribute("aria-pressed", choice === game);
@@ -3209,7 +3209,10 @@ $("new-search").onclick = () => {
       else play();
     };
     return button;
-  }));
+  });
+  const games = [...GAMES.values()];
+  $("homebrew-games").replaceChildren(...buttons.filter((_, i) => !games[i].rom.upload));
+  $("rom-games").replaceChildren(...buttons.filter((_, i) => games[i].rom.upload));
   const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
   if (shown) showRomPanel(shown, () => location.reload());
   else showLevelGrid();
@@ -3246,7 +3249,7 @@ $("new-search").onclick = () => {
 $("close-level-picker").onclick = () => $("level-picker").close();
 let playthroughPlayer = null;
 function pressGame(choice) {
-  for (const button of $("game-choice").children) button.setAttribute("aria-pressed", button.textContent === choice.title);
+  for (const button of $("game-choice").querySelectorAll("button")) button.setAttribute("aria-pressed", button.textContent === choice.title);
 }
 function showLevelGrid() {
   pressGame(game);
