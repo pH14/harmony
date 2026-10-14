@@ -201,7 +201,9 @@ uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command throug
 entrypoint script receive explicit hashes; all workload files remain bound by
 the rootfs segment. PostgreSQL's post-preparation source reads temporarily
 grant the staging user read/search access and restore the image modes afterward,
-so their hashes do not depend on host privilege.
+so their hashes do not depend on host privilege. These reads require resolved
+source paths to remain inside the staged rootfs, preventing image symlinks from
+hashing host files.
 
 Run `workloads/guest-images/verify-prepared-admission.py inventory DUMP
 --output NEW_REPORT_DIR` from the repository root for a candidate inventory. GNU
