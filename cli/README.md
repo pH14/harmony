@@ -270,7 +270,8 @@ an interrupted report write does not invalidate an earlier checkpoint.
 After a faults package returns, completion compares the saved report with the
 in-memory result before recording its outcome. A replaced or missing report
 cannot become a completed search, replay, or branch result. Command replay
-likewise keeps the outcome it read for comparison through completion.
+and standalone command runs likewise bind the record built by the execution
+producer before completion.
 UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
 same processor. Standalone command runs and replays bind that saved identity

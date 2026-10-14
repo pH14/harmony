@@ -15,7 +15,7 @@ pub fn execute(
     initramfs: &[u8],
     out: &Path,
     console: bool,
-) -> Result<bool> {
+) -> Result<(bool, serde_json::Value)> {
     let cmdline = format!("{} {}", runner::cmdline(), knobs.join(" "));
     let spec = runner::RunSpec {
         kernel,
@@ -86,7 +86,7 @@ pub fn execute(
     if rc.is_none() || parse_supervisor_failure_rc(&outcome.serial).is_some() {
         return Err(format!("guest application did not start or its supervisor failed; inspect {}/serial.log (startup {:?}, supervisor {:?})", out.display(), parse_startup_rc(&outcome.serial), parse_supervisor_failure_rc(&outcome.serial)).into());
     }
-    Ok(rc == Some(0))
+    Ok((rc == Some(0), record))
 }
 
 fn manifest_launch(out: &Path, identity: &serde_json::Value) -> Result<uml::Launch> {
