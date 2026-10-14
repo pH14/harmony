@@ -118,6 +118,9 @@ prefix while GNU tar ignores it and extracts a different name. Exact GNU
 headers may use the early bytes for timestamps and remain accepted, but their
 sparse-map, extension, and real-size fields must be empty: macOS tar can apply
 them even to ordinary files while GNU tar ignores them.
+Tar timestamps must be valid nonnegative numbers, even though the staged rootfs
+does not preserve them: macOS and GNU tar disagree on malformed or negative
+timestamp headers.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
 reports failure despite both tools writing the member bytes.
