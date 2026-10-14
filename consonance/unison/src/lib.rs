@@ -330,7 +330,7 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
             ));
         }
     }
-    let (mut observation_a, mut observation_b) = probe(hi)?;
+    let (observation_a, observation_b) = probe(hi)?;
     if observation_a == observation_b {
         return Err(SubjectError::NoDivergence { hi });
     }
@@ -340,16 +340,15 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
             return Err(SubjectError::DivergesAtLo { lo });
         }
     }
-    let (mut lo, mut hi) = (lo, hi);
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        let (ha, hb) = probe(mid)?;
-        if ha == hb {
-            lo = mid;
-        } else {
-            hi = mid;
-            observation_a = ha;
-            observation_b = hb;
+    for target in lo + 1..hi {
+        let (candidate_a, candidate_b) = probe(target)?;
+        if candidate_a != candidate_b {
+            return Ok(DivergencePoint::from_observations(
+                target,
+                candidate_a,
+                candidate_b,
+                runs_executed,
+            ));
         }
     }
     Ok(DivergencePoint::from_observations(

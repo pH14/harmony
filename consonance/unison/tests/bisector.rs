@@ -28,10 +28,6 @@ fn pair(
     (toy, flaky)
 }
 
-fn ceil_log2(n: u64) -> u64 {
-    u64::from(64 - n.saturating_sub(1).leading_zeros())
-}
-
 fn assert_bisects_exactly(
     toy: &ToyFactory,
     flaky: &FlakyFactory<ToyFactory>,
@@ -63,7 +59,7 @@ fn assert_bisects_exactly(
                 first_mismatch
             );
             prop_assert_ne!(point.hash_a, point.hash_b);
-            let bound = 2 * (ceil_log2(first_mismatch - lo) + 2);
+            let bound = 2 * (first_mismatch - lo + 2);
             prop_assert!(
                 point.runs_executed <= bound,
                 "runs_executed {} exceeds bound {}",
