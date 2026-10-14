@@ -48,13 +48,16 @@ table, and stops at 99 until the level is complete.
 ## Declared workload
 
 Setup presses A at the title and at the menu to reach level select, presses A
-again to start Stereo Madness and waits 90 frames, 1,141 frames in all. The
-genesis check requires gameplay in level 0.
+again to start Stereo Madness and waits 90 frames, 1,141 frames in all. A
+request's `stage` starts another level instead: setup writes the level number
+at level select before the last A press, as the browser demo does, and the
+level is part of the emulator identity. The genesis check requires gameplay at
+0 percent in the chosen level.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
-6 to 40. A death bit is a terminal death. The search plays the 22 main levels
-in order, and the objective is game state 3 in Dash, level 21. Frames outside
-gameplay are not archived.
+6 to 40. A death bit is a terminal death. The search plays the main levels in
+order from the starting level, and the objective is game state 3 in Dash,
+level 21. Frames outside gameplay are not archived.
 
 Game state 3 in an earlier level ends the action at that frame. The target
 then presses buttons to start the next level: A once every 16 frames until the
@@ -68,10 +71,12 @@ The archive key is the level, world x and y, game mode, gravity, size, dual
 mode and the sign of the vertical velocity. The place is the level and the
 32 × 16-pixel cell with the mode fields, progress is the level and the
 256-pixel band of world x, and the identity is the vertical motion. Each place
-keeps one entry, the one furthest right. The milestones are the levels
-cleared, the percent of the level being played, the finished game and a
-death. The progress watermark orders levels cleared, then percent, then world
-x.
+keeps one entry, the one furthest left. The level scrolls at a fixed speed, so
+x is also time, and a later arrival in the same cell has had fewer frames to
+line up the next jump. Many later arrivals are already doomed whatever the
+player presses. The milestones are the levels cleared, the percent of the
+level being played, the finished game and a death. The progress watermark
+orders levels cleared, then percent, then world x.
 
 ## Running
 
@@ -89,6 +94,23 @@ cargo run --release --manifest-path workloads/nes/Cargo.toml --bin nes-eval -- r
 
 Seeds 1 to 5 clear Stereo Madness in 6,800 to 9,000 executions, about 2
 seconds on 8 workers, and each victory witness replays. `nes-film` accepts
-`--game famidash` and renders the witness. The browser demo in
+`--game famidash` with `--level` for a run started at another level, and
+renders the witness.
+
+`famidash-probe ROM LEVEL INPUT.json` replays an input from a level's start and
+prints the endpoint. With `trace` it prints the decoded state every frame. With
+`frontier FRAMES [OUT.json]` it searches every press or release per frame from
+the endpoint, keeping one branch per vertical position, velocity, mode and held
+button, and reports how many branches stay alive. "every continuation dies"
+means the endpoint is already lost whatever the player presses. `OUT.json`
+receives a surviving or completing input. Above 4,096 branches it keeps an
+even spread of them. With `timing STRIDE HORIZON SAMPLES` it replays the input
+and, every STRIDE frames, draws SAMPLES random inputs of HORIZON frames from
+three vocabularies: the search's taps and holds, taps of 1 to 4 frames, and
+one random press or release per frame. It prints how many of each stay alive,
+and how many one- and two-frame shifts of a press boundary in the input keep
+it alive. `HARMONY_QUICKNES_CORE` names the core.
+
+The browser demo in
 `demos/twin-dragons` runs the same workload and starts later levels by writing
 the level number at level select.

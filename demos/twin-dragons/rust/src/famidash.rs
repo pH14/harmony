@@ -86,6 +86,7 @@ impl BrowserGame for Famidash {
             rom,
             identity,
             identity_sha256,
+            0,
             Box::new(move || {
                 FamidashTarget::from_power_on(
                     JsMachine::new::<Self>(core).map_err(|error| error.to_string())?,

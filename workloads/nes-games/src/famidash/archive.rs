@@ -17,8 +17,9 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "famidash_level_band_256_cell_32x16_mode_motion_v2";
-pub const REPLACEMENT_IDENTIFIER: &str = "furthest_then_fewest_frames";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "famidash_level_band_256_cell_32x16_mode_motion_earliest_v3";
+pub const REPLACEMENT_IDENTIFIER: &str = "earliest_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_tap_1_4_or_hold_6_40_v1";
 
 const CELL_WIDTH: i32 = 32;
@@ -74,7 +75,7 @@ impl ArchiveKey for FamidashArchiveKey {
     }
 
     fn preference_cmp(self, _preference: usize, other: Self) -> Ordering {
-        self.x.cmp(&other.x)
+        other.x.cmp(&self.x)
     }
 
     type Lineage = ();
@@ -280,11 +281,11 @@ mod tests {
     }
 
     #[test]
-    fn the_furthest_state_in_a_cell_is_preferred() {
+    fn the_earliest_state_in_a_cell_is_preferred() {
         let near = archive_key(state(1_000, 897, 0)).unwrap();
         let far = archive_key(state(1_020, 897, 0)).unwrap();
         assert_eq!(near.place(), far.place());
-        assert_eq!(far.preference_cmp(0, near), Ordering::Greater);
+        assert_eq!(near.preference_cmp(0, far), Ordering::Greater);
     }
 
     #[test]

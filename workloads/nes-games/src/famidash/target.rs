@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     famidash::progress,
-    nes_backend::NesBackend,
+    nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
 };
 
@@ -170,11 +170,44 @@ pub struct FamidashTarget<M: NesBackend<Vec<u8>>> {
     execution_work: u64,
 }
 
+impl<M: NesBackend<Vec<u8>> + NesMemory> FamidashTarget<M> {
+    pub fn from_power_on_at_level(mut machine: M, level: u8) -> Result<Self, MachineError> {
+        if level >= progress::LEVEL_COUNT {
+            return Err(MachineError::Backend(format!(
+                "Famidash has no level {level}"
+            )));
+        }
+        let power_on = machine.snapshot()?;
+        machine.branch(power_on, &nes::reproducer(&level_select_tape()))?;
+        run_setup(&mut machine)?;
+        machine.drop_snapshot(power_on)?;
+        machine.poke_wram(LEVEL, level);
+        let level_select = machine.snapshot()?;
+        machine.branch(level_select, &nes::reproducer(&start_level_tape()))?;
+        run_setup(&mut machine)?;
+        machine.drop_snapshot(level_select)?;
+        Self::from_machine(machine, level)
+    }
+}
+
+fn run_setup<M: Machine>(machine: &mut M) -> Result<(), MachineError> {
+    if matches!(
+        machine.run(StopConditions::default(), None)?,
+        machine::StopReason::Quiescent { .. }
+    ) {
+        Ok(())
+    } else {
+        Err(MachineError::Backend(
+            "Famidash setup did not quiesce".to_owned(),
+        ))
+    }
+}
+
 impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
-    pub fn from_machine(mut machine: M) -> Result<Self, MachineError> {
+    pub fn from_machine(mut machine: M, level: u8) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
         let state = decode_state(&wram)?;
-        validate_genesis(state)?;
+        validate_genesis(state, level)?;
         let genesis = machine.snapshot()?;
         let observation = FamidashObservations {
             frame_count: 0,
@@ -199,14 +232,9 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
     pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
         machine.branch(power_on, &nes::reproducer(&setup_tape()))?;
-        let run = machine.run(StopConditions::default(), None)?;
-        if !matches!(run, machine::StopReason::Quiescent { .. }) {
-            return Err(MachineError::Backend(
-                "Famidash setup did not quiesce".to_owned(),
-            ));
-        }
+        run_setup(&mut machine)?;
         machine.drop_snapshot(power_on)?;
-        Self::from_machine(machine)
+        Self::from_machine(machine, 0)
     }
 
     #[must_use]
@@ -442,12 +470,12 @@ impl FamidashTarget<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        level: u8,
     ) -> Result<Self, MachineError> {
-        Self::from_power_on(QuickNesMachine::from_rom_bytes(
-            rom,
-            core_path,
-            core_sha256,
-        )?)
+        Self::from_power_on_at_level(
+            QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
+            level,
+        )
     }
 
     pub fn render_input(
@@ -755,10 +783,16 @@ pub fn level_select_tape() -> Vec<ButtonChord> {
 }
 
 #[must_use]
+pub fn start_level_tape() -> Vec<ButtonChord> {
+    let mut tape = vec![ButtonChord::new(A_BUTTON, 1)];
+    wait(&mut tape, 90);
+    tape
+}
+
+#[must_use]
 pub fn setup_tape() -> Vec<ButtonChord> {
     let mut tape = level_select_tape();
-    tape.push(ButtonChord::new(A_BUTTON, 1));
-    wait(&mut tape, 90);
+    tape.extend(start_level_tape());
     tape
 }
 
@@ -824,12 +858,12 @@ fn read_wram<M: Machine>(machine: &M) -> Result<[u8; WRAM_SIZE], MachineError> {
     })
 }
 
-fn validate_genesis(state: FamidashMechanicalState) -> Result<(), MachineError> {
-    if state.gameplay.is_some() && state.level == 0 {
+fn validate_genesis(state: FamidashMechanicalState, level: u8) -> Result<(), MachineError> {
+    if state.gameplay.is_some() && state.level == level && state.percent() == 0 {
         Ok(())
     } else {
         Err(MachineError::Backend(format!(
-            "Famidash setup did not reach Stereo Madness gameplay: {state:?}"
+            "Famidash setup did not reach level {level} gameplay: {state:?}"
         )))
     }
 }
@@ -929,14 +963,15 @@ mod tests {
     }
 
     #[test]
-    fn genesis_requires_stereo_madness_gameplay() {
-        assert!(validate_genesis(decode_state(&playing_wram()).unwrap()).is_ok());
+    fn genesis_requires_gameplay_in_the_selected_level() {
+        assert!(validate_genesis(decode_state(&playing_wram()).unwrap(), 0).is_ok());
         let mut wram = playing_wram();
         wram[LEVEL] = 1;
-        assert!(validate_genesis(decode_state(&wram).unwrap()).is_err());
+        assert!(validate_genesis(decode_state(&wram).unwrap(), 0).is_err());
+        assert!(validate_genesis(decode_state(&wram).unwrap(), 1).is_ok());
         wram[LEVEL] = 0;
         wram[GAME_STATE] = GAME_STATE_LEVEL_SELECT;
-        assert!(validate_genesis(decode_state(&wram).unwrap()).is_err());
+        assert!(validate_genesis(decode_state(&wram).unwrap(), 0).is_err());
     }
 
     #[test]

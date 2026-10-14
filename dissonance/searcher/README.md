@@ -341,7 +341,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_pace_yield_cell_recent_count_decay_v1`, and the stream header names
+One selector exists, `tier_cascade_pace_yield_cell_recent_count_decay_v1`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
@@ -363,7 +363,12 @@ yields of the rank below over the same span, the halvings apply while
 different tier from the one recorded when the run began, or no tier was
 recorded, `Nd` and `Ny` are that tier's total draws and yields. A leading tier
 that yields at least as much per draw as the rank below keeps its full weight. A new cell in
-the tier restores the full weight. A
+the tier restores the full weight. When the leading tier has halved all the way
+to the weight of the rank below, the same rule is applied to that rank against
+the rank below it, and so on down. Every rank down to the first one still short
+of its full halvings shares that rank's halved weight. This lets the search
+fall back past several stalled tiers at once, which matters when the states
+that decide a later death lie several tiers back. A
 workload whose progress order has many close steps, such as fine progress
 bands, supplies a shift of one so each rank takes half of the one ahead. The
 largest accepted shift is seven, because a larger one overflows the leading
