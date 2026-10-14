@@ -285,8 +285,9 @@ export class GuidedTour {
         const key = `${this.index}:${reveal.dataset.map}:${Math.round(stage.top)}:${Math.round(bottom)}:${Math.round(stage.left)}`;
         if (key !== this.revealKey) {
           this.revealKey = key;
-          const r = reveal.getBoundingClientRect();
-          const navigation = reveal.closest(".map-row")?.querySelector(".room-navigation");
+          const row = reveal.closest(".map-row");
+          const r = (row || reveal).getBoundingClientRect();
+          const navigation = row?.querySelector(".room-navigation");
           const top = Math.max(stage.top, navigation ? parseFloat(getComputedStyle(navigation).top) + navigation.offsetHeight : 0);
           if (r.top < top + 8 || r.bottom > bottom - 8)
             window.scrollBy({ top: r.top - top - 8, behavior: "instant" });

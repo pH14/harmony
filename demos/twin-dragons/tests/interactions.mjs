@@ -95,7 +95,7 @@ try {
     const label = desktop.locator(`[data-search="${id}"]`);
     assert.ok((await label.innerText()).startsWith(`${time}\n`));
     assert.equal(await label.locator('.branch-icon').count(), 1, 'Each branch shows a dragon icon');
-    assert.equal(await label.locator('.search-origin').innerText(), await desktop.locator(`.map-row[data-map="${origin.level}"] .area-label`).innerText());
+    assert.equal(await label.locator('.search-origin').innerText(), await desktop.locator(`#room-tabs button[data-map="${origin.level}"]`).textContent());
     assert.match(await label.getAttribute('title'),new RegExp(`frame ${origin.frames.toLocaleString('en-US')} · branch ${id}`));
     assert.equal(await label.evaluate(b => {
       const r=b.querySelector('.search-time').getBoundingClientRect();

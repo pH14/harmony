@@ -58,7 +58,7 @@ const catalog = game.catalog || (await (await fetch(new URL("maps.json", assets)
 const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
-<div class="goal"><div class="level-nav"><nav id="level-strip" class="level-strip" aria-label="Levels in this search"></nav><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><span id="goal-status" hidden></span></div><div><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
+<div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
 <div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
@@ -1739,8 +1739,10 @@ function renderLevelStrip() {
     shown = collapse && !levelsExpanded ? levels.filter((level) => recent.has(level.id)) : levels,
     locked = !ready || branchBusy || controlMode,
     key = `${levels.map((level) => `${level.id}${cleared.has(level.id) ? "c" : ""}`)}|${focusedLevel}|${live}|${gameWon}|${locked}|${collapse && levelsExpanded}`;
-  const strip = $("level-strip");
+  const strip = $("level-strip"),
+    trail = $("level-trail");
   if (strip.dataset.key === key) return;
+  const expanding = collapse && levelsExpanded && !strip.dataset.key.endsWith("|true");
   strip.dataset.key = key;
   const buttons = shown.map((level) => {
     const button = document.createElement("button");
@@ -1763,22 +1765,42 @@ function renderLevelStrip() {
     button.onclick = () => showLevel(level, level.id === live);
     return button;
   });
+  const more = $("level-more");
+  more.hidden = !collapse;
   if (collapse) {
-    const more = document.createElement("button");
-    more.className = "level-more";
     more.setAttribute("aria-expanded", levelsExpanded);
     more.setAttribute("aria-label", levelsExpanded ? "Hide earlier levels" : `Show ${hidden.length} earlier levels`);
     more.title = levelsExpanded ? "Hide earlier levels" : hidden.map((level) => level.label).join(", ");
     more.innerHTML = levelsExpanded ? "Hide<span> earlier</span>" : `+${hidden.length}<span> earlier</span>`;
-    more.onclick = () => {
-      levelsExpanded = !levelsExpanded;
-      renderLevelStrip();
-      $("level-strip").querySelector(".level-more").focus();
-    };
-    buttons.unshift(more);
   }
-  strip.replaceChildren(...buttons);
+  trail.replaceChildren(...buttons);
+  if (expanding) trail.scrollLeft = 0;
+  else revealLevel(trail.querySelector('[aria-pressed="true"]'));
+  fadeTrail();
 }
+function revealLevel(button) {
+  const trail = $("level-trail");
+  if (!button) return;
+  const pad = 24,
+    start = button.offsetLeft - pad,
+    end = button.offsetLeft + button.offsetWidth + pad - trail.clientWidth;
+  if (trail.scrollLeft > start) trail.scrollLeft = start;
+  else if (trail.scrollLeft < end) trail.scrollLeft = end;
+}
+function fadeTrail() {
+  const trail = $("level-trail"),
+    max = trail.scrollWidth - trail.clientWidth;
+  trail.dataset.fade = `${trail.scrollLeft > 1 ? "start" : ""}${trail.scrollLeft < max - 1 ? "end" : ""}`;
+}
+$("level-trail").addEventListener("scroll", fadeTrail, { passive: true });
+new ResizeObserver(() => {
+  revealLevel($("level-trail").querySelector('[aria-pressed="true"]'));
+  fadeTrail();
+}).observe($("level-trail"));
+$("level-more").onclick = () => {
+  levelsExpanded = !levelsExpanded;
+  renderLevelStrip();
+};
 function showLevel(level, live) {
   userSelected = true;
   const active = live ? level.rooms.findLast((id) => swarmRooms.get(id)?.length) : undefined;
@@ -1811,17 +1833,7 @@ function renderMapRows(owner) {
       const row = document.createElement("section");
       row.className = "map-row";
       row.dataset.map = id;
-      const label = document.createElement("button");
-      label.textContent = maps.get(id).label;
-      label.className = "area-label";
-      label.setAttribute("aria-pressed", id === mapLevel);
-      label.onclick = () => {
-        userSelected = true;
-        browseRoom(id);
-      };
-      const heading = document.createElement("div");
-      heading.className = "area-heading";
-      heading.append(label);
+      row.setAttribute("aria-label", maps.get(id).label);
       const parts = document.createElement("div");
       parts.className = "room-parts";
       const map = maps.get(id), panels = roomPanels(map.width, map.height);
@@ -1854,7 +1866,7 @@ function renderMapRows(owner) {
           parts.append(part);
         } else parts.append(part, levelOverview(id));
       });
-      row.append(heading, parts);
+      row.append(parts);
       return row;
     }),
   );
@@ -2443,10 +2455,6 @@ function updateBranchControls() {
   $("inspector").classList.toggle("controlling", controlMode);
   for (const button of $("state-list").children)
     button.disabled = controlMode || branchBusy;
-  for (const button of document.querySelectorAll(
-    ".area-label",
-  ))
-    button.disabled = branchBusy;
 }
 function stopControl() {
   if (!controlMode) return;

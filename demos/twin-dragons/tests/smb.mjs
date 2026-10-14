@@ -99,8 +99,13 @@ const layout = () => page.evaluate(() => {
     page: document.documentElement.scrollWidth - document.documentElement.clientWidth,
     strip: strip.scrollWidth - strip.clientWidth,
     tabs: tabs.scrollWidth - tabs.clientWidth,
-    rows: document.querySelectorAll(".map-row").length,
+    mapRows: document.querySelectorAll(".map-row").length,
     levels: strip.querySelectorAll("[data-level]").length,
+    rows: new Set([...strip.querySelectorAll("button:not([hidden])")].map((b) => Math.round(b.getBoundingClientRect().top))).size,
+    current: (() => {
+      const trail = document.querySelector("#level-trail").getBoundingClientRect(), pill = strip.querySelector('[aria-pressed="true"]').getBoundingClientRect();
+      return pill.left >= trail.left - 1 && pill.right <= trail.right + 1;
+    })(),
   };
 });
 for (const width of [1280, 390]) {
@@ -108,14 +113,18 @@ for (const width of [1280, 390]) {
   await page.waitForTimeout(300);
   const collapsed = await layout();
   assert.ok(collapsed.page <= 0 && collapsed.strip <= 0 && collapsed.tabs <= 0, `At ${width} px nothing scrolls sideways: ${JSON.stringify(collapsed)}`);
-  assert.equal(collapsed.rows, 1, "Only the room on screen has a map row");
+  assert.equal(collapsed.mapRows, 1, "Only the room on screen has a map row");
+  assert.equal(collapsed.rows, 1, "The level trail stays on one row");
   assert.ok(collapsed.levels <= 3, "Earlier levels collapse behind one button");
 }
 await page.locator("#level-strip .level-more").click();
 const expanded = await layout();
 assert.equal(await page.locator("#level-strip .level-more").getAttribute("aria-expanded"), "true");
 assert.ok(expanded.levels >= 4, "Expanding the level list shows the earlier levels");
-assert.ok(expanded.page <= 0 && expanded.strip <= 0, `The expanded level list wraps: ${JSON.stringify(expanded)}`);
+assert.ok(expanded.page <= 0 && expanded.strip <= 0 && expanded.rows === 1, `The expanded level list scrolls in one row: ${JSON.stringify(expanded)}`);
+await page.setViewportSize({ width: 390, height: 900 });
+await page.waitForTimeout(300);
+assert.ok((await layout()).current, "The current level stays in view after the trail narrows");
 assert.deepEqual(errors, []);
-console.log("Cleared levels collapse into one button, and nothing scrolls sideways on desktop or phone.");
+console.log("Cleared levels collapse into one button, the trail stays on one row, and the page never scrolls sideways.");
 await browser.close();
