@@ -795,6 +795,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
             return Ok(members);
         }
         verify_checksum(&block)?;
+        if &block[257..263] != b"ustar\0" && !tar_field(&block[345..500]).is_empty() {
+            return Err(ImageError::Tar(
+                "non-ustar header has a nonempty prefix field".into(),
+            ));
+        }
         let size = parse_octal(&block[124..136])?;
         match block[156] {
             b'L' => {
@@ -2624,6 +2629,24 @@ mod tests {
         assert!(matches!(
             extract_checked(&archive, &dest),
             Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn noncanonical_ustar_prefix_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[257..263].copy_from_slice(b"ustar ");
+        member[345..351].copy_from_slice(b"prefix");
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "noncanonical-prefix.tar", &member);
+
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
         ));
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
     }
