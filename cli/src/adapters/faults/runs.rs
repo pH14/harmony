@@ -155,6 +155,7 @@ impl Manifest {
                 .contains_key("root")
                 .then(|| path.join("artifacts/root")),
             uml_profile: self.uml_host.as_ref().map(|_| path.join("artifacts/uml")),
+            checkpoint_owner: self.record.checkpoint_owner.clone(),
         }
     }
 

@@ -18,6 +18,7 @@ pub struct Options {
     pub output: PathBuf,
     pub uml_profile: Option<PathBuf>,
     pub root: Option<PathBuf>,
+    pub checkpoint_owner: Option<String>,
 }
 
 impl Options {
@@ -531,6 +532,7 @@ mod live {
                 every: std::num::NonZeroU64::new(100),
                 on_marks: false,
                 on_top_progress: false,
+                checkpoint_owner: options.checkpoint_owner.clone(),
             }),
         )?;
         let archive = &campaign_report.campaign.archive;
@@ -802,6 +804,7 @@ mod tests {
             output: PathBuf::from("unused"),
             uml_profile: None,
             root: None,
+            checkpoint_owner: None,
         }
     }
 

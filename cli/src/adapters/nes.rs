@@ -189,6 +189,7 @@ impl Package for Nes {
                 .try_into()?,
             output: out.join("package"),
             wall_seconds: m.config.search.wall_seconds,
+            checkpoint_owner: m.checkpoint_owner.clone(),
         };
         let result = if m.config.runner.kind == "quicknes" {
             let runner: crate::runners::Quicknes =
@@ -456,6 +457,7 @@ fn continue_search(request: Request) -> Result<u8> {
             .try_into()?,
         output: out.join("package"),
         wall_seconds: m.config.search.wall_seconds,
+        checkpoint_owner: m.checkpoint_owner.clone(),
     };
     let rom = fs::read(out.join("artifacts/input"))?;
     let result = if m.config.runner.kind == "quicknes" {

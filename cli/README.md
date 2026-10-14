@@ -227,10 +227,11 @@ its checkpoint journal and origin input under `package/`. A new seed intentional
 changes the draw sequence. The journal identifies the latest retained checkpoint;
 the additional execution budget uses its verified header's reserved count, so a
 stale journal count cannot change the continuation budget.
-Completed searches record the selected checkpoint's SHA-256 in their manifest.
-Resume refuses a different whole checkpoint, even when it is valid for the same
-workload. An interrupted search has no finalized checkpoint identity; its last
-retained checkpoint can be recovered, but its provenance is not yet certified.
+Each search records a fresh owner in its initial manifest and checkpoint
+headers. Resume refuses a checkpoint from another saved search, including after
+an interrupted run. Completed searches also record the selected checkpoint's
+SHA-256 in their manifest and refuse changed checkpoint bytes, even when they
+remain valid for the same workload.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
