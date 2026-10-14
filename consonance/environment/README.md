@@ -58,6 +58,9 @@ than one transport message while every nested value remains bounded and ordered.
 reproducer up to seven MiB for the control plane. The one MiB headroom under
 the SDK snapshot's eight MiB limit covers the maximum service handler state
 when a reproducer restores the full payload tape at its branch origin.
+Branch admission reserves the digest bytes for every answer that has not yet
+been used, so first use cannot strand an accepted branch beyond the export or
+snapshot limits.
 Individual channel values remain capped at `MAX_CHANNEL_BYTES`.
 
 `sdk` holds the SDK request rules every backend shares: the event classes,

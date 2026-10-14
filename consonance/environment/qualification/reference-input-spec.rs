@@ -37,10 +37,20 @@ impl BufferedInputs for environment::input_spec::InputSpec {
             out.extend(at.to_le_bytes());
             out.extend(service.to_le_bytes());
             out.extend(request.to_le_bytes());
-            match answer {
-                Answer::Nominal => out.push(0),
-                Answer::Data(bytes) => {
+            let digest = self.request_bindings().get(&(*at, *service, *request));
+            match (answer, digest) {
+                (Answer::Nominal, None) => out.push(0),
+                (Answer::Data(bytes), None) => {
                     out.push(1);
+                    put(&mut out, bytes);
+                }
+                (Answer::Nominal, Some(digest)) => {
+                    out.push(2);
+                    out.extend(digest);
+                }
+                (Answer::Data(bytes), Some(digest)) => {
+                    out.push(3);
+                    out.extend(digest);
                     put(&mut out, bytes);
                 }
             }

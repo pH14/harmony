@@ -481,7 +481,11 @@ mod tests {
                 spec.set_payloads(payloads);
                 spec.record_answer(11, 19, 3, Answer::Data(vec![4, 5]))
                     .unwrap();
+                spec.record_bound_answer(11, 19, 4, [0x73; 32], Answer::Data(vec![6, 7]))
+                    .unwrap();
                 spec.record_answer(11, 19, 7, Answer::Nominal).unwrap();
+                spec.record_bound_answer(11, 19, 8, [0xa5; 32], Answer::Nominal)
+                    .unwrap();
                 let encoded = spec.encode();
                 assert_eq!(encoded, buffered_reference::encode(&spec));
                 assert_eq!(InputSpec::decode_snapshot(&encoded).unwrap(), spec);
