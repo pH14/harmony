@@ -118,6 +118,10 @@ exact same spelling. Hardlink, symlink, and directory members cannot carry
 data in either their tar header or a pax size override. This also excludes
 archives that only extract because a host resolves a hardlink target
 case-insensitively or interprets a non-file payload differently.
+An effective member name or hardlink target beginning with an ASCII letter
+followed by `:` is rejected: macOS tar strips that drive-like prefix, while
+GNU tar retains it. The check uses the name or target after pax and GNU
+overrides, so a portable override of a drive-like base header remains valid.
 Symlink targets must have a nonempty ASCII base header target and a nonempty
 ASCII effective target after any pax or GNU override, with no embedded NUL.
 An empty base target can become a regular file on macOS but a symlink on Linux;
