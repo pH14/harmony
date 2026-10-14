@@ -27,13 +27,12 @@ import {
   followDiscovery,
 } from "./world.js";
 const params = new URLSearchParams(location.search);
-const requested = GAMES.get(params.get("game")) || GAMES.get("twin-dragons");
 const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
-const bundled = new Set(
-  await fetch(new URL("manifest.json", bundledRoms))
-    .then((response) => (response.ok ? response.json() : []))
-    .catch(() => []),
-);
+const manifest = await fetch(new URL("manifest.json", bundledRoms))
+  .then((response) => (response.ok ? response.json() : {}))
+  .catch(() => ({}));
+const bundled = new Set(manifest.games || []);
+const requested = GAMES.get(params.get("game")) || GAMES.get(manifest.default) || GAMES.get("twin-dragons");
 async function bundledRom(choice) {
   if (!bundled.has(choice.id)) return null;
   const response = await fetch(new URL(`${choice.id}.nes`, bundledRoms)).catch(() => null);
