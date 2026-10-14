@@ -1420,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_rejects_an_armed_clockevent_with_an_unconvertible_clock_offset() {
+    fn restore_rejects_nonzero_arm_clock_offset_with_or_without_a_deadline() {
         use crate::vmm::VtimeWiring;
 
         let configured = || {
@@ -1442,23 +1442,29 @@ mod tests {
             vmm
         };
 
-        let mut source = configured();
-        source.devices.clockevent.deadline = Some(CNTFRQ_HZ);
-        let valid = source.save_vm_state().unwrap();
-        let mut target = configured();
-        target.restore_vm_state(&valid).unwrap();
-        assert_eq!(target.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
+        for deadline in [Some(CNTFRQ_HZ), None] {
+            let mut source = configured();
+            source.devices.clockevent.deadline = deadline;
+            let valid = source.save_vm_state().unwrap();
+            let mut target = configured();
+            target.restore_vm_state(&valid).unwrap();
+            assert_eq!(
+                target.next_timer_deadline_vns_arm64(),
+                deadline.map(|_| 1_000_000_000)
+            );
 
-        let mut bad = valid;
-        let mut dev = records::decode_device_blob(&bad.devices.0).unwrap();
-        dev.clock_offset = 1;
-        bad.devices = records::encode_device_blob(&dev);
-        let before = target.save_vm_state().unwrap();
-        assert!(
-            target.restore_vm_state(&bad).is_err(),
-            "restoring a deadline with an unconvertible clock offset must fail closed"
-        );
-        assert_eq!(target.save_vm_state().unwrap(), before);
+            let mut bad = valid;
+            let mut dev = records::decode_device_blob(&bad.devices.0).unwrap();
+            dev.clock_offset = 1;
+            bad.devices = records::encode_device_blob(&dev);
+            let before = target.save_vm_state().unwrap();
+            assert!(matches!(
+                target.restore_vm_state(&bad),
+                Err(VmmError::ContractViolation(message))
+                    if message == "arm64 virtual-time clock offset must be zero"
+            ));
+            assert_eq!(target.save_vm_state().unwrap(), before);
+        }
     }
 
     #[test]
@@ -1481,10 +1487,11 @@ mod tests {
         let before = vmm.save_vtime().unwrap().unwrap();
         let mut bad = before.clone();
         bad.guest_clock_offset = 1;
-        assert!(
-            vmm.restore_vtime(&bad).is_err(),
-            "V-time restore must reject an Arm clock offset that hides an armed deadline"
-        );
+        assert!(matches!(
+            vmm.restore_vtime(&bad),
+            Err(VmmError::ContractViolation(message))
+                if message == "arm64 virtual-time clock offset must be zero"
+        ));
         assert_eq!(vmm.save_vtime().unwrap().unwrap(), before);
         assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
     }
