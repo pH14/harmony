@@ -6,6 +6,13 @@ use vmm_backend::{
     MsrFilter, MsrRange, VcpuState, X86Exit, X86Policy,
 };
 
+fn logical_endpoint_state(mut state: VcpuState) -> VcpuState {
+    state.xsave_restore_bv =
+        vmm_backend::logical_xsave_restore_bv(&state.xsave, state.xsave_restore_bv)
+            .expect("valid XSAVE state at completed guest endpoint");
+    state
+}
+
 struct GuestMem {
     ptr: *mut u8,
     layout: std::alloc::Layout,
@@ -169,7 +176,7 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
                 endpoint.regs.rbx, 1,
                 "INC executes exactly once on continuation"
             );
-            endpoints.push(endpoint);
+            endpoints.push(logical_endpoint_state(endpoint));
         }
         assert_eq!(
             endpoints[0], endpoints[1],
@@ -428,7 +435,7 @@ fn endpoint(
         "{}: INC BX did not run once",
         operation.name()
     );
-    (state, mem.as_mut_slice().to_vec())
+    (logical_endpoint_state(state), mem.as_mut_slice().to_vec())
 }
 
 #[test]
@@ -817,7 +824,10 @@ fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
                 }
                 let counts_before_hlt = backend.exit_counts();
                 let endpoint = continue_msr_guest(&mut backend, response, counts_before_hlt);
-                endpoints.push((endpoint, mem.as_mut_slice().to_vec()));
+                endpoints.push((
+                    logical_endpoint_state(endpoint),
+                    mem.as_mut_slice().to_vec(),
+                ));
             }
             assert_eq!(
                 endpoints[0], endpoints[1],
