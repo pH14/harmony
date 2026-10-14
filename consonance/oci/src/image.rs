@@ -795,9 +795,14 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
             return Ok(members);
         }
         verify_checksum(&block)?;
-        if &block[257..263] != b"ustar\0" && !tar_field(&block[345..500]).is_empty() {
+        let magic = &block[257..265];
+        if magic.starts_with(b"ustar")
+            && &block[257..263] != b"ustar\0"
+            && magic != b"ustar  \0"
+            && !tar_field(&block[345..500]).is_empty()
+        {
             return Err(ImageError::Tar(
-                "non-ustar header has a nonempty prefix field".into(),
+                "ambiguous tar header has a nonempty prefix field".into(),
             ));
         }
         let size = parse_octal(&block[124..136])?;
@@ -2649,6 +2654,21 @@ mod tests {
             Err(ImageError::Tar(_))
         ));
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn gnu_timestamp_field_is_not_treated_as_a_path_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[257..265].copy_from_slice(b"ustar  \0");
+        member[345..357].copy_from_slice(b"00000000001\0");
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "gnu-time-header.tar", &member);
+
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
     }
 
     #[test]
