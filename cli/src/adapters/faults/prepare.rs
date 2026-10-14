@@ -20,7 +20,7 @@ pub fn sdk(offline: bool) -> Result<PathBuf> {
 
 pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
     c.validate()?;
-    let mode = super::execution_mode(crate::runtime::choose(&c.runtime())?);
+    let mode = super::requested_execution_mode(c)?;
     let image = c
         .image
         .clone()

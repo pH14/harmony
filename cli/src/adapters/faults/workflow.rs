@@ -15,6 +15,7 @@ use std::{
 };
 
 pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
+    let requested_mode = super::requested_execution_mode(&c);
     let runtime_error = super::config::resolve(&mut c, offline)
         .err()
         .map(|error| error.to_string());
@@ -25,9 +26,14 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
         .transpose()?;
     let admission_error = admission
         .as_ref()
-        .and_then(|report| report.require_for(super::execution_mode(c.backend)).err())
+        .and_then(|report| {
+            requested_mode
+                .as_ref()
+                .ok()
+                .and_then(|mode| report.require_for(*mode).err())
+        })
         .map(|error| error.to_string());
-    let ready = runtime_error.is_none() && admission_error.is_none();
+    let ready = runtime_error.is_none() && requested_mode.is_ok() && admission_error.is_none();
     let blockers = runtime_error
         .iter()
         .chain(admission_error.iter())
@@ -46,7 +52,7 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
         if let Some(r) = admission {
             println!(
                 "image admission: {}\ninstrumented event faults: {}",
-                admission_error.is_none(),
+                admission_error.is_none() && requested_mode.is_ok(),
                 r.instrumented_events()
             );
             for error in r.scan_errors.iter().chain(&r.attestation_errors) {
