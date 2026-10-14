@@ -647,9 +647,10 @@ changes. The writer syncs the directory after deleting a pruned checkpoint and
 before punching, so a crash cannot bring back a checkpoint whose snapshots are
 gone. On macOS, and on a Linux filesystem without hole punching, the freed
 bytes stay in the file. Each `.ckpt` file holds its header, that index, the
-postcard body, and a trailing SHA-256 of those preceding bytes. Resume checks
-that checksum before decoding the header or body, so byte changes that remain
-valid postcard data fail closed instead of changing the continuation. These
+postcard body, and a trailing SHA-256 of those preceding bytes. Resume reads
+the format name first, then checks the checksum before decoding the rest of the
+header or body, so byte changes that remain valid postcard data fail closed
+instead of changing the continuation. These
 checks detect corruption, not deliberate rewriting of a checkpoint and its
 checksum. `checkpoints.jsonl` records write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
