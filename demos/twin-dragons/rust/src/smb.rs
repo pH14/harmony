@@ -29,6 +29,8 @@ const AREA_SLOTS: u16 = 128;
 const MAP_HEIGHT: u16 = 224;
 const SPRITE_TOP: u16 = 9;
 const FACING_LEFT: u8 = 2;
+const SIDE_PIPE_ENTRY: u8 = 2;
+const VERTICAL_PIPE_ENTRY: u8 = 3;
 const MAIN_AREAS: [u8; 32] = [
     37, 64, 38, 96, 40, 1, 39, 98, 36, 53, 32, 99, 34, 65, 44, 97, 42, 49, 38, 98, 46, 35, 45, 96,
     51, 1, 39, 100, 48, 50, 33, 101,
@@ -51,11 +53,19 @@ fn level_id(wram: &[u8; WRAM_SIZE]) -> u16 {
     u16::from(state.world) * 4 + u16::from(state.level)
 }
 
+fn in_area(wram: &[u8; WRAM_SIZE]) -> bool {
+    smb_is_playing(wram)
+        && !matches!(
+            smb_mechanical_state_from_wram(wram).player_engine_state,
+            SIDE_PIPE_ENTRY | VERTICAL_PIPE_ENTRY
+        )
+}
+
 fn map_room(wram: &[u8; WRAM_SIZE]) -> u16 {
     let level = level_id(wram);
     let area = area(wram);
     let main = MAIN_AREAS.get(usize::from(level)).copied();
-    if smb_is_playing(wram) && main.is_some_and(|main| main != area) {
+    if in_area(wram) && main.is_some_and(|main| main != area) {
         LEVEL_COUNT + level * AREA_SLOTS + u16::from(area)
     } else {
         level
@@ -76,7 +86,7 @@ fn cleared(wram: &[u8; WRAM_SIZE]) -> u8 {
         return LEVEL_COUNT as u8;
     }
     let state = smb_mechanical_state_from_wram(wram);
-    let done = state.flag_active || smb_world_cleared(wram);
+    let done = (state.flag_active && smb_is_playing(wram)) || smb_world_cleared(wram);
     u8::try_from(level_id(wram)).unwrap_or(u8::MAX) + u8::from(done)
 }
 
@@ -103,7 +113,7 @@ fn view(wram: &[u8; WRAM_SIZE]) -> View {
         world: state.world,
         stage: state.level,
         goal: state.flag_active,
-        loading: !smb_is_playing(wram),
+        loading: !in_area(wram),
         cleared: cleared(wram),
     }
 }
@@ -140,7 +150,7 @@ impl BrowserGame for Smb {
         let Ok(wram) = wram(memory) else {
             return [HIDDEN, 0, 0, 0];
         };
-        if !smb_is_playing(wram) || smb_mechanical_state_from_wram(wram).dead {
+        if !in_area(wram) || smb_mechanical_state_from_wram(wram).dead {
             return [HIDDEN, 0, 0, 0];
         }
         let position = smb_player_position(wram);

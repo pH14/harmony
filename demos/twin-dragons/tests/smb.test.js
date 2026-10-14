@@ -45,8 +45,11 @@ test("Super Mario Bros. decode reports deaths and cleared levels", () => {
   for (const dead of [memory({ state: 0x0b }), memory({ page: 2 })]) assert.equal(decode(dead).health, 0);
   const flag = memory({ flag: 1 });
   assert.deepEqual([decode(flag).goal, decode(flag).cleared], [true, 1]);
-  const advanced = memory({ level: 1, flag: 5, area: MAIN_AREAS[0] });
-  assert.equal(decode(advanced).level, 0);
+  const lastFlagTask = decode(memory({ level: 1, flag: 5 }));
+  assert.deepEqual([lastFlagTask.level, lastFlagTask.cleared], [1, 2]);
+  const nextLoad = decode(memory({ level: 2, flag: 5, task: 0 }));
+  assert.deepEqual([nextLoad.loading, nextLoad.cleared], [true, 2]);
+  assert.equal(decode(memory({ level: 1, state: 3, area: MAIN_AREAS[0] })).loading, true);
   assert.equal(decode(memory({ world: 0, level: 3, mode: 2 })).cleared, 4);
   assert.equal(decode(memory({ world: 7, level: 3, mode: 2 })).cleared, 32);
 });

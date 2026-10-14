@@ -116,7 +116,10 @@ function drain(search) {
       const job = round.jobs[round.next++];
       search.explorer.merge(job.result, new Uint32Array(job.transition));
       if (job.trail) {
-        if (job.clears) search.finishes.push(search.motion.length);
+        if (job.nextLevel) {
+          search.finishes.push(search.motion.length);
+          search.exits.push(job.nextLevel);
+        }
         search.motion.push(job.trail);
       }
       job.result = job.trail = job.transition = job.snapshot = null;
@@ -137,15 +140,18 @@ function sendCampaign(slot, job) {
   slot.worker.postMessage({ type: "job", chunk, job: job.bytes.buffer }, [job.bytes.buffer]);
   job.bytes = null;
 }
-function admitCampaign(job, { outcome, reservation, trail, clears }) {
+function admitCampaign(job, { outcome, reservation, trail, nextLevel }) {
   const { search } = job;
   if (job.cancelled || !searches.has(search.id) || search.explorer.stopped()) return;
-  search.held.set(reservation, { trail, clears });
+  search.held.set(reservation, { trail, nextLevel });
   for (const admitted of search.explorer.admit(new Uint8Array(outcome))) {
     const held = search.held.get(admitted);
     search.held.delete(admitted);
     if (!held?.trail) continue;
-    if (held.clears) search.finishes.push(search.motion.length);
+    if (held.nextLevel) {
+      search.finishes.push(search.motion.length);
+      search.exits.push(held.nextLevel);
+    }
     search.motion.push(held.trail);
   }
   if (search.explorer.stopped()) cancel(search);
@@ -212,7 +218,7 @@ function paced() {
   return false;
 }
 function finished(data) {
-  const { chunk, buffer, steps, trails, transitions, clears } = data;
+  const { chunk, buffer, steps, trails, transitions, nextLevels } = data;
   const entry = chunks.get(chunk);
   chunks.delete(chunk);
   entry.slot.chunks--;
@@ -232,7 +238,7 @@ function finished(data) {
     job.result = bytes;
     job.trail = trails[i];
     job.transition = transitions[i];
-    job.clears = clears[i];
+    job.nextLevel = nextLevels[i];
     touched.add(job.search);
   });
   for (const search of touched) drain(search);
@@ -248,9 +254,10 @@ function flush() {
   const search = searches.get(active);
   try {
     const batch = JSON.parse(search.explorer.take_batch());
-    const { motion, finishes } = search;
+    const { motion, finishes, exits } = search;
     search.motion = [];
     search.finishes = [];
+    search.exits = [];
     batch.points = batch.points.map((p) => ({
       ...p,
       retained: p.retained === null ? null : externalId(active, p.retained),
@@ -259,7 +266,7 @@ function flush() {
     updateMemory(batch, search);
     search.stats = batch;
     batch.workers = pool.length;
-    postMessage({ type: "batch", active, ...batch, motion, finishes }, motion.map((trail) => trail.buffer));
+    postMessage({ type: "batch", active, ...batch, motion, finishes, exits }, motion.map((trail) => trail.buffer));
     if (batch.stopped) {
       running = false;
       postMessage({ type: "limit", won: batch.won });
@@ -285,6 +292,7 @@ function addSearch(id, search) {
   search.queue = [];
   search.motion = [];
   search.finishes = [];
+  search.exits = [];
   search.held = new Map();
   searches.set(id, search);
   if (search.campaign) planJobs(search);

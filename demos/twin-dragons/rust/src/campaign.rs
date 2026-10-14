@@ -940,7 +940,7 @@ trait WorkerApi {
     fn run(&mut self, job: &[u8]) -> Result<Vec<u8>, JsValue>;
     fn trail(&mut self) -> Option<Vec<u16>>;
     fn reservation(&self) -> u32;
-    fn clears(&self) -> bool;
+    fn next_level(&self) -> u8;
 }
 
 struct Worker<G: BrowserGame> {
@@ -949,7 +949,7 @@ struct Worker<G: BrowserGame> {
     config: CampaignConfig<G>,
     target: G::Target,
     trail: Option<Vec<u16>>,
-    clears: bool,
+    next_level: u8,
     reservation: u32,
 }
 
@@ -962,7 +962,7 @@ impl<G: BrowserGame> Worker<G> {
             config: config(0, 0, 0),
             target: game.new_target()?,
             trail: None,
-            clears: false,
+            next_level: 0,
             reservation: 0,
         })
     }
@@ -991,15 +991,14 @@ impl<G: BrowserGame> WorkerApi for Worker<G> {
             .with_borrow_mut(|trails| trails.remove(&self.core))
             .unwrap_or_default();
         let outcome = outcome.map_err(js_error)?;
-        let cleared = outcome
+        self.next_level = outcome
             .result
             .actions
             .iter()
             .flat_map(|action| action.observations.last())
             .map(G::cleared)
-            .max()
+            .find(|&cleared| cleared > trail.start_cleared)
             .unwrap_or(0);
-        self.clears = cleared > trail.start_cleared;
         self.trail = (trail.samples.len() > 5).then_some(trail.samples);
         postcard::to_allocvec(&outcome).map_err(js_error)
     }
@@ -1012,8 +1011,8 @@ impl<G: BrowserGame> WorkerApi for Worker<G> {
         self.reservation
     }
 
-    fn clears(&self) -> bool {
-        self.clears
+    fn next_level(&self) -> u8 {
+        self.next_level
     }
 }
 
@@ -1152,8 +1151,8 @@ impl CampaignWorker {
         self.0.reservation()
     }
 
-    pub fn clears(&self) -> bool {
-        self.0.clears()
+    pub fn next_level(&self) -> u8 {
+        self.0.next_level()
     }
 }
 
