@@ -51,6 +51,8 @@ const HARMONY_GIC_IMPL_SPIS: u32 = 64;
 pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
 const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
+pub(crate) const KVM_VTIMER_PPI: u32 = 20;
+const KVM_PTIMER_PPI: u32 = 30;
 const GIC_STATE_VERSION: u32 = 6;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
@@ -1486,7 +1488,11 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
         self.ensure_healthy()?;
-        if id.is_some_and(|id| !(id.is_ppi() || id.is_spi()) || id.0 >= HARMONY_GIC_NR_IRQS) {
+        if id.is_some_and(|id| {
+            !(id.is_ppi() || id.is_spi())
+                || id.0 >= HARMONY_GIC_NR_IRQS
+                || matches!(id.0, KVM_VTIMER_PPI | KVM_PTIMER_PPI)
+        }) {
             return Err(BackendError::InvalidState);
         }
         self.pending_irq = id;
@@ -4019,11 +4025,11 @@ mod tests {
         b.set_policy(&Arm64Policy::default()).unwrap();
 
         b.inject(crate::arch::arm64::Arm64Injection::Interrupt {
-            intid: GicIntId(30),
+            intid: GicIntId(29),
         })
         .unwrap();
         assert_ne!(
-            b.save().unwrap().gic.unwrap().line_level[0] & (1 << 30),
+            b.save().unwrap().gic.unwrap().line_level[0] & (1 << 29),
             0,
             "inject must route through the same level-setting contract"
         );
@@ -4048,6 +4054,32 @@ mod tests {
         let caps = b.capabilities();
         assert_eq!(caps.name, "kvm-arm64-vgicv3");
         assert!(caps.arch.in_kernel_gic);
+    }
+
+    #[test]
+    fn timer_owned_ppis_refuse_external_injection_before_mutation() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let baseline = backend.save().unwrap();
+
+        for intid in [20, 30] {
+            assert!(matches!(
+                backend.set_pending_irq(Some(GicIntId(intid))),
+                Err(BackendError::InvalidState)
+            ));
+            assert!(matches!(
+                backend.inject(crate::arch::arm64::Arm64Injection::Interrupt {
+                    intid: GicIntId(intid)
+                }),
+                Err(BackendError::InvalidState)
+            ));
+            assert_eq!(backend.save().unwrap(), baseline);
+        }
+
+        backend.set_pending_irq(Some(GicIntId(29))).unwrap();
+        assert_eq!(backend.save().unwrap().gic.unwrap().line_level[0], 1 << 29);
     }
 
     #[test]

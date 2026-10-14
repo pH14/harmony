@@ -341,8 +341,10 @@ ARM KVM also exposes the guest physical timer. A guest can change
 PPI 30. Neither register belongs to the portable vCPU record. ARM KVM therefore
 admits capture only when both physical-timer registers equal the fresh-vCPU
 zero baseline, and clears both before guest entry and restore. GIC state version
-6 rejects older Arm snapshots that did not prove this condition; externally
-asserted PPI 30 remains supported when the physical timer is canonical. The
+6 rejects older Arm snapshots that did not prove this condition. KVM owns the
+virtual-timer PPI 20 and physical-timer PPI 30: it accepts a userspace line
+write for either one but clears that line before the guest can accept it, so
+the backend refuses external injection of both timer-owned PPIs. The
 live `guest_physical_timer_state_refuses_capture_and_legacy_restore` check
 observes a programmed timer's guest control value of `0x5` against a fresh
 guest's `0x0`, then verifies capture and old-record restore refusal. It also

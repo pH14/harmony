@@ -352,6 +352,15 @@ fn guest_physical_timer_state_refuses_capture_and_legacy_restore() {
     let after = target.save();
     assert_eq!(after.core, valid.core);
     assert_eq!(after.gic, valid.gic);
+    for intid in [20, 30] {
+        assert!(matches!(
+            target
+                .backend
+                .set_pending_irq(Some(vmm_backend::GicIntId(intid))),
+            Err(vmm_backend::BackendError::InvalidState)
+        ));
+        assert_eq!(target.save().gic, valid.gic);
+    }
 
     source.restore(&pristine_cut);
     for (slot, word) in source._memory.0.chunks_exact_mut(4).zip(pristine) {
