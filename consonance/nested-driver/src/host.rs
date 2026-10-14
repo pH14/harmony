@@ -19,13 +19,7 @@ use searcher::search::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{
-    error::Error,
-    fs,
-    io::BufWriter,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{error::Error, fs, io::BufWriter, path::PathBuf, time::Duration};
 
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -544,7 +538,7 @@ pub fn run_prepared(
     kernel: &[u8],
     initramfs: &[u8],
     options: &Options,
-    replay: Option<&Path>,
+    replay: Option<&[u8]>,
     repeat: u32,
 ) -> Result<bool, Box<dyn Error>> {
     if options.executions == 0 || options.ram_mib == 0 || repeat == 0 {
@@ -557,12 +551,11 @@ pub fn run_prepared(
     let workload = NestedWorkload::new(kernel, initramfs, options, contract);
     fs::create_dir_all(&options.output)?;
     let (report, _) = match replay {
-        Some(path) => {
-            let bytes = fs::read(path)?;
+        Some(bytes) => {
             let mut final_report = None;
             for run in 0..repeat {
                 let replayed =
-                    campaign::replay_campaign_checkpointed(&workload, &bytes, None, None)?;
+                    campaign::replay_campaign_checkpointed(&workload, bytes, None, None)?;
                 fs::write(
                     options.output.join(format!("replay-{run}.json")),
                     serde_json::to_vec_pretty(&replayed.0)?,
