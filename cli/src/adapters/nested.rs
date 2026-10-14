@@ -19,6 +19,18 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn verified_report(
+    path: &Path,
+    run: &nested_driver::host::PreparedRun,
+) -> Result<serde_json::Value> {
+    let bytes = fs::read(path.join("report.json"))?;
+    if bytes != run.report {
+        return Err("nested report changed after the search producer returned".into());
+    }
+    Ok(serde_json::from_slice(&run.report)?)
+}
+
 impl Package for Nested {
     fn name(&self) -> &'static str {
         "nested"
@@ -182,9 +194,10 @@ fn execute(mut request: Request) -> Result<u8> {
             }
         }
     }
-    if out.join("report.json").is_file() {
-        m.payload = serde_json::from_slice(&fs::read(out.join("report.json"))?)?;
-    }
+    let result = result.and_then(|run| {
+        m.payload = verified_report(&out, &run)?;
+        Ok(run.finding)
+    });
     m.status = if result.is_ok() { "complete" } else { "failed" }.into();
     m.error = result.as_ref().err().map(ToString::to_string);
     m.save(&out)?;
@@ -229,6 +242,31 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "recorded nested campaign has no stream digest"
+        );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn saved_nested_report_must_match_the_producer_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = br#"{"executions_completed":1}"#;
+        let run = nested_driver::host::PreparedRun {
+            finding: false,
+            report: original.to_vec(),
+        };
+        fs::write(dir.path().join("report.json"), original).unwrap();
+        assert_eq!(
+            verified_report(dir.path(), &run).unwrap()["executions_completed"],
+            1
+        );
+        fs::write(
+            dir.path().join("report.json"),
+            br#"{"executions_completed":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            verified_report(dir.path(), &run).unwrap_err().to_string(),
+            "nested report changed after the search producer returned"
         );
     }
 }
