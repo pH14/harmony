@@ -1033,6 +1033,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                         "non-directory member has a trailing slash".into(),
                     ));
                 }
+                if typeflag != b'5' && has_terminal_dot_after_named_component(&name) {
+                    return Err(ImageError::Tar(
+                        "non-directory member has a host-dependent terminal dot".into(),
+                    ));
+                }
                 let header_link = tar_field(&block[157..257]);
                 if typeflag == b'1' && (header_link.is_empty() || !header_link.is_ascii()) {
                     return Err(ImageError::Tar(
@@ -1223,6 +1228,14 @@ fn check_device_number(field: &[u8]) -> Result<(), ImageError> {
 
 fn host_dependent_tar_prefix(name: &[u8]) -> bool {
     name.first() == Some(&b'\\') || (name.get(1) == Some(&b':') && name[0].is_ascii_alphabetic())
+}
+
+fn has_terminal_dot_after_named_component(name: &[u8]) -> bool {
+    name.strip_suffix(b"/.").is_some_and(|prefix| {
+        prefix
+            .split(|byte| *byte == b'/')
+            .any(|component| !component.is_empty() && component != b".")
+    })
 }
 
 fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
@@ -2948,6 +2961,85 @@ mod tests {
     }
 
     #[test]
+    fn terminal_dot_non_directory_names_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (kind, target) in [(b'0', ""), (b'1', "source"), (b'2', "source")] {
+            let data: &[u8] = if kind == b'0' { b"payload" } else { b"" };
+            for (label, body) in [
+                ("raw", raw_member(b"d/.", kind, target, data)),
+                ("repeated-slash", raw_member(b"d//.", kind, target, data)),
+                ("repeated-dot", raw_member(b"d/./.", kind, target, data)),
+                ("leading-dot", raw_member(b"./d/.", kind, target, data)),
+                (
+                    "pax",
+                    [
+                        raw_member(
+                            b"PaxHeaders/0",
+                            b'x',
+                            "",
+                            pax_record("path", "d/.").as_bytes(),
+                        ),
+                        raw_member(b"valid", kind, target, data),
+                    ]
+                    .concat(),
+                ),
+                (
+                    "gnu",
+                    [
+                        raw_member(b"././@LongLink", b'L', "", b"d/.\0"),
+                        raw_member(b"valid", kind, target, data),
+                    ]
+                    .concat(),
+                ),
+            ] {
+                let archive = write_archive(
+                    dir.path(),
+                    &format!("terminal-dot-{kind}-{label}.tar"),
+                    &[raw_member(b"source", b'0', "", b"source"), body].concat(),
+                );
+                let dest = dir.path().join(format!("terminal-dot-{kind}-{label}"));
+                std::fs::create_dir(&dest).unwrap();
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn directory_terminal_dots_and_overridden_base_names_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "portable-terminal-dot.tar",
+            &[
+                raw_member(b"d/.", b'5', "", b""),
+                raw_member(b"d/child", b'0', "", b"child"),
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "pax-valid").as_bytes(),
+                ),
+                raw_member(b"d/.", b'0', "", b"pax"),
+                raw_member(b"././@LongLink", b'L', "", b"gnu-valid\0"),
+                raw_member(b"d/.", b'0', "", b"gnu"),
+            ]
+            .concat(),
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        assert_eq!(read_members(&archive).unwrap().len(), 4);
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("d/child")).unwrap(), b"child");
+        assert_eq!(std::fs::read(dest.join("pax-valid")).unwrap(), b"pax");
+        assert_eq!(std::fs::read(dest.join("gnu-valid")).unwrap(), b"gnu");
+    }
+
+    #[test]
     fn host_dependent_drive_prefix_hardlink_targets_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let setup = [
@@ -3135,6 +3227,7 @@ mod tests {
         assert_eq!(read_members(&archive).unwrap().len(), 4);
         extract_checked(&archive, &dest).unwrap();
         assert_eq!(std::fs::read(dest.join("copy")).unwrap(), b"first");
+        assert_eq!(std::fs::read(dest.join("./\\foo")).unwrap(), b"first");
         assert_eq!(std::fs::read(dest.join("valid")).unwrap(), b"other");
         assert_eq!(
             std::fs::read_link(dest.join("link")).unwrap(),

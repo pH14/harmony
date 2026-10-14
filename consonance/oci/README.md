@@ -123,6 +123,11 @@ letter followed by `:`, is rejected: macOS tar strips leading backslashes and
 drive-like prefixes, while GNU tar retains them. The check uses the name or
 target after pax and GNU overrides, so a portable override of an ambiguous
 base header remains valid. A name beginning with `./\` remains portable.
+An effective non-directory member name with a named path component followed
+by terminal `/.` is rejected, including repeated slashes or dot components:
+macOS tar can extract it as a file or link while GNU tar treats it as a
+directory and errors. Directory members keep this spelling, and a pax or GNU
+override to a portable name remains valid.
 Symlink targets must have a nonempty ASCII base header target and a nonempty
 ASCII effective target after any pax or GNU override, with no embedded NUL.
 An empty base target can become a regular file on macOS but a symlink on Linux;
