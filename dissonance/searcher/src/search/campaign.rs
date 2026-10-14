@@ -1993,13 +1993,18 @@ fn resolve_origin<G: Workload>(
             file_sha256,
             report,
             checkpoint,
-        } => (
-            ORIGIN_ARCHIVE.to_owned(),
-            Some(path.clone()),
-            Some(file_sha256.clone()),
-            checkpoint.as_ref(),
-            workload.resume_input(report)?,
-        ),
+        } => {
+            if let Some(checkpoint) = checkpoint {
+                validate_archive_checkpoint(workload, checkpoint)?;
+            }
+            (
+                ORIGIN_ARCHIVE.to_owned(),
+                Some(path.clone()),
+                Some(file_sha256.clone()),
+                checkpoint.as_ref(),
+                workload.resume_input(report)?,
+            )
+        }
     };
     let resume_input_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&resume_input)?));
     Ok(CampaignOriginRecord {
@@ -2813,6 +2818,35 @@ fn bootstrap_core<G: Workload>(
             Err("a search checkpoint restores its archive instead of bootstrapping one".into())
         }
     }
+}
+
+struct CheckpointHashWriter(Sha256);
+
+impl Write for CheckpointHashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_archive_checkpoint<G: Workload + ?Sized>(
+    workload: &G,
+    checkpoint: &CampaignCheckpoint<G::Snapshot>,
+) -> Result<(), Box<dyn Error>> {
+    if checkpoint.snapshots.format != workload.checkpoint_format() {
+        return Err("archive snapshot checkpoint format is not recognized".into());
+    }
+    let mut writer = CheckpointHashWriter(Sha256::new());
+    postcard::to_io(&checkpoint.snapshots, &mut writer)?;
+    let actual_sha256 = format!("{:x}", writer.0.finalize());
+    if checkpoint.file_sha256 != actual_sha256 {
+        return Err("archive snapshot checkpoint bytes do not match their SHA-256".into());
+    }
+    Ok(())
 }
 
 fn validate_snapshot_root_checkpoint<'a, G: Workload + ?Sized>(
@@ -4524,6 +4558,9 @@ where
     let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
     let action_cost = workload.action_cost_fn();
     if let Some(checkpoint) = origin_checkpoint {
+        if header.origin_kind == ORIGIN_ARCHIVE {
+            validate_archive_checkpoint(workload, checkpoint)?;
+        }
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
         let logical_path_matches =
@@ -6465,6 +6502,41 @@ mod tests {
                 checkpoint.as_ref(),
             )
             .expect("untouched archive replay");
+            if let Some(checkpoint) = &checkpoint {
+                let mut changed = checkpoint.clone();
+                changed.snapshots.entries.push(SnapshotCheckpointEntry {
+                    id: u64::MAX,
+                    snapshot: 0,
+                });
+                let replay = replay_campaign_checkpointed(
+                    &workload,
+                    &archive_stream,
+                    Some(&source_archive),
+                    Some(&changed),
+                );
+                assert!(
+                    replay.is_err(),
+                    "archive replay certified checkpoint bytes unrelated to its SHA-256"
+                );
+                let mut changed_stream = Vec::new();
+                let changed_origin = CampaignOrigin::Archive {
+                    path: "source.archive".to_owned(),
+                    file_sha256: source_archive_sha256.clone(),
+                    report: Box::new(source_archive.clone()),
+                    checkpoint: Some(changed),
+                };
+                assert!(
+                    run_campaign_checkpointed(
+                        &workload,
+                        &config,
+                        &changed_origin,
+                        &mut changed_stream,
+                        None,
+                    )
+                    .is_err(),
+                    "live archive campaign recorded a checkpoint SHA unrelated to its bytes"
+                );
+            }
             let mut lines = std::str::from_utf8(&archive_stream)
                 .unwrap()
                 .lines()
