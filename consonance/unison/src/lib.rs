@@ -23,6 +23,8 @@ pub enum SubjectError {
         "bisection probe at target {target} observed divergence after a halt at work {actual}; no exact work coordinate is available"
     )]
     UnreplayableTerminal { target: u64, actual: u64 },
+    #[error("comparison checkpoint at work {target} differs from direct replay")]
+    UnreplayableCheckpoint { target: u64 },
     #[error("bisection interval is empty: lo {lo} >= hi {hi}")]
     EmptyInterval { lo: u64, hi: u64 },
     #[error("state hashes and observable digests agree at hi = {hi}: no divergence to bisect")]
@@ -79,6 +81,21 @@ fn run_checked<M: Subject>(machine: &mut M, target: u64) -> Result<RunOutcome, S
         });
     }
     Ok(outcome)
+}
+
+fn verify_reached_replay<F: SubjectFactory>(
+    factory: &F,
+    seed: u64,
+    target: u64,
+    expected: Observation,
+) -> Result<(), SubjectError> {
+    let mut machine = factory.spawn(seed);
+    if run_checked(&mut machine, target)? != RunOutcome::ReachedTarget
+        || observe(&machine)? != expected
+    {
+        return Err(SubjectError::UnreplayableCheckpoint { target });
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,7 +162,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
             limit_reached: false,
         });
     }
-    if observe(&ma)? != observe(&mb)? {
+    let mut last_match_observations = (observe(&ma)?, observe(&mb)?);
+    if last_match_observations.0 != last_match_observations.1 {
         let (verdict, halted_at) = if initial_a == RunOutcome::Halted && ma.work() != 0 {
             (
                 Verdict::TerminalDiverged {
@@ -186,7 +204,13 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         match (oa, ob) {
             (RunOutcome::ReachedTarget, RunOutcome::ReachedTarget) => {
                 checkpoints_compared += 1;
-                if observe(&ma)? != observe(&mb)? {
+                let observations = (observe(&ma)?, observe(&mb)?);
+                if observations.0 != observations.1 {
+                    let matching_target = last_match.unwrap_or(0);
+                    verify_reached_replay(a, seed, matching_target, last_match_observations.0)?;
+                    verify_reached_replay(b, seed, matching_target, last_match_observations.1)?;
+                    verify_reached_replay(a, seed, t, observations.0)?;
+                    verify_reached_replay(b, seed, t, observations.1)?;
                     return Ok(CompareReport {
                         verdict: Verdict::Diverged {
                             last_match,
@@ -198,6 +222,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                     });
                 }
                 last_match = Some(t);
+                last_match_observations = observations;
             }
             (RunOutcome::Halted, RunOutcome::Halted) => {
                 if wa != wb {
