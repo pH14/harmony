@@ -440,7 +440,7 @@ impl Session {
         &mut self,
         reason: Option<ExitReason>,
         limit: Duration,
-    ) -> Result<(), SessionError> {
+    ) -> Result<ExitReason, SessionError> {
         let reason = match reason {
             Some(reason) => reason,
             None => {
@@ -466,7 +466,7 @@ impl Session {
                 exit.leftovers.len()
             )));
         }
-        Ok(())
+        Ok(exit.reason)
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {

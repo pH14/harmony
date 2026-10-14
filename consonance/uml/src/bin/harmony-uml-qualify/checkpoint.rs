@@ -129,7 +129,7 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
             return Ok(json!({"error": "the terminal fixture repeated exhausted stops"}));
         };
         let before_events = session.events().len();
-        session.settle_terminal_console(terminal, base.wall_limit)?;
+        let resolved = session.settle_terminal_console(terminal, base.wall_limit)?;
         let after_events = session.events().len();
         let tail = session.console_tail();
         Ok(json!({
@@ -137,6 +137,7 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
             "before_events": before_events,
             "after_events": after_events,
             "terminal": format!("{terminal:?}"),
+            "resolved": format!("{resolved:?}"),
         }))
     })();
     match result {
@@ -144,7 +145,8 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
             "checkpoint_console_terminal",
             detail["marker"] == json!(true)
                 && detail["before_events"] == detail["after_events"]
-                && detail["before_events"].as_u64().unwrap_or(0) >= 3,
+                && detail["before_events"].as_u64().unwrap_or(0) >= 3
+                && detail["resolved"] == json!("Exited(0)"),
             detail,
         ),
         Err(error) => check(

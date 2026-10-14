@@ -271,10 +271,10 @@ impl UmlSession {
         reason: Option<ExitReason>,
     ) -> Result<StopReason, Box<dyn Error>> {
         let limit = self.progress_limit;
-        let settled = self.live()?.settle_terminal_console(reason, limit);
-        if let Err(error) = settled {
-            return Err(self.abandon(error));
-        }
+        let terminal_reason = match self.live()?.settle_terminal_console(reason, limit) {
+            Ok(reason) => reason,
+            Err(error) => return Err(self.abandon(error)),
+        };
         let detail = self
             .session
             .as_ref()
@@ -289,7 +289,7 @@ impl UmlSession {
             vtime: Moment(moment),
             info: CrashInfo {
                 kind,
-                detail: format!("{reason:?}\n{detail}").into_bytes(),
+                detail: format!("{terminal_reason:?}\n{detail}").into_bytes(),
             },
         })
     }

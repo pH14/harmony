@@ -245,7 +245,8 @@ from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
 UML terminal classification waits for the host console collector to finish, so
-the final kernel output cannot race the panic decision.
+the final kernel output cannot race the panic decision. Crash diagnostics report
+the settled exit status whether the bridge closure or process exit was seen first.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic
