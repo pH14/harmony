@@ -988,6 +988,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Branch { snap, env } => self.timed_restore(*snap, Some(env)),
             Request::Replay(snap) => self.timed_restore(*snap, None),
             Request::Run { until, resolve } => {
+                if until.deadline.is_some()
+                    && self
+                        .vmm
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .effective_vns()
+                        .is_none()
+                {
+                    return Ok(Err(ControlError::Unsupported));
+                }
                 if let Some(resolution) = resolve {
                     let Some((at, question)) = self
                         .vmm
@@ -1972,6 +1982,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        if self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .effective_vns()
+            .is_none()
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         if self
             .vmm
             .as_ref()
@@ -9425,6 +9444,50 @@ mod tests {
         );
         assert_eq!(hash(&mut server), before);
         assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
+    }
+
+    #[test]
+    fn deadline_requests_without_virtual_time_are_rejected_before_mutation() {
+        let make_vm = || {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_snapshot_hashing();
+            Ok(vmm)
+        };
+        let mut server = ControlServer::new(make_vm().unwrap(), Box::new(make_vm));
+        hello(&mut server);
+        let before = hash(&mut server);
+
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(10)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+
+        assert_eq!(
+            server
+                .handle(&Request::Exec {
+                    cmd: "echo hi".to_string(),
+                    deadline: Moment(10),
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
     }
 
     #[test]
