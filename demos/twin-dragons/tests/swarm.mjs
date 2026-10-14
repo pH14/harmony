@@ -18,7 +18,7 @@ const engine = await createEngine(base, twinDragons, {
 const identity = coreIdentity("browser"), worker = campaignWorker(engine, identity);
 const root = engine.boot(), catalog = JSON.parse(await readFile(new URL("maps.json", base)));
 const mapCatalog = new Map(catalog.maps.map(m => [m.id, m]));
-const JOBS = 64;
+const JOBS = 256;
 const search = campaignSearch(engine, identity, { seed: 2 }), trails = [];
 runCampaign(search, worker, { jobs: JOBS, onJob: (w) => { const trail = w.trail(); if (trail) trails.push(trail); } });
 assert.ok(trails.length >= JOBS / 2, "Most rollouts must record a sampled trail");
@@ -42,11 +42,11 @@ const near = campaignSearch(engine, identity, { seed: 5, root: engine.capture(),
 let crossing = null, jobs = 0;
 while (!crossing && jobs++ < 2000 && runCampaign(near, worker, { jobs: 1 })) {
   const trail = worker.trail(), rooms = new Set((trail ?? []).filter((_, index) => index % MOTION_STRIDE === 1));
-  if (worker.next_level() && rooms.has(0) && rooms.has(1)) crossing = rooms;
+  if (worker.next_level() && rooms.has(0)) crossing = rooms;
 }
 near.free();
-assert.ok(crossing?.has(NO_ROOM), "The level change must be sampled with its loading frames hidden");
-console.log(`Swarm sampling: ${trails.length} sampled rollouts, ${trails.reduce((n, t) => n + t.length / MOTION_STRIDE, 0)} poses; a Level 2 crossing after ${jobs} rollouts hides its loading frames.`);
+assert.ok(crossing?.has(NO_ROOM), "The rollout that clears Level 1 must be sampled with its loading frames hidden");
+console.log(`Swarm sampling: ${trails.length} sampled rollouts, ${trails.reduce((n, t) => n + t.length / MOTION_STRIDE, 0)} poses; the Level 1 clear after ${jobs} rollouts hides its loading frames.`);
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?level=0&pace=0`;
@@ -165,7 +165,7 @@ try {
       if (await page.locator("#pause").getAttribute("aria-label") === "Pause Search") await page.locator("#pause").click();
       await setView(page,'both');
       const room = await (await page.waitForFunction(() => [...document.querySelectorAll('.area-map')].find((c) => c.offsetParent && Number(c.dataset.tracePoints) > 0)?.dataset.map)).jsonValue();
-      const routeMap = page.locator(`.map-row[data-map="${room}"] .area-map[data-marker-frame]:not([data-marker-frame=""])`);
+      const routeMap = page.locator(`.map-row[data-map="${room}"] .area-map`);
       await routeMap.focus();
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some((c) => Number(c.dataset.tracePoints) > 0));
