@@ -4366,6 +4366,31 @@ where
     if header.format != workload.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
+    let origin_fields_match = header.origin_checkpoint_policy_changes.is_empty()
+        && match header.origin_kind.as_str() {
+            ORIGIN_GENESIS => {
+                header.origin_path.is_none()
+                    && header.origin_archive_sha256.is_none()
+                    && header.origin_checkpoint_path.is_none()
+                    && header.origin_checkpoint_sha256.is_none()
+            }
+            ORIGIN_SNAPSHOT_ROOT => {
+                header.origin_path.is_none()
+                    && header.origin_archive_sha256.is_none()
+                    && header.origin_checkpoint_path.is_some()
+                    && header.origin_checkpoint_sha256.is_some()
+            }
+            ORIGIN_ARCHIVE => {
+                header.origin_path.is_some()
+                    && header.origin_archive_sha256.is_some()
+                    && (header.origin_checkpoint_path.is_some()
+                        == header.origin_checkpoint_sha256.is_some())
+            }
+            _ => true,
+        };
+    if !origin_fields_match {
+        return Err("campaign stream origin provenance is inconsistent".into());
+    }
     if !schedule_policy_is_supported(&header.schedule_policy) {
         return Err("campaign stream schedule policy is not recognized".into());
     }
@@ -6359,6 +6384,27 @@ mod tests {
                 "replay certified forged {field}: {:?}",
                 result.unwrap().0
             );
+        }
+    }
+
+    #[test]
+    fn replay_rejects_source_provenance_on_a_genesis_campaign() {
+        let (workload, original_lines) = five_job_campaign_stream();
+        for field in [
+            "origin_path",
+            "origin_archive_sha256",
+            "origin_checkpoint_path",
+            "origin_checkpoint_sha256",
+        ] {
+            let mut lines = original_lines.clone();
+            let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            header[field] = serde_json::json!("forged-source");
+            lines[0] = serde_json::to_string(&header).unwrap();
+            let error =
+                replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                    .expect_err("genesis replay copied a forged source into its report")
+                    .to_string();
+            assert!(error.contains("origin provenance"), "{field}: {error}");
         }
     }
 
