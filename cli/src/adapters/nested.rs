@@ -19,6 +19,22 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let bytes = fs::read(path.join("artifacts").join(name))?;
+        let expected = source
+            .artifacts
+            .get(name)
+            .ok_or_else(|| format!("saved nested run has no {name} digest"))?;
+        if crate::runtime::digest(&bytes) != *expected {
+            return Err(format!("recorded nested {name} changed during load").into());
+        }
+        Ok(bytes)
+    };
+    Ok((read("kernel")?, read("initramfs")?))
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn verified_report(
     path: &Path,
@@ -167,11 +183,8 @@ fn execute(mut request: Request) -> Result<u8> {
             Ok((path, m, stream))
         })
         .transpose()?;
-    let (kernel, initramfs) = if let Some((path, _, _)) = &original {
-        (
-            fs::read(path.join("artifacts/kernel"))?,
-            fs::read(path.join("artifacts/initramfs"))?,
-        )
+    let (kernel, initramfs) = if let Some((path, source, _)) = &original {
+        saved_replay_inputs(path, source)?
     } else {
         let runtime = crate::runners::consonance(&request.config.runner)?;
         if runtime.kernel.is_none() {
@@ -248,6 +261,40 @@ fn execute(mut request: Request) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_replay_refuses_a_temporary_source_artifact_swap() {
+        let source = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest
+            .store(source.path(), "kernel", b"kernel A")
+            .unwrap();
+        manifest
+            .store(source.path(), "initramfs", b"initramfs A")
+            .unwrap();
+        manifest.verify(source.path()).unwrap();
+
+        for (name, original, changed) in [
+            ("kernel", b"kernel A".as_slice(), b"kernel B".as_slice()),
+            (
+                "initramfs",
+                b"initramfs A".as_slice(),
+                b"initramfs B".as_slice(),
+            ),
+        ] {
+            fs::write(source.path().join("artifacts").join(name), changed).unwrap();
+            let loaded = saved_replay_inputs(source.path(), &manifest);
+            fs::write(source.path().join("artifacts").join(name), original).unwrap();
+            let inherited = manifest
+                .inherit(source.path(), child.path(), "replay")
+                .unwrap();
+            assert_eq!(inherited.artifacts[name], crate::runtime::digest(original));
+            assert!(loaded.is_err());
+        }
+    }
 
     #[test]
     fn saved_stream_substitution_fails_before_replay() {
