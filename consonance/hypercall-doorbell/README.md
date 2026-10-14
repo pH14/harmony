@@ -19,10 +19,10 @@ arm64). `IoDoorbell` is the seam used by loopback tests and alternate VMM
 integrations. The public `VmcallTransport` name is retained for API stability;
 the production mechanism is the port/MMIO doorbell described above.
 The MMIO ring places a hardware release barrier before the register store and
-an acquire barrier after it returns. This publishes the request page before the
-host handles the trap and orders reads of the host-written response page after
-the trap. The Linux `/dev/harmony` driver uses the corresponding `virt_wmb()`
-and `virt_rmb()` barriers around its doorbell exchange.
+a full barrier after it returns. This publishes the request page before the
+host handles the trap and orders the register store before reads of the
+host-written response page. The Linux `/dev/harmony` driver also brackets its
+synchronous doorbell exchange with `virt_wmb()` and `virt_rmb()`.
 
 ## Exchange safety
 
