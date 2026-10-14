@@ -1841,6 +1841,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Ok(())
     }
 
+    fn poison_crossed_schedule(&mut self, vns: u64) -> Option<ControlError> {
+        let moment = [
+            self.schedule.keys().next().copied(),
+            self.reseed_schedule.keys().next().copied(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .filter(|&moment| moment <= vns)?;
+        let failure = ScheduleFailure { moment, vtime: vns };
+        let error = failure.reply();
+        self.schedule_poisoned = Some(failure);
+        Some(error)
+    }
+
     fn run_inner(
         &mut self,
         until: &control_proto::StopConditions,
@@ -1923,6 +1938,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     let stop = vmm.take_sdk_stop();
                     if matches!(stop, Some(SdkStop::Decision { .. })) {
+                        if let Some(error) = self.poison_crossed_schedule(vns) {
+                            return Ok(Err(error));
+                        }
                         return Ok(Ok(Reply::Stop(sdk_stop_to_reason(
                             stop.expect("decision is present"),
                             vns,
@@ -8183,6 +8201,205 @@ mod tests {
         assert!(matches!(
             s.handle(&req).unwrap(),
             Err(ControlError::ScheduleUnsatisfiable { .. })
+        ));
+    }
+
+    struct CompletionChainBackend(MockBackend, bool);
+
+    impl Backend for CompletionChainBackend {
+        type A = vmm_backend::X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.0.set_policy(policy)
+        }
+
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: the inner mock only records the region and does not dereference host memory.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+
+        fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
+            self.0.run()
+        }
+
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.0.inject(event)
+        }
+
+        fn set_pending_irq(&mut self, irq: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(irq)
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(value)
+        }
+
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+
+        fn complete_hypercall(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(value)
+        }
+
+        fn complete_arch(
+            &mut self,
+            completion: vmm_backend::X86Completion,
+        ) -> vmm_backend::Result<()> {
+            self.0.complete_arch(completion)
+        }
+
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.0.retire_pending_completion()
+        }
+
+        fn finish_exit(&mut self) -> vmm_backend::Result<Option<Exit<vmm_backend::X86>>> {
+            if std::mem::take(&mut self.1) {
+                return self.0.run().map(Some);
+            }
+            Ok(None)
+        }
+
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.0.save()
+        }
+
+        fn restore(&mut self, state: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.0.restore(state)
+        }
+
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts();
+        }
+
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
+            self.0.capabilities()
+        }
+    }
+
+    #[test]
+    fn chained_decision_cannot_skip_a_crossed_fault() {
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0u8; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let mut backend = MockBackend::with_exits(vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(u32::from(b'x')),
+            }),
+            Exit::Arch(X86Exit::Io {
+                port: 0x0ca1,
+                size: 4,
+                write: Some(len as u32),
+            }),
+        ]);
+        backend
+            .set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+        let mut vmm = Vmm::new(
+            CompletionChainBackend(backend, true),
+            GuestRam::new(BIG_RAM).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
+        vmm.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[0xe000..0xe000 + len].copy_from_slice(&frame[..len]);
+        vmm.restore_guest_memory(&ram).unwrap();
+        let mut server = ControlServer::new(
+            vmm,
+            Box::new(|| Err(VmmError::ContractViolation("unused".into()))),
+        );
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::XorMemory {
+                            gpa: 0x40,
+                            bytes: vec![1],
+                        }
+                        .encode()
+                    ),
+                    at: Moment(1),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let result = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap();
+        assert!(
+            matches!(result, Err(ControlError::ScheduleUnsatisfiable { moment: 1, vtime }) if vtime >= 1),
+            "crossed fault must fail closed before surfacing the decision: {result:?}"
+        );
+        assert_eq!(server.vmm().unwrap().guest_memory()[0x40], 0);
+        assert!(server.recorded.effects().is_empty());
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable { moment: 1, .. })
         ));
     }
 
