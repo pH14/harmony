@@ -451,6 +451,18 @@ fn checkpoint_origin_input(parent: &Path, manifest: &Manifest) -> Result<serde_j
     Ok(saved)
 }
 
+fn read_recorded_artifact(path: &Path, manifest: &Manifest, name: &str) -> Result<Vec<u8>> {
+    let bytes = fs::read(path.join("artifacts").join(name))?;
+    let expected = manifest
+        .artifacts
+        .get(name)
+        .ok_or_else(|| format!("saved run has no {name} digest"))?;
+    if crate::runtime::digest(&bytes) != *expected {
+        return Err(format!("recorded artifact {name} changed during load").into());
+    }
+    Ok(bytes)
+}
+
 fn rooted_search_start(
     original: &Manifest,
     point: &crate::selection::Point,
@@ -532,7 +544,7 @@ fn continue_search(request: Request) -> Result<u8> {
         wall_seconds: m.config.search.wall_seconds,
         checkpoint_owner: m.checkpoint_owner.clone(),
     };
-    let rom = fs::read(out.join("artifacts/input"))?;
+    let rom = read_recorded_artifact(&out, &m, "input")?;
     let result = if m.config.runner.kind == "quicknes" {
         nes_workload::package::search_native(
             &rom,
@@ -548,8 +560,8 @@ fn continue_search(request: Request) -> Result<u8> {
         {
             nes_workload::package::search_saved_guest(
                 &rom,
-                &fs::read(out.join("artifacts/kernel"))?,
-                &fs::read(out.join("artifacts/initramfs"))?,
+                &read_recorded_artifact(&out, &m, "kernel")?,
+                &read_recorded_artifact(&out, &m, "initramfs")?,
                 &options,
                 &start,
             )
@@ -620,6 +632,37 @@ mod tests {
         CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
     };
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn rooted_search_refuses_artifacts_changed_after_manifest_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "branch").unwrap();
+        for name in ["input", "kernel", "initramfs"] {
+            manifest
+                .store(directory.path(), name, name.as_bytes())
+                .unwrap();
+        }
+        manifest.save(directory.path()).unwrap();
+        manifest.verify(directory.path()).unwrap();
+
+        for name in ["input", "kernel", "initramfs"] {
+            let original = name.as_bytes();
+            let path = directory.path().join("artifacts").join(name);
+            fs::write(&path, b"different bytes").unwrap();
+            let error = read_recorded_artifact(directory.path(), &manifest, name)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("artifact {name} changed during load")));
+            fs::write(&path, original).unwrap();
+            assert_eq!(
+                read_recorded_artifact(directory.path(), &manifest, name).unwrap(),
+                original
+            );
+        }
+    }
 
     #[test]
     fn rooted_search_records_the_canonical_accepted_input() {
