@@ -222,11 +222,14 @@ reads the vCPU. Completed MMIO reads and MMIO writes remain capturable;
 placeholder ARM64 sysreg exits remain uncapturable while their completion is
 pending. The ARM64 KVM backend leaves an MMIO write, or a read once its data is
 supplied, for the next `KVM_RUN` to complete, so each access costs one entry.
-`save` and `restore` first complete it with one immediate-exit entry, so the
-captured registers are past the access and a restore never leaves a completion
-to land on the restored registers. The backend counts and times those entries
+`save` completes it with one immediate-exit entry; `restore` first validates
+the requested state, then completes it before writing the restored state. A
+rejected restore therefore leaves an owed access untouched, while captured
+registers are past the access and a valid restore never leaves a completion to
+land on the restored registers. The backend counts and times those entries
 and reports the totals through `Backend::store_completions`, since they are
-host cost the exit table cannot see.
+host cost the exit table cannot see. An unexpected completion failure retires
+the vCPU because the kernel entry may already have advanced guest state.
 HVF rejects a restore with PSTATE bits above bit 31 before changing registers:
 its CPSR setter accepts those bits but discards them on the next capture.
 Its FPCR and FPSR setters likewise discard bits above bit 31, so restore

@@ -1229,8 +1229,10 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         }
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
+        self.state_poisoned = true;
         self.kvm.complete_mmio_exit()?;
         self.mmio_owed = false;
+        self.state_poisoned = false;
         self.completions.runs = self.completions.runs.saturating_add(1);
         self.completions.nanos = self
             .completions
@@ -1570,8 +1572,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
-        self.settle_mmio()?;
         self.validate_restore_state(state)?;
+        self.settle_mmio()?;
         if let Err(error) = restore_vcpu(&mut self.kvm, state) {
             self.state_poisoned = true;
             return Err(error);
@@ -1620,6 +1622,8 @@ pub struct FakeKvm {
     reg_writes: usize,
     #[cfg(test)]
     fail_reg_write_on: Option<usize>,
+    #[cfg(test)]
+    fail_mmio_completion: bool,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
@@ -1911,6 +1915,11 @@ impl Arm64Kvm for FakeKvm {
 
     fn complete_mmio_exit(&mut self) -> Result<()> {
         self.calls.push("complete_mmio_exit");
+        #[cfg(test)]
+        if self.fail_mmio_completion {
+            self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
+            return Err(BackendError::Internal("injected MMIO completion failure"));
+        }
         Ok(())
     }
 
@@ -3575,6 +3584,52 @@ mod tests {
             .rposition(|&call| call == "set_one_reg")
             .unwrap();
         assert!(completed < restored);
+    }
+
+    #[test]
+    fn invalid_restore_leaves_owed_mmio_store_uncompleted() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut invalid = backend.save().unwrap();
+        invalid.vtimer.masked = false;
+
+        backend.run().unwrap();
+        assert_eq!(completions(&backend), 0);
+        assert!(backend.mmio_owed);
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(completions(&backend), 0);
+        assert!(backend.mmio_owed);
+    }
+
+    #[test]
+    fn failed_mmio_settlement_retires_vcpu_after_partial_progress() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.run().unwrap();
+        backend.kvm.fail_mmio_completion = true;
+
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("injected MMIO completion failure"))
+        ));
+        assert_eq!(backend.kvm.reg(core_reg(CORE_PC)), Some(0xdead_beef));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     #[test]
