@@ -122,9 +122,11 @@ Tar header timestamps must be valid nonnegative numbers within the signed
 64-bit range: macOS and GNU tar disagree on malformed, negative, or larger
 header timestamps. PAX `mtime`, `atime`, and `ctime` records require signed
 decimal values within that range, with an optional fractional part. The
-rootfs CPIO writer sets file timestamps to zero instead of preserving the
-extracted times, but malformed PAX times can still make GNU tar fail where
-macOS tar succeeds.
+rootfs CPIO writer sets every file timestamp to zero, but malformed PAX times
+can still make GNU tar fail where macOS tar succeeds.
+PAX size and owner fields require unsigned decimal digits. A leading plus
+sign can make macOS extract a different payload size while GNU tar reports an
+invalid extended header.
 All tar numeric fields require octal digits with only space or NUL padding, or
 a nonnegative base-256 value. An empty space-only field, a leading plus sign,
 newline, or bytes after the NUL terminator can be interpreted differently by
