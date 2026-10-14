@@ -1151,6 +1151,9 @@ impl Backend for KvmBackend {
                 unsafe { raw_set_sregs2(self.vcpu.as_raw_fd(), sregs) }
             })?;
             self.restore_msrs(state)?;
+            if self.host_amd_compatible {
+                self.vcpu.set_xcrs(&xcrs_of(1)).map_err(kvm_err)?;
+            }
             self.vcpu.set_xcrs(&xcrs_of(state.xcr0)).map_err(kvm_err)?;
             self.restore_xsave(&xsave)?;
             self.vcpu
