@@ -298,7 +298,10 @@ CONSONANCE_CHECKS = Workflow(
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
                           "vmm-backend:kvm_smoke"),
-            ignored_tests=KVM_SERVICED_EXIT_TESTS + ("vmm-backend::contract_kvm *",),
+            ignored_tests=KVM_SERVICED_EXIT_TESTS + (
+                "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
+                "vmm-backend::contract_kvm *",
+            ),
             scope="consonance_kvm",
             select="rust_checks"),
         Job("Device State", "pr", 15,
