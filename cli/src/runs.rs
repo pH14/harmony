@@ -312,6 +312,7 @@ fn checkpoint_record_unbound(path: &Path) -> Result<CheckpointRecord> {
     )?;
     let mut recorded_files = BTreeSet::new();
     let mut selected = None;
+    let mut next_executions = None;
     for (index, line) in text.lines().rev().enumerate() {
         let record: serde_json::Value = match serde_json::from_str(line) {
             Ok(record) => record,
@@ -321,9 +322,22 @@ fn checkpoint_record_unbound(path: &Path) -> Result<CheckpointRecord> {
         let file = record["file"]
             .as_str()
             .ok_or("checkpoint journal record has no file")?;
+        let executions = record["executions"]
+            .as_u64()
+            .ok_or("checkpoint journal record has no executions")?;
+        if next_executions.is_some_and(|next| executions > next) {
+            return Err("checkpoint journal orders retained checkpoints backwards".into());
+        }
+        next_executions = Some(executions);
         let name = Path::new(file)
             .file_name()
             .ok_or("invalid checkpoint filename")?;
+        if name.to_str() != Some(file)
+            || !file.starts_with(&format!("{executions:012}-"))
+            || !file.ends_with(".ckpt")
+        {
+            return Err("checkpoint journal filename differs from its execution count".into());
+        }
         recorded_files.insert(name.to_owned());
         if selected.is_none() {
             let candidate = directory.join(name);
@@ -334,6 +348,9 @@ fn checkpoint_record_unbound(path: &Path) -> Result<CheckpointRecord> {
                 .as_str()
                 .ok_or("checkpoint journal has no checkpoint SHA-256")?;
             let (header, sha256) = searcher::search::checkpoint::read_header_with_sha(&candidate)?;
+            if header.executions != executions {
+                return Err("checkpoint journal execution count differs from checkpoint".into());
+            }
             if sha256 != expected {
                 return Err("checkpoint differs from its journal record".into());
             }
@@ -474,7 +491,7 @@ mod checkpoint_tests {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("checkpoints");
         fs::create_dir(&directory).unwrap();
-        let checkpoint = directory.join("checkpoint.bin");
+        let checkpoint = directory.join("000000000004-interval.ckpt");
         write_checkpoint(&checkpoint, 4, 7, 1, None);
         let journal = directory.join("checkpoints.jsonl");
         let checkpoint_sha256 = file_digest(&checkpoint).unwrap();
@@ -482,7 +499,7 @@ mod checkpoint_tests {
             fs::write(
                 &journal,
                 format!(
-                    "{{\"file\":\"checkpoint.bin\",\"executions\":4,\"reserved\":7,\"checkpoint_sha256\":\"{checkpoint_sha256}\"}}\n{suffix}"
+                    "{{\"file\":\"000000000004-interval.ckpt\",\"executions\":4,\"reserved\":7,\"checkpoint_sha256\":\"{checkpoint_sha256}\"}}\n{suffix}"
                 ),
             )
             .unwrap();
@@ -491,7 +508,7 @@ mod checkpoint_tests {
             assert_eq!(selected.sha256, checkpoint_sha256);
             assert_eq!(reserved, 7);
         }
-        write_journal(&directory, "checkpoint.bin", 4, 7);
+        write_journal(&directory, "000000000004-interval.ckpt", 4, 7);
         let first = fs::read_to_string(&journal).unwrap();
         fs::write(&journal, format!("{first}{{\"file\":broken}}")).unwrap();
         assert!(checkpoint_record(root.path()).is_err());
@@ -504,9 +521,9 @@ mod checkpoint_tests {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("checkpoints");
         fs::create_dir(&directory).unwrap();
-        let checkpoint = directory.join("checkpoint.ckpt");
+        let checkpoint = directory.join("000000000003-interval.ckpt");
         write_checkpoint(&checkpoint, 3, 3, 1, None);
-        write_journal(&directory, "checkpoint.ckpt", 3, 7);
+        write_journal(&directory, "000000000003-interval.ckpt", 3, 7);
         let (selected, reserved) = checkpoint_record(root.path()).unwrap();
         assert_eq!(selected.path, checkpoint);
         assert_eq!(reserved, 3);
@@ -523,19 +540,19 @@ mod checkpoint_tests {
             };
             let directory = search.join("checkpoints");
             fs::create_dir_all(&directory).unwrap();
-            let checkpoint = directory.join("checkpoint.ckpt");
+            let checkpoint = directory.join("000000000003-interval.ckpt");
             let mut config = Config::default();
             config.runner.kind = "test".into();
             let mut manifest = Manifest::new(config, "search").unwrap();
             let owner = manifest.checkpoint_owner.clone();
             write_checkpoint(&checkpoint, 3, 3, 1, owner.as_deref());
-            write_journal(&directory, "checkpoint.ckpt", 3, 3);
+            write_journal(&directory, "000000000003-interval.ckpt", 3, 3);
             manifest.status = "complete".into();
             manifest.save(root.path()).unwrap();
             assert_eq!(checkpoint_record(&search).unwrap().0.path, checkpoint);
 
             write_checkpoint(&checkpoint, 3, 3, 17, owner.as_deref());
-            write_journal(&directory, "checkpoint.ckpt", 3, 3);
+            write_journal(&directory, "000000000003-interval.ckpt", 3, 3);
             assert!(
                 checkpoint_record(&search)
                     .unwrap_err()
@@ -550,19 +567,19 @@ mod checkpoint_tests {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("checkpoints");
         fs::create_dir(&directory).unwrap();
-        let checkpoint = directory.join("checkpoint.ckpt");
+        let checkpoint = directory.join("000000000003-interval.ckpt");
         let mut config = Config::default();
         config.runner.kind = "test".into();
         let mut saved = Manifest::new(config, "search").unwrap();
         write_checkpoint(&checkpoint, 3, 3, 1, saved.checkpoint_owner.as_deref());
-        write_journal(&directory, "checkpoint.ckpt", 3, 3);
+        write_journal(&directory, "000000000003-interval.ckpt", 3, 3);
         saved.status = "complete".into();
         saved.save(root.path()).unwrap();
 
         let original = Manifest::read(root.path()).unwrap();
         original.verify(root.path()).unwrap();
         write_checkpoint(&checkpoint, 3, 3, 17, saved.checkpoint_owner.as_deref());
-        write_journal(&directory, "checkpoint.ckpt", 3, 3);
+        write_journal(&directory, "000000000003-interval.ckpt", 3, 3);
         saved.save(root.path()).unwrap();
         let changed = Manifest::read(root.path()).unwrap();
         assert_ne!(original.checkpoint_sha256, changed.checkpoint_sha256);
@@ -580,19 +597,19 @@ mod checkpoint_tests {
         let root = tempfile::tempdir().unwrap();
         let directory = root.path().join("checkpoints");
         fs::create_dir(&directory).unwrap();
-        let checkpoint = directory.join("checkpoint.ckpt");
+        let checkpoint = directory.join("000000000003-interval.ckpt");
         let mut config = Config::default();
         config.runner.kind = "test".into();
         let manifest = Manifest::new(config.clone(), "search").unwrap();
         let foreign = Manifest::new(config, "search").unwrap();
         assert_ne!(manifest.checkpoint_owner, foreign.checkpoint_owner);
         write_checkpoint(&checkpoint, 3, 3, 1, manifest.checkpoint_owner.as_deref());
-        write_journal(&directory, "checkpoint.ckpt", 3, 3);
+        write_journal(&directory, "000000000003-interval.ckpt", 3, 3);
         manifest.save(root.path()).unwrap();
         assert_eq!(checkpoint_record(root.path()).unwrap().0.path, checkpoint);
 
         write_checkpoint(&checkpoint, 3, 3, 17, foreign.checkpoint_owner.as_deref());
-        write_journal(&directory, "checkpoint.ckpt", 3, 3);
+        write_journal(&directory, "000000000003-interval.ckpt", 3, 3);
         assert!(
             checkpoint_record(root.path())
                 .unwrap_err()
@@ -630,7 +647,51 @@ mod checkpoint_tests {
             checkpoint_record(root.path())
                 .unwrap_err()
                 .to_string()
-                .contains("checkpoint differs from its journal record")
+                .contains("checkpoint journal execution count differs from checkpoint")
+        );
+    }
+
+    #[test]
+    fn interrupted_search_refuses_reordered_retained_checkpoints() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let manifest = Manifest::new(config, "search").unwrap();
+        let older = directory.join("000000000100-interval.ckpt");
+        let latest = directory.join("000000000106-final.ckpt");
+        write_checkpoint(&older, 100, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000100-interval.ckpt", 100, 106);
+        let older_record = fs::read_to_string(directory.join("checkpoints.jsonl")).unwrap();
+        write_checkpoint(&latest, 106, 106, 1, manifest.checkpoint_owner.as_deref());
+        write_journal(&directory, "000000000106-final.ckpt", 106, 106);
+        let latest_record = fs::read_to_string(directory.join("checkpoints.jsonl")).unwrap();
+        manifest.save(root.path()).unwrap();
+        fs::write(
+            directory.join("checkpoints.jsonl"),
+            format!("{latest_record}{older_record}"),
+        )
+        .unwrap();
+
+        assert!(
+            checkpoint_record_verified(root.path(), &manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("checkpoint journal orders retained checkpoints backwards")
+        );
+
+        let forged_latest = latest_record.replace("\"executions\":106", "\"executions\":99");
+        fs::write(
+            directory.join("checkpoints.jsonl"),
+            format!("{forged_latest}{older_record}"),
+        )
+        .unwrap();
+        assert!(
+            checkpoint_record_verified(root.path(), &manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("checkpoint journal filename differs from its execution count")
         );
     }
 
