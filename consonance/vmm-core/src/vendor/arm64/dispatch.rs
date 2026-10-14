@@ -1917,18 +1917,19 @@ mod tests {
         };
         let mut source = machine();
         let valid = source.save_vm_state().unwrap();
-        let mut legacy = valid.clone();
-        let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
-        dev.gic.as_mut().unwrap().version = 5;
-        legacy.devices = records::encode_device_blob(&dev);
-
         let mut target = machine();
         let before = target.save_vm_state().unwrap();
-        assert!(matches!(
-            target.restore_vm_state(&legacy),
-            Err(VmmError::Snapshot(SnapshotError::DeviceRestore(_)))
-        ));
-        assert_eq!(target.save_vm_state().unwrap(), before);
+        for version in [5, 6] {
+            let mut legacy = valid.clone();
+            let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
+            dev.gic.as_mut().unwrap().version = version;
+            legacy.devices = records::encode_device_blob(&dev);
+            assert!(matches!(
+                target.restore_vm_state(&legacy),
+                Err(VmmError::Snapshot(SnapshotError::DeviceRestore(_)))
+            ));
+            assert_eq!(target.save_vm_state().unwrap(), before);
+        }
         target.restore_vm_state(&valid).unwrap();
     }
 

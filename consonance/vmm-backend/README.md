@@ -340,21 +340,29 @@ ARM KVM also exposes the guest physical timer. A guest can change
 `CNTP_CVAL_EL0` while `CNTP_CTL_EL0` is disabled, or arm the timer and receive
 PPI 30. Neither register belongs to the portable vCPU record. ARM KVM therefore
 admits capture only when both physical-timer registers equal the fresh-vCPU
-zero baseline, and clears both before guest entry and restore. GIC state version
-6 rejects older Arm snapshots that did not prove this condition. KVM owns the
+zero baseline, and clears both before guest entry and restore. KVM owns the
 virtual-timer PPI 20 and physical-timer PPI 30: it accepts a userspace line
 write for either one but clears that line before the guest can accept it, so
 the backend refuses external injection of both timer-owned PPIs. The
 live `guest_physical_timer_state_refuses_capture_and_legacy_restore` check
 observes a programmed timer's guest control value of `0x5` against a fresh
 guest's `0x0`, then verifies capture and old-record restore refusal. It also
-checks a disabled timer with a nonzero compare value. KVM can retain a
-timer-owned PPI 20 or 30 in pending, active, or asserted line state after the
-timer controls return to zero at a terminal cut. Capture refuses any of those
-delivery states, and restore rejects a record containing one. The live
+checks a disabled timer with a nonzero compare value. KVM can leave PPI 20 or
+30 asserted after the timer controls return to zero at a shutdown exit.
+Capture also refuses a pending or active bit on either timer-owned PPI, and
+restore rejects a record containing any of those three delivery states. The live
 `guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore` check
-exercises the asserted PPI 30 terminal cut and confirms an external PPI 29
+exercises the asserted PPI 30 shutdown cut and confirms an external PPI 29
 remains admitted.
+
+ARM KVM also exposes a guest-writable `DISR_EL1` value. It is absent from the
+portable vCPU record: a guest-written `0x1234` survived uninterrupted execution
+but read back as zero after a cold restore. Capture now refuses a nonzero
+`DISR_EL1`, and policy installation and restore clear it to the fresh-vCPU zero
+baseline. Arm GIC state version 7 rejects older snapshots that lacked proof of
+both the physical-timer and `DISR_EL1` boundaries. The live
+`guest_disr_state_refuses_capture_and_legacy_restore` check covers capture
+refusal, version-6 restore refusal, and a clean restore into a reused vCPU.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before

@@ -431,6 +431,47 @@ fn guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_disr_state_refuses_capture_and_legacy_restore() {
+    let program = [
+        0xd282_4680,
+        0xd518_c120,
+        0xd503_3fdf,
+        0xd538_c120,
+        0xd2a1_2001,
+        0xf900_0020,
+        0xd538_c120,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    let mut clean = source.save();
+    clean.core.pc = RAM + 24;
+    clean.core.x[1] = OUTPUT;
+    assert_eq!(source.next_store(), 0x1234);
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { what })
+            if what == "save ARM KVM with noncanonical DISR_EL1"
+    ));
+
+    let mut legacy = clean;
+    legacy.gic.as_mut().unwrap().version = 6;
+    assert!(matches!(
+        source.backend.restore(&legacy),
+        Err(vmm_backend::BackendError::InvalidState)
+    ));
+    assert_eq!(source.next_store(), 0x1234);
+
+    source.restore(&clean);
+    assert_eq!(source.next_store(), 0);
+    let mut cold = Guest::new(live_backend(), &program);
+    cold.restore(&clean);
+    assert_eq!(cold.next_store(), 0);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
     let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
     let mut state = guest.save();

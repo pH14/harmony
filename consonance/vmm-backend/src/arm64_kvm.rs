@@ -53,7 +53,7 @@ const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
 pub(crate) const KVM_VTIMER_PPI: u32 = 20;
 const KVM_PTIMER_PPI: u32 = 30;
-const GIC_STATE_VERSION: u32 = 6;
+const GIC_STATE_VERSION: u32 = 7;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -461,6 +461,7 @@ const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
 const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
 const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
+const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
@@ -1018,6 +1019,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
             what: "save ARM KVM with noncanonical physical timer state",
         });
     }
+    if k.get_one_reg(DISR_EL1)? != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with noncanonical DISR_EL1",
+        });
+    }
     s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
     s.vtimer.counter = k.get_one_reg(CNTVCT_EL0)?;
     s.vtimer.masked = true;
@@ -1062,6 +1068,7 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
+    k.set_one_reg(DISR_EL1, 0)?;
     k.set_one_reg(CNTP_CTL_EL0, 0)?;
     k.set_one_reg(CNTP_CVAL_EL0, 0)?;
     k.set_one_reg(CNTVCT_EL0, s.vtimer.counter)?;
@@ -1384,6 +1391,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(DISR_EL1, 0)?;
         self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
         self.kvm.set_one_reg(CNTP_CVAL_EL0, 0)?;
         if !self.configured {
@@ -4133,6 +4141,34 @@ mod tests {
             }
         }
         assert_eq!(save_vcpu(&fake).unwrap(), valid);
+    }
+
+    #[test]
+    fn noncanonical_disr_refuses_capture_and_clean_restore_clears_it() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let valid = save_vcpu(&fake).unwrap();
+        fake.set_one_reg(DISR_EL1, 0x1234).unwrap();
+        assert!(matches!(
+            save_vcpu(&fake),
+            Err(BackendError::Unsupported { what })
+                if what == "save ARM KVM with noncanonical DISR_EL1"
+        ));
+        restore_vcpu(&mut fake, &valid).unwrap();
+        assert_eq!(fake.get_one_reg(DISR_EL1).unwrap(), 0);
+        let mut legacy = valid;
+        legacy.gic.as_mut().unwrap().version = 6;
+        assert!(matches!(
+            validate_restore_vcpu_state(&legacy),
+            Err(BackendError::InvalidState)
+        ));
+
+        let mut policy_fake = FakeKvm::new();
+        policy_fake.vcpu_init().unwrap();
+        policy_fake.set_one_reg(DISR_EL1, 0x1234).unwrap();
+        let mut backend = Arm64KvmBackend::new(policy_fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(backend.kvm.get_one_reg(DISR_EL1).unwrap(), 0);
     }
 
     #[test]
