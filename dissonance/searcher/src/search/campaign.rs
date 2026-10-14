@@ -4385,6 +4385,9 @@ where
     {
         return Err("campaign stream job reservations are not contiguous".into());
     }
+    if u64::try_from(replay_job_reservations.len())? > header.execution_budget {
+        return Err("campaign stream exceeds its recorded execution budget".into());
+    }
     let replay_job_parents = replay_job_reservations.into_values().collect::<Vec<_>>();
     let replay_job_metadata = replay_job_parents
         .iter()
@@ -6121,6 +6124,59 @@ mod tests {
                 .expect_err("replay certified reservations made after an objective")
                 .to_string();
         assert!(error.contains("after its objective stop"), "{error}");
+    }
+
+    fn five_job_campaign_stream() -> (TestWorkload, Vec<String>) {
+        let config = CampaignConfig {
+            campaign_seed: 7,
+            workers: 1,
+            execution_budget: 5,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 16,
+            window: 2,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("live campaign");
+        assert_eq!(live.executions_completed, 5);
+        let lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        (workload, lines)
+    }
+
+    #[test]
+    fn replay_rejects_more_reservations_than_its_execution_budget() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["execution_budget"] = serde_json::json!(1);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified five jobs under a one-job budget")
+                .to_string();
+        assert!(error.contains("recorded execution budget"), "{error}");
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,

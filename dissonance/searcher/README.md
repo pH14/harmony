@@ -20,7 +20,8 @@ selection plus `action_cost` summed over its replay and suffix actions. Jobs
 are dispatched and admitted in planned-finish order, with ties broken by
 reservation, so a short job reserved after a long one does not wait for it.
 Job records carry their reservation, and replay checks that admissions follow
-planned-finish order and that reservations form a contiguous sequence. One coordinator
+planned-finish order and that reservations form a contiguous sequence within
+the recorded execution budget. One coordinator
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
