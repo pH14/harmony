@@ -250,6 +250,29 @@ class CounterScanCoverage(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn("duplicate allocated data section '.rodata'", result.stderr)
 
+            straddle = root / "straddle.s"
+            straddle.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n.byte 0x0f,0xc7\n'
+                '.section .safe,"ax"\n.byte 0xf8,0xc3\n'
+            )
+            linker = root / "straddle.ld"
+            linker.write_text("SECTIONS { . = 0x400000; .text : { *(.text) } .safe : { *(.safe) } }\n")
+            run("as", "--64", "-o", str(root / "straddle.o"), str(straddle))
+            run(
+                "ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o",
+                str(root / "straddle.elf"), str(root / "straddle.o"),
+            )
+            straddle_bytes = (root / "straddle.elf").read_bytes()
+            for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
+                kernel.write_bytes(safe_bytes)
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                target.write_bytes(straddle_bytes)
+                with self.subTest(mode="cross-section", target=tag):
+                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("cross-section RDSEED", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
