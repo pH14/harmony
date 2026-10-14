@@ -22,6 +22,7 @@ def headers(data):
         program_format = "<IIQQQQQQ"
         section_format = "<IIQQQQIIQQ"
         program_fields = (0, 1, 2, 3, 5)
+        names_index_offset = 62
     elif data[4] == 1:
         if unpack("<H", data, 18)[0] != 3:
             raise ValueError("expected an x86 ELF")
@@ -30,6 +31,7 @@ def headers(data):
         program_format = "<IIIIIIII"
         section_format = "<IIIIIIIIII"
         program_fields = (0, 6, 1, 2, 4)
+        names_index_offset = 50
     else:
         raise ValueError("unsupported ELF class")
     if not program_count or not section_count:
@@ -45,10 +47,23 @@ def headers(data):
     for index in range(program_count):
         fields = unpack(program_format, data, program_offset + index * program_size)
         programs.append((index, *(fields[position] for position in program_fields)))
+    names_index = unpack("<H", data, names_index_offset)[0]
+    if names_index >= section_count:
+        raise ValueError("section-name table is missing")
+    names_header = unpack(section_format, data, section_offset + names_index * section_size)
+    if names_header[1] != 3 or names_header[4] + names_header[5] > len(data):
+        raise ValueError("invalid section-name table")
+    names = data[names_header[4] : names_header[4] + names_header[5]]
     sections = []
     for index in range(section_count):
         fields = unpack(section_format, data, section_offset + index * section_size)
-        sections.append((fields[1], fields[2], fields[3], fields[4], fields[5]))
+        if fields[0] >= len(names):
+            raise ValueError("section name is outside the name table")
+        end = names.find(b"\0", fields[0])
+        if end < 0:
+            raise ValueError("unterminated section name")
+        name = names[fields[0] : end].decode("ascii")
+        sections.append((name, fields[1], fields[2], fields[3], fields[4], fields[5]))
     return programs, sections
 
 
@@ -63,7 +78,7 @@ def unclaimed_opcode(data, programs, sections):
         if offset + size > len(data):
             raise ValueError(f"PT_LOAD {index} extends beyond the file")
         claimed = bytearray(size)
-        for section_kind, section_flags, section_address, section_offset, section_size in sections:
+        for name, section_kind, section_flags, section_address, section_offset, section_size in sections:
             if not section_flags & 2 or section_kind == 8 or not section_size:
                 continue
             if section_offset + section_size > len(data):
@@ -74,8 +89,9 @@ def unclaimed_opcode(data, programs, sections):
                 raise ValueError(f"allocated section crosses PT_LOAD {index} boundary")
             if section_address - address != section_offset - offset:
                 raise ValueError(f"allocated section does not map to PT_LOAD {index} address")
-            begin = section_offset - offset
-            claimed[begin : begin + section_size] = b"\x01" * section_size
+            if section_flags & 4 or name in (".rodata", ".rodata..compressed"):
+                begin = section_offset - offset
+                claimed[begin : begin + section_size] = b"\x01" * section_size
 
         segment = data[offset : offset + size]
         for position in range(size - 1):
