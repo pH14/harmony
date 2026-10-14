@@ -1365,7 +1365,7 @@ dialog h2 {
 .search-details summary { padding: 4px 0; color: var(--muted); font-size: 11px; cursor: pointer; }
 .search-details .metrics { flex-direction: column; gap: 6px; margin-top: 6px; }
 .timeline-collapsed .search-details { display: none; }
-.search-speed { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 4px; color: var(--muted); font-size: 10px; }
+.search-speed { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 10px; color: var(--muted); font-size: 10px; }
 .search-speed > span:first-child { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; white-space: nowrap; }
 .search-speed output { color: var(--text); font: 11px ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 .search-speed input { width: 100%; margin: 0; accent-color: var(--accent); }

@@ -232,7 +232,7 @@ try {
   });
   assert.ok(heroLayout.totalsBottom <= heroLayout.goalTop, "Live totals sit above the level title");
   assert.equal(await page.locator("#branches .search-details").count(), 1, "Per-search counters sit in the Searches pane");
-  assert.equal(heroLayout.detailsOpen, false, "Per-search counters start collapsed");
+  assert.equal(heroLayout.detailsOpen, true, "Per-search counters start open");
   assert.equal(heroLayout.heading, "Harmony Arcade");
   const originImage = await page
     .locator("#film")
@@ -259,16 +259,14 @@ try {
       return ((count() - start) * 1000) / (performance.now() - began);
     }, ms);
   assert.equal(await page.locator("#search-speed-value").textContent(), "Unlimited");
-  await page.locator(".search-details summary").click();
   await page.locator("#search-speed").fill("0");
-  assert.equal(await page.locator("#search-speed-value").textContent(), "10/s");
+  assert.equal(await page.locator("#search-speed-value").textContent(), "10");
   await page.waitForTimeout(1000);
   const slow = await searchRate(4000);
   assert.ok(slow <= 16, `The slowest search speed must hold near 10 timelines/s; got ${slow.toFixed(1)}`);
   await page.locator("#search-speed").fill(await page.locator("#search-speed").getAttribute("max"));
   const fast = await searchRate(2000);
   assert.ok(fast > 40, `Unlimited search speed must lift the limit; got ${fast.toFixed(1)}`);
-  await page.locator(".search-details summary").click();
   await page.locator("#pause").click();
   await page.waitForTimeout(200);
   const attempts = await page.locator("#attempts").textContent();
