@@ -64,8 +64,12 @@ difference at work zero remains directly bisectable.
 returns zero if the machines already differ there, and otherwise verifies the
 bracket endpoints and probes each work count in ascending order with fresh
 executions. This costs `O(hi - lo)` probe pairs but finds the first mismatch
-even when observations diverge temporarily and then reconverge. The upper
-endpoint must still differ for the supplied interval to be a valid bracket.
+within the supplied bracket even when observations diverge temporarily and
+then reconverge. A matching checkpoint does not rule out an earlier transient
+difference. `first_divergence_from_report` and the CLI probe from work zero to
+the report's first mismatching checkpoint before claiming a global first work
+count, costing `O(first_mismatch)` probe pairs. The upper endpoint must still
+differ for the supplied interval to be a valid bracket.
 
 ## Reference machines
 

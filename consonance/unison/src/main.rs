@@ -5,7 +5,7 @@ use serde::Serialize;
 use std::process::ExitCode;
 use unison::flaky::{FlakyFactory, Perturbation};
 use unison::toy::{ToyFactory, generate_program};
-use unison::{CompareReport, DivergencePoint, Verdict, bisect_divergence, compare_runs};
+use unison::{CompareReport, DivergencePoint, Verdict, compare_runs, first_divergence_from_report};
 
 const CLI_PERTURB: Perturbation = Perturbation::XorPrng {
     mask: 0x5EED_5EED_5EED_5EED,
@@ -112,19 +112,7 @@ fn run(cli: Cli) -> Result<ExitCode, Box<dyn std::error::Error>> {
             let (toy, flaky) = factories(program_seed, min_work, diverge_at);
             let checkpoint_every = (limit / 16).max(1);
             let compare = compare_runs(&toy, &flaky, seed, checkpoint_every, limit)?;
-            let point = match compare.verdict {
-                Verdict::Diverged {
-                    last_match,
-                    first_mismatch,
-                } => Some(bisect_divergence(
-                    &toy,
-                    &flaky,
-                    seed,
-                    last_match.unwrap_or(0),
-                    first_mismatch,
-                )?),
-                _ => None,
-            };
+            let point = first_divergence_from_report(&toy, &flaky, seed, &compare)?;
             let code = exit_for_verdict(&compare.verdict);
             print_json(&BisectOutput { compare, point })?;
             Ok(code)

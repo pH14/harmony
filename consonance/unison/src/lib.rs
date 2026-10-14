@@ -384,6 +384,20 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
     ))
 }
 
+pub fn first_divergence_from_report<FA: SubjectFactory, FB: SubjectFactory>(
+    a: &FA,
+    b: &FB,
+    seed: u64,
+    report: &CompareReport,
+) -> Result<Option<DivergencePoint>, SubjectError> {
+    match report.verdict {
+        Verdict::Diverged { first_mismatch, .. } => {
+            bisect_divergence(a, b, seed, 0, first_mismatch).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
 mod hex32 {
     use serde::de::Error as _;
     use serde::{Deserialize, Deserializer, Serializer};
