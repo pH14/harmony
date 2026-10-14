@@ -1997,16 +1997,41 @@ mod xsave_diagnostic {
                     let canonical_bv = header(&poison.xsave).0 | 2;
                     poison.xsave[XSTATE_BV].copy_from_slice(&canonical_bv.to_le_bytes());
                     poison.xsave_restore_bv = Some(poison.xsave_restore_bv.unwrap() | 2);
-                    source.backend.restore(&poison).unwrap();
+                    let amd_reuse = source.backend.host_amd_compatible;
+                    let mut negative_fixture = if amd_reuse {
+                        assert!(matches!(
+                            source.backend.restore(&poison),
+                            Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                        ));
+                        let mut fixture = entry_fixture(&program, seed, xcr0);
+                        fixture.ram.as_mut_bytes().copy_from_slice(&saved.ram);
+                        fixture.backend.restore(&poison).unwrap();
+                        Some(fixture)
+                    } else {
+                        source.backend.restore(&poison).unwrap();
+                        None
+                    };
+                    let negative_target = negative_fixture.as_mut().unwrap_or(&mut source);
                     if canonical && mode == "xrstor" {
-                        source.ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
+                        negative_target.ram.as_mut_bytes()
+                            [GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
                             .copy_from_slice(&0x3f80u32.to_le_bytes());
                     }
-                    let negative = entry_endpoint(&mut source, &directory, "negative");
-                    restore_entry(&mut source, &saved);
-                    let reused_initial = retain_entry(&mut source, &directory, "reused-initial");
-                    let reused = entry_endpoint(&mut source, &directory, "reused");
-                    let checks = [
+                    let negative = entry_endpoint(negative_target, &directory, "negative");
+                    let reused = if amd_reuse {
+                        assert!(matches!(
+                            source.backend.restore(&saved.state),
+                            Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                        ));
+                        None
+                    } else {
+                        restore_entry(&mut source, &saved);
+                        let reused_initial =
+                            retain_entry(&mut source, &directory, "reused-initial");
+                        let reused = entry_endpoint(&mut source, &directory, "reused");
+                        Some((reused_initial, reused))
+                    };
+                    let mut checks = vec![
                         ("independent-initial", initial == saved),
                         ("repeated-capture", saved == repeated),
                         ("captured-continuation", expected == continued),
@@ -2020,9 +2045,11 @@ mod xsave_diagnostic {
                                     != negative.ram
                                         [GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN],
                         ),
-                        ("reused-initial", saved == reused_initial),
-                        ("reused-continuation", expected == reused),
                     ];
+                    if let Some((reused_initial, reused_endpoint)) = reused.as_ref() {
+                        checks.push(("reused-initial", saved == *reused_initial));
+                        checks.push(("reused-continuation", expected == *reused_endpoint));
+                    }
                     let mut report = format!(
                         "label={label}\ncanonical={canonical}\ninitial_bv={:?}\nendpoint_bv={:?}\n",
                         initial.state.xsave_restore_bv, expected.state.xsave_restore_bv
@@ -2039,7 +2066,7 @@ mod xsave_diagnostic {
                         .unwrap();
                     }
                     if canonical {
-                        for (name, left, right, left_phase, right_phase) in [
+                        let mut setups = vec![
                             ("independent-setup", &initial, &saved, "initial", "captured"),
                             (
                                 "cold-setup",
@@ -2048,14 +2075,17 @@ mod xsave_diagnostic {
                                 "captured",
                                 "cold-initial",
                             ),
-                            (
+                        ];
+                        if let Some((reused_initial, _)) = reused.as_ref() {
+                            setups.push((
                                 "reused-setup",
                                 &saved,
-                                &reused_initial,
+                                reused_initial,
                                 "captured",
                                 "reused-initial",
-                            ),
-                        ] {
+                            ));
+                        }
+                        for (name, left, right, left_phase, right_phase) in setups {
                             let left_raw =
                                 fs::read(directory.join(left_phase).join("raw-xsave.bin")).unwrap();
                             let right_raw =
@@ -2078,6 +2108,9 @@ mod xsave_diagnostic {
                                 failures.push(format!("{label}: negative-xrstor-mxcsr-output"));
                             }
                         }
+                    }
+                    if amd_reuse {
+                        writeln!(report, "required:amd-reused-restore-refused=true").unwrap();
                     }
                     for (check, passed) in checks {
                         let diagnostic = canonical
@@ -2338,17 +2371,41 @@ mod xsave_diagnostic {
                         let cold_endpoint = entry_endpoint(&mut cold, &directory, "cold");
                         let mut poison = saved.state.clone();
                         poison.regs.r12 = if mode == 2 { 0 } else { 2 };
-                        source.backend.restore(&poison).unwrap();
-                        let poisoned = entry_endpoint(&mut source, &directory, "poisoned");
+                        let amd_reuse = source.backend.host_amd_compatible;
+                        let poisoned = if amd_reuse {
+                            assert!(matches!(
+                                source.backend.restore(&poison),
+                                Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                            ));
+                            let mut negative = canonical_fixture(mode, compacted, canonical);
+                            negative.ram.as_mut_bytes().copy_from_slice(&saved.ram);
+                            negative.backend.restore(&poison).unwrap();
+                            entry_endpoint(&mut negative, &directory, "poisoned")
+                        } else {
+                            source.backend.restore(&poison).unwrap();
+                            entry_endpoint(&mut source, &directory, "poisoned")
+                        };
                         assert_ne!(expected.ram, poisoned.ram);
-                        restore_entry(&mut source, &saved);
-                        let reused = entry_endpoint(&mut source, &directory, "reused");
+                        let reused = if amd_reuse {
+                            assert!(matches!(
+                                source.backend.restore(&saved.state),
+                                Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                            ));
+                            None
+                        } else {
+                            restore_entry(&mut source, &saved);
+                            Some(entry_endpoint(&mut source, &directory, "reused"))
+                        };
                         let mut report = String::new();
                         let mut endpoints = vec![
                             ("continued".to_string(), continued),
                             ("cold".to_string(), cold_endpoint),
-                            ("reused".to_string(), reused),
                         ];
+                        if let Some(reused) = reused {
+                            endpoints.push(("reused".to_string(), reused));
+                        } else {
+                            writeln!(report, "amd-reused-restore-refused=true").unwrap();
+                        }
                         for (name, rip) in [
                             ("before-save", stops[usize::from(compacted)]),
                             ("after-save", stops[2]),

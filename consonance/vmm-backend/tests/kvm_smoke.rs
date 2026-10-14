@@ -1353,16 +1353,19 @@ fn event_shape_restore_rejects_noncanonical_fields_before_mutation() {
     assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
     assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
 
-    let mut pending_nmis = baseline.clone();
+    let mut pending_mem = GuestMem::new(0x10000);
+    let mut pending_backend = new_backend_or_explain();
+    setup_real_mode(&mut pending_backend, &mut pending_mem, &[0xf4]);
+    let mut pending_nmis = pending_backend.save().expect("save unentered backend");
     pending_nmis.events.nmi_pending = 2;
-    backend
+    pending_backend
         .validate_restore_state(&pending_nmis)
         .expect("validate two pending NMIs");
-    backend
+    pending_backend
         .restore(&pending_nmis)
         .expect("restore two pending NMIs");
     assert_eq!(
-        backend
+        pending_backend
             .save()
             .expect("save pending NMIs")
             .events
