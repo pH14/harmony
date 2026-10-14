@@ -412,6 +412,7 @@ CONSONANCE_HARDWARE = Workflow(
                     "mmio_init_presence_snapshot_characterization",
                     "pae_pdpt_reload_preserves_snapshot_continuation",
                     "pae_cached_pdptrs_survive_full_vmm_snapshot_restore",
+                    "amd_legacy_pae_snapshot_refuses_before_publication",
                     "amd_default_npt_pae_guest_write_observations",
                     "xsave_guest_bytes_survive_cold_continuation",
                     "xsave_live_registers_survive_cold_continuation",

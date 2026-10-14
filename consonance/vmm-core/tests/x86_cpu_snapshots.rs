@@ -1146,6 +1146,43 @@ mod live_kvm {
     }
 
     #[test]
+    #[ignore = "live AMD KVM NPT; legacy PAE snapshot publication must fail closed"]
+    fn amd_legacy_pae_snapshot_refuses_before_publication() {
+        require_kvm();
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").expect("read /proc/cpuinfo");
+        assert!(
+            cpuinfo.lines().any(|line| {
+                line.split_once(':').is_some_and(|(key, value)| {
+                    key.trim() == "vendor_id" && value.trim() == "AuthenticAMD"
+                })
+            }),
+            "legacy PAE refusal requires an AuthenticAMD host"
+        );
+        let npt = std::fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+            .expect("read kvm_amd NPT setting");
+        assert!(matches!(npt.trim(), "Y" | "1"), "NPT must be enabled");
+
+        let mut source = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut source);
+        run_guest_pdpt_warmup(&mut source);
+        assert_eq!(
+            source.guest_memory()[PDPT_GPA..PDPT_GPA + 8],
+            PDPT_B_ENTRY.to_le_bytes()
+        );
+        let error = source
+            .save_vm_state()
+            .expect_err("active AMD legacy PAE state must not become a snapshot");
+        assert!(
+            error.to_string().contains("nonportable AMD legacy PAE"),
+            "unexpected snapshot refusal: {error}"
+        );
+        assert!(
+            source.step().is_err(),
+            "a failed observation must not leave an AMD legacy PAE guest runnable"
+        );
+    }
+
+    #[test]
     #[ignore = "live AMD KVM NPT observation; run with --ignored and NPT_REPORT_DIR"]
     fn amd_default_npt_pae_guest_write_observations() {
         require_kvm();
