@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -199,6 +206,8 @@ pub enum ChannelError {
     RequestIdentityMismatch,
     #[error("service handler state was rejected: {0}")]
     Handler(String),
+    #[error("service handler changed outside its transactional copy; channel is poisoned")]
+    Poisoned,
 }
 
 pub trait ServiceHandler: Send {
@@ -364,6 +373,7 @@ impl RecordedState {
     }
 
     pub fn capture<H: ServiceHandler>(environment: &RecordedEnv<H>) -> Result<Self, ChannelError> {
+        environment.ensure_healthy()?;
         for record in environment.overrides.values() {
             if let Answer::Data(bytes) = &record.answer {
                 check_len(bytes.len())?;
@@ -379,6 +389,7 @@ impl RecordedState {
         if state.encoded_len() > MAX_RECORDED_STATE_BYTES {
             return Err(ChannelError::TooLarge);
         }
+        environment.ensure_healthy()?;
         Ok(state)
     }
 
@@ -503,19 +514,25 @@ impl RecordedState {
         &self,
         environment: &mut RecordedEnv<H>,
     ) -> Result<(), ChannelError> {
+        environment.ensure_healthy()?;
         check_handler_contract(
             &environment.handler,
             &self.handler.identity,
             &self.handler.configuration,
         )?;
+        let before = HandlerSnapshot::capture(&environment.handler)?;
         let mut handler = environment.handler.clone();
-        handler.restore_state(&self.handler.state)?;
-        check_handler_contract(
-            &handler,
-            &self.handler.identity,
-            &self.handler.configuration,
-        )?;
-        check_handler_state(&handler, &self.handler.state)?;
+        let restored = (|| {
+            handler.restore_state(&self.handler.state)?;
+            check_handler_contract(
+                &handler,
+                &self.handler.identity,
+                &self.handler.configuration,
+            )?;
+            check_handler_state(&handler, &self.handler.state)
+        })();
+        environment.check_original_handler(&before)?;
+        restored?;
         environment.handler = handler;
         environment.stream_state = self.stream_state;
         environment.moment = self.moment;
@@ -573,6 +590,7 @@ pub struct RecordedEnv<H: ServiceHandler> {
     payloads: Option<Vec<Vec<u8>>>,
     payload_cursor: usize,
     handler: H,
+    poisoned: Arc<AtomicBool>,
 }
 
 impl<H> Clone for RecordedEnv<H>
@@ -587,6 +605,7 @@ where
             payloads: self.payloads.clone(),
             payload_cursor: self.payload_cursor,
             handler: self.handler.clone(),
+            poisoned: Arc::clone(&self.poisoned),
         }
     }
 }
@@ -600,6 +619,7 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
             .field("moment", &self.moment)
             .field("payload_cursor", &self.payload_cursor)
             .field("handler_identity", &self.handler.identity())
+            .field("poisoned", &self.poisoned.load(Ordering::Acquire))
             .finish_non_exhaustive()
     }
 }
@@ -621,6 +641,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             payloads: None,
             payload_cursor: 0,
             handler,
+            poisoned: Arc::new(AtomicBool::new(false)),
         };
         environment.handler.reseed(seed);
         environment
@@ -695,6 +716,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     }
 
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) -> Result<(), ChannelError> {
+        self.ensure_healthy()?;
         if let Some(entries) = &payloads {
             for entry in entries {
                 check_len(entry.len())?;
@@ -711,6 +733,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     }
 
     pub fn pull_payload(&mut self, bytes: usize) -> Result<Option<Vec<u8>>, ChannelError> {
+        self.ensure_healthy()?;
         check_len(bytes)?;
         let Some(entries) = self.payloads.as_ref() else {
             return Ok(None);
@@ -731,6 +754,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     where
         H: Clone,
     {
+        self.ensure_healthy()?;
         let key = DecisionKey {
             moment: self.moment,
             service: question.service(),
@@ -750,8 +774,11 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         if let Some(answer) = self.decide_core_supply(question)? {
             return Ok(ServiceResponse::Answered(answer));
         }
+        let before = HandlerSnapshot::capture(&self.handler)?;
         let mut candidate = self.handler.clone();
-        let response = candidate.respond(self.moment, question)?;
+        let response = candidate.respond(self.moment, question);
+        self.check_original_handler(&before)?;
+        let response = response?;
         if let ServiceResponse::Answered(answer) = &response {
             if let Answer::Data(bytes) = answer {
                 check_len(bytes.len())?;
@@ -763,6 +790,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
                     "handler identity or configuration changed while answering".to_owned(),
                 ));
             }
+            self.ensure_healthy()?;
             self.handler = candidate;
         }
         Ok(response)
@@ -774,6 +802,21 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn snapshot_state(&self) -> Result<RecordedState, ChannelError> {
         RecordedState::capture(self)
+    }
+
+    fn ensure_healthy(&self) -> Result<(), ChannelError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(ChannelError::Poisoned)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check_original_handler(&self, before: &HandlerSnapshot) -> Result<(), ChannelError> {
+        if HandlerSnapshot::capture(&self.handler).as_ref() != Ok(before) {
+            self.poisoned.store(true, Ordering::Release);
+        }
+        self.ensure_healthy()
     }
 
     pub fn snapshot_state_with_binding_reserve(&self) -> Result<RecordedState, ChannelError> {
@@ -1963,5 +2006,111 @@ mod tests {
         let debug = format!("{env:?}");
         assert!(debug.contains("stream_state"));
         assert!(debug.contains("handler_identity"));
+    }
+
+    #[derive(Clone, Copy)]
+    enum SharedResponse {
+        External,
+        Answered,
+        InvalidAnswer,
+        Failure,
+    }
+
+    #[derive(Clone)]
+    struct SharedStateHandler {
+        state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        response: SharedResponse,
+    }
+
+    impl SharedStateHandler {
+        fn new(value: u8, response: SharedResponse) -> Self {
+            Self {
+                state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(value)),
+                response,
+            }
+        }
+    }
+
+    impl ServiceHandler for SharedStateHandler {
+        fn identity(&self) -> &[u8] {
+            b"shared-state-handler"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            self.state.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match self.response {
+                SharedResponse::External => Ok(ServiceResponse::External),
+                SharedResponse::Answered => Ok(ServiceResponse::Answered(Answer::Nominal)),
+                SharedResponse::InvalidAnswer => Ok(ServiceResponse::Answered(Answer::Data(vec![
+                        0;
+                        MAX_CHANNEL_BYTES
+                            + 1
+                    ]))),
+                SharedResponse::Failure => Err(ChannelError::Malformed),
+            }
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.state.load(std::sync::atomic::Ordering::SeqCst)])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [value] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.state
+                .store(*value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn shared_handler_mutation_cannot_certify_an_external_request() {
+        for response in [
+            SharedResponse::External,
+            SharedResponse::Answered,
+            SharedResponse::InvalidAnswer,
+            SharedResponse::Failure,
+        ] {
+            let mut env = RecordedEnv::new(1, SharedStateHandler::new(0, response));
+            assert!(env.snapshot_state().is_ok());
+            let question = Question::new(7, vec![]).unwrap();
+            assert_eq!(env.decide(&question), Err(ChannelError::Poisoned));
+            assert_eq!(env.decide(&question), Err(ChannelError::Poisoned));
+            assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+            assert_eq!(env.pull_payload(1), Err(ChannelError::Poisoned));
+        }
+    }
+
+    #[test]
+    fn shared_handler_mutation_poison_reaches_transaction_parent() {
+        let handler = SharedStateHandler::new(0, SharedResponse::External);
+        let mut env = RecordedEnv::new(1, handler);
+        let mut request = Vec::from(7u16.to_le_bytes());
+        request.extend_from_slice(&0u64.to_le_bytes());
+        assert!(crate::sdk::decide_service(&mut env, 0, &request).is_err());
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn shared_handler_restore_poison_reaches_transaction_parent() {
+        let source = RecordedEnv::new(1, SharedStateHandler::new(1, SharedResponse::External));
+        let state = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(1, SharedStateHandler::new(0, SharedResponse::External));
+        let parent = target.clone();
+        assert_eq!(state.restore_into(&mut target), Err(ChannelError::Poisoned));
+        assert_eq!(parent.snapshot_state(), Err(ChannelError::Poisoned));
     }
 }
