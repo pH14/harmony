@@ -124,6 +124,10 @@ pub trait Vendor: Arch + Sized {
         Ok(())
     }
 
+    fn validate_vtime_clock_offset(_clock_offset: u64) -> Result<(), VmmError> {
+        Ok(())
+    }
+
     fn build_vm_state<B: Backend<A = Self>>(vmm: &Vmm<B>, vcpu: &Self::VcpuState)
     -> Self::Snapshot;
 

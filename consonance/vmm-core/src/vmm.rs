@@ -818,6 +818,7 @@ where
     }
 
     pub fn restore_vtime(&mut self, snap: &VtimeSnapshot) -> Result<(), VmmError> {
+        <B::A as Vendor>::validate_vtime_clock_offset(snap.guest_clock_offset)?;
         let (clock, cfg, entropy) = {
             let vt = self.vtime.as_ref().ok_or_else(|| {
                 VmmError::ContractViolation(

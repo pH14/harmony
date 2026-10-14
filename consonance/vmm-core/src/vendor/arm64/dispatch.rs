@@ -5,6 +5,7 @@ use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64GicIdleState, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 use crate::snapshot::SnapshotError;
+use crate::vendor::Vendor;
 use crate::vendor::arm64::contract;
 use crate::vendor::arm64::devices::Pl011;
 use crate::vendor::arm64::records::{
@@ -967,6 +968,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
         let dev = records::decode_device_blob(&s.devices.0)?;
+        <Arm64 as Vendor>::validate_vtime_clock_offset(dev.clock_offset)?;
         let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
         let new_gic = match (&dev.gic, in_kernel_gic, self.devices.gic.as_ref()) {
             (Some(gs), false, Some(target)) => {
@@ -1414,6 +1416,76 @@ mod tests {
             .unwrap(),
         );
         vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+        assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
+    }
+
+    #[test]
+    fn restore_rejects_an_armed_clockevent_with_an_unconvertible_clock_offset() {
+        use crate::vmm::VtimeWiring;
+
+        let configured = || {
+            let mut vmm = mock_vmm(Vec::new());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.enable_pvclock();
+            assert_eq!(vmm.pvclock_register(0x1000).0, Status::Ok);
+            vmm.wire_gic(new_gic());
+            vmm
+        };
+
+        let mut source = configured();
+        source.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+        let valid = source.save_vm_state().unwrap();
+        let mut target = configured();
+        target.restore_vm_state(&valid).unwrap();
+        assert_eq!(target.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
+
+        let mut bad = valid;
+        let mut dev = records::decode_device_blob(&bad.devices.0).unwrap();
+        dev.clock_offset = 1;
+        bad.devices = records::encode_device_blob(&dev);
+        let before = target.save_vm_state().unwrap();
+        assert!(
+            target.restore_vm_state(&bad).is_err(),
+            "restoring a deadline with an unconvertible clock offset must fail closed"
+        );
+        assert_eq!(target.save_vm_state().unwrap(), before);
+    }
+
+    #[test]
+    fn vtime_restore_rejects_an_unconvertible_arm_clock_offset() {
+        use crate::vmm::VtimeWiring;
+
+        let mut vmm = mock_vmm(Vec::new());
+        vmm.wire_vtime(
+            VtimeWiring::new_virtual_time(
+                vtime::VClockConfig {
+                    guest_hz: CNTFRQ_HZ,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                7,
+            )
+            .unwrap(),
+        );
+        vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+        let before = vmm.save_vtime().unwrap().unwrap();
+        let mut bad = before.clone();
+        bad.guest_clock_offset = 1;
+        assert!(
+            vmm.restore_vtime(&bad).is_err(),
+            "V-time restore must reject an Arm clock offset that hides an armed deadline"
+        );
+        assert_eq!(vmm.save_vtime().unwrap().unwrap(), before);
         assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
     }
 
