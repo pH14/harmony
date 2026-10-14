@@ -75,6 +75,13 @@ fn restore_defers_materialization(mode: RestoreMode) -> bool {
     mode == RestoreMode::InPlace
 }
 
+#[derive(Clone, Copy)]
+enum SparsePageVerification {
+    Base,
+    BaseAndTarget(SnapshotId),
+    AlreadyVerified,
+}
+
 fn restore_error_is_precommit(error: &VmmError) -> bool {
     matches!(
         error,
@@ -450,7 +457,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(base, target, target_id)?;
+        let sidecar = self.sparse_sidecar(
+            base,
+            target,
+            target_id,
+            SparsePageVerification::BaseAndTarget(target_id),
+        )?;
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
@@ -472,8 +484,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(setup, target, target_id)?;
         let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
+        let sidecar = self.sparse_sidecar(
+            setup,
+            target,
+            target_id,
+            SparsePageVerification::AlreadyVerified,
+        )?;
         let (mut cost, pages) = self.export_telemetry.get();
         cost.add(started.elapsed().as_nanos());
         self.export_telemetry
@@ -495,7 +512,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     fn sparse_base_ram_digest(
         &self,
         base: SnapId,
-        target: Option<snapshot_store::SnapshotId>,
+        verification: SparsePageVerification,
     ) -> Result<[u8; 32], PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let meta = self
@@ -503,10 +520,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .get(&base.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
         if let Some(digest) = meta.base_ram_digest.get() {
-            if let Some(target_id) = target {
-                self.engine.verify_snapshots(&[base_id, target_id])?;
-            } else {
-                self.engine.verify_snapshot_pages(base_id)?;
+            match verification {
+                SparsePageVerification::Base => self.engine.verify_snapshot_pages(base_id)?,
+                SparsePageVerification::BaseAndTarget(target_id) => {
+                    self.engine.verify_snapshots(&[base_id, target_id])?;
+                }
+                SparsePageVerification::AlreadyVerified => {}
             }
             return Ok(digest);
         }
@@ -524,7 +543,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             hasher.update(self.engine.read_page(base_id, gfn)?);
         }
         let digest = hasher.finalize().into();
-        if let Some(target_id) = target
+        if let SparsePageVerification::BaseAndTarget(target_id) = verification
             && target_id != base_id
         {
             self.engine.verify_snapshot_pages(target_id)?;
@@ -538,8 +557,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         base: SnapId,
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
+        verification: SparsePageVerification,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
-        let base_ram_digest = self.sparse_base_ram_digest(base, Some(target_id))?;
+        let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -726,7 +746,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse state hash preimage",
             ));
         }
-        if self.sparse_base_ram_digest(setup, None)? != portable.base_ram_digest {
+        if self.sparse_base_ram_digest(setup, SparsePageVerification::Base)?
+            != portable.base_ram_digest
+        {
             return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
         }
         self.preflight_imported_service(sdk, &portable.policy)?;
@@ -5303,6 +5325,37 @@ mod tests {
         ));
         assert!(matches!(
             source.export_sparse_delta(base, None, base),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+    }
+
+    #[test]
+    fn sparse_delta_rechecks_base_pages_replaced_in_target() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        source.export_sparse_snapshot(setup, setup).unwrap();
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[..4096].fill(0xA5);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        let target = snap(&mut source);
+        let setup_id = source.store_id(setup).unwrap();
+        source
+            .engine
+            .corrupt_page_for_test(setup_id, 0, 0, 1)
+            .unwrap();
+        assert!(matches!(
+            source.export_sparse_delta(setup, Some(parent), target),
             Err(PortableSnapshotError::Snapshot(
                 crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
                     gfn: 0

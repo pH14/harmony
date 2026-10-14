@@ -94,7 +94,10 @@ compute that digest once per base snapshot and cache it, verifying every
 distinct resident base page before reusing the cached digest. Sparse exports
 also verify every distinct resident target page, including inherited pages
 omitted from a delta. Pages shared by the base and target are hashed once per
-export. A release microbenchmark on Apple silicon measured 30.11 ms per
+export when the base digest is cached; delta export performs this check before
+encoding its sidecar and does not repeat it there. The first base-digest
+calculation still reads the base pages to compute its SHA-256 identity. A
+release microbenchmark on Apple silicon measured 30.11 ms per
 base-only check for 8,192 distinct 4 KiB pages (32 MiB) and 0.45 ms when
 those frames shared one interned page. Checking that base together with a
 target that replaced one quarter of its pages measured 35.90 ms with distinct
