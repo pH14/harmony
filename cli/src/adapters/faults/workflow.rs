@@ -190,7 +190,6 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
         SearchStart::Checkpoint(checkpoint)
     } else {
         SearchStart::Actions(super::investigate::prefix(
-            &parent,
             &original,
             &selection,
             &request.point,
