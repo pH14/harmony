@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -171,6 +172,10 @@ impl Manifest {
 
     pub fn inherit(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         self.verify(source)?;
+        self.inherit_verified(source, destination, mode)
+    }
+
+    fn inherit_verified(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         let mut child = self.clone();
         child.mode = mode.into();
         child.status = "running".into();
@@ -179,13 +184,17 @@ impl Manifest {
         child.checkpoint_sha256 = None;
         child.checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         child.parent = Some(source.to_path_buf());
-        for name in self.artifacts.keys() {
+        for (name, expected) in &self.artifacts {
             let original = source.join("artifacts").join(name);
-            child.store(destination, name, &fs::read(&original)?)?;
-            fs::set_permissions(
-                destination.join("artifacts").join(name),
-                fs::metadata(original)?.permissions(),
-            )?;
+            let mut file = fs::File::open(original)?;
+            let permissions = file.metadata()?.permissions();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            if digest(&bytes) != *expected {
+                return Err(format!("recorded artifact {name} changed during inheritance").into());
+            }
+            child.store(destination, name, &bytes)?;
+            fs::set_permissions(destination.join("artifacts").join(name), permissions)?;
         }
         Ok(child)
     }
@@ -199,7 +208,6 @@ fn new_checkpoint_owner() -> Result<String> {
 
 pub fn file_digest(path: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
-    use std::io::Read;
     let mut file = fs::File::open(path)?;
     let mut hash = Sha256::new();
     let mut buffer = [0; 65536];
@@ -272,6 +280,21 @@ mod tests {
                 .to_string()
                 .contains("changed")
         );
+    }
+
+    #[test]
+    fn inheritance_rejects_artifact_changed_after_source_verification() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(source.path(), "input", b"original").unwrap();
+        manifest.verify(source.path()).unwrap();
+        fs::write(source.path().join("artifacts/input"), b"replaced").unwrap();
+
+        let child = manifest.inherit_verified(source.path(), destination.path(), "branch");
+        assert!(child.is_err());
     }
 }
 
