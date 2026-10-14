@@ -1110,6 +1110,14 @@ fn record_mixture_outcome(
     Ok(())
 }
 
+fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (u8, u8) {
+    match mixture {
+        DrawMixture::Energy { scale } => (energy.biased_weight(scale), 0),
+        DrawMixture::EnergySplice { scale } => energy.splice_weights(scale),
+        _ => (DEFAULT_MIXTURE_WEIGHT, 0),
+    }
+}
+
 pub(crate) const CONTINUATION_EXITS_PER_RESERVATION: usize = 8;
 
 pub(crate) const CONTINUATION_ATTEMPT_IN: usize = 4;
@@ -3111,15 +3119,8 @@ where
                         .stable_id(parent_index)
                         .ok_or("selected archive slot is missing")?;
                     let mutation_seed = rand.next_u64();
-                    let (mixture_weight, splice_weight) = match config.mixture {
-                        DrawMixture::Energy { scale } => {
-                            (core.mixture_energy.biased_weight(scale), 0)
-                        }
-                        DrawMixture::EnergySplice { scale } => {
-                            core.mixture_energy.splice_weights(scale)
-                        }
-                        _ => (DEFAULT_MIXTURE_WEIGHT, 0),
-                    };
+                    let (mixture_weight, splice_weight) =
+                        mixture_weights(&core.mixture_energy, config.mixture);
                     let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
                     let (spliced, splice) =
                         if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
@@ -4540,6 +4541,7 @@ where
         BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
+    let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -4554,6 +4556,12 @@ where
         replay_continuation_energy.insert(job_slot, energy);
         if let Some(continuation) = continuation {
             replay_continuations.insert(job_slot, continuation);
+            replay_job_weights.insert(job_slot, (0, u8::MAX));
+        } else {
+            replay_job_weights.insert(
+                job_slot,
+                mixture_weights(&core.mixture_energy, replay_mixture),
+            );
         }
         let parent_index = core
             .archive
@@ -4578,6 +4586,13 @@ where
             serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
+                if (skip.mixture_weight, skip.splice_weight)
+                    != mixture_weights(&core.mixture_energy, replay_mixture)
+                {
+                    return Err(
+                        "recorded skip mixture weights diverge from the rebuilt policy".into(),
+                    );
+                }
                 let parent_index = core
                     .archive
                     .index_of_id(skip.parent_id)
@@ -4705,6 +4720,17 @@ where
                     );
                 }
                 let replay_job_slot = usize::try_from(job.reservation)?;
+                if (job.mixture_weight, job.splice_weight)
+                    != replay_job_weights
+                        .remove(&replay_job_slot)
+                        .ok_or("recorded job has no rebuilt mixture weights")?
+                {
+                    return Err(format!(
+                        "replayed job {} mixture weights diverge from the rebuilt policy",
+                        job.sequence
+                    )
+                    .into());
+                }
                 let admission_index = replay_admissions;
                 replay_admissions = replay_admissions.saturating_add(1);
                 let (planned_start, selection_sequence) = replay_selections
@@ -4969,6 +4995,18 @@ where
                     core.archive
                         .record_selection_outcome(parent_index, !retained_ids.is_empty());
                 }
+                let new_slot_descendant = retained_archive_indexes(&core, &decisions)
+                    .iter()
+                    .any(|id| core.archive.opened_new_slot(*id));
+                record_mixture_outcome(
+                    &mut core.mixture_energy,
+                    replay_mixture,
+                    job.selector.path,
+                    job.mutation_seed,
+                    (job.mixture_weight, job.splice_weight),
+                    new_slot_descendant,
+                    execution_work,
+                )?;
                 core.archive.unpin_job_origin(snapshot_id);
                 core.archive.unpin_metadata(job.parent_id);
                 core.archive.maintain_memory_budget()?;
@@ -4993,6 +5031,12 @@ where
                     replay_continuation_energy.insert(next_slot, energy);
                     if let Some(continuation) = continuation {
                         replay_continuations.insert(next_slot, continuation);
+                        replay_job_weights.insert(next_slot, (0, u8::MAX));
+                    } else {
+                        replay_job_weights.insert(
+                            next_slot,
+                            mixture_weights(&core.mixture_energy, replay_mixture),
+                        );
                     }
                     let parent_index = core
                         .archive
