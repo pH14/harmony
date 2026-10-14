@@ -1127,17 +1127,10 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             b"path" => pax.path = Some(value.to_vec()),
             b"linkpath" => pax.link_path = Some(value.to_vec()),
             b"size" => {
-                let size = std::str::from_utf8(value)
-                    .ok()
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| ImageError::Tar("unreadable pax size record".into()))?;
-                pax.size = Some(size);
+                pax.size = Some(parse_pax_decimal(value, "size")?);
             }
             b"uid" | b"gid" => {
-                let id = std::str::from_utf8(value)
-                    .ok()
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| ImageError::Tar("unreadable pax owner record".into()))?;
+                let id = parse_pax_decimal(value, "owner")?;
                 if key == b"uid" {
                     pax.uid = Some(id);
                 } else {
@@ -1168,6 +1161,17 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
         rest = &rest[length..];
     }
     Ok(())
+}
+
+fn parse_pax_decimal(value: &[u8], kind: &str) -> Result<u64, ImageError> {
+    let invalid = || ImageError::Tar(format!("unreadable pax {kind} record"));
+    if value.is_empty() || !value.iter().all(u8::is_ascii_digit) {
+        return Err(invalid());
+    }
+    std::str::from_utf8(value)
+        .map_err(|_| invalid())?
+        .parse()
+        .map_err(|_| invalid())
 }
 
 fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
@@ -2879,6 +2883,42 @@ mod tests {
             ]
             .concat();
             let archive = write_archive(dir.path(), &format!("valid-mtime-{value}.tar"), &body);
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn signed_pax_size_and_owner_fields_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (key, value) in [("size", "+4"), ("uid", "+1"), ("gid", "+1")] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("plus-{key}.tar"), &body);
+            let dest = dir.path().join(key);
+            std::fs::create_dir(&dest).unwrap();
+
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn padded_pax_size_and_owner_fields_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        for (key, value) in [("size", "0004"), ("uid", "0001"), ("gid", "0001")] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("padded-{key}.tar"), &body);
             assert_eq!(read_members(&archive).unwrap().len(), 1);
         }
     }
