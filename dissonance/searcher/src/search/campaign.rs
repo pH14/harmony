@@ -1391,12 +1391,22 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     }
 
     fn suffix_limit(&self, parent_id: u64, parent_index: usize) -> u8 {
+        self.suffix_limit_excluding(parent_id, parent_index, None)
+    }
+
+    fn suffix_limit_excluding(
+        &self,
+        parent_id: u64,
+        parent_index: usize,
+        excluded: Option<(u64, u8)>,
+    ) -> u8 {
         let limit = self.archive.suffix_limit(parent_index);
         if self
             .suffix_jobs_in_flight
             .range((parent_id, limit)..=(parent_id, u8::MAX))
-            .next()
-            .is_some()
+            .any(|(&(held_parent, held_limit), &count)| {
+                count > u32::from(excluded == Some((held_parent, held_limit)))
+            })
         {
             1
         } else {
@@ -4775,7 +4785,27 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
+                let expected_skip_limit = if replay_admissions > 0 && spliced.is_none() {
+                    let next_slot = replay_admissions
+                        .saturating_add(replay_window_depth)
+                        .saturating_sub(1);
+                    let excluded = replay_job_snapshots
+                        .contains_key(&next_slot)
+                        .then(|| {
+                            replay_job_parents
+                                .get(next_slot)
+                                .copied()
+                                .zip(replay_job_suffix_limits.get(next_slot).copied().flatten())
+                        })
+                        .flatten();
+                    Some(core.suffix_limit_excluding(skip.parent_id, parent_index, excluded))
+                } else {
+                    None
+                };
                 let suffix_limit = replay_suffix_limit(spliced.is_none(), skip.suffix_limit)?;
+                if expected_skip_limit.is_some_and(|expected| suffix_limit != Some(expected)) {
+                    return Err("replayed skip suffix limit diverged at selection".into());
+                }
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
