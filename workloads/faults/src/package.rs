@@ -635,6 +635,12 @@ mod live {
         }
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
+        if let Some(first) = report.bugs.iter().find(|bug| bug.confirmed) {
+            std::fs::write(
+                options.output.join("first-bug-input.json"),
+                serde_json::to_vec_pretty(&first.actions)?,
+            )?;
+        }
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
         report.execution_failures = campaign_report.campaign.execution_failures;

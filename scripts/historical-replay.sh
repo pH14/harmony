@@ -52,7 +52,23 @@ max_sessions=${MAX_REPLAY_SESSIONS:-2}
     exit 1
 }
 
-actions=$(jq -r 'if type == "array" then length else (.actions | length) end' "${input}")
+finding=
+if [[ "$mode" == reproduce ]]; then
+    source_report="$(dirname "$input")/report.json"
+    [[ -s "$source_report" ]] || {
+        echo "historical-replay: infra-failure (missing source report ${source_report})" >&2
+        exit 1
+    }
+    finding=$(jq -r '(.bugs // []) | to_entries | map(select(.value.confirmed == true))
+        | if length > 0 then .[0].key + 1 else empty end' "$source_report")
+    [[ "$finding" =~ ^[1-9][0-9]*$ ]] || {
+        echo 'historical-replay: infra-failure (no confirmed finding)' >&2
+        exit 1
+    }
+    actions=$(jq -r --argjson finding "$finding" '.bugs[$finding - 1].actions | length' "$source_report")
+else
+    actions=$(jq -r 'if type == "array" then length else (.actions | length) end' "${input}")
+fi
 [[ "${actions}" =~ ^[1-9][0-9]*$ ]] || {
     echo "historical-replay: infra-failure (input names no actions)" >&2
     exit 1
@@ -78,7 +94,7 @@ guest_arguments=()
 . "$(dirname "$0")/historical-backend.sh"
 historical_backend "reports/${CASE_ID}.${label}.denial.json"
 if [[ "$mode" == reproduce ]]; then
-    arguments=(debug replay "$(dirname "$input")" --finding 1 --repeat "$repeats")
+    arguments=(debug replay "$(dirname "$input")" --finding "$finding" --repeat "$repeats")
 else
     arguments=(debug run "oci-images/${IMAGE_PREFIX}-${WORKLOAD_VERSION}.oci"
         "${guest_arguments[@]}"
