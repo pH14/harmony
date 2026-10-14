@@ -53,23 +53,24 @@ The scan rejects:
 
 - a writable executable segment or an executable stack;
 - an ELF file that is not 64-bit little-endian x86-64 or arm64;
-- a hardware entropy instruction (RDRAND, RDSEED, RNDR, RNDRRS) without a
-  review in `/etc/harmony/instruction-allowlist`
+- a hardware entropy or CPU-identity instruction (RDRAND, RDSEED, RNDR,
+  RNDRRS, RDPID) without a review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
 - an arm64 monitor-based LL/SC instruction, even if listed for review;
 - an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
-For User-mode Linux, preparation rejects all four scanned hardware entropy
-instructions even when reviewed. UML runs guest user instructions natively, so
-the VM's hidden feature bits do not protect a guarded call site. This admission
-check walks the bytes of executable load segments in the packed image. Section
-headers do not determine what the guest loader executes. It rejects x86
-entropy opcodes whose bytes cross a section or adjacent executable load
-boundary, where each side would otherwise be decoded independently. The scan
-still requires cooperative workloads: dynamically generated code and
-instructions hidden inside another instruction's operand bytes are outside its
-guarantee.
+For User-mode Linux, preparation rejects the scanned hardware entropy and
+CPU-identity instructions even when reviewed. UML runs guest user instructions
+natively, so the VM's hidden feature bits do not protect a guarded call site.
+The stub's TSC trap does not trap RDPID; it returns the host CPU's identity.
+This admission check walks the bytes of executable load segments in the packed
+image. Section headers do not determine what the guest loader executes. It
+rejects x86 entropy and CPU-identity opcodes whose bytes cross a section or
+adjacent executable load boundary, where each side would otherwise be decoded
+independently. The scan still requires cooperative workloads: dynamically
+generated code and instructions hidden inside another instruction's operand
+bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -83,12 +84,13 @@ this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
 a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
-The scan catches entropy instructions that compilers and assemblers emit. On
+The scan catches entropy and CPU-identity instructions that compilers and
+assemblers emit. On
 x86 it decodes each allocated section inside an executable load segment from
 its start, regardless of the section's executable flag, and separately decodes
 the gaps between sections. This preserves instruction alignment when a segment
 begins with headers or other data without reporting an instruction assembled
-across a section boundary. It rejects entropy opcode patterns split across
+across a section boundary. It rejects instruction patterns split across
 these decoded ranges or adjacent executable loads. On arm64 it checks aligned
 instruction words across the complete 4 KiB page-rounded file mapping of each
 executable load, including bytes beyond the declared load size, and rejects

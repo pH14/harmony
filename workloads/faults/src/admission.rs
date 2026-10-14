@@ -230,7 +230,7 @@ impl ImageReport {
 
     pub fn require_uml_admission(&self) -> Result<(), Box<dyn Error>> {
         self.require_admission()?;
-        let native_entropy = self
+        let native_host_inputs = self
             .executables
             .iter()
             .flat_map(|executable| {
@@ -240,7 +240,7 @@ impl ImageReport {
                     .filter(|site| {
                         matches!(
                             site.instruction.as_str(),
-                            "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS"
+                            "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS" | "RDPID"
                         )
                     })
                     .map(|site| {
@@ -251,12 +251,12 @@ impl ImageReport {
                     })
             })
             .collect::<Vec<_>>();
-        if native_entropy.is_empty() {
+        if native_host_inputs.is_empty() {
             Ok(())
         } else {
             Err(format!(
-                "User-mode Linux executes hardware entropy instructions natively; these image sites cannot be admitted even when reviewed:\n{}",
-                native_entropy.join("\n")
+                "User-mode Linux executes hardware entropy and CPU-identity instructions natively; these image sites cannot be admitted even when reviewed:\n{}",
+                native_host_inputs.join("\n")
             )
             .into())
         }
@@ -762,6 +762,7 @@ fn scan_code(
             let name = match instruction.mnemonic() {
                 Mnemonic::Rdrand => "RDRAND",
                 Mnemonic::Rdseed => "RDSEED",
+                Mnemonic::Rdpid => "RDPID",
                 _ => continue,
             };
             sites.push((instruction.ip(), name));
@@ -1114,6 +1115,44 @@ mod tests {
             serde_json::to_value(&staged).unwrap()
         );
         assert!(packed.require_for(ExecutionMode::Vm).is_ok());
+    }
+
+    #[test]
+    fn uml_rejects_reviewed_rdpid_because_the_host_cpu_id_varies() {
+        assert_eq!(
+            scan_code(
+                object::Architecture::X86_64,
+                0x2000,
+                &[0xf3, 0x48, 0x0f, 0xc7, 0xf8]
+            )
+            .unwrap(),
+            [(0x2000, "RDPID")]
+        );
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+        let bytes = elf(&[0xf3, 0x0f, 0xc7, 0xf8, 0xc3], 5, 6);
+        fs::write(root.path().join("node"), &bytes).unwrap();
+        assert_eq!(
+            inspect_root(root.path()).unwrap().executables[0].sites[0].instruction,
+            "RDPID"
+        );
+        fs::write(
+            root.path().join(ALLOWLIST_PATH),
+            format!(
+                "{:x} 0x1000 RDPID native host CPU id\n",
+                Sha256::digest(&bytes)
+            ),
+        )
+        .unwrap();
+        let reviewed = inspect_root(root.path()).unwrap();
+        assert!(reviewed.require_for(ExecutionMode::Vm).is_ok());
+        assert!(
+            reviewed
+                .require_for(ExecutionMode::Uml)
+                .unwrap_err()
+                .to_string()
+                .contains("RDPID")
+        );
     }
 
     #[test]
