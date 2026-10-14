@@ -317,9 +317,10 @@ hypervisor or a built guest image. Each one has a runner in
   `ci-ignored-tests` checks that the job's steps pass `--ignored` and name each
   binary and test it lists.
 - `HOST_TESTS` lists tests that need a hypervisor no hosted runner offers, keyed
-  by the `<os>-<arch>` of a machine that has one. The pre-push hook runs the
-  entry for the machine it is on, selected by
-  `python3 scripts/ci_contract.py host-filter`.
+  by the `<os>-<arch>` of a machine that has one. The `linux-x86_64-hybrid` key
+  additionally requires accessible P-core and E-core pools in the caller's
+  affinity. The pre-push hook runs the entry for the machine it is on, selected
+  by `python3 scripts/ci_contract.py host-filter`.
 
 `Checks / Repository` runs `python3 scripts/check-test-partition.py ignored` on
 x86-64 Linux, arm64 Linux and arm64 macOS. It lists every ignored test that

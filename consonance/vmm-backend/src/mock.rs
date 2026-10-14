@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 
+use crate::HostCoreClass;
 use crate::arch::x86::{
     CpuidModel, Injection, MsrFilter, VcpuState, X86, X86Completion, X86Exit, X86Policy,
 };
@@ -69,6 +70,7 @@ pub struct MockBackend {
     completion_staged: bool,
     counts: ExitCounts,
     state: VcpuState,
+    host_core_class: Option<HostCoreClass>,
     regions: Vec<(Gpa, usize)>,
     injected: Vec<Injection>,
     pending_irq: Option<u8>,
@@ -96,6 +98,7 @@ impl MockBackend {
             completion_staged: false,
             counts: ExitCounts::default(),
             state: VcpuState::default(),
+            host_core_class: None,
             regions: Vec::new(),
             injected: Vec::new(),
             pending_irq: None,
@@ -113,6 +116,11 @@ impl MockBackend {
         latch: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         self.cancellation = Some(latch);
+        self
+    }
+
+    pub fn with_host_core_class(mut self, class: HostCoreClass) -> Self {
+        self.host_core_class = Some(class);
         self
     }
 
@@ -379,12 +387,20 @@ impl Backend for MockBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
-        Ok(self.state.clone())
+        let mut state = self.state.clone();
+        state.host_core_class = self.host_core_class;
+        Ok(state)
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
+        }
+        if state.host_core_class != self.host_core_class {
+            return Err(BackendError::HostCoreClassMismatch {
+                saved: state.host_core_class,
+                current: self.host_core_class,
+            });
         }
         self.state = state.clone();
         self.pending_irq = None;
@@ -406,6 +422,10 @@ impl Backend for MockBackend {
 
     fn capabilities(&self) -> MockCaps {
         self.caps
+    }
+
+    fn host_core_class(&self) -> Option<HostCoreClass> {
+        self.host_core_class
     }
 }
 

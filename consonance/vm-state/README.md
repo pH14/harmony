@@ -9,13 +9,16 @@ hypervisor dependencies.
 
 ## Format
 
-Version 8 is a little-endian TLV container: a 10-byte header (magic, version,
-architecture tag, and section count) followed by sections in ascending tag
+X86 version 8 and Arm version 10 use a little-endian TLV container: a 10-byte
+header (magic, version, architecture tag, and section count) followed by sections in ascending tag
 order. X86 records always use the current SREGS and DEBUGREGS layouts with the
 captured CPU fields (`flags` and `pdptrs`). The engine-state and
-`xsave_restore_bv` and nested-state sections are optional within this current format. ARM uses
-the same current version and retains its complete architecture-specific record
-set. Older output versions are rejected rather than decoded or re-emitted.
+`xsave_restore_bv` and nested-state sections are optional within this current
+format. Arm
+retains its complete architecture-specific record set. Arm version 10 rejects
+older records that lack proof of the HVF `ACTLR_EL1` and pointer-authentication
+key capture boundaries. Older output versions are rejected rather than decoded
+or re-emitted.
 Fixed-layout records use zerocopy wire types; variable sections are
 length-delimited. MSRs use `BTreeMap` order, and timer entries retain their
 firing order, so encoding is independent of insertion order.
@@ -38,8 +41,9 @@ sections or leave capacity sized for an extra growth step. MSR and timer records
 are written directly into that output, without temporary section buffers.
 
 `peek_version` validates the magic and reads the version without decoding the
-rest of the blob. `VM_STATE_VERSION` identifies the only writer and reader
-format. The restore-bits section is validated for wire shape here; vmm-core owns
+rest of the blob. `VM_STATE_VERSION` and `ARM64_VM_STATE_VERSION` identify the
+respective x86 and Arm writer and reader formats. The restore-bits section is
+validated for wire shape here; vmm-core owns
 any backend-specific validation of the captured XSAVE image.
 
 X86 tag 16 carries the entire variable-length KVM nested-state header and

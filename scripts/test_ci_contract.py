@@ -381,7 +381,10 @@ class IgnoredTestRegistryTests(unittest.TestCase):
     def test_host_tests_are_keyed_by_a_machine(self):
         for host in ci_contract.HOST_TESTS:
             with self.subTest(host=host):
-                self.assertRegex(host, r"^(?:macos|linux)-(?:aarch64|x86_64)$")
+                self.assertRegex(
+                    host,
+                    r"^(?:(?:macos|linux)-(?:aarch64|x86_64)|linux-x86_64-hybrid)$",
+                )
 
     def test_a_pattern_selects_its_whole_binary_or_one_exact_test(self):
         with mock.patch.object(ci_contract, "ignored_test_runners", lambda: {
@@ -405,8 +408,20 @@ class IgnoredTestRegistryTests(unittest.TestCase):
                                           ("Linux", "x86_64", "linux-x86_64")):
             with self.subTest(expected=expected), \
                  mock.patch.object(ci_contract.platform, "system", lambda: system), \
-                 mock.patch.object(ci_contract.platform, "machine", lambda: machine):
+                 mock.patch.object(ci_contract.platform, "machine", lambda: machine), \
+                 mock.patch.object(ci_contract, "_hybrid_kvm_pair_available", return_value=False):
                 self.assertEqual(ci_contract.this_host(), expected)
+
+        with mock.patch.object(ci_contract.platform, "system", return_value="Linux"), \
+             mock.patch.object(ci_contract.platform, "machine", return_value="x86_64"), \
+             mock.patch.object(ci_contract, "_hybrid_kvm_pair_available", return_value=True):
+            self.assertEqual(ci_contract.this_host(), "linux-x86_64-hybrid")
+
+    def test_hybrid_pool_parser_rejects_malformed_ranges(self):
+        self.assertEqual(ci_contract._cpu_list("0-3,8,10-11\n"), {0, 1, 2, 3, 8, 10, 11})
+        for value in ("", "3-1", "1,,2", "x", "4-"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ci_contract._cpu_list(value)
 
 
 class NamingTests(unittest.TestCase):

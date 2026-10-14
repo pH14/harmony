@@ -1896,6 +1896,86 @@ mod tests {
     }
 
     #[test]
+    fn public_restore_of_asserted_in_kernel_clockevent_allows_ack() {
+        use crate::vmm::VtimeWiring;
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm, GicIntId};
+
+        let machine = || {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.enable_pvclock();
+            assert_eq!(vmm.pvclock_register(0x1000).0, Status::Ok);
+            vmm
+        };
+        let mut source = machine();
+        source
+            .backend_mut()
+            .set_pending_irq(Some(GicIntId(PVCLOCK_PPI)))
+            .unwrap();
+        source.devices.clockevent.line_asserted = true;
+        source.devices.clockevent.assertions = 1;
+        let snapshot = source.save_vm_state().unwrap();
+        let mut target = machine();
+        target.restore_vm_state(&snapshot).unwrap();
+        assert_ne!(
+            target.backend_mut().save().unwrap().gic.unwrap().line_level[0] & (1 << PVCLOCK_PPI),
+            0
+        );
+        target
+            .dispatch_mmio_arm64(Gpa(super::super::board::PVCLOCK.0 + 0x18), 4, Some(2))
+            .unwrap();
+        assert_eq!(
+            target.backend_mut().save().unwrap().gic.unwrap().line_level[0] & (1 << PVCLOCK_PPI),
+            0
+        );
+    }
+
+    #[test]
+    fn public_kvm_restore_rejects_unproven_physical_timer_records_before_mutation() {
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
+
+        let machine = || {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine();
+        let valid = source.save_vm_state().unwrap();
+        let mut target = machine();
+        let before = target.save_vm_state().unwrap();
+        for version in [5, 6] {
+            let mut legacy = valid.clone();
+            let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
+            dev.gic.as_mut().unwrap().version = version;
+            legacy.devices = records::encode_device_blob(&dev);
+            assert!(matches!(
+                target.restore_vm_state(&legacy),
+                Err(VmmError::Snapshot(SnapshotError::DeviceRestore(_)))
+            ));
+            assert_eq!(target.save_vm_state().unwrap(), before);
+        }
+        target.restore_vm_state(&valid).unwrap();
+    }
+
+    #[test]
     fn in_kernel_clockevent_idle_survives_uncapturable_spi_state() {
         use crate::vmm::VtimeWiring;
         use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};

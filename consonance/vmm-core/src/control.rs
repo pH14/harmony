@@ -7316,6 +7316,7 @@ mod tests {
     struct UsedRestoreRejectBackend {
         inner: MockBackend,
         entered: bool,
+        reject_import: bool,
     }
 
     impl Backend for UsedRestoreRejectBackend {
@@ -7392,6 +7393,12 @@ mod tests {
         }
 
         fn validate_import_state(&self, state: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            if self.reject_import {
+                return Err(vmm_backend::BackendError::HostCoreClassMismatch {
+                    saved: state.host_core_class,
+                    current: Some(vmm_backend::HostCoreClass::Performance),
+                });
+            }
             self.inner.validate_restore_state(state)
         }
 
@@ -7421,6 +7428,7 @@ mod tests {
         let mut backend = UsedRestoreRejectBackend {
             inner: MockBackend::new(),
             entered: false,
+            reject_import: false,
         };
         // SAFETY: the aligned page remains live and exclusive until after the mock backend is dropped.
         unsafe { backend.map_memory(vmm_backend::Gpa(0), &mut page.0) }.unwrap();
@@ -7436,6 +7444,7 @@ mod tests {
                 UsedRestoreRejectBackend {
                     inner,
                     entered: false,
+                    reject_import: false,
                 },
                 GuestRam::new(RAM).unwrap(),
             );
@@ -7476,6 +7485,16 @@ mod tests {
                     .validate_restore_state(&before),
                 Err(vmm_backend::BackendError::AmdReusedVcpuRestoreUnsafe)
             ));
+            let stats_before = server.snapshot_store_stats();
+            server.vmm_mut().unwrap().backend_mut().reject_import = true;
+            assert!(matches!(
+                server.import_sparse_snapshot_parts(cut, &portable.pages, &portable.sidecar),
+                Err(PortableSnapshotError::Malformed(
+                    "portable VM state restore validation"
+                ))
+            ));
+            assert_eq!(server.snapshot_store_stats(), stats_before);
+            server.vmm_mut().unwrap().backend_mut().reject_import = false;
             let imported = server.import_sparse_snapshot(cut, portable).unwrap();
             assert_eq!(
                 server.handle(&Request::Replay(imported.id)).unwrap(),

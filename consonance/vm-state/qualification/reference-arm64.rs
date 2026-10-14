@@ -7,7 +7,7 @@ impl Arm64VmState {
         out.extend_from_slice(
             HeaderWire {
                 magic: VM_STATE_MAGIC.into(),
-                version: VM_STATE_VERSION.into(),
+                version: ARM64_VM_STATE_VERSION.into(),
                 arch: ARCH_AARCH64.into(),
                 section_count: section_count.into(),
             }

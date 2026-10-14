@@ -44,6 +44,21 @@ pub(crate) const IA32_TSC: u32 = 0x10;
 
 pub(crate) const IA32_TSC_ADJUST: u32 = 0x3b;
 
+pub(super) fn bind_host_core_class(
+    base: [u8; 32],
+    class: Option<vmm_backend::HostCoreClass>,
+) -> [u8; 32] {
+    let Some(class) = class else {
+        return base;
+    };
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"harmony-x86-host-core-class-v1");
+    hash.update(base);
+    hash.update([class as u8]);
+    hash.finalize().into()
+}
+
 pub(crate) const DOORBELL_PORT: u16 = 0x0CA1;
 
 pub(crate) const VIRTUAL_TIME_TICK_PORT: u16 = 0x0CA3;
@@ -619,10 +634,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
     }
 
     fn snapshot_contract_hash_x86(&self) -> [u8; 32] {
-        self.devices
+        let base = self
+            .devices
             .nested_host
             .as_ref()
-            .map_or_else(contract::contract_hash, contract::NestedHostContract::hash)
+            .map_or_else(contract::contract_hash, contract::NestedHostContract::hash);
+        bind_host_core_class(base, self.backend.host_core_class())
     }
 
     pub(crate) fn validate_restore_x86(
@@ -677,6 +694,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
         }
         self.pvclock_validate_restore(dev.pvclock.as_ref())?;
         let mut vcpu = records::vcpu_state_from(s);
+        vcpu.host_core_class = self.backend.host_core_class();
         vcpu.events = records::events_for_restore(&dev.events);
         let clock_offset = dev.tsc_adjust;
         Ok((
@@ -889,6 +907,10 @@ pub(crate) fn encode_vcpu_state(s: &VcpuState) -> Vec<u8> {
         v.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         v.extend_from_slice(bytes);
     }
+    if let Some(class) = s.host_core_class {
+        v.extend_from_slice(b"HCLS");
+        v.push(class as u8);
+    }
     v
 }
 
@@ -1078,6 +1100,9 @@ pub(crate) fn vcpu_components(s: &VcpuState, out: &mut Vec<(&'static str, [u8; 3
     if let Some(bytes) = &s.nested_state {
         out.push(("nested-state", dig(bytes)));
     }
+    if let Some(class) = s.host_core_class {
+        out.push(("host-core-class", dig(&[class as u8])));
+    }
     out.push(("xsave-extended", part(576, xs.len())));
 }
 
@@ -1118,6 +1143,67 @@ mod tests {
         assert_ne!(with_zero, with_two);
         assert_ne!(with_zero, with_three);
         assert_ne!(with_three, with_two);
+    }
+
+    #[test]
+    fn host_core_class_binds_raw_and_portable_identity() {
+        use vmm_backend::HostCoreClass::{Efficiency, Performance};
+        let base = contract::contract_hash();
+        let p = bind_host_core_class(base, Some(Performance));
+        let e = bind_host_core_class(base, Some(Efficiency));
+        assert_eq!(bind_host_core_class(base, None), base);
+        assert_ne!(p, e);
+        assert_ne!(p, base);
+        assert_ne!(e, base);
+
+        let mut state = xsave_state(None);
+        let unreported = encode_vcpu_state(&state);
+        state.host_core_class = Some(Performance);
+        let p_state = encode_vcpu_state(&state);
+        state.host_core_class = Some(Efficiency);
+        let e_state = encode_vcpu_state(&state);
+        assert_ne!(p_state, e_state);
+        assert_ne!(p_state, unreported);
+        assert_ne!(e_state, unreported);
+    }
+
+    #[test]
+    fn mock_host_core_class_binds_vmm_snapshot_restore() {
+        use vmm_backend::HostCoreClass::{Efficiency, Performance};
+
+        let build = |class| {
+            let mut backend = vmm_backend::MockBackend::new().with_host_core_class(class);
+            backend
+                .set_policy(&vmm_backend::arch::x86::X86Policy::default())
+                .unwrap();
+            backend.set_state(xsave_state(None));
+            Vmm::new(backend, crate::vmm::GuestRam::new(0x1000).unwrap())
+        };
+        let mut source = build(Performance);
+        let mut source_memory = source.guest_memory().to_vec();
+        source_memory[0x100] = 0x5a;
+        source.restore_guest_memory(&source_memory).unwrap();
+        let saved = source.save_vm_state().unwrap();
+        let saved = vm_state::VmState::decode(&saved.encode().unwrap()).unwrap();
+        assert_eq!(
+            saved.contract_hash,
+            bind_host_core_class(contract::contract_hash(), Some(Performance))
+        );
+        let memory = source.guest_memory().to_vec();
+
+        let mut same_class = build(Performance);
+        same_class.restore_snapshot(&memory, &saved).unwrap();
+        assert_eq!(same_class.guest_memory(), &memory);
+
+        let mut other_class = build(Efficiency);
+        let before_hash = other_class.state_hash().unwrap();
+        let before_memory = other_class.guest_memory().to_vec();
+        assert!(matches!(
+            other_class.restore_snapshot(&memory, &saved),
+            Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+        ));
+        assert_eq!(other_class.state_hash().unwrap(), before_hash);
+        assert_eq!(other_class.guest_memory(), before_memory);
     }
 
     #[test]

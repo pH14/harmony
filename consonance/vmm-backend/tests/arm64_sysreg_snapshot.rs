@@ -302,6 +302,280 @@ fn guest_nonzero_spi_route_rejects_capture_and_zero_route_restores() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_physical_timer_state_refuses_capture_and_legacy_restore() {
+    let enabled = [
+        0xd280_0020,
+        0xd51b_e200,
+        0xd51b_e220,
+        0xd503_3fdf,
+        0xd53b_e220,
+        0xd2a1_2001,
+        0xf900_0020,
+        0xd53b_e220,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &enabled);
+    assert_eq!(source.next_store(), 5);
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+    assert_eq!(source.next_store(), 5);
+
+    let disabled_with_compare = [
+        0xd280_0020,
+        0xd51b_e200,
+        0xd53b_e240,
+        0xd2a1_2001,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut disabled = Guest::new(live_backend(), &disabled_with_compare);
+    assert_ne!(disabled.next_store(), 0);
+    assert!(matches!(
+        disabled.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+
+    let pristine = [0xd53b_e220, 0xd2a1_2001, 0xf900_0020, 0x1400_0000];
+    let mut target = Guest::new(live_backend(), &pristine);
+    let pristine_cut = target.save();
+    assert_eq!(target.next_store(), 0);
+    let valid = target.save();
+    let mut legacy = valid;
+    legacy.gic.as_mut().unwrap().version = 5;
+    assert!(matches!(
+        target.backend.restore(&legacy),
+        Err(vmm_backend::BackendError::InvalidState)
+    ));
+    let after = target.save();
+    assert_eq!(after.core, valid.core);
+    assert_eq!(after.gic, valid.gic);
+    for intid in [20, 30] {
+        assert!(matches!(
+            target
+                .backend
+                .set_pending_irq(Some(vmm_backend::GicIntId(intid))),
+            Err(vmm_backend::BackendError::InvalidState)
+        ));
+        assert_eq!(target.save().gic, valid.gic);
+    }
+
+    source.restore(&pristine_cut);
+    for (slot, word) in source._memory.0.chunks_exact_mut(4).zip(pristine) {
+        slot.copy_from_slice(&word.to_le_bytes());
+    }
+    source
+        .backend
+        .invalidate_instruction_cache(source._memory.0.as_ptr() as usize, source._memory.0.len());
+    assert_eq!(source.next_store(), 0);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore() {
+    let program = [
+        0xd280_0020,
+        0xd51b_e200,
+        0xd51b_e220,
+        0xd503_3fdf,
+        0xd53b_e220,
+        0xd2a1_2001,
+        0xb900_0020,
+        0xd280_0000,
+        0xd51b_e220,
+        0xd51b_e240,
+        0xd503_3fdf,
+        0xd280_0100,
+        0xf2b0_8000,
+        0xd400_0002,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    assert_eq!(source.next_store(), 5);
+    assert_eq!(source.backend.run().unwrap(), CommonExit::Shutdown.into());
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { what })
+            if what == "save vGIC with timer-owned PPI delivery state"
+    ));
+
+    let mut target = Guest::new(live_backend(), &[0x1400_0000]);
+    let valid = target.save();
+    for intid in [20, 30] {
+        let bit = 1u32 << intid;
+        for field in [0, 1, 2] {
+            let mut malformed = valid;
+            let gic = malformed.gic.as_mut().unwrap();
+            match field {
+                0 => gic.pending[0] = bit,
+                1 => gic.active[0] = bit,
+                _ => gic.line_level[0] = bit,
+            }
+            assert!(matches!(
+                target.backend.restore(&malformed),
+                Err(vmm_backend::BackendError::InvalidState)
+            ));
+            assert_eq!(target.save().gic, valid.gic);
+        }
+    }
+    target
+        .backend
+        .set_pending_irq(Some(vmm_backend::GicIntId(29)))
+        .unwrap();
+    assert_eq!(target.save().gic.unwrap().line_level[0], 1 << 29);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_disr_state_refuses_capture_and_legacy_restore() {
+    let program = [
+        0xd282_4680,
+        0xd518_c120,
+        0xd503_3fdf,
+        0xd538_c120,
+        0xd2a1_2001,
+        0xf900_0020,
+        0xd538_c120,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    let mut clean = source.save();
+    clean.core.pc = RAM + 24;
+    clean.core.x[1] = OUTPUT;
+    assert_eq!(source.next_store(), 0x1234);
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { what })
+            if what == "save ARM KVM with noncanonical DISR_EL1"
+    ));
+
+    let mut legacy = clean;
+    legacy.gic.as_mut().unwrap().version = 6;
+    assert!(matches!(
+        source.backend.restore(&legacy),
+        Err(vmm_backend::BackendError::InvalidState)
+    ));
+    assert_eq!(source.next_store(), 0x1234);
+
+    source.restore(&clean);
+    assert_eq!(source.next_store(), 0);
+    let mut cold = Guest::new(live_backend(), &program);
+    cold.restore(&clean);
+    assert_eq!(cold.next_store(), 0);
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[ignore = "live HVF; registered in HOST_TESTS"]
+fn guest_actlr_state_refuses_capture_and_clean_restore_resets_it() {
+    let program = [
+        0xd280_0040,
+        0xd518_1020,
+        0xd503_3fdf,
+        0xd538_1020,
+        0xd2a1_2001,
+        0xf900_0020,
+        0xd538_1020,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    let mut clean = source.save();
+    clean.core.pc = RAM + 24;
+    clean.core.x[1] = OUTPUT;
+    assert_eq!(source.next_store(), 2);
+    assert!(matches!(
+        source.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { what })
+            if what == "save HVF with noncanonical ACTLR_EL1"
+    ));
+    assert_eq!(source.next_store(), 2);
+    source.restore(&clean);
+    assert_eq!(source.next_store(), 0);
+    drop(source);
+
+    let mut cold = Guest::new(live_backend(), &program);
+    cold.restore(&clean);
+    assert_eq!(cold.next_store(), 0);
+    drop(cold);
+
+    let mut independent = Guest::new(live_backend(), &program);
+    assert_eq!(independent.next_store(), 2);
+    independent.restore(&clean);
+    assert_eq!(independent.next_store(), 0);
+    drop(independent);
+
+    let mut policy = Guest::new(live_backend(), &program);
+    assert_eq!(policy.next_store(), 2);
+    policy.backend.set_policy(&Arm64Policy::default()).unwrap();
+    assert_eq!(policy.next_store(), 0);
+}
+
+#[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[ignore = "live HVF; registered in HOST_TESTS"]
+fn guest_pauth_keys_refuse_capture_and_clean_restore_resets_them() {
+    for (name, sysreg) in [
+        ("APIAKeyLo", 0xc108u32),
+        ("APIAKeyHi", 0xc109),
+        ("APIBKeyLo", 0xc10a),
+        ("APIBKeyHi", 0xc10b),
+        ("APDAKeyLo", 0xc110),
+        ("APDAKeyHi", 0xc111),
+        ("APDBKeyLo", 0xc112),
+        ("APDBKeyHi", 0xc113),
+        ("APGAKeyLo", 0xc118),
+        ("APGAKeyHi", 0xc119),
+    ] {
+        let program = [
+            0xd282_4680,
+            0xd500_0000 | sysreg << 5,
+            0xd503_3fdf,
+            0xd520_0000 | sysreg << 5,
+            0xd2a1_2001,
+            0xf900_0020,
+            0xd520_0000 | sysreg << 5,
+            0xf900_0020,
+            0x1400_0000,
+        ];
+        let mut source = Guest::new(live_backend(), &program);
+        let mut clean = source.save();
+        clean.core.pc = RAM + 24;
+        clean.core.x[1] = OUTPUT;
+        assert_eq!(source.next_store(), 0x1234, "{name} first read");
+        assert!(
+            matches!(
+                source.backend.save(),
+                Err(vmm_backend::BackendError::Unsupported { what })
+                    if what == "save HVF with noncanonical pointer-authentication key"
+            ),
+            "{name} capture"
+        );
+        assert_eq!(source.next_store(), 0x1234, "{name} uninterrupted read");
+        source.restore(&clean);
+        assert_eq!(source.next_store(), 0, "{name} reused restore");
+        drop(source);
+
+        let mut cold = Guest::new(live_backend(), &program);
+        cold.restore(&clean);
+        assert_eq!(cold.next_store(), 0, "{name} fresh restore");
+        drop(cold);
+
+        let mut policy = Guest::new(live_backend(), &program);
+        assert_eq!(policy.next_store(), 0x1234, "{name} policy setup");
+        policy.backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(policy.next_store(), 0, "{name} policy reset");
+    }
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
     let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
     let mut state = guest.save();
