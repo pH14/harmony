@@ -49,6 +49,11 @@ assert.ok(crossing?.has(NO_ROOM), "The rollout that clears Level 1 must be sampl
 console.log(`Swarm sampling: ${trails.length} sampled rollouts, ${trails.reduce((n, t) => n + t.length / MOTION_STRIDE, 0)} poses; the Level 1 clear after ${jobs} rollouts hides its loading frames.`);
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
+const stripHasSprites = () => [...document.querySelectorAll(".level-overview")].some((strip) => {
+  const data = strip.getContext("2d").getImageData(0, 0, strip.width, strip.height).data;
+  for (let k = 0; k < data.length; k += 4) if (data[k] === 255 && data[k + 1] === 217 && data[k + 2] === 106) return true;
+  return false;
+});
 const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?level=0&pace=0`;
 const errors = [];
 await mkdir("test-results", { recursive: true });
@@ -187,14 +192,14 @@ try {
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);
       await page.locator("#pause").click();
       await setView(page,'both');
-      await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
+      await page.waitForFunction(stripHasSprites);
       const ghosts = await page.locator(".area-map[data-panel=\"0\"]").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
       const branchAttempts = Number((await page.locator("#attempts").textContent()).replaceAll(",", ""));
       assert.ok(ghosts <= branchAttempts + 2, `A new branch must not display the original search's players (${ghosts} sprites, ${branchAttempts} attempts)`);
       await page.locator('#branch-tree button[data-search="0"]').click();
       await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
       await page.locator("#pause").click();
-      await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].reduce((n, c) => n + Number(c.dataset.swarmCount), 0) > 0);
+      await page.waitForFunction(stripHasSprites);
       assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
     } else await setView(page,'both');
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "both");
