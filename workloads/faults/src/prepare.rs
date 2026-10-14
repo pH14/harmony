@@ -42,19 +42,23 @@ fn prepare_staged(
     if base.is_empty() {
         return Err("fault search requires a guest base image".into());
     }
-    let root = staged.rootfs.canonicalize()?;
-    let admission = crate::admission::inspect_root(&root)?;
-    admission.require_for(mode)?;
-    let bundle = match supplied {
-        Some(text) => text.to_owned(),
-        None => {
-            let document = root.join(BUNDLE_PATH).canonicalize()?;
-            if !document.starts_with(&root) {
-                return Err("the bundle must reside inside the staged image".into());
-            }
-            String::from_utf8(std::fs::read(document)?)?
-        }
-    };
+    let (admission, bundle) =
+        oci_support::image::with_staged_read_access(staged, || -> Result<_, Box<dyn Error>> {
+            let root = staged.rootfs.canonicalize()?;
+            let admission = crate::admission::inspect_root(&root)?;
+            admission.require_for(mode)?;
+            let bundle = match supplied {
+                Some(text) => text.to_owned(),
+                None => {
+                    let document = root.join(BUNDLE_PATH).canonicalize()?;
+                    if !document.starts_with(&root) {
+                        return Err("the bundle must reside inside the staged image".into());
+                    }
+                    String::from_utf8(std::fs::read(document)?)?
+                }
+            };
+            Ok((admission, bundle))
+        })?;
     let vocabulary =
         FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
     let request = if supplied.is_some() {
@@ -190,6 +194,41 @@ ready /usr/bin/servicectl endpoint health
             .err()
             .unwrap();
         assert!(error.to_string().contains("guest base image"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_reads_unreadable_staged_files_and_restores_their_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        std::fs::write(root.path().join("secret"), b"hidden").unwrap();
+        for path in ["secret", BUNDLE_PATH, "etc/harmony"] {
+            std::fs::set_permissions(root.path().join(path), std::fs::Permissions::from_mode(0o0))
+                .unwrap();
+        }
+        let prepared = prepare_staged(&staged, b"base", None).unwrap();
+        assert_eq!(prepared.bundle, BUNDLE);
+        for path in ["secret", "etc/harmony"] {
+            let mode = std::fs::symlink_metadata(root.path().join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, 0, "{path}");
+        }
+        std::fs::set_permissions(
+            root.path().join("etc/harmony"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mode = std::fs::symlink_metadata(root.path().join(BUNDLE_PATH))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0);
     }
 
     #[cfg(unix)]

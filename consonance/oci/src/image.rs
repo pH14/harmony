@@ -436,6 +436,16 @@ where
     }
 }
 
+pub fn with_staged_read_access<T, E>(
+    staged: &StagedImage,
+    action: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<std::io::Error>,
+{
+    with_host_read_access(&staged.rootfs, |_| action())
+}
+
 fn allow_tree_reads(path: &Path, changed: &mut Vec<(PathBuf, u32)>) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     let needed = if meta.is_dir() {

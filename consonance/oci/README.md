@@ -193,7 +193,8 @@ read/search access to directories while validating mount paths, resolving
 credentials, and packaging the guest image, then restores their modes. The
 guest CPIO keeps the archive's recorded modes, even for files the staging user
 otherwise could not read. Standalone credential resolution uses the same
-temporary access rule.
+temporary access rule. Staged-image consumers that read files before bundle
+preparation use `image::with_staged_read_access` for the same restore boundary.
 
 `RuntimeConfig::user` retains the image `Config.User` value. The supported
 Linux forms are `uid`, `uid:gid`, `user`, `user:group`, `uid:group`, and

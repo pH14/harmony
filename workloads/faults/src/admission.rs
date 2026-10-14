@@ -129,7 +129,7 @@ impl ImageReport {
 pub fn inspect_image(image: &str) -> Result<ImageReport, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    inspect_root(&staged.rootfs)
+    oci_support::image::with_staged_read_access(&staged, || inspect_root(&staged.rootfs))
 }
 
 pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
