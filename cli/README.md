@@ -311,9 +311,11 @@ execution, and completed reports must name those saved digests. Saved faults
 execution checks the kernel, initramfs and search vocabulary at their final
 read against the manifest; rooted search passes the verified root bytes to its
 workers. UML search and command execution also check the loaded profile's
-identity against the verified recording before guest launch. UML also pins the
-exact physical processor identity selected by the fastest core pool's
-coordinator placement; the manifest and faults campaign use the same processor.
+identity against the verified recording before guest launch. The saved UML
+kernel digest must match that profile's executable before a run can complete.
+UML also pins the exact physical processor identity selected by the fastest
+core pool's coordinator placement; the manifest and faults campaign use the
+same processor.
 Standalone command runs and replays bind that saved identity before launching
 the guest. KVM and HVF application replay compare final state,
 assertions, actions and recovery evidence. UML application replay records
