@@ -924,6 +924,8 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
         let size = parse_octal(&block[124..136])?;
         i64::try_from(parse_octal(&block[136..148])?)
             .map_err(|_| ImageError::Tar("tar timestamp is too large".into()))?;
+        check_device_number(&block[329..337])?;
+        check_device_number(&block[337..345])?;
         match block[156] {
             b'L' => {
                 let mut data = header_data(&mut stream, size)?;
@@ -1188,6 +1190,13 @@ fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
     }
     u64::from_str_radix(std::str::from_utf8(digits).map_err(|_| invalid())?, 8)
         .map_err(|_| invalid())
+}
+
+fn check_device_number(field: &[u8]) -> Result<(), ImageError> {
+    if field.iter().all(|byte| *byte == b' ') || field[0] & 0x80 != 0 {
+        return Ok(());
+    }
+    parse_octal(field).map(|_| ())
 }
 
 fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
@@ -3176,6 +3185,81 @@ mod tests {
                 ));
                 assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
             }
+        }
+    }
+
+    #[test]
+    fn pax_owner_override_accepts_an_all_nul_base_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[108..124].fill(0);
+        reseal(&mut member);
+        let pax = [pax_record("uid", "3000000"), pax_record("gid", "3000000")].concat();
+        let body = [
+            raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes()),
+            member,
+        ]
+        .concat();
+        let archive = write_archive(dir.path(), "all-nul-base-owner.tar", &body);
+
+        assert_eq!(
+            read_members(&archive).unwrap()[0].owner,
+            Owner {
+                uid: 3_000_000,
+                gid: 3_000_000
+            }
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn malformed_device_number_fields_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, field) in [("major", 329..337), ("minor", 337..345)] {
+            for (label, bytes) in [
+                ("plus", b"     +1\0".as_slice()),
+                ("junk", b"abcdef\0 ".as_slice()),
+                ("nul-junk", b"0\0garbag".as_slice()),
+            ] {
+                let mut member = raw_member(b"payload", b'0', "", b"data");
+                member[field.clone()].copy_from_slice(bytes);
+                reseal(&mut member);
+                let case = format!("device-{name}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &member);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn portable_device_number_fields_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("spaces", b"        ".as_slice()),
+            ("binary", b"\xff\0\0\0\0\0\0\0".as_slice()),
+        ] {
+            let mut member = raw_member(b"payload", b'0', "", b"data");
+            member[329..337].copy_from_slice(bytes);
+            member[337..345].copy_from_slice(bytes);
+            reseal(&mut member);
+            let archive = write_archive(dir.path(), &format!("{name}.tar"), &member);
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+
+            let dest = dir.path().join(name);
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
         }
     }
 
