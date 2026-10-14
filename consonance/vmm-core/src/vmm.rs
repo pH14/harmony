@@ -5250,10 +5250,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_pic_imr_rejects_non_byte_io_before_state_or_time_changes() {
-        for port in [0x0021, 0x00A1] {
+    fn legacy_pic_ports_reject_non_byte_io_before_state_or_time_changes() {
+        for (port, valid_read) in [(0x0020, 0), (0x0021, 0xFE), (0x00A0, 0), (0x00A1, 0xFE)] {
             for size in [2, 4, 8, 0] {
-                for write in [Some(0x00EF), None] {
+                let wide_value = if valid_read == 0 { 0xEF00 } else { 0xEF };
+                for write in [Some(wide_value), None] {
                     let mut v = linux_vmm(vec![Exit::Arch(X86Exit::Io { port, size, write })]);
                     v.wire_vtime(
                         VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap(),
@@ -5262,7 +5263,7 @@ mod tests {
                     let before_imr = v.devices.legacy.as_ref().unwrap().pic_imr();
                     assert!(
                         matches!(v.step(), Err(VmmError::ContractViolation(_))),
-                        "PIC IMR port {port:#06x}, size {size}, write {write:?} must fail closed"
+                        "PIC port {port:#06x}, size {size}, write {write:?} must fail closed"
                     );
                     assert_eq!(v.now_vns().unwrap(), before_vns);
                     assert_eq!(v.devices.legacy.as_ref().unwrap().pic_imr(), before_imr);
@@ -5284,7 +5285,7 @@ mod tests {
                 Exit::Common(CommonExit::Idle),
             ]);
             valid.run().unwrap();
-            assert_eq!(valid.backend.completions(), &[Completion::Read(0xFE)]);
+            assert_eq!(valid.backend.completions(), &[Completion::Read(valid_read)]);
         }
     }
 

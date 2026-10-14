@@ -7,7 +7,8 @@ use vtime::VClockConfig;
 use crate::snapshot::SnapshotError;
 use crate::vendor::x86::contract::{self, MsrDisposition};
 use crate::vendor::x86::devices::{
-    ISA_DEBUG_EXIT_PORT, LegacyPlatform, PIC_MASTER_DATA, PIC_SLAVE_DATA, REPORT_PORT, Uart8250,
+    ISA_DEBUG_EXIT_PORT, LegacyPlatform, PIC_MASTER_COMMAND, PIC_MASTER_DATA, PIC_SLAVE_COMMAND,
+    PIC_SLAVE_DATA, REPORT_PORT, Uart8250,
 };
 use crate::vendor::x86::records::{self, DeviceState, LegacyState, UartState};
 use crate::virtual_time::{DeviceClass, NormalizedEventClass};
@@ -206,7 +207,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 "unmodeled OUT to port {port:#06x} value {value:#x} (size {size})"
             )));
         }
-        if matches!(port, PIC_MASTER_DATA | PIC_SLAVE_DATA) {
+        if matches!(
+            port,
+            PIC_MASTER_COMMAND | PIC_MASTER_DATA | PIC_SLAVE_COMMAND | PIC_SLAVE_DATA
+        ) {
             require_byte_io("OUT", port, size)?;
         }
         self.advance_virtual_time_for_port(port)?;
@@ -249,7 +253,10 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 "unmodeled IN from port {port:#06x} (size {size})"
             )));
         }
-        if matches!(port, PIC_MASTER_DATA | PIC_SLAVE_DATA) {
+        if matches!(
+            port,
+            PIC_MASTER_COMMAND | PIC_MASTER_DATA | PIC_SLAVE_COMMAND | PIC_SLAVE_DATA
+        ) {
             require_byte_io("IN", port, size)?;
         }
         self.advance_virtual_time_for_port(port)?;
