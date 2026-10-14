@@ -141,6 +141,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 false,
             )?;
             let new: serde_json::Value = serde_json::from_slice(&fs::read(out.join("run.json"))?)?;
+            manifest.pin_outcome(&new)?;
             if !command_replay_matches(&original, new) {
                 Err("replay diverged from the recorded command execution".into())
             } else {
@@ -158,6 +159,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 &manifest.options(&out),
                 original.settle,
             )?;
+            manifest.pin_outcome(&replay)?;
             if expected.state_hash_encoding == StateHashEncoding::Unavailable
                 || replay
                     .replays
@@ -255,6 +257,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
             &manifest.options(&out),
             !stop,
         )?;
+        manifest.pin_outcome(&report)?;
         Ok(if code != 0 {
             1
         } else {

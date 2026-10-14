@@ -147,7 +147,10 @@ pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> 
     capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
     manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
     manifest.save(&out)?;
-    let result = search_faults(&out, &manifest, &SearchStart::Genesis);
+    let result = search_faults(&out, &manifest, &SearchStart::Genesis).and_then(|report| {
+        manifest.pin_outcome(&report)?;
+        Ok(report_code(&report))
+    });
     finish(&out, &mut manifest, result)
 }
 
@@ -202,11 +205,18 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
     manifest.actions.clear();
     manifest.settle = true;
     manifest.save(&out)?;
-    let result = search_faults(&out, &manifest, &start);
+    let result = search_faults(&out, &manifest, &start).and_then(|report| {
+        manifest.pin_outcome(&report)?;
+        Ok(report_code(&report))
+    });
     finish(&out, &mut manifest, result)
 }
 
-fn search_faults(out: &Path, manifest: &Manifest, start: &SearchStart) -> Result<u8> {
+fn search_faults(
+    out: &Path,
+    manifest: &Manifest,
+    start: &SearchStart,
+) -> Result<faults_workload::Report> {
     let artifacts = manifest.fault_artifacts(out)?;
     let vocabulary: FaultVocabulary =
         serde_json::from_slice(&fs::read(out.join("artifacts/vocabulary.json"))?)?;
@@ -226,7 +236,7 @@ fn search_faults(out: &Path, manifest: &Manifest, start: &SearchStart) -> Result
         report.bugs.iter().filter(|b| b.confirmed).count(),
         report.never_satisfied.len()
     );
-    Ok(report_code(&report))
+    Ok(report)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -269,7 +279,10 @@ pub fn run(
             repeat,
             &manifest.options(&out),
         )
-        .map(|report| report_code(&report));
+        .and_then(|report| {
+            manifest.pin_outcome(&report)?;
+            Ok(report_code(&report))
+        });
         return finish(&out, &mut manifest, result);
     }
     if repeat != 1 {
@@ -307,4 +320,70 @@ pub fn run(
     )
     .map(|passed| if passed { 0 } else { 1 });
     finish(&out, &mut manifest, result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_search_refuses_report_replaced_after_package_return() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(directory.path()).unwrap();
+        let mut manifest = Manifest::read(directory.path()).unwrap();
+        let returned: faults_workload::Report = serde_json::from_value(serde_json::json!({
+            "package":"faults","mode":"search","image_sha256":"image",
+            "kernel_sha256":"kernel","identity":"runner","seed":0,"workers":1,
+            "ram_mib":1024,"executions":1,"bug_found":false,
+            "first_bug_execution":null,"bugs":[],"never_satisfied":[],"replays":[],
+            "execution_ticks":1,"wall_seconds":1,"execution_failures":0
+        }))
+        .unwrap();
+        assert_eq!(report_code(&returned), 0);
+        returned.write(directory.path()).unwrap();
+        manifest.pin_outcome(&returned).unwrap();
+        let mut replaced = returned.clone();
+        replaced
+            .never_satisfied
+            .push("fabricated reachability failure".into());
+        replaced.write(directory.path()).unwrap();
+
+        assert!(finish(directory.path(), &mut manifest, Ok(report_code(&returned))).is_err());
+        let saved = Manifest::read(directory.path()).unwrap();
+        assert!(
+            saved
+                .verify(directory.path())
+                .unwrap_err()
+                .to_string()
+                .contains("report.json has changed")
+        );
+
+        let mut replaced = returned.clone();
+        replaced.executions += 1;
+        assert_eq!(report_code(&replaced), report_code(&returned));
+        replaced.write(directory.path()).unwrap();
+        assert!(finish(directory.path(), &mut manifest, Ok(report_code(&returned))).is_err());
+
+        fs::remove_file(directory.path().join("report.json")).unwrap();
+        assert!(finish(directory.path(), &mut manifest, Ok(report_code(&returned))).is_err());
+
+        returned.write(directory.path()).unwrap();
+        assert_eq!(
+            finish(directory.path(), &mut manifest, Ok(report_code(&returned))).unwrap(),
+            0
+        );
+        let saved = Manifest::read(directory.path()).unwrap();
+        assert_eq!(saved.status, "complete");
+        assert_eq!(
+            saved.record.payload["outcome"],
+            serde_json::to_value(returned).unwrap()
+        );
+    }
 }
