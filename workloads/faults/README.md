@@ -247,8 +247,9 @@ execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest
 boot. Saved searches and command runs also bind the profile loaded for guest
-execution to the recording's verified profile identity. The staged initramfs
-is checked against the requested image, then the sealed bytes are checked
+execution to the recording's verified profile identity and require its
+executable digest to match the saved kernel. The staged initramfs is checked
+against the requested image, then the sealed bytes are checked
 again before boot, so the identity names the image the session actually runs.
 The UML identity hashes kernel arguments with their
 lengths, preserving the boundaries used at boot when a live session or cache

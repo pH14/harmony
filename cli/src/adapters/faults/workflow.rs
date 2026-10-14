@@ -283,16 +283,13 @@ pub fn run(
         capture_runtime(&mut manifest, &out, &artifacts)?;
         manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
         manifest.save(&out)?;
-        let result = package::replay(
-            &artifacts,
-            &manifest.actions,
-            repeat,
-            &manifest.options(&out)?,
-        )
-        .and_then(|report| {
-            manifest.pin_outcome(&report)?;
-            Ok(report_code(&report))
-        });
+        let result = manifest
+            .options(&out)
+            .and_then(|options| package::replay(&artifacts, &manifest.actions, repeat, &options))
+            .and_then(|report| {
+                manifest.pin_outcome(&report)?;
+                Ok(report_code(&report))
+            });
         return finish(&out, &mut manifest, result);
     }
     if repeat != 1 {

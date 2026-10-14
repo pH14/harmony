@@ -206,7 +206,14 @@ impl Manifest {
                     return Err("recorded UML profile changed during load".into());
                 }
                 let profile: uml::Profile = serde_json::from_slice(&bytes)?;
-                Ok(crate::runtime::digest(&serde_json::to_vec(&profile)?))
+                let verified = uml::Profile::load(&path.join("artifacts/uml"))?;
+                if verified.profile() != &profile {
+                    return Err("recorded UML profile changed during load".into());
+                }
+                if self.artifacts.get("kernel") != Some(&profile.executable.sha256) {
+                    return Err("recorded UML kernel differs from profile executable".into());
+                }
+                Ok(verified.identity_sha256().to_owned())
             })
             .transpose()
     }
@@ -258,16 +265,30 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        let mut kernel = vec![0_u8; 120];
+        kernel[..4].copy_from_slice(b"\x7fELF");
+        kernel[4] = 2;
+        kernel[5] = 1;
+        kernel[0x20..0x28].copy_from_slice(&64_u64.to_le_bytes());
+        kernel[0x36..0x38].copy_from_slice(&56_u16.to_le_bytes());
+        kernel[0x38..0x3a].copy_from_slice(&1_u16.to_le_bytes());
+        kernel[64..68].copy_from_slice(&1_u32.to_le_bytes());
+        record.store(dir.path(), "kernel", &kernel).unwrap();
+        record.store(dir.path(), "uml/linux", &kernel).unwrap();
+        record
+            .store(dir.path(), "uml/config", b"CONFIG_UML=y\n")
+            .unwrap();
+        record.store(dir.path(), "uml/rootfs", b"rootfs").unwrap();
         let profile = serde_json::json!({
             "schema": 2,
-            "architecture": "x86_64",
+            "architecture": std::env::consts::ARCH,
             "kernel_version": "test",
             "userspace": "seccomp",
             "patch_series_sha256": "test",
             "host_libraries": [],
-            "executable": { "name": "linux", "sha256": "test" },
-            "config": { "name": "config", "sha256": "test" },
-            "rootfs": { "name": "rootfs", "sha256": "test" },
+            "executable": { "name": "linux", "sha256": crate::runtime::digest(&kernel) },
+            "config": { "name": "config", "sha256": crate::runtime::digest(b"CONFIG_UML=y\n") },
+            "rootfs": { "name": "rootfs", "sha256": crate::runtime::digest(b"rootfs") },
             "virtual_time": { "syscall_vns": 100, "clock_read_vns": 1 }
         });
         let original = serde_json::to_vec(&profile).unwrap();
@@ -298,11 +319,28 @@ mod tests {
         );
 
         fs::write(dir.path().join("artifacts/uml/profile.json"), &original).unwrap();
-        let canonical: uml::Profile = serde_json::from_slice(&original).unwrap();
-        let expected = crate::runtime::digest(&serde_json::to_vec(&canonical).unwrap());
+        let expected = uml::Profile::load(&dir.path().join("artifacts/uml"))
+            .unwrap()
+            .identity_sha256()
+            .to_owned();
         assert_eq!(
             manifest.options(dir.path()).unwrap().uml_profile.unwrap().1,
             expected
+        );
+
+        kernel.push(1);
+        manifest
+            .record
+            .store(dir.path(), "kernel", &kernel)
+            .unwrap();
+        manifest.record.save(dir.path()).unwrap();
+        manifest.record.verify(dir.path()).unwrap();
+        assert!(
+            manifest
+                .options(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("UML kernel differs from profile executable")
         );
     }
 
