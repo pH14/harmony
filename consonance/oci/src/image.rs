@@ -1015,6 +1015,16 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                         "hardlink member has a nonportable header target".into(),
                     ));
                 }
+                if typeflag == b'1'
+                    && link_path
+                        .as_deref()
+                        .or(gnu_link.as_deref())
+                        .unwrap_or(&header_link)
+                        .len()
+                        > MAX_PORTABLE_MEMBER_PATH
+                {
+                    return Err(ImageError::Tar("hardlink target is too long".into()));
+                }
                 if typeflag == b'2' {
                     let portable = |target: &[u8]| {
                         !target.is_empty()
@@ -1331,7 +1341,7 @@ fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
 }
 
 fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
-    if path.as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT {
+    if path.canonicalize()?.as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT {
         return Err(ImageError::Tar("archive staging path is too long".into()));
     }
     Ok(())
@@ -3669,6 +3679,72 @@ mod tests {
             Err(ImageError::Tar(_))
         ));
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn staging_root_limit_uses_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("a".repeat(150)).join("b".repeat(80));
+        std::fs::create_dir_all(&actual).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        assert!(alias.as_os_str().as_bytes().len() <= MAX_PORTABLE_STAGING_ROOT);
+        assert!(
+            actual.canonicalize().unwrap().as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT
+        );
+        let archive = write_archive(
+            dir.path(),
+            "short-via-alias.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        assert!(matches!(
+            extract_checked(&archive, &alias),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(actual).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn padded_hardlink_target_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let target = format!("{}A", "./".repeat(600));
+        for (name, header) in [
+            (
+                "pax-padded-hardlink.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", &target).as_bytes(),
+                ),
+            ),
+            (
+                "gnu-padded-hardlink.tar",
+                raw_member(b"././@LongLink", b'K', "", format!("{target}\0").as_bytes()),
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[
+                    raw_member(b"A", b'0', "", b"payload"),
+                    header,
+                    raw_member(b"link", b'1', "A", b""),
+                ]
+                .concat(),
+            );
+            assert!(
+                matches!(read_members(&archive), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
     }
 
     #[test]
