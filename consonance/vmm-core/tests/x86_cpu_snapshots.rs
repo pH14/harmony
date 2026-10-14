@@ -1,11 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use vmm_backend::{Backend, CommonExit, Exit, Gpa, MockBackend, X86, X86Policy};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use vmm_core::control::{ControlServer, ServeError, server_caps};
 use vmm_core::vendor::x86::contract;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use vmm_core::vendor::x86::contract_vclock_config;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use vmm_core::vmm::Step;
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+use vmm_core::vmm::VmmError;
 use vmm_core::vmm::{GuestRam, TerminalReason, Vmm};
 
 const PAGE_SIZE: usize = 4096;
@@ -1073,6 +1077,64 @@ mod live_kvm {
             state_hash: vmm.state_hash().expect("hash guest-authored endpoint"),
             effective_vns: vmm.effective_vns(),
         }
+    }
+
+    #[test]
+    #[ignore = "live AMD KVM NPT; guest-written PAE PDPT must refuse capture"]
+    fn amd_pae_capture_refuses_and_retires_public_paths() {
+        require_kvm();
+        let cpuinfo = std::fs::read_to_string("/proc/cpuinfo").expect("read /proc/cpuinfo");
+        assert!(cpuinfo.contains("AuthenticAMD"), "requires an AMD host");
+        let npt = std::fs::read_to_string("/sys/module/kvm_amd/parameters/npt")
+            .expect("read kvm_amd NPT setting");
+        assert!(matches!(npt.trim(), "Y" | "1"), "NPT must be enabled");
+
+        let mut vmm = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut vmm);
+        run_guest_pdpt_warmup(&mut vmm);
+        let error = vmm
+            .save_vm_state()
+            .expect_err("AMD PAE capture must refuse");
+        assert!(matches!(
+            error,
+            VmmError::Backend(vmm_backend::BackendError::AmdPaeSnapshotUnsafe)
+        ));
+        assert_eq!(vmm.serial(), &[WARMUP_MARKER]);
+        assert!(vmm.step().is_err(), "capture must retire the source vCPU");
+
+        let mut vmm = fresh_guest_pdpt_vmm(true);
+        wire_snapshot_path(&mut vmm);
+        run_guest_pdpt_warmup(&mut vmm);
+        let factory = Box::new(|| {
+            let mut fresh = fresh_guest_pdpt_vmm(true);
+            wire_snapshot_path(&mut fresh);
+            Ok(fresh)
+        });
+        let mut server = ControlServer::new(vmm, factory);
+        assert!(
+            server
+                .handle(&control_proto::Request::Hello(server_caps()))
+                .unwrap()
+                .is_ok()
+        );
+        let error = server
+            .handle(&control_proto::Request::Snapshot)
+            .expect_err("control capture must refuse");
+        assert!(matches!(
+            error,
+            ServeError::Vmm(VmmError::Backend(
+                vmm_backend::BackendError::AmdPaeSnapshotUnsafe
+            ))
+        ));
+        assert_eq!(server.snapshot_store_stats().snapshots, 0);
+        let retry = server.handle(&control_proto::Request::Run {
+            until: control_proto::StopConditions::default(),
+            resolve: None,
+        });
+        assert!(
+            retry.is_err(),
+            "control run must not resume the poisoned vCPU"
+        );
     }
 
     #[test]
