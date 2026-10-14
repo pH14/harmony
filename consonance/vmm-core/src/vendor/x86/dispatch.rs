@@ -267,6 +267,12 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 gpa.0
             )));
         }
+        if size != 4 {
+            return Err(VmmError::ContractViolation(format!(
+                "xAPIC MMIO at {:#x} has size {size}; only 4-byte register accesses are modeled",
+                gpa.0
+            )));
+        }
         if self.virtual_time_vtime_enabled() {
             self.advance_virtual_time_vtime(
                 contract::virtual_time_timing().interrupt_controller_mmio_vns,

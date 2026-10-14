@@ -5186,6 +5186,36 @@ mod tests {
     }
 
     #[test]
+    fn xapic_rejects_non_dword_accesses_before_changing_device_state() {
+        for size in [8, 1, 2, 0] {
+            for write in [None, Some(0x1_0000_0020)] {
+                let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_TPR)),
+                    size,
+                    write,
+                })]);
+                v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+                let before = v.devices.lapic.as_ref().unwrap().snapshot();
+                let before_vns = v.now_vns().unwrap();
+                assert!(
+                    matches!(v.step(), Err(VmmError::ContractViolation(_))),
+                    "xAPIC size {size}, write {write:?} should fail closed"
+                );
+                assert_eq!(v.devices.lapic.as_ref().unwrap().snapshot(), before);
+                assert_eq!(v.now_vns().unwrap(), before_vns);
+            }
+        }
+
+        let mut valid = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_TPR)),
+            size: 4,
+            write: Some(0x20),
+        })]);
+        valid.step().unwrap();
+        assert_eq!(valid.devices.lapic.as_ref().unwrap().snapshot().tpr, 0x20);
+    }
+
+    #[test]
     fn mmio_outside_apic_page_fails_closed_even_on_linux_path() {
         let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEB0_0000),
