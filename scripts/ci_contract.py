@@ -238,6 +238,8 @@ HOST_TESTS = {
     "macos-aarch64": (
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
         "vmm-backend hvf::tests::failed_translation_flush_retires_mutated_vcpu",
+        "vmm-backend hvf::tests::rejected_policy_preserves_live_identity",
+        "vmm-backend hvf::tests::failed_policy_write_retires_mutated_vcpu",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",

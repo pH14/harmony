@@ -443,9 +443,11 @@ pub struct HvfBackend {
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
     host_id_regs: std::collections::BTreeMap<u16, u64>,
-    restore_poisoned: bool,
+    state_poisoned: bool,
     #[cfg(test)]
     fail_flush_after_staging: bool,
+    #[cfg(test)]
+    fail_policy_after_first_write: bool,
 }
 
 struct FlushStub {
@@ -511,16 +513,18 @@ impl HvfBackend {
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
             host_id_regs: std::collections::BTreeMap::new(),
-            restore_poisoned: false,
+            state_poisoned: false,
             #[cfg(test)]
             fail_flush_after_staging: false,
+            #[cfg(test)]
+            fail_policy_after_first_write: false,
         };
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
     }
 
     fn ensure_healthy(&self) -> Result<()> {
-        if self.restore_poisoned {
+        if self.state_poisoned {
             return Err(BackendError::Internal("backend state mutation failed"));
         }
         Ok(())
@@ -873,6 +877,7 @@ impl Backend for HvfBackend {
 
     fn set_policy(&mut self, policy: &Arm64Policy) -> Result<()> {
         self.ensure_healthy()?;
+        let mut writes = Vec::new();
         for (&encoding, &value) in &policy.id_regs.regs {
             if let Some(measured) = hvf_implicit_identity_value(encoding) {
                 if value != measured {
@@ -896,8 +901,17 @@ impl Backend for HvfBackend {
                     host,
                 });
             }
-            self.set_sysreg(reg, value)?;
+            writes.push((reg, value));
         }
+        self.state_poisoned = true;
+        for (reg, value) in writes {
+            self.set_sysreg(reg, value)?;
+            #[cfg(test)]
+            if self.fail_policy_after_first_write {
+                return Err(BackendError::Internal("injected HVF policy failure"));
+            }
+        }
+        self.state_poisoned = false;
         let _ = &policy.sysreg_traps;
         self.configured = true;
         Ok(())
@@ -1221,7 +1235,7 @@ impl Backend for HvfBackend {
             return Err(BackendError::PendingCompletion);
         }
         self.validate_restore_state(state)?;
-        self.restore_poisoned = true;
+        self.state_poisoned = true;
         self.flush_guest_translations()?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
@@ -1307,7 +1321,7 @@ impl Backend for HvfBackend {
         })?;
         self.pending_irq = None;
         self.accepted_irq = None;
-        self.restore_poisoned = false;
+        self.state_poisoned = false;
         Ok(())
     }
 
@@ -1416,6 +1430,67 @@ mod tests {
             backend.read_irq_mask().map(|_| ()),
             backend.run().map(|_| ()),
             backend.restore(&target),
+        ] {
+            assert!(matches!(
+                result,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "live HVF policy boundary; run on Apple silicon"]
+    fn rejected_policy_preserves_live_identity() {
+        let mut backend = HvfBackend::new().unwrap();
+        let initial = Arm64Policy {
+            id_regs: crate::arch::arm64::IdRegModel {
+                regs: [(0xc030, 0)].into_iter().collect(),
+            },
+            ..Arm64Policy::default()
+        };
+        backend.set_policy(&initial).unwrap();
+        assert_eq!(backend.sysreg(0xc030).unwrap(), 0);
+        let rejected = Arm64Policy {
+            id_regs: crate::arch::arm64::IdRegModel {
+                regs: [(0xc030, 0x20), (0xc038, 0xf << 4)].into_iter().collect(),
+            },
+            ..Arm64Policy::default()
+        };
+        assert!(matches!(
+            backend.set_policy(&rejected),
+            Err(BackendError::IdRegisterAboveHost {
+                encoding: 0xc038,
+                ..
+            })
+        ));
+        assert_eq!(backend.sysreg(0xc030).unwrap(), 0);
+        assert!(backend.save().is_ok());
+    }
+
+    #[test]
+    #[ignore = "live HVF policy boundary; run on Apple silicon"]
+    fn failed_policy_write_retires_mutated_vcpu() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let saved = backend.save().unwrap();
+        backend.fail_policy_after_first_write = true;
+        let policy = Arm64Policy {
+            id_regs: crate::arch::arm64::IdRegModel {
+                regs: [(0xc030, 0x20)].into_iter().collect(),
+            },
+            ..Arm64Policy::default()
+        };
+        assert!(matches!(
+            backend.set_policy(&policy),
+            Err(BackendError::Internal("injected HVF policy failure"))
+        ));
+        assert_eq!(backend.sysreg(0xc030).unwrap(), 0x20);
+        for result in [
+            backend.prepare_snapshot(),
+            backend.save().map(|_| ()),
+            backend.run().map(|_| ()),
+            backend.restore(&saved),
+            backend.set_policy(&policy),
         ] {
             assert!(matches!(
                 result,

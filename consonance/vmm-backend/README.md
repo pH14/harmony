@@ -331,8 +331,12 @@ flush has staged registers and checks the refusal; it also checks that an
 invalid restore shape leaves the backend usable.
 
 `HvfBackend::set_policy` reads HVF's own value of each `ID_AA64*` feature
-register before the first policy writes it, and fails with
-`BackendError::IdRegisterAboveHost` when any 4-bit field of a policy asks for
+register and validates the complete policy before writing any register. A
+rejected policy leaves the prior guest identity intact; a failed HVF write
+retires the vCPU because the prior identity may be partly replaced. The live
+`rejected_policy_preserves_live_identity` and
+`failed_policy_write_retires_mutated_vcpu` tests exercise both boundaries.
+Policy validation returns `BackendError::IdRegisterAboveHost` when any 4-bit field asks for
 more than that host value. The guest sizes its use of the hardware from these
 fields, and Hypervisor.framework accepts any value written to them. ARM KVM
 makes the same check inside `KVM_SET_ONE_REG`. Fields compare as unsigned
