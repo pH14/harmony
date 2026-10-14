@@ -127,6 +127,8 @@ can still make GNU tar fail where macOS tar succeeds.
 PAX size and owner fields require unsigned decimal digits. A leading plus
 sign can make macOS extract a different payload size while GNU tar reports an
 invalid extended header.
+PAX record lengths also require decimal digits and each record must end in a
+newline, so malformed framing fails admission before host extraction.
 All tar numeric fields require octal digits with only space or NUL padding, or
 a nonnegative base-256 value. An empty space-only field, a leading plus sign,
 newline, or bytes after the NUL terminator can be interpreted differently by
