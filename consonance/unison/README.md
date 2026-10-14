@@ -24,6 +24,13 @@ Comparisons and bisection reject these inconsistencies; equal state hashes canno
 different work counts. An already-halted subject can report its existing work
 count above a requested target without advancing. Comparison uses the actual
 halt count to detect mismatches.
+For a given seed and target, a fresh subject must produce the same outcome,
+work count, state hash, and observable digest whether `run_to(target)` is called
+once or after any increasing sequence of earlier targets. `spawn(seed)` must
+also reproduce the same starting state. Without this segmentation-invariance
+contract, a checkpoint bracket cannot identify a replayable work coordinate.
+The bundled toy and perturbation adapters are qualified against direct and
+segmented calls; custom adapters must establish the same property.
 
 `compare_runs` checks both machines immediately after spawn, then compares their
 state hashes and output digests at a caller-selected interval until they halt or
@@ -31,6 +38,12 @@ reach a limit. It reports identical runs, a checkpoint bracket, an equal-work
 terminal divergence, or a halt-count mismatch, and records whether the
 limit—not termination—ended the comparison. A zero-work mismatch is reported
 even when the limit is zero.
+Before returning a reached-target divergence bracket, comparison replays both
+the last matching checkpoint and the mismatching checkpoint on fresh subjects.
+It refuses the bracket if either direct replay has a different outcome or
+observation. This detects some segmentation-sensitive adapters at the point
+where they would produce an unreplayable bracket; the adapter contract remains
+necessary for all intermediate bisection probes.
 If both machines have already halted at the same work count, the report records
 termination for any limit without comparing another checkpoint.
 When both machines halt at the same work count but their terminal observations
