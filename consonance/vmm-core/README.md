@@ -165,6 +165,9 @@ the additive architecture seam on portable mocks and QEMU.
 The x86 xAPIC MMIO page accepts only 4-byte register accesses. Other widths
 fail before advancing virtual time or changing the modeled LAPIC, so a wider
 write cannot be silently truncated into a register transaction.
+Misaligned xAPIC offsets and rejected x86 I/O port accesses also fail before
+advancing virtual time. Supported ports keep the same assigned durations once
+their ownership and any explicit width constraint have been validated.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
 Each architecture supplies a guest machine policy; the backend supplies the

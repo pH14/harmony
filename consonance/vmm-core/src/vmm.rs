@@ -5216,6 +5216,58 @@ mod tests {
     }
 
     #[test]
+    fn rejected_x86_port_accesses_do_not_advance_virtual_time() {
+        let rejected = [
+            X86Exit::Io {
+                port: 0x3F8,
+                size: 2,
+                write: Some(u32::from(b'A')),
+            },
+            X86Exit::Io {
+                port: 0x3F8,
+                size: 2,
+                write: None,
+            },
+            X86Exit::Io {
+                port: 0x1337,
+                size: 1,
+                write: Some(1),
+            },
+            X86Exit::Io {
+                port: 0x1337,
+                size: 1,
+                write: None,
+            },
+        ];
+        for exit in rejected {
+            let mut v = linux_vmm(vec![Exit::Arch(exit)]);
+            v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+            let before = v.now_vns().unwrap();
+            assert!(matches!(v.step(), Err(VmmError::ContractViolation(_))));
+            assert_eq!(v.now_vns().unwrap(), before, "exit {exit:?}");
+        }
+    }
+
+    #[test]
+    fn rejected_xapic_offsets_do_not_advance_virtual_time() {
+        for offset in [0x004, 0xFF4] {
+            for write in [None, Some(0x20)] {
+                let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(APIC_MMIO_BASE + offset),
+                    size: 4,
+                    write,
+                })]);
+                v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+                let before = v.now_vns().unwrap();
+                let lapic = v.devices.lapic.as_ref().unwrap().snapshot();
+                assert!(matches!(v.step(), Err(VmmError::ContractViolation(_))));
+                assert_eq!(v.now_vns().unwrap(), before, "offset {offset:#x}");
+                assert_eq!(v.devices.lapic.as_ref().unwrap().snapshot(), lapic);
+            }
+        }
+    }
+
+    #[test]
     fn mmio_outside_apic_page_fails_closed_even_on_linux_path() {
         let mut v = linux_vmm(vec![Exit::Common(CommonExit::Mmio {
             gpa: Gpa(0xFEB0_0000),

@@ -104,6 +104,10 @@ impl Lapic {
         })
     }
 
+    pub fn validate_mmio_offset(offset: u32) -> Result<(), LapicError> {
+        check_offset(offset)
+    }
+
     pub fn mmio_read(&self, offset: u32, now_vns: u64) -> Result<u32, LapicError> {
         check_offset(offset)?;
         let value = match offset {
