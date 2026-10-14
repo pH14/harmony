@@ -542,22 +542,26 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 let end = start
                     .checked_add(file_size)
                     .ok_or("executable ELF segment address overflow")?;
-                let mut code = header
+                let segment_code = header
                     .data(elf.endian(), bytes)
-                    .map_err(|()| "executable ELF segment outside file")?
-                    .to_vec();
+                    .map_err(|()| "executable ELF segment outside file")?;
                 let file_offset = usize::try_from(header.p_offset(elf.endian()))?;
+                let page_head = usize::try_from(start % 4096)?;
+                if file_offset % 4096 != page_head {
+                    return Err("executable ELF segment page offset mismatch".into());
+                }
+                let mapped_start = start - u64::try_from(page_head)?;
+                let file_start = file_offset
+                    .checked_sub(page_head)
+                    .ok_or("executable ELF file offset underflow")?;
                 let file_end = file_offset
-                    .checked_add(code.len())
+                    .checked_add(segment_code.len())
                     .ok_or("executable ELF file offset overflow")?;
+                let mut code = bytes[file_start..file_end].to_vec();
                 let page_tail = usize::try_from((4096 - end % 4096) % 4096)?;
                 end.checked_add(u64::try_from(page_tail)?)
                     .ok_or("executable ELF mapped address overflow")?;
-                let available = if file_size == header.p_memsz(elf.endian()) {
-                    bytes.len().saturating_sub(file_end).min(page_tail)
-                } else {
-                    0
-                };
+                let available = bytes.len().saturating_sub(file_end).min(page_tail);
                 code.extend_from_slice(&bytes[file_end..file_end + available]);
                 let mapped_len = code
                     .len()
@@ -593,7 +597,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                         return Err("AArch64 executable load contains an allocated non-executable section; link with separate code pages".into());
                     }
                     if elf.architecture() == object::Architecture::X86_64 {
-                        let offset = usize::try_from(section.address() - start)?;
+                        let offset = usize::try_from(section.address() - mapped_start)?;
                         let section_end = offset
                             .checked_add(section_code.len())
                             .ok_or("mapped ELF section size overflow")?;
@@ -682,7 +686,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                                     && candidate[1] == 0xc7
                                     && ((candidate[2] >> 3) & 7) >= 6
                                 {
-                                    let address = start + u64::try_from(candidate_start)?;
+                                    let address = mapped_start + u64::try_from(candidate_start)?;
                                     return Err(format!(
                                         "hardware entropy opcode crosses executable section boundary at 0x{address:x}"
                                     )
@@ -698,7 +702,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                             anchors.insert(range_end);
                         }
                     }
-                    x86_executable_loads.push((start, code, anchors));
+                    x86_executable_loads.push((mapped_start, code, anchors));
                 }
             }
             _ => {}
@@ -839,7 +843,7 @@ mod tests {
     use oci_support::image::{Ownership, RuntimeConfig, StagedImage};
 
     fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
-        let mut bytes = vec![0; 385 + code.len()];
+        let mut bytes = vec![0; 4097 + code.len()];
         bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         for (offset, value) in [
             (16, 2_u16),
@@ -860,11 +864,11 @@ mod tests {
         bytes[64..68].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
         bytes[68..72].copy_from_slice(&load_flags.to_le_bytes());
         for (offset, value) in [
-            (72, 384_u64),
+            (72, 4096_u64),
             (80, 0x1000),
             (96, code.len() as u64),
             (104, code.len() as u64),
-            (112, 1),
+            (112, 4096),
         ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
@@ -874,17 +878,17 @@ mod tests {
         for (offset, value) in [
             (264, 6_u64),
             (272, 0x1000),
-            (280, 384),
+            (280, 4096),
             (288, code.len() as u64),
             (304, 1),
         ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
         bytes[324..328].copy_from_slice(&object::elf::SHT_STRTAB.to_le_bytes());
-        bytes[344..352].copy_from_slice(&(384_u64 + code.len() as u64).to_le_bytes());
+        bytes[344..352].copy_from_slice(&(4096_u64 + code.len() as u64).to_le_bytes());
         bytes[352..360].copy_from_slice(&1_u64.to_le_bytes());
         bytes[368..376].copy_from_slice(&1_u64.to_le_bytes());
-        bytes[384..384 + code.len()].copy_from_slice(code);
+        bytes[4096..4096 + code.len()].copy_from_slice(code);
         bytes
     }
 
@@ -1271,7 +1275,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let mut bytes = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
         bytes[272..280].copy_from_slice(&0x1003_u64.to_le_bytes());
-        bytes[280..288].copy_from_slice(&387_u64.to_le_bytes());
+        bytes[280..288].copy_from_slice(&4099_u64.to_le_bytes());
         bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
         fs::write(root.path().join("node"), bytes).unwrap();
 
@@ -1288,19 +1292,19 @@ mod tests {
     fn mapped_section_starts_preserve_x86_decoding_after_segment_headers() {
         let mut bytes = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
         for (offset, value) in [
-            (24, 0x400180_u64),
-            (72, 383),
-            (80, 0x40017f),
-            (88, 0x40017f),
+            (24, 0x401000_u64),
+            (72, 4095),
+            (80, 0x400fff),
+            (88, 0x400fff),
             (96, 5),
             (104, 5),
-            (272, 0x400180),
+            (272, 0x401000),
         ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
-        bytes[383] = 0xe8;
+        bytes[4095] = 0xe8;
         assert!(
-            scan_code(object::Architecture::X86_64, 0x40017f, &bytes[383..388])
+            scan_code(object::Architecture::X86_64, 0x400fff, &bytes[4095..4100])
                 .unwrap()
                 .is_empty()
         );
@@ -1310,7 +1314,7 @@ mod tests {
                 .iter()
                 .map(|site| (site.address, site.instruction.as_str()))
                 .collect::<Vec<_>>(),
-            [(0x400180, "RDRAND")]
+            [(0x401000, "RDRAND")]
         );
     }
 
@@ -1318,19 +1322,19 @@ mod tests {
     fn x86_segment_prelude_can_fall_through_into_a_different_section_decode() {
         let mut bytes = elf(&[0xb8, 0x90, 0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
         for (offset, value) in [
-            (24, 0x400180_u64),
-            (72, 383),
-            (80, 0x40017f),
-            (88, 0x40017f),
+            (24, 0x401000_u64),
+            (72, 4095),
+            (80, 0x400fff),
+            (88, 0x400fff),
             (96, 7),
             (104, 7),
-            (272, 0x400180),
+            (272, 0x401000),
         ] {
             bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
         }
-        bytes[383] = 0x3c;
+        bytes[4095] = 0x3c;
         assert_eq!(
-            scan_code(object::Architecture::X86_64, 0x40017f, &bytes[383..390])
+            scan_code(object::Architecture::X86_64, 0x400fff, &bytes[4095..4102])
                 .unwrap()
                 .len(),
             1
@@ -1341,7 +1345,7 @@ mod tests {
                 .iter()
                 .map(|site| (site.address, site.instruction.as_str()))
                 .collect::<Vec<_>>(),
-            [(0x400182, "RDRAND")]
+            [(0x401002, "RDRAND")]
         );
     }
 
@@ -1359,7 +1363,7 @@ mod tests {
             }
             let mut bytes = elf(&[0x0f, 0xc7, modrm, 0xc3], 5, 6);
             bytes[272..280].copy_from_slice(&0x1002_u64.to_le_bytes());
-            bytes[280..288].copy_from_slice(&386_u64.to_le_bytes());
+            bytes[280..288].copy_from_slice(&4098_u64.to_le_bytes());
             bytes[288..296].copy_from_slice(&2_u64.to_le_bytes());
             let error = scan_elf(&bytes, "").unwrap_err().to_string();
             assert!(
@@ -1503,6 +1507,63 @@ mod tests {
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
         assert_eq!(sites[0].address, 0x1000);
         assert_eq!(sites[0].instruction, "RNDR");
+    }
+
+    #[test]
+    fn executable_page_tail_with_larger_memory_size_contains_file_bytes() {
+        let mut bytes = elf(&[0x90, 0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        bytes[96..104].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[104..112].copy_from_slice(&5_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].address, 0x1001);
+        assert_eq!(sites[0].instruction, "RDRAND");
+    }
+
+    #[test]
+    fn executable_page_head_before_segment_address_contains_file_bytes() {
+        let mut bytes = elf(&[0xc3], 5, 6);
+        bytes.resize(0x1081, 0);
+        bytes[24..32].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[112..120].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes[272..280].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[280..288].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[0x1000..0x1004].copy_from_slice(&[0x0f, 0xc7, 0xf0, 0xc3]);
+        bytes[0x1080] = 0xc3;
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].address, 0x1000);
+        assert_eq!(sites[0].instruction, "RDRAND");
+    }
+
+    #[test]
+    fn arm_executable_page_head_before_segment_address_contains_file_bytes() {
+        let mut bytes = elf(&0xd65f03c0_u32.to_le_bytes(), 5, 6);
+        bytes.resize(0x1084, 0);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        bytes[24..32].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[272..280].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[280..288].copy_from_slice(&0x1080_u64.to_le_bytes());
+        bytes[0x1000..0x1004].copy_from_slice(&0xd53b2400_u32.to_le_bytes());
+        bytes[0x1080..0x1084].copy_from_slice(&0xd65f03c0_u32.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].address, 0x1000);
+        assert_eq!(sites[0].instruction, "RNDR");
+    }
+
+    #[test]
+    fn executable_load_offset_must_match_its_mapped_page_position() {
+        let mut bytes = elf(&[0xc3, 0x0f, 0xc7, 0xf0], 5, 6);
+        bytes[72..80].copy_from_slice(&4097_u64.to_le_bytes());
+        assert!(
+            scan_elf(&bytes, "")
+                .unwrap_err()
+                .to_string()
+                .contains("page offset mismatch")
+        );
     }
 
     #[test]

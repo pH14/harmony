@@ -65,8 +65,10 @@ CPU-identity instructions even when reviewed. UML runs guest user instructions
 natively, so the VM's hidden feature bits do not protect a guarded call site.
 The stub's TSC trap does not trap RDPID; it returns the host CPU's identity.
 This admission check walks executable loads in the packed image, including
-file bytes mapped into the last executable page beyond a segment's declared
-file size. Section headers do not determine what the guest loader executes.
+file bytes mapped before a segment's virtual start and beyond its declared
+file size in the first and last executable pages. It also rejects loads whose
+file offset and virtual address disagree within a page. Section headers do
+not determine what the guest loader executes.
 The x86 scan follows instruction streams from each mapped section and gap
 across section and adjacent executable-load boundaries, and rejects entropy
 opcode bytes split across those boundaries. The scan still requires
