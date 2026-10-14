@@ -19,6 +19,9 @@ capture cannot produce a usable snapshot or state hash. A handler's identity
 and configuration are immutable contract selectors. An answered request that
 changes either selector only in the candidate is rejected before that
 candidate commits, leaving the live handler usable.
+Reseeding follows the same candidate-commit rule: a shallow clone that changes
+the original handler poisons every channel clone. Rejecting a separate candidate
+leaves the entropy stream and live handler unchanged.
 Restoring a captured handler checks both selectors on the factory result and
 again after loading its state. It also checks that a new capture exactly
 reproduces the recorded state bytes. Restoring a recorded environment makes the
