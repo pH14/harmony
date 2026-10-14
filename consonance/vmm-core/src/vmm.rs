@@ -1718,7 +1718,7 @@ where
         Ok(())
     }
 
-    pub(crate) fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
+    pub(crate) fn pvclock_registration_status(&self, gpa: u64) -> (Status, Option<u32>) {
         if !self.pvclock_available() {
             return (Status::UnknownService, None);
         }
@@ -1728,9 +1728,17 @@ where
         if self.pvclock_validate_gpa(gpa).is_err() {
             return (Status::OutOfRange, None);
         }
+        (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION))
+    }
+
+    pub(crate) fn pvclock_register(&mut self, gpa: u64) -> (Status, Option<u32>) {
+        let result = self.pvclock_registration_status(gpa);
+        if result.0 != Status::Ok {
+            return result;
+        }
         let pv = self.pvclock.as_mut().expect("checked above");
         pv.gpa = Some(gpa);
-        (Status::Ok, Some(vtime::pvclock::PVCLOCK_ABI_VERSION))
+        result
     }
 
     fn pvclock_stamp(&mut self, kind: StampKind) -> Result<(), VmmError> {
