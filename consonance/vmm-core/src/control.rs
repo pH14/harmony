@@ -1941,7 +1941,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             let step = vmm.step()?;
             if until.deadline.is_some_and(|deadline| {
                 scheduled_wake.is_none_or(|scheduled| deadline.0 < scheduled)
-                    && vmm.last_step_control_idle_landing_vns == Some(deadline.0)
+                    && vmm.last_step_control_idle_landing_vns.is_some()
             }) {
                 self.timeline_tainted = true;
             }
@@ -10035,7 +10035,7 @@ mod tests {
         }
     }
 
-    struct IdleBackend(MockBackend);
+    struct IdleBackend(MockBackend, bool);
     impl Backend for IdleBackend {
         type A = vmm_backend::X86;
 
@@ -10051,7 +10051,15 @@ mod tests {
             unsafe { self.0.map_memory(gpa, host) }
         }
         fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
-            Ok(Exit::Common(CommonExit::Idle))
+            if self.1 {
+                Ok(Exit::Arch(X86Exit::Io {
+                    port: crate::vendor::x86::dispatch::IDLE_PORT,
+                    size: 4,
+                    write: Some(1),
+                }))
+            } else {
+                Ok(Exit::Common(CommonExit::Idle))
+            }
         }
         fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
@@ -10111,7 +10119,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let mut v = Vmm::new(IdleBackend(m), GuestRam::new(RAM).unwrap());
+        let mut v = Vmm::new(IdleBackend(m, false), GuestRam::new(RAM).unwrap());
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -10127,6 +10135,41 @@ mod tests {
 
     fn idle_server() -> ControlServer<IdleBackend> {
         ControlServer::new(idle_vmm(0x1D1E), Box::new(|| Ok(idle_vmm(0x1D1E))))
+    }
+
+    fn charged_idle_vmm(seed: u64) -> Vmm<IdleBackend> {
+        let mut vmm = idle_vmm(seed);
+        vmm.backend.1 = true;
+        vmm
+    }
+
+    #[test]
+    fn a_charged_idle_exit_crossing_the_deadline_refuses_a_false_reproducer() {
+        let mut live = ControlServer::new(
+            charged_idle_vmm(0x1D1E),
+            Box::new(|| Ok(charged_idle_vmm(0x1D1E))),
+        );
+        assert_eq!(
+            live.handle(&Request::Hello(server_caps())).unwrap(),
+            Ok(Reply::Hello(server_caps()))
+        );
+        assert_eq!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(1_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
     }
 
     #[test]

@@ -28,14 +28,14 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
-When a `Run` deadline is the earlier idle wake and advances the guest's
-virtual clock, control taints that timeline: the operator's deadline is not
-part of `RecordedEnv`, so issuing a reproducer would falsely claim that the
-clock jump can be replayed from genesis. A timer or staged input that would
-wake the guest at the same time does not cause this taint. Snapshots made
-after the jump retain the taint and can still be replayed from their sealed
-state. A deadline reached by ordinary guest steps also does not taint the
-timeline.
+When a `Run` deadline is the earlier idle wake and resumes the guest, control
+taints that timeline: the operator's deadline is not part of `RecordedEnv`, so
+issuing a reproducer would falsely claim that the continuation can be replayed
+from genesis. This includes an idle exit whose own virtual-time cost crosses
+the deadline. A timer or staged input that would wake the guest at the same
+time does not cause this taint. Snapshots made after the wake retain the taint
+and can still be replayed from their sealed state. A deadline reached by
+ordinary guest steps also does not taint the timeline.
 `Run` with a deadline and `Exec` require a wired virtual clock. An unwired VM
 rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
