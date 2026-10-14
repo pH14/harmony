@@ -560,16 +560,21 @@ those operations before they mutate KVM state. It does not choose a pool or
 change caller affinity. Preserve affinity for the backend lifetime and prevent
 concurrent external changes. CPU topology is read at admission; CPU hotplug or
 topology remapping requires stopping and requalifying the worker.
-Hosts that hide hybrid topology, including nested VMs, require operator
-qualification of the underlying scheduling placement; absent masks do not prove
-homogeneity. Raw KVM CPU snapshots carry the admitted P-core or E-core class,
-and restore refuses a different or missing class before changing the vCPU.
+If both topology masks are unavailable but Intel's hybrid CPUID bit is set,
+backend creation refuses the host. A namespace that hides these files on the
+measured Core Ultra 9 285HX otherwise admitted the same divergent P-to-E
+restore. Hosts that hide both topology and the hybrid CPUID indication,
+including nested VMs, require operator qualification of the underlying
+scheduling placement; absent signals do not prove homogeneity. Raw KVM CPU
+snapshots carry the admitted P-core or E-core class, and restore refuses a
+different or missing class before changing the vCPU.
 Snapshot validation also rechecks the current thread affinity, including when
 the VMM reuses a previously captured CPU record. The portable x86 VMM contract
 binds the same class, so import into the other class is refused before restore.
-On hosts without these topology masks the class is unreported and no hardware
-homogeneity can be inferred. Compatibility across different physical hosts,
-steppings, and feature sets still requires separate qualification.
+On hosts without these topology masks or a hybrid CPUID indication the class
+is unreported and no hardware homogeneity can be inferred. Compatibility
+across different physical hosts, steppings, and feature sets still requires
+separate qualification.
 
 On the measured Core Ultra 9 285HX, six P-core captures restored on an E-core
 were previously accepted but produced different guest-written XSAVE and RAM

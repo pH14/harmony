@@ -340,7 +340,7 @@ fn public_snapshot_restore_rejects_a_different_host_core_class() {
         })
     };
     let (Some(p_cpu), Some(e_cpu)) = (pool_cpu("cpu_core"), pool_cpu("cpu_atom")) else {
-        eprintln!("host has no accessible P-core/E-core pair");
+        eprintln!("SKIP: host has no accessible P-core/E-core pair");
         return;
     };
     struct ResetAffinity(CpuSet);

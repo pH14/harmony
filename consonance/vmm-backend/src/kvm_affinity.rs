@@ -82,10 +82,30 @@ fn read_pool(kind: &str) -> Result<Option<BTreeSet<u16>>> {
     }
 }
 
+fn host_reports_hybrid_architecture() -> bool {
+    #[cfg(test)]
+    if let Some(hybrid) = tests::fixture_hybrid() {
+        return hybrid;
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        std::arch::x86_64::__cpuid_count(7, 0).edx & (1 << 15) != 0
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        false
+    }
+}
+
 pub(crate) fn check_host_affinity() -> Result<HostAffinity> {
     let core = read_pool("cpu_core")?;
     let atom = read_pool("cpu_atom")?;
     if core.is_none() && atom.is_none() {
+        if host_reports_hybrid_architecture() {
+            return Err(BackendError::Unsupported {
+                what: "host reports hybrid x86 cores but core-type topology is unavailable",
+            });
+        }
         return Ok(HostAffinity::Unreported);
     }
     let status = read_affinity_file("/proc/thread-self/status")?;
@@ -134,6 +154,11 @@ mod tests {
 
     thread_local! {
         static FILES: std::cell::RefCell<Option<Fixture>> = const { std::cell::RefCell::new(None) };
+        static HYBRID: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+    }
+
+    pub(super) fn fixture_hybrid() -> Option<bool> {
+        HYBRID.with(std::cell::Cell::get)
     }
 
     pub(super) fn fixture_read(path: &str) -> Option<std::io::Result<String>> {
@@ -153,10 +178,20 @@ mod tests {
         atom: std::result::Result<&str, std::io::ErrorKind>,
         status: Option<&str>,
     ) -> Result<HostAffinity> {
+        with_files_and_hybrid(core, atom, status, false)
+    }
+
+    fn with_files_and_hybrid(
+        core: std::result::Result<&str, std::io::ErrorKind>,
+        atom: std::result::Result<&str, std::io::ErrorKind>,
+        status: Option<&str>,
+        hybrid: bool,
+    ) -> Result<HostAffinity> {
         struct Clear;
         impl Drop for Clear {
             fn drop(&mut self) {
                 FILES.with(|files| *files.borrow_mut() = None);
+                HYBRID.with(|hybrid| hybrid.set(None));
             }
         }
         let mut files = Fixture::new();
@@ -175,6 +210,7 @@ mod tests {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(files);
         });
+        HYBRID.with(|slot| slot.set(Some(hybrid)));
         let _clear = Clear;
         check_host_affinity()
     }
@@ -185,6 +221,21 @@ mod tests {
         assert!(with_files(Err(NotFound), Err(NotFound), None).is_ok());
         assert!(with_files(Ok(""), Ok(" \n\t"), None).is_ok());
         assert!(with_files(Ok(" "), Err(NotFound), None).is_ok());
+    }
+
+    #[test]
+    fn hybrid_cpuid_without_core_type_topology_fails_closed() {
+        use std::io::ErrorKind::NotFound;
+        for (core, atom) in [
+            (Err(NotFound), Err(NotFound)),
+            (Ok(""), Ok(" \n\t")),
+            (Ok(" "), Err(NotFound)),
+        ] {
+            assert!(matches!(
+                with_files_and_hybrid(core, atom, None, true),
+                Err(BackendError::Unsupported { .. })
+            ));
+        }
     }
 
     #[test]

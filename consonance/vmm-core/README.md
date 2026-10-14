@@ -556,14 +556,19 @@ KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
 and execution accounting. Raw XSAVE presence remains restoration metadata; the
 logical projection below decides how it enters identity. The execution
-requirement is one qualified host core type
-for related boots and restores; see the backend README for affinity admission and
-its limits. On Linux KVM hosts reporting P-core/E-core topology, the captured
+requirement is one qualified host core type for related boots and restores;
+see the backend README for affinity admission and its limits. On Linux KVM
+hosts reporting P-core/E-core topology, the captured
 class is bound into the x86 snapshot contract and the raw CPU state. Portable
 import and raw backend restore refuse a different class before changing the
 guest. A changed thread-affinity mask also refuses capture and restore. Hosts
-without reported class masks require placement qualification; cross-host
-placement and broader XSAVE state lie outside the qualified set.
+without reported class masks and without a hybrid CPUID indication require
+placement qualification; a host reporting hybrid CPUID without the masks is
+refused. Cross-host placement and broader XSAVE state lie outside the
+qualified set.
+The hosted hardware job reports an explicit skip when it lacks both P and E
+cores. A mock-backed test runs in ordinary CI to enforce the VMM contract
+binding; the live cross-class continuation remains qualified on a hybrid host.
 
 The supported x86 workload is the shipped 64-bit Linux kernel and initramfs on
 a 64-bit host. Application bitness is separate: 32-bit compatibility-mode

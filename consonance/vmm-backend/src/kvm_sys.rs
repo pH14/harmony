@@ -1460,6 +1460,14 @@ mod xsave_diagnostic {
             Err(BackendError::Unsupported { .. })
         ));
         assert!(matches!(
+            backend.validate_snapshot_state(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.validate_restore_state(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
             backend.restore(&before),
             Err(BackendError::Unsupported { .. })
         ));

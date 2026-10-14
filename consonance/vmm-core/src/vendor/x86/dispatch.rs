@@ -1157,6 +1157,42 @@ mod tests {
     }
 
     #[test]
+    fn mock_host_core_class_binds_vmm_snapshot_restore() {
+        use vmm_backend::HostCoreClass::{Efficiency, Performance};
+
+        let build = |class| {
+            let mut backend = vmm_backend::MockBackend::new().with_host_core_class(class);
+            backend
+                .set_policy(&vmm_backend::arch::x86::X86Policy::default())
+                .unwrap();
+            backend.set_state(xsave_state(None));
+            Vmm::new(backend, crate::vmm::GuestRam::new(0x1000).unwrap())
+        };
+        let mut source = build(Performance);
+        let saved = source.save_vm_state().unwrap();
+        let saved = vm_state::VmState::decode(&saved.encode().unwrap()).unwrap();
+        assert_eq!(
+            saved.contract_hash,
+            bind_host_core_class(contract::contract_hash(), Some(Performance))
+        );
+        let memory = source.guest_memory().to_vec();
+
+        let mut same_class = build(Performance);
+        same_class.restore_snapshot(&memory, &saved).unwrap();
+        assert_eq!(same_class.guest_memory(), &memory);
+
+        let mut other_class = build(Efficiency);
+        let before_hash = other_class.state_hash().unwrap();
+        let before_memory = other_class.guest_memory().to_vec();
+        assert!(matches!(
+            other_class.restore_snapshot(&memory, &saved),
+            Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+        ));
+        assert_eq!(other_class.state_hash().unwrap(), before_hash);
+        assert_eq!(other_class.guest_memory(), before_memory);
+    }
+
+    #[test]
     fn nested_state_binds_raw_and_snapshot_identity_and_requires_the_contract() {
         let mut state = xsave_state(None);
         let ordinary = encode_vcpu_state(&state);
