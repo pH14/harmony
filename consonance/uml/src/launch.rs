@@ -1427,15 +1427,15 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let mut launch = launch(parent.path());
         launch.console_tail_bytes = 64;
-        let gate = parent.path().join("release");
+        let release_path = parent.path().join("release");
         let script = format!(
             "while [ ! -e {} ]; do sleep 0.001; done; printf 'Kernel panic: terminal marker\\n'",
-            gate.display()
+            release_path.display()
         );
         let mut guest = shell(&launch, &script);
         let console = Arc::clone(&guest.console);
         let held = console.lock().unwrap();
-        std::fs::write(gate, []).unwrap();
+        std::fs::write(release_path, []).unwrap();
         let reason = loop {
             if let Some(reason) = guest.stopped().unwrap() {
                 break reason;
