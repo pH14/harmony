@@ -58,6 +58,14 @@ pub struct SearchEvidence {
     pub witness_input: Vec<u8>,
     pub result: Vec<u8>,
 }
+
+pub fn canonical_origin_input(
+    value: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let input: searcher::search::archive::Input<machine::nes::ButtonChord> =
+        serde_json::from_value(value)?;
+    Ok(serde_json::to_value(input)?)
+}
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchIdentity {
     pub seed: u64,

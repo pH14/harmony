@@ -441,6 +441,25 @@ fn checkpoint_origin_input(parent: &Path, manifest: &Manifest) -> Result<serde_j
     Ok(saved)
 }
 
+fn rooted_search_start(
+    original: &Manifest,
+    point: &crate::selection::Point,
+) -> Result<nes_workload::package::SearchStart> {
+    let mut input = original.payload["input"].clone();
+    let actions = input["actions"]
+        .as_array_mut()
+        .ok_or("execution has no input")?;
+    if point.rewind_time.is_some() {
+        return Err("this recording has no virtual-time boundaries; use --step or --rewind".into());
+    }
+    let boundaries = (0..=actions.len()).map(|n| (n, 0)).collect::<Vec<_>>();
+    let cut = point.resolve(&boundaries, actions.len())?;
+    actions.truncate(cut);
+    Ok(nes_workload::package::SearchStart::Actions(
+        nes_workload::package::canonical_origin_input(input)?,
+    ))
+}
+
 fn continue_search(request: Request) -> Result<u8> {
     use nes_workload::package::{SearchOptions, SearchStart};
     let selection = request.selection.ok_or("select a search or branch")?;
@@ -480,19 +499,7 @@ fn continue_search(request: Request) -> Result<u8> {
             origin_input: checkpoint_origin_input(&parent, &original)?,
         }
     } else {
-        let mut input = original.payload["input"].clone();
-        let actions = input["actions"]
-            .as_array_mut()
-            .ok_or("execution has no input")?;
-        if request.point.rewind_time.is_some() {
-            return Err(
-                "this recording has no virtual-time boundaries; use --step or --rewind".into(),
-            );
-        }
-        let boundaries = (0..=actions.len()).map(|n| (n, 0)).collect::<Vec<_>>();
-        let cut = request.point.resolve(&boundaries, actions.len())?;
-        actions.truncate(cut);
-        SearchStart::Actions(input)
+        rooted_search_start(&original, &request.point)?
     };
     let out = request.destination.create()?;
     let mut m = original.inherit(&parent, &out, "search")?;
@@ -595,6 +602,29 @@ mod tests {
         CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
     };
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn rooted_search_records_the_canonical_accepted_input() {
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "branch").unwrap();
+        manifest.payload = serde_json::json!({
+            "input": {
+                "actions": [{"buttons": 1, "hold_frames": 2, "note": "ignored"}],
+                "note": "ignored"
+            }
+        });
+        let nes_workload::package::SearchStart::Actions(input) =
+            rooted_search_start(&manifest, &crate::selection::Point::default()).unwrap()
+        else {
+            panic!("rooted search must begin with actions")
+        };
+        assert_eq!(
+            input,
+            serde_json::json!({"actions": [{"buttons": 1, "hold_frames": 2}]})
+        );
+    }
 
     #[test]
     fn resumed_search_refuses_a_replaced_origin_input() {
