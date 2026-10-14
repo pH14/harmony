@@ -282,6 +282,16 @@ class CounterScanCoverage(unittest.TestCase):
                     '.section .safe,"ax"\n.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
                     "boundary-desync RDTSC",
                 ),
+                (
+                    "boundary-desync-long",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb0\n'
+                    '.section .safe,"ax"\n'
+                    '.byte 0xb8,0x90,0x90,0x90,0xb0\n'
+                    '.byte 0xb8,0x90,0x90,0x90,0xb0\n'
+                    '.byte 0xb8,0x90,0x90,0x90,0xb0\n'
+                    '.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
+                    "incomplete instruction at adjacent code boundary",
+                ),
             )
             for mode, source, expected in boundary_cases:
                 asm = root / f"{mode}.s"
@@ -292,7 +302,7 @@ class CounterScanCoverage(unittest.TestCase):
                 run("ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o", str(elf), str(obj))
                 boundary_bytes = elf.read_bytes()
                 targets = ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor"))
-                if mode == "boundary-desync":
+                if mode.startswith("boundary-desync"):
                     targets = targets[:1]
                 for target, tag in targets:
                     kernel.write_bytes(safe_bytes)
