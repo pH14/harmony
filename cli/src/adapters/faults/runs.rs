@@ -184,10 +184,24 @@ impl Manifest {
         if self.config.backend == crate::config::Backend::Uml && !self.uml_entropy_admitted {
             return Err("this UML run predates hardware-entropy image admission and cannot be replayed safely".into());
         }
-        Ok(faults_workload::Artifacts {
+        let artifacts = faults_workload::Artifacts {
             kernel: fs::read(path.join("artifacts/kernel"))?,
             initramfs: fs::read(path.join("artifacts/initramfs"))?,
-        })
+        };
+        for (name, bytes) in [
+            ("kernel", &artifacts.kernel),
+            ("initramfs", &artifacts.initramfs),
+        ] {
+            let expected = self
+                .record
+                .artifacts
+                .get(name)
+                .ok_or_else(|| format!("recorded {name} artifact is missing"))?;
+            if crate::runtime::digest(bytes) != *expected {
+                return Err(format!("recorded artifact {name} changed during load").into());
+            }
+        }
+        Ok(artifacts)
     }
 }
 
@@ -205,6 +219,48 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loaded_runtime_bytes_must_match_the_verified_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "run").unwrap();
+        record
+            .store(dir.path(), "kernel", b"original kernel")
+            .unwrap();
+        record
+            .store(dir.path(), "initramfs", b"original initramfs")
+            .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":null,"actions":[],"settle":true,"outcome":null
+        });
+        record.save(dir.path()).unwrap();
+        let manifest = Manifest::read(dir.path()).unwrap();
+        manifest.record.verify(dir.path()).unwrap();
+
+        fs::write(dir.path().join("artifacts/kernel"), b"later kernel").unwrap();
+        assert!(
+            manifest
+                .fault_artifacts(dir.path())
+                .err()
+                .expect("changed kernel must be rejected")
+                .to_string()
+                .contains("kernel changed during load")
+        );
+
+        fs::write(dir.path().join("artifacts/kernel"), b"original kernel").unwrap();
+        fs::write(dir.path().join("artifacts/initramfs"), b"later initramfs").unwrap();
+        assert!(
+            manifest
+                .fault_artifacts(dir.path())
+                .err()
+                .expect("changed initramfs must be rejected")
+                .to_string()
+                .contains("initramfs changed during load")
+        );
+    }
 
     #[test]
     fn completed_save_refuses_a_different_executed_kernel() {
