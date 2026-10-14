@@ -142,6 +142,7 @@ mod runtime {
         decode_report,
     };
     use std::collections::VecDeque;
+    use std::fs::File;
     use std::io::{ErrorKind, Read, Write};
     use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
     use std::os::unix::net::UnixStream;
@@ -649,6 +650,7 @@ mod runtime {
     }
 
     struct HookRuntime {
+        assertion_output: File,
         hooks: Vec<Hook>,
         recovery: RecoveryReadiness,
         recovery_probe: Option<RecoveryProbe>,
@@ -660,8 +662,9 @@ mod runtime {
     }
 
     impl HookRuntime {
-        fn new() -> Self {
+        fn new(assertion_output: File) -> Self {
             Self {
+                assertion_output,
                 hooks: Vec::new(),
                 recovery: RecoveryReadiness::initially_ready(),
                 recovery_probe: None,
@@ -690,7 +693,9 @@ mod runtime {
             Path::new("/dev/harmony"),
         )
         .map_err(|error| format!("{}: {error}", harmony_supervisor::ANTITHESIS_OUTPUT_DIR))?;
-        process::write_record(&sdk_output(), &process::node_exit_record(None))
+        let mut assertion_output = process::open_record_sink(&sdk_output())
+            .map_err(|error| format!("node exit output: {error}"))?;
+        process::write_record(&mut assertion_output, &process::node_exit_record(None))
             .map_err(|error| format!("node exit declaration: {error}"))?;
         let mut nodes: Vec<Node> = bundle
             .nodes
@@ -714,7 +719,14 @@ mod runtime {
         log(0, "setup complete");
 
         let mut supervisor = Supervisor::new(nodes.len());
-        let result = poll_loop(spec, &bundle, &mut nodes, &mut sdk, &mut supervisor);
+        let result = poll_loop(
+            spec,
+            &bundle,
+            &mut nodes,
+            &mut sdk,
+            &mut supervisor,
+            assertion_output,
+        );
         let Err(error) = result else {
             return Ok(());
         };
@@ -867,10 +879,11 @@ mod runtime {
         nodes: &mut [Node],
         sdk: &mut GuestSdk,
         supervisor: &mut Supervisor,
+        assertion_output: File,
     ) -> Result<(), String> {
         supervisor.set_check_enabled(bundle.check.is_some());
         let mut registers = Registers::new();
-        let mut runtime = HookRuntime::new();
+        let mut runtime = HookRuntime::new(assertion_output);
         let mut debug = harmony_supervisor::debug::Terminal::default();
         let mut debug_status = None;
         let mut buffer = [0_u8; MAX_PAYLOAD];
@@ -946,7 +959,7 @@ mod runtime {
                 &exits,
                 runtime.recovery.is_fault_pending(),
                 tick,
-                &sdk_output(),
+                &mut runtime.assertion_output,
             )?;
             for action in actions {
                 log(tick, &action.describe());
@@ -1045,7 +1058,7 @@ mod runtime {
         deaths: &[(u16, Option<ExitStatus>)],
         recovery_pending: bool,
         tick: u64,
-        output: &Path,
+        output: &mut File,
     ) -> Result<(), String> {
         for (node, exit) in node_exit_violations(supervisor, deaths, recovery_pending) {
             log(tick, &format!("node {node} ended on its own: {exit}"));
@@ -1186,7 +1199,7 @@ mod runtime {
                         node,
                         runtime.recovery.is_fault_pending(),
                         tick,
-                        &sdk_output(),
+                        &mut runtime.assertion_output,
                     )?;
                 }
                 let spawned = spawn_node(spec, &entry.spec)?;
@@ -1257,7 +1270,7 @@ mod runtime {
         node: u16,
         recovery_pending: bool,
         tick: u64,
-        output: &Path,
+        output: &mut File,
     ) -> Result<(), String> {
         let status = if let Some(status) = child
             .try_wait()
@@ -1591,8 +1604,21 @@ mod runtime {
             let output =
                 std::env::temp_dir().join(format!("hs-replaced-node-exit-{}", std::process::id()));
             let _ = std::fs::remove_file(&output);
+            let mut assertion_output = std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(&output)
+                .unwrap();
             let mut supervisor = Supervisor::new(1);
-            retire_node_child(&mut child, &mut supervisor, 0, false, 1, &output).unwrap();
+            retire_node_child(
+                &mut child,
+                &mut supervisor,
+                0,
+                false,
+                1,
+                &mut assertion_output,
+            )
+            .unwrap();
             let recorded = std::fs::read_to_string(&output).unwrap();
             assert!(recorded.contains(r#""hit":true"#));
             assert!(recorded.contains(r#""exit":"exit status 37""#));
