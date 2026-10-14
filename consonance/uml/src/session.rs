@@ -150,8 +150,8 @@ impl Checkpoint {
         &self.services.events
     }
 
-    pub fn bytes(&self) -> u64 {
-        self.memory.image_bytes()
+    pub fn bytes(&self) -> Result<u64, SessionError> {
+        Ok(self.memory.image_bytes()?)
     }
 
     pub fn owned_pages(&self) -> u64 {
@@ -183,7 +183,7 @@ impl Checkpoint {
         let mut out =
             Vec::with_capacity(SIDECAR_MAGIC.len() + 32 + services.len() + self.request.len());
         out.extend_from_slice(SIDECAR_MAGIC);
-        out.extend_from_slice(&self.bytes().to_le_bytes());
+        out.extend_from_slice(&self.bytes()?.to_le_bytes());
         out.extend_from_slice(&self.memory.physmem_bytes()?.to_le_bytes());
         out.extend_from_slice(&(services.len() as u64).to_le_bytes());
         out.extend_from_slice(&services);
@@ -1030,6 +1030,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sidecar_rejects_a_corrupted_snapshot_image_length() {
+        let checkpoints = Checkpoints::new();
+        let target = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));
+        assert_eq!(target.bytes().unwrap(), 24);
+        let id = target.memory.id();
+        checkpoints
+            .held()
+            .unwrap()
+            .store
+            .corrupt_vm_state_for_test(id, 0, 1)
+            .unwrap();
+        assert_eq!(checkpoints.full(&target, |pages| pages.len()).unwrap(), 1);
+        assert!(matches!(
+            target.sidecar(),
+            Err(SessionError::Memory(MemoryError::Store(
+                snapshot_store::StoreError::VmStateIntegrity
+            )))
+        ));
+    }
+
     fn owned_delta(
         checkpoints: &Checkpoints,
         base: &Checkpoint,
@@ -1078,7 +1099,7 @@ mod tests {
         let checkpoints = Checkpoints::new();
         let stamped = checkpoint(snapshot(&checkpoints, None, &[(1, 1)]), 5, Some(120));
         assert_eq!(stamped.moment(), 120);
-        assert_eq!(stamped.bytes(), 24);
+        assert_eq!(stamped.bytes().unwrap(), 24);
         assert_eq!(stamped.owned_pages(), 1);
         assert_eq!(stamped.events().len(), 1);
         assert_eq!(stamped.events()[0].moment, 80);
@@ -1099,7 +1120,7 @@ mod tests {
         assert_ne!(bridged.digest().unwrap(), stamped.digest().unwrap());
         assert_ne!(bridged.digest().unwrap(), reseeded.digest().unwrap());
         drop(stamped);
-        assert_eq!(bridged.bytes(), 24);
+        assert_eq!(bridged.bytes().unwrap(), 24);
     }
 
     #[test]
@@ -1396,11 +1417,14 @@ mod tests {
         let imported = checkpoints
             .import(&base, &base, &[], &boundary, &nominal_factory())
             .unwrap();
-        assert_eq!(imported.bytes(), crate::memory::IMAGE_BYTES as u64);
+        assert_eq!(imported.bytes().unwrap(), crate::memory::IMAGE_BYTES as u64);
         let imported_full = checkpoints
             .import_full(&base, &[], &boundary, &nominal_factory())
             .unwrap();
-        assert_eq!(imported_full.bytes(), crate::memory::IMAGE_BYTES as u64);
+        assert_eq!(
+            imported_full.bytes().unwrap(),
+            crate::memory::IMAGE_BYTES as u64
+        );
         assert_eq!(checkpoints.stats().unwrap().snapshots, before + 2);
     }
 

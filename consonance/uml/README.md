@@ -93,6 +93,9 @@
   store. The sidecar and checkpoint digest bind the guest RAM size even when
   its additional pages are all zero. The live session rejects oversized
   bridge requests before they can become checkpoints.
+  Reading a checkpoint's image length and building its sidecar verify the
+  sealed memory-state digest, so corrupted length metadata fails rather than
+  exporting a sidecar with a zero length.
   Imported page payloads must match their hashes even when the nearby snapshot
   already has the claimed page; the import then reuses that resident page.
   `Checkpoint::digest` hashes a checkpoint's pages and services state.
