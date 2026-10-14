@@ -680,7 +680,7 @@ impl Costs {
         let started = now();
         let checkpoint = session.capture(capture)?;
         self.capture_ms.push(milliseconds(started.elapsed()));
-        self.image_bytes.push(checkpoint.bytes());
+        self.image_bytes.push(checkpoint.bytes()?);
         self.owned_bytes.push(checkpoint.owned_pages() * 4096);
         Ok(checkpoint)
     }
