@@ -993,17 +993,29 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                         "non-directory member has a trailing slash".into(),
                     ));
                 }
+                let header_link = tar_field(&block[157..257]);
+                if typeflag == b'2' {
+                    let portable = |target: &[u8]| {
+                        !target.is_empty() && target.is_ascii() && !target.contains(&0)
+                    };
+                    let effective = link_path
+                        .as_deref()
+                        .or(gnu_link.as_deref())
+                        .unwrap_or(&header_link);
+                    if !portable(&header_link) || !portable(effective) {
+                        return Err(ImageError::Tar(
+                            "symlink member has a nonportable target".into(),
+                        ));
+                    }
+                }
                 members.push(Member {
                     name,
                     kind: if typeflag == 0 { b'0' } else { typeflag },
                     is_dir: typeflag == b'5',
                     mode: (parse_octal(&block[100..108])? & 0o7777) as u32,
                     owner,
-                    hardlink_target: (typeflag == b'1').then(|| {
-                        link_path
-                            .or(gnu_link)
-                            .unwrap_or_else(|| tar_field(&block[157..257]))
-                    }),
+                    hardlink_target: (typeflag == b'1')
+                        .then(|| link_path.or(gnu_link).unwrap_or(header_link)),
                 });
                 let size = pax_size.unwrap_or(size);
                 let data = size
@@ -3462,6 +3474,80 @@ mod tests {
             ));
             assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
         }
+    }
+
+    #[test]
+    fn symlink_targets_require_portable_header_and_override_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        for (name, header, base) in [
+            (
+                "pax-empty-base.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "target").as_bytes(),
+                ),
+                "",
+            ),
+            (
+                "gnu-empty-base.tar",
+                raw_member(b"././@LongLink", b'K', "", b"target\0"),
+                "",
+            ),
+            (
+                "pax-empty-override.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "").as_bytes(),
+                ),
+                "base",
+            ),
+            (
+                "pax-unicode-override.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "targét").as_bytes(),
+                ),
+                "base",
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[header, raw_member(b"link", b'2', base, b"")].concat(),
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
+        let archive = write_archive(
+            dir.path(),
+            "portable-override.tar",
+            &[
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "target").as_bytes(),
+                ),
+                raw_member(b"link", b'2', "base", b""),
+            ]
+            .concat(),
+        );
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("target")
+        );
     }
 
     #[test]

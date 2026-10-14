@@ -110,6 +110,11 @@ exact same spelling. Hardlink, symlink, and directory members cannot carry
 data in either their tar header or a pax size override. This also excludes
 archives that only extract because a host resolves a hardlink target
 case-insensitively or interprets a non-file payload differently.
+Symlink targets must have a nonempty ASCII base header target and a nonempty
+ASCII effective target after any pax or GNU override, with no embedded NUL.
+An empty base target can become a regular file on macOS but a symlink on Linux;
+an empty pax override and non-ASCII target bytes can also change extraction
+success or the link's bytes between those hosts.
 A hardlink cannot point to its own name, even when an earlier member created
 that name: macOS tar rejects the repeated self-link while GNU tar accepts it.
 A tar header whose magic starts with `ustar` but is neither POSIX ustar nor the
