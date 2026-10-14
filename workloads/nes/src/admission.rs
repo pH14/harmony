@@ -33,6 +33,22 @@ fn image_files(
     Ok(())
 }
 
+fn postgres_code_inputs(
+    staged: &image::StagedImage,
+) -> Result<BTreeMap<String, Value>, Box<dyn std::error::Error>> {
+    image::with_staged_read_access(staged, || -> Result<_, Box<dyn std::error::Error>> {
+        let mut code_inputs = BTreeMap::new();
+        for name in ["/workload.sql", "/usr/local/bin/postgres-workload.sh"] {
+            let bytes = std::fs::read(staged.rootfs.join(name.trim_start_matches('/')))?;
+            code_inputs.insert(
+                name.to_owned(),
+                json!({"sha256": sha(&bytes), "size": bytes.len()}),
+            );
+        }
+        Ok(code_inputs)
+    })
+}
+
 pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
     if args.len() < 5
         || !matches!(args[0].as_str(), "nes" | "postgres")
@@ -79,16 +95,11 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
     } else {
         bundle::prepare(&staged, &bundle::LaunchRequest::new(Vec::new()))?
     };
-    let mut code_inputs = BTreeMap::new();
-    if mode == "postgres" {
-        for name in ["/workload.sql", "/usr/local/bin/postgres-workload.sh"] {
-            let bytes = std::fs::read(staged.rootfs.join(name.trim_start_matches('/')))?;
-            code_inputs.insert(
-                name.to_owned(),
-                json!({"sha256": sha(&bytes), "size": bytes.len()}),
-            );
-        }
-    }
+    let code_inputs = if mode == "postgres" {
+        postgres_code_inputs(&staged)?
+    } else {
+        BTreeMap::new()
+    };
     let execution = prepared.execution.to_vec()?;
     let composed = prepared.initramfs(&platform);
     let runtime_config = serde_json::to_vec(&staged.config)?;
@@ -133,4 +144,58 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
     )?;
     println!("{}", output.join("manifest.json").display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oci_support::image::{Ownership, RuntimeConfig};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn postgres_code_inputs_read_unreadable_staged_files_and_restore_modes() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("usr/local/bin")).unwrap();
+        std::fs::write(root.path().join("workload.sql"), b"SELECT 1;").unwrap();
+        std::fs::write(
+            root.path().join("usr/local/bin/postgres-workload.sh"),
+            b"run",
+        )
+        .unwrap();
+        for path in [
+            "workload.sql",
+            "usr/local/bin/postgres-workload.sh",
+            "usr/local/bin",
+        ] {
+            std::fs::set_permissions(root.path().join(path), std::fs::Permissions::from_mode(0o0))
+                .unwrap();
+        }
+        let staged = image::StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let inputs = postgres_code_inputs(&staged).unwrap();
+        assert_eq!(inputs["/workload.sql"]["sha256"], sha(b"SELECT 1;"));
+        for path in ["workload.sql", "usr/local/bin"] {
+            let mode = std::fs::symlink_metadata(root.path().join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, 0, "{path}");
+        }
+        std::fs::set_permissions(
+            root.path().join("usr/local/bin"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mode =
+            std::fs::symlink_metadata(root.path().join("usr/local/bin/postgres-workload.sh"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+        assert_eq!(mode, 0);
+    }
 }
