@@ -144,11 +144,13 @@ not materialize guest RAM for each import.
 The complete portable format is version 7, and the sparse sidecar is version 9;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
-deriving pages or minting a handle. Cache deltas retain their per-page hashes.
-The sidecar does not carry a target RAM hash, so independently recomposing both
-its source-base digest and changed-page digest remains outside this snapshot
-identity check. Use a complete portable snapshot when the imported target's
-whole-state hash must be verified.
+deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
+page numbers and bytes that differ from setup, independently of the parent or
+near snapshot. Import checks this commitment and every supplied page hash
+before minting a handle. Together with the setup RAM digest, the commitment
+checks reconstructed target RAM; it is not a standalone whole-state hash. Use
+a complete portable snapshot when the imported target's whole-state hash must
+be verified directly.
 Control seals and imports require VM-state
 hashing so every restored VM record participates in identity. Standalone VMM
 hashing remains optional. When KVM rejects a nonportable XSAVE MXCSR state,
@@ -530,8 +532,9 @@ page list over the setup snapshot and derives the imported snapshot from `near`,
 writing only the pages where the two differ. Once `near`'s chain reaches the
 maximum chain length, the import derives from `setup` instead, so repeated
 imports keep the same chain bound as seals. Every supplied page must match its
-hash, including a page reused from `near`; a mismatch is refused before a
-handle is minted.
+hash, including a page reused from `near`. The complete page list must match
+the sidecar's target-page commitment; a mismatch is refused before a handle is
+minted.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,

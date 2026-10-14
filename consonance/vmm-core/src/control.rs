@@ -118,6 +118,27 @@ fn sparse_target_pages_digest(pages: &[(u64, Arc<[u8; 4096]>)]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn sparse_delta_target_pages_digest<'a>(
+    engine: &SnapshotEngine,
+    setup: snapshot_store::SnapshotId,
+    pages: impl IntoIterator<Item = (u64, &'a [u8; 4096])>,
+) -> Result<[u8; 32], PortableSnapshotError> {
+    let mut changed = Vec::new();
+    for (gfn, page) in pages {
+        if engine.read_page(setup, gfn)? != *page {
+            changed.push((gfn, page));
+        }
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"consonance-sparse-delta-target-pages-v1\0");
+    hasher.update((changed.len() as u64).to_le_bytes());
+    for (gfn, page) in changed {
+        hasher.update(gfn.to_le_bytes());
+        hasher.update(page);
+    }
+    Ok(hasher.finalize().into())
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ServeError {
     #[error("control transport I/O error")]
@@ -524,12 +545,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
         let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
+        let target_pages = self.engine.diff_pages(Some(setup_id), target_id)?;
+        let target_pages_digest =
+            sparse_delta_target_pages_digest(&self.engine, setup_id, target_pages)?;
         let sidecar = self.sparse_sidecar(
             setup,
             target,
             target_id,
             SparsePageVerification::AlreadyVerified,
-            None,
+            Some(target_pages_digest),
         )?;
         let (mut cost, pages) = self.export_telemetry.get();
         cost.add(started.elapsed().as_nanos());
@@ -680,13 +704,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
         let setup_id = self.store_id(setup)?;
+        let target_pages_digest = sparse_delta_target_pages_digest(
+            &self.engine,
+            setup_id,
+            pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
+        )?;
         let mut written = 0usize;
         let receipt = self.import_sparse_untimed(
             setup,
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
-            None,
+            Some(target_pages_digest),
             |engine, near_id, vm_state| {
                 let near_id = if engine
                     .stats(near_id)
@@ -6399,6 +6428,46 @@ mod tests {
     }
 
     #[test]
+    fn sparse_delta_rejects_changed_target_page_list_with_original_sidecar() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xa5);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let delta = source.export_sparse_delta(setup, None, target).unwrap();
+        assert_eq!(delta.pages.len(), 1);
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let changed = delta.pages[0];
+        for pages in [
+            vec![],
+            vec![(2, changed.1, changed.2)],
+            vec![changed, (2, changed.1, changed.2)],
+        ] {
+            assert!(matches!(
+                destination.import_sparse_delta(base, base, &pages, &delta.sidecar),
+                Err(super::PortableSnapshotError::Malformed(
+                    "sparse target pages differ"
+                ))
+            ));
+            assert_eq!(destination.snapshot_store_stats(), before);
+            assert_eq!(destination.latest_snapshot(), Some(base));
+        }
+        destination
+            .import_sparse_delta(base, base, &delta.pages, &delta.sidecar)
+            .unwrap();
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "sparse replay materializes snapshot-store mappings")]
     fn sparse_import_requires_the_source_base_ram_for_pages_and_deltas() {
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -6686,10 +6755,8 @@ mod tests {
         ];
         assert!(matches!(
             destination.import_sparse_delta(destination_setup, near, &corrupted, &sidecar),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 3
-                })
+            Err(PortableSnapshotError::Malformed(
+                "sparse target pages differ"
             ))
         ));
         assert_eq!(destination.snapshot_store_stats(), before);
