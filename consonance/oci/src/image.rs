@@ -730,6 +730,22 @@ impl Read for ArchiveReader {
     }
 }
 
+impl ArchiveReader {
+    fn finish(&mut self) -> Result<(), ImageError> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(ImageError::Tar(format!(
+                "archive decompressor exited with {status}"
+            )))
+        }
+    }
+}
+
 impl Drop for ArchiveReader {
     fn drop(&mut self) {
         let Some(mut child) = self.child.take() else {
@@ -792,6 +808,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     while read_block(&mut stream, &mut block)? {
         if block.iter().all(|byte| *byte == 0) {
             require_trailing_zeros(&mut stream)?;
+            stream.finish()?;
             return Ok(members);
         }
         verify_checksum(&block)?;
@@ -3636,6 +3653,32 @@ mod tests {
             extract_checked(&compressed, &dest).unwrap();
             assert_eq!(std::fs::read(dest.join("etc/passwd")).unwrap(), b"root");
         }
+    }
+
+    #[test]
+    fn corrupt_gzip_trailer_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = write_archive(
+            dir.path(),
+            "plain.tar",
+            &raw_member(b"payload", b'0', "", b"data"),
+        );
+        let output = Command::new("gzip").arg("-c").arg(&plain).output().unwrap();
+        assert!(output.status.success());
+        let mut compressed = output.stdout;
+        let trailer = compressed.len() - 8;
+        compressed[trailer] ^= 1;
+        let archive = dir.path().join("bad-crc.tar.gz");
+        std::fs::write(&archive, compressed).unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
     }
 
     #[test]
