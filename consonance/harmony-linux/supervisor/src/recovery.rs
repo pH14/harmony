@@ -10,6 +10,7 @@ pub enum RecoveryError {
 pub struct RecoveryReadiness {
     generation: u64,
     ready: bool,
+    fault_pending: bool,
     queued: Vec<u32>,
 }
 
@@ -19,16 +20,18 @@ impl RecoveryReadiness {
         Self {
             generation: 0,
             ready: true,
+            fault_pending: false,
             queued: Vec::new(),
         }
     }
 
-    pub fn restarted(&mut self) -> Result<(), RecoveryError> {
+    pub fn restarted(&mut self, after_fault: bool) -> Result<(), RecoveryError> {
         self.generation = self
             .generation
             .checked_add(1)
             .ok_or(RecoveryError::GenerationExhausted)?;
         self.ready = false;
+        self.fault_pending |= after_fault;
         Ok(())
     }
 
@@ -46,12 +49,18 @@ impl RecoveryReadiness {
             return Vec::new();
         }
         self.ready = true;
+        self.fault_pending = false;
         self.queued.drain(..).collect()
     }
 
     #[must_use]
     pub fn is_pending(&self) -> bool {
         !self.ready
+    }
+
+    #[must_use]
+    pub fn is_fault_pending(&self) -> bool {
+        self.fault_pending
     }
 
     #[must_use]
@@ -67,7 +76,7 @@ mod tests {
     #[test]
     fn a_slow_probe_keeps_hooks_queued_until_the_current_generation_is_ready() {
         let mut readiness = RecoveryReadiness::initially_ready();
-        readiness.restarted().unwrap();
+        readiness.restarted(true).unwrap();
         let generation = readiness.generation();
 
         assert!(readiness.is_pending());
@@ -83,11 +92,11 @@ mod tests {
     #[test]
     fn a_stale_probe_cannot_release_hooks_after_a_new_restart() {
         let mut readiness = RecoveryReadiness::initially_ready();
-        readiness.restarted().unwrap();
+        readiness.restarted(true).unwrap();
         let stale = readiness.generation();
         assert!(readiness.request_hook(3).is_empty());
 
-        readiness.restarted().unwrap();
+        readiness.restarted(true).unwrap();
         let current = readiness.generation();
         assert_ne!(current, stale);
         assert!(readiness.mark_ready(stale).is_empty());
@@ -98,7 +107,7 @@ mod tests {
     #[test]
     fn ready_hooks_preserve_request_order_and_duplicates() {
         let mut readiness = RecoveryReadiness::initially_ready();
-        readiness.restarted().unwrap();
+        readiness.restarted(true).unwrap();
         assert!(readiness.request_hook(2).is_empty());
         assert!(readiness.request_hook(1).is_empty());
         assert!(readiness.request_hook(2).is_empty());
@@ -116,15 +125,32 @@ mod tests {
     }
 
     #[test]
+    fn natural_restart_does_not_exempt_crashes_but_fault_recovery_survives_restarts() {
+        let mut readiness = RecoveryReadiness::initially_ready();
+        readiness.restarted(false).unwrap();
+        assert!(readiness.is_pending());
+        assert!(!readiness.is_fault_pending());
+
+        readiness.restarted(true).unwrap();
+        let fault_generation = readiness.generation();
+        readiness.restarted(false).unwrap();
+        assert!(readiness.mark_ready(fault_generation).is_empty());
+        assert!(readiness.is_fault_pending());
+        readiness.mark_ready(readiness.generation());
+        assert!(!readiness.is_fault_pending());
+    }
+
+    #[test]
     fn generation_exhaustion_does_not_reuse_a_stale_generation() {
         let mut readiness = RecoveryReadiness {
             generation: u64::MAX,
             ready: true,
+            fault_pending: false,
             queued: Vec::new(),
         };
 
         assert_eq!(
-            readiness.restarted(),
+            readiness.restarted(true),
             Err(RecoveryError::GenerationExhausted)
         );
         assert_eq!(readiness.generation(), u64::MAX);

@@ -939,12 +939,12 @@ mod runtime {
                 sdk,
                 supervisor,
             )?;
-            supervisor.note_recovery_pending(runtime.recovery.is_pending());
+            supervisor.note_recovery_pending(runtime.recovery.is_fault_pending());
             let actions = supervisor.tick(&active, &deaths);
             report_node_exits(
                 supervisor,
                 &exits,
-                runtime.recovery.is_pending(),
+                runtime.recovery.is_fault_pending(),
                 tick,
                 &sdk_output(),
             )?;
@@ -1172,7 +1172,7 @@ mod runtime {
                     supervisor.note_process_transition();
                 }
             }
-            Action::Start(node) => {
+            Action::Start { node, after_fault } => {
                 let Some(entry) = nodes.get_mut(usize::from(node)) else {
                     return Ok(());
                 };
@@ -1184,7 +1184,7 @@ mod runtime {
                         &mut child,
                         supervisor,
                         node,
-                        runtime.recovery.is_pending(),
+                        runtime.recovery.is_fault_pending(),
                         tick,
                         &sdk_output(),
                     )?;
@@ -1200,7 +1200,7 @@ mod runtime {
                     }
                     runtime
                         .recovery
-                        .restarted()
+                        .restarted(after_fault)
                         .map_err(|error| format!("recovery: {error}"))?;
                 }
             }
@@ -1488,6 +1488,7 @@ mod runtime {
             Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events,
             inherit_event_fd, node_exit_violations, retire_node_child,
         };
+        use harmony_supervisor::recovery::RecoveryReadiness;
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
@@ -1531,10 +1532,51 @@ mod runtime {
             recovering.note_recovery_pending(true);
             assert_eq!(
                 recovering.tick(&ActiveWindows::new(), &[0]),
-                [Action::Start(0)]
+                [Action::Start {
+                    node: 0,
+                    after_fault: false,
+                }]
             );
             let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
             assert!(node_exit_violations(&mut recovering, &exits, true).is_empty());
+        }
+
+        #[test]
+        fn natural_restart_readiness_does_not_hide_a_later_crash() {
+            let mut supervisor = Supervisor::new(1);
+            let mut recovery = RecoveryReadiness::initially_ready();
+            let no_faults = ActiveWindows::new();
+            assert_eq!(
+                supervisor.tick(&no_faults, &[0]),
+                [Action::Start {
+                    node: 0,
+                    after_fault: false,
+                }]
+            );
+            assert!(
+                node_exit_violations(
+                    &mut supervisor,
+                    &[(0, Some(ExitStatus::from_raw(0)))],
+                    recovery.is_pending()
+                )
+                .is_empty()
+            );
+            recovery.restarted(false).unwrap();
+            assert!(recovery.is_pending());
+
+            supervisor.note_recovery_pending(recovery.is_fault_pending());
+            assert_eq!(
+                supervisor.tick(&no_faults, &[0]),
+                [Action::Start {
+                    node: 0,
+                    after_fault: false,
+                }]
+            );
+            let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
+            assert_eq!(
+                node_exit_violations(&mut supervisor, &exits, recovery.is_fault_pending()),
+                [(0, format!("signal {}", libc::SIGSEGV))]
+            );
         }
 
         #[test]
