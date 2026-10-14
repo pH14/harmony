@@ -367,14 +367,18 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.store(directory.path(), "kernel", b"kernel").unwrap();
+        record
+            .store(directory.path(), "initramfs", b"image")
+            .unwrap();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
         });
         record.save(directory.path()).unwrap();
         let mut manifest = Manifest::read(directory.path()).unwrap();
         let returned: faults_workload::Report = serde_json::from_value(serde_json::json!({
-            "package":"faults","mode":"search","image_sha256":"image",
-            "kernel_sha256":"kernel","identity":"runner","seed":0,"workers":1,
+            "package":"faults","mode":"search","image_sha256":crate::runtime::digest(b"image"),
+            "kernel_sha256":crate::runtime::digest(b"kernel"),"identity":"runner","seed":0,"workers":1,
             "ram_mib":1024,"executions":1,"bug_found":false,
             "first_bug_execution":null,"bugs":[],"never_satisfied":[],"replays":[],
             "execution_ticks":1,"wall_seconds":1,"execution_failures":0

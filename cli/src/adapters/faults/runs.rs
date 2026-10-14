@@ -62,6 +62,26 @@ impl Manifest {
         }
     }
 
+    fn verify_runtime_outcome(&self, outcome: &serde_json::Value) -> Result<()> {
+        if self.record.status != "complete" || self.bundle.is_none() {
+            return Ok(());
+        }
+        for (artifact, field) in [("kernel", "kernel_sha256"), ("initramfs", "image_sha256")] {
+            let saved = self
+                .record
+                .artifacts
+                .get(artifact)
+                .ok_or_else(|| format!("completed report lacks {artifact} artifact"))?;
+            let executed = outcome[field]
+                .as_str()
+                .ok_or_else(|| format!("completed report lacks {field}"))?;
+            if executed != saved {
+                return Err(format!("{artifact} digest differs from completed report").into());
+            }
+        }
+        Ok(())
+    }
+
     pub fn new(
         config: Config,
         mode: &str,
@@ -118,6 +138,7 @@ impl Manifest {
                 format!("{} differs from the returned outcome", self.outcome_file()).into(),
             );
         }
+        self.verify_runtime_outcome(&outcome)?;
         let mut record = self.record.clone();
         record.config = self.config.shared()?;
         record.payload = serde_json::to_value(State {
@@ -134,7 +155,7 @@ impl Manifest {
         if self.outcome(path)? != self.record.payload["outcome"] {
             return Err(format!("recorded {} has changed", self.outcome_file()).into());
         }
-        Ok(())
+        self.verify_runtime_outcome(&self.record.payload["outcome"])
     }
     pub fn inherit(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         let mut child = self.clone();
@@ -184,6 +205,99 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completed_save_refuses_a_different_executed_kernel() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "run").unwrap();
+        record.store(dir.path(), "kernel", b"later kernel").unwrap();
+        record
+            .store(dir.path(), "initramfs", b"prepared initramfs")
+            .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(dir.path()).unwrap();
+        let mut manifest = Manifest::read(dir.path()).unwrap();
+        let outcome = serde_json::json!({
+            "kernel_sha256": crate::runtime::digest(b"executed kernel"),
+            "image_sha256": crate::runtime::digest(b"prepared initramfs"),
+        });
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&outcome).unwrap(),
+        )
+        .unwrap();
+        manifest.pin_outcome(&outcome).unwrap();
+        manifest.status = "complete".into();
+
+        assert!(
+            manifest
+                .save(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("kernel digest differs")
+        );
+    }
+
+    #[test]
+    fn completed_report_refuses_a_different_saved_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "run").unwrap();
+        record.store(dir.path(), "kernel", b"later kernel").unwrap();
+        record
+            .store(dir.path(), "initramfs", b"prepared initramfs")
+            .unwrap();
+        let outcome = serde_json::json!({
+            "kernel_sha256": crate::runtime::digest(b"executed kernel"),
+            "image_sha256": crate::runtime::digest(b"prepared initramfs"),
+        });
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&outcome).unwrap(),
+        )
+        .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":outcome
+        });
+        record.status = "complete".into();
+        record.save(dir.path()).unwrap();
+
+        let manifest = Manifest::read(dir.path()).unwrap();
+        assert!(
+            manifest
+                .verify(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("kernel digest differs")
+        );
+
+        let mut record = manifest.record.clone();
+        let mut outcome = record.payload["outcome"].clone();
+        outcome["kernel_sha256"] = record.artifacts["kernel"].clone().into();
+        outcome["image_sha256"] = crate::runtime::digest(b"other initramfs").into();
+        fs::write(
+            dir.path().join("report.json"),
+            serde_json::to_vec(&outcome).unwrap(),
+        )
+        .unwrap();
+        record.payload["outcome"] = outcome;
+        record.save(dir.path()).unwrap();
+        let manifest = Manifest::read(dir.path()).unwrap();
+        assert!(
+            manifest
+                .verify(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("initramfs digest differs")
+        );
+    }
 
     #[test]
     fn edited_report_fails_replay_verification_but_partial_report_allows_resume() {
