@@ -129,7 +129,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 c.uml_profile = Some(out.join("artifacts/uml"));
             }
             let artifacts = manifest.fault_artifacts(&out)?;
-            crate::oci::execute(
+            let (_, new) = crate::oci::execute(
                 &c.runtime(),
                 &manifest.runner_identity,
                 c.seed,
@@ -140,7 +140,6 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 &out,
                 false,
             )?;
-            let new: serde_json::Value = serde_json::from_slice(&fs::read(out.join("run.json"))?)?;
             manifest.pin_outcome(&new)?;
             if !command_replay_matches(&original, new) {
                 Err("replay diverged from the recorded command execution".into())

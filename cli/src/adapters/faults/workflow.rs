@@ -318,7 +318,10 @@ pub fn run(
         &out,
         console,
     )
-    .map(|passed| if passed { 0 } else { 1 });
+    .and_then(|(passed, record)| {
+        manifest.pin_outcome(&record)?;
+        Ok(if passed { 0 } else { 1 })
+    });
     finish(&out, &mut manifest, result)
 }
 
@@ -385,5 +388,53 @@ mod tests {
             saved.record.payload["outcome"],
             serde_json::to_value(returned).unwrap()
         );
+    }
+
+    #[test]
+    fn completed_command_run_requires_the_producer_record() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "run").unwrap();
+        record.payload = serde_json::json!({
+            "bundle":null,"actions":[],"settle":true,"outcome":null
+        });
+        record.save(directory.path()).unwrap();
+        let mut manifest = Manifest::read(directory.path()).unwrap();
+        let produced = serde_json::json!({"container_rc":1,"serial_sha256":"original"});
+        fs::write(
+            directory.path().join("run.json"),
+            serde_json::to_vec(&produced).unwrap(),
+        )
+        .unwrap();
+        let replaced = serde_json::json!({"container_rc":0,"serial_sha256":"replaced"});
+        fs::write(
+            directory.path().join("run.json"),
+            serde_json::to_vec(&replaced).unwrap(),
+        )
+        .unwrap();
+
+        assert!(finish(directory.path(), &mut manifest, Ok(1)).is_err());
+        manifest.pin_outcome(&produced).unwrap();
+        assert!(finish(directory.path(), &mut manifest, Ok(1)).is_err());
+
+        let same_code = serde_json::json!({"container_rc":1,"serial_sha256":"replaced"});
+        fs::write(
+            directory.path().join("run.json"),
+            serde_json::to_vec(&same_code).unwrap(),
+        )
+        .unwrap();
+        assert!(finish(directory.path(), &mut manifest, Ok(1)).is_err());
+
+        fs::write(
+            directory.path().join("run.json"),
+            serde_json::to_vec(&produced).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(finish(directory.path(), &mut manifest, Ok(1)).unwrap(), 1);
+        let saved = Manifest::read(directory.path()).unwrap();
+        assert_eq!(saved.status, "complete");
+        assert_eq!(saved.record.payload["outcome"], produced);
     }
 }

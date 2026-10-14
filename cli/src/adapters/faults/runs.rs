@@ -105,6 +105,9 @@ impl Manifest {
         Ok(())
     }
     pub fn save(&self, path: &Path) -> Result<()> {
+        if self.record.status == "complete" && self.expected_outcome.is_none() {
+            return Err("completed faults run has no returned outcome".into());
+        }
         let outcome = self.outcome(path)?;
         if self
             .expected_outcome
