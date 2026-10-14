@@ -51,6 +51,9 @@ If a backend step or scheduled-input application fails after `Run` begins,
 control retires the live VM. A failed step can already have advanced virtual
 time or changed guest state, so the session cannot mint a reproducer or accept
 another run from an unverified continuation.
+The failed run's console and SDK events remain readable from a diagnostic
+copy without keeping the failed VM executable. Replay starts with fresh
+observations.
 Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
 write that offset, and both full-VM snapshot restore and V-time-only restore
 reject a nonzero value before changing live state. This keeps an armed

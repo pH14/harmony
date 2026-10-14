@@ -196,6 +196,12 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     last_seal_dirty_gfns: Option<Vec<u64>>,
     telemetry: HostTelemetry,
     export_telemetry: std::cell::Cell<(Cost, u64)>,
+    retired_observations: Option<RetiredObservations>,
+}
+
+struct RetiredObservations {
+    console: Vec<u8>,
+    sdk_events: Vec<(u64, u32, Vec<u8>)>,
 }
 
 struct SdkSnap {
@@ -331,6 +337,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             last_seal_dirty_gfns: None,
             telemetry: HostTelemetry::default(),
             export_telemetry: std::cell::Cell::new((Cost::default(), 0)),
+            retired_observations: None,
         }
     }
 
@@ -413,9 +420,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn retire_vmm(&mut self) {
+        self.retired_observations = None;
         if let Some(vmm) = self.vmm.take() {
             self.telemetry.exits.merge(&vmm.exit_telemetry());
         }
+    }
+
+    fn retire_failed_vmm(&mut self) {
+        let observations = self.vmm.as_ref().map(|vmm| RetiredObservations {
+            console: vmm.serial().to_vec(),
+            sdk_events: vmm.sdk_events().to_vec(),
+        });
+        self.retire_vmm();
+        self.retired_observations = observations;
     }
 
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
@@ -1084,14 +1101,31 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             },
             Request::Perturb { fault, at } => Ok(self.perturb(fault, *at)),
             Request::SdkEvents { offset } => {
-                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                let events = match self.vmm.as_ref() {
+                    Some(vmm) => vmm.sdk_events(),
+                    None => self
+                        .retired_observations
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .sdk_events
+                        .as_slice(),
+                };
                 Ok(Ok(Reply::SdkEvents(page_sdk_events(
-                    vmm.sdk_events(),
+                    events,
                     *offset as usize,
                 ))))
             }
             Request::Console { offset } => {
-                let serial = self.vmm.as_ref().map(|v| v.serial()).unwrap_or(&[]);
+                let serial = self
+                    .vmm
+                    .as_ref()
+                    .map(Vmm::serial)
+                    .or_else(|| {
+                        self.retired_observations
+                            .as_ref()
+                            .map(|observations| observations.console.as_slice())
+                    })
+                    .unwrap_or(&[]);
                 let (total, chunk) = page_console(serial, *offset as usize);
                 Ok(Ok(Reply::Console { total, chunk }))
             }
@@ -1832,12 +1866,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Ok(reply) => match self.sync_recorded_request_bindings() {
                 Ok(()) => Ok(reply),
                 Err(error) => {
-                    self.retire_vmm();
+                    if self.vmm.is_some() {
+                        self.retire_failed_vmm();
+                    }
                     Err(error)
                 }
             },
             Err(error) => {
-                self.retire_vmm();
+                if self.vmm.is_some() {
+                    self.retire_failed_vmm();
+                }
                 Err(error)
             }
         }
@@ -2376,11 +2414,18 @@ mod tests {
 
     #[test]
     fn unmodeled_guest_exit_must_retire_the_failed_run() {
-        let mut server = server(vec![Exit::Common(CommonExit::Mmio {
-            gpa: vmm_backend::Gpa(0xdead_0000),
-            size: 4,
-            write: Some(1),
-        })]);
+        let mut server = server(vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(b'X' as u32),
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: vmm_backend::Gpa(0xdead_0000),
+                size: 4,
+                write: Some(1),
+            }),
+        ]);
         hello(&mut server);
         let base = snap(&mut server);
         assert!(
@@ -2392,6 +2437,11 @@ mod tests {
                 .unwrap()
                 .is_ok()
         );
+        let expected_event = (0, 91, vec![1, 2, 3]);
+        let vmm = server.vmm_mut().unwrap();
+        let mut channel = vmm.sdk_snapshot().unwrap().unwrap();
+        channel.events.push(expected_event.clone());
+        vmm.sdk_restore_events(&channel);
         let run = Request::Run {
             until: StopConditions {
                 deadline: None,
@@ -2400,10 +2450,48 @@ mod tests {
             resolve: None,
         };
         assert!(matches!(server.handle(&run), Err(ServeError::Vmm(_))));
+        assert_eq!(
+            server.handle(&Request::Console { offset: 0 }).unwrap(),
+            Ok(Reply::Console {
+                total: 1,
+                chunk: vec![b'X'],
+            })
+        );
+        assert_eq!(
+            server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+            Ok(Reply::SdkEvents(vec![expected_event.clone()]))
+        );
         assert!(matches!(
             server.handle(&Request::RecordedEnv),
             Err(ServeError::Poisoned)
         ));
+        assert!(matches!(server.handle(&run), Err(ServeError::Poisoned)));
+        assert_eq!(
+            server.handle(&Request::Console { offset: 0 }).unwrap(),
+            Ok(Reply::Console {
+                total: 1,
+                chunk: vec![b'X'],
+            })
+        );
+        assert_eq!(
+            server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+            Ok(Reply::SdkEvents(vec![expected_event]))
+        );
+        assert_eq!(
+            server.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            server.handle(&Request::Console { offset: 0 }).unwrap(),
+            Ok(Reply::Console {
+                total: 0,
+                chunk: Vec::new(),
+            })
+        );
+        assert_eq!(
+            server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+            Ok(Reply::SdkEvents(Vec::new()))
+        );
     }
 
     #[test]
