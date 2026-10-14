@@ -695,7 +695,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                             }
                         }
                     }
-                    let mut anchors = BTreeSet::from([0]);
+                    let mut anchors = BTreeSet::from([0, page_head]);
                     for (range_start, range_end) in mapped_ranges {
                         anchors.insert(range_start);
                         if range_end < code.len() {
@@ -715,7 +715,13 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     for pair in x86_executable_loads.windows(2) {
         let (left_start, left, _) = &pair[0];
         let (right_start, right, _) = &pair[1];
-        if left_start.checked_add(u64::try_from(left.len())?) != Some(*right_start) {
+        let left_end = left_start
+            .checked_add(u64::try_from(left.len())?)
+            .ok_or("executable ELF mapped address overflow")?;
+        if left_end > *right_start {
+            return Err("overlapping executable ELF mappings".into());
+        }
+        if left_end != *right_start {
             continue;
         }
         let suffix_len = left.len().min(2);
@@ -1470,6 +1476,90 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn overlapping_executable_loads_cannot_hide_a_cross_page_instruction() {
+        let mut bytes = vec![0; 0x3011];
+        bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+        for (offset, value) in [
+            (16, 2_u16),
+            (18, 62),
+            (52, 64),
+            (54, 56),
+            (56, 2),
+            (58, 64),
+            (60, 4),
+        ] {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[62..64].copy_from_slice(&3_u16.to_le_bytes());
+        for (offset, value) in [(24, 0x1ffe_u64), (32, 64), (40, 256)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        for (index, (file_offset, address, size)) in
+            [(0x1000_u64, 0x1000_u64, 0x1002_u64), (0x3000, 0x2000, 13)]
+                .into_iter()
+                .enumerate()
+        {
+            let program = 64 + index * 56;
+            bytes[program..program + 4].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
+            bytes[program + 4..program + 8].copy_from_slice(&5_u32.to_le_bytes());
+            for (field, value) in [
+                (8, file_offset),
+                (16, address),
+                (24, address),
+                (32, size),
+                (40, size),
+                (48, 4096),
+            ] {
+                bytes[program + field..program + field + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            let section = 320 + index * 64;
+            bytes[section + 4..section + 8]
+                .copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+            for (field, value) in [
+                (8, 6_u64),
+                (16, address),
+                (24, file_offset),
+                (32, size),
+                (48, 1),
+            ] {
+                bytes[section + field..section + field + 8].copy_from_slice(&value.to_le_bytes());
+            }
+        }
+        bytes[352..360].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[400..408].copy_from_slice(&0x2002_u64.to_le_bytes());
+        bytes[408..416].copy_from_slice(&0x3002_u64.to_le_bytes());
+        bytes[416..424].copy_from_slice(&11_u64.to_le_bytes());
+        bytes[452..456].copy_from_slice(&object::elf::SHT_STRTAB.to_le_bytes());
+        bytes[472..480].copy_from_slice(&0x3010_u64.to_le_bytes());
+        bytes[480..488].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[496..504].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[0x1000..0x1ffe].fill(0x90);
+        bytes[0x1ffe..0x2002].copy_from_slice(&[0x0f, 0xc7, 0x90, 0x90]);
+        bytes[0x3000..0x300d]
+            .copy_from_slice(&[0xf0, 0xbf, 0x25, 0, 0, 0, 0xb8, 0x3c, 0, 0, 0, 0x0f, 0x05]);
+        let error = scan_elf(&bytes, "").unwrap_err().to_string();
+        assert!(error.contains("overlapping executable ELF mappings"));
+    }
+
+    #[test]
+    fn x86_segment_start_remains_a_decode_anchor_inside_the_first_page() {
+        let mut bytes = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        bytes.resize(4102, 0);
+        bytes[24..32].copy_from_slice(&0x1001_u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&4097_u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x1001_u64.to_le_bytes());
+        bytes[272..280].copy_from_slice(&0x1004_u64.to_le_bytes());
+        bytes[280..288].copy_from_slice(&4100_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[344..352].copy_from_slice(&4101_u64.to_le_bytes());
+        bytes[4096..4101].copy_from_slice(&[0xb8, 0x0f, 0xc7, 0xf0, 0xc3]);
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].address, 0x1001);
+        assert_eq!(sites[0].instruction, "RDRAND");
     }
 
     #[test]

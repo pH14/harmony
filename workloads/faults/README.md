@@ -70,8 +70,9 @@ file size in the first and last executable pages. It also rejects loads whose
 file offset and virtual address disagree within a page. Section headers do
 not determine what the guest loader executes.
 The x86 scan follows instruction streams from each mapped section and gap
-across section and adjacent executable-load boundaries, and rejects entropy
-opcode bytes split across those boundaries. The scan still requires
+across section and adjacent executable-load boundaries. It starts at each
+load's declared address and rejects overlapping executable mappings, which
+could combine instruction bytes from different loads. The scan still requires
 cooperative workloads: dynamically generated code and instructions hidden
 inside another instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
@@ -94,7 +95,8 @@ the gaps separately. Each decode continues through later ranges when their
 virtual addresses are contiguous. This preserves instruction alignment when a
 segment begins with headers or other data while finding an instruction reached
 by falling through a boundary. It rejects instruction patterns split across
-decoded ranges or adjacent executable loads. On arm64 it checks aligned
+decoded ranges or adjacent executable loads, and rejects overlapping x86
+executable mappings. On arm64 it checks aligned
 instruction words across the complete 4 KiB page-rounded file mapping of each
 executable load, including bytes beyond the declared load size, and rejects
 another load segment that aliases an executable memory page. Images with
