@@ -199,7 +199,9 @@ prepared identity, kernel bytes, and ordered concatenated initramfs bytes. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by
-the rootfs segment.
+the rootfs segment. PostgreSQL's post-preparation source reads temporarily
+grant the staging user read/search access and restore the image modes afterward,
+so their hashes do not depend on host privilege.
 
 Run `workloads/guest-images/verify-prepared-admission.py inventory DUMP
 --output NEW_REPORT_DIR` from the repository root for a candidate inventory. GNU
