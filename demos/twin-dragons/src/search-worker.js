@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
-import { createEngine, GAMES } from "./emulator.js";
+import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { parsePlan, rolloutBytes, stepBytes, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
 import { validateTape } from "./heat.js";
 import { branchInfo } from "./branch.js";
 import { snapshotHash } from "./media.js";
+import { campaignSearch, coreIdentity } from "./campaign.js";
 let initialized = false,
   wasm,
   budget,
   engine,
   genesis,
   bootLevel = 0,
+  identity,
   active = 0,
   nextBranch = 1,
   generation = 0,
@@ -27,6 +29,7 @@ function memoryLimit() {
   return wasm.memory.buffer.byteLength + engine.mod.HEAPU8.byteLength >= budget.searchMiB * 1048576;
 }
 function shareSnapshotBudget(search) {
+  if (search.campaign) return;
   const others = usedSnapshots() - search.explorer.snapshot_bytes();
   search.explorer.set_snapshot_budget(Math.max(0, budget.snapshotsMiB * 1048576 - others));
 }
@@ -83,6 +86,10 @@ let running = false,
   refilled = 0,
   paceTimer = null;
 const parentKey = (search, id) => search.key * 4294967296 + id;
+function planJobs(search) {
+  if (search.explorer.stopped()) return;
+  for (let bytes; (bytes = search.explorer.plan()); ) search.queue.push({ search, bytes });
+}
 function planRound(search) {
   if (search.explorer.stopped()) return;
   const jobs = parsePlan(search.explorer.plan(ROUND_PATHS));
@@ -122,6 +129,27 @@ function drain(search) {
     search.rounds.shift();
     planRound(search);
   }
+}
+function sendCampaign(slot, job) {
+  const chunk = ++nextChunk;
+  chunks.set(chunk, { slot, jobs: [job] });
+  slot.chunks++;
+  slot.worker.postMessage({ type: "job", chunk, job: job.bytes.buffer }, [job.bytes.buffer]);
+  job.bytes = null;
+}
+function admitCampaign(job, { outcome, reservation, trail, clears }) {
+  const { search } = job;
+  if (job.cancelled || !searches.has(search.id) || search.explorer.stopped()) return;
+  search.held.set(reservation, { trail, clears });
+  for (const admitted of search.explorer.admit(new Uint8Array(outcome))) {
+    const held = search.held.get(admitted);
+    search.held.delete(admitted);
+    if (!held?.trail) continue;
+    if (held.clears) search.finishes.push(search.motion.length);
+    search.motion.push(held.trail);
+  }
+  if (search.explorer.stopped()) cancel(search);
+  else planJobs(search);
 }
 function send(slot, jobs) {
   const added = [], evicted = new Set(), size = engine.stateSize;
@@ -163,7 +191,8 @@ function pump() {
       if (!search.queue.length) return;
       if (slot.chunks >= CHUNKS_AHEAD || !slot.ready) continue;
       if (!paced()) return;
-      send(slot, search.queue.splice(0, CHUNK_PATHS));
+      if (search.campaign) sendCampaign(slot, search.queue.shift());
+      else send(slot, search.queue.splice(0, CHUNK_PATHS));
     }
 }
 function paced() {
@@ -182,10 +211,17 @@ function paced() {
     }, ((CHUNK_PATHS - allowance) * 1000) / pace);
   return false;
 }
-function finished({ chunk, buffer, steps, trails, transitions, clears }) {
+function finished(data) {
+  const { chunk, buffer, steps, trails, transitions, clears } = data;
   const entry = chunks.get(chunk);
   chunks.delete(chunk);
   entry.slot.chunks--;
+  if ("outcome" in data) {
+    admitCampaign(entry.jobs[0], data);
+    pump();
+    scheduleFlush();
+    return;
+  }
   const stride = stepBytes(engine);
   let offset = 0;
   const touched = new Set();
@@ -249,12 +285,15 @@ function addSearch(id, search) {
   search.queue = [];
   search.motion = [];
   search.finishes = [];
+  search.held = new Map();
   searches.set(id, search);
-  for (let r = 0; r < ROUNDS_AHEAD; r++) planRound(search);
+  if (search.campaign) planJobs(search);
+  else for (let r = 0; r < ROUNDS_AHEAD; r++) planRound(search);
 }
 async function startPool(ports, base) {
   const rom = engine.rom,
     wasm = new Uint8Array(await (await fetch(new URL(`engine/${engine.game.core}.wasm`, base))).arrayBuffer());
+  identity = coreIdentity(await sha256Hex(wasm));
   await Promise.all(ports.map((worker) => new Promise((resolve) => {
     const slot = { worker, cache: new Map(), chunks: 0, ready: false };
     worker.onmessage = ({ data }) => {
@@ -268,9 +307,20 @@ async function startPool(ports, base) {
         error(e);
       }
     };
-    worker.postMessage({ type: "init", base, game: engine.game.id, rom, wasm });
+    worker.postMessage({ type: "init", base, game: engine.game.id, rom, wasm, identity });
     pool.push(slot);
   })));
+}
+function createSearch(seed, root, prefix) {
+  if (engine.game.campaign)
+    return {
+      explorer: campaignSearch(engine, identity, { seed, root, prefix, memoryMiB: budget.snapshotsMiB }),
+      campaign: true,
+    };
+  const explorer = root === undefined ? new Explorer(engine.game.id, seed) :
+    Explorer.from_history(engine.game.id, seed, JSON.stringify(prefix));
+  explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
+  return { explorer, campaign: false };
 }
 function error(e) {
   pause();
@@ -294,9 +344,7 @@ onmessage = async ({ data }) => {
       if (gen !== generation) return;
       await startPool(data.ports, data.base);
       if (gen !== generation) return;
-      const explorer = bootLevel === 0 ? new Explorer(engine.game.id, data.seed ?? 1) : Explorer.from_history(engine.game.id, data.seed ?? 1, "[]");
-      explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
-      addSearch(0, { explorer, branch: null });
+      addSearch(0, { ...createSearch(data.seed ?? 1, bootLevel === 0 ? undefined : genesis, []), branch: null });
       initialized = true;
       ready();
       resume();
@@ -371,14 +419,9 @@ onmessage = async ({ data }) => {
         }
         if ((await snapshotHash(engine.capture())) !== tape.endpoint_sha256)
           throw new Error("Branch history does not reproduce its snapshot");
-        const explorer = Explorer.from_history(
-          engine.game.id,
-          data.seed,
-          JSON.stringify(tape.actions),
-        );
-        explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
+        const { explorer, campaign } = createSearch(data.seed, engine.capture(), tape.actions);
         const id = nextBranch++;
-        addSearch(id, { explorer, branch: branchInfo(tape.branch, frames), parent: active,
+        addSearch(id, { explorer, campaign, branch: branchInfo(tape.branch, frames), parent: active,
           origin: { frames, level: JSON.parse(explorer.state(0)).observation.level } });
         active = id;
         busy = false;

@@ -1,8 +1,7 @@
 # Harmony browser explorer
 
 A static demonstration of state-space exploration. Emulators compiled to
-WebAssembly run a game, and a Rust worker uses the Dissonance `Archive` and
-parent selector to search it. The site plays three games: the NES game Twin
+WebAssembly run a game, and a Rust worker uses Dissonance to search it. The site plays three games: the NES game Twin
 Dragons on QuickNES, the Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and
 Super Mario Bros., Mega Man 2 and Metroid on QuickNES from ROMs the visitor
 supplies. The `game` URL
@@ -64,51 +63,48 @@ RAM at these addresses:
 | `$74` | facing, 1 is right |
 | `$75` | health, 0 to 3 |
 
-The world x position is `$52 * 256 + $57 + $62`. For four frames after a level
-change, the game reports state 1 with the new level while the goal flag is
-still set and `$35` still names the old next level. The adapter treats a state
-as settled when the game state is 1 and `$35` is the level after `$42` (or
-`$FF` on the last level). Every other state is loading. A level counts as
-cleared when a settled state has touched the goal. The game is complete when
-the third level is cleared.
+The world x position is `$52 * 256 + $57 + $62`. The decoder is
+`decode_state` in `workloads/nes-games/src/twin_dragons/target.rs`, and the page
+calls it through the `twin_dragons_observation` export of the Rust worker. The
+game is complete when the third level is cleared.
 
 ## Search
 
-The search runs in one coordinator worker and a pool of rollout workers. The
-coordinator owns the Dissonance archive and parent selector. Each rollout
-worker holds its own QuickNES instance. The page starts every worker and hands
-the coordinator a `MessageChannel` port to each rollout worker, because some
-browsers fail to load a worker started from inside another worker. The archive place is (level, loading,
-x / 32, y / 32), its progress is the number of levels cleared, and its identity
-within a place is (x / 16, y / 16). The place rows match the map's cell rows.
-The parent selector weighs each progress tier 2 times the tier below, the same
-weight as the `workloads/nes` Super Mario Bros. key, so new work concentrates on
-the furthest level without a direction preference. Within
-a place it prefers more health. A state with zero health or on the
-title screen ends a rollout. The 32-pixel heatmap projection is separate from
-archive identity.
+The search runs in one coordinator worker and a pool of rollout workers. Each
+rollout worker holds its own QuickNES instance. The page starts every worker and
+hands the coordinator a `MessageChannel` port to each rollout worker, because
+some browsers fail to load a worker started from inside another worker.
 
-Rollouts have 1 to 24 controller actions. Each action holds its buttons for 2
-to 12 frames or 6 to 18 frames, with equal odds. The coordinator plans rollouts
-in rounds of 16. For each rollout it selects a parent and draws the actions
-from the seeded generator. It plans four rounds ahead and plans a new round
-each time the oldest round has fully merged. Rollout workers run the actions
-from the parent snapshot and return the 2 KiB work RAM and the raw snapshot
-after each action, plus a motion trail. The coordinator merges results into
-the archive in plan order, whatever order they arrive in. The seed therefore
-determines every search choice, and the worker count and timing change only
-throughput and presentation. The first search uses seed 27, and Restart
-increments it. Seed 27 enters Level 2 after about 1,760 paths, Level 3 after
-about 8,850 and finishes the game after about 14,200. A history is bounded to
-10,000 actions and 200,000 frames. Runs stop when a path finishes the game or
-when the search WASM buffers reach their limit.
+Twin Dragons runs the same search as the native `twin-dragons-campaign`
+binary. `rust/src/twin_dragons.rs` builds the `TwinDragonsGame` workload from
+`nes-games` over `JsMachine`, a `machine::Machine` and `NesBackend` that drives
+the browser QuickNES core through `globalThis.harmonyCores`. The coordinator
+worker owns a Dissonance `CampaignCoordinator`. It sends each planned
+`JobSpec` to a rollout worker as postcard bytes; the rollout worker runs it with
+`run_job` and returns the `JobOutcome` bytes. The coordinator admits outcomes in
+reservation order, whatever order they arrive in, so the seed alone decides the
+search. The browser always uses an admission window of 16 and records workers as
+16, independent of the device's worker count, so its decision stream equals the
+native campaign run with `--workers 16`. The archive key, draw, milestones and
+objective are the workload's; `workloads/nes/src/twin_dragons/README.md`
+describes them. Each rollout worker samples motion inside `JsMachine` and
+reports whether the rollout cleared a level. The coordinator releases a trail
+with the batch only once its job is admitted. Level-load frames are not
+archived, so a clearing rollout often ends before the next level loads.
 
-The coordinator sends one rollout per message and keeps two messages
-outstanding per worker. Each worker caches up to 64 parent snapshots by id;
-the coordinator tracks every worker's cache, so a message carries a snapshot
-only when the worker lacks it. Results come back in one transferred buffer
-per message. Pause stops sending new rollouts and holds results until resume,
-so the counters freeze at once.
+The other games still use the older `Explorer` in `rust/src/lib.rs`. Rollouts
+have 1 to 24 controller actions. Each action holds its buttons for 2 to 12
+frames or 6 to 18 frames, with equal odds. The coordinator plans rollouts in
+rounds of 16, four rounds ahead, and merges results in plan order. Rollout
+workers return the 2 KiB work RAM and the raw snapshot after each action, plus a
+motion trail. Each worker caches up to 64 parent snapshots by id.
+
+The first search uses seed 27, and Restart increments it. The Twin Dragons
+search reaches Level 2 after about 10,000 to 16,000 executions; the native
+campaign beat the game on one of three seeds within 400,000. A history is
+bounded to 10,000 actions and 200,000 frames. Runs stop when a path finishes the
+game or when the search WASM buffers reach their limit. Pause stops sending new
+rollouts and holds results until resume.
 
 Desktops run `navigator.hardwareConcurrency - 2` rollout workers, at most 8, so
 the page and the coordinator each keep a core. WebKit throughput drops about 4
@@ -116,46 +112,31 @@ times when the rollout workers use every core: on 8 cores of the machine below,
 6 workers run 132,000 frames per second and 7 run 30,000.
 Phones, coarse-pointer devices and devices reporting at most 4 GiB of RAM run
 2 or 3. The `workers` URL parameter overrides the count, from 1 to 16. The
-Details pane shows the count. Each rollout worker holds a 16 MiB QuickNES heap
-and up to 0.8 MB of cached parents. Small devices use 32 MiB of snapshots and
-96 MiB of coordinator WASM buffers; other devices use 1,024 MiB and 1,536 MiB. A
-Twin Dragons snapshot is 12,792 bytes before compression, and 60,000 paths
-retain about 10 MB of compressed snapshots.
-
-The snapshot budget never stops a search. Every entry the archive retires
-releases its snapshot at the end of each rollout. When resident snapshots
-exceed the budget, the adapter lowers the archive's `max_entries` cap by about
-1.5%, never below 256 active entries, so each later admission retires an older
-entry. The archive selects only active entries, and the coordinator copies each
-parent snapshot when it plans the rollout, so a rollout never needs a released
-snapshot. Each admitted state keeps a 64-bit digest of its raw snapshot, so
-replays of retired paths still verify exactly. Up to eight searches are
-retained in the coordinator, with only one advancing at a time on all rollout
-workers. Rollouts already sent for a search still merge into it after a
-switch. The advancing search gets the global budget minus the bytes the others hold, with
-a 2 MiB floor.
+Details pane shows the count. Each rollout worker holds a 16 MiB QuickNES heap.
+Small devices use 32 MiB of snapshots and 96 MiB of coordinator WASM buffers;
+other devices use 1,024 MiB and 1,536 MiB. For Twin Dragons the snapshot figure
+is the coordinator's `memory_budget_mib`, which evicts snapshots and replays
+from an ancestor when it binds. A binding budget changes the search, so the
+search reproduces for a given seed and device memory class. Each admitted state
+keeps a 64-bit digest of its raw snapshot, so replays verify exactly. Up to
+eight searches are retained in the coordinator, with only one advancing at a
+time on all rollout workers. Rollouts already sent for a search still merge
+into it after a switch.
 
 The coordinator sends at most 85 rollouts per second for Twin Dragons, 120 for
 Tobu Tobu Girl and 300 for the Nintendo games, so a viewer can follow the
-search. Winning the game takes 9,700 to 15,600 rollouts across 18 seeds, so
-a paced search finishes in about 2 to 3 minutes on any device that keeps up.
+search.
 The `pace` URL parameter sets the starting rate in rollouts per second, and
 `pace=0` removes the limit. The Timelines per second slider at the top of
 Details changes the rate while the search runs: 10, 30, the game's pace, 300, 1,000 or unlimited.
 The browser tests run with `pace=0`, and the throughput
 figures below are unpaced.
 
-Throughput scales with the worker count. On the 8 performance cores of an
-Intel Core Ultra 9 285HX in Chrome, 6 rollout workers run about 217,000 game
-frames per second, 7 run 236,000 and 8 run 243,000 (3,600 paths per second),
-and 8 workers reach Level 2 in 0.7 seconds and Level 3 in 2.6 seconds. Workers
-wait on the round boundary less than 1% of the time. The core is built with
-`-O3` and link-time optimization. On a 4-core phone layout with 3 workers and
-the CPU slowed 6 times, the search runs about 18,600 frames per second. A
-rollout first reaches the middle of Level 1 after 3.9 seconds, Level 2 after
-9.3 seconds and Level 3 after 36 seconds. Slowed 4 times, the same
-milestones take 2.6, 6.1 and 23 seconds. The page holds 60 frames per second
-in both cases.
+Throughput scales with the worker count. In Chrome on an Apple laptop under a
+load average of 10 to 25, the Twin Dragons search ran about 122,000 game frames
+per second (2,200 executions per second) with 4 rollout workers and 160,000
+(2,800) with 8. Nearly all the time goes to the emulator. The core is built
+with `-O3` and link-time optimization.
 
 The map samples swarm sprites evenly when drawing falls behind. While display
 frames run late and drawing the maps takes more than 6 ms, the sprite budget
@@ -163,12 +144,13 @@ shrinks by 10% per frame, down to 256; it grows back once frames are on time.
 
 Each level's root comes from a fixed boot route. `boot(level)` restores a
 power-on snapshot and presses nothing for 60 frames, Start for 2 frames, and
-nothing for 240 frames. It then waits up to 120 frames for the player to land.
-For Level 2 or 3 it writes the level to `$35` and sets `$04E3` during Level 1
+nothing for 240 frames, the native genesis tape, so the Level 1 root equals
+the native campaign's genesis. For Level 2 or 3 it writes the level to `$35` and sets `$04E3` during Level 1
 gameplay, then runs until the requested level is settled, the goal flag is
 clear and the player is on the ground. Every root has full health. The level
 selector starts a fresh search at the chosen root. Replay and forks include the
-starting level, and the worker rejects tapes from a different root.
+starting level, and the worker rejects tapes from a different root. A Level 2
+or 3 search starts from a `CampaignOrigin::SnapshotRoot` built from that root.
 
 ## Maps and sprites
 
@@ -203,7 +185,8 @@ Two toggles, Movement and Heatmap, choose what the map shows. Either or both
 can be on, and the last one on stays on. Movement alone is the default.
 Movement shows the level map with small dragon sprites replaying recorded
 search rollouts. Each rollout worker samples its emulator every four game
-frames, without changing inputs, random draws or captured endpoints. Loading
+frames and at each action's end, without changing inputs, random draws or
+captured endpoints. Loading
 frames and frames with zero health are hidden. Each sprite fades in as its
 rollout starts and eases to about two-thirds opacity as it finishes, followed
 by two faint dots at its position six and twelve game frames earlier. Sprites
@@ -256,8 +239,8 @@ expands the full list. The row wraps instead of scrolling sideways.
 
 A rollout that raises the cleared-level count is a clearing rollout. The map
 always draws clearing rollouts and the camera follows the one that leaves the
-level first. The map moves to the next level as soon as the search reports a
-state there, so the page never shows a level the search has already left. New
+level first. The map moves to the next level as soon as a clearing rollout or a
+state there arrives, so the page never shows a level the search has already left. New
 rooms in levels behind the shown one never move the map back. The automatic
 replay pick skips states outside the shown level. Showing a level also builds
 the next level's map in the background, so the map is ready when the search
@@ -301,11 +284,13 @@ in the meantime. The automatic replay pick plays while the search runs.
 
 Each game is a module in `src/games/` that names its core, ROM, RAM size,
 level count, screen and sprite sizes, controls, credits, rollout pace and
-history limits, and supplies `decode`, `ended`, `motion` and `boot`. A game
-with a scripted level change also supplies `levelComplete` and `transition`.
-`src/emulator.js` lists the games and cores. The Rust `Game` enum in
-`rust/src/lib.rs` holds the matching decoder and archive key, and
-`tests/*.mjs` check that the two decoders agree.
+history limits, and supplies `decode` and `boot`. A game on the older
+`Explorer` path also supplies `ended` and `motion`, and one with a scripted
+level change supplies `levelComplete` and `transition`. `src/emulator.js` lists
+the games and cores. The Rust `Game` enum in `rust/src/lib.rs` holds the
+matching decoder and archive key for those games, and `tests/*.mjs` check that
+the two decoders agree. A game with `campaign: true`, Twin Dragons, decodes in
+Rust and searches with the `nes-games` workload through `src/campaign.js`.
 
 ### Tobu Tobu Girl Deluxe
 
@@ -526,23 +511,28 @@ npm run test:browser
 
 `tests/levels.mjs` boots all three levels and checks health, progress, a fresh
 search, exact replay, repeated boot and a rooted fork. `tests/search.mjs`
-requires seeds 27 and 34 to enter Level 2 within 6,000 paths and exactly
-replays each arrival. It runs the same seed twice with three emulators and
-once with one, requires identical batches and digests, and replays a state
-found by the third emulator. It replays the `level-one`, `level-two` and `level-three`
-fixtures against their endpoint checksums, and checks that the Level 1 fixture
-plus the rest of the Level 2 controller history reproduces the Level 2
-snapshot. It also forks mid-action and from manual play in Levels 1 and 2 and
-checks the audio emulator against the search emulator. The fixtures came from
-real seed 3 and seed 5 searches and contain only controller inputs.
-`TWIN_DRAGONS_PROGRESS_PATHS=25000 npm run test:search` requires seed 11 to
-enter Level 3, which it does at about 5,700 paths. `tests/parallel.mjs` loads
-the page twice with three workers and once with one, and requires the first
-120 archived histories and digests to match.
+requires seed 1 to enter Level 2 within 12,000 executions and exactly replays
+the arrival. It runs a seed with results admitted in order and in reverse order
+and requires identical decision streams, digests and an exact late replay. It
+replays the `level-one`, `level-two` and `level-three` fixtures against their
+endpoint checksums, and checks that the Level 1 fixture plus the rest of the
+Level 2 controller history reproduces the Level 2 snapshot. It runs a 3 MiB
+memory budget for 6,000 executions and checks that the search keeps going and
+still replays exactly. It also forks mid-action and from manual play in Levels 1
+and 2 and checks the audio emulator against the search emulator. The fixtures
+came from real searches and contain only controller inputs.
+`TWIN_DRAGONS_PROGRESS_PATHS=25000 npm run test:search` requires seeds 1, 2 and
+27 to enter Level 2. `tests/parallel.mjs` loads the page twice with three
+workers and once with one, and requires the first 120 archived histories and
+digests to match.
 
-`tests/search.mjs` also runs a 2 MiB snapshot budget for 3,000 rollouts and
-checks that the search keeps going, retires snapshots and still replays
-exactly. `tests/media.test.js` checks the snapshot digest against the Rust
+`node tests/campaign-oracle.mjs` runs the native `twin-dragons-campaign` with 16
+workers and the browser coordinator in Node on the same seed and execution
+budget, and requires every job and skip line of the two decision streams to be
+equal. `ORACLE_SEED` (default 1) and `ORACLE_EXECUTIONS` (default 600) set the
+run. It needs the native core like `tests/core-oracle.mjs`.
+
+`tests/media.test.js` checks the snapshot digest against the Rust
 reference vectors.
 
 The browser tests cover the swarm, heatmap, route selection, exact replay,

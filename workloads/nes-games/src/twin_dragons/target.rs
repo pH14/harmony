@@ -167,6 +167,19 @@ impl<M: NesBackend<Vec<u8>>> TwinDragonsTarget<M> {
         })
     }
 
+    pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
+        let power_on = machine.snapshot()?;
+        machine.branch(power_on, &nes::reproducer(&setup_tape()))?;
+        let run = machine.run(StopConditions::default(), None)?;
+        if !matches!(run, machine::StopReason::Quiescent { .. }) {
+            return Err(MachineError::Backend(
+                "Twin Dragons setup did not quiesce".to_owned(),
+            ));
+        }
+        machine.drop_snapshot(power_on)?;
+        Self::from_machine(machine)
+    }
+
     #[must_use]
     pub fn mechanical_state(&self) -> TwinDragonsMechanicalState {
         self.observation.decoded
@@ -337,17 +350,11 @@ impl TwinDragonsTarget<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
-        let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
-        let power_on = machine.snapshot()?;
-        machine.branch(power_on, &nes::reproducer(&setup_tape()))?;
-        let run = machine.run(StopConditions::default(), None)?;
-        if !matches!(run, machine::StopReason::Quiescent { .. }) {
-            return Err(MachineError::Backend(
-                "Twin Dragons setup did not quiesce".to_owned(),
-            ));
-        }
-        machine.drop_snapshot(power_on)?;
-        Self::from_machine(machine)
+        Self::from_power_on(QuickNesMachine::from_rom_bytes(
+            rom,
+            core_path,
+            core_sha256,
+        )?)
     }
 
     pub fn render_input(

@@ -1589,6 +1589,16 @@ function startSearch(level = bootLevel) {
             else setRoom(o.level);
           }
         }
+        // A clearing rollout can end before the next level finishes loading, so
+        // its first archived point there may arrive several batches later.
+        for (const index of finishes || []) {
+          const from = levelIndex(motion[index]?.[1]), next = catalog.levels[from + 1]?.rooms[0];
+          const shown = branchPreview?.room ?? mapLevel;
+          if (from < 0 || from !== levelIndex(shown) || next == null || !maps.has(next)) continue;
+          if (!followDiscovery({ level: next }, !seenMaps.has(next), focusedLevel, userSelected, cleared)) continue;
+          if (branchPreview) branchPreview.room = next;
+          else setRoom(next);
+        }
         if (
           latestBest !== null &&
           !userSelected &&

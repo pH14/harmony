@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { Heatmap, cellKey, routeIds, validateTape } from "../src/heat.js";
 import twinDragons, { decode } from "../src/games/twin-dragons.js";
 import { QUICKNES_REVISION as CORE_REVISION, canonicalize } from "../src/cores/quicknes.js";
+import { initRustNode } from "../tools/rust-node.mjs";
 const ROM_SHA256 = twinDragons.rom.sha256;
 test("heat cools with the search's rollouts and running time without discarding histories, and separates rooms", () => {
   const heat = new Heatmap(),
@@ -125,7 +126,8 @@ test("history admission rejects wrong identities and malformed inputs", () => {
   ])
     assert.throws(() => validateTape({ ...tape, ...changes }, twinDragons, CORE_REVISION));
 });
-test("Twin Dragons memory decode reads world position and progress and refuses other layouts", () => {
+test("Twin Dragons memory decode reads world position and progress and refuses other layouts", async () => {
+  await initRustNode();
   const ram = new Uint8Array(2048);
   ram[0x52] = 1;
   ram[0x57] = 0x20;

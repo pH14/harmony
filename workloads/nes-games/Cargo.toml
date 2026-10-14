@@ -11,8 +11,7 @@ searcher = { path = "../../dissonance/searcher", version = "=0.1.0" }
 machine = { path = "../nes-machine", version = "=0.1.0" }
 serde = { version = "=1.0.228", features = ["derive"] }
 serde_json = { version = "=1.0.151", optional = true }
-
-[target.'cfg(unix)'.dependencies]
+sha2 = "=0.10.9"
 lz4_flex = { version = "=0.11.6", default-features = false, features = ["safe-decode", "safe-encode", "std"] }
 
 [features]

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import initRust from "../rust/pkg/twin_dragons_browser.js";
 import { loadQuickNES } from "./cores/quicknes.js";
 import { loadSameBoy } from "./cores/sameboy.js";
 import twinDragons from "./games/twin-dragons.js";
@@ -23,6 +24,7 @@ export async function createEngine(base, game, inputs = {}) {
     new Uint8Array(await (await checkedFetch(new URL(game.rom.file, base))).arrayBuffer());
   if (rom.byteLength !== game.rom.bytes) throw new Error(`Unexpected ${game.title} ROM size`);
   if ((await sha256Hex(rom)) !== game.rom.sha256) throw new Error(`${game.title} ROM checksum mismatch`);
+  if (game.campaign) await loadRust();
   const core = await CORES[game.core](base, rom, { ...inputs, cartridgeMemory: !!game.cartridgeMemory });
   const engine = {
     ...core,
@@ -47,6 +49,17 @@ export async function createEngine(base, game, inputs = {}) {
     observation() {
       return game.decode(this.memory());
     },
+    reset() {
+      this.restore(powerOn);
+    },
+    frames(buttons, count) {
+      const ram = core.ramPointer(), out = new Uint8Array(count * game.ramBytes);
+      for (let frame = 0; frame < count; frame++) {
+        core.step(buttons, 1);
+        out.set(core.mod.HEAPU8.subarray(ram, ram + game.ramBytes), frame * game.ramBytes);
+      }
+      return out;
+    },
     boot(level = 0) {
       this.restore(powerOn);
       game.boot(this, level);
@@ -55,6 +68,11 @@ export async function createEngine(base, game, inputs = {}) {
   };
   const powerOn = engine.capture();
   return engine;
+}
+async function loadRust() {
+  if (!globalThis.process?.versions?.node) return initRust();
+  const helper = "../tools/rust-node.mjs";
+  return (await import(/* @vite-ignore */ helper)).initRustNode();
 }
 async function checkedFetch(url) {
   const r = await fetch(url);

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { createEngine, GAMES } from "./emulator.js";
 import { runRollout, rolloutBytes, stepBytes } from "./rollout.js";
-let engine;
+import { campaignWorker } from "./campaign.js";
+let engine, campaign;
 const parents = new Map();
 let channel = self;
 onmessage = ({ data }) => {
@@ -12,7 +13,14 @@ async function handle({ data }) {
   try {
     if (data.type === "init") {
       engine = await createEngine(data.base, GAMES.get(data.game), { rom: data.rom, wasmBinary: data.wasm });
+      campaign = engine.game.campaign ? campaignWorker(engine, data.identity) : null;
       channel.postMessage({ type: "ready" });
+      return;
+    }
+    if (data.type === "job") {
+      const outcome = campaign.run(new Uint8Array(data.job)), trail = campaign.trail() ?? null;
+      channel.postMessage({ type: "done", chunk: data.chunk, outcome: outcome.buffer, reservation: campaign.reservation(), trail, clears: campaign.clears() },
+        [outcome.buffer, ...(trail ? [trail.buffer] : [])]);
       return;
     }
     if (data.type !== "run") return;

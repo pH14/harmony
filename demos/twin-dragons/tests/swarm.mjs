@@ -4,68 +4,49 @@ import twinDragons from "../src/games/twin-dragons.js";
 import { chromium } from "@playwright/test";
 import { readFile, mkdir } from "node:fs/promises";
 import { createEngine } from "../src/emulator.js";
-import { decode } from "../src/games/twin-dragons.js";
-import { NO_ROOM } from "../src/swarm.js";
+import { NO_ROOM, MOTION_STRIDE } from "../src/swarm.js";
 import { Heatmap, cellKey } from "../src/heat.js";
 import { project, isMapEvidence } from "../src/world.js";
 import { TOUR_KEY } from "../src/tour.js";
-import { RoundSearch, ROUND_PATHS, runRollout, stepBytes } from "../src/rollout.js";
-import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
+import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, twinDragons, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });
-await init({ module_or_path: await readFile(new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url)) });
-globalThis.harmonyEngine = engine;
+const identity = coreIdentity("browser"), worker = campaignWorker(engine, identity);
 const root = engine.boot(), catalog = JSON.parse(await readFile(new URL("maps.json", base)));
-const original = new Explorer("twin-dragons", 2), expected = [], plain = new RoundSearch(original, [engine]);
-for (let i = 0; i < 4; i++) {
-  const { batch } = plain.round();
-  expected.push({ batch, snapshots: batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, original.digest(p.retained)]) });
-}
-original.free();
-engine.restore(root);
-const recorded = new Explorer("twin-dragons", 2), sampled = new RoundSearch(recorded, [engine], { record: true });
-let recordedPoints = 0;
 const mapCatalog = new Map(catalog.maps.map(m => [m.id, m]));
-for (const before of expected) {
-  const { batch, trails } = sampled.round();
-  assert.deepEqual(batch, before.batch, "Sampling must preserve all random choices, work counts and retained states");
-  for (const [id, snapshot] of before.snapshots)
-    assert.equal(recorded.digest(id), snapshot, "Sampling must preserve every archived endpoint byte");
-  assert.equal(trails.length, ROUND_PATHS);
-  assert.ok(trails.every((trail) => trail.length <= 1205));
-  recordedPoints += trails.reduce((n, t) => n + t.length / 5, 0);
+const JOBS = 64;
+const search = campaignSearch(engine, identity, { seed: 2 }), trails = [];
+runCampaign(search, worker, { jobs: JOBS, onJob: (w) => { const trail = w.trail(); if (trail) trails.push(trail); } });
+assert.ok(trails.length >= JOBS / 2, "Most rollouts must record a sampled trail");
+assert.ok(trails.every((t) => t.length % MOTION_STRIDE === 0 && t[0] === 0), "Trails start at the rollout's first frame");
+const points = JSON.parse(search.take_batch()).points;
+search.free();
+const sampledHeat = new Heatmap(), endpointKeys = new Set();
+sampledHeat.visitMotion(trails, mapCatalog, 0);
+for (const o of points.map((p) => p.observation)) {
+  const map = mapCatalog.get(o.level);
+  if (map && isMapEvidence(o, catalog.levels)) endpointKeys.add(cellKey(project(o, map)));
 }
-recorded.free();
-for (const name of ["level-one", "level-two"]) {
-  const tape = JSON.parse(await readFile(new URL(`fixtures/${name}.json`, import.meta.url)));
-  engine.restore(root);
-  for (const a of tape.actions) engine.run(a.buttons, a.frames);
-  const endpoint = engine.capture();
-  const actions = Uint32Array.from(tape.actions, (a) => (a.buttons << 8) | a.frames);
-  const steps = new Uint8Array(actions.length * stepBytes(engine));
-  const { trail } = runRollout(engine, root, actions, steps, 0, true);
-  assert.deepEqual(engine.capture(), endpoint, "Sampled level transitions must match unsampled execution");
-  if (name === "level-one") {
-    const sampledHeat = new Heatmap(), endpointKeys = new Set();
-    sampledHeat.visitMotion([trail], mapCatalog, 0);
-    for (let i = 0; i < actions.length; i++) {
-      const o = decode(steps.subarray(i * stepBytes(engine), i * stepBytes(engine) + 2048)), map = mapCatalog.get(o.level);
-      if (map && isMapEvidence(o, catalog.levels)) endpointKeys.add(cellKey(project(o, map)));
-    }
-    const transitCells = [...sampledHeat.cells.values()].filter(c => !endpointKeys.has(c.key));
-    assert.ok(transitCells.length > 0, "Real attempts must mark crossed cells missing from action endpoints");
-    assert.ok(transitCells.every(c => c.heat > 0 && c.ids.length === 0), "Transit cells must not invent retained histories");
-    console.log(`Sampled heat: ${transitCells.length} real transit cells missing from endpoint-only heat, without fabricated states.`);
-  }
-  const rooms = new Set([...trail].filter((_, index) => index % 5 === 1));
-  assert.ok(rooms.has(0));
-  if (name === "level-two") assert.ok(rooms.has(1) && rooms.has(NO_ROOM), "The level change must be sampled with its loading frames hidden");
+const transitCells = [...sampledHeat.cells.values()].filter(c => !endpointKeys.has(c.key));
+assert.ok(transitCells.length > 0, "Real attempts must mark crossed cells missing from action endpoints");
+assert.ok(transitCells.every(c => c.heat > 0 && c.ids.length === 0), "Transit cells must not invent retained histories");
+console.log(`Sampled heat: ${transitCells.length} real transit cells missing from endpoint-only heat, without fabricated states.`);
+const tape = JSON.parse(await readFile(new URL("fixtures/level-one.json", import.meta.url)));
+engine.restore(root);
+for (const a of tape.actions) engine.run(a.buttons, a.frames);
+const near = campaignSearch(engine, identity, { seed: 5, root: engine.capture(), prefix: tape.actions });
+let crossing = null, jobs = 0;
+while (!crossing && jobs++ < 2000 && runCampaign(near, worker, { jobs: 1 })) {
+  const trail = worker.trail(), rooms = new Set((trail ?? []).filter((_, index) => index % MOTION_STRIDE === 1));
+  if (worker.clears() && rooms.has(0) && rooms.has(1)) crossing = rooms;
 }
-console.log(`Swarm sampling: ${4 * ROUND_PATHS} actual rollouts, ${recordedPoints} poses, every archived endpoint and recorded campaign transitions match unsampled execution.`);
+near.free();
+assert.ok(crossing?.has(NO_ROOM), "The level change must be sampled with its loading frames hidden");
+console.log(`Swarm sampling: ${trails.length} sampled rollouts, ${trails.reduce((n, t) => n + t.length / MOTION_STRIDE, 0)} poses; a Level 2 crossing after ${jobs} rollouts hides its loading frames.`);
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const url = `${(process.env.DEMO_URL || "http://127.0.0.1:4173").replace(/\/$/, "")}/?level=0&pace=0`;

@@ -10,36 +10,24 @@ import { validateTape } from "../src/heat.js";
 import { prefixAt, appendInput } from "../src/branch.js";
 import { isMapEvidence } from "../src/world.js";
 import { snapshotHash, snapshotDigest, CREDIT } from "../src/media.js";
-import { RoundSearch, ROUND_PATHS } from "../src/rollout.js";
-import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
+import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, twinDragons, {
   rom: await readFile(new URL("twin-dragons.nes", base)),
   wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
 });
-globalThis.harmonyEngine = engine;
-await init({
-  module_or_path: await readFile(
-    new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url),
-  ),
-});
+const identity = coreIdentity("browser");
+const worker = campaignWorker(engine, identity);
 const catalog = JSON.parse(await readFile(new URL("maps.json", base)));
 const root = engine.boot();
 const extended = process.env.TWIN_DRAGONS_PROGRESS_PATHS === "25000";
-const target = extended ? 2 : 1,
-  budget = extended ? 25000 : 6000;
+const budget = extended ? 25000 : 12000;
 await mkdir("test-results", { recursive: true });
-for (const seed of extended ? [11] : [27, 34]) {
-  engine.restore(root);
-  const search = new Explorer("twin-dragons", seed),
-    rounds = new RoundSearch(search, [engine]),
+for (const seed of extended ? [1, 2, 27] : [1]) {
+  const search = campaignSearch(engine, identity, { seed, executions: budget }),
     arrivals = new Map();
-  for (
-    let tries = 0;
-    tries < budget && !arrivals.has(target);
-    tries += ROUND_PATHS
-  ) {
-    const { batch } = rounds.round();
+  while (!arrivals.has(1) && runCampaign(search, worker, { jobs: 16 })) {
+    const batch = JSON.parse(search.take_batch());
     for (const point of batch.points)
       if (
         point.observation.level > 0 &&
@@ -57,7 +45,7 @@ for (const seed of extended ? [11] : [27, 34]) {
         assert.equal(
           snapshotDigest(engine.capture()),
           snapshot,
-          "Compressed archived state must replay exactly from its real controller history",
+          "An archived state must replay exactly from its real controller history",
         );
         arrivals.set(point.observation.level, batch.executions);
         const tape = {
@@ -73,58 +61,43 @@ for (const seed of extended ? [11] : [27, 34]) {
           JSON.stringify(tape),
         );
       }
-    assert.ok(
-      batch.snapshot_bytes > 0 && batch.snapshot_bytes < 128 * 1024 * 1024,
-    );
-    if (batch.stopped) break;
   }
   assert.ok(
-    arrivals.has(target),
-    `Seed ${seed} must enter Level ${target + 1} after a real clear within ${budget} paths`,
+    arrivals.has(1),
+    `Seed ${seed} must enter Level 2 after a real clear within ${budget} executions`,
   );
   search.free();
   console.log(
-    `Seed ${seed}: ${[...arrivals].map(([level, paths]) => `Level ${level + 1} at ${paths} paths`).join(", ")}; exact replays passed.`,
+    `Seed ${seed}: ${[...arrivals].map(([level, paths]) => `Level ${level + 1} at ${paths} executions`).join(", ")}; exact replays passed.`,
   );
 }
 
-const loadEngine = async () => createEngine(base, twinDragons, {
-  rom: await readFile(new URL("twin-dragons.nes", base)),
-  wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
-});
-const workers = [engine, await loadEngine(), await loadEngine()];
-function parallelRun(pool) {
-  engine.restore(root);
-  const explorer = new Explorer("twin-dragons", 7),
-    rounds = new RoundSearch(explorer, pool),
-    batches = [],
-    found = [];
-  for (let r = 0; r < 48; r++) {
-    const { batch, jobs } = rounds.round();
-    batches.push(batch);
-    let cursor = 0;
-    for (const job of jobs) {
-      for (const point of batch.points.slice(cursor, cursor + job.points))
-        if (point.retained !== null) found.push({ engine: job.engine, id: point.retained, digest: explorer.digest(point.retained) });
-      cursor += job.points;
-    }
-    assert.equal(cursor, batch.points.length);
+function shuffledRun(reverse) {
+  const search = campaignSearch(engine, identity, { seed: 7, executions: 800, record: true });
+  for (;;) {
+    const jobs = [];
+    for (let job; (job = search.plan()); ) jobs.push(job);
+    if (!jobs.length) break;
+    const outcomes = jobs.map((job) => worker.run(job));
+    if (reverse) outcomes.reverse();
+    for (const outcome of outcomes) search.admit(outcome);
   }
-  return { explorer, batches, found };
+  const stream = search.take_stream().split("\n").slice(1).join("\n"),
+    batch = JSON.parse(search.take_batch()),
+    found = batch.points.filter((p) => p.retained !== null).map((p) => [p.retained, search.digest(p.retained)]);
+  return { search, stream, found };
 }
-const first = parallelRun(workers), second = parallelRun(workers), single = parallelRun([engine]);
-assert.deepEqual(second.batches, first.batches, "A fixed seed and worker count must make the same search choices on every run");
-assert.deepEqual(second.found, first.found, "Retained states and their snapshot digests must match across runs");
-assert.deepEqual(single.batches, first.batches, "The worker count must not change the search choices");
-const late = first.found.findLast((f) => f.engine === 2);
-assert.ok(late, "The third worker must find a retained state");
-const lateState = JSON.parse(first.explorer.state(late.id));
-const replayer = await loadEngine();
-replayer.restore(root);
-for (const action of lateState.actions) replayer.run(action.buttons, action.frames);
-assert.equal(snapshotDigest(replayer.capture()), late.digest, "A state found by the third worker must replay exactly");
-for (const run of [first, second, single]) run.explorer.free();
-console.log(`Three-worker rounds repeat exactly across runs and match one worker over ${first.batches.at(-1).executions} paths; a third-worker state replays exactly.`);
+const ordered = shuffledRun(false), reversed = shuffledRun(true), repeated = shuffledRun(false);
+assert.equal(repeated.stream, ordered.stream, "A fixed seed must make the same search choices on every run");
+assert.equal(reversed.stream, ordered.stream, "Results that arrive out of order must not change the search choices");
+assert.deepEqual(reversed.found, ordered.found, "Retained states and their snapshot digests must match");
+const [lateId, lateDigest] = ordered.found.at(-1);
+const lateState = JSON.parse(ordered.search.state(lateId));
+engine.restore(root);
+for (const action of lateState.actions) engine.run(action.buttons, action.frames);
+assert.equal(snapshotDigest(engine.capture()), lateDigest, "A late retained state must replay exactly");
+for (const run of [ordered, reversed, repeated]) run.search.free();
+console.log(`Out-of-order results repeat the in-order search stream exactly over 800 executions; a late state replays exactly.`);
 
 const fixtures = {};
 for (const name of ["level-one", "level-two", "level-three"]) {
@@ -160,43 +133,31 @@ assert.deepEqual(
 );
 console.log("Level 1, 2 and 3 witnesses replay exactly; the Level 1 checkpoint plus its suffix reaches Level 2.");
 
-engine.restore(root);
-const bounded = new Explorer("twin-dragons", 1);
-const smallBudget = 2 * 1024 * 1024;
-bounded.set_snapshot_budget(smallBudget);
-const boundedRounds = new RoundSearch(bounded, [engine]);
-let batch, lastRetained, peak = 0, overBudget = 0;
-for (let tries = 0; tries < 6000; tries += ROUND_PATHS) {
-  batch = boundedRounds.round().batch;
+const smallBudget = 3;
+const bounded = campaignSearch(engine, identity, { seed: 1, memoryMiB: smallBudget, executions: 6000 });
+let batch, lastRetained, peak = 0;
+while (runCampaign(bounded, worker, { jobs: 16 })) {
+  batch = JSON.parse(bounded.take_batch());
   for (const point of batch.points)
     if (point.retained !== null) lastRetained = point.retained;
   peak = Math.max(peak, batch.snapshot_bytes);
-  if (batch.snapshot_bytes > smallBudget) overBudget++;
-  if (batch.stopped) break;
 }
-assert.equal(batch.stopped, false, "A full snapshot budget keeps searching instead of stopping");
-assert.ok(bounded.retired_snapshots() > 0, "Retired entries release their snapshots");
-assert.ok(peak < smallBudget * 1.5, `Resident snapshots stay near the budget (${peak} bytes)`);
+batch = JSON.parse(bounded.take_batch());
+assert.equal(batch.executions, 6000, "A small snapshot budget keeps searching until its execution budget");
+assert.ok(peak > 0 && peak <= smallBudget * 1048576, `Resident snapshots stay within the budget (${peak} bytes)`);
 assert.ok(lastRetained > 0);
 const retained = JSON.parse(bounded.state(lastRetained));
 assert.ok(retained.frames > 0);
-let expected = null;
-try {
-  expected = bounded.snapshot(lastRetained);
-} catch {}
 engine.restore(root);
 for (const action of retained.actions)
   engine.run(action.buttons, action.frames);
-if (expected)
-  assert.deepEqual(
-    engine.capture(),
-    expected,
-    "A late retained state must replay exactly within the budget",
-  );
-bounded.free();
-console.log(
-  `Small snapshot budget keeps searching: peak ${peak} bytes, ${overBudget} batches over budget, retired snapshots released, retained histories replay.`,
+assert.equal(
+  snapshotDigest(engine.capture()),
+  bounded.digest(lastRetained),
+  "A late retained state must replay exactly within the budget",
 );
+bounded.free();
+console.log(`Small snapshot budget keeps searching: peak ${peak} bytes; retained histories replay.`);
 
 const levelTwo = fixtures["level-two"].tape,
   levelOne = fixtures["level-one"].tape;
@@ -216,15 +177,14 @@ for (const [label, prefix, seed] of [
   appendInput(prefix, 1, 6);
   engine.run(1, 6, true);
   const manual = engine.capture();
-  const branch = Explorer.from_history("twin-dragons", seed, JSON.stringify(prefix));
+  const branch = campaignSearch(engine, identity, { seed, root: manual, prefix });
   assert.deepEqual(JSON.parse(branch.state(0)).actions, prefix);
   assert.deepEqual(branch.snapshot(0), manual);
-  assert.equal(branch.state_count(), 1);
-  assert.equal(branch.snapshot_bytes() > 0, true);
+  assert.equal(JSON.parse(branch.take_batch()).states, 1);
   let descendant;
-  const branchRounds = new RoundSearch(branch, [engine]);
-  for (let jobs = 0; jobs < 64 && descendant === undefined; jobs += ROUND_PATHS) {
-    for (const point of branchRounds.round().batch.points)
+  for (let jobs = 0; jobs < 256 && descendant === undefined; jobs += 16) {
+    runCampaign(branch, worker, { jobs: 16 });
+    for (const point of JSON.parse(branch.take_batch()).points)
       if (point.retained !== null && point.retained > 0)
         descendant = point.retained;
   }

@@ -24,9 +24,16 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
+Twin Dragons also has a `campaign` module with its `Workload` implementation.
+`TwinDragonsGame<M>` is generic over the backend and builds each target from a
+boxed factory, so the native workload and the browser demo share every trait
+implementation: the native one passes a QuickNES factory, and
+`demos/twin-dragons` passes one over the browser core. LZ4 snapshot packing is
+available on every target for that reason.
+
 [`../nes`](../nes/README.md) re-exports these modules and keeps everything
-else: campaign drivers, `Workload` implementations, streams, films, evaluation,
-packaging, guest preparation and binaries. The game READMEs under
+else: campaign drivers, the other games' `Workload` implementations, streams,
+films, evaluation, packaging, guest preparation and binaries. The game READMEs under
 `../nes/src` document the RAM maps and policies of each game.
 
 ```sh

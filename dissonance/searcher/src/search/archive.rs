@@ -1574,7 +1574,8 @@ where
         self.preserve_inactive_snapshots
     }
 
-    pub(crate) fn index_of_id(&self, id: u64) -> Option<usize> {
+    #[must_use]
+    pub fn index_of_id(&self, id: u64) -> Option<usize> {
         self.id_to_index.get(&id).copied()
     }
 
@@ -2055,6 +2056,11 @@ where
     #[must_use]
     pub fn entry_key(&self, id: usize) -> Option<K> {
         self.entries.get(id).map(|entry| entry.key)
+    }
+
+    #[must_use]
+    pub fn entry_snapshot(&self, id: usize) -> Option<&S> {
+        self.entries.get(id)?.snapshot.as_deref()
     }
 
     #[must_use]

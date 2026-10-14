@@ -2,7 +2,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createEngine } from "../src/emulator.js";
-import twinDragons, { playerPose } from "../src/games/twin-dragons.js";
+import twinDragons from "../src/games/twin-dragons.js";
+import { twin_dragons_pose } from "../rust/pkg/twin_dragons_browser.js";
 import { png } from "./png.mjs";
 import { creditPNG } from "../src/media.js";
 const SPRITE = twinDragons.sprite;
@@ -55,7 +56,7 @@ for (const [buttons, frames] of [[0, 1], [0x80, 30], [0x40, 30], [0x41, 12]]) {
   engine.boot(0);
   engine.run(buttons, frames - 1);
   const ram = engine.memory(),
-    pose = playerPose(ram);
+    pose = twin_dragons_pose(ram);
   engine.run(buttons, 1, true);
   const frame = engine.pixels();
   let checked = 0;

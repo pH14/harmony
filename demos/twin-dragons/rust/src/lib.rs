@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod twin_dragons;
+
 use searcher::search::{
     archive::{Archive, ArchiveCandidate, ArchiveKey},
     rand::RomuDuoJrRand,
@@ -27,7 +29,6 @@ pub struct Action {
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Game {
-    TwinDragons,
     TobuTobuGirl,
     SuperMarioBros,
     MegaMan2,
@@ -57,8 +58,6 @@ pub struct Observation {
 }
 
 const LEVEL_COUNT: u8 = 3;
-const PLAYING: u8 = 1;
-const LOADING: u8 = 2;
 const TOBU_IN_LEVEL: u8 = 4;
 const TOBU_ENDING: u8 = 10;
 const TOBU_LEVEL_COMPLETE: u8 = 2;
@@ -120,7 +119,6 @@ const SMB_MAIN_AREAS: [u8; 32] = [
 impl Game {
     fn parse(id: &str) -> Result<Game, &'static str> {
         match id {
-            "twin-dragons" => Ok(Game::TwinDragons),
             "tobu-tobu-girl" => Ok(Game::TobuTobuGirl),
             "super-mario-bros" => Ok(Game::SuperMarioBros),
             "mega-man-2" => Ok(Game::MegaMan2),
@@ -130,14 +128,13 @@ impl Game {
     }
     fn ram_bytes(self) -> usize {
         match self {
-            Game::TwinDragons | Game::SuperMarioBros | Game::MegaMan2 => 0x800,
+            Game::SuperMarioBros | Game::MegaMan2 => 0x800,
             Game::TobuTobuGirl => 0x400,
             Game::Metroid => 0x2800,
         }
     }
     fn decode(self, ram: &[u8]) -> Result<Observation, &'static str> {
         match self {
-            Game::TwinDragons => decode(ram),
             Game::TobuTobuGirl => decode_tobu(ram),
             Game::SuperMarioBros => decode_smb(ram),
             Game::MegaMan2 => decode_mm2(ram),
@@ -146,7 +143,6 @@ impl Game {
     }
     fn admissible(self, o: Observation) -> bool {
         match self {
-            Game::TwinDragons => o.health != 0 && o.gamestate != 0,
             Game::TobuTobuGirl => !o.loading || o.gamestate == TOBU_ENDING,
             Game::SuperMarioBros => (o.health != 0 && o.gamestate == SMB_PLAY && !o.goal) || o.won(),
             Game::MegaMan2 => (o.health != 0 && !o.loading && !o.goal) || o.won(),
@@ -155,7 +151,6 @@ impl Game {
     }
     fn level_complete(self, o: Observation) -> bool {
         match self {
-            Game::TwinDragons => false,
             Game::TobuTobuGirl => o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE,
             Game::SuperMarioBros => o.health != 0 && !o.won() && (o.goal || o.gamestate == SMB_VICTORY),
             Game::MegaMan2 => o.health != 0 && !o.won() && o.goal,
@@ -164,7 +159,6 @@ impl Game {
     }
     fn starts_at_level_one(self, o: Observation) -> bool {
         match self {
-            Game::TwinDragons => o.gamestate == PLAYING && o.level == 0,
             Game::TobuTobuGirl | Game::SuperMarioBros | Game::MegaMan2 | Game::Metroid => !o.loading && o.level == 0,
         }
     }
@@ -204,7 +198,6 @@ impl ArchiveKey for Observation {
     type Lineage = ();
     fn place(self) -> Self::Place {
         match self.game {
-            Game::TwinDragons => (self.level, self.loading, self.x / 32, self.y / 32),
             Game::TobuTobuGirl => (self.level, self.loading, self.climb / 32, (self.x + TOBU_SPRITE_LEFT) / 32),
             Game::SuperMarioBros => (
                 self.level,
@@ -218,7 +211,6 @@ impl ArchiveKey for Observation {
     }
     fn progress(self) -> Self::Progress {
         match self.game {
-            Game::TwinDragons => (self.cleared, 0),
             Game::TobuTobuGirl => (self.cleared, self.climb / TOBU_BAND),
             Game::SuperMarioBros => (self.cleared, self.climb / SMB_BAND),
             Game::MegaMan2 => (self.cleared, (self.climb / MM2_BAND) * 32 + u16::from(self.time)),
@@ -227,7 +219,6 @@ impl ArchiveKey for Observation {
     }
     fn identity(self) -> Self::Identity {
         match self.game {
-            Game::TwinDragons => (self.x / 16, self.y / 16),
             Game::TobuTobuGirl => (0, 0),
             Game::SuperMarioBros => (self.climb % 16, 0),
             Game::MegaMan2 | Game::Metroid => (self.x / 16 % 2, self.y / 16 % 2),
@@ -244,7 +235,6 @@ impl ArchiveKey for Observation {
     }
     fn preference_cmp(self, _: usize, other: Self) -> Ordering {
         match self.game {
-            Game::TwinDragons => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
             Game::TobuTobuGirl => (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb)),
             Game::SuperMarioBros => (self.cleared, self.clock).cmp(&(other.cleared, other.clock)),
             Game::MegaMan2 => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
@@ -260,49 +250,12 @@ impl ArchiveKey for Observation {
 impl Observation {
     fn won(self) -> bool {
         match self.game {
-            Game::TwinDragons => self.cleared >= LEVEL_COUNT,
             Game::TobuTobuGirl => self.gamestate == TOBU_ENDING,
             Game::SuperMarioBros => self.cleared >= SMB_LEVEL_COUNT,
             Game::MegaMan2 => self.cleared >= MM2_LEVEL_COUNT,
             Game::Metroid => self.goal,
         }
     }
-}
-
-pub fn decode(ram: &[u8]) -> Result<Observation, &'static str> {
-    if ram.len() != 0x800 {
-        return Err("emulator memory must contain 2 KiB work RAM");
-    }
-    let gamestate = ram[0x9e];
-    let level = ram[0x42];
-    let next_level = ram[0x35];
-    let goal = ram[0x4e3] != 0;
-    let settled = gamestate == PLAYING
-        && (next_level == level.wrapping_add(1) || (level == LEVEL_COUNT - 1 && next_level == 0xff));
-    let cleared = match gamestate {
-        PLAYING if settled && goal => level.saturating_add(1),
-        PLAYING | LOADING => level,
-        _ => 0,
-    };
-    Ok(Observation {
-        game: Game::TwinDragons,
-        x: u16::from(ram[0x52]) * 256 + u16::from(ram[0x57]) + u16::from(ram[0x62]),
-        y: u16::from(ram[0x63]),
-        health: ram[0x75],
-        level: u16::from(level),
-        next_level,
-        gamestate,
-        goal,
-        on_ground: ram[0x6b] != 0,
-        facing: ram[0x74],
-        loading: !settled,
-        cleared,
-        scene: 0,
-        climb: 0,
-        time: 0,
-        fuel: 0,
-        clock: 0,
-    })
 }
 
 pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
@@ -629,7 +582,7 @@ struct Job {
 const MIN_SNAPSHOT_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_ACTIVE_ENTRIES: usize = 256;
 
-fn snapshot_digest(bytes: &[u8]) -> u64 {
+pub(crate) fn snapshot_digest(bytes: &[u8]) -> u64 {
     let mut a: u32 = 0x811c_9dc5;
     let mut b: u32 = 0x01c9_3a75;
     for &byte in bytes {
@@ -971,59 +924,9 @@ mod tests {
         assert_ne!(snapshot_digest(b"twin"), snapshot_digest(b"twio"));
     }
     #[test]
-    fn recorded_next_level_is_admitted_with_its_real_input_suffix() {
-        #[derive(Deserialize)]
-        struct Tape {
-            observation: Observation,
-            actions: Vec<Action>,
-        }
-        let before: Tape =
-            serde_json::from_str(include_str!("../../tests/fixtures/level-one.json")).unwrap();
-        let after: Tape =
-            serde_json::from_str(include_str!("../../tests/fixtures/level-two.json")).unwrap();
-        assert_eq!((before.observation.level, before.observation.cleared), (0, 0));
-        assert_eq!((after.observation.level, after.observation.cleared), (1, 1));
-        assert_ne!(before.observation.place(), after.observation.place());
-        assert!(Game::TwinDragons.admissible(before.observation));
-        assert!(Game::TwinDragons.admissible(after.observation));
-        assert!(after.actions.starts_with(&before.actions));
-        let suffix = after.actions[before.actions.len()..].to_vec();
-        assert!(!suffix.is_empty());
-        let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
-        let root = archive
-            .insert(
-                None,
-                0,
-                ArchiveCandidate {
-                    suffix: Vec::<Action>::new(),
-                    key: before.observation,
-                    milestones: (),
-                },
-                (),
-            )
-            .unwrap()
-            .unwrap();
-        let id = archive
-            .insert(
-                Some(root),
-                1,
-                ArchiveCandidate {
-                    suffix: suffix.clone(),
-                    key: after.observation,
-                    milestones: (),
-                },
-                (),
-            )
-            .unwrap()
-            .unwrap();
-        assert_ne!(root, id);
-        assert_eq!(archive.entry_input(id).unwrap().actions, suffix);
-    }
-
-    #[test]
     fn human_histories_reject_invalid_inputs_and_bound_total_work() {
         assert!(
-            Game::TwinDragons.validate_actions(&[Action {
+            Game::SuperMarioBros.validate_actions(&[Action {
                 buttons: 128,
                 frames: 1
             }])
@@ -1051,10 +954,10 @@ mod tests {
                 frames: 121,
             },
         ] {
-            assert!(Game::TwinDragons.validate_actions(&[action]).is_err());
+            assert!(Game::SuperMarioBros.validate_actions(&[action]).is_err());
         }
         assert!(
-            Game::TwinDragons.validate_actions(&vec![
+            Game::SuperMarioBros.validate_actions(&vec![
                 Action {
                     buttons: 0,
                     frames: 120
@@ -1064,7 +967,7 @@ mod tests {
             .is_err()
         );
         assert!(
-            Game::TwinDragons.validate_actions(&vec![
+            Game::SuperMarioBros.validate_actions(&vec![
                 Action {
                     buttons: 0,
                     frames: 1
@@ -1076,41 +979,6 @@ mod tests {
     }
 
     #[test]
-    fn twin_dragons_addresses_decode_world_position_and_progress() {
-        let mut ram = vec![0; 0x800];
-        ram[0x52] = 1;
-        ram[0x57] = 0x20;
-        ram[0x62] = 0x40;
-        ram[0x63] = 100;
-        ram[0x75] = 2;
-        ram[0x42] = 1;
-        ram[0x35] = 2;
-        ram[0x9e] = PLAYING;
-        let state = decode(&ram).unwrap();
-        assert!(!state.loading);
-        assert_eq!(
-            (state.x, state.y, state.health, state.level, state.next_level),
-            (352, 100, 2, 1, 2)
-        );
-        assert_eq!(state.cleared, 1);
-        assert!(!state.won());
-        ram[0x4e3] = 1;
-        assert_eq!(decode(&ram).unwrap().cleared, 2);
-        ram[0x42] = 2;
-        let unsettled = decode(&ram).unwrap();
-        assert!(unsettled.loading && !unsettled.won());
-        assert_eq!(unsettled.cleared, 2);
-        ram[0x35] = 0xff;
-        assert!(decode(&ram).unwrap().won());
-        ram[0x9e] = LOADING;
-        assert_eq!(decode(&ram).unwrap().cleared, 2);
-        ram[0x9e] = 0;
-        assert_eq!(decode(&ram).unwrap().cleared, 0);
-        assert!(!Game::TwinDragons.admissible(decode(&ram).unwrap()));
-        assert!(decode(&ram[..0x400]).is_err());
-        assert!(decode(&vec![0; 0x2800]).is_err());
-    }
-    #[test]
     fn compressed_snapshot_owns_only_its_payload_and_round_trips() {
         let bytes: Vec<u8> = (0..20998).map(|i| (i % 256) as u8).collect();
         let compressed: Box<[u8]> = compress_snapshot(&bytes);
@@ -1121,22 +989,7 @@ mod tests {
         );
     }
     #[test]
-    fn heatmap_position_is_not_full_archive_identity() {
-        let mut ram = vec![0; 0x800];
-        ram[0x9e] = PLAYING;
-        ram[0x35] = 1;
-        let a = decode(&ram).unwrap();
-        let b = Observation { health: 3, ..a };
-        assert_eq!(a.place(), b.place());
-        assert!(!Game::TwinDragons.admissible(a));
-        assert!(Game::TwinDragons.admissible(b));
-        let loading = Observation {
-            gamestate: LOADING,
-            loading: true,
-            ..b
-        };
-        assert_ne!(loading.place(), b.place());
-        assert_eq!(b.preference_cmp(0, a), Ordering::Greater);
+    fn drawn_actions_respect_the_controller_rules() {
         let mut rng = RomuDuoJrRand::with_seed(1);
         let mut prev = None;
         for _ in 0..10000 {
