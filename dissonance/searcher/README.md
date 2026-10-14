@@ -32,8 +32,10 @@ stops the campaign on an objective, replay rejects work selected after it while 
 already reserved in the admission window to finish. The same admission-window
 rule applies when cumulative work reaches the recorded work budget. Schema version 11 appends a
 terminal record only after the campaign has drained its jobs and finished
-successfully. Replay requires that record and
-checks its job, skip, and admission totals, so a stream cut after a complete
+successfully. Replay requires that record and checks its job, skip, and
+admission totals. Without a wall-time limit, it also requires every reservation
+the deterministic stop policy would have made; intermediate prefix replay is
+still allowed. Thus a stream cut after a complete
 JSON line cannot be certified as a finished campaign. Callers that deliberately
 rebuild an intermediate state use `replay_campaign_prefix_checkpointed`, whose
 report mode is `campaign-prefix` and is not a completed-campaign certificate.

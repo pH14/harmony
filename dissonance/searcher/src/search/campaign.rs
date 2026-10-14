@@ -4568,6 +4568,26 @@ where
     {
         return Err("campaign replay selected work after its work budget".into());
     }
+    if require_terminal
+        && header.wall_budget_seconds.is_none()
+        && !stop_reservations_after_objective(
+            header.stop_campaign_on_objective,
+            core.objective_witness.is_some(),
+        )
+        && !stop_reservations_after_work_budget(
+            header.work_budget,
+            counters.bootstrap_execution_work,
+            counters.job_execution_work,
+        )
+        && replay_job_parents.len()
+            < usize::try_from(
+                header
+                    .execution_budget
+                    .min(u64::try_from(replay_window_depth)?),
+            )?
+    {
+        return Err("campaign stream ended before required reservations completed".into());
+    }
     let mut duration_admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -5082,6 +5102,24 @@ where
                 {
                     return Err("campaign replay selected work after its work budget".into());
                 }
+                if require_terminal
+                    && header.wall_budget_seconds.is_none()
+                    && u64::try_from(next_slot)? < header.execution_budget
+                    && !stop_reservations_after_objective(
+                        header.stop_campaign_on_objective,
+                        core.objective_witness.is_some(),
+                    )
+                    && !stop_reservations_after_work_budget(
+                        header.work_budget,
+                        counters.bootstrap_execution_work,
+                        counters.job_execution_work.saturating_add(execution_work),
+                    )
+                    && replay_job_parents.get(next_slot).is_none()
+                {
+                    return Err(
+                        "campaign stream ended before required reservations completed".into(),
+                    );
+                }
                 if let Some(parent_id) = replay_job_parents.get(next_slot) {
                     let (energy, continuation) = continuation_attempt(
                         &mut core,
@@ -5207,10 +5245,11 @@ mod tests {
         execution_work_delta, finish_record, full_selector_report_due, is_zero_usize,
         memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
         progress_line_interval, progress_policy_is_supported, record_compaction_elapsed,
-        record_mixture_outcome, replay_campaign_checkpointed, replay_splice,
-        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
-        run_campaign_checkpointed_with_options, schedule_policy_identifier,
-        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
+        record_mixture_outcome, replay_campaign_checkpointed, replay_campaign_prefix_checkpointed,
+        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
+        run_campaign_checkpointed, run_campaign_checkpointed_with_options,
+        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
+        stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -6133,15 +6172,20 @@ mod tests {
         assert_eq!(live.executions_completed, 5);
         assert!(live.objectives_reached > 0);
         config.stop_campaign_on_objective = true;
+        let mut stopped_stream = Vec::new();
         let (stopped, _) = run_campaign_checkpointed(
             &workload,
             &config,
             &CampaignOrigin::Genesis,
-            &mut Vec::new(),
+            &mut stopped_stream,
             None,
         )
         .expect("live objective-stop campaign");
-        assert!(stopped.executions_completed <= 2);
+        assert_eq!(stopped.executions_completed, 2);
+        let (replayed_stopped, _) =
+            replay_campaign_checkpointed(&workload, &stopped_stream, None, None)
+                .expect("in-flight job remains replayable after an objective stop");
+        assert_eq!(replayed_stopped.executions_completed, 2);
         let mut lines = std::str::from_utf8(&stream)
             .unwrap()
             .lines()
@@ -6221,6 +6265,50 @@ mod tests {
                 .expect_err("replay certified five jobs under a one-work-unit budget")
                 .to_string();
         assert!(error.contains("after its work budget"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_a_terminal_record_before_required_reservations_finish() {
+        let (workload, full_lines) = five_job_campaign_stream();
+        for keep_jobs in [1_usize, 3] {
+            let mut lines = full_lines.clone();
+            let last_job = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+                })
+                .nth(keep_jobs - 1)
+                .unwrap()
+                .0;
+            let skips = lines[1..last_job]
+                .iter()
+                .filter(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "skip"
+                })
+                .count();
+            let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+            end["jobs"] = serde_json::json!(keep_jobs);
+            end["skips"] = serde_json::json!(skips);
+            end["executions_completed"] = serde_json::json!(keep_jobs);
+            lines.truncate(last_job + 1);
+            let (prefix, _) = replay_campaign_prefix_checkpointed(
+                &workload,
+                lines.join("\n").as_bytes(),
+                None,
+                None,
+            )
+            .expect("intermediate prefix remains replayable");
+            assert_eq!(prefix.mode, "campaign-prefix");
+            lines.push(serde_json::to_string(&end).unwrap());
+            let error =
+                replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                    .expect_err(
+                        "replay certified a completed campaign before required work finished",
+                    )
+                    .to_string();
+            assert!(error.contains("required reservations"), "{error}");
+        }
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
