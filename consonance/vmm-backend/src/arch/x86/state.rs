@@ -253,6 +253,9 @@ pub fn kvm_restore_xsave_image(
     if xcomp_bv != 0 || xstate_bv & !supported_bv != 0 || mxcsr & !0xffff != 0 {
         return Err(BackendError::InvalidState);
     }
+    if xstate_bv & 2 == 0 && mxcsr != u32::from_le_bytes(SSE_INIT_MXCSR) {
+        return Err(BackendError::UnrestorableXsaveMxcsr);
+    }
     Ok(restored)
 }
 
@@ -551,6 +554,25 @@ mod tests {
             kvm_restore_xsave_image(&image, None, supported).unwrap(),
             image
         );
+    }
+
+    #[test]
+    fn kvm_restore_rejects_mxcsr_that_guest_entry_cannot_preserve() {
+        let mut without_sse = init_image(4);
+        without_sse[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        for restore_bv in [None, Some(4)] {
+            assert!(matches!(
+                kvm_restore_xsave_image(&without_sse, restore_bv, 7),
+                Err(BackendError::UnrestorableXsaveMxcsr)
+            ));
+        }
+
+        without_sse[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        assert!(kvm_restore_xsave_image(&without_sse, Some(4), 7).is_ok());
+
+        let mut with_sse = init_image(6);
+        with_sse[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        assert!(kvm_restore_xsave_image(&with_sse, Some(6), 7).is_ok());
     }
 
     #[test]

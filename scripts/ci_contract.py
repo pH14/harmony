@@ -422,7 +422,7 @@ CONSONANCE_HARDWARE = Workflow(
                     "snapshot_preparation_raw_presence_stability",
                     "snapshot_restore_rejects_each_pending_state_without_mutation",
                     "snapshot_restore_drains_an_acknowledged_write_completion",
-                    "ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore",
+                    "ymm_without_sse_noninit_mxcsr_restore_rejects_atomically",
                     "natural_avx_mxcsr_survives_capture_and_restore",
                     "snapshot_entry_restores_match_uninterrupted_execution",
                     "snapshot_canonical_entry_restores_match_uninterrupted_execution",

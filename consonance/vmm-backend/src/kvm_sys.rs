@@ -1749,41 +1749,20 @@ mod xsave_diagnostic {
     }
 
     #[test]
-    #[ignore = "requires Linux KVM with AVX and a fresh XSAVE_MXCSR_REPORT_DIR"]
-    fn ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore() {
-        let root =
-            PathBuf::from(std::env::var_os("XSAVE_MXCSR_REPORT_DIR").expect("report directory"));
-        fs::create_dir(&root).unwrap();
-        let program = if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
-            [0x0f, 0xae, 0x1c, 0x25, 0x00, 0x20, 0x00, 0x00, 0xf4]
-        } else {
-            [0x67, 0x0f, 0xae, 0x1d, 0x00, 0x20, 0x00, 0x00, 0xf4]
-        };
-        let mut original = entry_fixture(&program, 0, 7);
-        let mut state = original.backend.save().unwrap();
+    #[ignore = "requires Linux KVM with AVX"]
+    fn ymm_without_sse_noninit_mxcsr_restore_rejects_atomically() {
+        let mut fixture = entry_fixture(&[0xf4], 0, 7);
+        let before = fixture.backend.save().unwrap();
+        let mut state = before.clone();
         state.xsave[XSTATE_BV].copy_from_slice(&4u64.to_le_bytes());
         state.xsave[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
         state.xsave[576] = 0x5a;
         state.xsave_restore_bv = Some(4);
-        original.backend.restore(&state).unwrap();
-        let saved = retain_entry(&mut original, &root, "captured");
-        assert_eq!(saved.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
-        let continued = entry_endpoint(&mut original, &root, "continued");
-        let mut cold = entry_fixture(&program, 0, 7);
-        restore_entry(&mut cold, &saved);
-        let restored = entry_endpoint(&mut cold, &root, "restored");
-        assert_eq!(restored.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
-        assert_eq!(continued.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
-        fs::write(
-            root.join("guest-mxcsr.txt"),
-            format!(
-                "continued={:02x?} restored={:02x?}\n",
-                &continued.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4],
-                &restored.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4]
-            ),
-        )
-        .unwrap();
-        assert_eq!(continued.ram, restored.ram);
+        assert!(matches!(
+            fixture.backend.restore(&state),
+            Err(BackendError::UnrestorableXsaveMxcsr)
+        ));
+        assert_eq!(fixture.backend.save().unwrap(), before);
     }
 
     #[test]
