@@ -1031,15 +1031,35 @@ fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
                 .ok_or_else(|| ImageError::Tar("tar header field is too large".into()))
         });
     }
-    let digits = field.split(|byte| *byte == 0).next().unwrap_or_default();
-    let text = std::str::from_utf8(digits)
-        .map_err(|_| ImageError::Tar("tar header field is not octal".into()))?
-        .trim();
-    if text.is_empty() {
-        return Ok(0);
+    let invalid = || ImageError::Tar("tar header field is not octal".into());
+    let digits = match field.iter().position(|byte| *byte == 0) {
+        Some(end) => {
+            if field[end..].iter().any(|byte| !matches!(*byte, 0 | b' ')) {
+                return Err(invalid());
+            }
+            &field[..end]
+        }
+        None => field,
+    };
+    let start = digits.iter().take_while(|byte| **byte == b' ').count();
+    let digits = &digits[start..];
+    let end = digits
+        .iter()
+        .rposition(|byte| *byte != b' ')
+        .map_or(0, |at| at + 1);
+    let digits = &digits[..end];
+    if digits.is_empty() {
+        return if field.first() == Some(&0) {
+            Ok(0)
+        } else {
+            Err(invalid())
+        };
     }
-    u64::from_str_radix(text, 8)
-        .map_err(|_| ImageError::Tar("tar header field is not octal".into()))
+    if !digits.iter().all(|byte| (b'0'..=b'7').contains(byte)) {
+        return Err(invalid());
+    }
+    u64::from_str_radix(std::str::from_utf8(digits).map_err(|_| invalid())?, 8)
+        .map_err(|_| invalid())
 }
 
 fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
@@ -2755,6 +2775,42 @@ mod tests {
                 Err(ImageError::Tar(_))
             ));
             assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn ambiguous_tar_numeric_fields_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, field) in [
+            ("mode", 100..108),
+            ("uid", 108..116),
+            ("gid", 116..124),
+            ("mtime", 136..148),
+        ] {
+            for (label, bytes) in [
+                ("nul-junk", b"1\0x".as_slice()),
+                ("plus", b"+1".as_slice()),
+                ("newline", b"\n1".as_slice()),
+                ("spaces", b" ".as_slice()),
+            ] {
+                let mut member = raw_member(b"payload", b'0', "", b"data");
+                member[field.clone()].fill(if label == "spaces" { b' ' } else { 0 });
+                if label != "spaces" {
+                    member[field.start..field.start + bytes.len()].copy_from_slice(bytes);
+                }
+                reseal(&mut member);
+                let case = format!("{name}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &member);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
         }
     }
 
