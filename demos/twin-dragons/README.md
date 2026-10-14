@@ -100,13 +100,14 @@ browser always uses an admission window of 16 and records workers as 16,
 independent of the device's worker count, so its decision stream equals the
 native campaign run with 16 workers. The archive key, draw, milestones,
 admission rules and objective are the workload's; the game READMEs under
-`workloads/nes/src` describe them. Twin Dragons and Famidash draw from the
-controller alphabet like their native runs; the other three use the
-`energy_splice:6` mixture of `nes-eval` and the search benchmarks. Each
+`workloads/nes/src` describe them. Famidash draws from the controller alphabet
+like its native run; the other games use the `energy_splice:6` mixture of
+`nes-eval`, the native Twin Dragons campaign and the search benchmarks. Each
 rollout worker samples motion inside `JsMachine` and reports whether the
 rollout cleared a level. The coordinator releases a trail with the batch only
-once its job is admitted. Level-load frames are not archived, so a clearing
-rollout often ends before the next level loads.
+once its job is admitted. Twin Dragons archives the level-load frames in
+stages; the other games do not, so a clearing rollout there often ends before
+the next level loads.
 
 A target can press buttons the archived input does not hold: the Mega Man 2
 whole-game target walks through the weapon screen and stage select after each
@@ -125,9 +126,11 @@ Rollout workers return the 1 KiB work RAM bank and the raw snapshot after each
 action, plus a
 motion trail. Each worker caches up to 64 parent snapshots by id.
 
-The first search uses seed 27, and Restart increments it. The Twin Dragons
-search reaches Level 2 after about 10,000 to 16,000 executions; the native
-campaign beat the game on one of three seeds within 400,000. A history is
+The first search uses seed 27, and Restart increments it. Across seeds 27 to
+36 the native Twin Dragons campaign, which makes the same decisions, clears
+Level 1 after a median of 6,300 executions, Level 2 after 37,000 and the game
+after 89,000; every seed finished within 94,000. A coordinator job averages
+about 17 frames. A history is
 bounded to 10,000 actions and 200,000 frames. Runs stop when a path finishes the
 game or when the search WASM buffers reach their limit. Pause stops sending new
 rollouts and holds results until resume.
@@ -149,8 +152,8 @@ eight searches are retained in the coordinator, with only one advancing at a
 time on all rollout workers. Rollouts already sent for a search still merge
 into it after a switch.
 
-The coordinator sends at most 85 rollouts per second for Twin Dragons, 120 for
-Famidash and Tobu Tobu Girl and 300 for the Nintendo games, so a viewer can follow the
+The coordinator sends at most 120 rollouts per second for Famidash and Tobu
+Tobu Girl and 300 for Twin Dragons and the Nintendo games, so a viewer can follow the
 search.
 The `pace` URL parameter sets the starting rate in rollouts per second, and
 `pace=0` removes the limit. The Timelines per second slider at the top of

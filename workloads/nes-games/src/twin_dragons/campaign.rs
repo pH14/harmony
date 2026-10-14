@@ -48,7 +48,7 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
-const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v1";
+const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "directions9_times_ab4_no_start_select_v2";
 const SOURCE_COMMIT: &str = "bcf27d0c5117a2aac19e6c33bdb3c776ada069fb";
 const TERMINAL_POLICY_IDENTIFIER: &str = "final_goal_win_or_zero_health_death_v1";
 
@@ -212,7 +212,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             objective_reached,
             disposition,
         };
-        let gameplay_valid = target.mechanical_state().gameplay.is_some();
+        let archivable = archive_key(target.mechanical_state()).is_some();
         let recorded_action = if matches!(outcome.disposition, ExecutionDisposition::Terminal) {
             let elapsed = target
                 .observe()
@@ -224,7 +224,7 @@ fn execute_suffix<M: NesBackend<Vec<u8>>>(
             *action
         };
         let candidate =
-            if !matches!(outcome.disposition, ExecutionDisposition::Runnable) || !gameplay_valid {
+            if !matches!(outcome.disposition, ExecutionDisposition::Runnable) || !archivable {
                 None
             } else {
                 let snapshot = target

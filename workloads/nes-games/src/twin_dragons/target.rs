@@ -69,6 +69,11 @@ impl TwinDragonsMechanicalState {
     }
 
     #[must_use]
+    pub fn loading(self) -> bool {
+        self.game_state == GAME_STATE_LOADING
+    }
+
+    #[must_use]
     pub fn dead(self) -> bool {
         self.playing() && self.loaded && !self.goal && self.gameplay.is_none()
     }

@@ -26,7 +26,7 @@ export default {
   ramBytes: 2048,
   levelCount: LEVEL_COUNT,
   maxHealth: 3,
-  pace: 85,
+  pace: 300,
   maxActionFrames: 120,
   menuButtons: false,
   system: "NES",

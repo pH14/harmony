@@ -54,17 +54,28 @@ Setup waits 60 frames, presses Start for 2 frames, and waits 240 frames. The
 genesis check requires game state 1, level 0, next level 1 and health 3.
 
 The controller vocabulary is the shared NES chord vocabulary without Start or
-Select, with short holds of 2 to 12 frames and long holds of 48 to 120.
+Select, with short holds of 2 to 12 frames and long holds of 6 to 40. The
+campaign draws with the `energy_splice:6` mixture. Most coordinator jobs run a
+single action, so a long hold of 48 frames or more walks into enemies and pits
+before the search can react. Splicing archived tails gives some jobs the
+dozens of actions that a jump sequence or a level load needs.
 
 Health 0 is a terminal death. The game would restart the level, but a restart
 loses all progress, so the search ends the rollout. Touching the goal of the
 third level is the objective. Earlier goals are milestones that count cleared
-levels. Level-load frames are runnable but are not archived.
+levels.
 
-The archive key is the level, world x and y in 16-pixel units, and health. The
-place is the level and the 32-pixel cell, the identity is the 16-pixel cell,
-and higher health is preferred within a place. The progress watermark is the
-pair of levels cleared and furthest world x.
+The archive key is the levels cleared, a stage, world x and y in 16-pixel
+units, and health. The progress tier is the levels cleared, so the newest level
+outweighs the levels behind it. During gameplay the place is the level and the
+32-pixel cell, the identity is the 16-pixel cell, and higher health is
+preferred within a place. The level transition takes about 300 frames from
+touching the goal to the next level's first gameplay frame. Its states are
+archived in the next level's tier, one place per 32 frames of the transition
+timer `$CE`: four places while the goal is touched, one per stage of the
+level-load screen, and one for the frames before the new level is loaded. A
+job can then cross the transition in short steps. The progress watermark is
+the pair of levels cleared and furthest world x.
 
 ## Running
 

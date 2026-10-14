@@ -89,7 +89,7 @@ impl BrowserGame for TwinDragons {
     }
 
     fn mixture() -> DrawMixture {
-        DrawMixture::AlphabetOnly
+        DrawMixture::EnergySplice { scale: 6 }
     }
 
     fn motion(memory: &[u8]) -> [u16; 4] {

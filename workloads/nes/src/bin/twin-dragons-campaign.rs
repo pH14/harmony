@@ -150,7 +150,7 @@ fn campaign_config(args: &Args) -> TwinDragonsCampaignConfig {
         memory_budget_mib: args.memory_budget_mib,
         materialize_final_artifacts: true,
         retention: RetentionPolicy::Unprobed,
-        mixture: DrawMixture::AlphabetOnly,
+        mixture: DrawMixture::EnergySplice { scale: 6 },
         victory_input_path: Some(args.output.join("victory-input.json")),
     }
 }
