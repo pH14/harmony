@@ -764,7 +764,7 @@ fn check_hardlinks(members: &[Member]) -> Result<(), ImageError> {
             }
             if exact.as_os_str().is_empty() || !seen.contains(&exact) {
                 return Err(ImageError::UnsafePath(format!(
-                    "hardlink {} has no earlier exact target {}",
+                    "hardlink {} has no earlier matching target {}",
                     member.shown(),
                     path.display()
                 )));
@@ -3342,7 +3342,7 @@ mod tests {
     }
 
     #[test]
-    fn hardlink_target_requires_an_earlier_exact_archive_name() {
+    fn hardlink_target_requires_an_earlier_case_exact_archive_name() {
         let dir = tempfile::tempdir().unwrap();
         let rootfs = dir.path().join("rootfs");
         std::fs::create_dir(&rootfs).unwrap();
@@ -3372,6 +3372,30 @@ mod tests {
         let layer = write_archive(dir.path(), "exact-hardlink.tar", &body);
         apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
         assert_eq!(std::fs::read(rootfs.join("link")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn hardlink_target_accepts_portable_dot_and_separator_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, target) in [
+            ("dot", "d/./f"),
+            ("separator", "d//f"),
+            ("leading-dot", "./d/f"),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                &format!("normalized-hardlink-{label}.tar"),
+                &[
+                    raw_member(b"d/f", b'0', "", b"content"),
+                    raw_member(b"copy", b'1', target, b""),
+                ]
+                .concat(),
+            );
+            let dest = dir.path().join(format!("normalized-hardlink-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("copy")).unwrap(), b"content");
+        }
     }
 
     #[test]
