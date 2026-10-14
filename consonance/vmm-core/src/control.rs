@@ -1022,7 +1022,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     )?;
                     if self
                         .project_pending_recorded(&recorded)
-                        .try_encode_reproducer()
+                        .try_encode_reproducer_with_binding_reserve()
                         .is_err()
                     {
                         return Ok(Err(ControlError::MalformedEnvironment));
@@ -1129,7 +1129,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.validate_host_fault(&decoded, at.0, floor)?;
         let mut projected = self.project_pending_recorded(&self.recorded);
         projected.record_effect(at.0, decoded.clone());
-        if projected.try_encode_reproducer().is_err() {
+        if projected
+            .try_encode_reproducer_with_binding_reserve()
+            .is_err()
+        {
             return Err(ControlError::MalformedEnvironment);
         }
         self.schedule.insert(at.0, decoded);
@@ -1550,16 +1553,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             if !reseeds.is_empty() && !reseeds.contains_key(&restored_floor) {
                 plan.record_reseed(restored_floor, 0);
             }
-            let encoded = match plan.try_encode_reproducer() {
-                Ok(encoded) => encoded,
-                Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
-            };
-            let unbound = plan.answers().len() - plan.request_bindings().len();
-            if encoded
-                .len()
-                .saturating_add(unbound.saturating_mul(Sha256::output_size()))
-                > EnvSpec::MAX_REPRODUCER_BYTES
-            {
+            if plan.try_encode_reproducer_with_binding_reserve().is_err() {
                 return Ok(Err(ControlError::MalformedEnvironment));
             }
         }
@@ -1592,16 +1586,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             {
                 return Ok(Err(ControlError::Unsupported));
             }
-            let prepared = match prepared_env.snapshot_state() {
-                Ok(prepared) => prepared,
-                Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
-            };
-            let unbound = prepared.answers().count() - prepared.request_bindings().count();
-            if prepared
-                .encoded_len()
-                .saturating_add(unbound.saturating_mul(Sha256::output_size()))
-                > environment::channel::MAX_RECORDED_STATE_BYTES
-            {
+            if prepared_env.snapshot_state_with_binding_reserve().is_err() {
                 return Ok(Err(ControlError::MalformedEnvironment));
             }
         }
@@ -4659,6 +4644,17 @@ mod tests {
                 .unwrap(),
             Ok(Reply::Unit)
         );
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(EnvHostEffect::write_memory(0, vec![1]).unwrap().encode()),
+                    at: Moment(at + 1),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
         let mut request = 19_u16.to_le_bytes().to_vec();
         request.extend(77_u64.to_le_bytes());
         request.extend(b"choose");
@@ -4700,6 +4696,102 @@ mod tests {
             server.handle(&Request::Snapshot).unwrap(),
             Ok(Reply::Snapshot { .. })
         ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn resolving_another_service_request_preserves_unbound_answer_capacity() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+
+        let mut server = payload_server();
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        let expected = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |actual| {
+            if actual != &expected {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(ExternalService(0)))
+        }));
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let origin = snap(&mut server);
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(config);
+        spec.record_answer(at, 19, 78, ServiceAnswer::Nominal)
+            .unwrap();
+        let mut payloads = vec![Vec::new(); 8];
+        spec.set_payloads(Some(payloads.clone()));
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 70 - spec.encode().len();
+        for payload in &mut payloads {
+            *payload = vec![0; payload_bytes / 8];
+        }
+        payloads[0].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 70);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let mut request = 19_u16.to_le_bytes().to_vec();
+        request.extend(77_u64.to_le_bytes());
+        request.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &request,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(at)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(ServiceAnswer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
     }
 
     #[test]

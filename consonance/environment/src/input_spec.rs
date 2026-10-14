@@ -5,6 +5,8 @@ use crate::channel::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+use sha2::{Digest, Sha256};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceConfig {
     pub identity: Vec<u8>,
@@ -229,6 +231,19 @@ impl InputSpec {
     pub fn try_encode_reproducer(&self) -> Result<Vec<u8>, ChannelError> {
         let bytes = self.encode();
         Self::decode_reproducer(&bytes)?;
+        Ok(bytes)
+    }
+
+    pub fn try_encode_reproducer_with_binding_reserve(&self) -> Result<Vec<u8>, ChannelError> {
+        let bytes = self.try_encode_reproducer()?;
+        let unbound = self.answers.len() - self.request_bindings.len();
+        if bytes
+            .len()
+            .saturating_add(unbound.saturating_mul(Sha256::output_size()))
+            > Self::MAX_REPRODUCER_BYTES
+        {
+            return Err(ChannelError::TooLarge);
+        }
         Ok(bytes)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
