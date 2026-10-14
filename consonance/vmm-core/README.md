@@ -139,6 +139,9 @@ admissibility or future execution equivalence.
 `RecordedEnv` retains the complete payload tape from the branch origin, including
 entries already consumed. SDK snapshots separately retain the unread tail, so a
 reproducer can replay an earlier snapshot without shifting the payload order.
+Control rejects a new fault or service answer if the recorded inputs plus
+pending faults and reseeds would exceed the eight MiB reproducer limit.
+Branch admission also reserves the reseed marker created at its snapshot floor.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version

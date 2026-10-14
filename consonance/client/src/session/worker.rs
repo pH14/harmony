@@ -1042,7 +1042,7 @@ impl Served {
             }
             BRANCH => {
                 let snap = SnapId(input.u64()?);
-                let spec = InputSpec::decode(input.bytes()?)
+                let spec = InputSpec::decode_reproducer(input.bytes()?)
                     .map_err(|error| format!("branch input: {error}"))?;
                 input.finish()?;
                 session.branch_input(snap, &spec)?;

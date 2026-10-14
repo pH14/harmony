@@ -1016,7 +1016,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         question.request_id(),
                         response.clone(),
                     )?;
-                    if recorded.try_encode().is_err() {
+                    if self
+                        .project_pending_recorded(&recorded)
+                        .try_encode_reproducer()
+                        .is_err()
+                    {
                         return Ok(Err(ControlError::MalformedEnvironment));
                     }
                     if let Err(error) = self
@@ -1110,8 +1114,24 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .and_then(|v| v.effective_vns())
             .unwrap_or(0);
         self.validate_host_fault(&decoded, at.0, floor)?;
+        let mut projected = self.project_pending_recorded(&self.recorded);
+        projected.record_effect(at.0, decoded.clone());
+        if projected.try_encode_reproducer().is_err() {
+            return Err(ControlError::MalformedEnvironment);
+        }
         self.schedule.insert(at.0, decoded);
         Ok(Reply::Unit)
+    }
+
+    fn project_pending_recorded(&self, recorded: &EnvSpec) -> EnvSpec {
+        let mut projected = recorded.clone();
+        for (&at, effect) in &self.schedule {
+            projected.record_effect(at, effect.clone());
+        }
+        for (&at, &seed) in &self.reseed_schedule {
+            projected.record_reseed(at, seed);
+        }
+        projected
     }
 
     fn validate_host_fault(&self, fault: &Effect, at: u64, floor: u64) -> Result<(), ControlError> {
@@ -1406,16 +1426,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut payloads: Option<Vec<Vec<u8>>> = None;
         let mut answers = BTreeMap::new();
         let mut env_policy: Option<ServiceConfig> = None;
+        let mut branch_plan: Option<EnvSpec> = None;
         let seed = match env {
             None => None,
             Some(env) => {
                 if env.blob_version != EnvSpec::BLOB_VERSION {
                     return Ok(Err(ControlError::BadEnvVersion(env.blob_version)));
                 }
-                let spec = match EnvSpec::decode(&env.bytes) {
+                let spec = match EnvSpec::decode_reproducer(&env.bytes) {
                     Ok(spec) => spec,
                     Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                 };
+                branch_plan = Some(spec.clone());
                 host = spec
                     .effects()
                     .iter()
@@ -1495,6 +1517,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Some(mapping)
         };
         let restored_floor = vm_state.vtime().snapshot_vns;
+        if let Some(mut plan) = branch_plan {
+            if !reseeds.is_empty() && !reseeds.contains_key(&restored_floor) {
+                plan.record_reseed(restored_floor, 0);
+            }
+            if plan.try_encode_reproducer().is_err() {
+                return Ok(Err(ControlError::MalformedEnvironment));
+            }
+        }
         if let Some(branch_seed) = seed {
             let effective_reseed = if reseeds.is_empty() {
                 Some(branch_seed)
@@ -1939,7 +1969,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             blob_version: EnvSpec::BLOB_VERSION,
             bytes: self
                 .recorded
-                .try_encode()
+                .try_encode_reproducer()
                 .map_err(|_| ControlError::MalformedEnvironment)?,
         }))
     }
@@ -4268,6 +4298,209 @@ mod tests {
             (hypercall_proto::Status::Ok as u16, first)
         );
         assert_eq!(hash(&mut server), expected);
+    }
+
+    fn near_reproducer_limit(margin: usize, future_reseed: bool) -> Reproducer {
+        let mut spec = EnvSpec::seeded(7);
+        if future_reseed {
+            spec.record_reseed(600, 9);
+        }
+        let empty_size = spec.encode().len();
+        let mut one = spec.clone();
+        one.record_effect(601, EnvHostEffect::write_memory(0, vec![0]).unwrap());
+        let effect_overhead = one.encode().len() - empty_size - 1;
+        let count = (EnvSpec::MAX_REPRODUCER_BYTES - margin - empty_size) / (RAM + effect_overhead);
+        for index in 0..count {
+            spec.record_effect(
+                601 + index as u64,
+                EnvHostEffect::write_memory(0, vec![index as u8; RAM]).unwrap(),
+            );
+        }
+        let remaining = EnvSpec::MAX_REPRODUCER_BYTES - margin - spec.encode().len();
+        if remaining > effect_overhead {
+            spec.record_effect(
+                601 + count as u64,
+                EnvHostEffect::write_memory(0, vec![0; remaining - effect_overhead]).unwrap(),
+            );
+        }
+        assert!(spec.encode().len() <= EnvSpec::MAX_REPRODUCER_BYTES - margin);
+        Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.try_encode_reproducer().unwrap(),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn a_multi_message_payload_history_round_trips_through_recorded_env() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_payloads(Some(vec![vec![1; 700_000], vec![2; 700_000]]));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert!(bytes.len() > environment::channel::MAX_CHANNEL_BYTES);
+        let branch = Request::Branch {
+            snap: origin,
+            env: Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes,
+            },
+        };
+        let mut request_frame = Vec::new();
+        control_proto::encode_request(7, &branch, &mut request_frame).unwrap();
+        let (seq, decoded, consumed) = control_proto::decode_request(&request_frame)
+            .unwrap()
+            .unwrap();
+        assert_eq!((seq, consumed), (7, request_frame.len()));
+        assert_eq!(decoded, branch);
+        assert_eq!(server.handle(&decoded).unwrap(), Ok(Reply::Unit));
+        let before = hash(&mut server);
+        let reproducer = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert!(reproducer.bytes.len() > environment::channel::MAX_CHANNEL_BYTES);
+        let mut reply_frame = Vec::new();
+        control_proto::encode_reply(
+            8,
+            &Ok(Reply::Recorded(reproducer.clone())),
+            &mut reply_frame,
+        )
+        .unwrap();
+        let (seq, decoded, consumed) = control_proto::decode_reply(&reply_frame).unwrap().unwrap();
+        assert_eq!((seq, consumed), (8, reply_frame.len()));
+        assert_eq!(decoded, Ok(Reply::Recorded(reproducer.clone())));
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: reproducer,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut server), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn fault_that_would_overflow_the_recorded_environment_is_rejected() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let env = near_reproducer_limit(1024, false);
+        assert_eq!(
+            server
+                .handle(&Request::Branch { snap: origin, env })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::write_memory(0, vec![0; 2048])
+                            .unwrap()
+                            .encode()
+                    ),
+                    at: Moment(at),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn pending_faults_share_the_recorded_environment_size_budget() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut one_effect = EnvSpec::seeded(7);
+        let empty_size = one_effect.encode().len();
+        one_effect.record_effect(501, EnvHostEffect::write_memory(0, vec![0; 512]).unwrap());
+        let effect_size = one_effect.encode().len() - empty_size;
+        let env = near_reproducer_limit(effect_size + 1, false);
+        assert_eq!(
+            server
+                .handle(&Request::Branch { snap: origin, env })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::write_memory(0, vec![0; 512])
+                            .unwrap()
+                            .encode()
+                    ),
+                    at: Moment(at),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::write_memory(0, vec![1; 512])
+                            .unwrap()
+                            .encode()
+                    ),
+                    at: Moment(at + 1),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn branch_rejects_a_future_reseed_that_exhausts_recording_capacity() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let env = near_reproducer_limit(8, true);
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Branch { snap: origin, env })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
     }
 
     #[test]

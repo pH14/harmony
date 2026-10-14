@@ -62,6 +62,7 @@ pub struct InputSpec {
 }
 impl InputSpec {
     pub const BLOB_VERSION: u16 = 5;
+    pub const MAX_REPRODUCER_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
     pub fn seeded(seed: u64) -> Self {
         Self {
             seed,
@@ -189,8 +190,20 @@ impl InputSpec {
         Self::decode(&bytes)?;
         Ok(bytes)
     }
+    pub fn try_encode_reproducer(&self) -> Result<Vec<u8>, ChannelError> {
+        let bytes = self.encode();
+        Self::decode_reproducer(&bytes)?;
+        Ok(bytes)
+    }
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         if bytes.len() > MAX_CHANNEL_BYTES {
+            return Err(ChannelError::TooLarge);
+        }
+        Self::decode_snapshot(bytes)
+    }
+
+    pub fn decode_reproducer(bytes: &[u8]) -> Result<Self, ChannelError> {
+        if bytes.len() > Self::MAX_REPRODUCER_BYTES {
             return Err(ChannelError::TooLarge);
         }
         Self::decode_snapshot(bytes)
@@ -628,7 +641,13 @@ mod tests {
         let bytes = spec.encode();
         assert!(bytes.len() > MAX_CHANNEL_BYTES);
         assert_eq!(InputSpec::decode(&bytes), Err(ChannelError::TooLarge));
+        assert_eq!(InputSpec::try_encode_reproducer(&spec).unwrap(), bytes);
+        assert_eq!(InputSpec::decode_reproducer(&bytes).unwrap(), spec);
         assert_eq!(InputSpec::decode_snapshot(&bytes).unwrap(), spec);
+        assert_eq!(
+            InputSpec::decode_reproducer(&vec![0; InputSpec::MAX_REPRODUCER_BYTES + 1]),
+            Err(ChannelError::TooLarge)
+        );
     }
 
     #[test]
