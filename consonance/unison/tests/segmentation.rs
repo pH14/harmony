@@ -13,12 +13,14 @@ use unison::{
 struct CounterFactory {
     next_id: Rc<Cell<u8>>,
     halt_at_one: bool,
+    initial_sensitive: bool,
 }
 
 struct CounterMachine {
     work: u64,
     spawn_id: u8,
     halt_at_one: bool,
+    initial_sensitive: bool,
 }
 
 impl SubjectFactory for CounterFactory {
@@ -31,6 +33,7 @@ impl SubjectFactory for CounterFactory {
             work: 0,
             spawn_id,
             halt_at_one: self.halt_at_one,
+            initial_sensitive: self.initial_sensitive,
         }
     }
 }
@@ -51,7 +54,7 @@ impl Subject for CounterMachine {
 
     fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
         let mut hash = [self.work as u8; 32];
-        if self.work > 0 {
+        if self.work > 0 || self.initial_sensitive {
             hash[0] ^= self.spawn_id;
         }
         Ok(hash)
@@ -159,6 +162,7 @@ fn same_seed_nondeterminism_is_reported_without_a_first_work_claim() {
     let factory = CounterFactory {
         next_id: Rc::new(Cell::new(0)),
         halt_at_one: false,
+        initial_sensitive: false,
     };
     let report = compare_runs(&factory, &factory, 7, 1, 1).unwrap();
     assert_eq!(
@@ -180,6 +184,7 @@ fn terminal_mismatch_keeps_observation_when_direct_replay_is_unstable() {
     let factory = CounterFactory {
         next_id: Rc::new(Cell::new(0)),
         halt_at_one: true,
+        initial_sensitive: false,
     };
     let report = compare_runs(&factory, &factory, 7, 2, 2).unwrap();
     assert_eq!(
@@ -188,6 +193,24 @@ fn terminal_mismatch_keeps_observation_when_direct_replay_is_unstable() {
             last_match: None,
             halted_at: 1,
         }
+    );
+    assert_eq!(
+        first_divergence_from_report(&factory, &factory, 7, &report).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn work_zero_mismatch_keeps_observation_when_direct_replay_is_unstable() {
+    let factory = CounterFactory {
+        next_id: Rc::new(Cell::new(0)),
+        halt_at_one: false,
+        initial_sensitive: true,
+    };
+    let report = compare_runs(&factory, &factory, 7, 1, 1).unwrap();
+    assert_eq!(
+        report.verdict,
+        Verdict::UnreplayableDivergence { observed_at: 0 }
     );
     assert_eq!(
         first_divergence_from_report(&factory, &factory, 7, &report).unwrap(),

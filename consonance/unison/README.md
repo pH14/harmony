@@ -46,9 +46,10 @@ The other verdicts report a replayable checkpoint bracket, an observed but
 unreplayable checkpoint mismatch, an equal-work terminal divergence, or a
 halt-count mismatch. The report records whether the limit—not
 termination—ended the comparison. A zero-work mismatch is reported
-even when the limit is zero.
-Before returning a reached-target divergence bracket, comparison replays both
-the last matching checkpoint and the mismatching checkpoint on fresh subjects.
+even when the limit is zero. Before claiming an exact work-zero mismatch or a
+reached-target divergence bracket, comparison replays each observation on
+fresh subjects. For a reached-target bracket it replays both the last matching
+checkpoint and the mismatching checkpoint.
 It refuses the bracket if either direct replay has a different outcome or
 observation. This detects some segmentation-sensitive adapters at the point
 where they would produce an unreplayable bracket; the adapter contract remains
@@ -71,7 +72,9 @@ report without a first-work coordinate.
 Already-halted machines spawned at equal nonzero work also report a differing
 initial observation as `TerminalDiverged` at their actual halt count; reporting
 it at work zero would provide an unreplayable bisection coordinate. An initial
-difference at work zero remains directly bisectable.
+difference at work zero is directly bisectable only when fresh replay reproduces
+both observations. Otherwise the report retains the observed difference without
+a first-work coordinate.
 `bisect_divergence` checks the initial state when the lower bound is zero,
 returns zero if the machines already differ there, and otherwise verifies the
 bracket endpoints and advances one pair through each work count in ascending

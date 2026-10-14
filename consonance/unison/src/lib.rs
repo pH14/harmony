@@ -96,6 +96,19 @@ fn reached_replay_matches<F: SubjectFactory>(
     )
 }
 
+fn initial_replay_matches<F: SubjectFactory>(
+    factory: &F,
+    seed: u64,
+    expected_outcome: RunOutcome,
+    expected_work: u64,
+    expected: Observation,
+) -> Result<bool, SubjectError> {
+    let mut machine = factory.spawn(seed);
+    Ok(run_checked(&mut machine, 0)? == expected_outcome
+        && machine.work() == expected_work
+        && observe(&machine)? == expected)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompareReport {
     pub verdict: Verdict,
@@ -171,6 +184,27 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     }
     let mut last_match_observations = (observe(&ma)?, observe(&mb)?);
     if last_match_observations.0 != last_match_observations.1 {
+        let replayable =
+            initial_replay_matches(a, seed, initial_a, ma.work(), last_match_observations.0)?
+                && initial_replay_matches(
+                    b,
+                    seed,
+                    initial_b,
+                    mb.work(),
+                    last_match_observations.1,
+                )?;
+        if !replayable {
+            return Ok(CompareReport {
+                verdict: Verdict::UnreplayableDivergence {
+                    observed_at: ma.work(),
+                },
+                checkpoint_every,
+                requested_limit: limit,
+                checkpoints_compared,
+                halted_at: (initial_a == RunOutcome::Halted).then_some(ma.work()),
+                limit_reached: false,
+            });
+        }
         let (verdict, halted_at) = if initial_a == RunOutcome::Halted && ma.work() != 0 {
             (
                 Verdict::TerminalDiverged {
