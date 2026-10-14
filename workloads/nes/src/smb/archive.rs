@@ -49,27 +49,15 @@ pub struct SmbArchiveKey {
     pub progress: u16,
     pub player_y_bucket: u8,
     pub loop_on_path: bool,
-    #[serde(default, skip_serializing_if = "room_x_bucket_is_absent")]
+    #[serde(default)]
     pub room_x_bucket: u8,
     #[serde(default)]
     pub time_bucket: u8,
     pub clock: u16,
-    #[serde(default, skip_serializing_if = "room_is_absent")]
+    #[serde(default)]
     pub room: SmbRoomIdentity,
-    #[serde(default, skip_serializing_if = "band_is_absent")]
+    #[serde(default)]
     pub lineage_band: u16,
-}
-
-fn band_is_absent(band: &u16) -> bool {
-    *band == 0
-}
-
-fn room_is_absent(room: &SmbRoomIdentity) -> bool {
-    *room == SmbRoomIdentity::default()
-}
-
-fn room_x_bucket_is_absent(bucket: &u8) -> bool {
-    *bucket == 0
 }
 
 impl ArchiveKey for SmbArchiveKey {
@@ -665,6 +653,27 @@ mod tests {
             let encoded = serde_json::to_string(&original).unwrap();
             let decoded: SmbArchiveKey = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn the_key_round_trips_through_postcard() {
+        let bare = SmbArchiveKey {
+            room: SmbRoomIdentity::default(),
+            ..key(300, [4, 9])
+        };
+        let banded = SmbArchiveKey {
+            lineage_band: 3,
+            ..bare
+        };
+        let full = SmbArchiveKey {
+            room_x_bucket: 5,
+            ..key(300, [4, 9])
+        };
+        for original in [bare, banded, full] {
+            let encoded = postcard::to_allocvec(&(original, 7_u8)).unwrap();
+            let decoded: (SmbArchiveKey, u8) = postcard::from_bytes(&encoded).unwrap();
+            assert_eq!(decoded, (original, 7));
         }
     }
 
