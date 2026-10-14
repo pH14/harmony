@@ -307,25 +307,28 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             Some(v) => {
-                let (deadline_before, deadline_after, timer_id) = {
+                let (schedule_before, schedule_after) = {
                     let lapic = self
                         .devices
                         .lapic
                         .as_mut()
                         .expect("in_apic_page implies wired");
-                    let before = lapic.next_timer_deadline();
+                    let before = lapic
+                        .next_timer_deadline()
+                        .map(|deadline| (deadline, u32::from(lapic.timer_vector())));
                     lapic.mmio_write(offset, v as u32, now_vns).map_err(|e| {
                         VmmError::ContractViolation(format!("xAPIC write {offset:#x}: {e}"))
                     })?;
                     (
                         before,
-                        lapic.next_timer_deadline(),
-                        u32::from(lapic.timer_vector()),
+                        lapic
+                            .next_timer_deadline()
+                            .map(|deadline| (deadline, u32::from(lapic.timer_vector()))),
                     )
                 };
-                if deadline_after != deadline_before {
-                    match deadline_after {
-                        Some(deadline_vns) => {
+                if schedule_after != schedule_before {
+                    match schedule_after {
+                        Some((deadline_vns, timer_id)) => {
                             self.trace_clockevent_schedule_vns(deadline_vns, timer_id)?;
                         }
                         None => self.trace_clockevent_cancel()?,

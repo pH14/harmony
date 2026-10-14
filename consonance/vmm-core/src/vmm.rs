@@ -5747,6 +5747,43 @@ mod tests {
     }
 
     #[test]
+    fn changing_lapic_timer_vector_retags_the_live_schedule() {
+        let mut exits = arm_timer_exits(1000);
+        exits.push(Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(APIC_MMIO_BASE + u64::from(lapic::APIC_LVT_TIMER)),
+            size: 4,
+            write: Some(0x41),
+        }));
+        exits.push(Exit::Common(CommonExit::Idle));
+        exits.push(Exit::Common(CommonExit::Shutdown));
+        let mut mock = configured_mock(exits);
+        mock.set_state(if_set_state());
+        mock.set_defer_accept(true);
+        let mut v = virtual_time_lapic_vmm(mock);
+        v.run().expect("run");
+
+        assert_eq!(v.backend.pending_irq(), Some(0x41));
+        let trace = v.virtual_time_trace().expect("virtual_time trace wired");
+        let schedule = trace.schedule();
+        assert_eq!(schedule.len(), 2, "vector rewrite replaces the schedule");
+        assert_eq!(schedule[0].interrupt_id, 0x40);
+        assert_eq!(schedule[0].canceled_at_event, Some(3));
+        assert_eq!(schedule[1].interrupt_id, 0x41);
+        assert_eq!(schedule[1].armed_for_event, 3);
+        assert_eq!(schedule[1].deadline_vns, schedule[0].deadline_vns);
+        let deliveries: Vec<_> = trace
+            .normalized_log()
+            .events
+            .iter()
+            .flat_map(|event| &event.interrupts)
+            .collect();
+        assert_eq!(deliveries.len(), 1);
+        assert_eq!(deliveries[0].interrupt_id, 0x41);
+        crate::virtual_time::check_delivery_placement(schedule, trace.normalized_log())
+            .expect("the retagged vector is delivered at its unchanged deadline");
+    }
+
+    #[test]
     fn virtual_time_lapic_timer_disarm_cancels_the_schedule() {
         let mut exits = arm_timer_exits(1_000_000);
         exits.push(Exit::Common(CommonExit::Mmio {
