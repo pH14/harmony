@@ -1246,8 +1246,8 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
             self.apply_pending_irq()?;
-            let view = self.kvm.run()?;
             self.state_poisoned = true;
+            let view = self.kvm.run()?;
             self.mmio_owed = false;
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
@@ -1630,6 +1630,8 @@ pub struct FakeKvm {
     #[cfg(test)]
     fail_mmio_completion: bool,
     #[cfg(test)]
+    fail_run_after_entry: bool,
+    #[cfg(test)]
     irq_line_writes: usize,
     #[cfg(test)]
     fail_irq_line_write_on: Option<usize>,
@@ -1977,6 +1979,14 @@ impl Arm64Kvm for FakeKvm {
                     levels,
                 );
             }
+        }
+        #[cfg(test)]
+        if self.fail_run_after_entry {
+            self.run_queue.pop_front();
+            self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
+            return Err(BackendError::Internal(
+                "fake KVM run failed after guest entry",
+            ));
         }
         self.run_queue
             .pop_front()
@@ -3820,6 +3830,28 @@ mod tests {
         assert!(backend.kvm.run_queue.is_empty());
         assert_eq!(backend.exit_counts(), ExitCounts::default());
         backend.kvm.fail_vgic_read = None;
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
+    fn failed_guest_entry_refuses_capture_after_unreported_guest_progress() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        fake.fail_run_after_entry = true;
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal(
+                "fake KVM run failed after guest entry"
+            ))
+        ));
+        assert!(backend.kvm.run_queue.is_empty());
+        assert_eq!(backend.kvm.reg(core_reg(CORE_PC)), Some(0xdead_beef));
         assert!(matches!(
             backend.save(),
             Err(BackendError::Internal("backend state mutation failed"))
