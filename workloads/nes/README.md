@@ -15,6 +15,8 @@ The SMB campaign binary hashes and parses a source archive through one open file
 so a replacement of its path cannot attach one archive's digest to another's entries.
 It also decodes and hashes snapshot checkpoints from the same read bytes, so a
 source replacement cannot label one snapshot set with another file's digest.
+SMB fixture extraction likewise pins its source archive digest to the entries it
+parses into a challenge.
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.
