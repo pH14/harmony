@@ -388,7 +388,13 @@ impl Store {
         let from = parent.unwrap_or(base);
         self.live_layer(from)?;
         let mut delta = PageDelta::default();
-        let mut verified_pages = BTreeSet::new();
+        let mut verified_pages = self.verified_snapshot_pages(target)?;
+        if from != target {
+            self.verify_snapshot_pages_into(from, &mut verified_pages)?;
+        }
+        if base != from && base != target {
+            self.verify_snapshot_pages_into(base, &mut verified_pages)?;
+        }
         for gfn in self.changed_gfns(from, target, &[])? {
             let page = self.resolve(target.0, gfn);
             if page == self.resolve(from.0, gfn) {
@@ -1224,6 +1230,48 @@ mod tests {
                 .changed
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn page_delta_rejects_corrupted_reverted_page() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(Vec::new());
+        let parent = snap_with(&mut store, base, &[(0, 0x22)]);
+        let target = snap_with(&mut store, parent, &[(0, 0x11)]);
+        let PageRef::Data(id) = store.resolve(target.0, 0) else {
+            panic!("expected reverted resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+
+        let mut restored = [0; PAGE_SIZE];
+        assert!(matches!(
+            store.read_page(target, 0, &mut restored),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert!(matches!(
+            store.page_delta(base, Some(parent), target),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
+    fn page_delta_rejects_corrupted_unchanged_page() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(Vec::new());
+        let target = snap_with(&mut store, base, &[(1, 0x22)]);
+        let PageRef::Data(id) = store.resolve(target.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+
+        assert!(matches!(
+            store.page_delta(base, None, target),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
     }
 
     #[test]
