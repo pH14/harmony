@@ -292,7 +292,9 @@ checkpoint and does not consume the report;
 an interrupted report write does not invalidate an earlier checkpoint.
 Faults `show`, `--timeline` and report-backed `--logs` display the manifest's
 saved outcome, so later edits to an outcome file cannot change the displayed
-recording. Raw console and terminal log files remain diagnostic output.
+recording. Command runs with a saved serial digest check it before displaying
+`--logs`; a completed command without one refuses display. Other raw console
+and terminal logs remain diagnostic output.
 After a faults package returns, completion compares the saved report with the
 in-memory result before recording its outcome. A replaced or missing report
 cannot become a completed search, replay, or branch result. Command replay
