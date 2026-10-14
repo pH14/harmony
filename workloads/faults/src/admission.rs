@@ -655,6 +655,31 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                     }
                 } else {
                     mapped_ranges.sort_unstable();
+                    for &(range_start, range_end) in &mapped_ranges {
+                        for boundary in [range_start, range_end] {
+                            if boundary == 0 || boundary >= code.len() {
+                                continue;
+                            }
+                            for candidate_start in boundary.saturating_sub(2)..boundary {
+                                let Some(candidate) = code
+                                    .get(candidate_start..)
+                                    .and_then(|remaining| remaining.get(..3))
+                                else {
+                                    continue;
+                                };
+                                if candidate[0] == 0x0f
+                                    && candidate[1] == 0xc7
+                                    && ((candidate[2] >> 3) & 7) >= 6
+                                {
+                                    let address = start + u64::try_from(candidate_start)?;
+                                    return Err(format!(
+                                        "hardware entropy opcode crosses executable section boundary at 0x{address:x}"
+                                    )
+                                    .into());
+                                }
+                            }
+                        }
+                    }
                     let mut cursor = 0;
                     for (range_start, range_end) in mapped_ranges {
                         if range_start > cursor {
@@ -1204,6 +1229,30 @@ mod tests {
             1
         );
         assert_eq!(scan_elf(&bytes, "").unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn x86_entropy_split_across_mapped_section_boundary_is_rejected() {
+        for (mnemonic, modrm) in [("RDRAND", 0xf0), ("RDSEED", 0xf8)] {
+            for section_size in [1_u64, 2] {
+                let mut bytes = elf(&[0x0f, 0xc7, modrm, 0xc3], 5, 6);
+                bytes[288..296].copy_from_slice(&section_size.to_le_bytes());
+                let error = scan_elf(&bytes, "").unwrap_err().to_string();
+                assert!(
+                    error.contains("crosses executable section boundary"),
+                    "{mnemonic} crossing section end {section_size}: {error}"
+                );
+            }
+            let mut bytes = elf(&[0x0f, 0xc7, modrm, 0xc3], 5, 6);
+            bytes[272..280].copy_from_slice(&0x1002_u64.to_le_bytes());
+            bytes[280..288].copy_from_slice(&386_u64.to_le_bytes());
+            bytes[288..296].copy_from_slice(&2_u64.to_le_bytes());
+            let error = scan_elf(&bytes, "").unwrap_err().to_string();
+            assert!(
+                error.contains("crosses executable section boundary"),
+                "{mnemonic} crossing section start: {error}"
+            );
+        }
     }
 
     #[test]
