@@ -301,10 +301,11 @@ Earlier UML `engine_digest` values covered only bridge state and cannot prove
 full-state replay equivalence.
 
 The search report and `campaign-summary.json` also record
-`watchdog_cutoffs`, the number of guest action runs ended by the session's
-host watchdog, including cutoffs while reconstructing an evicted prefix. A
-reconstruction cutoff ends that preparation attempt, counts one execution failure
-and one watchdog cutoff, and leaves the worker available for later jobs. It
+`watchdog_cutoffs`, the number of guest action runs and prefix reconstruction
+attempts ended by the session's host watchdog, including waits for a fresh UML
+restore. A reconstruction cutoff ends that preparation attempt, counts one
+execution failure and one watchdog cutoff, and leaves the worker available for
+later jobs. It
 produces no suffix action, retained candidate, oracle evidence, or duration
 feedback. Other reconstruction errors still fail the campaign. A completed CLI
 with such cutoffs remains a measured campaign;
