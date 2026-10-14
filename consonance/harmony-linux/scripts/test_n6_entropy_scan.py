@@ -111,6 +111,24 @@ class EntropyScanTests(unittest.TestCase):
         lea = b"\x48\x8d\x3d\x0f\xc7\xf8\x00"
         self.assertEqual(self.check(elf(scan.EM_X86_64, lea, b"\xc3", 6)), [])
 
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_mapped_section_start_recovers_instruction_after_segment_prelude(self):
+        data = elf(scan.EM_X86_64, b"\x0f\xc7\xf0", b"\xc3", 2)
+        data[383] = 0xe8
+        for offset, value in (
+            (24, 0x400180),
+            (72, 383),
+            (80, 0x40017f),
+            (88, 0x40017f),
+            (96, 5),
+            (104, 5),
+            (192 + 16, 0x400180),
+            (256 + 16, 0x400183),
+        ):
+            struct.pack_into("<Q", data, offset, value)
+        self.assertEqual(scan.x86_hits([("segment", 0x40017f, data[383:388])]), [])
+        self.assertEqual(self.check(data), [(".text", 0, "RDRAND")])
+
     def test_arm_section_flag_cannot_hide_loaded_rndr(self):
         rndr = scan.RNDR.to_bytes(4, "little")
         ret = b"\xc0\x03\x5f\xd6"

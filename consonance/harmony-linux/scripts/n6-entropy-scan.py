@@ -13,16 +13,18 @@ from pathlib import Path
 
 ELF_HEADER = "<16sHHIQQQIHHHHHH"
 PROGRAM_HEADER = "<IIQQQQQQ"
+SECTION_HEADER = "<IIQQQQIIQQ"
 PT_LOAD = 1
 PF_X = 1
+SHF_ALLOC = 2
 EM_X86_64 = 62
 EM_AARCH64 = 183
 RNDR = 0xD53B2400
 RNDRRS = 0xD53B2420
 
 
-def executable_segments(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
-    """Return the file-backed bytes mapped executable by the ELF loader."""
+def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
+    """Return executable segments and mapped sections as decoder starts."""
     data = path.read_bytes()
     header_size = struct.calcsize(ELF_HEADER)
     program_size = struct.calcsize(PROGRAM_HEADER)
@@ -35,14 +37,14 @@ def executable_segments(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
         version,
         _entry,
         program_offset,
-        _section_offset,
+        section_offset,
         _flags,
         elf_header_size,
         program_entry_size,
         program_count,
-        _section_entry_size,
-        _section_count,
-        _string_index,
+        section_entry_size,
+        section_count,
+        string_index,
     ) = struct.unpack_from(ELF_HEADER, data)
     if ident[:4] != b"\x7fELF" or ident[4:7] != b"\x02\x01\x01":
         raise ValueError("require ELF64 little-endian version 1")
@@ -55,6 +57,31 @@ def executable_segments(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
     table_bytes = program_count * program_entry_size
     if program_offset > len(data) or table_bytes > len(data) - program_offset:
         raise ValueError("program table outside file")
+    if section_count == 0 or string_index >= section_count:
+        raise ValueError("missing/extended section table unsupported")
+    if section_entry_size < struct.calcsize(SECTION_HEADER):
+        raise ValueError("short section entry")
+    table_bytes = section_count * section_entry_size
+    if section_offset > len(data) or table_bytes > len(data) - section_offset:
+        raise ValueError("section table outside file")
+
+    def section(index: int):
+        return struct.unpack_from(
+            SECTION_HEADER, data, section_offset + index * section_entry_size
+        )
+
+    strings = section(string_index)
+    if strings[1] != 3 or strings[4] > len(data) or strings[5] > len(data) - strings[4]:
+        raise ValueError("invalid section-name table")
+    names = data[strings[4] : strings[4] + strings[5]]
+
+    def name_at(offset: int) -> str:
+        if offset >= len(names):
+            raise ValueError("section-name offset outside table")
+        end = names.find(b"\0", offset)
+        if end < 0:
+            raise ValueError("unterminated section name")
+        return names[offset:end].decode("ascii", errors="strict")
 
     found: list[tuple[str, int, bytes]] = []
     for index in range(program_count):
@@ -71,7 +98,30 @@ def executable_segments(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
             raise ValueError(f"unaligned AArch64 executable segment {index}")
         if offset > len(data) or size > len(data) - offset:
             raise ValueError(f"executable segment {index} outside file")
-        found.append((f"<exec-segment {index}>", address, data[offset : offset + size]))
+        segment = data[offset : offset + size]
+        found.append((f"<exec-segment {index}>", address, segment))
+        mapped_sections = 0
+        for section_index in range(section_count):
+            name_offset, _kind, section_flags, section_address, _offset, section_size, *_ = (
+                section(section_index)
+            )
+            if section_flags & SHF_ALLOC == 0 or section_size == 0:
+                continue
+            if section_size >= (1 << 64) - section_address:
+                raise ValueError(f"mapped section {section_index} address overflow")
+            if section_address < address:
+                continue
+            relative = section_address - address
+            if relative > size or section_size > size - relative:
+                continue
+            if machine == EM_AARCH64 and section_address % 4 != 0:
+                raise ValueError(f"unaligned AArch64 mapped section {section_index}")
+            found.append(
+                (name_at(name_offset), section_address, segment[relative : relative + section_size])
+            )
+            mapped_sections += 1
+        if mapped_sections == 0:
+            raise ValueError(f"executable segment {index} without a mapped section")
     if not found:
         raise ValueError("no executable load segments")
     return machine, found
@@ -92,8 +142,9 @@ def arm64_hits(data: bytes) -> list[tuple[int, str]]:
 
 
 def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
-    """Decode each executable load segment without consulting section headers."""
+    """Decode executable ranges at their natural boundaries."""
     hits: list[tuple[str, int, str]] = []
+    seen: set[tuple[int, str]] = set()
     parsed = 0
     with tempfile.TemporaryDirectory() as temporary:
         segment_path = Path(temporary) / "segment"
@@ -141,7 +192,10 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
                     None,
                 )
                 if mnemonic is not None:
-                    hits.append((label, address - base, mnemonic.upper()))
+                    key = (address, mnemonic.upper())
+                    if key not in seen:
+                        hits.append((label, address - base, mnemonic.upper()))
+                        seen.add(key)
     if parsed == 0:
         raise ValueError("objdump parsed zero executable instructions")
     return hits
@@ -149,14 +203,18 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
 
 def scan(path: Path) -> list[tuple[str, int, str]]:
     """Return entropy-opcode hits with segment-relative offsets."""
-    machine, segments = executable_segments(path)
+    machine, segments = executable_ranges(path)
     if machine == EM_X86_64:
         return x86_hits(segments)
-    return [
-        (segment, offset, mnemonic)
-        for segment, _address, data in segments
-        for offset, mnemonic in arm64_hits(data)
-    ]
+    hits: list[tuple[str, int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for segment, address, data in segments:
+        for offset, mnemonic in arm64_hits(data):
+            key = (address + offset, mnemonic)
+            if key not in seen:
+                hits.append((segment, offset, mnemonic))
+                seen.add(key)
+    return hits
 
 
 def self_test() -> None:
