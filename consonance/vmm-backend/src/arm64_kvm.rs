@@ -1461,7 +1461,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
         self.ensure_healthy()?;
-        if id.is_some_and(|id| !(id.is_ppi() || id.is_spi())) {
+        if id.is_some_and(|id| !(id.is_ppi() || id.is_spi()) || id.0 >= HARMONY_GIC_NR_IRQS) {
             return Err(BackendError::InvalidState);
         }
         self.pending_irq = id;
@@ -3878,6 +3878,13 @@ mod tests {
             b.set_pending_irq(Some(GicIntId(1))),
             Err(BackendError::InvalidState)
         ));
+        assert!(matches!(
+            b.set_pending_irq(Some(GicIntId(HARMONY_GIC_NR_IRQS))),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(b.pending_irq, Some(GicIntId(27)));
+        assert_eq!(b.applied_irq, Some(GicIntId(27)));
+        b.save().unwrap();
         assert_eq!(b.take_accepted_interrupt(), None);
 
         let caps = b.capabilities();

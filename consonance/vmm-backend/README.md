@@ -453,6 +453,9 @@ the VGIC line level has already changed; capturing at that point would publish
 a half-applied interrupt switch. The fake-KVM
 `failed_irq_line_switch_refuses_capture_after_partial_transition` test forces
 that sequence and checks that capture refuses it.
+IRQ requests outside the configured 96-interrupt VGIC are rejected before any
+line changes, leaving the backend usable.
+
 After `KVM_RUN` returns, ARM KVM observes interrupt acceptance and decodes the
 exit before handing it to the VMM. If either observation fails, the backend
 retires: guest execution may have advanced, but the exit was not reported or
