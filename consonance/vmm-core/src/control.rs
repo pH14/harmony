@@ -988,6 +988,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Branch { snap, env } => self.timed_restore(*snap, Some(env)),
             Request::Replay(snap) => self.timed_restore(*snap, None),
             Request::Run { until, resolve } => {
+                if let Some(error) = &self.schedule_poisoned {
+                    return Ok(Err(error.reply()));
+                }
                 if until.deadline.is_some()
                     && self
                         .vmm
@@ -8389,6 +8392,41 @@ mod tests {
                 .map(|(_, question)| question.request_id()),
             Some(77)
         );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let response_before = server.vmm().unwrap().guest_memory()[0xf000..0xf020].to_vec();
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(environment::channel::Answer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment: 1,
+                vtime: at,
+            })
+        );
+        assert_eq!(
+            server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            response_before
+        );
+        assert!(server.recorded.answers().is_empty());
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
         assert!(matches!(
             server
                 .handle(&Request::Run {
@@ -8401,6 +8439,7 @@ mod tests {
                 .unwrap(),
             Err(ControlError::ScheduleUnsatisfiable { moment: 1, .. })
         ));
+        server.vmm.as_mut().unwrap().map_doorbell_pages().unwrap();
     }
 
     #[test]
