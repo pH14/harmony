@@ -1457,6 +1457,7 @@ mod live_kvm {
     }
 
     const XSAVE_GPA: usize = 0x9000;
+    const XSAVE_XRSTOR_GPA: usize = 0xA000;
     const XSAVE_PAGE_LEN: usize = PAGE_SIZE;
     const XSAVE_WARMUP_LEN: usize = 10;
     const XSAVE_PROGRAM_LEN: usize = 34;
@@ -1485,6 +1486,52 @@ mod live_kvm {
         0x00,
         0x31,
         0xD2,
+        0x0F,
+        0xAE,
+        0x25,
+        0x00,
+        0x90,
+        0x00,
+        0x00,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        XSAVE_MARKER,
+        0xEE,
+        0x43,
+        0xF4,
+    ];
+
+    const XSAVE_XRSTOR_PROGRAM_LEN: usize = XSAVE_PROGRAM_LEN + 7;
+    const XSAVE_XRSTOR_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_XRSTOR_PROGRAM_LEN;
+    const XSAVE_XRSTOR_PROGRAM: [u8; XSAVE_XRSTOR_PROGRAM_LEN] = [
+        0xDB,
+        0xE3,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        WARMUP_MARKER,
+        0xEE,
+        0xB8,
+        0x03,
+        0x00,
+        0x00,
+        0x00,
+        0x31,
+        0xD2,
+        0x0F,
+        0xAE,
+        0x2D,
+        0x00,
+        0xA0,
+        0x00,
+        0x00,
         0x0F,
         0xAE,
         0x25,
@@ -1562,6 +1609,8 @@ mod live_kvm {
         let mut ram = guest_ram_image();
         let bytes = ram.as_mut_bytes();
         bytes[XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN].fill(0);
+        bytes[XSAVE_XRSTOR_GPA + 24..XSAVE_XRSTOR_GPA + 28]
+            .copy_from_slice(&0x1f80u32.to_le_bytes());
         put_bytes(bytes, CODE_GPA, program);
         put_bytes(bytes, REMAPPED_CODE_GPA, program);
         put_bytes(bytes, XSAVE_MUTATOR_GPA, &XSAVE_MUTATOR);
@@ -1894,6 +1943,18 @@ mod live_kvm {
             XSAVE_LIVE_ENDPOINT_RIP,
             "XSAVE_LIVE_REGISTERS_REPORT_DIR",
             assert_live_register_xsave_output,
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_XRSTOR_REPORT_DIR"]
+    fn xrstor_init_guest_bytes_survive_reused_continuation() {
+        run_xsave_continuation(
+            &XSAVE_XRSTOR_PROGRAM,
+            CODE_GPA + XSAVE_WARMUP_LEN,
+            XSAVE_XRSTOR_ENDPOINT_RIP,
+            "XSAVE_XRSTOR_REPORT_DIR",
+            assert_nonzero_xsave_output,
         );
     }
 }

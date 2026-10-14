@@ -420,6 +420,7 @@ CONSONANCE_HARDWARE = Workflow(
                     "long_mode_capture_preserves_continuation",
                     "xsave_guest_bytes_survive_cold_continuation",
                     "xsave_live_registers_survive_cold_continuation",
+                    "xrstor_init_guest_bytes_survive_reused_continuation",
                 )
             ) + tuple(
                 f"vmm-backend kvm_sys::xsave_diagnostic::{test}" for test in (
