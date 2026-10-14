@@ -21,24 +21,52 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
         console(options, profile),
         orphans(options, profile),
         seccomp_denied(options, profile),
-        pinned_auxv(options, profile, false),
-        pinned_auxv(options, profile, true),
+        pinned_auxv(
+            options,
+            profile,
+            "missing_pinned_auxv",
+            "unset HARMONY_UML_HWCAP; exec \"$0\"",
+            "HARMONY_UML_HWCAP",
+        ),
+        pinned_auxv(
+            options,
+            profile,
+            "malformed_pinned_auxv",
+            "HARMONY_UML_HWCAP=malformed; export HARMONY_UML_HWCAP; exec \"$0\"",
+            "HARMONY_UML_HWCAP",
+        ),
+        pinned_auxv(
+            options,
+            profile,
+            "wrong_pinned_hwcap",
+            "HARMONY_UML_HWCAP=$((HARMONY_UML_HWCAP ^ 8)); export HARMONY_UML_HWCAP; exec \"$0\"",
+            "HARMONY_UML_HWCAP",
+        ),
+        pinned_auxv(
+            options,
+            profile,
+            "wrong_pinned_platform",
+            "HARMONY_UML_PLATFORM=\"${HARMONY_UML_PLATFORM}x\"; export HARMONY_UML_PLATFORM; exec \"$0\"",
+            "AT_PLATFORM",
+        ),
         init_exit(options, profile),
     ]
     .into_iter()
     .collect()
 }
 
-fn pinned_auxv(options: &Options, profile: &VerifiedProfile, malformed: bool) -> io::Result<Value> {
+fn pinned_auxv(
+    options: &Options,
+    profile: &VerifiedProfile,
+    name: &str,
+    mutation: &str,
+    diagnostic: &str,
+) -> io::Result<Value> {
     let mut launch = launch(options, "boot");
     launch.wall_limit = Duration::from_secs(5);
     let work = launch.work_directory()?;
     let mut command = Command::new("/bin/sh");
-    command.arg("-c").arg(if malformed {
-        "HARMONY_UML_HWCAP=malformed; export HARMONY_UML_HWCAP; exec \"$0\""
-    } else {
-        "unset HARMONY_UML_HWCAP; exec \"$0\""
-    });
+    command.arg("-c").arg(mutation);
     command.arg(profile.directory().join(&profile.profile().executable.name));
     let exit = Guest::start(command, work, &launch)
         .map_err(io::Error::other)?
@@ -46,19 +74,11 @@ fn pinned_auxv(options: &Options, profile: &VerifiedProfile, malformed: bool) ->
     let passed = matches!(exit.reason, ExitReason::Exited(code) if code != 0)
         && contains(
             &exit,
-            "Harmony host auxiliary vector mismatch: HARMONY_UML_HWCAP",
+            &format!("Harmony host auxiliary vector mismatch: {diagnostic}"),
         )
         && !contains(&exit, "HARMONY_UML READY")
         && clean(&exit);
-    Ok(check(
-        if malformed {
-            "malformed_pinned_auxv"
-        } else {
-            "missing_pinned_auxv"
-        },
-        passed,
-        summary(&exit),
-    ))
+    Ok(check(name, passed, summary(&exit)))
 }
 
 fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {
