@@ -180,7 +180,8 @@ fi
 echo "ok: scanner rejected the planted live-counter probe"
 python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
     "$arm64_object_root/vmlinux" \
-    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg" \
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" --embedded-vdso \
     "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 
 # LL/SC permits implementation-dependent spurious STXR failures that can change
@@ -240,7 +241,8 @@ echo "ok: scanner rejected the executable .rodata LDXR probe"
 python3 "$exclusive_scan" --kernel-vmlinux "$arm64_object_root/vmlinux" \
     "$arm64_object_root/arch/arm64/boot/Image"
 python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
-python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
+python3 "$exclusive_scan" --embedded-vdso \
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 
 install -m 0644 "$arm64_object_root/arch/arm64/boot/Image" "$ARM64_ART_DIR/$arm64_output"
 echo "ok: $ARM64_ART_DIR/$arm64_output"
