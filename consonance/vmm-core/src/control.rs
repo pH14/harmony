@@ -492,14 +492,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))
     }
 
-    fn sparse_base_ram_digest(&self, base: SnapId) -> Result<[u8; 32], PortableSnapshotError> {
+    fn sparse_base_ram_digest(
+        &self,
+        base: SnapId,
+        target: Option<snapshot_store::SnapshotId>,
+    ) -> Result<[u8; 32], PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let meta = self
             .snapshot_meta
             .get(&base.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
         if let Some(digest) = meta.base_ram_digest.get() {
-            self.engine.verify_snapshot_pages(base_id)?;
+            if let Some(target_id) = target {
+                self.engine.verify_snapshots(&[base_id, target_id])?;
+            } else {
+                self.engine.verify_snapshot_pages(base_id)?;
+            }
             return Ok(digest);
         }
         let memory_len = self
@@ -516,6 +524,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             hasher.update(self.engine.read_page(base_id, gfn)?);
         }
         let digest = hasher.finalize().into();
+        if let Some(target_id) = target
+            && target_id != base_id
+        {
+            self.engine.verify_snapshot_pages(target_id)?;
+        }
         meta.base_ram_digest.set(Some(digest));
         Ok(digest)
     }
@@ -526,7 +539,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
-        let base_ram_digest = self.sparse_base_ram_digest(base)?;
+        let base_ram_digest = self.sparse_base_ram_digest(base, Some(target_id))?;
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -713,7 +726,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse state hash preimage",
             ));
         }
-        if self.sparse_base_ram_digest(setup)? != portable.base_ram_digest {
+        if self.sparse_base_ram_digest(setup, None)? != portable.base_ram_digest {
             return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
         }
         self.preflight_imported_service(sdk, &portable.policy)?;
@@ -5326,6 +5339,41 @@ mod tests {
             ))
         ));
         assert_eq!(destination.snapshot_store_stats(), before);
+    }
+
+    #[test]
+    fn sparse_delta_rechecks_target_pages_omitted_from_delta() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xA5);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        let target = snap(&mut source);
+        let anchor = source.export_sparse_delta(setup, None, parent).unwrap();
+        assert_eq!(
+            anchor.pages.iter().map(|page| page.0).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let parent_id = source.store_id(parent).unwrap();
+        source
+            .engine
+            .corrupt_page_for_test(parent_id, 1, 0, 1)
+            .unwrap();
+        assert!(matches!(
+            source.export_sparse_delta(setup, Some(parent), target),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 1
+                })
+            ))
+        ));
     }
 
     #[test]
