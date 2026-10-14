@@ -13,6 +13,8 @@ points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` i
 native execution. SMB supports native QuickNES and whole-VM Consonance execution.
 The SMB campaign binary hashes and parses a source archive through one open file,
 so a replacement of its path cannot attach one archive's digest to another's entries.
+Saved campaign replay rejects a source archive whose exact bytes differ from the
+archive digest recorded in the stream, even if its parsed report is unchanged.
 It also decodes and hashes snapshot checkpoints from the same read bytes, so a
 source replacement cannot label one snapshot set with another file's digest.
 SMB fixture extraction likewise pins its source archive digest to the entries it
