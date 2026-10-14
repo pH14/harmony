@@ -67,13 +67,15 @@ this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
 a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
-The scan catches entropy instructions that compilers and assemblers emit. It
-decodes each executable load segment and each contained allocated section from
-their starts, regardless of the section's executable flag. This preserves x86
-instruction alignment when a segment begins with headers or other data, while
-the segment pass also checks bytes absent from section metadata. A binary built
-to hide an instruction inside the operand bytes of another instruction can
-still pass.
+The scan catches entropy instructions that compilers and assemblers emit. On
+x86 it decodes each allocated section inside an executable load segment from
+its start, regardless of the section's executable flag, and separately decodes
+the gaps between sections. This preserves instruction alignment when a segment
+begins with headers or other data without reporting an instruction assembled
+across a section boundary. On arm64 it checks aligned instruction words across
+the whole executable load segment, so odd-length data sections are harmless. A
+binary built to hide an x86 instruction inside another instruction's operand
+bytes can still pass.
 
 `harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
