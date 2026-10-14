@@ -96,7 +96,7 @@ VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
 Embedded complete portable snapshots use format version 7; sparse sidecars use
-version 8. Older embedded versions are rejected. The outer sparse archive layout
+version 9. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
