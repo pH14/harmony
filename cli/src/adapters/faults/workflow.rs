@@ -23,12 +23,17 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
         .as_deref()
         .map(faults_workload::admission::inspect_image)
         .transpose()?;
-    let ready = runtime_error.is_none()
-        && admission
-            .as_ref()
-            .is_none_or(|r| r.scan_passed() && r.attestation_errors.is_empty());
+    let admission_error = admission
+        .as_ref()
+        .and_then(|report| report.require_for(super::execution_mode(c.backend)).err())
+        .map(|error| error.to_string());
+    let ready = runtime_error.is_none() && admission_error.is_none();
+    let blockers = runtime_error
+        .iter()
+        .chain(admission_error.iter())
+        .collect::<Vec<_>>();
     let report = serde_json::json!({ "os": std::env::consts::OS, "architecture": std::env::consts::ARCH,
-        "blockers": runtime_error.iter().collect::<Vec<_>>(), "backend": c.backend, "kernel": c.kernel, "base_initramfs": c.base_initramfs,
+        "blockers": blockers, "backend": c.backend, "kernel": c.kernel, "base_initramfs": c.base_initramfs,
         "uml_profile": c.uml_profile, "admission": admission, "ready": ready, "bundle": c.bundle()? });
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -41,10 +46,13 @@ pub fn check(mut c: Config, offline: bool, json: bool) -> Result<u8> {
         if let Some(r) = admission {
             println!(
                 "image admission: {}\ninstrumented event faults: {}",
-                r.scan_passed(),
+                admission_error.is_none(),
                 r.instrumented_events()
             );
             for error in r.scan_errors.iter().chain(&r.attestation_errors) {
+                println!("  {error}");
+            }
+            if let Some(error) = &admission_error {
                 println!("  {error}");
             }
             for file in r.instrumented {
@@ -85,11 +93,7 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
         c.image.as_deref().ok_or("application image missing")?,
         &base,
         generated.as_deref(),
-        if c.backend == Backend::Uml {
-            faults_workload::prepare::ExecutionMode::Uml
-        } else {
-            faults_workload::prepare::ExecutionMode::Vm
-        },
+        super::execution_mode(c.backend),
     )?;
     Ok((
         Artifacts {
@@ -133,7 +137,7 @@ pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> 
     let c = configure(c, offline)?;
     let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
     let out = destination.create()?;
-    let mut manifest = Manifest::new(c, "search", Some(bundle))?;
+    let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
     capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
     manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
     manifest.save(&out)?;
@@ -245,7 +249,7 @@ pub fn run(
             )],
         };
         let out = destination.create()?;
-        let mut manifest = Manifest::new(c, "run", Some(bundle))?;
+        let mut manifest = Manifest::new(c, "run", Some(bundle), true)?;
         manifest.actions = actions;
         capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
         manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
@@ -267,7 +271,8 @@ pub fn run(
     let stage = tempfile::tempdir()?;
     let staged =
         oci_support::image::stage(c.image.as_deref().ok_or("missing image")?, stage.path())?;
-    faults_workload::admission::inspect_root(&staged.rootfs)?.require_admission()?;
+    faults_workload::admission::inspect_root(&staged.rootfs)?
+        .require_for(super::execution_mode(c.backend))?;
     let prepared = oci_support::bundle::prepare(
         &staged,
         &oci_support::bundle::LaunchRequest::new(c.command.clone()),
@@ -275,7 +280,7 @@ pub fn run(
     let initramfs =
         prepared.initramfs(&fs::read(c.base_initramfs.as_ref().ok_or("missing base")?)?);
     let out = destination.create()?;
-    let mut manifest = Manifest::new(c, "run", None)?;
+    let mut manifest = Manifest::new(c, "run", None, true)?;
     capture_runtime(&mut manifest, &out, &initramfs)?;
     let kernel = fs::read(out.join("artifacts/kernel"))?;
     let result = crate::oci::execute(

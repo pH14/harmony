@@ -20,6 +20,7 @@ pub fn sdk(offline: bool) -> Result<PathBuf> {
 
 pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
     c.validate()?;
+    let mode = super::execution_mode(crate::runtime::choose(&c.runtime())?);
     let image = c
         .image
         .clone()
@@ -82,7 +83,7 @@ pub fn run(c: &mut Config, offline: bool) -> Result<serde_json::Value> {
         checked(&mut command)?;
     }
     let admission = faults_workload::admission::inspect_image(&image)?;
-    admission.require_admission()?;
+    admission.require_for(mode)?;
     let bundle = c.bundle()?;
     let report = serde_json::json!({ "image": image, "admission": admission, "bundle": bundle,
         "language": c.build.language, "next": "harmony check, then harmony search" });

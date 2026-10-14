@@ -17,6 +17,12 @@ use sha2::{Digest, Sha256};
 pub const ALLOWLIST_PATH: &str = "etc/harmony/instruction-allowlist";
 pub const ATTESTATION_PATH: &str = "symbols/harmony-instrumented-events";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionMode {
+    Vm,
+    Uml,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct InstructionSite {
     pub digest: String,
@@ -48,6 +54,13 @@ pub struct ImageReport {
 }
 
 impl ImageReport {
+    pub fn require_for(&self, mode: ExecutionMode) -> Result<(), Box<dyn Error>> {
+        match mode {
+            ExecutionMode::Vm => self.require_admission(),
+            ExecutionMode::Uml => self.require_uml_admission(),
+        }
+    }
+
     pub fn scan_passed(&self) -> bool {
         self.scan_errors.is_empty()
     }
@@ -508,10 +521,10 @@ mod tests {
         .unwrap();
         let accepted = inspect_root(root.path()).unwrap();
         assert!(accepted.scan_passed());
-        assert!(accepted.require_admission().is_ok());
+        assert!(accepted.require_for(ExecutionMode::Vm).is_ok());
         assert!(
             accepted
-                .require_uml_admission()
+                .require_for(ExecutionMode::Uml)
                 .unwrap_err()
                 .to_string()
                 .contains("RDRAND")

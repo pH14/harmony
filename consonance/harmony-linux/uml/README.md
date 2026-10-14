@@ -55,9 +55,11 @@ sequence of guest events.
   randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image
-  preparation refuses scanned hardware entropy instructions for UML, including
-  reviewed call sites. This does not trap an instruction supplied by dynamic
-  code or hidden from the executable-section scan.
+  preparation, search and command runs refuse scanned hardware entropy
+  instructions for UML, including reviewed call sites. The current x86
+  Bookworm language and historical images contain such sites and are refused
+  for UML until built without them. This does not trap an instruction supplied
+  by dynamic code or hidden from the executable-section scan.
 - Host stops and continues of stub processes no longer raise guest
   interrupts. A stub that dies without the kernel killing it panics the
   guest.

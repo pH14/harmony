@@ -2,18 +2,13 @@
 
 use std::error::Error;
 
+use crate::admission::ExecutionMode;
 use crate::bundle::FaultVocabulary;
 use oci_support::bundle::LaunchRequest;
 use oci_support::image::StagedImage;
 
 pub const BUNDLE_PATH: &str = "etc/harmony/bundle";
 pub const SUPERVISOR_BUNDLE: &str = "/etc/harmony/bundle";
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ExecutionMode {
-    Vm,
-    Uml,
-}
 
 pub struct Prepared {
     pub vocabulary: FaultVocabulary,
@@ -49,10 +44,7 @@ fn prepare_staged(
     }
     let root = staged.rootfs.canonicalize()?;
     let admission = crate::admission::inspect_root(&root)?;
-    match mode {
-        ExecutionMode::Vm => admission.require_admission()?,
-        ExecutionMode::Uml => admission.require_uml_admission()?,
-    }
+    admission.require_for(mode)?;
     let bundle = match supplied {
         Some(text) => text.to_owned(),
         None => {

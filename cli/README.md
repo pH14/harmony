@@ -111,6 +111,10 @@ Consonance chooses KVM, then HVF, then UML according to host availability.
 `--runner` selects an execution implementation; `--backend` constrains its backend.
 UML runs on Linux without hardware virtualization, including ordinary containers.
 An explicit UML profile selects UML when the backend is automatic.
+UML admission rejects scanned hardware entropy instructions even if a VM
+review lists them. `prepare`, `check`, `search` and plain `debug run` apply the
+selected backend's policy. A saved UML run from before this policy cannot be
+replayed or branched because its guest image was not admitted under this rule.
 
 Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
 inside `runner.options`. `check` provisions checksummed versioned artifacts.
@@ -277,5 +281,7 @@ same dispatch and storage interfaces without application or NES types.
 
 - `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, guest commands,
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.
-- `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY` exercises plain
-  command replay as an unprivileged UML user and rejects planted output divergence.
+- `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY [REJECTED_IMAGE]`
+  exercises plain command replay as an unprivileged UML user, rejects planted
+  output divergence, and optionally verifies that a reviewed hardware-entropy
+  image is refused before launch.
