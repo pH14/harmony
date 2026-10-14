@@ -355,6 +355,61 @@ class CounterScanCoverage(unittest.TestCase):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+            decoder_cases = (
+                (
+                    "symbol-restart",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
+                    '.global reset_decode\nreset_decode:\n'
+                    '.byte 0x90,0x90,0x90,0xb8\n'
+                    + '.byte 0x90,0x90,0x90,0xb0,0xb8\n' * 3
+                    + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                ),
+                (
+                    "intel64-displacement",
+                    '.section .text,"ax"\n.global _start\n_start:\n'
+                    'or $1,%eax\n'
+                    '.byte 0x66,0x0f,0x84,0x00,0x00,0xef,0x00,0x0f,0x31\n'
+                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                ),
+            )
+            for mode, source in decoder_cases:
+                asm = root / f"{mode}.s"
+                asm.write_text(source)
+                obj = root / f"{mode}.o"
+                elf = root / f"{mode}.elf"
+                run("as", "--64", "-o", str(obj), str(asm))
+                run("ld", "-nostdlib", "-e", "_start", "-o", str(elf), str(obj))
+                hazard_bytes = elf.read_bytes()
+                raw_setup = subprocess.run(
+                    ["bash", "-c",
+                     "source <(sed '/^self_test$/,$d' \"$1\"); "
+                     "if raw_byte_scan_one \"$2\" setup; then exit 0; else exit 1; fi",
+                     "probe", str(SCAN), str(elf)],
+                    capture_output=True, text=True,
+                )
+                self.assertNotEqual(raw_setup.returncode, 0, raw_setup.stdout + raw_setup.stderr)
+                self.assertIn(
+                    "raw counter-opcode bytes in setup section .text", raw_setup.stderr,
+                    f"exit={raw_setup.returncode} stdout={raw_setup.stdout!r} stderr={raw_setup.stderr!r}",
+                )
+                for target, tag in ((kernel, "vmlinux"), (decompressor, "decompressor")):
+                    kernel.write_bytes(safe_bytes)
+                    setup.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_bytes)
+                    target.write_bytes(hazard_bytes)
+                    with self.subTest(mode=mode, target=tag):
+                        result = subprocess.run(
+                            ["bash", str(SCAN), str(kernel)], capture_output=True, text=True
+                        )
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("counter instruction", result.stderr)
+                        if mode == "symbol-restart":
+                            self.assertIn("symbol-restart", result.stderr)
+                            self.assertIn(f"{tag}:.text:", result.stderr)
+                        else:
+                            expected_tag = "vmlinux:intel64" if tag == "vmlinux" else f"{tag}:.text:intel64"
+                            self.assertIn(expected_tag, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

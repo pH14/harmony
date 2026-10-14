@@ -102,6 +102,13 @@ code section adjacent to another code section. This catches a truncated opcode
 followed by otherwise complete instructions, as well as a prefix chain that
 would shift decoding farther than one maximum instruction length into the next
 section.
+For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
+both AMD64 and Intel64 modes; operand-size prefixes can change instruction
+boundaries on Intel hardware. ELF symbols can restart objdump inside an
+instruction, so the scanner also decodes the bounded path across every
+truncated instruction at a symbol boundary until it rejoins ordinary decoding
+or terminates. An unresolved branch or path fails admission. The section-boundary
+tail check also uses raw dual-mode decoding.
 
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during

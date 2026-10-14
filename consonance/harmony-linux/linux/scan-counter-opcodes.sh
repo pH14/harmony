@@ -72,29 +72,27 @@ sites() {
     done | sort
 }
 
-# all_sites [mnemonic-regex] [path]: disassemble the kernel proper and emit its
-# artifact-qualified site list for that mnemonic class (boot artifacts use the
-# section-aware scan below). FAILS if vmlinux is missing — a check that silently
-# skips its target passes vacuously.
+# all_sites [mnemonic-regex] [path]: disassemble the kernel's executable
+# sections in both AMD64 and Intel64 modes. The two decoder modes differ on
+# some operand-size prefixes.
 all_sites() {
     local path=${2:-$VMLINUX}
     if [ ! -f "$path" ]; then
         echo "FAIL: kernel ELF '$path' not found — scan the uncompressed vmlinux." >&2
         return 1
     fi
-    local dis rc=0
+    local mode dis
     dis=$(mktemp)
-    if ! objdump -d "$path" > "$dis"; then
-        echo "FAIL: could not disassemble kernel ELF '$path'" >&2
-        rc=1
-    elif ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
-        echo "FAIL: kernel ELF '$path' yielded no disassembled instructions" >&2
-        rc=1
-    else
-        sites "$dis" vmlinux "${1:-}" || rc=1
-    fi
+    for mode in amd64 intel64; do
+        if ! objdump -d -z -w -M "$mode" "$path" > "$dis" 2>/dev/null \
+            || ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
+            echo "FAIL: could not disassemble kernel ELF '$path' in $mode mode" >&2
+            rm -f "$dis"
+            return 1
+        fi
+        sites "$dis" "vmlinux:$mode" "${1:-}"
+    done
     rm -f "$dis"
-    return "$rc"
 }
 
 require_code_sections() {
@@ -183,29 +181,33 @@ raw_byte_scan_one() {
             echo "  refusing to green a scan that did not read the section (fail-closed)." >&2
             return 1
         fi
-        rm -f "$bin"
         if [ "$tag" = decompressor ] && [ "$s" = .text ]; then
-            dis=$(mktemp)
-            if ! objdump -d -j "$s" "$path" >"$dis" 2>/dev/null; then
-                echo "FAIL: could not disassemble 64-bit $tag section $s" >&2
+            for mode in amd64 intel64; do
+                dis=$(mktemp)
+                if ! objdump -d -z -w -M "$mode" -j "$s" "$path" >"$dis" 2>/dev/null \
+                    || ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
+                    echo "FAIL: could not disassemble 64-bit $tag section $s in $mode mode" >&2
+                    rm -f "$dis" "$bin"
+                    return 1
+                fi
+                counter_found=$(sites "$dis" "$tag:$s:$mode")
+                rng_found=$(sites "$dis" "$tag:$s:$mode" '^(rdrand|rdseed)$')
                 rm -f "$dis"
-                return 1
-            fi
-            counter_found=$(sites "$dis" "$tag")
-            rng_found=$(sites "$dis" "$tag" '^(rdrand|rdseed)$')
-            rm -f "$dis"
-            if [ -n "$counter_found" ]; then
-                echo "FAIL: decoded counter instruction(s) in 64-bit $tag section $s:" >&2
-                printf '%s\n' "$counter_found" | sed 's/^/  /' >&2
-                rc=1
-            fi
-            if [ -n "$rng_found" ]; then
-                echo "FAIL: decoded hardware-RNG instruction(s) in 64-bit $tag section $s:" >&2
-                printf '%s\n' "$rng_found" | sed 's/^/  /' >&2
-                rc=1
-            fi
+                if [ -n "$counter_found" ]; then
+                    echo "FAIL: decoded counter instruction(s) in 64-bit $tag section $s ($mode):" >&2
+                    printf '%s\n' "$counter_found" | sed 's/^/  /' >&2
+                    rc=1
+                fi
+                if [ -n "$rng_found" ]; then
+                    echo "FAIL: decoded hardware-RNG instruction(s) in 64-bit $tag section $s ($mode):" >&2
+                    printf '%s\n' "$rng_found" | sed 's/^/  /' >&2
+                    rc=1
+                fi
+            done
+            rm -f "$bin"
             continue
         fi
+        rm -f "$bin"
         n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
         n01f9=$(grep -oE '0f01f9' <<<"$hex" | wc -l | tr -d ' ')
         if [ "$n31" != 0 ] || [ "$n01f9" != 0 ]; then
