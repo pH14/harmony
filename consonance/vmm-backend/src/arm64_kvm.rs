@@ -654,6 +654,14 @@ fn has_pending_or_asserted_spi(s: &Arm64GicState) -> bool {
         .any(|&word| word != 0)
 }
 
+fn single_asserted_ppi(s: &Arm64GicState) -> Result<Option<GicIntId>> {
+    let lines = s.line_level[0];
+    if lines & 0xffff != 0 || lines.count_ones() > 1 {
+        return Err(BackendError::InvalidState);
+    }
+    Ok((lines != 0).then(|| GicIntId(lines.trailing_zeros())))
+}
+
 fn read_vgic_idle_state<K: Arm64Kvm + ?Sized>(k: &K, intid: u32) -> Result<Arm64GicIdleState> {
     if !(16..32).contains(&intid) {
         return Err(BackendError::InvalidState);
@@ -783,6 +791,11 @@ fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
             what: "save vGIC with pending or asserted SPI",
         });
     }
+    if single_asserted_ppi(&s).is_err() {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with multiple asserted PPIs or an asserted SGI line",
+        });
+    }
     Ok(s)
 }
 
@@ -799,6 +812,7 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.bpr0 > 7
         || s.bpr1 > 7
         || has_pending_or_asserted_spi(s)
+        || single_asserted_ppi(s).is_err()
     {
         return Err(BackendError::InvalidState);
     }
@@ -1578,13 +1592,15 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             return Err(BackendError::PendingCompletion);
         }
         self.validate_restore_state(state)?;
+        let restored_irq =
+            single_asserted_ppi(state.gic.as_ref().ok_or(BackendError::InvalidState)?)?;
         self.settle_mmio()?;
         if let Err(error) = restore_vcpu(&mut self.kvm, state) {
             self.state_poisoned = true;
             return Err(error);
         }
-        self.pending_irq = None;
-        self.applied_irq = None;
+        self.pending_irq = restored_irq;
+        self.applied_irq = restored_irq;
         self.accepted_irq = None;
         self.reported_active_irq = None;
         Ok(())
@@ -3065,6 +3081,64 @@ mod tests {
 
         b.restore(&s).unwrap();
         assert_eq!(b.save().unwrap(), s);
+    }
+
+    #[test]
+    fn restored_asserted_ppi_can_be_lowered() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut source = Arm64KvmBackend::new(fake);
+        source.set_policy(&Arm64Policy::default()).unwrap();
+        source.set_pending_irq(Some(GicIntId(27))).unwrap();
+        let saved = source.save().unwrap();
+        assert_ne!(saved.gic.as_ref().unwrap().line_level[0] & (1 << 27), 0);
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut target = Arm64KvmBackend::new(fake);
+        target.set_policy(&Arm64Policy::default()).unwrap();
+        target.restore(&saved).unwrap();
+        assert_eq!(target.pending_irq, Some(GicIntId(27)));
+        assert_eq!(target.applied_irq, Some(GicIntId(27)));
+        target.set_pending_irq(None).unwrap();
+        assert_eq!(
+            target.save().unwrap().gic.unwrap().line_level[0] & (1 << 27),
+            0
+        );
+    }
+
+    #[test]
+    fn multiple_asserted_ppis_and_asserted_sgi_lines_refuse_snapshot_and_restore() {
+        for lines in [(1 << 27) | (1 << 28), 1 << 1] {
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            fake.set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+                vgic_level_attr(0),
+                false,
+                u64::from(lines),
+            )
+            .unwrap();
+            let mut source = Arm64KvmBackend::new(fake);
+            source.set_policy(&Arm64Policy::default()).unwrap();
+            assert!(matches!(
+                source.save(),
+                Err(BackendError::Unsupported { .. })
+            ));
+
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            let mut target = Arm64KvmBackend::new(fake);
+            target.set_policy(&Arm64Policy::default()).unwrap();
+            let baseline = target.save().unwrap();
+            let mut malformed = baseline;
+            malformed.gic.as_mut().unwrap().line_level[0] = lines;
+            assert!(matches!(
+                target.restore(&malformed),
+                Err(BackendError::InvalidState)
+            ));
+            assert_eq!(target.save().unwrap(), baseline);
+        }
     }
 
     #[test]

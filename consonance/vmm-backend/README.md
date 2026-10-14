@@ -449,6 +449,14 @@ restore rejects such a KVM GIC record before changing the target. The userspace
 GIC retains its own pending-SPI state. The ignored
 `routed_away_pending_spi_refuses_capture_and_restore` ARM KVM test compares the
 two live routing histories and verifies both refusal paths.
+ARM KVM restore reconstructs the one asserted external PPI input from the saved
+VGIC line level. The next clockevent ACK or DISARM can then lower that line
+through `KVM_IRQ_LINE`, while restored interrupt-acceptance observations remain
+transient. Capture refuses multiple asserted PPIs or any asserted SGI input,
+and restore rejects those records before changing the target because the
+backend controls one external interrupt line at a time. The public VMM
+clockevent regression saves an asserted PPI, restores it into a cold VM, and
+acknowledges it through the ARM MMIO dispatch path.
 Changing an asserted KVM interrupt line deasserts the old input before it
 asserts the new one. A failure on the second write retires the backend because
 the VGIC line level has already changed; capturing at that point would publish
