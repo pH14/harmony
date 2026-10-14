@@ -1108,6 +1108,9 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             .iter()
             .position(|byte| *byte == b' ')
             .ok_or_else(malformed)?;
+        if space == 0 || !rest[..space].iter().all(u8::is_ascii_digit) {
+            return Err(malformed());
+        }
         let length: usize = std::str::from_utf8(&rest[..space])
             .map_err(|_| malformed())?
             .parse()
@@ -1122,7 +1125,7 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             .ok_or_else(malformed)?;
         let (key, value) = record.split_at(equals);
         let value = &value[1..];
-        let value = value.strip_suffix(b"\n").unwrap_or(value);
+        let value = value.strip_suffix(b"\n").ok_or_else(malformed)?;
         match key {
             b"path" => pax.path = Some(value.to_vec()),
             b"linkpath" => pax.link_path = Some(value.to_vec()),
@@ -2920,6 +2923,32 @@ mod tests {
             .concat();
             let archive = write_archive(dir.path(), &format!("padded-{key}.tar"), &body);
             assert_eq!(read_members(&archive).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn malformed_pax_record_framing_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, record) in [
+            ("plus-uid", b"+10 uid=1\n".as_slice()),
+            ("plus-size", b"+11 size=4\n".as_slice()),
+            ("missing-newline", b"9 uid=123".as_slice()),
+        ] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", record),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("bad-pax-{label}.tar"), &body);
+            let dest = dir.path().join(label);
+            std::fs::create_dir(&dest).unwrap();
+
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
         }
     }
 
