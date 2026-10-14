@@ -2,7 +2,8 @@
 import { MOTION_STRIDE, NO_ROOM } from "./swarm.js";
 
 export const CELL_SIZE = 32;
-const HALF_LIFE = 2000;
+const HALF_LIFE_ROLLOUTS = 2000;
+const HALF_LIFE_MS = 2500;
 export const cellRow = (y) => Math.floor((y - 8) / CELL_SIZE);
 export const cellTop = (row) => row * CELL_SIZE + 8;
 export const cellKey = (o) =>
@@ -36,6 +37,7 @@ export class Heatmap {
         y: cellRow(point.observation.y),
         heat: 0,
         work: this.work,
+        time: this.clock(now),
         visits: 0,
         ids: [],
         routes: new Map(),
@@ -52,8 +54,9 @@ export class Heatmap {
   }
   visit(point, now) {
     const cell = this.retain(point, now);
-    cell.heat = this.value(cell) + 1;
+    cell.heat = this.value(cell, now) + 1;
     cell.work = this.work;
+    cell.time = this.clock(now);
     cell.visits++;
     this.peaks = null;
     return cell;
@@ -74,16 +77,18 @@ export class Heatmap {
       }
     }
   }
-  value(cell) {
-    return cell.heat * Math.pow(0.5, (this.work - cell.work) / HALF_LIFE);
+  value(cell, now) {
+    const age = (this.work - cell.work) / HALF_LIFE_ROLLOUTS + Math.max(0, this.clock(now) - cell.time) / HALF_LIFE_MS;
+    return cell.heat * Math.pow(0.5, age);
   }
-  color(cell) {
+  color(cell, now) {
     if (this.peaks === null) {
       this.peaks = new Map();
-      for (const c of this.cells.values()) this.peaks.set(c.level, Math.max(this.peaks.get(c.level) || 0, this.value(c)));
+      this.peakTime = this.clock(now);
+      for (const c of this.cells.values()) this.peaks.set(c.level, Math.max(this.peaks.get(c.level) || 0, this.value(c, now)));
     }
-    const peak = this.peaks.get(cell.level),
-      v = peak > 0 ? Math.sqrt(this.value(cell) / peak) : 0,
+    const peak = this.peaks.get(cell.level) * Math.pow(0.5, (this.clock(now) - this.peakTime) / HALF_LIFE_MS),
+      v = peak > 0 ? Math.min(1, this.value(cell, now) / peak) : 0,
       stops = [
         [64, 124, 181],
         [74, 212, 132],

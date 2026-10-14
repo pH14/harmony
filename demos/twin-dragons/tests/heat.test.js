@@ -6,19 +6,20 @@ import { Heatmap, cellKey, routeIds, validateTape } from "../src/heat.js";
 import twinDragons, { decode } from "../src/games/twin-dragons.js";
 import { QUICKNES_REVISION as CORE_REVISION, canonicalize } from "../src/cores/quicknes.js";
 const ROM_SHA256 = twinDragons.rom.sha256;
-test("heat cools with the search's rollouts without discarding histories, and separates rooms", () => {
+test("heat cools with the search's rollouts and running time without discarding histories, and separates rooms", () => {
   const heat = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 };
   const cell = heat.visit(point, 100);
   assert.equal(cellKey(point.observation), "0:1:5");
   heat.work = 2000;
-  assert.equal(heat.value(cell), 0.5);
+  assert.equal(heat.value(cell, 100), 0.5);
+  assert.equal(heat.value(cell, 2600), 0.25);
   heat.visit(point, 100);
   assert.equal(cell.heat, 1.5);
   assert.deepEqual(cell.ids, [7]);
   assert.equal(cell.visits, 2);
   heat.work = 4000;
-  assert.equal(heat.value(cell), 0.75);
+  assert.equal(heat.value(cell, 100), 0.75);
   heat.visit(
     { ...point, observation: { ...point.observation, level: 40 } },
     100,
@@ -29,15 +30,18 @@ test("heat cools with the search's rollouts without discarding histories, and se
   assert.equal(cell.ids.length, 12);
   assert.equal(cell.ids[0], 15);
 });
-test("a search's heat holds still while other searches run", () => {
+test("paused and inactive searches hold their heat until they run again", () => {
   const original = new Heatmap(),
     child = new Heatmap(),
     point = { observation: { level: 0, x: 52, y: 184 }, retained: 7 },
     cell = original.visit(point, 100);
-  const frozen = original.value(cell);
+  original.setRunning(false, 100);
+  const frozen = original.value(cell, 100);
   child.visit({ ...point, retained: "1:0" }, 100);
   child.work += 10000;
-  assert.equal(original.value(cell), frozen);
+  assert.equal(original.value(cell, 600000), frozen);
+  original.setRunning(true, 600000);
+  assert.equal(original.value(cell, 602500), frozen / 2);
   assert.deepEqual(cell.ids, [7]);
   assert.equal(cell.visits, 1);
 });
@@ -47,15 +51,16 @@ test("colors compare each cell with the hottest cell of its own level", () => {
   heat.work = 20000;
   const hot = heat.visit({ observation: { level: 0, x: 116, y: 184 }, retained: null }, 0);
   const other = heat.visit({ observation: { level: 3, x: 52, y: 184 }, retained: null }, 0);
-  assert.deepEqual(heat.color(hot), [245, 89, 62]);
-  assert.deepEqual(heat.color(other), [245, 89, 62], "Each level has its own hottest cell");
-  const color = heat.color(cool);
+  assert.deepEqual(heat.color(hot, 0), [245, 89, 62]);
+  assert.deepEqual(heat.color(hot, 5000), [245, 89, 62], "The hottest cell stays red as time passes");
+  assert.deepEqual(heat.color(other, 0), [245, 89, 62], "Each level has its own hottest cell");
+  const color = heat.color(cool, 0);
   assert.ok(color[2] > color[0], "A cooled cell stays visible and turns blue");
   assert.equal(cool.visits, 1);
   assert.deepEqual(cool.ids, []);
   heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
   heat.visit({ observation: { level: 0, x: 52, y: 184 }, retained: null }, 0);
-  assert.deepEqual(heat.color(cool), [245, 89, 62], "Colors follow new visits");
+  assert.deepEqual(heat.color(cool, 0), [245, 89, 62], "Colors follow new visits");
 });
 test("route numbers survive new arrivals, the rolling window and repeat visits", () => {
   const heat = new Heatmap(),

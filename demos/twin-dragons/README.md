@@ -205,10 +205,11 @@ rollout starts and eases to about two-thirds opacity as it finishes, followed
 by two faint dots at its position six and twelve game frames earlier. Sprites
 are drawn at least 18 CSS pixels tall, up to 2.5 times their native size.
 Heatmap counts the rollouts that pass through each 32-pixel cell. A cell's
-count halves every 2,000 rollouts, so the map fades at the rate the search
-works, at any pace. Each cell's color runs from blue through red by the square
-root of its count over the hottest cell in the same level, so the cells where
-the search spends most of its rollouts now are red. Heatmap draws nothing else
+count halves every 2,000 rollouts and every 2.5 seconds while that search runs,
+so the map fades quickly at the default pace and keeps up at full speed. Each
+cell's color runs from blue through red by its count over the hottest cell in
+the same level, so the cells where the search spends most of its rollouts now
+are red. Heatmap draws nothing else
 from the search. Cell rows start 8 pixels below a 32-pixel
 boundary of the map, on the 16-pixel tile grid, so a dragon standing on a
 floor sits inside one cell.
