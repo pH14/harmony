@@ -20,8 +20,8 @@ at a caller-selected interval until they halt or reach a limit. It reports
 identical runs, a checkpoint bracket, or a halt-count mismatch, and records
 whether the limit—not termination—ended the
 comparison. A zero-work mismatch is reported even when the limit is zero.
-If both machines have already halted at work zero, the report records termination
-even when the limit is zero.
+If both machines have already halted at the same work count, the report records
+termination for any limit without comparing another checkpoint.
 `bisect_divergence` checks the initial state when the lower bound is zero,
 returns zero if the machines already differ there, and otherwise verifies the
 bracket endpoints and binary searches fresh executions in `O(log(hi - lo))`
