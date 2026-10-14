@@ -15,7 +15,7 @@ def run(*args):
     subprocess.run(args, check=True, capture_output=True, text=True)
 
 
-def hide_text_flag(path):
+def hide_text_bytes(path, mode):
     data = bytearray(path.read_bytes())
     section_offset = struct.unpack_from("<Q", data, 40)[0]
     section_size = struct.unpack_from("<H", data, 58)[0]
@@ -47,7 +47,13 @@ def hide_text_flag(path):
                     ):
                         executable_load = True
             assert executable_load
-            struct.pack_into("<Q", data, header + 8, flags & ~4)
+            if mode == "flags":
+                struct.pack_into("<Q", data, header + 8, flags & ~4)
+            elif mode == "size":
+                assert text_size >= 3
+                struct.pack_into("<Q", data, header + 32, 1)
+            else:
+                raise AssertionError(mode)
             path.write_bytes(data)
             return
     raise AssertionError("fixture has no .text section")
@@ -58,7 +64,7 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
-    def test_executable_segment_with_hidden_text_flag_is_rejected(self):
+    def test_executable_segment_with_hidden_code_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             hazard = root / "hazard.s"
@@ -69,7 +75,7 @@ class CounterScanCoverage(unittest.TestCase):
             run("as", "--64", "-o", str(root / "hazard.o"), str(hazard))
             kernel = root / "vmlinux"
             run("ld", "-nostdlib", "-e", "_start", "-o", str(kernel), str(root / "hazard.o"))
-            hide_text_flag(kernel)
+            hazard_bytes = kernel.read_bytes()
 
             safe = root / "safe.s"
             safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
@@ -82,17 +88,29 @@ class CounterScanCoverage(unittest.TestCase):
             decompressor = root / "arch/x86/boot/compressed/vmlinux"
             setup.parent.mkdir(parents=True)
             decompressor.parent.mkdir(parents=True)
-            hazard_bytes = kernel.read_bytes()
             safe_bytes = (root / "safe.elf").read_bytes()
             for target in (kernel, setup, decompressor):
-                kernel.write_bytes(safe_bytes)
-                setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
-                target.write_bytes(hazard_bytes)
-                with self.subTest(target=target):
-                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn(".text", result.stderr)
+                target.write_bytes(safe_bytes)
+            result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            for mode in ("flags", "size"):
+                kernel.write_bytes(hazard_bytes)
+                hide_text_bytes(kernel, mode)
+                hidden_bytes = kernel.read_bytes()
+                for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
+                    kernel.write_bytes(safe_bytes)
+                    setup.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_bytes)
+                    target.write_bytes(hidden_bytes)
+                    with self.subTest(mode=mode, target=tag):
+                        result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(f"{tag} (", result.stderr)
+                        if mode == "flags":
+                            self.assertIn("code section .text is not executable PROGBITS", result.stderr)
+                        else:
+                            self.assertIn("unclaimed", result.stderr)
 
 
 if __name__ == "__main__":
