@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "39c24e568",
+    "commit": "eddeeaf3a",
     "build": "locally verified static build",
-    "checks": "npm test 61/61; browser test on the merged build",
-    "asset_manifest_sha256": "2a81bea9396f028c5838d856e1b1b71d4a30f2985b7323419aef76c7bc57eff1"
+    "checks": "npm test 61/61; browser famidash, smb, swarm, tour, browser; campaign oracle twin-dragons and famidash",
+    "asset_manifest_sha256": "11c92fdd2dc978f559d11eaf18b0a9f528809b074bd9550c534038d4925ec609"
   }
 }
