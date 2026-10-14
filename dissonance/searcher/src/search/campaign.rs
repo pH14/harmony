@@ -1299,6 +1299,19 @@ fn verify_selector_annotation(
     }
 }
 
+fn verify_selector_observed_tiers(
+    draw: &SelectorDraw,
+    observed_progress_tiers: usize,
+) -> Result<(), Box<dyn Error>> {
+    if draw
+        .tier_rank
+        .is_some_and(|rank| usize::from(rank) >= observed_progress_tiers)
+    {
+        return Err("tier rank exceeds observed progress tiers at selection".into());
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn derive_selection_seed(campaign_seed: u64) -> u64 {
     let digest = Sha256::digest(campaign_seed.to_le_bytes());
@@ -4550,6 +4563,13 @@ where
     }
 
     core.archive.prepare_selection();
+    let mut observed_progress_tiers = BTreeSet::new();
+    for entry in &core.archive.entries {
+        observed_progress_tiers.insert(entry.key.progress());
+        if observed_progress_tiers.len() > usize::from(u8::MAX) {
+            break;
+        }
+    }
 
     let replay_window_depth = schedule_policy_window(&header.schedule_policy)
         .ok_or("campaign stream schedule policy is not recognized")?;
@@ -4596,6 +4616,7 @@ where
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
+    let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -4605,6 +4626,7 @@ where
         .take(replay_window_depth)
         .enumerate()
     {
+        replay_job_tier_limits.insert(job_slot, observed_progress_tiers.len());
         let (energy, continuation) =
             continuation_attempt(&mut core, header.campaign_seed, u64::try_from(job_slot)?);
         replay_continuation_energy.insert(job_slot, energy);
@@ -4756,6 +4778,7 @@ where
                     return Err("continuations cannot be recorded skips".into());
                 }
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
+                verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
@@ -4787,6 +4810,9 @@ where
                     );
                 }
                 let replay_job_slot = usize::try_from(job.reservation)?;
+                let selector_tier_limit = replay_job_tier_limits
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt selection tier bound")?;
                 if (job.mixture_weight, job.splice_weight)
                     != replay_job_weights
                         .remove(&replay_job_slot)
@@ -4990,6 +5016,14 @@ where
                     )
                     .into());
                 }
+                if observed_progress_tiers.len() <= usize::from(u8::MAX) {
+                    for index in retained_archive_indexes(&core, &decisions) {
+                        observed_progress_tiers.insert(core.archive.entries[index].key.progress());
+                        if observed_progress_tiers.len() > usize::from(u8::MAX) {
+                            break;
+                        }
+                    }
+                }
                 if duration_admission.applied {
                     let draw = duration_draw
                         .ok_or("duration application was reported without a duration draw")?;
@@ -5037,6 +5071,7 @@ where
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
+                verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
@@ -5121,6 +5156,7 @@ where
                     );
                 }
                 if let Some(parent_id) = replay_job_parents.get(next_slot) {
+                    replay_job_tier_limits.insert(next_slot, observed_progress_tiers.len());
                     let (energy, continuation) = continuation_attempt(
                         &mut core,
                         header.campaign_seed,
@@ -6309,6 +6345,29 @@ mod tests {
                     .to_string();
             assert!(error.contains("required reservations"), "{error}");
         }
+    }
+
+    #[test]
+    fn replay_rejects_a_tier_rank_absent_from_the_selection_history() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["archive_entry_limit"] = serde_json::json!(256);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let first_job = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+            })
+            .unwrap();
+        let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
+        assert_eq!(job["selector"]["tier_rank"], 0);
+        job["selector"]["tier_rank"] = serde_json::json!(200);
+        lines[first_job] = serde_json::to_string(&job).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a nonexistent tier in a one-tier campaign")
+                .to_string();
+        assert!(error.contains("observed progress tiers"), "{error}");
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,

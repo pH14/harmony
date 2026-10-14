@@ -359,7 +359,13 @@ progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
 `tier_rank_shift` is three unless the workload says otherwise, so the leading
 tier takes most of the draws, and no tier holding an entry takes zero. The
-leading tier gives up weight while it finds nothing new. Each tier counts its
+replay verifier bounds a recorded rank by completed progress levels in
+previously admitted archive entries when that selection was reserved. The
+bound includes historical levels that may no longer be selectable, so it
+rejects impossible ranks without claiming to
+reconstruct every selector draw.
+
+The leading tier gives up weight while it finds nothing new. Each tier counts its
 draws since a new cell last appeared in it and keeps the longest such run; its
 pace is that longest run or its cell count, whichever is larger. When the
 current count passes twice the pace, the leading tier's weight halves, and it
