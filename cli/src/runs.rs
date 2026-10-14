@@ -22,7 +22,7 @@ pub struct Destination {
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub format: String,
-    pub binary_sha256: String,
+    pub binary_identity: String,
     pub architecture: String,
     pub mode: String,
     pub status: String,
@@ -90,8 +90,10 @@ impl Manifest {
         let runner_identity = crate::runners::identity(&config.runner)?;
         let checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         Ok(Self {
-            format: "harmony-run-v2".into(),
-            binary_sha256: file_digest(&std::env::current_exe()?)?,
+            format: "harmony-run-v3".into(),
+            binary_identity: consonance_client::image_identity::loaded_executable_identity(
+                std::process::id(),
+            )?,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
             status: "running".into(),
@@ -108,7 +110,7 @@ impl Manifest {
 
     pub fn read(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_slice(&fs::read(path.join("manifest.json"))?)?;
-        if manifest.format != "harmony-run-v2" {
+        if manifest.format != "harmony-run-v3" {
             return Err("unsupported run format".into());
         }
         Ok(manifest)
@@ -150,7 +152,9 @@ impl Manifest {
         if self.architecture != std::env::consts::ARCH {
             return Err("run architecture differs from this host".into());
         }
-        if self.binary_sha256 != file_digest(&std::env::current_exe()?)? {
+        if self.binary_identity
+            != consonance_client::image_identity::loaded_executable_identity(std::process::id())?
+        {
             return Err("this run requires the exact Harmony executable that recorded it".into());
         }
         crate::runners::verify(&self.config.runner, &self.runner_identity)?;
@@ -255,6 +259,70 @@ pub fn store_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
+    #[allow(clippy::disallowed_methods)]
+    #[test]
+    fn manifest_identity_follows_loaded_executable_after_path_replacement() {
+        let child_directory = std::env::var_os("HARMONY_IDENTITY_CHILD_DIRECTORY");
+        if let Some(directory) = child_directory {
+            let directory = PathBuf::from(directory);
+            let mut config = Config::default();
+            config.runner.kind = "test".into();
+            let manifest = Manifest::new(config, "search").unwrap();
+            fs::write(directory.join("ready"), b"ready").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !directory.join("continue").exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "parent did not resume child"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            manifest.verify(&directory).unwrap();
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let running = directory.path().join("running-test");
+        let replacement = directory.path().join("replacement-test");
+        let original = std::env::current_exe().unwrap();
+        fs::copy(&original, &running).unwrap();
+        fs::copy(&original, &replacement).unwrap();
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&replacement)
+            .unwrap()
+            .write_all(b"changed-executable-file")
+            .unwrap();
+        let before = file_digest(&running).unwrap();
+        let child = std::process::Command::new(&running)
+            .args([
+                "--exact",
+                "runs::tests::manifest_identity_follows_loaded_executable_after_path_replacement",
+                "--nocapture",
+            ])
+            .env("HARMONY_IDENTITY_CHILD_DIRECTORY", directory.path())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !directory.path().join("ready").exists() {
+            assert!(std::time::Instant::now() < deadline, "child did not start");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fs::rename(replacement, &running).unwrap();
+        assert_ne!(before, file_digest(&running).unwrap());
+        fs::write(directory.path().join("continue"), b"continue").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     #[test]
     fn named_runs_are_fresh_and_never_overwrite() {
         let dir = tempfile::tempdir().unwrap();
