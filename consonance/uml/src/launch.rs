@@ -511,6 +511,10 @@ impl Guest {
         {
             let host = launch.host_identity()?;
             command.env("HARMONY_UML_CPUINFO", &host.boot_cpuinfo);
+            command.env("HARMONY_UML_HWCAP", host.auxv.hwcap.to_string());
+            command.env("HARMONY_UML_HWCAP2", host.auxv.hwcap2.to_string());
+            command.env("HARMONY_UML_MINSIGSTKSZ", host.auxv.minsigstksz.to_string());
+            command.env("HARMONY_UML_PLATFORM", &host.auxv.platform);
             enforce_host_cpu(&mut command, host.processor, launch.shared_host)?;
         }
         let child = command.spawn()?;
@@ -964,21 +968,31 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
-    fn guest_start_passes_the_admitted_cpuinfo_lines() {
+    fn guest_start_passes_the_admitted_host_imports() {
         let directory = tempfile::tempdir().unwrap();
         let mut launch = Launch::new(directory.path().to_path_buf());
         let host = launch.host_identity().unwrap();
-        launch.console_tail_bytes = host.boot_cpuinfo.len() + 1;
-        launch.console_limit_bytes = (host.boot_cpuinfo.len() + 1) as u64;
+        let expected = format!(
+            "{}|{}|{}|{}|{}",
+            host.boot_cpuinfo,
+            host.auxv.hwcap,
+            host.auxv.hwcap2,
+            host.auxv.minsigstksz,
+            host.auxv.platform
+        );
+        launch.console_tail_bytes = expected.len() + 1;
+        launch.console_limit_bytes = (expected.len() + 1) as u64;
         let work = launch.work_directory().unwrap();
         let mut command = Command::new("sh");
-        command.arg("-c").arg("printf %s \"$HARMONY_UML_CPUINFO\"");
+        command.arg("-c").arg(
+            "printf '%s|%s|%s|%s|%s' \"$HARMONY_UML_CPUINFO\" \"$HARMONY_UML_HWCAP\" \"$HARMONY_UML_HWCAP2\" \"$HARMONY_UML_MINSIGSTKSZ\" \"$HARMONY_UML_PLATFORM\"",
+        );
         let exit = Guest::start(command, work, &launch)
             .unwrap()
             .wait()
             .unwrap();
         assert_eq!(exit.reason, ExitReason::Exited(0));
-        assert_eq!(exit.console, host.boot_cpuinfo.as_bytes());
+        assert_eq!(exit.console, expected.as_bytes());
     }
 
     #[test]
@@ -1333,7 +1347,7 @@ mod tests {
         let profile = VerifiedProfile::for_test(
             directory.path().to_path_buf(),
             Profile {
-                schema: 3,
+                schema: 4,
                 architecture: std::env::consts::ARCH.to_owned(),
                 kernel_version: String::new(),
                 userspace: "seccomp".to_owned(),

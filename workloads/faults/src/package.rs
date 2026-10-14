@@ -406,9 +406,10 @@ mod live {
     fn config(options: &Options) -> Result<FaultConfig, String> {
         let backend = match &options.uml_profile {
             None => GuestBackend::Vm,
-            Some(profile) => {
-                GuestBackend::Uml(UmlGuest::load(profile, options.output.join("uml-work"))?)
-            }
+            Some(profile) => GuestBackend::Uml(Box::new(UmlGuest::load(
+                profile,
+                options.output.join("uml-work"),
+            )?)),
         };
         Ok(FaultConfig {
             knobs: options.knobs.clone(),

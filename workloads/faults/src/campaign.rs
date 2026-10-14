@@ -1178,7 +1178,7 @@ mod tests {
     fn a_uml_profile_separates_identity_and_formats_from_the_vm() {
         let uml = |identity: &str| {
             let mut config = config(&[]);
-            config.backend = GuestBackend::Uml(crate::consonance::UmlGuest {
+            config.backend = GuestBackend::Uml(Box::new(crate::consonance::UmlGuest {
                 profile: "profile".into(),
                 profile_identity_sha256: identity.to_owned(),
                 host: uml::HostIdentity {
@@ -1187,10 +1187,11 @@ mod tests {
                     cpu_model: identity.to_owned(),
                     cpu_features: String::new(),
                     boot_cpuinfo: String::new(),
+                    auxv: uml::HostAuxv::default(),
                 },
                 identity: identity.to_owned(),
                 work_parent: "work".into(),
-            });
+            }));
             FaultWorkload::new(b"kernel", b"initramfs", &config)
         };
         let vm = game();
