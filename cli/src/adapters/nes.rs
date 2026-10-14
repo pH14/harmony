@@ -226,7 +226,8 @@ impl Package for Nes {
                 Err("the NES guest adapter requires Linux".into())
             }
         };
-        let result = result.and_then(|()| collect_search(&out, &search.output, &mut m));
+        let result =
+            result.and_then(|evidence| collect_search(&out, &search.output, &evidence, &mut m));
         finish(&out, &mut m, result)
     }
 }
@@ -479,20 +480,30 @@ fn continue_search(request: Request) -> Result<u8> {
             Err("the NES guest adapter requires Linux".into())
         }
     };
-    let result = result.and_then(|()| collect_search(&out, &options.output, &mut m));
+    let result =
+        result.and_then(|evidence| collect_search(&out, &options.output, &evidence, &mut m));
     finish(&out, &mut m, result)
 }
 
-fn collect_search(out: &Path, package: &Path, m: &mut Manifest) -> Result<u8> {
+fn collect_search(
+    out: &Path,
+    package: &Path,
+    evidence: &nes_workload::package::SearchEvidence,
+    m: &mut Manifest,
+) -> Result<u8> {
     for entry in fs::read_dir(package)? {
         let entry = entry?;
         if entry.file_type()?.is_file() && entry.file_name() != "origin-input.json" {
             fs::rename(entry.path(), out.join(entry.file_name()))?;
         }
     }
-    let input: serde_json::Value =
-        serde_json::from_slice(&fs::read(out.join("witness-input.json"))?)?;
-    let report: serde_json::Value = serde_json::from_slice(&fs::read(out.join("result.json"))?)?;
+    if fs::read(out.join("witness-input.json"))? != evidence.witness_input
+        || fs::read(out.join("result.json"))? != evidence.result
+    {
+        return Err("NES search evidence differs from the returned result".into());
+    }
+    let input: serde_json::Value = serde_json::from_slice(&evidence.witness_input)?;
+    let report: serde_json::Value = serde_json::from_slice(&evidence.result)?;
     let solved = report["solved"]
         .as_bool()
         .ok_or("NES search result has no solved outcome")?;
@@ -527,18 +538,87 @@ fn record_witness(
 mod tests {
     use super::*;
     #[test]
+    fn search_rejects_result_or_input_replaced_after_package_return() {
+        for artifact in ["result.json", "witness-input.json"] {
+            let out = tempfile::tempdir().unwrap();
+            let package = out.path().join("package");
+            fs::create_dir(&package).unwrap();
+            let input = serde_json::json!({"actions":[]});
+            let produced = serde_json::json!({
+                "format":"harmony-search-result-v1",
+                "backend":"native",
+                "solved":false,
+                "witness":{"victory":false,"snapshot_sha256":"original"},
+                "endpoint":{"snapshot_sha256":"original"}
+            });
+            let evidence = nes_workload::package::SearchEvidence {
+                witness_input: serde_json::to_vec(&input).unwrap(),
+                result: serde_json::to_vec(&produced).unwrap(),
+            };
+            fs::write(package.join("witness-input.json"), &evidence.witness_input).unwrap();
+            fs::write(package.join("result.json"), &evidence.result).unwrap();
+            let replacement = if artifact == "result.json" {
+                serde_json::json!({
+                    "format":"harmony-search-result-v1",
+                    "backend":"native",
+                    "solved":true,
+                    "witness":{"victory":true,"snapshot_sha256":"forged"},
+                    "endpoint":{"snapshot_sha256":"forged"}
+                })
+            } else {
+                serde_json::json!({"actions":[{"buttons":1,"hold_frames":2}]})
+            };
+            fs::write(
+                package.join(artifact),
+                serde_json::to_vec(&replacement).unwrap(),
+            )
+            .unwrap();
+
+            let mut config = Config::default();
+            config.workload.package = "nes".into();
+            config.runner.kind = "quicknes".into();
+            let mut manifest = Manifest::new(config, "search").unwrap();
+            let result = collect_search(out.path(), &package, &evidence, &mut manifest);
+            assert!(finish(out.path(), &mut manifest, result).is_err());
+            let saved = Manifest::read(out.path()).unwrap();
+            assert_eq!(saved.status, "failed");
+            assert_ne!(saved.payload["finding"], true);
+        }
+    }
+
+    #[test]
+    fn search_accepts_unchanged_package_evidence() {
+        let out = tempfile::tempdir().unwrap();
+        let package = out.path().join("package");
+        fs::create_dir(&package).unwrap();
+        let evidence = nes_workload::package::SearchEvidence {
+            witness_input: serde_json::to_vec(&serde_json::json!({"actions":[]})).unwrap(),
+            result: serde_json::to_vec(&serde_json::json!({
+                "solved":false,"witness":{"victory":false,"snapshot_sha256":"original"}
+            }))
+            .unwrap(),
+        };
+        fs::write(package.join("witness-input.json"), &evidence.witness_input).unwrap();
+        fs::write(package.join("result.json"), &evidence.result).unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        assert_eq!(
+            collect_search(out.path(), &package, &evidence, &mut manifest).unwrap(),
+            0
+        );
+        assert_eq!(manifest.payload["finding"], false);
+    }
+
+    #[test]
     fn search_rejects_a_claimed_solution_without_fresh_replay_victory() {
         let out = tempfile::tempdir().unwrap();
         let package = out.path().join("package");
         fs::create_dir(&package).unwrap();
-        fs::write(
-            package.join("witness-input.json"),
-            serde_json::to_vec(&serde_json::json!({"actions":[]})).unwrap(),
-        )
-        .unwrap();
-        fs::write(
-            package.join("result.json"),
-            serde_json::to_vec(&serde_json::json!({
+        let evidence = nes_workload::package::SearchEvidence {
+            witness_input: serde_json::to_vec(&serde_json::json!({"actions":[]})).unwrap(),
+            result: serde_json::to_vec(&serde_json::json!({
                 "format":"harmony-search-result-v1",
                 "backend":"native",
                 "solved":true,
@@ -546,13 +626,14 @@ mod tests {
                 "endpoint":{"snapshot_sha256":"fresh"}
             }))
             .unwrap(),
-        )
-        .unwrap();
+        };
+        fs::write(package.join("witness-input.json"), &evidence.witness_input).unwrap();
+        fs::write(package.join("result.json"), &evidence.result).unwrap();
         let mut config = Config::default();
         config.workload.package = "nes".into();
         config.runner.kind = "quicknes".into();
         let mut manifest = Manifest::new(config, "search").unwrap();
-        let result = collect_search(out.path(), &package, &mut manifest);
+        let result = collect_search(out.path(), &package, &evidence, &mut manifest);
         assert!(finish(out.path(), &mut manifest, result).is_err());
         let saved = Manifest::read(out.path()).unwrap();
         assert_eq!(saved.status, "failed");
