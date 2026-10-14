@@ -353,6 +353,12 @@ rejected policy leaves the prior guest identity intact; a failed HVF write
 retires the vCPU because the prior identity may be partly replaced. The live
 `rejected_policy_preserves_live_identity` and
 `failed_policy_write_retires_mutated_vcpu` tests exercise both boundaries.
+HVF also retires the vCPU if servicing a trapped system-register fault fails
+after it begins writing the exception registers. Retrying from a partly changed
+PSTATE would take a different exception path and replace the original SPSR.
+The live `failed_fault_completion_retires_partly_changed_vcpu` test forces that
+late failure and checks that the backend refuses a retry and capture.
+
 Policy validation returns `BackendError::IdRegisterAboveHost` when any 4-bit field asks for
 more than that host value. The guest sizes its use of the hardware from these
 fields, and Hypervisor.framework accepts any value written to them. ARM KVM

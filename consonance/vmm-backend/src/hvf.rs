@@ -448,6 +448,8 @@ pub struct HvfBackend {
     fail_flush_after_staging: bool,
     #[cfg(test)]
     fail_policy_after_first_write: bool,
+    #[cfg(test)]
+    fail_fault_after_pstate: bool,
 }
 
 struct FlushStub {
@@ -518,6 +520,8 @@ impl HvfBackend {
             fail_flush_after_staging: false,
             #[cfg(test)]
             fail_policy_after_first_write: false,
+            #[cfg(test)]
+            fail_fault_after_pstate: false,
         };
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
@@ -1072,12 +1076,20 @@ impl Backend for HvfBackend {
                     self.sysreg(HV_SYS_REG_SCTLR_EL1)?,
                     self.sysreg(HV_SYS_REG_VBAR_EL1)?,
                 )?;
+                self.state_poisoned = true;
                 self.set_sysreg(HV_SYS_REG_ELR_EL1, exception.elr_el1)?;
                 self.set_sysreg(HV_SYS_REG_SPSR_EL1, exception.spsr_el1)?;
                 self.set_sysreg(HV_SYS_REG_ESR_EL1, exception.esr_el1)?;
                 self.set_reg(HV_REG_CPSR, exception.pstate)?;
+                #[cfg(test)]
+                if self.fail_fault_after_pstate {
+                    return Err(BackendError::Internal(
+                        "injected HVF fault completion failure",
+                    ));
+                }
                 self.set_reg(HV_REG_PC, exception.pc)?;
                 self.pending = Pending::None;
+                self.state_poisoned = false;
                 Ok(())
             }
             _ => Err(BackendError::BadCompletion),
@@ -1436,6 +1448,48 @@ mod tests {
                 Err(BackendError::Internal("backend state mutation failed"))
             ));
         }
+    }
+
+    #[test]
+    #[ignore = "live HVF fault-completion boundary; run on Apple silicon"]
+    fn failed_fault_completion_retires_partly_changed_vcpu() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_reg(HV_REG_PC, 0x1004).unwrap();
+        backend.set_reg(HV_REG_CPSR, PSTATE_MODE_EL0T).unwrap();
+        backend.set_sysreg(HV_SYS_REG_VBAR_EL1, 0x8000).unwrap();
+        let original_pstate = backend.reg(HV_REG_CPSR).unwrap();
+        backend.pending = Pending::SysregRead { reg: 0 };
+        backend.fail_fault_after_pstate = true;
+        assert!(matches!(
+            backend.complete_fault(),
+            Err(BackendError::Internal(
+                "injected HVF fault completion failure"
+            ))
+        ));
+        assert_eq!(
+            backend.sysreg(HV_SYS_REG_SPSR_EL1).unwrap(),
+            original_pstate
+        );
+        let changed_pstate = backend.reg(HV_REG_CPSR).unwrap();
+        assert_ne!(changed_pstate, original_pstate);
+        backend.fail_fault_after_pstate = false;
+        assert!(matches!(
+            backend.complete_fault(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert_eq!(
+            backend.sysreg(HV_SYS_REG_SPSR_EL1).unwrap(),
+            original_pstate
+        );
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     #[test]
