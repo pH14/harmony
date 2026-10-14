@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "ece7d2f67",
+    "commit": "d4659ec4a",
     "build": "locally verified static build",
-    "checks": "Production build, the browser, Super Mario Bros. and room camera browser checks in Chrome, and the unit tests on the source branch.",
-    "asset_manifest_sha256": "72d0ccbec3e0bff8adcb117413c3a1c1e9200b8d6dcda6de0bcc098530ba7755"
+    "checks": "Runtime and production build, the full browser suite and unit tests on the source branch, and the browser and Super Mario Bros. checks in Chrome on this build.",
+    "asset_manifest_sha256": "d2d8d0e642175146f779aab8332812d4f1d1c80360f40496592c1b2395557e6f"
   }
 }
