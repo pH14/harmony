@@ -463,9 +463,7 @@ try {
   await next(landscape, 1);
   await landscape.locator("#tour-skip").click();
   await landscape.waitForFunction(
-    (id) =>
-      document.querySelector("#film-title").dataset.stateId === id &&
-      !document.querySelector("#take-control").disabled,
+    (id) => document.querySelector("#film-title").dataset.stateId === id && !document.querySelector("#guided-tour").open,
     landscapeManual,
   );
   assert.equal(
