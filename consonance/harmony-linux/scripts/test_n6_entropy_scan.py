@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-or-later
+import importlib.util
+import platform
+import struct
+import tempfile
+import unittest
+from pathlib import Path
+
+
+SPEC = importlib.util.spec_from_file_location(
+    "entropy_scan", Path(__file__).with_name("n6-entropy-scan.py")
+)
+scan = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(scan)
+
+
+def elf(machine, text, safe, text_flags):
+    names = b"\0.text\0.safe\0.shstrtab\0"
+    code = text + safe
+    code_offset = 384
+    data = bytearray(code_offset + len(code) + len(names))
+    ident = b"\x7fELF\x02\x01\x01" + bytes(9)
+    struct.pack_into(
+        scan.ELF_HEADER,
+        data,
+        0,
+        ident,
+        2,
+        machine,
+        1,
+        0x1000,
+        64,
+        128,
+        0,
+        64,
+        56,
+        1,
+        64,
+        4,
+        3,
+    )
+    struct.pack_into(
+        scan.PROGRAM_HEADER,
+        data,
+        64,
+        scan.PT_LOAD,
+        scan.PF_X | 4,
+        code_offset,
+        0x1000,
+        0x1000,
+        len(code),
+        len(code),
+        1,
+    )
+    section = "<IIQQQQIIQQ"
+    struct.pack_into(section, data, 192, 1, 1, text_flags, 0x1000, code_offset, len(text), 0, 0, 1, 0)
+    struct.pack_into(
+        section,
+        data,
+        256,
+        7,
+        1,
+        6,
+        0x1000 + len(text),
+        code_offset + len(text),
+        len(safe),
+        0,
+        0,
+        1,
+        0,
+    )
+    struct.pack_into(
+        section,
+        data,
+        320,
+        13,
+        3,
+        0,
+        0,
+        code_offset + len(code),
+        len(names),
+        0,
+        0,
+        1,
+        0,
+    )
+    data[code_offset : code_offset + len(code)] = code
+    data[code_offset + len(code) :] = names
+    return data
+
+
+class EntropyScanTests(unittest.TestCase):
+    def check(self, data):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "guest"
+            path.write_bytes(data)
+            return scan.scan(path)
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_section_flag_cannot_hide_loaded_rdrand(self):
+        for flags in (6, 2):
+            with self.subTest(text_flags=flags):
+                data = elf(scan.EM_X86_64, b"\x0f\xc7\xf0", b"\xc3", flags)
+                self.assertEqual(
+                    self.check(data), [("<exec-segment 0>", 0, "RDRAND")]
+                )
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_displacement_is_not_an_entropy_instruction(self):
+        lea = b"\x48\x8d\x3d\x0f\xc7\xf8\x00"
+        self.assertEqual(self.check(elf(scan.EM_X86_64, lea, b"\xc3", 6)), [])
+
+    def test_arm_section_flag_cannot_hide_loaded_rndr(self):
+        rndr = scan.RNDR.to_bytes(4, "little")
+        ret = b"\xc0\x03\x5f\xd6"
+        self.assertEqual(
+            self.check(elf(scan.EM_AARCH64, rndr, ret, 2)),
+            [("<exec-segment 0>", 0, "RNDR")],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
