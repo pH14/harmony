@@ -4305,6 +4305,11 @@ mod tests {
             packed,
             crate::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap()
         );
+        let fallback_required = match std::fs::read(staged.rootfs.join("etc/passwd")) {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => true,
+            Ok(_) => false,
+            Err(error) => panic!("unexpected account-file read error: {error}"),
+        };
         let credentials = staged
             .config
             .resolve_process_credentials(&staged.rootfs)
@@ -4338,12 +4343,21 @@ mod tests {
             )
             .unwrap();
         };
-        assert_preparation_modes();
+        if fallback_required {
+            assert_preparation_modes();
+        }
         let request = crate::bundle::LaunchRequest::new(vec!["/bin/true".into()]);
         let prepared = crate::bundle::prepare(&staged, &request).unwrap();
         assert_eq!((prepared.execution.uid, prepared.execution.gid), (123, 456));
         assert_eq!(prepared.rootfs_segment, packed);
         assert_preparation_modes();
+        for path in ["etc", "usr"] {
+            std::fs::set_permissions(
+                staged.rootfs.join(path),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+        }
     }
 
     #[test]
