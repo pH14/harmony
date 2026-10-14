@@ -1020,9 +1020,9 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 if name.is_empty() {
                     return Err(ImageError::Tar("archive member has an empty name".into()));
                 }
-                if host_dependent_drive_prefix(&name) {
+                if host_dependent_tar_prefix(&name) {
                     return Err(ImageError::Tar(
-                        "archive member has a host-dependent drive prefix".into(),
+                        "archive member has a host-dependent prefix".into(),
                     ));
                 }
                 if name.len() > MAX_PORTABLE_MEMBER_PATH {
@@ -1050,7 +1050,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     return Err(ImageError::Tar("hardlink target is too long".into()));
                 }
                 if typeflag == b'1'
-                    && host_dependent_drive_prefix(
+                    && host_dependent_tar_prefix(
                         link_path
                             .as_deref()
                             .or(gnu_link.as_deref())
@@ -1058,7 +1058,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     )
                 {
                     return Err(ImageError::Tar(
-                        "hardlink target has a host-dependent drive prefix".into(),
+                        "hardlink target has a host-dependent prefix".into(),
                     ));
                 }
                 if typeflag == b'2' {
@@ -1221,8 +1221,8 @@ fn check_device_number(field: &[u8]) -> Result<(), ImageError> {
     parse_octal(field).map(|_| ())
 }
 
-fn host_dependent_drive_prefix(name: &[u8]) -> bool {
-    name.get(1) == Some(&b':') && name[0].is_ascii_alphabetic()
+fn host_dependent_tar_prefix(name: &[u8]) -> bool {
+    name.first() == Some(&b'\\') || (name.get(1) == Some(&b':') && name[0].is_ascii_alphabetic())
 }
 
 fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
@@ -2908,6 +2908,46 @@ mod tests {
     }
 
     #[test]
+    fn leading_backslash_member_names_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("raw", raw_member(b"\\foo", b'0', "", b"data")),
+            (
+                "pax",
+                [
+                    raw_member(
+                        b"PaxHeaders/0",
+                        b'x',
+                        "",
+                        pax_record("path", "\\foo").as_bytes(),
+                    ),
+                    raw_member(b"valid", b'0', "", b"data"),
+                ]
+                .concat(),
+            ),
+            (
+                "gnu",
+                [
+                    raw_member(b"././@LongLink", b'L', "", b"\\foo\0"),
+                    raw_member(b"valid", b'0', "", b"data"),
+                ]
+                .concat(),
+            ),
+        ];
+        for (label, body) in cases {
+            let archive = write_archive(dir.path(), &format!("backslash-name-{label}.tar"), &body);
+            let dest = dir.path().join(format!("backslash-name-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
     fn host_dependent_drive_prefix_hardlink_targets_are_rejected() {
         let dir = tempfile::tempdir().unwrap();
         let setup = [
@@ -2946,6 +2986,55 @@ mod tests {
                 &[setup.as_slice(), link.as_slice()].concat(),
             );
             let dest = dir.path().join(format!("drive-link-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn leading_backslash_hardlink_targets_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let setup = [
+            raw_member(b"./\\foo", b'0', "", b"first"),
+            raw_member(b"foo", b'0', "", b"second"),
+        ]
+        .concat();
+        let cases = [
+            ("raw", raw_member(b"copy", b'1', "\\foo", b"")),
+            (
+                "pax",
+                [
+                    raw_member(
+                        b"PaxHeaders/0",
+                        b'x',
+                        "",
+                        pax_record("linkpath", "\\foo").as_bytes(),
+                    ),
+                    raw_member(b"copy", b'1', "./\\foo", b""),
+                ]
+                .concat(),
+            ),
+            (
+                "gnu",
+                [
+                    raw_member(b"././@LongLink", b'K', "", b"\\foo\0"),
+                    raw_member(b"copy", b'1', "./\\foo", b""),
+                ]
+                .concat(),
+            ),
+        ];
+        for (label, link) in cases {
+            let archive = write_archive(
+                dir.path(),
+                &format!("backslash-link-{label}.tar"),
+                &[setup.as_slice(), link.as_slice()].concat(),
+            );
+            let dest = dir.path().join(format!("backslash-link-{label}"));
             std::fs::create_dir(&dest).unwrap();
             assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
             assert!(matches!(
@@ -3012,6 +3101,44 @@ mod tests {
         assert_eq!(
             std::fs::read(overridden_dest.join("copy")).unwrap(),
             b"first"
+        );
+    }
+
+    #[test]
+    fn portable_backslash_paths_and_overridden_base_fields_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "portable-backslash.tar",
+            &[
+                raw_member(b"./\\foo", b'0', "", b"first"),
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "valid").as_bytes(),
+                ),
+                raw_member(b"\\foo", b'0', "", b"other"),
+                raw_member(
+                    b"PaxHeaders/1",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "./\\foo").as_bytes(),
+                ),
+                raw_member(b"copy", b'1', "\\foo", b""),
+                raw_member(b"link", b'2', "\\foo", b""),
+            ]
+            .concat(),
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        assert_eq!(read_members(&archive).unwrap().len(), 4);
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("copy")).unwrap(), b"first");
+        assert_eq!(std::fs::read(dest.join("valid")).unwrap(), b"other");
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("\\foo")
         );
     }
 
