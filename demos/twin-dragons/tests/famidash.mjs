@@ -120,4 +120,28 @@ await page.waitForFunction(() => Number(document.querySelector("#attempts").text
 assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Nothing scrolls sideways");
 assert.deepEqual(errors, []);
 console.log("Playing from the selected state and branching starts a search whose root replays exactly.");
+
+const dash = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+dash.on("pageerror", (error) => errors.push(error.message));
+await dash.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
+await dash.goto(`${url}/?game=famidash&level=21&pace=0`);
+await dash.waitForFunction(() => Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 50, null, { timeout: 60000 });
+await dash.locator("#pause").click();
+const dashView = dash.locator('.area-map[data-map="21"]'), dashPart = dash.locator('.map-row[data-map="21"] .room-part');
+const dashStrip = await dash.locator('.level-overview[data-map="21"]').boundingBox();
+const centerY = async () => Number(await dashView.getAttribute("data-center-y"));
+await dash.mouse.click(dashStrip.x + 4, dashStrip.y + 1);
+const top = await centerY();
+await dash.mouse.click(dashStrip.x + 4, dashStrip.y + dashStrip.height - 1);
+assert.ok((await centerY()) > top + 8, "Clicking the bottom of the level strip moves the view down");
+for (const dir of [-1, 1]) {
+  await dash.waitForFunction((key) => document.querySelector('.map-row[data-map="21"] .room-part').dataset[key] === "true", dir > 0 ? "panDown" : "panUp");
+  const before = await centerY();
+  await dashView.hover();
+  await dashPart.locator(`.pan-edge[data-axis="y"][data-dir="${dir}"]`).hover();
+  await dash.waitForFunction(([dir, before]) => dir * (Number(document.querySelector('.area-map[data-map="21"]').dataset.centerY) - before) > 8, [dir, before]);
+  await dash.mouse.move(2, 890);
+}
+assert.deepEqual(errors, []);
+console.log("On Dash, the level strip and the top and bottom pan edges move the view up and down.");
 await browser.close();

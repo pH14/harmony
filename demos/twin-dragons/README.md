@@ -246,7 +246,9 @@ glides about half a screen. A mouse click on a chevron selects the cell
 beneath it. A strip under the view shows the whole level, with
 each live sprite as a dot (or the heat cells in Heatmap mode) and a box for the
 part on screen. Clicking or dragging the strip moves the view there, and a
-sideways scroll on the map or the strip pans it. A room the visitor has not
+sideways scroll on the map or the strip pans it. When a level is taller than
+the view, as in Famidash, chevrons at the top and bottom edges pan it up and
+down, and the strip moves the view on both axes. A room the visitor has not
 seen yet opens at the close-up, centered on the frontier or the level start.
 
 A game with `grid: true` has maps that run in two directions. Its view is 4:3,
@@ -628,7 +630,8 @@ view.
 Stereo Madness and Clubstep states exactly, checks the picker order, starts a
 Stereo Madness search and waits for Level progress, pauses, selects the root's
 cell, then plays from it and branches, and replays the branch history to its
-endpoint checksum.
+endpoint checksum. On Dash it checks that the level strip and the top and
+bottom chevrons move the view up and down.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the
 automatic replay pick and after the replay pauses, ends or closes.

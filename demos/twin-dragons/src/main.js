@@ -481,7 +481,7 @@ function levelOverview(id) {
     const r = strip.getBoundingClientRect();
     moveCameraByHand();
     const x = ((e.clientX - r.left) / r.width) * map.width, y = ((e.clientY - r.top) / r.height) * map.height;
-    scrollRoom(id, game.grid ? { x, y } : game.vertical ? { y } : { x });
+    scrollRoom(id, game.vertical ? { y } : { x, y });
     drawMap(performance.now());
   };
   strip.addEventListener("pointerdown", (e) => {
@@ -1843,7 +1843,7 @@ function renderMapRows(owner) {
         c.tabIndex = 0;
         if (c !== canvas) bindMap(c);
         part.append(c, panEdge(c, -1), panEdge(c, 1));
-        if (game.grid) part.append(panEdge(c, -1, "y"), panEdge(c, 1, "y"));
+        if (!game.vertical) part.append(panEdge(c, -1, "y"), panEdge(c, 1, "y"));
         if (game.grid) {
           const pair = document.createElement("div");
           pair.className = "room-pair";
@@ -1926,7 +1926,7 @@ function updateRoomChrome(c) {
   const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
   const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale, halfY = c.height / 2 / scale;
   const before = view.x - half - map.x, after = map.x + map.width - view.x - half;
-  const above = game.grid && view.y - halfY - map.y > 1, below = game.grid && map.y + map.height - view.y - halfY > 1;
+  const above = !game.vertical && view.y - halfY - map.y > 1, below = !game.vertical && map.y + map.height - view.y - halfY > 1;
   const key = `${before > 1},${after > 1},${above},${below}`;
   if (part.dataset.chrome === key) return;
   part.dataset.chrome = key;
