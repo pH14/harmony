@@ -82,6 +82,93 @@ fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
     enter_real_mode_at(backend, 0x1000);
 }
 
+fn native_entropy_endpoint(instruction: &[u8], cpuid: CpuidModel) -> u64 {
+    let mut backend = new_backend_or_explain();
+    let mut mem = GuestMem::new(0x10000);
+    setup_real_mode(
+        &mut backend,
+        &mut mem,
+        &[
+            instruction[0],
+            instruction[1],
+            instruction[2],
+            0xBA,
+            0xF8,
+            0x03,
+            0xB0,
+            0x42,
+            0xEE,
+            0xF4,
+        ],
+    );
+    backend
+        .set_policy(&X86Policy {
+            cpuid,
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        })
+        .expect("set entropy CPUID policy");
+    backend
+        .write_guest(Gpa(6 * 4), &[0x00, 0x20, 0x00, 0x00])
+        .expect("load #UD IVT");
+    backend
+        .write_guest(Gpa(0x2000), &[0xBA, 0xF8, 0x03, 0xB0, 0x55, 0xEE, 0xF4])
+        .expect("load #UD handler");
+    let mut state = backend.save().expect("save entropy guest entry");
+    state.regs.rsp = 0x8000;
+    state.sregs.ss.base = 0;
+    state.sregs.ss.selector = 0;
+    backend
+        .restore(&state)
+        .expect("restore entropy guest entry");
+    match backend.run().expect("run entropy instruction") {
+        Exit::Arch(X86Exit::Io {
+            port: 0x3F8,
+            size: 1,
+            write: Some(marker),
+        }) => marker,
+        other => panic!("expected entropy instruction or #UD marker, got {other:?}"),
+    }
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn masked_native_entropy_instructions_raise_ud() {
+    for (name, instruction, enabled_model) in [
+        (
+            "RDRAND",
+            [0x0F, 0xC7, 0xF0],
+            CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 1,
+                    ecx: 1 << 30,
+                    ..Default::default()
+                }],
+            },
+        ),
+        (
+            "RDSEED",
+            [0x0F, 0xC7, 0xF8],
+            CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 7,
+                    ebx: 1 << 18,
+                    ..Default::default()
+                }],
+            },
+        ),
+    ] {
+        let enabled = native_entropy_endpoint(&instruction, enabled_model);
+        assert_eq!(enabled, 0x42, "host cannot execute {name} positive control");
+        let masked = native_entropy_endpoint(&instruction, CpuidModel::default());
+        assert_eq!(masked, 0x55, "masked {name} executed natively");
+    }
+}
+
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
