@@ -139,7 +139,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_pace_yield_cell_recent_count_decay_v1";
+pub const SELECTOR_IDENTIFIER: &str = "tier_cascade_pace_yield_cell_recent_count_decay_v1";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -2692,44 +2692,57 @@ where
             .or_default()
     }
 
+    fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>, shift: u32) -> u32 {
+        let Some(next) = next else {
+            return 0;
+        };
+        let runs = self.tier_runs(progress);
+        let cells = self.tiers.get(&progress).map_or(1, |tier| {
+            u64::try_from(tier.places.len().max(1)).unwrap_or(u64::MAX)
+        });
+        let pace = runs.longest.max(cells);
+        let counts = self.tier_runs(next);
+        let (next_draws, next_yields) = if format!("{next:?}") == runs.next_tier {
+            (
+                counts.draws.saturating_sub(runs.next_draws),
+                counts.yields.saturating_sub(runs.next_yields),
+            )
+        } else {
+            (counts.draws, counts.yields)
+        };
+        let next_yields_more = u128::from(next_yields.saturating_add(1))
+            * u128::from(runs.current.saturating_add(1))
+            > u128::from(runs.wins.saturating_add(1)) * u128::from(next_draws.saturating_add(1));
+        if next_yields_more {
+            (runs.current.saturating_sub(1) / pace)
+                .max(1)
+                .ilog2()
+                .min(shift)
+        } else {
+            0
+        }
+    }
+
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
         let tiers = self.tiers.len();
-        let halvings = self.tiers.iter().next_back().map_or(0, |(progress, tier)| {
-            let runs = self.tier_runs(*progress);
-            let cells = u64::try_from(tier.places.len().max(1)).unwrap_or(u64::MAX);
-            let pace = runs.longest.max(cells);
-            let (next_draws, next_yields) =
-                self.tiers.iter().rev().nth(1).map_or((0, 0), |(next, _)| {
-                    let counts = self.tier_runs(*next);
-                    if format!("{next:?}") == runs.next_tier {
-                        (
-                            counts.draws.saturating_sub(runs.next_draws),
-                            counts.yields.saturating_sub(runs.next_yields),
-                        )
-                    } else {
-                        (counts.draws, counts.yields)
-                    }
-                });
-            let next_yields_more = u128::from(next_yields.saturating_add(1))
-                * u128::from(runs.current.saturating_add(1))
-                > u128::from(runs.wins.saturating_add(1))
-                    * u128::from(next_draws.saturating_add(1));
-            if next_yields_more {
-                (runs.current.saturating_sub(1) / pace)
-                    .max(1)
-                    .ilog2()
-                    .min(shift)
-            } else {
-                0
+        let mut ranked = self.tiers.keys().rev().copied().peekable();
+        let mut floor = 0_usize;
+        let mut halvings = 0;
+        while let Some(progress) = ranked.next() {
+            halvings = self.tier_halvings(progress, ranked.peek().copied(), shift);
+            if halvings < shift || ranked.peek().is_none() {
+                break;
             }
-        });
+            floor += 1;
+        }
+        let floor_weight =
+            (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX), shift) >> halvings).max(1);
         let weights = (0..tiers).map(|rank| {
-            let weight = tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift);
-            if rank == 0 && tiers > 1 {
-                weight >> halvings
+            if rank <= floor {
+                floor_weight
             } else {
-                weight
+                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX), shift)
             }
         });
         let index = draw_weighted(rand, weights)?;
@@ -8291,6 +8304,47 @@ mod tests {
 
     fn roughly_equal(left: u64, right: u64) -> bool {
         left * 4 < right * 5 && right * 4 < left * 5
+    }
+
+    #[test]
+    fn stalled_tiers_below_a_stalled_top_fall_together_to_the_first_tier_still_opening_cells() {
+        let mut archive = tier_archive(&[(1, 9, 0), (2, 1, 0), (3, 1, 0)]);
+        for (id, rank, draws) in [(2, 0, 128), (1, 1, 64)] {
+            let draw = SelectorDraw {
+                path: SelectorPath::Tiers,
+                tier_rank: Some(rank),
+                best_preference: None,
+            };
+            for _ in 0..draws {
+                archive.record_selection(id, &draw);
+            }
+        }
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000c, 6144);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+        assert!(roughly_equal(counts[0], counts[2]), "{counts:?}");
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(1),
+            best_preference: None,
+        };
+        let mut key = probe_key(2, 1, 5, 0);
+        key.state_fingerprint = 7;
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![7],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert middle tier entry")
+            .expect("retain middle tier entry");
+        archive.record_selection(1, &draw);
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000d, 6144);
+        assert!(counts[1] + counts[3] > counts[0] * 5, "{counts:?}");
     }
 
     #[test]
