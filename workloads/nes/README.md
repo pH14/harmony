@@ -262,5 +262,7 @@ A CLI-selected checkpoint carries its journal digest into the searcher so a
 file changed after selection cannot resume under the earlier identity. The
 checkpoint's origin input comes from a saved, verified run artifact and is
 passed to the package as pinned data; the package does not reopen the mutable
-parent path to reconstruct that input.
+parent path to reconstruct that input. A rooted search stores the same typed
+controller input that the package writes, even when the user's JSON contains
+accepted fields outside that type.
 See the [CLI README](../../cli/README.md) for named runs and investigation.

@@ -232,6 +232,10 @@ generated filename and the selected checkpoint header, so reversing two retained
 records cannot select an older continuation. The additional execution budget
 uses the verified header's reserved count, so a stale journal count cannot
 change the continuation budget.
+An interrupted write can leave an unjournaled newer checkpoint; resume refuses
+that ambiguous state even if an older checkpoint remains. NES records the
+package's canonical controller origin, so accepted extra JSON fields in an
+action file do not prevent a later resume.
 Each search records a fresh owner in its initial manifest and checkpoint
 headers. Resume refuses a checkpoint from another saved search, including after
 an interrupted run. A completed search also records the selected checkpoint's
