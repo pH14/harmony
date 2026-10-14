@@ -2,6 +2,7 @@
 
 use std::{error::Error, path::Path};
 
+use fault_policy::StandingWindow;
 use serde::{Deserialize, Serialize};
 
 use crate::archive::FaultBugRecord;
@@ -24,10 +25,13 @@ impl BugReport {
         bug: u64,
         execution: u64,
         windows: ActionWindows,
+        inherited: &[StandingWindow],
         actions: &[FaultAction],
         observations: &FaultObservations,
     ) -> Result<Self, Box<dyn Error>> {
-        let standing = fault_policy::encode_windows(&standing_windows(windows, actions)?)?;
+        let mut standing = inherited.to_vec();
+        standing.extend(standing_windows(windows, actions)?);
+        let standing = fault_policy::encode_windows(&standing)?;
         Ok(Self {
             bug,
             execution,
@@ -68,6 +72,7 @@ impl BugReport {
 
 pub fn write_bug_reports(
     windows: ActionWindows,
+    inherited: &[StandingWindow],
     bugs: &[FaultBugRecord],
     directory: &Path,
 ) -> Result<Vec<BugReport>, Box<dyn Error>> {
@@ -78,6 +83,7 @@ pub fn write_bug_reports(
             ordinal,
             bug.execution,
             windows,
+            inherited,
             &bug.input.actions,
             &bug.observations,
         )?;
@@ -114,6 +120,7 @@ mod tests {
             1,
             42,
             WINDOWS,
+            &[],
             &[
                 FaultOperation::Hook(1, TICKS).into(),
                 FaultOperation::Kill(0, TICKS).into(),
@@ -133,6 +140,33 @@ mod tests {
             fault_policy::decode_windows(&bytes).expect("the window list decodes"),
             standing_windows(WINDOWS, &report.actions).unwrap(),
             "both faulting actions reach the window list"
+        );
+    }
+
+    #[test]
+    fn a_rooted_report_carries_inherited_standing_windows() {
+        let origin = ActionWindows { root_seal: 0 };
+        let prefix = [FaultAction::from(FaultOperation::EventKill {
+            node: 0,
+            rarity: 1,
+            ticks: TICKS,
+        })];
+        let inherited = standing_windows(origin, &prefix).unwrap();
+        let rooted = ActionWindows {
+            root_seal: origin.window(&prefix, 0).unwrap().1,
+        };
+        let report = BugReport::new(
+            1,
+            42,
+            rooted,
+            &inherited,
+            &[FaultOperation::Wait(NonZeroU16::MIN).into()],
+            &FaultObservations::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            fault_policy::decode_windows(&report.standing_bytes().unwrap()).unwrap(),
+            inherited
         );
     }
 
@@ -182,7 +216,7 @@ mod tests {
             bug(9, FaultOperation::Wait(NonZeroU16::MIN).into()),
         ];
         let windows = ActionWindows { root_seal: 7 };
-        let written = write_bug_reports(windows, &bugs, directory.path()).expect("write");
+        let written = write_bug_reports(windows, &[], &bugs, directory.path()).expect("write");
         assert_eq!(written.len(), 2);
         assert_eq!(written[0].bug, 1);
         assert_eq!(written[0].execution, 4);

@@ -688,17 +688,17 @@ impl FaultTarget {
 
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
         with_live(&self.config, |live| {
-            let mut standing = live.inherited.clone();
-            standing.extend(standing_windows(live.windows, &self.actions)?);
             let (snapshot, moment) = live.session.snapshot().map_err(|e| e.to_string())?;
-            standing.retain(|window| window.contains(moment));
-            let result = export_root(
-                live.session.as_mut(),
-                snapshot,
-                live.base_identity,
-                &standing,
-            )
-            .map_err(|e| e.to_string());
+            let result = active_root_windows(&live.inherited, live.windows, &self.actions, moment)
+                .and_then(|standing| {
+                    export_root(
+                        live.session.as_mut(),
+                        snapshot,
+                        live.base_identity,
+                        &standing,
+                    )
+                    .map_err(|e| e.to_string())
+                });
             live.session
                 .drop_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
@@ -1628,14 +1628,11 @@ mod tests {
         })];
         let moment = root.window(&prefix, 0).unwrap().1;
         let original = branch_config(root, &[], &prefix).unwrap();
-        let active = standing_windows(root, &prefix)
-            .unwrap()
-            .into_iter()
-            .filter(|window| window.contains(moment))
-            .collect::<Vec<_>>();
+        let active = active_root_windows(&[], root, &prefix, moment).unwrap();
         let payload = encode_root_payload([7; 32], &active, b"snapshot").unwrap();
         let decoded = decode_root_payload(&payload, [7; 32]).unwrap();
         assert_eq!(decoded.snapshot, b"snapshot");
+        assert_eq!(root_standing(&payload).unwrap(), active);
         let continuation =
             branch_config(ActionWindows { root_seal: moment }, &decoded.standing, &[]).unwrap();
         let mut original = StandingHandler::from_configuration(&original.configuration).unwrap();
@@ -1645,6 +1642,28 @@ mod tests {
         assert_eq!(
             original.respond(moment, &question).unwrap(),
             continuation.respond(moment, &question).unwrap()
+        );
+        let rooted = ActionWindows { root_seal: moment };
+        let suffix = [FaultAction::from(FaultOperation::Wait(
+            std::num::NonZeroU16::MIN,
+        ))];
+        let nested_moment = rooted.window(&suffix, 0).unwrap().1;
+        let nested_active =
+            active_root_windows(&decoded.standing, rooted, &suffix, nested_moment).unwrap();
+        let nested_payload = encode_root_payload([7; 32], &nested_active, b"nested").unwrap();
+        let nested = decode_root_payload(&nested_payload, [7; 32]).unwrap();
+        let nested_config = branch_config(
+            ActionWindows {
+                root_seal: nested_moment,
+            },
+            &nested.standing,
+            &[],
+        )
+        .unwrap();
+        let mut nested = StandingHandler::from_configuration(&nested_config.configuration).unwrap();
+        assert_eq!(
+            original.respond(nested_moment, &question).unwrap(),
+            nested.respond(nested_moment, &question).unwrap()
         );
         assert!(decode_root_payload(&payload, [8; 32]).is_err());
         assert!(decode_root_payload(&payload[..payload.len() - 8], [7; 32]).is_err());
@@ -1691,6 +1710,19 @@ fn export_root(
     }
     encode_root_payload(identity, standing, chain[0].bytes())
 }
+
+fn active_root_windows(
+    inherited: &[StandingWindow],
+    windows: ActionWindows,
+    actions: &[FaultAction],
+    moment: u64,
+) -> Result<Vec<StandingWindow>, String> {
+    let mut standing = inherited.to_vec();
+    standing.extend(standing_windows(windows, actions)?);
+    standing.retain(|window| window.contains(moment));
+    Ok(standing)
+}
+
 fn import_root(
     session: &mut dyn SearchSession,
     bytes: &[u8],
@@ -1723,6 +1755,14 @@ fn encode_root_payload(
     bytes.extend_from_slice(&encoded);
     bytes.extend_from_slice(snapshot);
     Ok(bytes)
+}
+
+pub(crate) fn root_standing(root: &[u8]) -> Result<Vec<StandingWindow>, Box<dyn Error>> {
+    let identity = root
+        .get(8..40)
+        .ok_or("invalid branch snapshot header")?
+        .try_into()?;
+    Ok(decode_root_payload(root, identity)?.standing)
 }
 
 struct RootPayload<'a> {
