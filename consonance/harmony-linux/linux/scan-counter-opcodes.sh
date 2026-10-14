@@ -71,28 +71,66 @@ sites() {
     done | sort
 }
 
-# all_sites [mnemonic-regex]: disassemble the kernel proper and emit its
+# all_sites [mnemonic-regex] [path]: disassemble the kernel proper and emit its
 # artifact-qualified site list for that mnemonic class (boot artifacts use the
 # section-aware scan below). FAILS if vmlinux is missing — a check that silently
 # skips its target passes vacuously.
 all_sites() {
-    if [ ! -f "$VMLINUX" ]; then
-        echo "FAIL: kernel ELF '$VMLINUX' not found — scan the uncompressed vmlinux." >&2
+    local path=${2:-$VMLINUX}
+    if [ ! -f "$path" ]; then
+        echo "FAIL: kernel ELF '$path' not found — scan the uncompressed vmlinux." >&2
         return 1
     fi
     local dis rc=0
     dis=$(mktemp)
-    if ! objdump -d "$VMLINUX" > "$dis"; then
-        echo "FAIL: could not disassemble kernel ELF '$VMLINUX'" >&2
+    if ! objdump -d "$path" > "$dis"; then
+        echo "FAIL: could not disassemble kernel ELF '$path'" >&2
         rc=1
     elif ! grep -Eq '^[[:space:]]*[[:xdigit:]]+:[[:space:]]+[[:xdigit:]]{2}' "$dis"; then
-        echo "FAIL: kernel ELF '$VMLINUX' yielded no disassembled instructions" >&2
+        echo "FAIL: kernel ELF '$path' yielded no disassembled instructions" >&2
         rc=1
     else
         sites "$dis" vmlinux "${1:-}" || rc=1
     fi
     rm -f "$dis"
     return "$rc"
+}
+
+require_code_sections() {
+    local path=$1 tag=$2 layout section info kind flags
+    local expected='.text'
+    case "$tag" in
+        vmlinux) expected="$expected .init.text .altinstr_aux .altinstr_replacement .exit.text" ;;
+        setup) expected="$expected .bstext .entrytext .inittext .text32" ;;
+        decompressor) expected="$expected .head.text" ;;
+    esac
+    if ! layout=$(readelf -W -S "$path" 2>&1); then
+        echo "FAIL: cannot read $tag ELF section table at $path" >&2
+        return 1
+    fi
+    for section in $expected; do
+        info=$(awk -v wanted="$section" '
+            { for (i = 1; i <= NF; i++)
+                  if ($i == wanted) { print $(i + 1) ":" $(i + 6); break } }
+        ' <<<"$layout")
+        if [ -z "$info" ]; then
+            if [ "$section" = .text ]; then
+                echo "FAIL: $tag ($path) has no .text section to scan" >&2
+                return 1
+            fi
+            continue
+        fi
+        if [[ "$info" == *$'\n'* ]]; then
+            echo "FAIL: $tag ($path) has duplicate $section sections" >&2
+            return 1
+        fi
+        kind=${info%%:*}
+        flags=${info#*:}
+        if [ "$kind" != PROGBITS ] || [[ "$flags" != *X* ]]; then
+            echo "FAIL: $tag ($path) code section $section is not executable PROGBITS" >&2
+            return 1
+        fi
+    done
 }
 
 # raw_byte_scan: fail-closed opcode scan of the boot artifacts. Setup and the
@@ -246,7 +284,7 @@ EOF
     fi
 
     printf 'not an ELF\n' > "$d/malformed.elf"
-    if (VMLINUX="$d/malformed.elf"; all_sites >/dev/null 2>&1); then
+    if all_sites '' "$d/malformed.elf" >/dev/null 2>&1; then
         echo "FAIL: self-test — an unreadable kernel ELF passed the disassembly gate" >&2
         exit 1
     fi
@@ -289,6 +327,13 @@ EOF
             | as -o "$d/dirty.elf" - 2>/dev/null && dirty_ok=1
         printf '.section .text,"ax"\n.byte 0x90,0x90\n.byte 0xc3\n' \
             | as -o "$d/clean.elf" - 2>/dev/null && clean_ok=1
+        if [ "${clean_ok:-0}" = 1 ]; then
+            objcopy --set-section-flags .text=alloc "$d/clean.elf" "$d/empty-dis.elf"
+            if all_sites '' "$d/empty-dis.elf" >/dev/null 2>&1; then
+                echo "FAIL: self-test — empty disassembly passed the kernel scan" >&2
+                exit 1
+            fi
+        fi
         # A WRITABLE-executable section (flags "awx" → readelf "WAX"): the X-flag
         # selection must still scan it (an exact-`AX`-token match would miss it,
         # and a forbidden opcode there would pass — cross-model r9 P2).
@@ -358,6 +403,11 @@ command -v objdump >/dev/null 2>&1 || {
     echo "FAIL: objdump not found (binutils required)" >&2
     exit 1
 }
+
+require_code_sections "$VMLINUX" vmlinux
+for artifact in "${RAW_ARTIFACTS[@]}"; do
+    require_code_sections "${artifact#*=}" "${artifact%%=*}"
+done
 
 FOUND=$(all_sites)
 RNG_FOUND=$(all_sites '^(rdrand|rdseed)$')
