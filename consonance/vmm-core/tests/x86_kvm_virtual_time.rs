@@ -4,7 +4,8 @@
 use sha2::{Digest, Sha256};
 use vmm_backend::Gpa;
 use vmm_backend::{
-    Backend, CpuidModel, Exit, Injection, KvmBackend, MsrFilter, MsrRange, X86, X86Exit, X86Policy,
+    Backend, CpuidModel, Exit, Injection, KvmBackend, MsrFilter, MsrRange, VcpuState, X86, X86Exit,
+    X86Policy,
 };
 use vmm_core::virtual_time::{
     ClassifiedExit, LogField, NormalizedLog, PlacementViolation, ScheduledInterrupt,
@@ -134,13 +135,13 @@ fn deliver(
     Ok(())
 }
 
-fn checkpoint_hash(backend: &mut KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
+fn checkpoint_hash_from_state(state: VcpuState, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"x1-live-state-v1\0");
     hasher.update(checkpoint.vns.to_le_bytes());
     hasher.update(checkpoint.pending_interrupts.to_le_bytes());
     hasher.update(checkpoint.event_index.to_le_bytes());
-    hasher.update(format!("{:?}", backend.save().unwrap()).as_bytes());
+    hasher.update(format!("{state:?}").as_bytes());
     hasher.finalize().into()
 }
 
@@ -167,7 +168,14 @@ fn log_digest(log: &NormalizedLog) -> [u8; 32] {
     h.finalize().into()
 }
 
+struct CheckpointCapture {
+    checkpoint: VirtualTimeCheckpoint,
+    vcpu: VcpuState,
+    ram: Vec<u8>,
+}
+
 struct RunResult {
+    captures: Vec<CheckpointCapture>,
     digest: [u8; 32],
     guest_deliveries: u8,
     log: NormalizedLog,
@@ -221,9 +229,21 @@ fn one_run() -> RunResult {
             .schedule_interrupt(deadline, TIMER_VECTOR)
             .expect("schedule");
     }
+    let mut captures = Vec::new();
     loop {
         let event = run_loop
-            .run_backend_once(classify, deliver, checkpoint_hash)
+            .run_backend_once(classify, deliver, |backend, checkpoint| {
+                let vcpu = backend.save().unwrap();
+                let mut ram = vec![0; RAM_LEN];
+                backend.read_guest(Gpa(0), &mut ram).unwrap();
+                let hash = checkpoint_hash_from_state(vcpu.clone(), checkpoint);
+                captures.push(CheckpointCapture {
+                    checkpoint,
+                    vcpu,
+                    ram,
+                });
+                hash
+            })
             .expect("run_backend_once");
         if event.class == vmm_core::virtual_time::NormalizedEventClass::Terminal {
             break;
@@ -235,6 +255,7 @@ fn one_run() -> RunResult {
     drop(run_loop);
     let guest_deliveries = mem.as_mut_slice()[COUNTER_GPA];
     RunResult {
+        captures,
         digest,
         guest_deliveries,
         log,
@@ -255,9 +276,50 @@ fn x1_ten_same_seed_runs_produce_one_normalized_log() {
     assert_eq!(first.log.events[1].interrupts.len(), 1);
     assert_eq!(first.log.events[3].interrupts.len(), 1);
 
-    for _ in 1..10 {
+    for run_index in 1..10 {
         let run = one_run();
-        compare_normalized_logs(&first.log, &run.log).expect("same-seed logs must be identical");
+        if let Err(error) = compare_normalized_logs(&first.log, &run.log) {
+            println!(
+                "X1_DIAG run_index={run_index} captures={} reference_captures={}",
+                run.captures.len(),
+                first.captures.len()
+            );
+            for (expected, actual) in first.captures.iter().zip(&run.captures) {
+                if expected.checkpoint != actual.checkpoint
+                    || expected.vcpu != actual.vcpu
+                    || expected.ram != actual.ram
+                {
+                    println!(
+                        "X1_DIAG event={} checkpoint_equal={} hash_equal={} ram_equal={} regs_equal={} sregs_equal={} xcr0_equal={} debugregs_equal={} events_equal={} mp_equal={} msrs_equal={} xsave_equal={} raw_bv={:?}->{:?} logical_bv={:?}->{:?} nested_equal={}",
+                        expected.checkpoint.event_index,
+                        expected.checkpoint == actual.checkpoint,
+                        checkpoint_hash_from_state(expected.vcpu.clone(), expected.checkpoint)
+                            == checkpoint_hash_from_state(actual.vcpu.clone(), actual.checkpoint),
+                        expected.ram == actual.ram,
+                        expected.vcpu.regs == actual.vcpu.regs,
+                        expected.vcpu.sregs == actual.vcpu.sregs,
+                        expected.vcpu.xcr0 == actual.vcpu.xcr0,
+                        expected.vcpu.debugregs == actual.vcpu.debugregs,
+                        expected.vcpu.events == actual.vcpu.events,
+                        expected.vcpu.mp_state == actual.vcpu.mp_state,
+                        expected.vcpu.msrs == actual.vcpu.msrs,
+                        expected.vcpu.xsave == actual.vcpu.xsave,
+                        expected.vcpu.xsave_restore_bv,
+                        actual.vcpu.xsave_restore_bv,
+                        vmm_backend::logical_xsave_restore_bv(
+                            &expected.vcpu.xsave,
+                            expected.vcpu.xsave_restore_bv
+                        ),
+                        vmm_backend::logical_xsave_restore_bv(
+                            &actual.vcpu.xsave,
+                            actual.vcpu.xsave_restore_bv
+                        ),
+                        expected.vcpu.nested_state == actual.vcpu.nested_state,
+                    );
+                }
+            }
+            panic!("same-seed logs must be identical: {error:?}");
+        }
         assert_eq!(run.digest, first.digest);
         assert_eq!(run.guest_deliveries, first.guest_deliveries);
         check_delivery_placement(&run.schedule, &run.log).expect("placement");
