@@ -227,8 +227,10 @@ its checkpoint journal and origin input under `package/`. A new seed intentional
 changes the draw sequence. The journal identifies the latest retained checkpoint
 and binds its bytes with SHA-256. Resume refuses a missing or changed latest
 checkpoint or an unjournaled retained checkpoint, including after an
-interruption. The additional execution budget uses the verified header's
-reserved count, so a stale journal count cannot
+interruption. Journal execution counts must be monotonic and agree with each
+generated filename and the selected checkpoint header, so reversing two retained
+records cannot select an older continuation. The additional execution budget
+uses the verified header's reserved count, so a stale journal count cannot
 change the continuation budget.
 Each search records a fresh owner in its initial manifest and checkpoint
 headers. Resume refuses a checkpoint from another saved search, including after
