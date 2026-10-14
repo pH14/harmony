@@ -81,11 +81,9 @@ fn configure(mut c: Config, offline: bool) -> Result<Config> {
     Ok(c)
 }
 
-fn capture_runtime(manifest: &mut Manifest, path: &Path, initramfs: &[u8]) -> Result<()> {
-    let kernel = manifest.config.kernel.as_ref().ok_or("missing kernel")?;
-    let kernel = fs::read(kernel)?;
-    manifest.store(path, "kernel", &kernel)?;
-    manifest.store(path, "initramfs", initramfs)?;
+fn capture_runtime(manifest: &mut Manifest, path: &Path, artifacts: &Artifacts) -> Result<()> {
+    manifest.store(path, "kernel", &artifacts.kernel)?;
+    manifest.store(path, "initramfs", &artifacts.initramfs)?;
     if let Some(profile) = manifest.config.uml_profile.clone() {
         crate::runs::store_tree(&mut manifest.record, path, &profile, "uml")?;
     }
@@ -144,7 +142,7 @@ pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> 
     let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
-    capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
+    capture_runtime(&mut manifest, &out, &artifacts)?;
     manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
     manifest.save(&out)?;
     let result = search_faults(&out, &manifest, &SearchStart::Genesis).and_then(|report| {
@@ -271,7 +269,7 @@ pub fn run(
         let out = destination.create()?;
         let mut manifest = Manifest::new(c, "run", Some(bundle), true)?;
         manifest.actions = actions;
-        capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
+        capture_runtime(&mut manifest, &out, &artifacts)?;
         manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
         manifest.save(&out)?;
         let result = package::replay(
@@ -304,18 +302,21 @@ pub fn run(
     )?;
     let initramfs =
         prepared.initramfs(&fs::read(c.base_initramfs.as_ref().ok_or("missing base")?)?);
+    let artifacts = Artifacts {
+        kernel: fs::read(c.kernel.as_ref().ok_or("missing kernel")?)?,
+        initramfs,
+    };
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
-    capture_runtime(&mut manifest, &out, &initramfs)?;
-    let kernel = fs::read(out.join("artifacts/kernel"))?;
+    capture_runtime(&mut manifest, &out, &artifacts)?;
     let result = crate::oci::execute(
         &manifest.config.runtime(),
         &manifest.runner_identity,
         manifest.config.seed,
         &manifest.config.knobs,
         manifest.config.wall_seconds,
-        &kernel,
-        &initramfs,
+        &artifacts.kernel,
+        &artifacts.initramfs,
         &out,
         console,
     )
@@ -329,6 +330,35 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_kernel_is_the_prepared_kernel_after_source_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("kernel-source");
+        fs::write(&source, b"executed kernel").unwrap();
+        let artifacts = Artifacts {
+            kernel: fs::read(&source).unwrap(),
+            initramfs: b"prepared initramfs".to_vec(),
+        };
+        fs::write(&source, b"later kernel").unwrap();
+        let config = Config {
+            backend: Backend::Kvm,
+            kernel: Some(source),
+            ..Config::default()
+        };
+        let mut manifest = Manifest::new(config, "run", None, true).unwrap();
+
+        capture_runtime(&mut manifest, directory.path(), &artifacts).unwrap();
+
+        assert_eq!(
+            fs::read(directory.path().join("artifacts/kernel")).unwrap(),
+            artifacts.kernel
+        );
+        assert_eq!(
+            manifest.artifacts["kernel"],
+            crate::runtime::digest(&artifacts.kernel)
+        );
+    }
 
     #[test]
     fn completed_search_refuses_report_replaced_after_package_return() {
