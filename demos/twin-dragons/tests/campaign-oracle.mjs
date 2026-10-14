@@ -71,6 +71,8 @@ for (const game of CASES) {
   const out = mkdtempSync(join(tmpdir(), `${game.id}-campaign-`));
   try {
     const native = records(nativeStream(game, executions, out));
+    const end = JSON.parse(native.pop());
+    assert.equal(end.event, "end", `the native ${game.id} stream ends with its end record`);
     const engine = await createEngine(base, GAMES.get(game.id), {
       rom: readFileSync(game.rom),
       wasmBinary: readFileSync(new URL("engine/quicknes.wasm", base)),
@@ -79,6 +81,7 @@ for (const game of CASES) {
     const search = campaignSearch(engine, identity, { seed, executions, memoryMiB: game.eval ? memoryMiB : 0, record: true });
     runCampaign(search, campaignWorker(engine, identity));
     const browser = records(search.take_stream());
+    assert.equal(end.executions_completed, JSON.parse(search.take_batch()).executions, `both ${game.id} campaigns completed the same executions`);
     assert.ok(native.length >= executions, `the native ${game.id} campaign recorded every execution`);
     assert.equal(browser.length, native.length, `both ${game.id} campaigns recorded the same number of events`);
     browser.forEach((line, i) => assert.deepEqual(JSON.parse(line), JSON.parse(native[i]), `${game.id} event ${i + 1} differs`));

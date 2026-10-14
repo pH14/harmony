@@ -636,7 +636,8 @@ digests to match.
 `node tests/campaign-oracle.mjs` runs each campaign game natively with 16
 workers and in the browser coordinator in Node on the same seed and execution
 budget, and requires every job and skip line of the two decision streams to be
-equal. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Famidash
+equal. The native stream's closing end record must report the browser's
+execution count. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Famidash
 runs `nes-eval` with `alphabet_only` for 400 executions. Super
 Mario Bros. runs `nes-eval` with `energy_splice:6`, a window of 16 and a
 1,024 MiB memory budget for 400 executions, Mega Man 2 runs it with
