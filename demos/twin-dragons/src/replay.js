@@ -101,6 +101,14 @@ export function prefixTrail(points, frames, stride) {
   }
   return prefix;
 }
+export function levelEntryFrame(points, level) {
+  let entry = 0;
+  for (let i = points.length - 1; i >= 0; i--) {
+    if (points[i].gap || points[i].level !== level) break;
+    entry = points[i].frame;
+  }
+  return entry;
+}
 export function trailPoint(points, frame) {
   let lo = 0,
     hi = points.length;

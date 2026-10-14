@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import "./style.css";
 import { GuidedTour, tourSeen } from "./tour.js";
-import { ReplayTimeline, prefixTrail, trailPoint } from "./replay.js";
+import { ReplayTimeline, levelEntryFrame, prefixTrail, trailPoint } from "./replay.js";
 import { RoutePreviews } from "./preview.js";
 import { GameAudio } from "./audio.js";
 import { createEngine, GAMES, sha256Hex } from "./emulator.js";
@@ -60,7 +60,7 @@ const maps = new Map(catalog.maps.map((map) => [map.id, map]));
 document.querySelector("#app").innerHTML = `
 <main><section class="hero" aria-labelledby="hero-title"><div class="hero-copy"><h1 id="hero-title">Harmony Arcade</h1><p class="hero-lede">Watch and join Harmony in playing games through multiverse state exploration.</p></div><div class="hero-side"><div class="hero-stats" aria-label="Search progress"><div><b id="hero-timelines">0</b><span>timelines tried</span></div></div><button id="tour-open" disabled>Take the tour</button></div></section><div class="workspace" id="workspace"><aside id="branches" class="branches" aria-label="Search branches"><div class="pane-heading"><h2>Searches</h2><button id="timeline-toggle" aria-expanded="true" aria-label="Collapse Searches">‹</button></div><nav aria-label="Search branches"><ol id="branch-tree"></ol></nav><details class="search-details" open><summary>Details</summary><label class="search-speed"><span>Timelines per second <output id="search-speed-value"></output></span><input id="search-speed" type="range" min="0" step="1"><span class="search-speed-ends" aria-hidden="true"><span>Slower</span><span>Faster</span></span></label><div class="metrics"><div><b id="attempts">0</b><span>timelines tried</span></div><div><b id="states">0</b><span>moments saved</span></div><div><b id="cells">0</b><span>map cells reached</span></div><div><b id="work">0</b><span>game frames played</span></div><div><b id="memory">0 MB</b><span>snapshot memory</span></div><div><b id="workers">0</b><span>search workers</span></div></div></details></aside><section class="exploration" aria-label="Exploration"><h2 class="exploration-heading visually-hidden">Exploration</h2><div class="controls" hidden><span id="status" hidden>Loading ${game.title}…</span><i id="status-dot" hidden></i><button id="pause" class="icon-button" aria-label="Pause Search" title="Pause Search" disabled></button><button id="reset" class="icon-button" aria-label="Restart Search" title="Restart Search" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div><span id="branch-feedback" class="visually-hidden" role="status"></span>
 <div class="goal"><div class="level-nav"><button id="new-search" class="new-search" aria-haspopup="dialog" aria-controls="level-picker" title="Start a fresh search from any level" aria-label="New search" disabled><span>New search</span></button><nav id="level-strip" class="level-strip" aria-label="Levels in this search" data-key=""><button id="level-more" class="level-more" aria-controls="level-trail" aria-expanded="false" hidden></button><div id="level-trail" class="level-trail"></div></nav><span id="goal-status" hidden></span></div><div class="view-tools"><div id="visualization" class="segments toggles" role="group" aria-label="Show on map" data-value="movement"><button data-viz="movement" aria-pressed="true">Movement</button><button data-viz="heat" aria-pressed="false">Heatmap</button></div><button id="completion" hidden>Watch completion</button></div></div>
-<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
+<div class="map-wrap" data-rooms="1"><div class="room-bar"><nav id="room-tabs" aria-label="Maps in this level"></nav></div><div id="map-rows"></div><canvas id="map" width="1280" height="320" tabindex="0" aria-label="Game area heatmap. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center."></canvas><span class="map-label" id="map-label" hidden>LEVEL 1</span><div id="hover" hidden></div></div>
 <div class="map-footer"><span id="memory-limit" hidden></span></div>
 ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 </section>
@@ -2090,7 +2090,7 @@ function drawArea(canvas, now) {
   canvas.dataset.centerX = areaCenter;
   canvas.dataset.centerY = areaCenterY;
   canvas.dataset.overlay = mode;
-  const label = `${map.label} ${mode === "movement" ? "player movement" : mode === "both" ? "heatmap and player movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys move the selection; Enter inspects a cell.`;
+  const label = `${map.label} ${mode === "movement" ? "player movement" : mode === "both" ? "heatmap and player movement" : "heatmap"}. Click a cell to watch its history. Drag to move when zoomed. Arrow keys pan; Enter inspects the cell under the pointer or at the center.`;
   if (canvas.getAttribute("aria-label") !== label)
     canvas.setAttribute("aria-label", label);
   canvas.dataset.swarmCount = 0;
@@ -2331,45 +2331,13 @@ function bindMap(c) {
   });
   c.addEventListener("keydown", (e) => {
     const level = Number(c.dataset.map),
-      map = maps.get(level);
+      view = roomView(level, c);
     const point = (hoverCell?.level === level ? hoverCell : null) ||
       (selectedCell?.level === level ? selectedCell : null) || {
         level,
-        x: Math.floor((Number(c.dataset.panelX) + 16) / 32),
-        y: Math.floor((Number(c.dataset.panelY) + Math.min(152, c.height - 24)) / 32),
+        x: Math.floor(view.x / 32),
+        y: Math.floor((view.y - 8) / 32),
       };
-    if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
-      e.preventDefault();
-      hoverCell = {
-        ...point,
-        x: Math.max(
-          0,
-          Math.min(
-            Math.floor(map.width / 32) - 1,
-            point.x +
-              (e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0),
-          ),
-        ),
-        y: Math.max(
-          0,
-          Math.min(
-            Math.ceil(map.height / 32) - 1,
-            point.y +
-              (e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : 0),
-          ),
-        ),
-      };
-    }
-    if (e.key.startsWith("Arrow") && hoverCell) {
-      const target = { x: hoverCell.x * 32 + 16, y: cellTop(hoverCell.y) + 16 }, next = mapCanvas(level, target);
-      if (next && next !== c) { next.focus({ preventScroll: true }); next.scrollIntoView({ block: "nearest" }); }
-      const shown = next || c, view = roomView(level, shown), panel = canvasPanel(shown);
-      const scale = Math.min(shown.width / panel.width, shown.height / panel.height) * view.zoom;
-      if (Math.abs(target.x - view.x) > shown.width / 2 / scale - 32 || Math.abs(target.y - view.y) > shown.height / 2 / scale - 32) {
-        moveCameraByHand();
-        scrollRoom(level, target);
-      }
-    }
     if (e.key === "Enter") {
       e.preventDefault();
       if (level !== mapLevel) setRoom(level);
@@ -2438,7 +2406,7 @@ $("play").onclick = async () => {
   music.unlock().catch(audioError);
   if (currentFrame >= current.frames) {
     const state = current,
-      reset = seek(0),
+      reset = seek(isMapEvidence(state.observation, catalog.levels) ? levelEntryFrame(trace, state.observation.level) : 0),
       epoch = replayEpoch;
     if (!(await reset) || current !== state || epoch !== replayEpoch) return;
   }
@@ -2807,7 +2775,7 @@ window.addEventListener("keydown", (e) => {
     !e.ctrlKey &&
     !e.metaKey &&
     !e.altKey &&
-    !e.target.closest("input,select,textarea,[contenteditable=true],[role=slider],#guided-tour,.area-map")
+    !e.target.closest("input,select,textarea,[contenteditable=true],[role=slider],#guided-tour")
   ) {
     const c = mapCanvas(branchPreview?.room ?? mapLevel);
     if (c && panRoom(c)[arrow[2]]) {

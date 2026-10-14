@@ -257,8 +257,9 @@ part on screen. Clicking or dragging the strip moves the view there, and a
 sideways scroll on the map or the strip pans it. When a level is taller than
 the view, as in Famidash, chevrons at the top and bottom edges pan it up and
 down, and the strip moves the view on both axes. Outside Play from here, the
-arrow keys pan the view the same way the chevrons do. When the map has focus,
-they move the keyboard cell cursor instead, and the view follows it. A room the visitor has not
+arrow keys pan the view the same way the chevrons do, including when the map
+has focus. Enter on the map inspects the cell under the pointer, or the cell
+at the center of the view. A room the visitor has not
 seen yet opens at the close-up, centered on the frontier or the level start.
 
 A game with `grid: true` has maps that run in two directions. Its view is 4:3,

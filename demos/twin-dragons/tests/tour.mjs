@@ -357,8 +357,6 @@ try {
   const tourRoutes = await page.locator('#state-list .state').evaluateAll((rows) => rows.map((row) => row.dataset.stateId));
   await page.mouse.move(1, 1);
   await page.locator('#map').focus();
-  await page.keyboard.press('ArrowRight');
-  await page.keyboard.press('ArrowLeft');
   await page.locator('#film-title').evaluate((title) => { title.dataset.stateId = ''; });
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('#film-title').dataset.stateId !== '' && document.querySelector('#verification').textContent === 'Exact replay ✓');

@@ -6,6 +6,7 @@ import {
   prefixTrail,
   sharedFrames,
   trailPoint,
+  levelEntryFrame,
 } from "../src/replay.js";
 test("checkpoint seeks use the preceding state and remain within their byte budget", () => {
   const t = new ReplayTimeline(8);
@@ -108,4 +109,17 @@ test("shared trail reuse drops the divergent future and preserves reload boundar
   ]);
   assert.equal(trailPoint(prefixTrail(points, 100, 48), 60), null);
   assert.deepEqual(prefixTrail(points, 0, 24), [points[0]]);
+});
+
+test("a replay of a later level starts where the history entered that level", () => {
+  const points = [
+    { frame: 0, level: 7, x: 0, y: 0 },
+    { frame: 24, level: 7, x: 40, y: 0 },
+    { frame: 48, gap: true },
+    { frame: 72, level: 8, x: 0, y: 0 },
+    { frame: 96, level: 8, x: 40, y: 0 },
+  ];
+  assert.equal(levelEntryFrame(points, 8), 72);
+  assert.equal(levelEntryFrame(points.slice(0, 2), 7), 0);
+  assert.equal(levelEntryFrame(points, 9), 0);
 });
