@@ -111,6 +111,8 @@ Consonance chooses KVM, then HVF, then UML according to host availability.
 `--runner` selects an execution implementation; `--backend` constrains its backend.
 UML runs on Linux without hardware virtualization, including ordinary containers.
 An explicit UML profile selects UML when the backend is automatic.
+Preparation applies an explicit UML backend or profile's policy even when the
+current host cannot launch UML.
 UML admission rejects scanned hardware entropy instructions even if a VM
 review lists them. `prepare`, `check`, `search` and plain `debug run` apply the
 selected backend's policy. A saved UML run from before this policy cannot be

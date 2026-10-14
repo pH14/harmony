@@ -17,6 +17,17 @@ fn execution_mode(backend: crate::config::Backend) -> faults_workload::admission
     }
 }
 
+fn requested_execution_mode(
+    config: &config::Config,
+) -> config::Result<faults_workload::admission::ExecutionMode> {
+    let backend = match config.backend {
+        crate::config::Backend::Auto if config.uml_profile.is_some() => crate::config::Backend::Uml,
+        crate::config::Backend::Auto => crate::runtime::choose(&config.runtime())?,
+        backend => backend,
+    };
+    Ok(execution_mode(backend))
+}
+
 pub struct Faults;
 impl Package for Faults {
     fn name(&self) -> &'static str {
@@ -110,4 +121,34 @@ pub fn worker() -> Result<u8> {
         (service == SESSION_SERVICE).then(service_factory)
     })?;
     Ok(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Backend;
+    use faults_workload::admission::ExecutionMode;
+
+    #[test]
+    fn explicit_backend_and_profile_select_preparation_policy_without_a_live_runtime() {
+        let mut config = config::Config {
+            backend: Backend::Uml,
+            ..Default::default()
+        };
+        assert_eq!(
+            requested_execution_mode(&config).unwrap(),
+            ExecutionMode::Uml
+        );
+        config.backend = Backend::Hvf;
+        assert_eq!(
+            requested_execution_mode(&config).unwrap(),
+            ExecutionMode::Vm
+        );
+        config.backend = Backend::Auto;
+        config.uml_profile = Some("/nonexistent/uml-profile".into());
+        assert_eq!(
+            requested_execution_mode(&config).unwrap(),
+            ExecutionMode::Uml
+        );
+    }
 }
