@@ -115,7 +115,9 @@ that name: macOS tar rejects the repeated self-link while GNU tar accepts it.
 A tar header whose magic starts with `ustar` but is neither POSIX ustar nor the
 exact GNU header cannot carry a nonempty prefix field: macOS tar applies the
 prefix while GNU tar ignores it and extracts a different name. Exact GNU
-headers use those bytes for timestamps, so they remain accepted.
+headers may use the early bytes for timestamps and remain accepted, but their
+sparse-map, extension, and real-size fields must be empty: macOS tar can apply
+them even to ordinary files while GNU tar ignores them.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
 reports failure despite both tools writing the member bytes.

@@ -822,6 +822,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 "ambiguous tar header has a nonempty prefix field".into(),
             ));
         }
+        if magic == b"ustar  \0" && block[386..495].iter().any(|byte| *byte != 0) {
+            return Err(ImageError::Tar(
+                "GNU tar header carries unsupported sparse metadata".into(),
+            ));
+        }
         let size = parse_octal(&block[124..136])?;
         match block[156] {
             b'L' => {
@@ -2686,6 +2691,25 @@ mod tests {
 
         extract_checked(&archive, &dest).unwrap();
         assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn gnu_sparse_metadata_on_regular_file_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[257..265].copy_from_slice(b"ustar  \0");
+        member[483..495].copy_from_slice(b"00000000010\0");
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "gnu-sparse-regular.tar", &member);
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
     }
 
     #[test]
