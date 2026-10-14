@@ -15,6 +15,8 @@ struct State {
     actions: Vec<FaultAction>,
     settle: bool,
     #[serde(default)]
+    uml_entropy_admitted: bool,
+    #[serde(default)]
     outcome: serde_json::Value,
 }
 #[derive(Clone, Debug, Serialize)]
@@ -27,6 +29,7 @@ pub struct Manifest {
     pub actions: Vec<FaultAction>,
     pub settle: bool,
     pub uml_host: Option<serde_json::Value>,
+    pub uml_entropy_admitted: bool,
 }
 impl Deref for Manifest {
     type Target = crate::runs::Manifest;
@@ -40,8 +43,14 @@ impl DerefMut for Manifest {
     }
 }
 impl Manifest {
-    pub fn new(config: Config, mode: &str, bundle: Option<String>) -> Result<Self> {
+    pub fn new(
+        config: Config,
+        mode: &str,
+        bundle: Option<String>,
+        image_admitted: bool,
+    ) -> Result<Self> {
         let record = crate::runs::Manifest::new(config.shared()?, mode)?;
+        let uml_entropy_admitted = image_admitted && config.backend == crate::config::Backend::Uml;
         let uml_host =
             (config.backend == crate::config::Backend::Uml).then(|| record.runner_identity.clone());
         Ok(Self {
@@ -51,6 +60,7 @@ impl Manifest {
             actions: Vec::new(),
             settle: true,
             uml_host,
+            uml_entropy_admitted,
         })
     }
     pub fn read(path: &Path) -> Result<Self> {
@@ -66,6 +76,7 @@ impl Manifest {
             actions: state.actions,
             settle: state.settle,
             uml_host,
+            uml_entropy_admitted: state.uml_entropy_admitted,
         })
     }
     pub fn save(&self, path: &Path) -> Result<()> {
@@ -75,6 +86,7 @@ impl Manifest {
             bundle: self.bundle.clone(),
             actions: self.actions.clone(),
             settle: self.settle,
+            uml_entropy_admitted: self.uml_entropy_admitted,
             outcome: if path.join("report.json").is_file() {
                 serde_json::from_slice(&fs::read(path.join("report.json"))?)?
             } else if path.join("run.json").is_file() {
@@ -107,6 +119,9 @@ impl Manifest {
     }
 
     pub fn fault_artifacts(&self, path: &Path) -> Result<faults_workload::Artifacts> {
+        if self.config.backend == crate::config::Backend::Uml && !self.uml_entropy_admitted {
+            return Err("this UML run predates hardware-entropy image admission and cannot be replayed safely".into());
+        }
         Ok(faults_workload::Artifacts {
             kernel: fs::read(path.join("artifacts/kernel"))?,
             initramfs: fs::read(path.join("artifacts/initramfs"))?,
@@ -128,6 +143,17 @@ pub fn semantic_outcome(payload: &serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_run_state_has_no_uml_entropy_admission_evidence() {
+        let state: State = serde_json::from_value(serde_json::json!({
+            "bundle": null,
+            "actions": [],
+            "settle": true
+        }))
+        .unwrap();
+        assert!(!state.uml_entropy_admitted);
+    }
+
     #[test]
     fn semantic_comparison_ignores_host_duration_but_keeps_execution_changes() {
         let a = serde_json::json!({"actions":[1],"outcome":{"wall_seconds":1,"replays":[{"state_hash":"same"}]}});

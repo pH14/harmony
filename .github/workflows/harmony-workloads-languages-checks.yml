@@ -216,10 +216,26 @@ jobs:
           chmod +x uml-profile/linux
       - name: Verify plain command replay as an ordinary user on UML
         run: |
-          timeout -k 10 300 bash cli/tests/uml-command.sh language-image/c.tar \
+          mkdir -p "$RUNNER_TEMP/uml-command-image"
+          cat > "$RUNNER_TEMP/uml-command-image/true.S" <<'ASM'
+          .global _start
+          _start:
+              mov $60, %rax
+              xor %rdi, %rdi
+              syscall
+          ASM
+          cc -nostdlib -static -no-pie -Wl,-z,noexecstack \
+            -o "$RUNNER_TEMP/uml-command-image/true" "$RUNNER_TEMP/uml-command-image/true.S"
+          cat > "$RUNNER_TEMP/uml-command-image/Dockerfile" <<'DOCKERFILE'
+          FROM scratch
+          COPY true /bin/true
+          DOCKERFILE
+          docker build -t harmony-uml-command-safe:local "$RUNNER_TEMP/uml-command-image"
+          docker save -o "$RUNNER_TEMP/uml-command-safe.tar" harmony-uml-command-safe:local
+          timeout -k 10 300 bash cli/tests/uml-command.sh "$RUNNER_TEMP/uml-command-safe.tar" \
             "$GITHUB_WORKSPACE/uml-profile" \
             "$GITHUB_WORKSPACE/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz" \
-            uml-command-evidence
+            uml-command-evidence language-image/c.tar
       - if: always()
         uses: actions/upload-artifact@v4
         with:

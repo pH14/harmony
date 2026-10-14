@@ -8,6 +8,15 @@ mod workflow;
 use super::{Operation, Package, Request};
 use crate::config::{Config, Result};
 use std::path::Path;
+
+fn execution_mode(backend: crate::config::Backend) -> faults_workload::admission::ExecutionMode {
+    if backend == crate::config::Backend::Uml {
+        faults_workload::admission::ExecutionMode::Uml
+    } else {
+        faults_workload::admission::ExecutionMode::Vm
+    }
+}
+
 pub struct Faults;
 impl Package for Faults {
     fn name(&self) -> &'static str {

@@ -7,6 +7,7 @@ image=${1:?usage: uml-command.sh IMAGE PROFILE INITRAMFS EVIDENCE_DIRECTORY}
 profile=${2:?UML profile required}
 initramfs=${3:?base initramfs required}
 evidence=${4:?evidence directory required}
+rejected_image=${5:-}
 mkdir -p "$evidence"
 evidence=$(cd "$evidence" && pwd)
 runtime=$(python3 - "$profile" "$initramfs" <<'PYTHON'
@@ -17,6 +18,28 @@ print('base_initramfs = ' + json.dumps(sys.argv[2]))
 print('ram_mib = 1024')
 PYTHON
 )
+if [ -n "$rejected_image" ]; then
+    status=0
+    "$binary" prepare "$rejected_image" --config-toml "$runtime" >"$evidence/rejected-prepare.txt" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -q 'User-mode Linux executes hardware entropy instructions natively' "$evidence/rejected-prepare.txt"
+    status=0
+    "$binary" check "$rejected_image" --config-toml "$runtime" --offline --json >"$evidence/rejected-check.json" 2>"$evidence/rejected-check.err" || status=$?
+    test "$status" -eq 2
+    python3 - "$evidence/rejected-check.json" <<'PYTHON'
+import json, sys
+report = json.load(open(sys.argv[1]))
+assert report['backend'] == 'uml'
+assert report['ready'] is False
+assert any('User-mode Linux executes hardware entropy instructions natively' in reason for reason in report['blockers'])
+PYTHON
+    status=0
+    "$binary" debug run "$rejected_image" --config-toml "$runtime" --for 60s \
+        --out "$evidence/rejected" -- /bin/true >"$evidence/rejected.txt" 2>&1 || status=$?
+    test "$status" -eq 2
+    grep -q 'User-mode Linux executes hardware entropy instructions natively' "$evidence/rejected.txt"
+    test ! -e "$evidence/rejected/manifest.json"
+fi
 "$binary" debug run "$image" --config-toml "$runtime" --for 60s --out "$evidence/original" -- /bin/true
 "$binary" debug replay "$evidence/original" --out "$evidence/replayed"
 "$binary" debug replay "$evidence/replayed" --out "$evidence/replayed-again"

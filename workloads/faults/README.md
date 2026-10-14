@@ -52,6 +52,12 @@ the VM's hidden feature bits do not protect a guarded call site. This admission
 check applies to executable sections in the staged image. The existing scan
 boundary still requires cooperative workloads: dynamically generated code and
 instructions hidden in unscanned executable bytes are outside its guarantee.
+The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
+entropy sites, so UML refuses those images even if a particular workload
+would not call them. Build a UML image without the sites before searching or
+running it; the review entries remain valid for VM execution. Saved UML runs
+created before this admission rule cannot be replayed or branched because their
+guest initramfs has no admission evidence.
 
 Each line of `/symbols/harmony-instrumented-events` holds a SHA-256 and an
 absolute image path, and must match that file. Event actions are enabled when

@@ -401,8 +401,12 @@ explicitly unavailable. The oracle then checks observed evidence, reports
 `state identity unavailable`, and does not claim whole-state equivalence.
 
 The language workflow also builds a pinned UML profile for `UML Command Replay`.
-That bounded check runs a plain OCI command and fresh replays as an ordinary
-user, compares application and bridge evidence, and rejects a planted divergence.
+That bounded check rejects the reviewed hardware-entropy sites in the Bookworm
+C image, then runs a small image without those sites and fresh replays as an
+ordinary user. It compares application and bridge evidence and rejects a
+planted divergence. Current Bookworm historical case images have the same
+reviewed sites, so the manually dispatched UML campaign refuses them at image
+admission until they are rebuilt without those instructions.
 
 ## Repository maintenance
 
