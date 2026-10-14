@@ -117,7 +117,7 @@ def complete_section_tail(path, name, end):
         raise ValueError(f"cannot disassemble adjacent code section {name}: {error}") from error
     if result.returncode:
         raise ValueError(f"cannot disassemble adjacent code section {name}: {result.stderr.strip()}")
-    last = None
+    decoded = []
     for line in result.stdout.splitlines():
         fields = line.split("\t")
         if len(fields) < 3 or not re.fullmatch(r"[0-9a-fA-F]+:", fields[0].strip()):
@@ -125,13 +125,19 @@ def complete_section_tail(path, name, end):
         raw = fields[1].split()
         if not raw or any(re.fullmatch(r"[0-9a-fA-F]{2}", byte) is None for byte in raw):
             continue
-        last = (int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip())
+        decoded.append((int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip()))
+    last = decoded[-1] if decoded else None
     if last is None or last[0] + last[1] != end:
         raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
-    mnemonic = last[2].split()[0].lower() if last[2] else ""
-    if (not mnemonic or mnemonic in TRAILING_PREFIXES
-            or mnemonic.startswith((".byte", "(bad)", "rex"))):
-        raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+    for address, _length, instruction in decoded:
+        if address < end - (MAX_X86_INSTRUCTION_BYTES - 1):
+            continue
+        words = instruction.lower().split()
+        if (not words or words[0].startswith((".byte", "(bad)"))
+                or (len(words) == 1 and (
+                    words[0] in TRAILING_PREFIXES or words[0].startswith("rex")
+                ))):
+            raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
 
 
 def unclaimed_opcode(data, programs, sections, tag, path):

@@ -292,6 +292,15 @@ class CounterScanCoverage(unittest.TestCase):
                     '.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
                     "incomplete instruction at adjacent code boundary",
                 ),
+                (
+                    "boundary-desync-shifted-tail",
+                    '.section .text,"ax"\n.global _start\n_start:\n'
+                    '.byte 0xb8,0x90,0x90\n'
+                    '.section .safe,"ax"\n.byte 0x90\n'
+                    + '.byte 0xb8,0x90,0x90,0x90,0xb0\n' * 3
+                    + '.byte 0xb8,0x0f,0x31,0x90,0x90\n',
+                    "incomplete instruction at adjacent code boundary",
+                ),
             )
             for mode, source, expected in boundary_cases:
                 asm = root / f"{mode}.s"
@@ -328,6 +337,21 @@ class CounterScanCoverage(unittest.TestCase):
             setup.write_bytes(safe_bytes)
             decompressor.write_bytes(safe_bytes)
             with self.subTest(mode="boundary-control", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            prefixed = root / "boundary-prefixed.s"
+            prefixed.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nrep stosb\n'
+                '.section .safe,"ax"\n.byte 0xc3\n'
+            )
+            run("as", "--64", "-o", str(root / "boundary-prefixed.o"), str(prefixed))
+            run(
+                "ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o",
+                str(root / "boundary-prefixed.elf"), str(root / "boundary-prefixed.o"),
+            )
+            kernel.write_bytes((root / "boundary-prefixed.elf").read_bytes())
+            with self.subTest(mode="boundary-prefixed", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
