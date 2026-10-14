@@ -860,7 +860,7 @@ fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
             child: None,
         });
     };
-    let mut child = Command::new(tool)
+    let mut child = archive_tool(tool)
         .arg("-dc")
         .arg(archive)
         .stdout(Stdio::piped())
@@ -877,6 +877,18 @@ fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
         reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, stdout)),
         child: Some(child),
     })
+}
+
+fn archive_tool(tool: &str) -> Command {
+    let mut command = Command::new(tool);
+    command
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var_os("PATH").unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin")),
+        )
+        .env("LC_ALL", "C");
+    command
 }
 
 fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
@@ -1522,13 +1534,7 @@ fn resolve_under(
 }
 
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
-    let out = Command::new("sh")
-        .env_clear()
-        .env(
-            "PATH",
-            std::env::var_os("PATH").unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin")),
-        )
-        .env("LC_ALL", "C")
+    let out = archive_tool("sh")
         .arg("-c")
         .arg("umask 022; exec tar \"$@\"")
         .arg("tar")
@@ -4441,6 +4447,47 @@ mod tests {
             extract_checked(&compressed, &dest).unwrap();
             assert_eq!(std::fs::read(dest.join("etc/passwd")).unwrap(), b"root");
         }
+    }
+
+    #[test]
+    fn decompression_ignores_inherited_host_options() {
+        if std::env::var_os("HARMONY_OCI_XZ_ENV_TEST_CHILD").is_some() {
+            let dir = tempfile::tempdir().unwrap();
+            let plain = tar_layer(dir.path(), "layer", &[("file", b"data")]);
+            let compressed = dir.path().join("layer.xz");
+            let output = Command::new("xz")
+                .arg("-c")
+                .arg(&plain)
+                .env_remove("XZ_DEFAULTS")
+                .stdout(std::fs::File::create(&compressed).unwrap())
+                .status()
+                .unwrap();
+            assert!(output.success());
+            assert_eq!(read_members(&compressed).unwrap()[0].shown(), "file");
+            let dest = dir.path().join("out");
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&compressed, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("file")).unwrap(), b"data");
+            return;
+        }
+        if Command::new("xz").arg("--version").output().is_err() {
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::decompression_ignores_inherited_host_options",
+            ])
+            .env("HARMONY_OCI_XZ_ENV_TEST_CHILD", "1")
+            .env("XZ_DEFAULTS", "--memlimit-decompress=1MiB")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

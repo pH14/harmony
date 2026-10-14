@@ -156,8 +156,10 @@ host tar implementations.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
 reports failure despite both tools writing the member bytes.
-Layer extraction invokes tar with a cleared child environment, retaining only
-`PATH` for tar and compression helpers and setting `LC_ALL=C`. GNU tar honors inherited `TAR_OPTIONS` such as
+Layer admission and extraction invoke decompressors and tar with a cleared child
+environment, retaining only `PATH` for the tools and setting `LC_ALL=C`.
+Inherited `XZ_DEFAULTS` can otherwise reject a valid archive before admission.
+GNU tar honors inherited `TAR_OPTIONS` such as
 `--strip-components=1`, while macOS tar honors `TAR_READER_OPTIONS` such as a
 header charset conversion. Either could otherwise change an extracted path
 after admission.
