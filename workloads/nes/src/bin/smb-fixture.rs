@@ -440,13 +440,16 @@ fn load_source_archive_with_hook(
     path: &Path,
     after_first_access: impl FnOnce(),
 ) -> Result<(String, SmbArchiveReport), Box<dyn Error>> {
-    let mut reader = HashingReader {
-        inner: BufReader::new(fs::File::open(path)?),
+    let mut reader = BufReader::new(HashingReader {
+        inner: fs::File::open(path)?,
         digest: Sha256::new(),
-    };
+    });
     after_first_access();
     let report = serde_json::from_reader(&mut reader)?;
-    Ok((format!("{:x}", reader.digest.finalize()), report))
+    Ok((
+        format!("{:x}", reader.into_inner().digest.finalize()),
+        report,
+    ))
 }
 
 fn sha256(bytes: &[u8]) -> String {

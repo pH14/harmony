@@ -235,6 +235,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
         checkpoint_arg.as_deref(),
         checkpoint_format,
     )?;
+    ensure_replay_archive_digest(&stream_bytes, &origin)?;
     let (origin_report, origin_checkpoint) = match origin {
         SmbCampaignOrigin::Genesis => (None, None),
         SmbCampaignOrigin::SnapshotRoot { checkpoint } => (None, Some(checkpoint)),
@@ -370,13 +371,13 @@ fn load_origin_with_source_hook(
             )?,
         });
     }
-    let mut reader = HashingReader {
-        inner: BufReader::new(fs::File::open(origin_arg)?),
+    let mut reader = BufReader::new(HashingReader {
+        inner: fs::File::open(origin_arg)?,
         digest: Sha256::new(),
-    };
+    });
     after_first_access();
     let report: SmbArchiveReport = serde_json::from_reader(&mut reader)?;
-    let file_sha256 = format!("{:x}", reader.digest.finalize());
+    let file_sha256 = format!("{:x}", reader.into_inner().digest.finalize());
     Ok(SmbCampaignOrigin::Archive {
         path: origin_arg.to_owned(),
         file_sha256,
@@ -408,20 +409,45 @@ fn load_checkpoint_as_with_source_hook(
     checkpoint_format: &str,
     after_first_access: impl FnOnce(),
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    let mut bytes = Vec::new();
-    fs::File::open(path)?
-        .take(1024 * 1024 + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > 1024 * 1024 {
-        return Err("snapshot checkpoint exceeds 1 MiB".into());
+    let mut reader = BufReader::new(HashingReader {
+        inner: fs::File::open(path)?,
+        digest: Sha256::new(),
+    });
+    let mut scratch = vec![0_u8; 1024 * 1024];
+    let (snapshots, _) = postcard::from_io((&mut reader, scratch.as_mut_slice()))?;
+    let snapshots: SmbSnapshotCheckpoint = snapshots;
+    if snapshots.format != checkpoint_format {
+        return Err("snapshot checkpoint format is not recognized".into());
     }
-    let snapshots = SmbSnapshotCheckpoint::from_bytes(&bytes, checkpoint_format)?;
+    std::io::copy(&mut reader, &mut std::io::sink())?;
     after_first_access();
     Ok(SmbCampaignCheckpoint {
         path: logical_path,
-        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+        file_sha256: format!("{:x}", reader.into_inner().digest.finalize()),
         snapshots,
     })
+}
+
+fn ensure_replay_archive_digest(
+    stream_bytes: &[u8],
+    origin: &SmbCampaignOrigin,
+) -> Result<(), Box<dyn Error>> {
+    let SmbCampaignOrigin::Archive { file_sha256, .. } = origin else {
+        return Ok(());
+    };
+    let header_line = stream_bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .ok_or("campaign stream has no header")?;
+    let header: serde_json::Value = serde_json::from_slice(header_line)?;
+    if header
+        .get("origin_archive_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(file_sha256.as_str())
+    {
+        return Err("campaign replay source archive bytes do not match the recorded digest".into());
+    }
+    Ok(())
 }
 
 fn write_report_files(
@@ -507,9 +533,10 @@ fn parse_u64(value: &str) -> Result<u64, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SmbArchiveReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
+        SmbArchiveReport, SmbCampaignOrigin, SmbSnapshotCheckpoint, ensure_replay_archive_digest,
         load_checkpoint_as_with_source_hook, load_origin_with_source_hook,
     };
+    use nes_workload::smb::campaign::SmbSnapshotCheckpointEntry;
     use sha2::{Digest, Sha256};
 
     fn archive_bytes(seed: u64) -> Vec<u8> {
@@ -594,6 +621,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn replay_refuses_semantically_equal_archive_with_different_source_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-archive.json");
+        let original = archive_bytes(7);
+        let mut changed = original.clone();
+        changed.extend_from_slice(b" \n\t");
+        std::fs::write(&path, &changed).unwrap();
+        let origin =
+            load_origin_with_source_hook(path.to_str().unwrap(), None, "test", || {}).unwrap();
+        let recorded = serde_json::to_vec(&serde_json::json!({
+            "origin_archive_sha256": format!("{:x}", Sha256::digest(&original))
+        }))
+        .unwrap();
+        assert!(
+            ensure_replay_archive_digest(&recorded, &origin).is_err(),
+            "replay accepted archive bytes that differ from the recorded digest"
+        );
+        let matched = serde_json::to_vec(&serde_json::json!({
+            "origin_archive_sha256": format!("{:x}", Sha256::digest(&changed))
+        }))
+        .unwrap();
+        ensure_replay_archive_digest(&matched, &origin).unwrap();
+    }
+
     fn checkpoint_bytes(id: u64) -> Vec<u8> {
         let snapshot: SmbSnapshotCheckpoint = serde_json::from_value(serde_json::json!({
             "format": "test",
@@ -651,5 +703,32 @@ mod tests {
             checkpoint.file_sha256,
             format!("{:x}", Sha256::digest(&original))
         );
+    }
+
+    #[test]
+    fn whole_tree_checkpoint_larger_than_one_mib_still_loads() {
+        let small: SmbSnapshotCheckpoint =
+            SmbSnapshotCheckpoint::from_bytes(&checkpoint_bytes(0), "test").unwrap();
+        let snapshot = small.entries[0].snapshot.clone();
+        let large = SmbSnapshotCheckpoint {
+            format: "test".to_owned(),
+            entries: (0_u64..60_000)
+                .map(|id| SmbSnapshotCheckpointEntry {
+                    id,
+                    snapshot: snapshot.clone(),
+                })
+                .collect(),
+        };
+        let mut bytes = large.to_bytes().unwrap();
+        bytes.extend_from_slice(b"trailing checkpoint bytes");
+        assert!(bytes.len() > 1024 * 1024);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("whole-tree.bin");
+        std::fs::write(&path, &bytes).unwrap();
+        let loaded =
+            load_checkpoint_as_with_source_hook(&path, "whole-tree".to_owned(), "test", || {})
+                .unwrap();
+        assert_eq!(loaded.snapshots.entries.len(), 60_000);
+        assert_eq!(loaded.file_sha256, format!("{:x}", Sha256::digest(&bytes)));
     }
 }
