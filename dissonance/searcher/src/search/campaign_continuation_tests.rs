@@ -1416,3 +1416,35 @@ fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
         );
     }
 }
+
+#[test]
+fn replay_rejects_forged_post_admission_skip_suffix_limits() {
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.execution_budget = 800;
+    config.campaign_seed = 3;
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let index = 147;
+    let mut skip: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
+    assert_eq!(skip["event"], "skip");
+    assert_eq!(skip["suffix_limit"], 1);
+    skip["suffix_limit"] = serde_json::json!(2);
+    lines[index] = serde_json::to_string(&skip).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay certified a skip limit no live selector could have drawn")
+            .to_string();
+    assert!(error.contains("skip suffix limit diverged"), "{error}");
+}
