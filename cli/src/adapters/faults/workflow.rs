@@ -320,21 +320,23 @@ pub fn run(
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
-    let result = crate::oci::execute(
-        &manifest.config.runtime(),
-        &manifest.runner_identity,
-        manifest.config.seed,
-        &manifest.config.knobs,
-        manifest.config.wall_seconds,
-        &artifacts.kernel,
-        &artifacts.initramfs,
-        &out,
-        console,
-    )
-    .and_then(|(passed, record)| {
+    let result = (|| -> Result<u8> {
+        let profile_identity = manifest.uml_profile_identity(&out)?;
+        let (passed, record) = crate::oci::execute(
+            &manifest.config.runtime(),
+            &manifest.runner_identity,
+            profile_identity.as_deref(),
+            manifest.config.seed,
+            &manifest.config.knobs,
+            manifest.config.wall_seconds,
+            &artifacts.kernel,
+            &artifacts.initramfs,
+            &out,
+            console,
+        )?;
         manifest.pin_outcome(&record)?;
         Ok(if passed { 0 } else { 1 })
-    });
+    })();
     finish(&out, &mut manifest, result)
 }
 

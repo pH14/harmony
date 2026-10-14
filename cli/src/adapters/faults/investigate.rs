@@ -134,9 +134,11 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 c.uml_profile = Some(out.join("artifacts/uml"));
             }
             let artifacts = manifest.fault_artifacts(&out)?;
+            let profile_identity = manifest.uml_profile_identity(&out)?;
             let (_, new) = crate::oci::execute(
                 &c.runtime(),
                 &manifest.runner_identity,
+                profile_identity.as_deref(),
                 c.seed,
                 &c.knobs,
                 c.wall_seconds,
@@ -604,6 +606,8 @@ mod tests {
         config.runner.kind = "test".into();
         config.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(config, "run").unwrap();
+        record.store(path, "kernel", b"").unwrap();
+        record.store(path, "initramfs", b"").unwrap();
         record.status = status.into();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
@@ -829,6 +833,8 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.store(dir.path(), "kernel", b"").unwrap();
+        record.store(dir.path(), "initramfs", b"").unwrap();
         record.status = "complete".into();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
