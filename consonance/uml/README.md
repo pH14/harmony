@@ -70,6 +70,8 @@
   limit is supplied when the session starts, so a fresh process restoring a
   checkpoint is bounded while it waits for the restore request and replies.
   An in-place restore also uses that limit for its bridge acknowledgements.
+  A capture acknowledgement that stops arriving reports the same limit, and
+  the client abandons that incomplete session.
   The session pauses the guest before each answer, takes a `Checkpoint` there,
   restores one in place, or starts a fresh process that restores one at boot.
   At restore, the console collector drains output already written by the
