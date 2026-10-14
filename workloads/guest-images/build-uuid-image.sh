@@ -41,6 +41,7 @@ if [ "$(id -u)" != "0" ]; then
     echo "FAIL: build-uuid-image.sh must run as root (the OCI image preserves uid-70 ownership)." >&2
     exit 1
 fi
+python3 "$workload_dir/test_uuid_entropy.py"
 
 # --- tunables (mirror build-postgres-image.sh) -------------------------------
 PGV=$PG_MAJOR                                  # from versions.lock
