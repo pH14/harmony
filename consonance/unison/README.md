@@ -49,9 +49,10 @@ it at work zero would provide an unreplayable bisection coordinate. An initial
 difference at work zero remains directly bisectable.
 `bisect_divergence` checks the initial state when the lower bound is zero,
 returns zero if the machines already differ there, and otherwise verifies the
-bracket endpoints and binary searches fresh executions in `O(log(hi - lo))`
-probes. Its first-divergence claim assumes the observed difference remains
-persistent within the bracket.
+bracket endpoints and probes each work count in ascending order with fresh
+executions. This costs `O(hi - lo)` probe pairs but finds the first mismatch
+even when observations diverge temporarily and then reconverge. The upper
+endpoint must still differ for the supplied interval to be a valid bracket.
 
 ## Reference machines
 

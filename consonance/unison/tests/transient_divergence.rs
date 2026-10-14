@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+use unison::{
+    RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
+};
+
+#[derive(Clone, Copy)]
+struct Factory(bool);
+
+struct Machine {
+    work: u64,
+    divergent: bool,
+}
+
+impl SubjectFactory for Factory {
+    type M = Machine;
+
+    fn spawn(&self, _: u64) -> Self::M {
+        Machine {
+            work: 0,
+            divergent: self.0,
+        }
+    }
+}
+
+impl Subject for Machine {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        if target < self.work {
+            return Err(SubjectError::TargetBehind {
+                target,
+                current: self.work,
+            });
+        }
+        self.work = target;
+        Ok(RunOutcome::ReachedTarget)
+    }
+
+    fn work(&self) -> u64 {
+        self.work
+    }
+
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+        let mut hash = [self.work as u8; 32];
+        if self.divergent && (self.work == 1 || self.work >= 5) {
+            hash[0] ^= 0x80;
+        }
+        Ok(hash)
+    }
+
+    fn observable_digest(&self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
+#[test]
+fn first_mismatch_precedes_a_matching_checkpoint() {
+    let a = Factory(false);
+    let b = Factory(true);
+    let report = compare_runs(&a, &b, 7, 5, 5).unwrap();
+    assert_eq!(
+        report.verdict,
+        Verdict::Diverged {
+            last_match: None,
+            first_mismatch: 5,
+        }
+    );
+    let point = bisect_divergence(&a, &b, 7, 0, 5).unwrap();
+    assert_eq!(point.first_divergent_work, 1);
+    assert_ne!(point.hash_a, point.hash_b);
+}
