@@ -64,10 +64,11 @@ For User-mode Linux, preparation rejects all four scanned hardware entropy
 instructions even when reviewed. UML runs guest user instructions natively, so
 the VM's hidden feature bits do not protect a guarded call site. This admission
 check walks the bytes of executable load segments in the packed image. Section
-headers do not determine what the guest loader executes. The scan boundary
-still requires cooperative workloads: dynamically generated code and
-instructions hidden inside another instruction's operand bytes are outside its
-guarantee.
+headers do not determine what the guest loader executes. It rejects x86
+entropy opcodes whose bytes cross a section boundary, where each side would
+otherwise be decoded independently. The scan still requires cooperative
+workloads: dynamically generated code and instructions hidden inside another
+instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
