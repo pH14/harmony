@@ -1104,7 +1104,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
             }
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
-            Request::RecordedEnv => Ok(self.recorded_env_reply()),
+            Request::RecordedEnv => {
+                self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(self.recorded_env_reply())
+            }
         }
     }
 
@@ -1825,10 +1828,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         let result = self.run_inner(until);
-        if result.is_ok() {
-            self.sync_recorded_request_bindings()?;
+        match result {
+            Ok(reply) => match self.sync_recorded_request_bindings() {
+                Ok(()) => Ok(reply),
+                Err(error) => {
+                    self.retire_vmm();
+                    Err(error)
+                }
+            },
+            Err(error) => {
+                self.retire_vmm();
+                Err(error)
+            }
         }
-        result
     }
 
     fn sync_recorded_request_bindings(&mut self) -> Result<(), ServeError> {
@@ -2360,6 +2372,38 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn unmodeled_guest_exit_must_retire_the_failed_run() {
+        let mut server = server(vec![Exit::Common(CommonExit::Mmio {
+            gpa: vmm_backend::Gpa(0xdead_0000),
+            size: 4,
+            write: Some(1),
+        })]);
+        hello(&mut server);
+        let base = snap(&mut server);
+        assert!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(1),
+                })
+                .unwrap()
+                .is_ok()
+        );
+        let run = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert!(matches!(server.handle(&run), Err(ServeError::Vmm(_))));
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv),
+            Err(ServeError::Poisoned)
+        ));
     }
 
     #[test]
@@ -10040,7 +10084,7 @@ mod tests {
         }
     }
 
-    struct IdleBackend(MockBackend, bool);
+    struct IdleBackend(MockBackend, bool, bool);
     impl Backend for IdleBackend {
         type A = vmm_backend::X86;
 
@@ -10064,6 +10108,15 @@ mod tests {
                 }))
             } else {
                 Ok(Exit::Common(CommonExit::Idle))
+            }
+        }
+        fn finish_exit(&mut self) -> vmm_backend::Result<Option<Exit<vmm_backend::X86>>> {
+            if self.2 {
+                Err(vmm_backend::BackendError::Internal(
+                    "injected post-idle failure",
+                ))
+            } else {
+                Ok(None)
             }
         }
         fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
@@ -10124,7 +10177,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let mut v = Vmm::new(IdleBackend(m, false), GuestRam::new(RAM).unwrap());
+        let mut v = Vmm::new(IdleBackend(m, false, false), GuestRam::new(RAM).unwrap());
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -10175,6 +10228,32 @@ mod tests {
             live.handle(&Request::RecordedEnv).unwrap(),
             Err(ControlError::Tainted)
         );
+    }
+
+    #[test]
+    fn a_post_idle_failure_cannot_mint_a_false_reproducer() {
+        let mut probe = charged_idle_vmm(0x1D1E);
+        probe.backend.2 = true;
+        probe.set_idle_wake_vns(Some(1_000));
+        assert!(probe.step().is_err());
+        assert_eq!(probe.effective_vns(), Some(10_000));
+
+        let mut failed = charged_idle_vmm(0x1D1E);
+        failed.backend.2 = true;
+        let mut live = ControlServer::new(failed, Box::new(|| Ok(charged_idle_vmm(0x1D1E))));
+        assert!(live.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+        let run = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(1_000)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert!(matches!(live.handle(&run), Err(ServeError::Vmm(_))));
+        assert!(matches!(
+            live.handle(&Request::RecordedEnv),
+            Err(ServeError::Poisoned)
+        ));
     }
 
     #[test]
