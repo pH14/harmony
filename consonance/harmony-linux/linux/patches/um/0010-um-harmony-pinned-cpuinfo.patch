@@ -1,0 +1,69 @@
+Import the admitted host CPU-info lines from the launcher
+
+The launcher records the lines that the UML boot parser consumes and passes
+those exact bytes to the kernel. Reading the live host proc file after the
+launcher checked its identity allows a mount or CPU-info change to produce a
+guest under the wrong recording identity. Require the pinned input, including
+when there are no matching lines.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/start_up.c
++++ b/arch/um/os-Linux/start_up.c
+@@ -238,31 +238,34 @@
+ 		void (*flags_helper_func)(char *line),
+ 		void (*cache_helper_func)(char *line))
+ {
++	const char *pinned = getenv("HARMONY_UML_CPUINFO");
+ 	FILE *cpuinfo;
+ 	char *line = NULL;
+ 	size_t len = 0;
+ 	int done_parsing = 0;
+ 
+-	cpuinfo = fopen("/proc/cpuinfo", "r");
+-	if (cpuinfo == NULL) {
+-		os_info("Failed to get host CPU features\n");
+-	} else {
+-		while ((getline(&line, &len, cpuinfo)) != -1) {
+-			if (strstr(line, "flags")) {
+-				flags_helper_func(line);
+-				done_parsing++;
+-			}
+-			if (strstr(line, "cache_alignment")) {
+-				cache_helper_func(line);
+-				done_parsing++;
+-			}
+-			free(line);
+-			line = NULL;
+-			if (done_parsing > 1)
+-				break;
+-		}
+-		fclose(cpuinfo);
++	if (pinned == NULL)
++		fatal("Harmony requires pinned host CPU info\n");
++	if (*pinned == '\0')
++		return;
++	cpuinfo = fmemopen((void *)pinned, strlen(pinned), "r");
++	if (cpuinfo == NULL)
++		fatal("Cannot read pinned host CPU info: %d\n", errno);
++	while ((getline(&line, &len, cpuinfo)) != -1) {
++		if (strstr(line, "flags")) {
++			flags_helper_func(line);
++			done_parsing++;
++		}
++		if (strstr(line, "cache_alignment")) {
++			cache_helper_func(line);
++			done_parsing++;
++		}
++		free(line);
++		line = NULL;
++		if (done_parsing > 1)
++			break;
+ 	}
++	fclose(cpuinfo);
+ }
+ 
+ static int __init uml_seccomp_config(char *line, int *add)

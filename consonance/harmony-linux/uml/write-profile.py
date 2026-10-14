@@ -35,7 +35,7 @@ def main() -> None:
     args = parser.parse_args()
 
     profile = {
-        "schema": 2,
+        "schema": 3,
         "architecture": args.architecture,
         "kernel_version": args.kernel_version,
         "userspace": "seccomp",

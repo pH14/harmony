@@ -26,8 +26,8 @@
   running the guest. On arm64, it consumes leading `cache_alignment` lines
   before the first ordinary line, then uses host auxiliary-vector features.
   `HostIdentity::identity_sha256` binds all recorded fields with lengths. Each
-  `Launch`
-  admits one processor on first use and shares that admission with its clones;
+  `Launch` admits one processor and host identity on first use and shares that
+  admission with its clones;
   moving an ordinary launch to a thread that excludes that processor refuses
   execution. A caller can instead bind a verified expected host identity when
   multiple worker threads must run guests on one canonical processor. The
@@ -36,14 +36,19 @@
   to spawn if its cpuset no longer permits the processor. Qualification's
   pinned replay perturbation contends for the actual guest processor and
   verifies the final affinity despite an earlier override callback. The host
-  identity is checked before spawn; it does not atomically pin the host's
-  `/proc/cpuinfo` bytes until UML reads them during boot.
+  identity is checked before spawn. At the final check, `Guest::start` passes
+  the admitted parser-input lines through `HARMONY_UML_CPUINFO`; the owned UML
+  kernel consumes those bytes instead of reopening `/proc/cpuinfo`. A changed
+  host CPU-info file after the check cannot alter the boot import. Profiles
+  from before this pinned-import contract have schema 2 and are refused;
+  schema 3 profiles require the matching owned kernel patch.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
   per-launch work directory for
-  `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR` and
-  `GLIBC_TUNABLES`. With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
+  `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR`,
+  `GLIBC_TUNABLES`, and the pinned boot CPU-info passed at `Guest::start`.
+  With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
   It refuses extra kernel arguments that would replace these settings or
   attach host files, disks, consoles or network devices, because a
   `Recording` cannot carry those host resources. `set_initramfs` likewise
