@@ -1044,12 +1044,9 @@ impl Live {
 
     fn replay(&mut self, snapshot: SnapId) -> Result<(), String> {
         let restore_started = started();
-        let result = self
-            .session
-            .replay_snapshot(snapshot)
-            .map_err(|error| format!("replay: {error}"));
+        let result = self.session.replay_snapshot(snapshot);
         self.telemetry.restores.since(restore_started);
-        result
+        result.map_err(|error| self.abandon("replay", error.as_ref()))
     }
 
     fn drop_snapshots(&mut self, snapshots: Vec<SnapId>) -> Result<(), String> {
@@ -1524,6 +1521,118 @@ mod tests {
             guest_horizons_run: 0,
             root_seal: 0,
         }
+    }
+
+    #[derive(Debug)]
+    struct TimedOutReplay;
+
+    impl SearchSession for TimedOutReplay {
+        fn setup_handle(&self) -> (SnapId, u64) {
+            (SnapId(1), 0)
+        }
+
+        fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+
+        fn telemetry_counters(&self) -> Vec<(String, u64)> {
+            Vec::new()
+        }
+
+        fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
+            None
+        }
+
+        fn store_bytes(&self) -> Option<u64> {
+            None
+        }
+
+        fn publish_snapshot(
+            &self,
+            _: &dyn CacheIndex,
+            _: Namespace,
+            _: &[u8],
+            _: Option<(SnapId, &Lease)>,
+            _: SnapId,
+            _: u64,
+        ) -> Result<Lease, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn import_cached(
+            &mut self,
+            _: &dyn CacheIndex,
+            _: &Lease,
+            _: SnapId,
+        ) -> Result<(SnapId, u64), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn replay_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+            Err(SessionError::Hung(WALL_LIMIT).into())
+        }
+
+        fn drop_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn branch_with_service(
+            &mut self,
+            _: SnapId,
+            _: ServiceConfig,
+            _: Vec<Vec<u8>>,
+            _: Vec<(u64, environment::channel::Effect)>,
+        ) -> Result<(), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn run_until(&mut self, _: u64) -> Result<StopReason, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn sdk_events(
+            &mut self,
+        ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn abandoned(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn replay_timeout_is_a_recoverable_watchdog_cutoff() {
+        let mut live = Live {
+            key: [0; 32],
+            holder: 0,
+            session: Box::new(TimedOutReplay),
+            base_identity: [0; 32],
+            setup: SnapId(1),
+            windows: ActionWindows { root_seal: 0 },
+            inherited: Vec::new(),
+            chain: Chain::new(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                None,
+            ),
+            horizons_run: 0,
+            abandoned: false,
+            telemetry: LiveTelemetry::default(),
+        };
+        let error = live.replay(SnapId(1)).unwrap_err();
+        assert!(error.starts_with(WATCHDOG_CUTOFF));
+        assert!(live.abandoned);
     }
 
     #[test]

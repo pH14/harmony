@@ -273,7 +273,8 @@ impl UmlSession {
             &self.checkpoints,
             Some(checkpoint),
             Some(self.progress_limit),
-        )?;
+        )
+        .map_err(|error| self.abandon(error))?;
         self.session = Some(session);
         self.counters.fresh_restores.since(begun);
         Ok(())
@@ -315,9 +316,17 @@ impl UmlSession {
             .take()
             .map(|session| session.console_tail())
             .unwrap_or_default();
-        match error {
-            uml::SessionError::Hung(limit) => SessionError::Hung(limit).into(),
-            error => SessionError::Control(format!("{error}\n{tail}")).into(),
+        let hung = match &error {
+            uml::SessionError::Hung(limit) => Some(*limit),
+            uml::SessionError::Boot { error, .. } => match error.as_ref() {
+                uml::SessionError::Hung(limit) => Some(*limit),
+                _ => None,
+            },
+            _ => None,
+        };
+        match hung {
+            Some(limit) => SessionError::Hung(limit).into(),
+            None => SessionError::Control(format!("{error}\n{tail}")).into(),
         }
     }
 }
@@ -676,6 +685,21 @@ mod tests {
             abandoned: false,
             counters: Counters::default(),
         }
+    }
+
+    #[test]
+    fn fresh_restore_timeout_abandons_with_a_typed_watchdog_error() {
+        let limit = Duration::from_millis(25);
+        let mut session = unbooted_session();
+        let error = session.abandon(uml::SessionError::Boot {
+            error: Box::new(uml::SessionError::Hung(limit)),
+            console: "restore wait".into(),
+        });
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Hung(got)) if *got == limit
+        ));
+        assert!(session.abandoned);
     }
 
     fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
