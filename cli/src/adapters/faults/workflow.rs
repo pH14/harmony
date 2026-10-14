@@ -277,8 +277,10 @@ pub fn run(
     let stage = tempfile::tempdir()?;
     let staged =
         oci_support::image::stage(c.image.as_deref().ok_or("missing image")?, stage.path())?;
-    faults_workload::admission::inspect_root(&staged.rootfs)?
-        .require_for(super::execution_mode(c.backend))?;
+    oci_support::image::with_staged_read_access(&staged, || {
+        faults_workload::admission::inspect_root(&staged.rootfs)
+    })?
+    .require_for(super::execution_mode(c.backend))?;
     let prepared = oci_support::bundle::prepare(
         &staged,
         &oci_support::bundle::LaunchRequest::new(c.command.clone()),
