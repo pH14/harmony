@@ -365,6 +365,21 @@ class CounterScanCoverage(unittest.TestCase):
                     + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n',
                 ),
                 (
+                    "symbol-restart-not-last",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8,0x90\n'
+                    '.global reset_decode\nreset_decode:\n'
+                    '.byte 0xb8,0xb8,0xb8,0x0f,0x31\n'
+                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                ),
+                (
+                    "symbol-restart-gt-name",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
+                    '.global reset_decode\nreset_decode:\n'
+                    '.byte 0x90,0x90,0x90,0xb8\n'
+                    + '.byte 0x90,0x90,0x90,0xb0,0xb8\n' * 3
+                    + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                ),
+                (
                     "intel64-displacement",
                     '.section .text,"ax"\n.global _start\n_start:\n'
                     'or $1,%eax\n'
@@ -380,6 +395,10 @@ class CounterScanCoverage(unittest.TestCase):
                 run("as", "--64", "-o", str(obj), str(asm))
                 run("ld", "-nostdlib", "-e", "_start", "-o", str(elf), str(obj))
                 hazard_bytes = elf.read_bytes()
+                if mode == "symbol-restart-gt-name":
+                    self.assertIn(b"reset_decode\0", hazard_bytes)
+                    hazard_bytes = hazard_bytes.replace(b"reset_decode\0", b"reset>decode\0", 1)
+                    elf.write_bytes(hazard_bytes)
                 raw_setup = subprocess.run(
                     ["bash", "-c",
                      "source <(sed '/^self_test$/,$d' \"$1\"); "
@@ -403,12 +422,54 @@ class CounterScanCoverage(unittest.TestCase):
                         )
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn("counter instruction", result.stderr)
-                        if mode == "symbol-restart":
+                        if mode.startswith("symbol-restart"):
                             self.assertIn("symbol-restart", result.stderr)
                             self.assertIn(f"{tag}:.text:", result.stderr)
                         else:
                             expected_tag = "vmlinux:intel64" if tag == "vmlinux" else f"{tag}:.text:intel64"
                             self.assertIn(expected_tag, result.stderr)
+
+            tail = root / "symbol-tail-restart.s"
+            tail.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb0\n'
+                '.global reset_decode\nreset_decode:\n.byte 0xc0,0xc3,0x01\n'
+                + '.byte 0xb0\n' * 5
+                + '.section .safe,"ax"\n'
+                + '.byte 0xb0\n' * 21
+                + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n'
+            )
+            run("as", "--64", "-o", str(root / "symbol-tail-restart.o"), str(tail))
+            tail_elf = root / "symbol-tail-restart.elf"
+            run(
+                "ld", "-nostdlib", "-T", str(linker), "-e", "reset_decode", "-o",
+                str(tail_elf), str(root / "symbol-tail-restart.o"),
+            )
+            kernel.write_bytes(tail_elf.read_bytes())
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="symbol-tail-restart", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("incomplete instruction at adjacent code boundary", result.stderr)
+
+            duplicate_code = root / "duplicate-code.s"
+            duplicate_code.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nret\n'
+                '.section .safe,"ax"\nsafe:\nret\n'
+                '.section .saft,"ax"\nsaft:\nret\n'
+            )
+            run("as", "--64", "-o", str(root / "duplicate-code.o"), str(duplicate_code))
+            duplicate_elf = root / "duplicate-code.elf"
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(duplicate_elf), str(root / "duplicate-code.o"))
+            duplicate_bytes = duplicate_elf.read_bytes()
+            self.assertIn(b".saft\0", duplicate_bytes)
+            kernel.write_bytes(duplicate_bytes.replace(b".saft\0", b".safe\0", 1))
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="duplicate-code-name", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("duplicate executable section name", result.stderr)
 
 
 if __name__ == "__main__":

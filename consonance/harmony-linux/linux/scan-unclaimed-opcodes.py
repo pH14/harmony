@@ -5,6 +5,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from bisect import bisect_left
 from pathlib import Path
 
 
@@ -110,14 +111,24 @@ def headers(data):
     return programs, sections
 
 
-def complete_section_tail(data, name, offset, size):
+def check_complete_tail(decoded, end, name):
+    last = decoded[-1] if decoded else None
+    if last is None or last[0] + last[1] != end:
+        raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+    for address, _length, instruction in decoded:
+        if address >= end - (MAX_X86_INSTRUCTION_BYTES - 1) \
+                and truncated_instruction(instruction):
+            raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+
+
+def complete_section_tail(data, path, name, address, offset, size):
     with tempfile.TemporaryDirectory() as directory:
         raw_section = Path(directory) / "section.bin"
         raw_section.write_bytes(data[offset : offset + size])
         for mode in ("amd64", "intel64"):
             try:
                 result = subprocess.run(
-                    ["objdump", "-D", "-w", "-b", "binary", "-m", "i386:x86-64",
+                    ["objdump", "-D", "-z", "-w", "-b", "binary", "-m", "i386:x86-64",
                      "-M", mode, str(raw_section)],
                     capture_output=True, text=True, check=False,
                 )
@@ -130,27 +141,16 @@ def complete_section_tail(data, name, offset, size):
                     f"cannot disassemble adjacent code section {name} in {mode}: "
                     f"{result.stderr.strip()}"
                 )
-            decoded = []
-            for line in result.stdout.splitlines():
-                fields = line.split("\t")
-                if len(fields) < 3 or not re.fullmatch(r"[0-9a-fA-F]+:", fields[0].strip()):
-                    continue
-                raw = fields[1].split()
-                if not raw or any(re.fullmatch(r"[0-9a-fA-F]{2}", byte) is None for byte in raw):
-                    continue
-                decoded.append((int(fields[0].strip()[:-1], 16), len(raw), fields[2].strip()))
-            last = decoded[-1] if decoded else None
-            if last is None or last[0] + last[1] != size:
-                raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
-            for address, _length, instruction in decoded:
-                if address < size - (MAX_X86_INSTRUCTION_BYTES - 1):
-                    continue
-                words = instruction.lower().split()
-                if (not words or words[0].startswith((".byte", "(bad)"))
-                        or (len(words) == 1 and (
-                            words[0] in TRAILING_PREFIXES or words[0].startswith("rex")
-                        ))):
-                    raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+            check_complete_tail(list(disassembled_instructions(result.stdout)), size, name)
+            symbolic = subprocess.run(
+                ["objdump", "-d", "-z", "-w", "-M", mode, "-j", name, path],
+                capture_output=True, text=True, check=False,
+            )
+            if symbolic.returncode:
+                raise ValueError(f"cannot disassemble adjacent code section {name} in {mode}")
+            check_complete_tail(
+                list(disassembled_instructions(symbolic.stdout)), address + size, name
+            )
 
 
 def disassembled_instructions(output):
@@ -229,7 +229,7 @@ def scan_symbol_restarts(data, sections, tag, path):
                     continue
                 if section not in names:
                     continue
-                match = re.fullmatch(r"([0-9a-fA-F]+) <[^>]+>:", line)
+                match = re.fullmatch(r"([0-9a-fA-F]+) <.*>:", line)
                 if match:
                     symbols[section].add(int(match.group(1), 16))
                     continue
@@ -237,21 +237,20 @@ def scan_symbol_restarts(data, sections, tag, path):
 
             for name, (address, offset, size) in names.items():
                 canonical = {site: (length, instruction) for site, length, instruction in decoded[name]}
-                by_end = {site + length: (site, instruction) for site, length, instruction in decoded[name]}
+                markers = sorted(
+                    site for site, _length, instruction in decoded[name]
+                    if truncated_instruction(instruction)
+                )
                 starts = set()
                 for symbol in symbols[name]:
-                    previous = by_end.get(symbol)
-                    if previous is None or not truncated_instruction(previous[1]):
-                        continue
-                    start = previous[0]
-                    while (prior := by_end.get(start)) and truncated_instruction(prior[1]):
-                        start = prior[0]
-                    starts.add((start, symbol))
+                    first = bisect_left(markers, symbol - (MAX_X86_INSTRUCTION_BYTES - 1))
+                    last = bisect_left(markers, symbol)
+                    starts.update(markers[first:last])
                 if not starts:
                     continue
                 raw_section = Path(directory) / f"section-{mode}-{offset:x}.bin"
                 raw_section.write_bytes(data[offset : offset + size])
-                for start, symbol in sorted(starts):
+                for start in sorted(starts):
                     relative = start - address
                     if relative < 0 or relative >= size:
                         raise ValueError(f"symbol restart outside {tag} section {name}")
@@ -274,11 +273,12 @@ def scan_symbol_restarts(data, sections, tag, path):
                                 f"{tag}:{name}:{mode} at 0x{site:x}"
                             )
                         ordinary = canonical.get(site)
-                        if site >= symbol and ordinary is not None and ordinary[0] == length \
+                        if site > start and ordinary is not None and ordinary[0] == length \
                                 and not truncated_instruction(ordinary[1]):
                             rejoined = True
                             break
-                        if mnemonic.startswith("j") or mnemonic in ("call", "lcall", "loop", "loope", "loopne"):
+                        if mnemonic.startswith(("j", "loop", "call")) \
+                                or mnemonic in ("lcall", "ljmp", "xbegin"):
                             raise ValueError(
                                 f"unresolved branch in {tag}:{name}:{mode} symbol restart at 0x{site:x}"
                             )
@@ -295,6 +295,12 @@ def unclaimed_opcode(data, programs, sections, tag, path):
     allowed_data = KNOWN_DATA.get(tag)
     if allowed_data is None:
         raise ValueError(f"unknown x86 kernel artifact tag: {tag}")
+    code_names = [
+        name for name, kind, flags, _address, _offset, size in sections
+        if kind == 1 and flags & 4 and size
+    ]
+    if len(code_names) != len(set(code_names)):
+        raise ValueError("duplicate executable section name")
     seen_data = set()
     saw_load = False
     for index, kind, _flags, offset, address, size in programs:
@@ -372,7 +378,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             ]
             if len(left) != 1:
                 raise ValueError(f"ambiguous adjacent executable section boundary in PT_LOAD {index}")
-            complete_section_tail(data, left[0][0], left[0][2], left[0][3])
+            complete_section_tail(data, path, *left[0])
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
     scan_symbol_restarts(data, sections, tag, path)

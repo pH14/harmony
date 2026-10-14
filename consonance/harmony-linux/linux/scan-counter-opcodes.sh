@@ -81,7 +81,7 @@ all_sites() {
         echo "FAIL: kernel ELF '$path' not found — scan the uncompressed vmlinux." >&2
         return 1
     fi
-    local mode dis
+    local mode dis found
     dis=$(mktemp)
     for mode in amd64 intel64; do
         if ! objdump -d -z -w -M "$mode" "$path" > "$dis" 2>/dev/null \
@@ -90,7 +90,14 @@ all_sites() {
             rm -f "$dis"
             return 1
         fi
-        sites "$dis" "vmlinux:$mode" "${1:-}"
+        if ! found=$(sites "$dis" "vmlinux:$mode" "${1:-}"); then
+            echo "FAIL: could not inspect disassembled kernel sites in $mode mode" >&2
+            rm -f "$dis"
+            return 1
+        fi
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found"
+        fi
     done
     rm -f "$dis"
 }
@@ -190,8 +197,12 @@ raw_byte_scan_one() {
                     rm -f "$dis" "$bin"
                     return 1
                 fi
-                counter_found=$(sites "$dis" "$tag:$s:$mode")
-                rng_found=$(sites "$dis" "$tag:$s:$mode" '^(rdrand|rdseed)$')
+                if ! counter_found=$(sites "$dis" "$tag:$s:$mode") \
+                    || ! rng_found=$(sites "$dis" "$tag:$s:$mode" '^(rdrand|rdseed)$'); then
+                    echo "FAIL: could not inspect disassembled $tag section $s in $mode mode" >&2
+                    rm -f "$dis" "$bin"
+                    return 1
+                fi
                 rm -f "$dis"
                 if [ -n "$counter_found" ]; then
                     echo "FAIL: decoded counter instruction(s) in 64-bit $tag section $s ($mode):" >&2
