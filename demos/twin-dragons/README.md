@@ -240,11 +240,16 @@ floor sits inside one cell.
 Each level shows through one camera viewport: a 4:1 strip on desktop and a 2:1
 view on phones. The camera holds the full level height on screen and follows
 the search frontier (the 80th-percentile x of live sprites, smoothed), or the
-furthest cell the search has reached, or the level start. Following pauses
+furthest cell the search has reached, or the level start. Sprites replay
+rollouts from their start states, so the frontier drops back whenever the
+search draws earlier states; the camera moves back only after the frontier has
+stayed behind for 3 seconds, and it closes a large gap faster than a small
+one. Following pauses
 while the mouse is over the map and for 2.5 seconds after a touch. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
 Selecting a cell stops following. Hovering the map shows chevrons at its left
-and right edges; resting on one pans that way, and a tap on a touch screen
+and right edges; moving the mouse onto one and resting there pans that way, so a
+layout change that leaves a still pointer over an edge does not pan, and a tap on a touch screen
 glides about half a screen. A mouse click on a chevron selects the cell
 beneath it. A strip under the view shows the whole level, with
 each live sprite as a dot (or the heat cells in Heatmap mode) and a box for the

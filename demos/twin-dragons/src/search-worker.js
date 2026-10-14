@@ -439,16 +439,18 @@ onmessage = async ({ data }) => {
         postMessage({ type: "branch-error", message: String(e?.message || e) });
       }
     } else if (data.type === "states" && initialized) {
-      const states = [];
+      const states = [], missing = [];
       for (const key of data.ids.slice(0, 12)) {
         try {
           const parts = String(key).split(":"),
             branch = parts.length === 1 ? 0 : Number(parts[0]),
             id = Number(parts.at(-1));
           states.push(stateFor(branch, id));
-        } catch {}
+        } catch {
+          missing.push(key);
+        }
       }
-      postMessage({ type: "states", request: data.request, states });
+      postMessage({ type: "states", request: data.request, states, missing });
     }
   } catch (e) {
     error(e);

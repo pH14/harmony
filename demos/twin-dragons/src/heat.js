@@ -52,6 +52,16 @@ export class Heatmap {
     }
     return cell;
   }
+  forget(ids) {
+    const gone = new Set(ids), replacements = new Map();
+    for (const cell of this.cells.values()) {
+      const dropped = cell.ids.filter((id) => gone.has(id));
+      if (!dropped.length) continue;
+      cell.ids = cell.ids.filter((id) => !gone.has(id));
+      for (const id of dropped) replacements.set(id, cell.ids[0] ?? null);
+    }
+    return replacements;
+  }
   visit(point, now) {
     const cell = this.retain(point, now);
     cell.heat = this.value(cell, now) + 1;

@@ -351,7 +351,8 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
 const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
-  ROOM_DWELL_MS = 10000;
+  ROOM_DWELL_MS = 10000,
+  CAMERA_RETREAT_MS = 3000;
 const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
@@ -420,6 +421,9 @@ function reachedFrontier(level) {
   for (const cell of heat.cells.values())
     if (cell.level === level && (!best || (game.grid ? rank(cell) > rank(best) : game.vertical ? cell.y < best.y : cell.x > best.x))) best = cell;
   return best ? center(best) : game.grid ? game.entry(level) : { x: 0, y: map.height };
+}
+function cameraProgress(level, point) {
+  return game.grid ? game.route(level, point.x, point.y + 8) : game.vertical ? -point.y : point.x;
 }
 function steerCamera(level, c, target, zoom, zoomRate, panRate) {
   const view = roomView(level, c);
@@ -691,12 +695,19 @@ function updateCamera(now) {
   for (const room of drivenRooms()) {
     let point = frontier(room);
     point ||= reachedFrontier(room);
+    const held = camera.targets.get(room);
+    if (held?.goal && cameraProgress(room, point) < cameraProgress(room, held.goal) - 32) {
+      held.behind ||= now;
+      if (now - held.behind < CAMERA_RETREAT_MS) point = held.goal;
+    } else if (held) held.behind = 0;
     const c = mapCanvas(room, point);
     if (!c) continue;
     const view = roomView(room, c);
-    let target = camera.targets.get(room);
-    if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, x: view.x, y: view.y }));
-    const settle = reducedMotion.matches ? 1 : 1 - Math.exp(-dt / 1.1);
+    let target = held;
+    if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, x: view.x, y: view.y, behind: held?.behind ?? 0 }));
+    target.goal = point;
+    const gap = Math.hypot(point.x - target.x, point.y - target.y);
+    const settle = reducedMotion.matches ? 1 : 1 - Math.exp((-dt * (1 + gap / 160)) / 1.1);
     target.x += (point.x - target.x) * settle;
     target.y += (point.y - target.y) * settle;
     steerCamera(room, c, target, closeUpZoom(c) * (room === camera.introRoom ? scale : 1), smooth(0.6), smooth(0.35));
@@ -1643,16 +1654,19 @@ function startSearch(level = bootLevel) {
         offerTour();
       } else if (data.type === "states") {
         for (const state of data.states) stateCache.set(state.id, state);
+        if (data.missing?.length) replaceDropped(heat.forget(data.missing));
         if (data.request === -2001) {
           if (routeHover) showRoutePreview(stateCache.get(routeHover.id), routeHover);
         } else if (data.request === 0) {
           const state = data.states[0];
+          if (!state) lastAuto = 0;
           if (!userSelected && state && (!isMapEvidence(state.observation, catalog.levels) || levelRooms().includes(state.observation.level)))
             selectState(state, true).catch(fail);
         } else if (data.request === request) {
           renderStates();
           if (data.states[0])
             selectState(data.states[0], watchRequested).then((ok) => transportPending && revealTransport(ok)).catch(fail);
+          else $("verification").textContent = "The search no longer keeps a path to this spot";
           watchRequested = false;
         }
       } else if (data.type === "limit") {
@@ -1720,6 +1734,14 @@ function browseRoom(level) {
   if (id !== undefined) {
     watchRequested = false;
     worker.postMessage({ type: "states", ids: [id], request: ++request });
+  }
+}
+function replaceDropped(replacements) {
+  for (const [dropped, next] of replacements) {
+    if (latestBest === dropped) latestBest = next;
+    for (const states of [bestStates, arrivals, wins])
+      for (const [level, id] of states)
+        if (id === dropped) next === null ? states.delete(level) : states.set(level, next);
   }
 }
 function levelLabel(id) {
@@ -1967,13 +1989,16 @@ function panEdge(c, dir, axis = "x") {
   const mine = () => holdingPan(c, dir, axis);
   const start = () => holdPan(c, dir, axis);
   const end = () => releasePan(c, dir, axis);
-  edge.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") start(); });
   edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && mine()) panHold = null; });
   edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
   edge.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") end(); });
   edge.addEventListener("pointercancel", () => { if (panHold?.canvas === c) panHold = null; });
   const forward = (type, e) => c.dispatchEvent(new PointerEvent(type, { clientX: e.clientX, clientY: e.clientY, pointerType: "mouse", bubbles: true }));
-  edge.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse") forward("pointermove", e); });
+  edge.addEventListener("pointermove", (e) => {
+    if (e.pointerType !== "mouse") return;
+    if (!mine() && (e.movementX || e.movementY)) start();
+    forward("pointermove", e);
+  });
   edge.addEventListener("click", (e) => {
     if (e.pointerType === "mouse") return forward("click", e);
     if (e.pointerType) return;
