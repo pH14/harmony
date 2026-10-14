@@ -1369,15 +1369,23 @@ pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String
 
 fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
     if let Some(guest) = config.uml() {
+        let arguments = UmlGuest::kernel_arguments(&config.knobs);
+        let mut arguments_digest = Sha256::new();
+        arguments_digest.update(b"faults-uml-kernel-arguments-v1\0");
+        arguments_digest.update((arguments.len() as u64).to_le_bytes());
+        for argument in arguments {
+            arguments_digest.update((argument.len() as u64).to_le_bytes());
+            arguments_digest.update(argument.as_bytes());
+        }
         return format!(
-            "faults-uml-v1;{};executable={:x};initramfs={:x};memory_mib={};arguments={};\
+            "faults-uml-v2;{};executable={:x};initramfs={:x};memory_mib={};arguments-sha256={:x};\
              seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
              action=standing-fault-delta-v4;snapshot=uml-checkpoint-v2",
             guest.identity,
             Sha256::digest(kernel),
             Sha256::digest(initramfs),
             config.ram_mib,
-            UmlGuest::kernel_arguments(&config.knobs).join(" "),
+            arguments_digest.finalize(),
         );
     }
     format!(
@@ -1427,6 +1435,45 @@ mod tests {
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
         assert_eq!(launch.expected_host, guest.host);
         assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
+    }
+
+    #[test]
+    fn uml_identity_distinguishes_kernel_argument_boundaries() {
+        let guest = UmlGuest {
+            profile: PathBuf::from("profile"),
+            profile_identity_sha256: "admitted-profile".into(),
+            host: uml::HostIdentity {
+                architecture: "x86_64".into(),
+                processor: 0,
+                cpu_model: "model".into(),
+                cpu_features: "features".into(),
+            },
+            identity: "admitted-host".into(),
+            work_parent: PathBuf::from("work"),
+        };
+        let mut joined = FaultConfig {
+            knobs: vec!["foo=bar root=/dev/ram0".into()],
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Uml(guest),
+            root: None,
+        };
+        let split = FaultConfig {
+            knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
+            ..joined.clone()
+        };
+        assert_eq!(
+            UmlGuest::kernel_arguments(&joined.knobs).join(" "),
+            UmlGuest::kernel_arguments(&split.knobs).join(" ")
+        );
+        assert_ne!(
+            identity(b"kernel", b"initramfs", &joined),
+            identity(b"kernel", b"initramfs", &split)
+        );
+        joined.knobs = split.knobs.clone();
+        assert_eq!(
+            identity(b"kernel", b"initramfs", &joined),
+            identity(b"kernel", b"initramfs", &split)
+        );
     }
 
     #[test]
