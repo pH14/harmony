@@ -135,12 +135,15 @@ prefix while GNU tar ignores it and extracts a different name. Exact GNU
 headers may use the early bytes for timestamps and remain accepted, but their
 sparse-map, extension, and real-size fields must be empty: macOS tar can apply
 them even to ordinary files while GNU tar ignores them.
-Tar header timestamps must be valid nonnegative numbers within the signed
-64-bit range: macOS and GNU tar disagree on malformed, negative, or larger
-header timestamps. PAX `mtime`, `atime`, and `ctime` records require signed
-decimal values within that range, with an optional fractional part. The
-rootfs CPIO writer sets every file timestamp to zero, but malformed PAX times
-can still make GNU tar fail where macOS tar succeeds.
+Tar header timestamps must be valid nonnegative seconds representable as
+signed 64-bit nanoseconds: macOS and GNU tar disagree on malformed, negative,
+or larger header timestamps. PAX `mtime`, `atime`, and `ctime` records require
+signed decimal values within that range, with an optional fractional part;
+negative values cannot have a nonzero fraction. macOS tar interprets negative
+fractions differently from GNU tar and clamps timestamps beyond the signed
+nanosecond range, changing staged file metadata. The rootfs CPIO writer sets
+every guest file timestamp to zero, but malformed PAX times can still make
+GNU tar fail where macOS tar succeeds.
 PAX size and owner fields require unsigned decimal digits. A leading plus
 sign can make macOS extract a different payload size while GNU tar reports an
 invalid extended header.

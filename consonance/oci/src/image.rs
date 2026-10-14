@@ -776,6 +776,7 @@ fn check_hardlinks(members: &[Member]) -> Result<(), ImageError> {
 }
 
 const TAR_BLOCK: usize = 512;
+const MAX_PORTABLE_TIMESTAMP_SECONDS: u64 = i64::MAX as u64 / 1_000_000_000;
 const MAX_MEMBERS: usize = 1 << 20;
 const MAX_HEADER_DATA: u64 = 1 << 16;
 const MAX_PORTABLE_SYMLINK_TARGET: usize = 1023;
@@ -925,8 +926,9 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
         if size >= i64::MAX as u64 {
             return Err(ImageError::Tar("tar member size is too large".into()));
         }
-        i64::try_from(parse_octal(&block[136..148])?)
-            .map_err(|_| ImageError::Tar("tar timestamp is too large".into()))?;
+        if parse_octal(&block[136..148])? > MAX_PORTABLE_TIMESTAMP_SECONDS {
+            return Err(ImageError::Tar("tar timestamp is too large".into()));
+        }
         check_device_number(&block[329..337])?;
         check_device_number(&block[337..345])?;
         match block[156] {
@@ -1342,11 +1344,22 @@ fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
         .map_err(|_| invalid())?
         .parse::<u64>()
         .map_err(|_| invalid())?;
-    let limit = i64::MAX as u64 + u64::from(negative);
-    if seconds > limit
-        || (negative
-            && seconds == limit
-            && fraction.is_some_and(|digits| digits.iter().any(|digit| *digit != b'0')))
+    let fraction = fraction.unwrap_or_default();
+    if negative && fraction.iter().any(|digit| *digit != b'0') {
+        return Err(invalid());
+    }
+    let mut fractional_nanos = [b'0'; 9];
+    for (out, digit) in fractional_nanos.iter_mut().zip(fraction) {
+        *out = *digit;
+    }
+    if seconds > MAX_PORTABLE_TIMESTAMP_SECONDS
+        || (!negative
+            && seconds == MAX_PORTABLE_TIMESTAMP_SECONDS
+            && (fractional_nanos > *b"854775807"
+                || (fractional_nanos == *b"854775807"
+                    && fraction
+                        .get(9..)
+                        .is_some_and(|remaining| remaining.iter().any(|digit| *digit != b'0')))))
     {
         return Err(invalid());
     }
@@ -3008,6 +3021,27 @@ mod tests {
     }
 
     #[test]
+    fn host_nanosecond_overflow_in_tar_timestamp_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        let mut timestamp = [0u8; 12];
+        timestamp[0] = 0x80;
+        timestamp[4..12].copy_from_slice(&9_223_372_037_u64.to_be_bytes());
+        member[136..148].copy_from_slice(&timestamp);
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "host-ns-overflow.tar", &member);
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
     fn nonportable_pax_timestamps_are_rejected_before_extraction() {
         let dir = tempfile::tempdir().unwrap();
         for key in ["mtime", "atime", "ctime"] {
@@ -3018,6 +3052,11 @@ mod tests {
                 ("missing-integer", ".5"),
                 ("too-large", "99999999999999999999"),
                 ("too-negative", "-9223372036854775808.9"),
+                ("negative-fraction", "-0.1"),
+                ("host-nanosecond-overflow", "16725225600"),
+                ("host-nanosecond-edge", "9223372036.854775808"),
+                ("host-nanosecond-fraction", "9223372036.8547758071"),
+                ("negative-host-nanosecond-overflow", "-9223372037"),
             ] {
                 let body = [
                     raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
@@ -3042,7 +3081,14 @@ mod tests {
     #[test]
     fn portable_pax_timestamps_remain_admitted() {
         let dir = tempfile::tempdir().unwrap();
-        for value in ["0", "-1.5", "123.456789", "0.", "9223372036854775807.9"] {
+        for value in [
+            "0",
+            "-1.0",
+            "-0.0",
+            "123.456789",
+            "0.",
+            "9223372036.854775807",
+        ] {
             let body = [
                 raw_member(
                     b"PaxHeaders/0",
