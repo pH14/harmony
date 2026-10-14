@@ -542,12 +542,28 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 let end = start
                     .checked_add(file_size)
                     .ok_or("executable ELF segment address overflow")?;
-                let code = header
+                let mut code = header
                     .data(elf.endian(), bytes)
-                    .map_err(|()| "executable ELF segment outside file")?;
-                if elf.architecture() == object::Architecture::X86_64 {
-                    x86_executable_loads.push((start, code));
-                }
+                    .map_err(|()| "executable ELF segment outside file")?
+                    .to_vec();
+                let file_offset = usize::try_from(header.p_offset(elf.endian()))?;
+                let file_end = file_offset
+                    .checked_add(code.len())
+                    .ok_or("executable ELF file offset overflow")?;
+                let page_tail = usize::try_from((4096 - end % 4096) % 4096)?;
+                end.checked_add(u64::try_from(page_tail)?)
+                    .ok_or("executable ELF mapped address overflow")?;
+                let available = if file_size == header.p_memsz(elf.endian()) {
+                    bytes.len().saturating_sub(file_end).min(page_tail)
+                } else {
+                    0
+                };
+                code.extend_from_slice(&bytes[file_end..file_end + available]);
+                let mapped_len = code
+                    .len()
+                    .checked_add(page_tail - available)
+                    .ok_or("executable ELF mapped size overflow")?;
+                code.resize(mapped_len, 0);
                 let mut mapped_sections = 0;
                 let mut mapped_ranges = Vec::new();
                 for section in elf.sections() {
@@ -582,15 +598,6 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                             .checked_add(section_code.len())
                             .ok_or("mapped ELF section size overflow")?;
                         mapped_ranges.push((offset, section_end));
-                        for (address, instruction) in
-                            scan_code(elf.architecture(), section.address(), section_code)?
-                        {
-                            sites.push(InstructionSite {
-                                digest: digest.to_owned(),
-                                address,
-                                instruction: instruction.into(),
-                            });
-                        }
                     }
                 }
                 if mapped_sections == 0 {
@@ -684,34 +691,14 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                             }
                         }
                     }
-                    let mut cursor = 0;
+                    let mut anchors = BTreeSet::from([0]);
                     for (range_start, range_end) in mapped_ranges {
-                        if range_start > cursor {
-                            let address = start + u64::try_from(cursor)?;
-                            for (site, instruction) in
-                                scan_code(elf.architecture(), address, &code[cursor..range_start])?
-                            {
-                                sites.push(InstructionSite {
-                                    digest: digest.to_owned(),
-                                    address: site,
-                                    instruction: instruction.into(),
-                                });
-                            }
-                        }
-                        cursor = cursor.max(range_end);
-                    }
-                    if cursor < code.len() {
-                        let address = start + u64::try_from(cursor)?;
-                        for (site, instruction) in
-                            scan_code(elf.architecture(), address, &code[cursor..])?
-                        {
-                            sites.push(InstructionSite {
-                                digest: digest.to_owned(),
-                                address: site,
-                                instruction: instruction.into(),
-                            });
+                        anchors.insert(range_start);
+                        if range_end < code.len() {
+                            anchors.insert(range_end);
                         }
                     }
+                    x86_executable_loads.push((start, code, anchors));
                 }
             }
             _ => {}
@@ -720,11 +707,11 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     if executable_segments == 0 {
         return Err("no executable ELF segment".into());
     }
-    x86_executable_loads.sort_unstable_by_key(|(start, _)| *start);
+    x86_executable_loads.sort_unstable_by_key(|(start, _, _)| *start);
     for pair in x86_executable_loads.windows(2) {
-        let (left_start, left) = pair[0];
-        let (right_start, right) = pair[1];
-        if left_start.checked_add(u64::try_from(left.len())?) != Some(right_start) {
+        let (left_start, left, _) = &pair[0];
+        let (right_start, right, _) = &pair[1];
+        if left_start.checked_add(u64::try_from(left.len())?) != Some(*right_start) {
             continue;
         }
         let suffix_len = left.len().min(2);
@@ -745,9 +732,61 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
             }
         }
     }
+    let mut group_start: Option<u64> = None;
+    let mut group_code = Vec::new();
+    let mut group_anchors = BTreeSet::new();
+    for (start, code, anchors) in x86_executable_loads {
+        if let Some(first) = group_start
+            && first.checked_add(u64::try_from(group_code.len())?) != Some(start)
+        {
+            push_x86_sites(first, &group_code, &group_anchors, digest, &mut sites)?;
+            group_start = None;
+            group_code.clear();
+            group_anchors.clear();
+        }
+        if group_start.is_none() {
+            group_start = Some(start);
+        }
+        let offset = group_code.len();
+        group_code.extend_from_slice(&code);
+        group_anchors.insert(offset);
+        for anchor in anchors {
+            group_anchors.insert(offset + anchor);
+        }
+    }
+    if let Some(first) = group_start {
+        push_x86_sites(first, &group_code, &group_anchors, digest, &mut sites)?;
+    }
     sites.sort();
     sites.dedup();
     Ok(Some(sites))
+}
+
+fn push_x86_sites(
+    start: u64,
+    code: &[u8],
+    anchors: &BTreeSet<usize>,
+    digest: &str,
+    sites: &mut Vec<InstructionSite>,
+) -> Result<(), Box<dyn Error>> {
+    for &offset in anchors {
+        if offset >= code.len() {
+            continue;
+        }
+        let address = start
+            .checked_add(u64::try_from(offset)?)
+            .ok_or("executable ELF segment address overflow")?;
+        for (address, instruction) in
+            scan_code(object::Architecture::X86_64, address, &code[offset..])?
+        {
+            sites.push(InstructionSite {
+                digest: digest.to_owned(),
+                address,
+                instruction: instruction.into(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn scan_code(
@@ -1276,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn x86_segment_prelude_cannot_invent_entropy_inside_a_mapped_section() {
+    fn x86_segment_prelude_can_fall_through_into_a_different_section_decode() {
         let mut bytes = elf(&[0xb8, 0x90, 0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
         for (offset, value) in [
             (24, 0x400180_u64),
@@ -1296,7 +1335,14 @@ mod tests {
                 .len(),
             1
         );
-        assert_eq!(scan_elf(&bytes, "").unwrap(), Some(Vec::new()));
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x400182, "RDRAND")]
+        );
     }
 
     #[test]
@@ -1324,69 +1370,101 @@ mod tests {
     }
 
     #[test]
+    fn x86_section_decode_continues_an_instruction_into_the_next_range() {
+        let mut bytes = elf(&[0xb0, 0x05, 0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x1002, "RDRAND")]
+        );
+    }
+
+    #[test]
     fn x86_entropy_split_across_adjacent_executable_loads_is_rejected() {
         for (mnemonic, modrm) in [("RDRAND", 0xf0), ("RDSEED", 0xf8)] {
-            let mut bytes = vec![0; 8203];
-            bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
-            for (offset, value) in [
-                (16, 2_u16),
-                (18, 62),
-                (52, 64),
-                (54, 56),
-                (56, 3),
-                (58, 64),
-                (60, 4),
-                (62, 3),
-            ] {
-                bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
-            }
-            bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
-            for (offset, value) in [(24, 0x1ffe_u64), (32, 64), (40, 256)] {
-                bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
-            }
-            for (index, size) in [(0_usize, 4096_u64), (1, 10)] {
-                let offset = 64 + index * 56;
-                bytes[offset..offset + 4].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
-                bytes[offset + 4..offset + 8].copy_from_slice(&5_u32.to_le_bytes());
-                for (field, value) in [
-                    (8, 4096_u64 + index as u64 * 4096),
-                    (16, 0x1000_u64 + index as u64 * 4096),
-                    (24, 0x1000_u64 + index as u64 * 4096),
-                    (32, size),
-                    (40, size),
-                    (48, 4096),
+            for left_file_size in [4096_u64, 4094] {
+                let mut bytes = vec![0; 8203];
+                bytes[..16]
+                    .copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+                for (offset, value) in [
+                    (16, 2_u16),
+                    (18, 62),
+                    (52, 64),
+                    (54, 56),
+                    (56, 3),
+                    (58, 64),
+                    (60, 4),
+                    (62, 3),
                 ] {
-                    bytes[offset + field..offset + field + 8].copy_from_slice(&value.to_le_bytes());
+                    bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
                 }
-                let section = 320 + index * 64;
-                bytes[section + 4..section + 8]
-                    .copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
-                for (field, value) in [
-                    (8, 6_u64),
-                    (16, 0x1000_u64 + index as u64 * 4096),
-                    (24, 4096_u64 + index as u64 * 4096),
-                    (32, size),
-                    (48, 1),
-                ] {
-                    bytes[section + field..section + field + 8]
-                        .copy_from_slice(&value.to_le_bytes());
+                bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+                for (offset, value) in [(24, 0x1ffe_u64), (32, 64), (40, 256)] {
+                    bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+                }
+                for (index, size) in [(0_usize, left_file_size), (1, 10)] {
+                    let offset = 64 + index * 56;
+                    bytes[offset..offset + 4].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
+                    bytes[offset + 4..offset + 8].copy_from_slice(&5_u32.to_le_bytes());
+                    for (field, value) in [
+                        (8, 4096_u64 + index as u64 * 4096),
+                        (16, 0x1000_u64 + index as u64 * 4096),
+                        (24, 0x1000_u64 + index as u64 * 4096),
+                        (32, size),
+                        (40, size),
+                        (48, 4096),
+                    ] {
+                        bytes[offset + field..offset + field + 8]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
+                    let section = 320 + index * 64;
+                    bytes[section + 4..section + 8]
+                        .copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+                    for (field, value) in [
+                        (8, 6_u64),
+                        (16, 0x1000_u64 + index as u64 * 4096),
+                        (24, 4096_u64 + index as u64 * 4096),
+                        (32, size),
+                        (48, 1),
+                    ] {
+                        bytes[section + field..section + field + 8]
+                            .copy_from_slice(&value.to_le_bytes());
+                    }
+                }
+                bytes[176..180].copy_from_slice(&object::elf::PT_GNU_STACK.to_le_bytes());
+                bytes[180..184].copy_from_slice(&6_u32.to_le_bytes());
+                bytes[452..456].copy_from_slice(&object::elf::SHT_STRTAB.to_le_bytes());
+                bytes[472..480].copy_from_slice(&8202_u64.to_le_bytes());
+                bytes[480..488].copy_from_slice(&1_u64.to_le_bytes());
+                bytes[496..504].copy_from_slice(&1_u64.to_le_bytes());
+                bytes[4096..8192].fill(0x90);
+                bytes[8190..8192].copy_from_slice(&[0x0f, 0xc7]);
+                bytes[8192..8202]
+                    .copy_from_slice(&[modrm, 0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
+                let error = scan_elf(&bytes, "").unwrap_err().to_string();
+                assert!(
+                    error.contains("crosses executable segment boundary"),
+                    "{mnemonic} with left file size {left_file_size}: {error}"
+                );
+                if left_file_size == 4096 {
+                    bytes[8190..8192].copy_from_slice(&[0x90, 0xb0]);
+                    bytes[8192..8202].copy_from_slice(&[
+                        0x05, 0x0f, 0xc7, modrm, 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90,
+                    ]);
+                    let sites = scan_elf(&bytes, "").unwrap().unwrap();
+                    assert_eq!(
+                        sites
+                            .iter()
+                            .map(|site| (site.address, site.instruction.as_str()))
+                            .collect::<Vec<_>>(),
+                        [(0x2001, mnemonic)]
+                    );
                 }
             }
-            bytes[176..180].copy_from_slice(&object::elf::PT_GNU_STACK.to_le_bytes());
-            bytes[180..184].copy_from_slice(&6_u32.to_le_bytes());
-            bytes[452..456].copy_from_slice(&object::elf::SHT_STRTAB.to_le_bytes());
-            bytes[472..480].copy_from_slice(&8202_u64.to_le_bytes());
-            bytes[480..488].copy_from_slice(&1_u64.to_le_bytes());
-            bytes[496..504].copy_from_slice(&1_u64.to_le_bytes());
-            bytes[4096..8192].fill(0x90);
-            bytes[8190..8192].copy_from_slice(&[0x0f, 0xc7]);
-            bytes[8192..8202]
-                .copy_from_slice(&[modrm, 0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
-            let error = scan_elf(&bytes, "").unwrap_err().to_string();
-            assert!(
-                error.contains("crosses executable segment boundary"),
-                "{mnemonic}: {error}"
-            );
         }
     }
 
@@ -1412,6 +1490,18 @@ mod tests {
         code.push(0xff);
         let bytes = arm_elf(&code, code.len());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].instruction, "RNDR");
+    }
+
+    #[test]
+    fn arm_executable_page_tail_can_complete_an_entropy_instruction() {
+        let mut bytes = elf(&0xd53b2400_u32.to_le_bytes(), 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        for offset in [96, 104, 288] {
+            bytes[offset..offset + 8].copy_from_slice(&2_u64.to_le_bytes());
+        }
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].address, 0x1000);
         assert_eq!(sites[0].instruction, "RNDR");
     }
 
