@@ -381,6 +381,9 @@ arm, a control version or a replay mode over a second build.
 `ci-historical-arms` rejects them, along with any matrix dimension that would
 restore the arm. A separate Historical Bugs Checks workflow does not exist; the
 full search lives in Benchmarks and pull requests do not run it.
+Once a historical search writes `report.json`, selector errors and missing
+selected evidence still write an infrastructure-failure panel record without a
+finding or reproducer.
 
 `Benchmarks / Harmony Workloads / UML` runs one historical case, etcd by
 default, on the User-mode Linux profile when an operator dispatches it.
@@ -393,8 +396,6 @@ confirmed finding whose saved replay also carried the case's assertion and
 evidence and applied every action, then replays it from genesis in fresh
 processes before uploading the run. Both panel records name the selected
 finding; the search panel points to its `bug-N.json` evidence.
-Once a report exists, selector errors and missing selected evidence still write
-an infrastructure-failure panel record with no finding or reproducer.
 This preserves the recorded UML host identity and executable artifact modes.
 The UML search wall is capped at 280 minutes within a 360-minute job, reserving
 20 minutes for search shutdown, 50 for finding replay and 10 for setup and uploads.
