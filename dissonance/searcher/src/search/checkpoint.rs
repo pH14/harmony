@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, VecDeque, btree_map::Entry},
     error::Error,
     fs::{self, File, OpenOptions},
-    io::{BufWriter, Read, Seek, SeekFrom, Write},
+    io::{self, BufWriter, Read, Seek, SeekFrom, Write},
     num::NonZeroU64,
     path::{Path, PathBuf},
     time::Instant,
@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v4";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v5";
 const SNAPSHOT_STORE: &str = "snapshots.store";
 const CHECKPOINT_LOG: &str = "checkpoints.jsonl";
 const CHECKPOINT_EXTENSION: &str = "ckpt";
@@ -68,6 +68,7 @@ pub struct StoredSnapshot {
     pub id: u64,
     pub offset: u64,
     pub len: u64,
+    pub sha256: [u8; 32],
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -91,7 +92,21 @@ struct CheckpointLogLine<'a> {
 struct StoredRange {
     offset: u64,
     len: u64,
+    sha256: [u8; 32],
     listings: u64,
+}
+
+fn sha256_reader(reader: &mut impl Read) -> io::Result<[u8; 32]> {
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1 << 16];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(digest.finalize().into())
 }
 
 pub(crate) struct CheckpointWriter<P> {
@@ -177,10 +192,12 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
                 Entry::Vacant(entry) => {
                     let bytes = postcard::to_allocvec(snapshot)?;
                     let len = u64::try_from(bytes.len())?;
+                    let sha256 = Sha256::digest(&bytes).into();
                     self.store.write_all(&bytes)?;
                     let stored = StoredRange {
                         offset: self.store_len,
                         len,
+                        sha256,
                         listings: 1,
                     };
                     self.store_len = self.store_len.saturating_add(len);
@@ -194,6 +211,7 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
                 id,
                 offset: stored.offset,
                 len: stored.len,
+                sha256: stored.sha256,
             });
         }
         self.store.flush()?;
@@ -210,7 +228,10 @@ impl<P: Copy + Ord> CheckpointWriter<P> {
         postcard::to_io(&index, &mut out)?;
         body(&mut out)?;
         out.flush()?;
-        let file = out.into_inner().map_err(|error| error.into_error())?;
+        let mut file = out.into_inner().map_err(|error| error.into_error())?;
+        file.sync_data()?;
+        let checksum = sha256_reader(&mut File::open(&partial)?)?;
+        file.write_all(&checksum)?;
         file.sync_data()?;
         let checkpoint_bytes = file.metadata()?.len();
         drop(file);
@@ -333,8 +354,17 @@ pub(crate) struct CheckpointReader {
 
 impl CheckpointReader {
     pub(crate) fn open(path: &Path) -> Result<Self, Box<dyn Error>> {
-        let bytes = fs::read(path)?;
+        let mut bytes = fs::read(path)?;
+        let payload_len = bytes
+            .len()
+            .checked_sub(32)
+            .ok_or("search checkpoint checksum is missing")?;
+        let actual: [u8; 32] = Sha256::digest(&bytes[..payload_len]).into();
+        if bytes[payload_len..] != actual {
+            return Err("search checkpoint checksum differs from its bytes".into());
+        }
         let file_sha256 = format!("{:x}", Sha256::digest(&bytes));
+        bytes.truncate(payload_len);
         let (header, rest): (CheckpointHeader, _) = postcard::take_from_bytes(&bytes)?;
         if header.format != SEARCH_CHECKPOINT_FORMAT {
             return Err("search checkpoint format is not recognized".into());
@@ -378,6 +408,12 @@ impl CheckpointReader {
             store.seek(SeekFrom::Start(stored.offset))?;
             buffer.resize(usize::try_from(stored.len)?, 0);
             store.read_exact(&mut buffer)?;
+            let actual: [u8; 32] = Sha256::digest(&buffer).into();
+            if actual != stored.sha256 {
+                return Err(
+                    format!("search checkpoint snapshot {} checksum differs", stored.id).into(),
+                );
+            }
             snapshots.push((stored.id, postcard::from_bytes(&buffer)?));
         }
         Ok(snapshots)
@@ -473,6 +509,55 @@ mod tests {
             "a directory holds one run's snapshot store"
         );
         fs::remove_dir_all(&directory).expect("remove the directory");
+    }
+
+    #[test]
+    fn checkpoint_reader_rejects_changed_body() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-body-integrity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).unwrap();
+        writer
+            .write(
+                &header(10, "interval"),
+                std::iter::empty::<(u64, &Vec<u8>)>(),
+                |out| Ok(postcard::to_io(&7_u32, out).map(|_| ())?),
+            )
+            .unwrap();
+        let path = directory.join("000000000010-interval.ckpt");
+        let mut bytes = fs::read(&path).unwrap();
+        let body_end = bytes.len() - 32;
+        bytes[body_end - 1] ^= 1;
+        fs::write(&path, bytes).unwrap();
+        assert!(CheckpointReader::open(&path).is_err());
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
+    fn checkpoint_reader_rejects_changed_snapshot_bytes() {
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-checkpoint-snapshot-integrity-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let mut writer = CheckpointWriter::<u8>::create(plan(directory.clone()), 0, None).unwrap();
+        let snapshots = [(1_u64, vec![1_u8, 2])];
+        writer
+            .write(
+                &header(10, "interval"),
+                snapshots.iter().map(|(id, snapshot)| (*id, snapshot)),
+                |out| Ok(postcard::to_io(&7_u32, out).map(|_| ())?),
+            )
+            .unwrap();
+        let store_path = directory.join(SNAPSHOT_STORE);
+        let mut bytes = fs::read(&store_path).unwrap();
+        bytes[1] ^= 1;
+        fs::write(&store_path, bytes).unwrap();
+        let reader = CheckpointReader::open(&directory.join("000000000010-interval.ckpt")).unwrap();
+        assert!(reader.snapshots::<Vec<u8>>().is_err());
+        fs::remove_dir_all(&directory).unwrap();
     }
 
     fn header(executions: u64, reason: &str) -> CheckpointHeader {

@@ -931,10 +931,13 @@ fn a_resume_under_a_changed_search_policy_records_the_change() {
 
 fn rewrite_checkpoint_policy(path: &std::path::Path, field: &str, value: &str) {
     let bytes = std::fs::read(path).unwrap();
-    let (mut header, rest): (CheckpointHeader, _) = postcard::take_from_bytes(&bytes).unwrap();
+    let payload = &bytes[..bytes.len() - 32];
+    let (mut header, rest): (CheckpointHeader, _) = postcard::take_from_bytes(payload).unwrap();
     header.policies.insert(field.to_owned(), value.to_owned());
     let mut rewritten = postcard::to_allocvec(&header).unwrap();
     rewritten.extend_from_slice(rest);
+    let checksum = sha2::Sha256::digest(&rewritten);
+    rewritten.extend_from_slice(&checksum);
     std::fs::write(path, rewritten).unwrap();
 }
 

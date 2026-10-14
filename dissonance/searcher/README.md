@@ -636,7 +636,8 @@ checkpoints are kept; only the last two interval checkpoints are kept.
 
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
-list it by entry id and offset. The writer counts the kept checkpoints that
+list it by entry id, offset, length, and SHA-256. Resume checks each referenced
+snapshot's bytes before decoding it. The writer counts the kept checkpoints that
 list each stored snapshot. Deleting an interval checkpoint decrements the
 counts of the snapshots it listed. A snapshot no kept checkpoint lists leaves
 the writer's map, and on Linux its byte range in the store becomes a hole
@@ -645,8 +646,12 @@ keeps its length and every other offset stays valid, so no checkpoint file
 changes. The writer syncs the directory after deleting a pruned checkpoint and
 before punching, so a crash cannot bring back a checkpoint whose snapshots are
 gone. On macOS, and on a Linux filesystem without hole punching, the freed
-bytes stay in the file. Each `.ckpt` file holds its header, that index, and
-the postcard body. `checkpoints.jsonl` records write time and sizes:
+bytes stay in the file. Each `.ckpt` file holds its header, that index, the
+postcard body, and a trailing SHA-256 of those preceding bytes. Resume checks
+that checksum before decoding the header or body, so byte changes that remain
+valid postcard data fail closed instead of changing the continuation. These
+checks detect corruption, not deliberate rewriting of a checkpoint and its
+checksum. `checkpoints.jsonl` records write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
 kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
 what the write's pruning released. The
