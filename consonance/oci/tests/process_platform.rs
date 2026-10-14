@@ -12,7 +12,7 @@ mod platform {
     };
     use control_proto::{Moment, StopReason};
     use environment::{
-        channel::{Answer, ChannelError, Question, ServiceHandler, ServiceResponse},
+        channel::{Answer, ChannelError, Effect, Question, ServiceHandler, ServiceResponse},
         input_spec::{ServiceConfig, ServiceFactory},
     };
     use oci_support::{ExternalInput, LaunchRequest, bundle, image};
@@ -271,6 +271,18 @@ mod platform {
         let mut session = Session::new_with_config(&kernel, &initramfs, config)?;
         session.set_service_factory(service_factory());
         let (setup, _) = session.setup_handle();
+        let checkpoint_at = session
+            .setup_at()
+            .checked_add(400_000_000)
+            .ok_or("checkpoint deadline overflow")?;
+        let continuation_at = checkpoint_at
+            .checked_add(400_000_000)
+            .ok_or("continuation deadline overflow")?;
+        let wake_gpa = if cfg!(target_arch = "aarch64") {
+            0x4000_0000
+        } else {
+            0
+        };
         session.branch_with_service(
             setup,
             ServiceConfig {
@@ -278,21 +290,17 @@ mod platform {
                 configuration: SERVICE_CONFIGURATION.to_vec(),
             },
             Vec::new(),
-            Vec::new(),
+            vec![
+                (checkpoint_at, Effect::write_memory(wake_gpa, Vec::new())?),
+                (continuation_at, Effect::write_memory(wake_gpa, Vec::new())?),
+            ],
         )?;
 
-        let checkpoint_at = session
-            .setup_at()
-            .checked_add(400_000_000)
-            .ok_or("checkpoint deadline overflow")?;
         run_until(&mut session, checkpoint_at)?;
         let (checkpoint_id, checkpoint_time) = session.snapshot()?;
         let checkpoint = portable_snapshot(&mut session, checkpoint_id, checkpoint_time)?;
         session.drop_snapshot(checkpoint_id)?;
 
-        let continuation_at = checkpoint_time
-            .checked_add(400_000_000)
-            .ok_or("continuation deadline overflow")?;
         run_until(&mut session, continuation_at)?;
         let expected = capture(&mut session)?;
         assert_process_evidence(&expected)?;
