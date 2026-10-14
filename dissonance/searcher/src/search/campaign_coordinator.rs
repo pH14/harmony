@@ -15,20 +15,20 @@ use super::{
     CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
     CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord, CampaignSkipRecord,
     CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CompletedJob,
-    CoordinatorCore, DEFAULT_MIXTURE_WEIGHT, JobSpecRecord, LONGEST_SPLICE_TAIL,
-    LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
-    archive_entry_limit_is_valid, bootstrap_campaign, build_report, continuation_arrival,
-    continuation_attempt, derive_selection_seed, execution_work_delta, finish_record,
-    initial_draw_state, memory_is_within_reserve, planned_finish, profile_elapsed, profile_now,
-    progress_checkpoint_due, progress_record, record_compaction_elapsed, record_mixture_outcome,
-    resolve_origin, restore_search_checkpoint, retained_archive_indexes,
-    stop_reservations_after_objective, stream_header, write_live_progress, write_search_checkpoint,
+    CoordinatorCore, JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob,
+    SelectedJob, StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
+    build_report, continuation_arrival, continuation_attempt, derive_selection_seed,
+    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
+    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
+    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
+    restore_search_checkpoint, retained_archive_indexes, stop_reservations_after_objective,
+    stream_header, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
 };
 use crate::search::checkpoint::{CheckpointReader, CheckpointWriter};
-use crate::search::draw::{DrawMixture, EnergyStrategy, MixtureDraw, energy_strategy};
+use crate::search::draw::{EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
 use crate::search::empirical_steps::EmpiricalStepCheckpoint;
@@ -996,11 +996,8 @@ where
                 .stable_id(parent_index)
                 .ok_or("selected archive slot is missing")?;
             let mutation_seed = rand.next_u64();
-            let (mixture_weight, splice_weight) = match config.mixture {
-                DrawMixture::Energy { scale } => (core.mixture_energy.biased_weight(scale), 0),
-                DrawMixture::EnergySplice { scale } => core.mixture_energy.splice_weights(scale),
-                _ => (DEFAULT_MIXTURE_WEIGHT, 0),
-            };
+            let (mixture_weight, splice_weight) =
+                mixture_weights(&core.mixture_energy, config.mixture);
             let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
             let (spliced, splice) =
                 if energy_strategy(mutation_seed, mixture_weight, splice_weight)?

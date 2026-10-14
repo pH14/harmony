@@ -118,9 +118,16 @@ fn output_only_difference_at_equal_halt_count_is_a_divergence() {
     assert_eq!(report.halted_at, Some(1));
     assert_eq!(
         report.verdict,
-        Verdict::Diverged {
+        Verdict::TerminalDiverged {
             last_match: None,
-            first_mismatch: 1,
+            halted_at: 1,
         }
+    );
+    assert_eq!(
+        bisect_divergence(&a, &b, 7, 0, 1)
+            .unwrap()
+            .first_divergent_work,
+        1,
+        "a terminal state reached at the requested work count remains replayable"
     );
 }

@@ -42,6 +42,9 @@ Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
 write that offset, and both full-VM snapshot restore and V-time-only restore
 reject a nonzero value before changing live state. This keeps an armed
 clockevent in the next-deadline and virtual-time trace schedules.
+An Arm guest MMIO transaction against the pvclock frame is rejected before
+advancing virtual time unless the VM offers pvclock. An unoffered frame cannot
+arm a clockevent that would be absent from the VM snapshot.
 
 The run loop also times each backend run and each exit it services, keyed by
 exit reason, address or port, and direction. `ControlServer::host_telemetry`

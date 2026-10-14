@@ -349,6 +349,156 @@ fn continuations_replay_exactly_under_snapshot_pressure() {
 }
 
 #[test]
+fn replay_rejects_a_splice_weight_impossible_for_the_recorded_energy_policy() {
+    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let line = lines
+        .iter_mut()
+        .find(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            if value["event"] != "job" || value["selector"]["path"] == "continuation" {
+                return false;
+            }
+            let seed = value["mutation_seed"].as_u64().unwrap();
+            let weight = u8::try_from(value["mixture_weight"].as_u64().unwrap()).unwrap();
+            energy_strategy(seed, weight, 0).unwrap() == energy_strategy(seed, weight, 1).unwrap()
+        })
+        .expect("an ordinary draw whose strategy survives a one-point change");
+    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(value["splice_weight"], 0);
+    value["splice_weight"] = serde_json::json!(1);
+    *line = serde_json::to_string(&value).unwrap();
+    let error = replay_error(&lines);
+    assert!(error.contains("mixture weights diverge"), "{error}");
+}
+
+#[test]
+fn replay_rejects_an_adaptive_weight_not_derived_from_prior_admissions() {
+    let config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let initial = MixtureEnergy::default().splice_weights(6);
+    let line = lines
+        .iter_mut()
+        .find(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            if value["event"] != "job" || value["selector"]["path"] == "continuation" {
+                return false;
+            }
+            if value["reservation"].as_u64().unwrap() < config.window as u64 {
+                return false;
+            }
+            let seed = value["mutation_seed"].as_u64().unwrap();
+            let weight = u8::try_from(value["mixture_weight"].as_u64().unwrap()).unwrap();
+            let splice = u8::try_from(value["splice_weight"].as_u64().unwrap()).unwrap();
+            (weight, splice) != initial
+                && weight < 253
+                && energy_strategy(seed, weight, splice).unwrap()
+                    == energy_strategy(seed, weight + 1, splice).unwrap()
+        })
+        .expect("an adaptive draw whose strategy survives a one-point change");
+    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+    value["mixture_weight"] = serde_json::json!(value["mixture_weight"].as_u64().unwrap() + 1);
+    *line = serde_json::to_string(&value).unwrap();
+    let error = replay_error(&lines);
+    assert!(error.contains("mixture weights diverge"), "{error}");
+}
+
+#[test]
+fn replay_rejects_a_skip_weight_not_derived_from_the_energy_policy() {
+    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let line = lines
+        .iter_mut()
+        .find(|line| {
+            let value: serde_json::Value = serde_json::from_str(line).unwrap();
+            value["event"] == "skip"
+        })
+        .expect("an ordinary duplicate skip");
+    let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(value["splice_weight"], 0);
+    value["splice_weight"] = serde_json::json!(1);
+    *line = serde_json::to_string(&value).unwrap();
+    let error = replay_error(&lines);
+    assert!(error.contains("mixture weights diverge"), "{error}");
+}
+
+#[test]
+fn replay_rejects_selector_tiers_beyond_the_archive_population_limit() {
+    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let original = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for kind in ["job", "skip"] {
+        let mut lines = original.clone();
+        let line = lines
+            .iter_mut()
+            .find(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value["event"] == kind && value["selector"]["path"] != "continuation"
+            })
+            .expect("an ordinary tier selection");
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value["selector"]["tier_rank"] = serde_json::json!(config.archive_entry_limit);
+        *line = serde_json::to_string(&value).unwrap();
+        let error = replay_error(&lines);
+        assert!(
+            error.contains("tier rank exceeds the archive population limit"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn a_tampered_continuation_record_fails_its_replay() {
     let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();
@@ -529,7 +679,7 @@ fn replay_rejects_a_stream_whose_header_or_draw_state_was_changed() {
         "alphabet_only",
     ));
     assert!(
-        error.contains("result digest") && error.contains("diverged"),
+        error.contains("mixture weights diverge from the rebuilt policy"),
         "a swapped mixture failed for another reason: {error}"
     );
     let error = replay_error(&with_header_field(

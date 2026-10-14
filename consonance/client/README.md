@@ -202,9 +202,10 @@ boot; its sealed bytes define the root identity and serve every later fresh
 process. Boot checks their SHA-256 against the caller's admitted initramfs
 digest. The caller supplies the admitted profile and exact host processor
 identity; boot checks both against the pinned profile and
-processor before starting a guest. The root identity includes that host
-identity and the exact boot argument list and initramfs bytes, with explicit
-field boundaries. An import from a different physical processor or launch
+processor before starting a guest. The root identity includes a length-delimited
+digest of the complete admitted host identity, including the CPU-info lines
+UML imports at boot, and the exact boot argument list and initramfs bytes.
+An import from a different physical processor or launch
 input is refused before the checkpoint store changes. Fresh restore spawns
 recheck the same admitted processor and host identity. A publish exports the
 checkpoint into one extent,

@@ -265,8 +265,16 @@ the search report's stream digest and runs from the verified bytes.
 
 Hidden `harmony debug run` executes a fixed action input or an OCI command;
 `harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
+For supervised runs it compares the final state and outcome as well as every
+recorded action boundary, including the action, observation, settlement marker,
+and bounded console evidence. The repeat ordinal and `guest_horizons` cache
+diagnostic are not replay invariants.
+
 Finding replay refuses an unconfirmed saved finding, because replay did not
 establish its reported failure. Branching can still inspect that evidence.
+Faults replay also refuses a failed or incomplete recording. A saved supervised
+run with multiple replays must have matching outcomes before one can serve as
+the reference for a fresh replay.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
@@ -285,6 +293,12 @@ evidence. Replay and branch selection use that verified manifest copy, even
 if a source outcome file changes later. Search resume restores its
 checkpoint and does not consume the report;
 an interrupted report write does not invalidate an earlier checkpoint.
+Faults `show`, `--timeline` and report-backed `--logs` display the manifest's
+saved outcome, so later edits to an outcome file cannot change the displayed
+recording. Command runs with a saved serial digest check it before displaying
+`--logs`; a completed command without one refuses display. Other raw console
+and terminal logs remain diagnostic output. A supervised recording always uses
+its saved action-boundary console; a stray `serial.log` cannot replace it.
 After a faults package returns, completion compares the saved report with the
 in-memory result before recording its outcome. A replaced or missing report
 cannot become a completed search, replay, or branch result. Command replay

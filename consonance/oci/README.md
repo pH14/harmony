@@ -183,8 +183,10 @@ fields containing only spaces and NULs, and base-256 encodings with a `0x80`
 or `0xff` lead byte, remain admitted on both hosts.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
-reports failure despite both tools writing the member bytes.
-Layer admission and extraction invoke decompressors and tar with a cleared child
+reports failure despite both tools writing the member bytes. Gzip admission
+uses one Rust decoder on every host and rejects trailing padding bytes: Apple
+gzip rejects that padding while GNU gzip accepts it.
+Other layer decompressors and tar run with a cleared child
 environment, retaining only `PATH` for the tools and setting `LC_ALL=C`.
 Inherited `XZ_DEFAULTS` can otherwise reject a valid archive before admission.
 GNU tar honors inherited `TAR_OPTIONS` such as

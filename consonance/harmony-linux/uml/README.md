@@ -51,7 +51,16 @@ sequence of guest events.
   library clock calls are system calls and follow virtual time.
 - `/proc/cpuinfo` no longer shows the host `uname` line. The CPU flags and
   model still come from the host and `cpuid` runs natively, so the recording
-  names both. A guest program that executes `rdrand` or `rdseed` gets host
+  names both. The launcher captures the host CPU-info lines the owned kernel
+  parses, binds them into the host identity, and passes them as
+  `HARMONY_UML_CPUINFO` at spawn. The kernel refuses a launch without that
+  input and never reopens host `/proc/cpuinfo` during boot. `profile.json`
+  schema 4 requires this patched import and a second early check: the admitted
+  host auxiliary-vector HWCAP, HWCAP2, minimum signal-stack size and platform
+  bytes are passed at launch, and the kernel refuses a child whose initial
+  values differ. Earlier profiles are refused. The arm64 kernel imports its
+  hardware-capability flags from this auxiliary vector. A guest program that
+  executes `rdrand` or `rdseed` gets host
   randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image
@@ -219,9 +228,12 @@ must run Linux 6.12 or later, the first release where `PR_SET_TSC` traps
 counter reads, and must use 4 KiB pages: a guest page is a host mapping, and
 the arm64 profile uses 4 KiB pages. Guest
 instructions run natively, so a recording is valid only on the CPU that made
-it. `HostIdentity` records the CPU model and feature flags, and replay refuses
-a recording from a different CPU. Guests must be trusted: the UML
-SECCOMP filter does not stop guest userspace from reading UML's memory.
+it. `HostIdentity` records the CPU model, feature flags, and the exact host
+`/proc/cpuinfo` lines imported by the pinned UML kernel at boot. The x86
+kernel may read two processors' flag lines when no `cache_alignment` line
+appears. Replay refuses a different recorded host identity. Guests must be
+trusted: the UML SECCOMP filter does not stop guest userspace from reading UML's
+memory.
 
 The launcher sets `GLIBC_TUNABLES=glibc.pthread.rseq=0`. UML keeps its own
 memory image, and a glibc-registered restartable-sequence area in that image

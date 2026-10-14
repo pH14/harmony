@@ -2,7 +2,8 @@
 
 `unison` is the determinism harness and divergence bisector. It compares two
 fresh machines created with the same seed, detects differing architectural
-state, and re-executes from scratch to locate the first divergent work count.
+state at selected checkpoints, and re-executes from scratch to locate the first
+divergent work count when a replayable checkpoint bracket exists.
 The `Subject` abstraction treats work as an opaque monotonic counter: VM exits
 for a real adapter and retired instructions for the bundled toy machine.
 
@@ -24,20 +25,69 @@ Comparisons and bisection reject these inconsistencies; equal state hashes canno
 different work counts. An already-halted subject can report its existing work
 count above a requested target without advancing. Comparison uses the actual
 halt count to detect mismatches.
+For a given seed and target, a fresh subject must produce the same outcome,
+work count, state hash, and observable digest whether `run_to(target)` is called
+once or after any increasing sequence of earlier targets. `spawn(seed)` must
+also reproduce the same starting state. This segmentation-invariance contract
+is required to identify a replayable first-work coordinate. A same-seed
+checkpoint mismatch that fails direct replay is still reported as an
+`UnreplayableDivergence` at the observed checkpoint, without a first-work
+claim. The bundled toy and perturbation adapters are qualified against direct
+and segmented calls; custom adapters must establish the same property for
+bisection.
 
 `compare_runs` checks both machines immediately after spawn, then compares their
 state hashes and output digests at a caller-selected interval until they halt or
-reach a limit. It reports
-identical runs, a checkpoint bracket, or a halt-count mismatch, and records
-whether the limit—not termination—ended the
-comparison. A zero-work mismatch is reported even when the limit is zero.
+reach a limit. `MatchingCheckpoints` means only that the sampled states and
+outputs agree; a transient difference between checkpoints can go unobserved.
+The serialized report carries `checkpoint_every` and `requested_limit`, so this
+claim identifies its sampling plan even when the run halts before the limit.
+The other verdicts report a replayable checkpoint bracket, an observed but
+unreplayable checkpoint mismatch, an equal-work terminal divergence, or a
+halt-count mismatch. The report records whether the limit—not
+termination—ended the comparison. A zero-work mismatch is reported
+even when the limit is zero. Before claiming an exact work-zero mismatch or a
+reached-target divergence bracket, comparison replays each observation on
+fresh subjects. For a reached-target bracket it replays both the last matching
+checkpoint and the mismatching checkpoint.
+It refuses the bracket if either direct replay has a different outcome or
+observation. This detects some segmentation-sensitive adapters at the point
+where they would produce an unreplayable bracket; the adapter contract remains
+necessary for all intermediate bisection probes.
 If both machines have already halted at the same work count, the report records
 termination for any limit without comparing another checkpoint.
+When both machines halt at the same work count but their terminal observations
+differ, the report uses `TerminalDiverged`. This names the observed halt count
+and last matching checkpoint without claiming a first divergent work count:
+a fresh run to the halt count may stop at a pre-halt state, while the terminal
+transition happens only when asked to run farther. The CLI reports this
+divergence with exit code 2 and supplies a first-work point only if a direct
+probe through the halt count reproduces the mismatch. Direct bisection
+also refuses a mismatching probe that halted at a different work count from
+the requested target, because that terminal observation cannot be assigned
+the probe's work coordinate. A terminal observation reached at the requested
+work count remains bisectable. If direct replay does not reproduce the
+terminal observation, the observed divergence remains in the comparison
+report without a first-work coordinate.
+Already-halted machines spawned at equal nonzero work also report a differing
+initial observation as `TerminalDiverged` at their actual halt count; reporting
+it at work zero would provide an unreplayable bisection coordinate. An initial
+difference at work zero is directly bisectable only when fresh replay reproduces
+both observations. Otherwise the report retains the observed difference without
+a first-work coordinate.
 `bisect_divergence` checks the initial state when the lower bound is zero,
 returns zero if the machines already differ there, and otherwise verifies the
-bracket endpoints and binary searches fresh executions in `O(log(hi - lo))`
-probes. Its first-divergence claim assumes the observed difference remains
-persistent within the bracket.
+bracket endpoints and advances one pair through each work count in ascending
+order. A fresh direct probe verifies a mismatching candidate before reporting
+its work count; an inconsistent segmented/direct observation is refused. This
+uses `O(hi - lo)` incremental `run_to` calls and `O(hi)` total work for subjects
+whose `run_to` advances incrementally, and finds the first mismatch within the
+supplied bracket even when observations diverge temporarily and then
+reconverge. A matching checkpoint does not rule out an earlier transient
+difference. `first_divergence_from_report` and the CLI scan from work zero to
+the report's first mismatching checkpoint before claiming a global first work
+count. The upper endpoint must still differ for the supplied interval to be a
+valid bracket.
 
 ## Reference machines
 
