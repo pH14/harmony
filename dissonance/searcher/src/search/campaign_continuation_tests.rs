@@ -1025,6 +1025,54 @@ fn a_checkpoint_with_no_jobs_in_flight_resumes_under_a_larger_budget() {
 }
 
 #[test]
+fn a_drain_checkpoint_refills_the_original_admission_window_on_resume() {
+    let source = checkpoint_directory("drain-window-source");
+    let resumed_directory = checkpoint_directory("drain-window-resumed");
+    let mut config = continuation_config(2, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.execution_budget = 15;
+    config.stop_campaign_on_objective = false;
+    run_with_checkpoints(
+        &config,
+        &CampaignOrigin::Genesis,
+        Some(CheckpointPlan {
+            directory: source.clone(),
+            every: NonZeroU64::new(2),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    let checkpoint = source.join("000000000014-interval.ckpt");
+    assert!(checkpoint.exists());
+    config.execution_budget = 25;
+    let (resumed, _) = run_with_checkpoints(
+        &config,
+        &CampaignOrigin::SearchCheckpoint { path: checkpoint },
+        Some(CheckpointPlan {
+            directory: resumed_directory.clone(),
+            every: NonZeroU64::new(1),
+            on_marks: false,
+            on_top_progress: false,
+        }),
+    );
+    assert_eq!(resumed.0.executions_completed, 25);
+    let first: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(resumed_directory.join("checkpoints.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(first["executions"], 15);
+    assert_eq!(
+        first["reserved"].as_u64().unwrap() - 15,
+        config.window as u64
+    );
+    std::fs::remove_dir_all(source).unwrap();
+    std::fs::remove_dir_all(resumed_directory).unwrap();
+}
+
+#[test]
 fn campaign_counters_with_an_import_round_trip_through_postcard() {
     let counters = CampaignCounters {
         bootstrap_execution_work: 3,

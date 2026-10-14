@@ -678,8 +678,11 @@ from the recorded one, so stream draw-table hashes after a resume differ from an
 uninterrupted run. A resumed stream cannot be replayed. The checkpoint stores
 every reservation between the next admission and the last reservation, whether
 queued, running or finished, and the resumed run dispatches them again, so it
-may use a different worker count. Workloads opt in through
-`Reporting::evidence_checkpoint` and `Reporting::evidence_from_checkpoint`.
+may use a different worker count. If the checkpoint was taken while a budget
+was draining the reservation queue, a larger resumed budget fills the vacant
+slots up to the recorded window before admitting another result. Workloads opt
+in through `Reporting::evidence_checkpoint` and
+`Reporting::evidence_from_checkpoint`.
 
 
 ## Host hashing

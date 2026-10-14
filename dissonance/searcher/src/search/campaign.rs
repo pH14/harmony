@@ -3304,11 +3304,7 @@ where
                 }
                 pending.insert(job.reservation, job.pending);
             }
-            let prefill = if !pending.is_empty() {
-                0
-            } else {
-                pipeline_depth
-            };
+            let prefill = pipeline_depth.saturating_sub(pending.len());
             for _ in 0..prefill {
                 let selection_started = profile_now();
                 let selected = select(
