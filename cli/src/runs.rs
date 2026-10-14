@@ -290,16 +290,53 @@ mod tests {
         let original = std::env::current_exe().unwrap();
         fs::copy(&original, &running).unwrap();
         fs::copy(&original, &replacement).unwrap();
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(&replacement)
-            .unwrap()
-            .write_all(b"changed-executable-file")
-            .unwrap();
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&replacement)
+                .unwrap()
+                .write_all(b"changed-executable-file")
+                .unwrap();
+        }
         let before = file_digest(&running).unwrap();
         let expected_identity =
             consonance_client::image_identity::loaded_executable_identity_self().unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let signed = std::process::Command::new("codesign")
+                .args([
+                    "--force",
+                    "--sign",
+                    "-",
+                    "--identifier",
+                    "harmony.loaded-image.replacement",
+                ])
+                .arg(&replacement)
+                .output()
+                .unwrap();
+            assert!(
+                signed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&signed.stderr)
+            );
+            let shown = std::process::Command::new("codesign")
+                .arg("-dvvv")
+                .arg(&replacement)
+                .output()
+                .unwrap();
+            assert!(shown.status.success());
+            let details = String::from_utf8_lossy(&shown.stderr);
+            let replacement_hash = details
+                .lines()
+                .find_map(|line| line.strip_prefix("CDHash="))
+                .unwrap();
+            assert_ne!(
+                expected_identity,
+                format!("macos-cdhash-v1:{replacement_hash}")
+            );
+        }
         let mut child = std::process::Command::new(&running)
             .args([
                 "--exact",
