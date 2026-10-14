@@ -778,6 +778,9 @@ fn check_hardlinks(members: &[Member]) -> Result<(), ImageError> {
 const TAR_BLOCK: usize = 512;
 const MAX_MEMBERS: usize = 1 << 20;
 const MAX_HEADER_DATA: u64 = 1 << 16;
+const MAX_PORTABLE_SYMLINK_TARGET: usize = 1023;
+const MAX_PORTABLE_MEMBER_PATH: usize = 768;
+const MAX_PORTABLE_STAGING_ROOT: usize = 254;
 
 struct Member {
     name: Vec<u8>,
@@ -998,15 +1001,26 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 if name.is_empty() {
                     return Err(ImageError::Tar("archive member has an empty name".into()));
                 }
+                if name.len() > MAX_PORTABLE_MEMBER_PATH {
+                    return Err(ImageError::Tar("archive member path is too long".into()));
+                }
                 if typeflag != b'5' && name.ends_with(b"/") {
                     return Err(ImageError::Tar(
                         "non-directory member has a trailing slash".into(),
                     ));
                 }
                 let header_link = tar_field(&block[157..257]);
+                if typeflag == b'1' && (header_link.is_empty() || !header_link.is_ascii()) {
+                    return Err(ImageError::Tar(
+                        "hardlink member has a nonportable header target".into(),
+                    ));
+                }
                 if typeflag == b'2' {
                     let portable = |target: &[u8]| {
-                        !target.is_empty() && target.is_ascii() && !target.contains(&0)
+                        !target.is_empty()
+                            && target.len() <= MAX_PORTABLE_SYMLINK_TARGET
+                            && target.is_ascii()
+                            && !target.contains(&0)
                     };
                     let effective = link_path
                         .as_deref()
@@ -1307,12 +1321,20 @@ fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
 }
 
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
+    check_portable_staging_root(dest)?;
     let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
     let members = read_members(pinned.path())?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
     untar(pinned.path(), dest)
+}
+
+fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
+    if path.as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT {
+        return Err(ImageError::Tar("archive staging path is too long".into()));
+    }
+    Ok(())
 }
 
 fn pin_archive(archive: &Path, staging: &Path) -> Result<tempfile::NamedTempFile, ImageError> {
@@ -1514,15 +1536,17 @@ fn apply_layer_tracked(
     owners: &mut Ownership,
     portable_names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> Result<(), ImageError> {
+    check_portable_staging_root(rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
     let pinned = pin_archive(layer, staging)?;
     let members = read_members(pinned.path())?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
+    let staged = tempfile::tempdir_in(staging)?;
+    check_portable_staging_root(staged.path())?;
     let opaque_modes = apply_whiteouts(&members, rootfs)?;
     let implicit_dirs = implicit_layer_dirs(&members);
-    let staged = tempfile::tempdir_in(staging)?;
     untar(pinned.path(), staged.path())?;
     let mut preserved_modes = BTreeMap::new();
     merge_layer(
@@ -3558,6 +3582,135 @@ mod tests {
             std::fs::read_link(dest.join("link")).unwrap(),
             Path::new("target")
         );
+    }
+
+    #[test]
+    fn oversized_symlink_target_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let target = "x".repeat(1024);
+        for (name, header) in [
+            (
+                "pax-long-link.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", &target).as_bytes(),
+                ),
+            ),
+            (
+                "gnu-long-link.tar",
+                raw_member(b"././@LongLink", b'K', "", format!("{target}\0").as_bytes()),
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[header, raw_member(b"link", b'2', "x", b"")].concat(),
+            );
+            assert!(
+                matches!(read_members(&archive), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn overlong_archive_paths_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let name = vec!["x".repeat(80); 13].join("/");
+        let archive = write_archive(
+            dir.path(),
+            "overlong-path.tar",
+            &[
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", &name).as_bytes(),
+                ),
+                raw_member(b"short", b'0', "", b"data"),
+            ]
+            .concat(),
+        );
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn deep_staging_roots_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir
+            .path()
+            .join("a".repeat(80))
+            .join("b".repeat(80))
+            .join("c".repeat(80));
+        std::fs::create_dir_all(&dest).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "short-path.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn hardlink_override_requires_a_nonempty_base_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        for (name, header) in [
+            (
+                "pax-empty-hardlink.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "A").as_bytes(),
+                ),
+            ),
+            (
+                "gnu-empty-hardlink.tar",
+                raw_member(b"././@LongLink", b'K', "", b"A\0"),
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[
+                    raw_member(b"A", b'0', "", b"payload"),
+                    header,
+                    raw_member(b"link", b'1', "", b""),
+                ]
+                .concat(),
+            );
+            assert!(
+                matches!(read_members(&archive), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
     }
 
     #[test]

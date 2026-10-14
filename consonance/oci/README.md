@@ -89,6 +89,11 @@ case-insensitive, Unicode-normalizing filesystems common on macOS. A Unicode
 normalization pass alone would not cover arbitrary non-UTF-8 Linux names or
 every host filesystem's case rules, so non-ASCII archive paths fail closed.
 Existing Harmony workload images use ASCII paths.
+Archive member paths are limited to 768 bytes and staging roots to 254 bytes.
+The combined path then fits macOS's 1023-byte filesystem-call limit, including
+the separator, as well as Linux's. GNU and macOS tar can both extract a deeply
+nested longer name, but later rootfs traversal by absolute path fails only on
+macOS.
 Whiteout targets must match the spelling of the lower name they remove; after
 an exact whiteout, a new entry may reuse that path with different case. Whiteout
 lookups never follow a staged symlink parent. OCI control-file, mount, and
@@ -114,7 +119,11 @@ Symlink targets must have a nonempty ASCII base header target and a nonempty
 ASCII effective target after any pax or GNU override, with no embedded NUL.
 An empty base target can become a regular file on macOS but a symlink on Linux;
 an empty pax override and non-ASCII target bytes can also change extraction
-success or the link's bytes between those hosts.
+success or the link's bytes between those hosts. Effective symlink targets are
+limited to 1023 bytes: macOS rejects longer targets while Linux can create
+them. Hardlinks likewise require a nonempty ASCII base header target even when
+a pax or GNU override supplies a valid earlier target; an empty base can
+extract as an empty regular file on macOS and a hardlink on Linux.
 A hardlink cannot point to its own name, even when an earlier member created
 that name: macOS tar rejects the repeated self-link while GNU tar accepts it.
 A tar header whose magic starts with `ustar` but is neither POSIX ustar nor the
