@@ -161,8 +161,8 @@ size overrides it: macOS tar reports overflow at that exact value while GNU
 tar extracts the PAX-sized payload.
 Device-major and device-minor header fields must have portable numeric syntax
 even on ordinary files. macOS tar rejects malformed fields that GNU tar ignores;
-empty space-filled fields and base-256 encodings that both hosts accept remain
-admitted.
+fields containing only spaces and NULs, and base-256 encodings with a `0x80`
+or `0xff` lead byte, remain admitted on both hosts.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
 reports failure despite both tools writing the member bytes.
