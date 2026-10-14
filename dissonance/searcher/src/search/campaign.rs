@@ -1312,6 +1312,16 @@ fn verify_selector_observed_tiers(
     Ok(())
 }
 
+fn verify_selector_preference<K: ArchiveKey>(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
+    if draw
+        .best_preference
+        .is_some_and(|preference| usize::from(preference) >= K::preferences())
+    {
+        return Err("selector best preference is outside the key portfolio".into());
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn derive_selection_seed(campaign_seed: u64) -> u64 {
     let digest = Sha256::digest(campaign_seed.to_le_bytes());
@@ -4779,6 +4789,7 @@ where
                 }
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
+                verify_selector_preference::<G::Key>(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
@@ -5072,6 +5083,7 @@ where
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
+                verify_selector_preference::<G::Key>(&job.selector)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
@@ -6368,6 +6380,25 @@ mod tests {
                 .expect_err("replay certified a nonexistent tier in a one-tier campaign")
                 .to_string();
         assert!(error.contains("observed progress tiers"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_a_selector_preference_outside_the_key_portfolio() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let first_job = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+            })
+            .unwrap();
+        let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
+        job["selector"]["best_preference"] = serde_json::json!(255);
+        lines[first_job] = serde_json::to_string(&job).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a preference the key does not define")
+                .to_string();
+        assert!(error.contains("preference"), "{error}");
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,

@@ -364,6 +364,8 @@ previously admitted archive entries when that selection was reserved. The
 bound includes historical levels that may no longer be selectable, so it
 rejects impossible ranks without claiming to
 reconstruct every selector draw.
+Replay also rejects a best-holder preference index outside the workload key's
+compiled portfolio; otherwise selector accounting would silently ignore it.
 
 The leading tier gives up weight while it finds nothing new. Each tier counts its
 draws since a new cell last appeared in it and keeps the longest such run; its
