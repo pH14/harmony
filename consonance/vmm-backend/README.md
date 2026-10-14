@@ -183,8 +183,9 @@ successor instruction or injects an interrupt. An MSR fault queues its
 exception without executing the handler.
 The live serviced-exit regressions require exact CPU state at the stopped
 completion boundary. After guest continuation, they compare logical XSAVE
-presence alongside every CPU field and RAM byte: KVM can change raw presence
-bits for init-valued x87/SSE components on entry without changing their state.
+presence alongside every CPU field; the MMIO and MSR cases also compare guest
+RAM bytewise. KVM can change raw presence bits for init-valued x87/SSE
+components on entry without changing their state.
 
 KVM construction enables the exception-payload API so pending exceptions remain
 distinct from injected ones and restores replace the complete exception record.
