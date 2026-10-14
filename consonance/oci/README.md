@@ -113,8 +113,9 @@ An unqualified image name remains a container-tool reference unless its local
 path has an exact match; an exact-name symlink with an invalid target is
 rejected instead of falling through to the container tool. Absolute and
 dot-relative paths explicitly select a local input and reject aliases.
-Hardlink targets must name an earlier member of the same archive with the
-exact same spelling. Hardlink, symlink, and directory members cannot carry
+Hardlink targets must resolve to an earlier member of the same archive with
+the same case-sensitive path after removing `.` and repeated separators.
+Hardlink, symlink, and directory members cannot carry
 data in either their tar header or a pax size override. This also excludes
 archives that only extract because a host resolves a hardlink target
 case-insensitively or interprets a non-file payload differently.
