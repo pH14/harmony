@@ -1247,14 +1247,17 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         loop {
             self.apply_pending_irq()?;
             let view = self.kvm.run()?;
+            self.state_poisoned = true;
             self.mmio_owed = false;
             self.observe_irq_acceptance()?;
             if let Some((exit, pending)) = decode_exit(&view)? {
                 self.mmio_owed = view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write;
                 self.counts.bump(exit.reason());
                 self.pending = pending;
+                self.state_poisoned = false;
                 return Ok(exit);
             }
+            self.state_poisoned = false;
         }
     }
 
@@ -1630,6 +1633,8 @@ pub struct FakeKvm {
     irq_line_writes: usize,
     #[cfg(test)]
     fail_irq_line_write_on: Option<usize>,
+    #[cfg(test)]
+    fail_vgic_read: Option<(u32, u64, bool)>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
@@ -1908,6 +1913,10 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_vgic_attr(&self, group: u32, attr: u64, width64: bool) -> Result<u64> {
+        #[cfg(test)]
+        if self.fail_vgic_read == Some((group, attr, width64)) {
+            return Err(BackendError::Internal("fake KVM VGIC read failed"));
+        }
         Ok(self
             .vgic_attrs
             .get(&(group, attr, width64))
@@ -3791,6 +3800,30 @@ mod tests {
             Exit::Common(CommonExit::Mmio { .. })
         ));
         assert_eq!(mutant.take_accepted_interrupt(), None);
+    }
+
+    #[test]
+    fn failed_post_run_irq_observation_refuses_lost_exit_capture() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_accept_irqs(true);
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_pending_irq(Some(GicIntId(27))).unwrap();
+        backend.kvm.fail_vgic_read =
+            Some((KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, false));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("fake KVM VGIC read failed"))
+        ));
+        assert!(backend.kvm.run_queue.is_empty());
+        assert_eq!(backend.exit_counts(), ExitCounts::default());
+        backend.kvm.fail_vgic_read = None;
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     #[test]

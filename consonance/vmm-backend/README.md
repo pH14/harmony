@@ -453,6 +453,12 @@ the VGIC line level has already changed; capturing at that point would publish
 a half-applied interrupt switch. The fake-KVM
 `failed_irq_line_switch_refuses_capture_after_partial_transition` test forces
 that sequence and checks that capture refuses it.
+After `KVM_RUN` returns, ARM KVM observes interrupt acceptance and decodes the
+exit before handing it to the VMM. If either observation fails, the backend
+retires: guest execution may have advanced, but the exit was not reported or
+accounted. The fake-KVM `failed_post_run_irq_observation_refuses_lost_exit_capture`
+test forces a VGIC read failure after a consumed MMIO exit and requires capture
+to refuse the lost-exit state.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
