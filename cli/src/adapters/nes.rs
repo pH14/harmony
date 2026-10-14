@@ -249,17 +249,21 @@ fn replay(path: &Path, m: &Manifest, input: serde_json::Value) -> Result<serde_j
     }
     #[cfg(target_os = "linux")]
     {
-        nes_workload::package::replay_consonance(
-            &rom,
-            &fs::read(path.join("artifacts/kernel"))?,
-            &fs::read(path.join("artifacts/initramfs"))?,
-            input,
-        )
+        let (kernel, initramfs) = guest_replay_runtime(path, m)?;
+        nes_workload::package::replay_consonance(&rom, &kernel, &initramfs, input)
     }
     #[cfg(not(target_os = "linux"))]
     {
         Err("the NES guest adapter requires Linux".into())
     }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn guest_replay_runtime(path: &Path, manifest: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok((
+        read_recorded_artifact(path, manifest, "kernel")?,
+        read_recorded_artifact(path, manifest, "initramfs")?,
+    ))
 }
 fn saved(request: Request) -> Result<u8> {
     if matches!(request.operation, Operation::Search | Operation::Resume) {
@@ -632,6 +636,38 @@ mod tests {
         CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
     };
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn guest_replay_refuses_changed_runtime_after_inheritance() {
+        let source = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest
+            .store(source.path(), "kernel", b"kernel A")
+            .unwrap();
+        manifest
+            .store(source.path(), "initramfs", b"initramfs A")
+            .unwrap();
+        let inherited = manifest
+            .inherit(source.path(), child.path(), "replay")
+            .unwrap();
+
+        for (name, original, changed) in [
+            ("kernel", b"kernel A".as_slice(), b"kernel B".as_slice()),
+            (
+                "initramfs",
+                b"initramfs A".as_slice(),
+                b"initramfs B".as_slice(),
+            ),
+        ] {
+            fs::write(child.path().join("artifacts").join(name), changed).unwrap();
+            let loaded = guest_replay_runtime(child.path(), &inherited);
+            fs::write(child.path().join("artifacts").join(name), original).unwrap();
+            assert!(loaded.is_err());
+        }
+    }
 
     #[test]
     fn rooted_search_refuses_artifacts_changed_after_manifest_verification() {
