@@ -33,6 +33,11 @@ MSRs and sets IA32_FEATURE_CONTROL; SVM uses its supported CPUID capability leaf
 and retains VM_CR and VM_HSAVE_PA through the native MSR filter and snapshot
 MSR block. Partial MSR operations fail. The VMM's named nested-host policy binds
 vendor and every exposed capability into contract identity.
+Once nested initialization starts changing CPUID, an invalid VMX capability MSR,
+rejected feature-control write, or later validation error retires the vCPU. The
+live `rejected_vmx_capability_read_retires_partly_initialized_vcpu` test forces
+an invalid MSR index after the CPUID write and requires capture and policy
+installation to refuse the partly initialized backend.
 
 Nested state is captured in a capability-sized initialized buffer. The complete
 returned payload is retained with the inactive VMCS12 metadata normalization

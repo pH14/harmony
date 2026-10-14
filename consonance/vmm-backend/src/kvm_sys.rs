@@ -245,6 +245,7 @@ impl KvmBackend {
         if format == NestedFormat::Svm && !indices.is_empty() {
             return Err(BackendError::Internal("SVM cannot use VMX capability MSRs"));
         }
+        self.state_mutation_guard.begin()?;
         self.install_cpuid(cpuid)?;
         let mut capabilities = BTreeMap::new();
         if format == NestedFormat::Vmx {
@@ -272,6 +273,7 @@ impl KvmBackend {
         crate::arch::x86::nested_probe(nested_size as usize)?;
         self.nested_physical_bits = crate::arch::x86::guest_physical_bits(cpuid);
         self.nested_state_config = Some((format, nested_size as usize));
+        self.state_mutation_guard.finish();
         Ok(capabilities)
     }
 
@@ -1314,6 +1316,49 @@ mod policy_diagnostic {
         ));
         assert!(matches!(
             backend.set_policy(&first),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
+    #[ignore = "live KVM nested VMX boundary; requires /dev/kvm"]
+    fn rejected_vmx_capability_read_retires_partly_initialized_vcpu() {
+        let mut backend = KvmBackend::new().unwrap();
+        let Ok((format, _)) = backend.nested_capabilities() else {
+            return;
+        };
+        if format != NestedFormat::Vmx {
+            return;
+        }
+        let cpuid = CpuidModel {
+            entries: vec![CpuidEntry {
+                leaf: 1,
+                eax: 1,
+                ..Default::default()
+            }],
+        };
+        assert!(
+            backend
+                .initialize_nested(format, &cpuid, &[0xdead_beef], 0)
+                .is_err()
+        );
+        let installed = backend.vcpu.get_cpuid2(16).unwrap();
+        let eax = installed
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 1)
+            .unwrap()
+            .eax;
+        assert_eq!(eax, 1);
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.set_policy(&X86Policy {
+                cpuid,
+                msr_filter: MsrFilter::default(),
+            }),
             Err(BackendError::Internal("backend state mutation failed"))
         ));
     }

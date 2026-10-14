@@ -304,6 +304,7 @@ CONSONANCE_CHECKS = Workflow(
             ignored_tests=KVM_SERVICED_EXIT_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_msr_filter_retires_partly_reconfigured_vcpu",
+                "vmm-backend kvm_sys::policy_diagnostic::rejected_vmx_capability_read_retires_partly_initialized_vcpu",
                 "vmm-backend::contract_kvm *",
             ),
             scope="consonance_kvm",
