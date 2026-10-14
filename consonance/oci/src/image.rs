@@ -1196,7 +1196,7 @@ fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
 }
 
 fn check_device_number(field: &[u8]) -> Result<(), ImageError> {
-    if field.iter().all(|byte| *byte == b' ') || field[0] & 0x80 != 0 {
+    if field.iter().all(|byte| matches!(*byte, 0 | b' ')) || matches!(field[0], 0x80 | 0xff) {
         return Ok(());
     }
     parse_octal(field).map(|_| ())
@@ -3226,6 +3226,8 @@ mod tests {
                 ("plus", b"     +1\0".as_slice()),
                 ("junk", b"abcdef\0 ".as_slice()),
                 ("nul-junk", b"0\0garbag".as_slice()),
+                ("binary-lead-81", b"\x81\0\0\0\0\0\0\0".as_slice()),
+                ("binary-lead-fe", b"\xfe\0\0\0\0\0\0\0".as_slice()),
             ] {
                 let mut member = raw_member(b"payload", b'0', "", b"data");
                 member[field.clone()].copy_from_slice(bytes);
@@ -3250,6 +3252,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         for (name, bytes) in [
             ("spaces", b"        ".as_slice()),
+            ("spaces-nul", b"       \0".as_slice()),
+            ("nul-spaces", b"\0       ".as_slice()),
+            ("positive-binary", b"\x80\0\0\0\0\0\0\0".as_slice()),
             ("binary", b"\xff\0\0\0\0\0\0\0".as_slice()),
         ] {
             let mut member = raw_member(b"payload", b'0', "", b"data");
