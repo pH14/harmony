@@ -28,8 +28,16 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+`Run` with a deadline and `Exec` require a wired virtual clock. An unwired VM
+rejects either request before resolving a pending service answer, injecting a
+command, or entering the guest; it cannot treat a missing clock as time zero.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+If a backend completion chains a later SDK decision into the same guest step
+after virtual time crosses a staged host effect or reseed, control rejects the
+decision as an unsatisfiable schedule instead of exposing it before the input.
+Further `Run` requests reject that poisoned schedule before resolving the
+pending service answer.
 Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
 write that offset, and both full-VM snapshot restore and V-time-only restore
 reject a nonzero value before changing live state. This keeps an armed

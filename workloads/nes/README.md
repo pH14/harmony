@@ -50,8 +50,12 @@ MP4. `nes-film` renders the evaluation matrices. It reads the input and `result.
 recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
-A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
-snapshots after `SnapshotState::logical_identity`. On Intel KVM hosts a whole-VM endpoint's raw
+A witness's `snapshot_sha256` hashes snapshots after `SnapshotState::logical_identity`. The Super Tilt Bro
+campaign result digest covers the complete job result, including preparation
+failures and retained QuickNES snapshots. Replay therefore detects a latent
+endpoint-state change even when its decoded game observations and archive key
+agree. The games in `nes-games` digest only the decoded result so a browser
+campaign and a native one produce the same stream. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
 
@@ -275,6 +279,9 @@ this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
 image in `workload.options.guest_image`.
 
 `package` exposes typed search and replay for native and prepared guest execution.
+Native search and replay require the saved core digest from the run manifest;
+the package checks the on-disk core before constructing a target, and the
+QuickNES loader checks its private copy against the same digest on every load.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search

@@ -200,6 +200,9 @@ impl Package for Nes {
             nes_workload::package::search_native(
                 &rom,
                 &out.join("artifacts/core"),
+                m.artifacts
+                    .get("core")
+                    .ok_or("saved run has no core digest")?,
                 &search,
                 &nes_workload::package::SearchStart::Genesis,
             )
@@ -235,7 +238,14 @@ impl Package for Nes {
 fn replay(path: &Path, m: &Manifest, input: serde_json::Value) -> Result<serde_json::Value> {
     let rom = fs::read(path.join("artifacts/input"))?;
     if m.config.runner.kind == "quicknes" {
-        return nes_workload::package::replay_native(&rom, &path.join("artifacts/core"), input);
+        return nes_workload::package::replay_native(
+            &rom,
+            &path.join("artifacts/core"),
+            m.artifacts
+                .get("core")
+                .ok_or("saved run has no core digest")?,
+            input,
+        );
     }
     #[cfg(target_os = "linux")]
     {
@@ -524,7 +534,15 @@ fn continue_search(request: Request) -> Result<u8> {
     };
     let rom = fs::read(out.join("artifacts/input"))?;
     let result = if m.config.runner.kind == "quicknes" {
-        nes_workload::package::search_native(&rom, &out.join("artifacts/core"), &options, &start)
+        nes_workload::package::search_native(
+            &rom,
+            &out.join("artifacts/core"),
+            m.artifacts
+                .get("core")
+                .ok_or("saved run has no core digest")?,
+            &options,
+            &start,
+        )
     } else {
         #[cfg(target_os = "linux")]
         {

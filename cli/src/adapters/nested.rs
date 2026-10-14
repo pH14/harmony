@@ -19,12 +19,56 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn verified_report(
+    path: &Path,
+    run: &nested_driver::host::PreparedRun,
+) -> Result<serde_json::Value> {
+    let bytes = fs::read(path.join("report.json"))?;
+    if bytes != run.report {
+        return Err("nested report changed after the search producer returned".into());
+    }
+    Ok(serde_json::from_slice(&run.report)?)
+}
+
+fn stable_report(payload: &serde_json::Value) -> serde_json::Value {
+    let mut outcome = payload.clone();
+    if let Some(archive) = outcome
+        .get_mut("archive")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        archive.remove("entries");
+    }
+    outcome
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn replay_report_matches(
+    source_mode: &str,
+    saved: &serde_json::Value,
+    replayed: &serde_json::Value,
+) -> bool {
+    match source_mode {
+        "search" => {
+            saved["archive"]["entries"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+                && stable_report(saved) == stable_report(replayed)
+        }
+        "replay" => saved == replayed,
+        _ => false,
+    }
+}
+
 impl Package for Nested {
     fn name(&self) -> &'static str {
         "nested"
     }
     fn accepts(&self, _: &str) -> bool {
         false
+    }
+    fn semantic_outcome(&self, payload: &serde_json::Value) -> serde_json::Value {
+        stable_report(payload)
     }
     fn normalize(&self, c: &mut Config, base: &Path) -> Result<()> {
         crate::config::resolve_input(&mut c.workload.input, base, false);
@@ -182,9 +226,18 @@ fn execute(mut request: Request) -> Result<u8> {
             }
         }
     }
-    if out.join("report.json").is_file() {
-        m.payload = serde_json::from_slice(&fs::read(out.join("report.json"))?)?;
-    }
+    let result = result.and_then(|run| {
+        m.payload = verified_report(&out, &run)?;
+        Ok(run.finding)
+    });
+    let result = result.and_then(|finding| {
+        if let Some((_, source, _)) = &original
+            && !replay_report_matches(&source.mode, &source.payload, &m.payload)
+        {
+            return Err("nested replay report diverged from saved campaign".into());
+        }
+        Ok(finding)
+    });
     m.status = if result.is_ok() { "complete" } else { "failed" }.into();
     m.error = result.as_ref().err().map(ToString::to_string);
     m.save(&out)?;
@@ -229,6 +282,59 @@ mod tests {
                 .unwrap_err()
                 .to_string(),
             "recorded nested campaign has no stream digest"
+        );
+    }
+
+    #[test]
+    fn nested_replay_compares_stable_report_fields() {
+        let saved = serde_json::json!({
+            "executions_completed": 1,
+            "archive": {"entries": [], "evidence": {"failures": []}}
+        });
+        let mut replayed = saved.clone();
+        replayed["archive"]["entries"] = serde_json::json!([{"key": "materialized"}]);
+        assert!(replay_report_matches("search", &saved, &replayed));
+        replayed["executions_completed"] = serde_json::json!(7);
+        assert!(!replay_report_matches("search", &saved, &replayed));
+    }
+
+    #[test]
+    fn nested_replay_rejects_fabricated_saved_archive_entries() {
+        let saved = serde_json::json!({
+            "executions_completed": 1,
+            "archive": {"entries": [{"forged": "phantom verified archive"}], "evidence": {"failures": []}}
+        });
+        let replayed = serde_json::json!({
+            "executions_completed": 1,
+            "archive": {"entries": [{"key": "materialized"}], "evidence": {"failures": []}}
+        });
+        assert!(!replay_report_matches("search", &saved, &replayed));
+        assert!(replay_report_matches("replay", &replayed, &replayed));
+        assert!(!replay_report_matches("replay", &saved, &replayed));
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn saved_nested_report_must_match_the_producer_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = br#"{"executions_completed":1}"#;
+        let run = nested_driver::host::PreparedRun {
+            finding: false,
+            report: original.to_vec(),
+        };
+        fs::write(dir.path().join("report.json"), original).unwrap();
+        assert_eq!(
+            verified_report(dir.path(), &run).unwrap()["executions_completed"],
+            1
+        );
+        fs::write(
+            dir.path().join("report.json"),
+            br#"{"executions_completed":7}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            verified_report(dir.path(), &run).unwrap_err().to_string(),
+            "nested report changed after the search producer returned"
         );
     }
 }

@@ -275,8 +275,7 @@ Brain's state, latched Tourian events and the destroyed Zebetite column, and
 binds Mother Brain's room to her status byte. Route timestamps exclude genesis
 setup. The replay probe reports action execution work and setup separately, and
 probes and backend snapshot replay are outside the execution-work counter. The
-campaign stream format is v4, the snapshot checkpoint format is v12, and the
-result digest format is v8. The combined capacity score is a separate named score.
+campaign stream format is v4 and the snapshot checkpoint format is v12. The combined capacity score is a separate named score.
 
 Retrospective replay, without submitting an existing solution to search:
 
