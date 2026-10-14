@@ -137,7 +137,7 @@ make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Ima
 # a determinism hole: CNTFRQ differs across the supported substrates, while the
 # count registers also vary with host execution.
 # The canonical Image is therefore published only after the empty-allowlist
-# scanner accepts the symbolized vmlinux.
+# scanner accepts the exact bytes mapped executable by the owned kernel.
 echo "== arm64 kernel: zero-live-counter reachability check"
 scan=$GUEST_DIR/scripts/aa5-counter-scan.py
 scan_probe=$BUILD_ROOT/aa5-counter-scan-probe.S
@@ -178,8 +178,10 @@ if ! grep -q '^\[REJECT\].*3 live-domain timer program' "$scan_probe_log"; then
     exit 1
 fi
 echo "ok: scanner rejected the planted live-counter probe"
-python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" --kernel-vmlinux \
     "$arm64_object_root/vmlinux" \
+    "$arm64_object_root/arch/arm64/boot/Image"
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
     "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
 python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" --embedded-vdso \
     "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"

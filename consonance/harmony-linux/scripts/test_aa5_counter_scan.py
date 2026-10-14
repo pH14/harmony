@@ -295,6 +295,27 @@ class CounterScanTests(unittest.TestCase):
                 words = exclusive.executable_words(str(path), kernel_image_path=str(image))
         self.assertIn((0x2000, 0x885F7C20, "<kernel-image>"), words)
 
+    def test_counter_in_kernel_boot_image_executable_alignment_tail_is_scanned(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        counter = (0xD53BE040).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret),), 0)
+        image_bytes = bytearray(8192)
+        image_bytes[:4096] = data[4096:8192].ljust(4096, b"\0")
+        image_bytes[4096:4100] = counter
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "kernel-with-executable-counter-tail"
+            path.write_bytes(data)
+            image = Path(temporary) / "Image"
+            image.write_bytes(image_bytes)
+            with patch.object(scan.importlib.util, "spec_from_file_location") as spec, \
+                 patch.object(scan.importlib.util, "module_from_spec", return_value=exclusive), \
+                 patch.object(exclusive, "kernel_runtime_exec_ranges",
+                              return_value=((0x1000, 0x3000),)):
+                spec.return_value.loader.exec_module.return_value = None
+                words = scan.executable_words(str(path), kernel_image_path=str(image))
+        self.assertIn((0x2000, 0xD53BE040, "<kernel-image>"), words)
+        self.assertEqual(scan.decode_counter_read(0xD53BE040), "CNTVCT_EL0")
+
     def test_kernel_linker_ranges_require_aligned_known_layout(self):
         names = (
             "_text", "_stext", "_etext", "__start_rodata",
