@@ -50,6 +50,7 @@ const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 pub struct KvmBackend {
     vcpu: VcpuFd,
     vm: VmFd,
+    host_affinity: crate::kvm_affinity::HostAffinity,
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
@@ -86,7 +87,7 @@ pub struct KvmBackend {
 
 impl KvmBackend {
     pub fn new() -> Result<KvmBackend> {
-        crate::kvm_affinity::check_host_affinity()?;
+        let host_affinity = crate::kvm_affinity::check_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
@@ -131,6 +132,7 @@ impl KvmBackend {
         Ok(KvmBackend {
             vcpu,
             vm,
+            host_affinity,
             run,
             mmap_size,
             xsave2_size,
@@ -171,6 +173,7 @@ impl KvmBackend {
     }
 
     pub fn nested_capabilities(&self) -> Result<(NestedFormat, Option<CpuidEntry>)> {
+        self.ensure_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         let supported = kvm
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
@@ -219,6 +222,7 @@ impl KvmBackend {
         indices: &[u32],
         feature_control: u64,
     ) -> Result<BTreeMap<u32, u64>> {
+        self.ensure_host_affinity()?;
         if self.cpuid_installed || self.msr_filter_installed {
             return Err(BackendError::Internal(
                 "nested initialization requires a fresh vCPU",
@@ -281,6 +285,10 @@ impl KvmBackend {
         self.cpuid_installed && self.msr_filter_installed
     }
 
+    fn ensure_host_affinity(&self) -> Result<()> {
+        crate::kvm_affinity::ensure_host_affinity(&self.host_affinity)
+    }
+
     fn reload_nested_memory_slots(&self) -> Result<()> {
         crate::arch::x86::reload_nested_memory_slots(
             &self.mapped_slots,
@@ -302,6 +310,7 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
@@ -346,6 +355,7 @@ impl KvmBackend {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
             }
+            self.ensure_host_affinity()?;
             match plan_irq_entry(
                 self.run_page(),
                 self.pending_irq,
@@ -756,6 +766,7 @@ impl KvmBackend {
     }
 
     fn run_guarded_entry(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         self.check_completion_clear()?;
         // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
@@ -797,6 +808,7 @@ impl Backend for KvmBackend {
     type A = X86;
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.install_cpuid(&policy.cpuid)?;
         self.install_msr_filter(&policy.msr_filter)
     }
@@ -856,6 +868,7 @@ impl Backend for KvmBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
@@ -901,6 +914,7 @@ impl Backend for KvmBackend {
 
     #[cfg(feature = "xsave-diagnostics")]
     fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.diagnostic_rip.is_some() || !self.diagnostic_hits.is_empty() {
             return Err(BackendError::Internal("diagnostic breakpoint already used"));
         }
@@ -929,6 +943,7 @@ impl Backend for KvmBackend {
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {
+        self.ensure_host_affinity()?;
         match event {
             Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
@@ -939,6 +954,7 @@ impl Backend for KvmBackend {
     }
 
     fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.pending_irq = vector;
         Ok(())
     }
@@ -948,6 +964,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -962,6 +979,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -972,6 +990,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -994,6 +1013,7 @@ impl Backend for KvmBackend {
     }
 
     fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.ensure_host_affinity()?;
         if let Some(exit) = self.completion_exit.take() {
             return Ok(Some(exit));
         }
@@ -1014,6 +1034,7 @@ impl Backend for KvmBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
@@ -1126,6 +1147,7 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.check_completion_clear()?;
         self.validate_restore_state(state)?;
         self.drain_staged_completion()?;
