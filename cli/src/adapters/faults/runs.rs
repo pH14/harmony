@@ -163,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edited_report_fails_verification_before_replay_or_branch() {
+    fn edited_report_fails_replay_verification_but_partial_report_allows_resume() {
         let dir = tempfile::tempdir().unwrap();
         let report = serde_json::json!({
             "package":"faults","mode":"search","image_sha256":"image","kernel_sha256":"kernel",
@@ -203,6 +203,22 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("report.json has changed")
+        );
+
+        fs::write(dir.path().join("report.json"), b"{\"bugs\":[").unwrap();
+        let resume = crate::adapters::Request {
+            operation: crate::adapters::Operation::Resume,
+            selection: Some(crate::selection::Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            }),
+            ..Default::default()
+        };
+        assert!(
+            super::super::workflow::continue_search(resume)
+                .unwrap_err()
+                .to_string()
+                .contains("no whole-search checkpoint yet")
         );
     }
 
