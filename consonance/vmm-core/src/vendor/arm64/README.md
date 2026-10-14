@@ -50,6 +50,9 @@ cargo test -p vmm-core --lib vendor::arm64::contract -- --ignored
 ```
 
 `dispatch` routes GIC, PL011, doorbell, and pvclock MMIO to the modeled devices.
+Pvclock MMIO rejects invalid or duplicate registration, unsupported clockevent
+control values and asserted-PPI deadline writes before charging the access to
+virtual time. These protocol rejections leave the clock and device state intact.
 The userspace `gicv3` model is used by the HVF composition; stock arm64 KVM
 owns its GIC in the kernel and does not expose an arbitrary userspace INTID
 injection fabric. The shared run loop therefore treats that distinction as a

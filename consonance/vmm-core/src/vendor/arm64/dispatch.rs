@@ -464,6 +464,25 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     if write.is_some() { "write" } else { "read" }
                 )));
             }
+            let control = match (offset, write) {
+                (0x000, Some(gpa)) => {
+                    let (status, abi) = self.pvclock_registration_status(gpa);
+                    if !pvclock_registration_accepted(status, abi) {
+                        return Err(VmmError::ContractViolation(format!(
+                            "arm64 pvclock registration rejected GPA {gpa:#x}: status \
+                             {status:?}, abi {abi:?}"
+                        )));
+                    }
+                    None
+                }
+                (0x010, Some(_)) if self.devices.clockevent.line_asserted => {
+                    return Err(VmmError::ContractViolation(
+                        "arm64 clockevent deadline write while its PPI is asserted".to_string(),
+                    ));
+                }
+                (0x018, Some(value)) => Some(self.preflight_arm_clockevent_control(value)?),
+                _ => None,
+            };
             if self.virtual_time_vtime_enabled() {
                 let timing = contract::virtual_time_timing();
                 let advance = if offset == 0x020 {
@@ -497,13 +516,8 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                     self.arm_clockevent_program(deadline)?;
                     Ok(Step::Continued)
                 }
-                (0x018, Some(control)) => {
-                    let control = u32::try_from(control).map_err(|_| {
-                        VmmError::ContractViolation(
-                            "arm64 pvclock control value exceeds u32".to_string(),
-                        )
-                    })?;
-                    self.arm_clockevent_control(control)?;
+                (0x018, Some(_)) => {
+                    self.arm_clockevent_control(control.expect("validated control"))?;
                     Ok(Step::Continued)
                 }
                 (0x020, Some(1)) => Ok(Step::Continued),
@@ -585,6 +599,31 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             "unmodeled MMIO at {addr:#x} (size {size}); only the PL011 console, the GICv3 \
              frames, the pvclock frame, and the hypercall doorbell are modeled on the arm64 board"
         )))
+    }
+
+    fn preflight_arm_clockevent_control(&self, value: u64) -> Result<u32, VmmError> {
+        let control = u32::try_from(value).map_err(|_| {
+            VmmError::ContractViolation("arm64 pvclock control value exceeds u32".to_string())
+        })?;
+        let line_asserted = self.devices.clockevent.line_asserted;
+        let controller_available =
+            self.devices.gic.is_some() || self.backend.capabilities().arch.in_kernel_gic;
+        match control {
+            1 if line_asserted && !controller_available => Err(VmmError::ContractViolation(
+                "arm64 clockevent DISARM with no interrupt controller".to_string(),
+            )),
+            1 => Ok(control),
+            2 if !line_asserted => Err(VmmError::ContractViolation(
+                "arm64 clockevent ACK while its PPI is not asserted".to_string(),
+            )),
+            2 if !controller_available => Err(VmmError::ContractViolation(
+                "arm64 clockevent ACK with no interrupt controller".to_string(),
+            )),
+            2 => Ok(control),
+            _ => Err(VmmError::ContractViolation(format!(
+                "arm64 clockevent control value {control} is not DISARM(1) or ACK(2)"
+            ))),
+        }
     }
 
     fn arm_clockevent_program(&mut self, deadline: u64) -> Result<(), VmmError> {
@@ -1293,6 +1332,24 @@ mod tests {
         Vmm::new(backend, GuestRam::new(0x4000).unwrap())
     }
 
+    fn clocked_mock_vmm() -> Vmm<MockArm64Backend> {
+        use crate::vmm::VtimeWiring;
+
+        let mut vmm = mock_vmm(Vec::new());
+        vmm.wire_vtime(
+            VtimeWiring::new_virtual_time(
+                vtime::VClockConfig {
+                    guest_hz: CNTFRQ_HZ,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                7,
+            )
+            .unwrap(),
+        );
+        vmm
+    }
+
     #[test]
     fn dispatch_boundary_predicates_have_complete_truth_tables() {
         let abi = vtime::pvclock::PVCLOCK_ABI_VERSION;
@@ -1358,6 +1415,78 @@ mod tests {
         );
         vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
         assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
+    }
+
+    #[test]
+    fn rejected_pvclock_control_keeps_virtual_time_unchanged() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        for value in [2, 3, u64::from(u32::MAX) + 1] {
+            let mut vmm = clocked_mock_vmm();
+            let before = vmm.effective_vns();
+            let result = vmm.dispatch_mmio_arm64(Gpa(PVCLOCK.0 + 0x18), 4, Some(value));
+            assert!(matches!(result, Err(VmmError::ContractViolation(_))));
+            assert_eq!(vmm.effective_vns(), before, "control value {value:#x}");
+        }
+    }
+
+    #[test]
+    fn rejected_pvclock_registration_keeps_virtual_time_unchanged() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut invalid = clocked_mock_vmm();
+        invalid.enable_pvclock();
+        let before = invalid.effective_vns();
+        let result = invalid.dispatch_mmio_arm64(Gpa(PVCLOCK.0), 8, Some(0x123));
+        assert!(matches!(result, Err(VmmError::ContractViolation(_))));
+        assert_eq!(invalid.effective_vns(), before);
+        assert_eq!(invalid.pvclock_registration(), None);
+
+        let mut duplicate = clocked_mock_vmm();
+        duplicate.enable_pvclock();
+        assert_eq!(duplicate.pvclock_register(0x1000).0, Status::Ok);
+        let before = duplicate.effective_vns();
+        let result = duplicate.dispatch_mmio_arm64(Gpa(PVCLOCK.0), 8, Some(0x2000));
+        assert!(matches!(result, Err(VmmError::ContractViolation(_))));
+        assert_eq!(duplicate.effective_vns(), before);
+        assert_eq!(duplicate.pvclock_registration(), Some(0x1000));
+    }
+
+    #[test]
+    fn rejected_pvclock_deadline_keeps_virtual_time_unchanged() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut vmm = clocked_mock_vmm();
+        vmm.devices.clockevent.line_asserted = true;
+        let before = vmm.effective_vns();
+        let result = vmm.dispatch_mmio_arm64(Gpa(PVCLOCK.0 + 0x10), 8, Some(123));
+        assert!(matches!(result, Err(VmmError::ContractViolation(_))));
+        assert_eq!(vmm.effective_vns(), before);
+        assert_eq!(vmm.devices.clockevent.deadline, None);
+    }
+
+    #[test]
+    fn accepted_pvclock_registration_and_disarm_advance_virtual_time() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut vmm = clocked_mock_vmm();
+        vmm.enable_pvclock();
+        assert_eq!(
+            vmm.dispatch_mmio_arm64(Gpa(PVCLOCK.0), 8, Some(0x1000))
+                .unwrap(),
+            Step::Continued
+        );
+        assert_eq!(vmm.pvclock_registration(), Some(0x1000));
+        let after_registration = vmm.effective_vns().unwrap();
+        assert!(after_registration > 0);
+
+        assert_eq!(
+            vmm.dispatch_mmio_arm64(Gpa(PVCLOCK.0 + 0x18), 4, Some(1))
+                .unwrap(),
+            Step::Continued
+        );
+        assert_eq!(vmm.devices.clockevent.deadline, None);
+        assert!(vmm.effective_vns().unwrap() > after_registration);
     }
 
     #[test]
