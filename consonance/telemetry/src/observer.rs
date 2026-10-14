@@ -20,6 +20,7 @@ impl Observer for NullObserver {
 pub struct NdjsonRecorder<W: Write> {
     writer: W,
     first_error: Option<io::Error>,
+    failed: bool,
 }
 
 impl<W: Write> NdjsonRecorder<W> {
@@ -27,11 +28,24 @@ impl<W: Write> NdjsonRecorder<W> {
         NdjsonRecorder {
             writer,
             first_error: None,
+            failed: false,
         }
     }
 
     pub fn flush(&mut self) -> io::Result<()> {
-        self.writer.flush()
+        if self.failed {
+            return Err(io::Error::other(
+                "recorder is incomplete after a write failure",
+            ));
+        }
+        match self.writer.flush() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.failed = true;
+                self.first_error = Some(io::Error::new(error.kind(), error.to_string()));
+                Err(error)
+            }
+        }
     }
 
     pub fn error(&self) -> Option<&io::Error> {
@@ -55,10 +69,11 @@ impl<W: Write> NdjsonRecorder<W> {
 
 impl<W: Write> Observer for NdjsonRecorder<W> {
     fn emit(&mut self, ev: &Event) {
-        if self.first_error.is_some() {
+        if self.failed {
             return;
         }
         if let Err(e) = self.write_line(ev) {
+            self.failed = true;
             self.first_error = Some(e);
         }
     }
@@ -131,6 +146,85 @@ mod tests {
         assert!(rec.error().is_some());
         assert!(rec.take_error().is_some());
         assert!(rec.error().is_none());
+    }
+
+    struct FailsOnceAfterPartialWrite {
+        bytes: Vec<u8>,
+        writes: usize,
+    }
+
+    impl Write for FailsOnceAfterPartialWrite {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            match self.writes {
+                1 => {
+                    self.bytes.extend_from_slice(&buf[..5]);
+                    Ok(5)
+                }
+                2 => Err(io::Error::other("temporary write failure")),
+                _ => {
+                    self.bytes.extend_from_slice(buf);
+                    Ok(buf.len())
+                }
+            }
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn taking_a_write_error_does_not_resume_a_partial_record() {
+        let writer = FailsOnceAfterPartialWrite {
+            bytes: Vec::new(),
+            writes: 0,
+        };
+        let mut rec = NdjsonRecorder::new(writer);
+        rec.emit(&sample(0));
+        let incomplete = rec.writer.bytes.clone();
+        assert_eq!(incomplete.len(), 5);
+        assert!(rec.take_error().is_some());
+        rec.emit(&sample(1));
+        assert_eq!(rec.writer.bytes, incomplete);
+        assert!(rec.flush().is_err());
+    }
+
+    struct FailsFirstFlush {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Write for FailsFirstFlush {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            if self.flushes == 1 {
+                Err(io::Error::other("flush failed"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn flush_failure_latches_the_recorder() {
+        let writer = FailsFirstFlush {
+            bytes: Vec::new(),
+            flushes: 0,
+        };
+        let mut rec = NdjsonRecorder::new(writer);
+        rec.emit(&sample(0));
+        let written = rec.writer.bytes.clone();
+        assert!(rec.flush().is_err());
+        assert!(rec.take_error().is_some());
+        rec.emit(&sample(1));
+        assert_eq!(rec.writer.bytes, written);
+        assert!(rec.flush().is_err());
     }
 
     struct DeferredWriter {
