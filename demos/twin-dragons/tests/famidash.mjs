@@ -102,7 +102,7 @@ assert.deepEqual((await page.locator("#level-grid button").allInnerTexts()).map(
 await page.locator("#level-grid button").first().click();
 await page.waitForFunction(() => document.documentElement.dataset.game === "famidash" && Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 100, null, { timeout: 60000 });
 assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textContent(), "Stereo Madness");
-assert.match(await page.locator(".game-attribution").innerText(), /unofficial fan demake of RobTop’s Geometry Dash/);
+assert.match(await page.locator(".game-attribution").innerText(), /^Famidash by TFDSoft, MIT$/);
 const progress = async () => {
   const fields = await page.locator("#details div").allInnerTexts();
   const field = fields.find((text) => text.startsWith("Level progress"));
