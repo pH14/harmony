@@ -398,6 +398,7 @@ impl KvmBackend {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
+                self.state_mutation_guard.poison();
                 return Err(BackendError::Io(err));
             }
             self.completion = Stage::CLEAR;
@@ -406,22 +407,30 @@ impl KvmBackend {
             {
                 let reason = self.run_page().exit_reason();
                 if reason == kvm_bindings::KVM_EXIT_DEBUG {
-                    let expected = self
-                        .diagnostic_rip
-                        .take()
-                        .ok_or(BackendError::Internal("unexpected diagnostic debug exit"))?;
-                    let regs = self.vcpu.get_regs().map_err(kvm_err)?;
-                    if regs.rip != expected {
-                        return Err(BackendError::Internal("diagnostic breakpoint RIP mismatch"));
-                    }
-                    self.vcpu
-                        .set_guest_debug(&Default::default())
-                        .map_err(kvm_err)?;
-                    self.diagnostic_hits.push(regs.rip);
+                    let diagnostic = (|| {
+                        let expected = self
+                            .diagnostic_rip
+                            .take()
+                            .ok_or(BackendError::Internal("unexpected diagnostic debug exit"))?;
+                        let regs = self.vcpu.get_regs().map_err(kvm_err)?;
+                        if regs.rip != expected {
+                            return Err(BackendError::Internal(
+                                "diagnostic breakpoint RIP mismatch",
+                            ));
+                        }
+                        self.vcpu
+                            .set_guest_debug(&Default::default())
+                            .map_err(kvm_err)?;
+                        self.diagnostic_hits.push(regs.rip);
+                        Ok(())
+                    })();
+                    diagnostic.inspect_err(|_| self.state_mutation_guard.poison())?;
                     continue;
                 }
             }
-            match decode_exit(self.run_page())? {
+            let decoded =
+                decode_exit(self.run_page()).inspect_err(|_| self.state_mutation_guard.poison())?;
+            match decoded {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;

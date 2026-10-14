@@ -127,6 +127,7 @@ jobs:
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           { printf 'PINNED_CPU=%s\n' "$cpu"; lscpu; uname -a; } | tee cpu-state-evidence/host.txt
           for test in \
+            rejected_rep_input_retires_uncounted_guest_progress \
             serviced_pio_is_exactly_snapshottable_without_guest_execution \
             serviced_msr_is_exactly_snapshottable_without_guest_execution \
             serviced_exception_payload_round_trips_and_empty_restore_clears_it \

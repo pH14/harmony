@@ -522,6 +522,7 @@ jobs:
           }
 
           failed=0
+          run_exact vmm-backend kvm_smoke rejected_rep_input_retires_uncounted_guest_progress rep-input-refusal || failed=1
           run_exact vmm-backend kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution pio || failed=1
           run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr || failed=1
           run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload || failed=1

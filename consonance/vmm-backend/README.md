@@ -210,7 +210,12 @@ successor instruction or injects an interrupt. An MSR fault queues its
 exception without executing the handler. An unexpected completion-only entry
 or ioctl error retires the backend before it can retry the uncertain completion
 or publish a snapshot; expected immediate-exit interruption and a decoded
-device continuation leave the backend usable.
+device continuation leave the backend usable. An unsupported exit after guest
+entry also retires the backend. The live
+`rejected_rep_input_retires_uncounted_guest_progress` test executes a guest
+write before KVM returns a multi-byte REP input exit that this backend cannot
+decode; the exit count stays zero, and capture, restore, and re-entry all
+refuse that uncounted progress.
 The live serviced-exit regressions require exact CPU state at the stopped
 completion boundary. After guest continuation, they compare logical XSAVE
 presence alongside every CPU field; the MMIO and MSR cases also compare guest

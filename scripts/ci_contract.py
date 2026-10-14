@@ -271,7 +271,8 @@ HOST_TESTS = {
     ),
 }
 
-KVM_SERVICED_EXIT_TESTS = (
+KVM_EXIT_BOUNDARY_TESTS = (
+    "vmm-backend::kvm_smoke rejected_rep_input_retires_uncounted_guest_progress",
     "vmm-backend::kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution",
     "vmm-backend::kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution",
     "vmm-backend::kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it",
@@ -314,7 +315,7 @@ CONSONANCE_CHECKS = Workflow(
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
                           "vmm-backend:kvm_smoke"),
-            ignored_tests=KVM_SERVICED_EXIT_TESTS + (
+            ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_msr_filter_retires_partly_reconfigured_vcpu",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_vmx_capability_read_retires_partly_initialized_vcpu",
@@ -424,7 +425,7 @@ CONSONANCE_HARDWARE = Workflow(
                            "x2_component_diff_first_checkpoint",)),
         Job("Snapshot Identity — Replica <N>", "full", 15,
             test_targets=("vmm-core:x86_cpu_snapshots",),
-            ignored_tests=KVM_SERVICED_EXIT_TESTS + (
+            ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend::kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation",
                 PUBLIC_SNAPSHOT_IDENTITY_TEST,
             ) + tuple(
