@@ -146,10 +146,8 @@ def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
 
 def arm64_hits(data: bytes) -> list[tuple[int, str]]:
     """Find RNDR/RNDRRS MRS words, ignoring the destination register."""
-    if len(data) % 4 != 0:
-        raise ValueError("unaligned AArch64 executable segment")
     hits: list[tuple[int, str]] = []
-    for offset in range(0, len(data), 4):
+    for offset in range(0, len(data) - len(data) % 4, 4):
         word = int.from_bytes(data[offset : offset + 4], "little") & ~0x1F
         if word == RNDR:
             hits.append((offset, "RNDR"))

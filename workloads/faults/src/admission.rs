@@ -484,7 +484,7 @@ fn scan_code(
             sites.push((instruction.ip(), name));
         }
     } else {
-        if !address.is_multiple_of(4) || !data.len().is_multiple_of(4) {
+        if !address.is_multiple_of(4) {
             return Err("unaligned AArch64 executable segment".into());
         }
         for (index, bytes) in data.chunks_exact(4).enumerate() {
@@ -752,6 +752,19 @@ mod tests {
         bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
         bytes[264..272].copy_from_slice(&2_u64.to_le_bytes());
         bytes[288..296].copy_from_slice(&3_u64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].instruction, "RNDR");
+    }
+
+    #[test]
+    fn arm_executable_load_can_end_with_partial_data_word() {
+        let mut code: Vec<u8> = [0xd53b2400_u32, 0xd65f03c0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        code.push(0xff);
+        let mut bytes = elf(&code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
         assert_eq!(sites[0].instruction, "RNDR");
     }

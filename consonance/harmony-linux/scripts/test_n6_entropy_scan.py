@@ -162,6 +162,14 @@ class EntropyScanTests(unittest.TestCase):
             self.check(data), [("<exec-segment 0>", 0, "RNDR")]
         )
 
+    def test_arm_executable_load_can_end_with_partial_data_word(self):
+        rndr = scan.RNDR.to_bytes(4, "little")
+        ret = b"\xc0\x03\x5f\xd6"
+        self.assertEqual(
+            self.check(elf(scan.EM_AARCH64, rndr, ret + b"\xff", 2)),
+            [("<exec-segment 0>", 0, "RNDR")],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
