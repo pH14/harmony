@@ -399,18 +399,27 @@ fn load_checkpoint_as(
     logical_path: String,
     checkpoint_format: &str,
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    let mut scratch = vec![0_u8; 1024 * 1024];
-    let (snapshots, _) = postcard::from_io((
-        BufReader::new(fs::File::open(path)?),
-        scratch.as_mut_slice(),
-    ))?;
-    let snapshots: SmbSnapshotCheckpoint = snapshots;
-    if snapshots.format != checkpoint_format {
-        return Err("snapshot checkpoint format is not recognized".into());
+    load_checkpoint_as_with_source_hook(path, logical_path, checkpoint_format, || {})
+}
+
+fn load_checkpoint_as_with_source_hook(
+    path: &std::path::Path,
+    logical_path: String,
+    checkpoint_format: &str,
+    after_first_access: impl FnOnce(),
+) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take(1024 * 1024 + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > 1024 * 1024 {
+        return Err("snapshot checkpoint exceeds 1 MiB".into());
     }
+    let snapshots = SmbSnapshotCheckpoint::from_bytes(&bytes, checkpoint_format)?;
+    after_first_access();
     Ok(SmbCampaignCheckpoint {
         path: logical_path,
-        file_sha256: sha256_file(path)?,
+        file_sha256: format!("{:x}", Sha256::digest(&bytes)),
         snapshots,
     })
 }
@@ -497,7 +506,10 @@ fn parse_u64(value: &str) -> Result<u64, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SmbArchiveReport, SmbCampaignOrigin, load_origin_with_source_hook};
+    use super::{
+        SmbArchiveReport, SmbCampaignOrigin, SmbSnapshotCheckpoint,
+        load_checkpoint_as_with_source_hook, load_origin_with_source_hook,
+    };
     use sha2::{Digest, Sha256};
 
     fn archive_bytes(seed: u64) -> Vec<u8> {
@@ -579,6 +591,65 @@ mod tests {
         assert_eq!(
             report.seed, 7,
             "archive loader parsed replaced source bytes"
+        );
+    }
+
+    fn checkpoint_bytes(id: u64) -> Vec<u8> {
+        let snapshot: SmbSnapshotCheckpoint = serde_json::from_value(serde_json::json!({
+            "format": "test",
+            "entries": [{
+                "id": id,
+                "snapshot": {
+                    "emulator_state": [0],
+                    "observation": {
+                        "frame_count": 0,
+                        "decoded": {
+                            "world": 0,
+                            "level": 0,
+                            "progress": 0,
+                            "player_y_bucket": 0,
+                            "player_engine_state": 0,
+                            "dead": false,
+                            "flag_active": false
+                        },
+                        "milestones": {
+                            "max_1_1_scroll_bucket": 0,
+                            "reached_1_1_flag": false,
+                            "reached_1_2": false,
+                            "reached_onward": false
+                        },
+                        "dead": false
+                    },
+                    "work_ram": null,
+                    "room_area": [0, 0],
+                    "dead": false,
+                    "failed": false
+                }
+            }]
+        }))
+        .unwrap();
+        snapshot.to_bytes().unwrap()
+    }
+
+    #[test]
+    fn checkpoint_origin_digest_names_the_parsed_bytes_after_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-snapshots.bin");
+        let replacement_path = directory.path().join("replacement-snapshots.bin");
+        let original = checkpoint_bytes(7);
+        let replacement = checkpoint_bytes(8);
+        assert_ne!(original, replacement);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        let checkpoint =
+            load_checkpoint_as_with_source_hook(&path, "recorded-root".to_owned(), "test", || {
+                std::fs::rename(&replacement_path, &path).unwrap();
+            })
+            .unwrap();
+        assert_eq!(checkpoint.snapshots.entries[0].id, 7);
+        assert_eq!(
+            checkpoint.file_sha256,
+            format!("{:x}", Sha256::digest(&original))
         );
     }
 }
