@@ -447,6 +447,12 @@ restore rejects such a KVM GIC record before changing the target. The userspace
 GIC retains its own pending-SPI state. The ignored
 `routed_away_pending_spi_refuses_capture_and_restore` ARM KVM test compares the
 two live routing histories and verifies both refusal paths.
+Changing an asserted KVM interrupt line deasserts the old input before it
+asserts the new one. A failure on the second write retires the backend because
+the VGIC line level has already changed; capturing at that point would publish
+a half-applied interrupt switch. The fake-KVM
+`failed_irq_line_switch_refuses_capture_after_partial_transition` test forces
+that sequence and checks that capture refuses it.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the

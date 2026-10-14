@@ -1184,6 +1184,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         if self.applied_irq == self.pending_irq {
             return Ok(());
         }
+        self.state_poisoned = true;
         if let Some(old) = self.applied_irq {
             self.kvm.set_irq_line(old, false)?;
         }
@@ -1191,6 +1192,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             self.kvm.set_irq_line(new, true)?;
         }
         self.applied_irq = self.pending_irq;
+        self.state_poisoned = false;
         Ok(())
     }
 
@@ -1624,6 +1626,10 @@ pub struct FakeKvm {
     fail_reg_write_on: Option<usize>,
     #[cfg(test)]
     fail_mmio_completion: bool,
+    #[cfg(test)]
+    irq_line_writes: usize,
+    #[cfg(test)]
+    fail_irq_line_write_on: Option<usize>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
@@ -1881,6 +1887,13 @@ impl Arm64Kvm for FakeKvm {
         } else {
             "set_irq_line_low"
         });
+        #[cfg(test)]
+        {
+            self.irq_line_writes += 1;
+            if self.fail_irq_line_write_on == Some(self.irq_line_writes) {
+                return Err(BackendError::Internal("fake KVM IRQ line write failed"));
+            }
+        }
         let block = id.0 / 32 * 32;
         let key = (
             KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
@@ -3778,6 +3791,33 @@ mod tests {
             Exit::Common(CommonExit::Mmio { .. })
         ));
         assert_eq!(mutant.take_accepted_interrupt(), None);
+    }
+
+    #[test]
+    fn failed_irq_line_switch_refuses_capture_after_partial_transition() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_pending_irq(Some(GicIntId(27))).unwrap();
+        let (group, attr) = (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(0));
+        assert_ne!(
+            backend.kvm.get_vgic_attr(group, attr, false).unwrap() & (1 << 27),
+            0
+        );
+        backend.kvm.fail_irq_line_write_on = Some(backend.kvm.irq_line_writes + 2);
+        assert!(matches!(
+            backend.set_pending_irq(Some(GicIntId(28))),
+            Err(BackendError::Internal("fake KVM IRQ line write failed"))
+        ));
+        assert_eq!(backend.applied_irq, Some(GicIntId(27)));
+        assert_eq!(backend.pending_irq, Some(GicIntId(28)));
+        let level = backend.kvm.get_vgic_attr(group, attr, false).unwrap();
+        assert_eq!(level & ((1 << 27) | (1 << 28)), 0);
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     #[test]
