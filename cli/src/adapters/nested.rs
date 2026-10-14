@@ -24,6 +24,13 @@ fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     if source.status != "complete" {
         return Err("nested replay requires a completed saved campaign".into());
     }
+    let recorded_wall_budget = serde_json::json!(source.config.search.wall_seconds);
+    if source.payload["campaign_seed"].as_u64() != Some(source.config.search.seed)
+        || source.payload["execution_budget"].as_u64() != Some(source.config.search.executions)
+        || source.payload.get("wall_budget_seconds") != Some(&recorded_wall_budget)
+    {
+        return Err("nested replay configuration disagrees with the recorded campaign".into());
+    }
     verified_replay_stream(path, source)
 }
 
@@ -294,10 +301,17 @@ mod tests {
         let grandchild = tempfile::tempdir().unwrap();
         let mut config = crate::config::Config::default();
         config.runner.kind = "test".into();
+        config.search.executions = 1;
+        config.search.wall_seconds = Some(180);
         let stream = b"recorded nested campaign";
         let mut manifest = Manifest::new(config, "search").unwrap();
         manifest.status = "complete".into();
-        manifest.payload = serde_json::json!({"stream_sha256":crate::runtime::digest(stream)});
+        manifest.payload = serde_json::json!({
+            "stream_sha256": crate::runtime::digest(stream),
+            "campaign_seed": 0,
+            "execution_budget": 1,
+            "wall_budget_seconds": 180
+        });
         manifest.store(source.path(), "kernel", b"kernel").unwrap();
         manifest
             .store(source.path(), "initramfs", b"initramfs")
@@ -334,13 +348,18 @@ mod tests {
         let grandchild = source.path().join("grandchild");
         let mut config = crate::config::Config::default();
         config.runner.kind = "test".into();
+        config.search.executions = 1;
+        config.search.wall_seconds = Some(180);
         let stream = b"recorded nested campaign";
         let mut replay = Manifest::new(config, "replay").unwrap();
         replay.status = "failed".into();
         replay.error = Some("nested replay report diverged from saved campaign".into());
         replay.payload = serde_json::json!({
             "stream_sha256": crate::runtime::digest(stream),
-            "executions_completed": 1
+            "executions_completed": 1,
+            "campaign_seed": 0,
+            "execution_budget": 1,
+            "wall_budget_seconds": 180
         });
         replay.store(source.path(), "kernel", b"kernel").unwrap();
         replay
@@ -366,6 +385,52 @@ mod tests {
             verified_replay_source(source.path(), &saved).unwrap(),
             stream
         );
+    }
+
+    #[test]
+    fn replay_rejects_config_that_disagrees_with_the_recorded_campaign() {
+        let source = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.search.seed = 0;
+        config.search.executions = 1;
+        config.search.wall_seconds = Some(180);
+        let stream = b"recorded nested campaign";
+        let mut replay = Manifest::new(config, "replay").unwrap();
+        replay.status = "complete".into();
+        replay.payload = serde_json::json!({
+            "stream_sha256": crate::runtime::digest(stream),
+            "campaign_seed": 0,
+            "execution_budget": 1,
+            "wall_budget_seconds": 180
+        });
+        replay.store(source.path(), "kernel", b"kernel").unwrap();
+        replay
+            .store(source.path(), "initramfs", b"initramfs")
+            .unwrap();
+        replay.save(source.path()).unwrap();
+        fs::write(source.path().join("stream.jsonl"), stream).unwrap();
+
+        let valid = Manifest::read(source.path()).unwrap();
+        valid.verify(source.path()).unwrap();
+        assert_eq!(
+            verified_replay_source(source.path(), &valid).unwrap(),
+            stream
+        );
+
+        for (seed, executions, wall_seconds) in
+            [(1, 1, Some(180)), (0, 2, Some(180)), (0, 1, Some(200))]
+        {
+            replay.config.search = crate::config::Search {
+                seed,
+                executions,
+                wall_seconds,
+            };
+            replay.save(source.path()).unwrap();
+            let forged = Manifest::read(source.path()).unwrap();
+            forged.verify(source.path()).unwrap();
+            assert!(verified_replay_source(source.path(), &forged).is_err());
+        }
     }
 
     #[test]
