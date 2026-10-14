@@ -54,12 +54,8 @@ max_sessions=${MAX_REPLAY_SESSIONS:-2}
 
 finding=
 if [[ "$mode" == reproduce ]]; then
-    finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" '
-        (.bugs // []) | to_entries | map(select(
-            .value.confirmed == true
-            and ((.value.violations // []) | index($assertion)) != null
-            and ((.value.sometimes // []) | index($evidence)) != null))
-        | if length > 0 then .[0].key + 1 else empty end' "$input")
+    finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" \
+        -f "$(dirname "$0")/historical-confirmed-finding.jq" "$input")
     [[ "$finding" =~ ^[1-9][0-9]*$ ]] || {
         echo 'historical-replay: infra-failure (no confirmed case finding)' >&2
         exit 1
@@ -134,11 +130,13 @@ else
     jq -n \
         --arg mode "${mode}" --arg case_id "${CASE_ID}" \
         --arg version "${WORKLOAD_VERSION}" --arg input "${input}" \
+        --arg finding "${finding}" \
         --arg status "${status}" --arg oracle "${ok}" \
         --argjson repeats "${repeats}" --argjson actions "${actions}" \
         --argjson state_hashes "${hash_count_json}" \
         '{mode:$mode, case_id:$case_id, version:$version,
-          input:$input, repeats:$repeats, actions:$actions,
+          input:$input, finding:(if $finding == "" then null else ($finding | tonumber) end),
+          repeats:$repeats, actions:$actions,
           cli_exit_status:($status|tonumber), state_hash_count:$state_hashes,
           oracle:$oracle}' >"${out}/panel-status.json"
     row="| ${WORKLOAD_VERSION} | ${repeats} | ${hash_count} | ${ok} (cli exit ${status}) |"
