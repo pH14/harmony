@@ -6443,6 +6443,47 @@ mod tests {
     }
 
     #[test]
+    fn replay_accepts_only_the_window_reserved_before_work_budget_exhaustion() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let jobs = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                (value["event"] == "job").then_some((index, value))
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(jobs.len(), 2);
+        let first_job_work = jobs[0].1["execution_work"].as_u64().unwrap();
+        assert!(first_job_work > 0);
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["work_budget"] = serde_json::json!(first_job_work);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let second_job = jobs[1].0;
+        let skips = lines[1..=second_job]
+            .iter()
+            .filter(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "skip"
+            })
+            .count();
+        let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        end["jobs"] = serde_json::json!(2);
+        end["skips"] = serde_json::json!(skips);
+        end["executions_completed"] = serde_json::json!(2);
+        let mut reserved_window = lines[..=second_job].to_vec();
+        reserved_window.push(serde_json::to_string(&end).unwrap());
+        let (report, _) = replay_campaign_checkpointed(
+            &workload,
+            reserved_window.join("\n").as_bytes(),
+            None,
+            None,
+        )
+        .expect("the two jobs reserved before the work budget was reached may finish");
+        assert_eq!(report.executions_completed, 2);
+    }
+
+    #[test]
     fn replay_rejects_a_terminal_record_before_required_reservations_finish() {
         let (workload, full_lines) = five_job_campaign_stream();
         for keep_jobs in [1_usize, 3] {
