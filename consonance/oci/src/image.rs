@@ -828,6 +828,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
             ));
         }
         let size = parse_octal(&block[124..136])?;
+        parse_octal(&block[136..148])?;
         match block[156] {
             b'L' => {
                 let mut data = header_data(&mut stream, size)?;
@@ -2735,6 +2736,26 @@ mod tests {
             Err(ImageError::Tar(_))
         ));
         assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn invalid_tar_timestamps_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, timestamp) in [("invalid", b"xxxxxxxxxxxx"), ("negative", b"-0000000001\0")] {
+            let mut member = raw_member(b"payload", b'0', "", b"data");
+            member[136..148].copy_from_slice(timestamp);
+            reseal(&mut member);
+            let archive = write_archive(dir.path(), &format!("{label}.tar"), &member);
+            let dest = dir.path().join(label);
+            std::fs::create_dir(&dest).unwrap();
+
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
     }
 
     #[test]
