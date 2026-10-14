@@ -60,9 +60,14 @@ exports copy only the pages that must outlive the store borrow.
 itself derives from `base`: pages that differ from the parent, with their
 stored BLAKE3 hashes, and the page numbers that returned to the base's content.
 With no parent the delta is every page that differs from the base. Before
-exporting a resident page with its stored hash, the store rehashes its bytes and
-rejects stale content. An export checks each distinct emitted resident page once;
-unchanged pages are not read or rehashed.
+classifying the delta, the store rehashes each distinct resident page reachable
+from the base, parent, or target and rejects stale content. This includes pages
+that will be omitted as unchanged or represented only by a return to the base.
+Shared resident pages are checked once across those snapshots.
+On the same Apple-silicon host, a local release benchmark of ten empty deltas
+over 8,192 distinct 4 KiB pages (32 MiB) averaged 22.76 ms per delta; 8,192
+references to one interned page averaged 1.32 ms per delta. This verifies the
+input snapshots even when the delta itself carries no page bytes.
 `DeltaBuilder::write_hashed_page` hashes the page once, rejects it when the
 hash differs from the one supplied, and interns it under that hash.
 `DeltaBuilder::write_changed_page` compares the page with the parent's stored
