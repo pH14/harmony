@@ -21,10 +21,10 @@ pub enum SubjectError {
     ZeroCheckpointInterval,
     #[error("bisection interval is empty: lo {lo} >= hi {hi}")]
     EmptyInterval { lo: u64, hi: u64 },
-    #[error("state hashes are equal at hi = {hi}: no divergence to bisect")]
+    #[error("state hashes and observable digests agree at hi = {hi}: no divergence to bisect")]
     NoDivergence { hi: u64 },
     #[error(
-        "state hashes already differ at lo = {lo}: interval does not bracket the first divergence"
+        "state hashes or observable digests already differ at lo = {lo}: interval does not bracket the first divergence"
     )]
     DivergesAtLo { lo: u64 },
 }
@@ -45,6 +45,19 @@ pub trait Subject {
 pub trait SubjectFactory {
     type M: Subject;
     fn spawn(&self, seed: u64) -> Self::M;
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Observation {
+    state_hash: [u8; 32],
+    observable_digest: [u8; 32],
+}
+
+fn observe<M: Subject>(machine: &M) -> Result<Observation, SubjectError> {
+    Ok(Observation {
+        state_hash: machine.state_hash()?,
+        observable_digest: machine.observable_digest(),
+    })
 }
 
 fn run_checked<M: Subject>(machine: &mut M, target: u64) -> Result<RunOutcome, SubjectError> {
@@ -124,7 +137,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
             limit_reached: false,
         });
     }
-    if ma.state_hash()? != mb.state_hash()? {
+    if observe(&ma)? != observe(&mb)? {
         return Ok(CompareReport {
             verdict: Verdict::Diverged {
                 last_match: None,
@@ -151,7 +164,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         match (oa, ob) {
             (RunOutcome::ReachedTarget, RunOutcome::ReachedTarget) => {
                 checkpoints_compared += 1;
-                if ma.state_hash()? != mb.state_hash()? {
+                if observe(&ma)? != observe(&mb)? {
                     return Ok(CompareReport {
                         verdict: Verdict::Diverged {
                             last_match,
@@ -177,7 +190,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                     });
                 }
                 checkpoints_compared += 1;
-                let verdict = if ma.state_hash()? != mb.state_hash()? {
+                let verdict = if observe(&ma)? != observe(&mb)? {
                     Verdict::Diverged {
                         last_match,
                         first_mismatch: wa,
@@ -231,7 +244,29 @@ pub struct DivergencePoint {
     pub hash_a: [u8; 32],
     #[serde(with = "hex32")]
     pub hash_b: [u8; 32],
+    #[serde(with = "hex32")]
+    pub observable_digest_a: [u8; 32],
+    #[serde(with = "hex32")]
+    pub observable_digest_b: [u8; 32],
     pub runs_executed: u64,
+}
+
+impl DivergencePoint {
+    fn from_observations(
+        first_divergent_work: u64,
+        a: Observation,
+        b: Observation,
+        runs_executed: u64,
+    ) -> Self {
+        Self {
+            first_divergent_work,
+            hash_a: a.state_hash,
+            hash_b: b.state_hash,
+            observable_digest_a: a.observable_digest,
+            observable_digest_b: b.observable_digest,
+            runs_executed,
+        }
+    }
 }
 
 pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
@@ -245,28 +280,28 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
         return Err(SubjectError::EmptyInterval { lo, hi });
     }
     let mut runs_executed = 0u64;
-    let mut probe = |t: u64| -> Result<([u8; 32], [u8; 32]), SubjectError> {
+    let mut probe = |t: u64| -> Result<(Observation, Observation), SubjectError> {
         let mut ma = a.spawn(seed);
         run_checked(&mut ma, t)?;
         runs_executed += 1;
         let mut mb = b.spawn(seed);
         run_checked(&mut mb, t)?;
         runs_executed += 1;
-        Ok((ma.state_hash()?, mb.state_hash()?))
+        Ok((observe(&ma)?, observe(&mb)?))
     };
     if lo == 0 {
-        let (hash_a, hash_b) = probe(0)?;
-        if hash_a != hash_b {
-            return Ok(DivergencePoint {
-                first_divergent_work: 0,
-                hash_a,
-                hash_b,
+        let (observation_a, observation_b) = probe(0)?;
+        if observation_a != observation_b {
+            return Ok(DivergencePoint::from_observations(
+                0,
+                observation_a,
+                observation_b,
                 runs_executed,
-            });
+            ));
         }
     }
-    let (mut hash_a, mut hash_b) = probe(hi)?;
-    if hash_a == hash_b {
+    let (mut observation_a, mut observation_b) = probe(hi)?;
+    if observation_a == observation_b {
         return Err(SubjectError::NoDivergence { hi });
     }
     if lo > 0 {
@@ -283,16 +318,16 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
             lo = mid;
         } else {
             hi = mid;
-            hash_a = ha;
-            hash_b = hb;
+            observation_a = ha;
+            observation_b = hb;
         }
     }
-    Ok(DivergencePoint {
-        first_divergent_work: hi,
-        hash_a,
-        hash_b,
+    Ok(DivergencePoint::from_observations(
+        hi,
+        observation_a,
+        observation_b,
         runs_executed,
-    })
+    ))
 }
 
 mod hex32 {
@@ -595,6 +630,8 @@ mod tests {
             first_divergent_work: 42,
             hash_a: [0xAB; 32],
             hash_b: [0x01; 32],
+            observable_digest_a: [0x23; 32],
+            observable_digest_b: [0x45; 32],
             runs_executed: 12,
         };
         let json = serde_json::to_string(&p).unwrap();
