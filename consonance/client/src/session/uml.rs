@@ -262,7 +262,9 @@ impl UmlSession {
         }
         let begun = started();
         if let Some(session) = self.session.as_mut().filter(|session| session.paused()) {
-            session.restore(checkpoint)?;
+            session
+                .restore(checkpoint)
+                .map_err(|error| self.abandon(error))?;
             self.counters.restores.since(begun);
             return Ok(());
         }
@@ -700,6 +702,75 @@ mod tests {
             Some(SessionError::Hung(got)) if *got == limit
         ));
         assert!(session.abandoned);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn paused_restore_timeout_abandons_with_a_typed_watchdog_error() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        if std::env::var_os("HARMONY_UML_RESTORE_CHILD").is_some() {
+            // SAFETY: the UML launcher passes distinct owned bridge and memory descriptors.
+            let (mut socket, memory) =
+                unsafe { (std::fs::File::from_raw_fd(3), std::fs::File::from_raw_fd(4)) };
+            memory.set_len(4 * 4096).unwrap();
+            socket.write_all(&100_u64.to_le_bytes()).unwrap();
+            let mut control = [0_u8; 16];
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
+            let ack = |command: u32, result: i64| {
+                let mut frame = [0_u8; 16];
+                frame[..4].copy_from_slice(&0x3143_5548_u32.to_le_bytes());
+                frame[4..8].copy_from_slice(&command.to_le_bytes());
+                frame[8..].copy_from_slice(&result.to_le_bytes());
+                frame
+            };
+            socket.write_all(&ack(4, 1)).unwrap();
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+            socket.write_all(&ack(1, 0)).unwrap();
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 2);
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::MAX;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_RESTORE_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let limit = Duration::from_secs(2);
+        let mut guest =
+            uml::Session::start(command, work, &launch, &checkpoints, None, Some(limit)).unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let checkpoint = guest.capture(Capture::default()).unwrap();
+        assert!(guest.paused());
+
+        let mut session = unbooted_session();
+        session.host = launch.host_identity().unwrap();
+        session.launch = launch;
+        session.checkpoints = checkpoints;
+        session.session = Some(guest);
+        session.snapshots.insert(SnapId(1), checkpoint);
+        let error = session.restore(SnapId(1)).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Hung(got)) if *got == limit
+        ));
+        assert!(session.abandoned());
     }
 
     fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
