@@ -7,11 +7,7 @@ use crate::{BackendError, Result};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HostAffinity {
     Unreported,
-    Reported {
-        core: Option<BTreeSet<u16>>,
-        atom: Option<BTreeSet<u16>>,
-        allowed: BTreeSet<u16>,
-    },
+    Reported { allowed: BTreeSet<u16> },
 }
 
 fn cpu_list(text: &str) -> Result<BTreeSet<u16>> {
@@ -84,25 +80,32 @@ pub(crate) fn check_host_affinity() -> Result<HostAffinity> {
         .flatten()
         .collect::<Vec<_>>();
     check_allowed_masks(&allowed, &pools)?;
-    Ok(HostAffinity::Reported {
-        core,
-        atom,
-        allowed,
-    })
+    Ok(HostAffinity::Reported { allowed })
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) fn ensure_host_affinity(expected: &HostAffinity) -> Result<()> {
-    let current = check_host_affinity()?;
-    compare_host_affinity(expected, &current)
+    let HostAffinity::Reported { allowed } = expected else {
+        return Ok(());
+    };
+    let current = rustix::thread::sched_getaffinity(None).map_err(std::io::Error::from)?;
+    check_allowed_mask(allowed, current.count() as usize, |cpu| {
+        let cpu = usize::from(cpu);
+        cpu < rustix::thread::CpuSet::MAX_CPU && current.is_set(cpu)
+    })
 }
 
-fn compare_host_affinity(expected: &HostAffinity, current: &HostAffinity) -> Result<()> {
-    if current == expected {
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+fn check_allowed_mask(
+    allowed: &BTreeSet<u16>,
+    count: usize,
+    mut contains: impl FnMut(u16) -> bool,
+) -> Result<()> {
+    if count == allowed.len() && allowed.iter().copied().all(&mut contains) {
         Ok(())
     } else {
         Err(BackendError::Unsupported {
-            what: "host CPU affinity or core-type topology changed after KVM backend creation",
+            what: "host CPU affinity changed after KVM backend creation",
         })
     }
 }
@@ -228,26 +231,17 @@ mod tests {
     }
 
     #[test]
-    fn runtime_affinity_rejects_pool_mask_and_topology_changes() {
-        let pinned_core = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0")).unwrap();
-        let same = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0")).unwrap();
-        let changed_core = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 1")).unwrap();
-        let changed_pool = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 8")).unwrap();
-        let changed_topology =
-            with_files(Ok("0-6"), Ok("8-23"), Some("Cpus_allowed_list: 0")).unwrap();
-        let hidden = with_files(
-            Err(std::io::ErrorKind::NotFound),
-            Err(std::io::ErrorKind::NotFound),
-            None,
-        )
-        .unwrap();
-        assert!(compare_host_affinity(&pinned_core, &same).is_ok());
-        let range = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0-1")).unwrap();
-        let enumerated = with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0,1")).unwrap();
-        assert!(compare_host_affinity(&range, &enumerated).is_ok());
-        for current in [changed_core, changed_pool, changed_topology, hidden] {
+    fn runtime_affinity_rejects_changed_mask() {
+        let expected = cpu_list("0-1").unwrap();
+        let equivalent = cpu_list("0,1").unwrap();
+        assert!(
+            check_allowed_mask(&expected, equivalent.len(), |cpu| equivalent.contains(&cpu))
+                .is_ok()
+        );
+        for current in ["0", "1", "8-9", "0,8", "0-2"] {
+            let current = cpu_list(current).unwrap();
             assert!(matches!(
-                compare_host_affinity(&pinned_core, &current),
+                check_allowed_mask(&expected, current.len(), |cpu| current.contains(&cpu)),
                 Err(BackendError::Unsupported { .. })
             ));
         }

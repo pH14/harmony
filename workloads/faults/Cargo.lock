@@ -637,6 +637,7 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "rustix",
  "thiserror",
 ]
 
