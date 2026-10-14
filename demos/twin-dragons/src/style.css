@@ -337,17 +337,6 @@ h2 {
   background: transparent;
   color: var(--text);
 }
-#map-hint {
-  position: absolute;
-  inset: 42% 0 auto;
-  text-align: center;
-  font-size: 11px;
-  line-height: 1.5;
-  pointer-events: none;
-  color: #fff4df;
-  text-shadow: 0 1px 4px #000;
-  transition: opacity 1s;
-}
 #hover {
   position: absolute;
   right: 14px;
