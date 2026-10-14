@@ -2,6 +2,7 @@
 
 use std::process::Command;
 use unison::DivergencePoint;
+use unison::toy::generate_program;
 
 fn run(args: &[&str]) -> (Option<i32>, serde_json::Value) {
     let out = Command::new(env!("CARGO_BIN_EXE_unison"))
@@ -108,4 +109,30 @@ fn toy_bisect_reports_a_spawn_difference_with_zero_limit() {
     assert_eq!(code, Some(2));
     assert_eq!(json["compare"]["verdict"]["diverged"]["first_mismatch"], 0);
     assert_eq!(json["point"]["first_divergent_work"], 0);
+}
+
+#[test]
+fn toy_bisect_preserves_terminal_divergence_without_an_unverified_point() {
+    let halted_at = generate_program(0, 1).work_to_halt;
+    let diverge_at = halted_at.to_string();
+    let limit = halted_at.saturating_add(1).to_string();
+    let (code, json) = run(&[
+        "toy-bisect",
+        "--seed",
+        "7",
+        "--diverge-at",
+        &diverge_at,
+        "--limit",
+        &limit,
+        "--program-seed",
+        "0",
+        "--min-work",
+        "1",
+    ]);
+    assert_eq!(code, Some(2));
+    assert_eq!(
+        json["compare"]["verdict"]["terminal_diverged"]["halted_at"],
+        halted_at
+    );
+    assert_eq!(json["point"], serde_json::Value::Null);
 }

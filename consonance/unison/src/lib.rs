@@ -19,6 +19,10 @@ pub enum SubjectError {
     },
     #[error("checkpoint_every must be at least 1")]
     ZeroCheckpointInterval,
+    #[error(
+        "bisection probe at target {target} observed divergence after a halt at work {actual}; no exact work coordinate is available"
+    )]
+    UnreplayableTerminal { target: u64, actual: u64 },
     #[error("bisection interval is empty: lo {lo} >= hi {hi}")]
     EmptyInterval { lo: u64, hi: u64 },
     #[error("state hashes and observable digests agree at hi = {hi}: no divergence to bisect")]
@@ -93,6 +97,10 @@ pub enum Verdict {
         last_match: Option<u64>,
         first_mismatch: u64,
     },
+    TerminalDiverged {
+        last_match: Option<u64>,
+        halted_at: u64,
+    },
     HaltMismatch {
         a: Option<u64>,
         b: Option<u64>,
@@ -138,13 +146,27 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         });
     }
     if observe(&ma)? != observe(&mb)? {
+        let (verdict, halted_at) = if initial_a == RunOutcome::Halted && ma.work() != 0 {
+            (
+                Verdict::TerminalDiverged {
+                    last_match: None,
+                    halted_at: ma.work(),
+                },
+                Some(ma.work()),
+            )
+        } else {
+            (
+                Verdict::Diverged {
+                    last_match: None,
+                    first_mismatch: 0,
+                },
+                None,
+            )
+        };
         return Ok(CompareReport {
-            verdict: Verdict::Diverged {
-                last_match: None,
-                first_mismatch: 0,
-            },
+            verdict,
             checkpoints_compared,
-            halted_at: None,
+            halted_at,
             limit_reached: false,
         });
     }
@@ -191,9 +213,9 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                 }
                 checkpoints_compared += 1;
                 let verdict = if observe(&ma)? != observe(&mb)? {
-                    Verdict::Diverged {
+                    Verdict::TerminalDiverged {
                         last_match,
-                        first_mismatch: wa,
+                        halted_at: wa,
                     }
                 } else {
                     Verdict::Identical
@@ -282,12 +304,20 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
     let mut runs_executed = 0u64;
     let mut probe = |t: u64| -> Result<(Observation, Observation), SubjectError> {
         let mut ma = a.spawn(seed);
-        run_checked(&mut ma, t)?;
+        let outcome_a = run_checked(&mut ma, t)?;
         runs_executed += 1;
         let mut mb = b.spawn(seed);
-        run_checked(&mut mb, t)?;
+        let outcome_b = run_checked(&mut mb, t)?;
         runs_executed += 1;
-        Ok((observe(&ma)?, observe(&mb)?))
+        let observations = (observe(&ma)?, observe(&mb)?);
+        if observations.0 != observations.1 {
+            for (outcome, actual) in [(outcome_a, ma.work()), (outcome_b, mb.work())] {
+                if outcome == RunOutcome::Halted && actual != t {
+                    return Err(SubjectError::UnreplayableTerminal { target: t, actual });
+                }
+            }
+        }
+        Ok(observations)
     };
     if lo == 0 {
         let (observation_a, observation_b) = probe(0)?;
