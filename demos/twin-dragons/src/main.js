@@ -3258,6 +3258,7 @@ $("new-search").onclick = () => {
     };
     $("level-grid").append(card);
   }
+  if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
   $("level-picker").showModal();
 };
 $("close-level-picker").onclick = () => $("level-picker").close();
