@@ -263,10 +263,18 @@ Super Mario Bros. bonus areas, tabs above the view switch between them. Auto
 view moves to a room that has had 1.5 times as many live sprites as the shown
 room for 2.5 seconds. A newly found room in the shown level does not move the
 view by itself, so one rollout entering a bonus room leaves the view on the
-busy room. The level row
-above the map lists the levels the search has reached. Once it holds four or
-more, all but the last two and the shown level collapse into a +N button that
-expands the full list. The row wraps instead of scrolling sideways.
+busy room.
+
+One toolbar sits above the map. New search is on the left, then the level
+trail, and the Movement and Heatmap toggles are on the right. Every control in
+the toolbar has the same height. The level trail lists the levels the search
+has reached and names the shown level, so the map has no separate title. Once
+it holds four or more levels, all but the last two and the shown level collapse
+into a +N button that expands the full list. The trail stays on one row and
+scrolls sideways, fading at a clipped edge, and it scrolls to keep the shown
+level in view as the search moves on. When the exploration column is narrower
+than 620 pixels, New search shrinks to a + button and the toggles move to a
+second row.
 
 A rollout that raises the cleared-level count is a clearing rollout. The map
 always draws clearing rollouts and the camera follows the one that leaves the
