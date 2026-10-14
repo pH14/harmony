@@ -57,9 +57,10 @@ The supervisor declares one built-in check, the Always assertion
 while no kill, restart or event kill targets it, by a signal its own execution
 raises (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP` or
 `SIGSYS`) or a nonzero exit status, violates it; the record's details name the
-node and the exit. A death while any node start still waits for the ready probe
-does not violate it, because a node that fails to come back after a kill or
-restart is part of that fault.
+node and the exit. A death while a node start waits for the ready probe is
+exempt only when that recovery generation includes an injected kill, restart,
+or event kill. A natural restart still runs the ready probe and queues hooks,
+but a later independent crash remains a violation.
 The supervisor also checks the final child status after signaling a scheduled
 kill or replacing a child. Its injected kills use `SIGKILL`, so a fatal signal
 or nonzero exit status proves the child ended independently before the kill
