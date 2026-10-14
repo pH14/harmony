@@ -188,9 +188,9 @@ try {
       await page.locator("#pause").click();
       await setView(page,'both');
       await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
+      const ghosts = await page.locator(".area-map[data-panel=\"0\"]").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
       const branchAttempts = Number((await page.locator("#attempts").textContent()).replaceAll(",", ""));
-      const ghosts = () => page.locator(".area-map[data-panel=\"0\"]").evaluateAll((cs) => cs.reduce((n, c) => n + Number(c.dataset.swarmCount), 0));
-      assert.ok(await ghosts() <= branchAttempts + 2, "A new branch must not display the original search's players");
+      assert.ok(ghosts <= branchAttempts + 2, `A new branch must not display the original search's players (${ghosts} sprites, ${branchAttempts} attempts)`);
       await page.locator('#branch-tree button[data-search="0"]').click();
       await page.waitForFunction(() => document.querySelector("#pause").getAttribute("aria-label") === "Pause Search");
       await page.locator("#pause").click();
