@@ -30,9 +30,12 @@ persistent within the bracket.
 
 `ToyMachine` is a tiny deterministic register VM with eight registers, 64 KiB
 of memory, a program counter, output log, seeded xorshift64* state, and one work
-unit per retired instruction. Its instruction set and state-hash layout are
-stable and fully exercised by the harness tests. `ToyFactory` and
-`generate_program` create repeatable programs for bounded comparisons.
+unit per retired instruction. Its state hash also includes the complete
+instruction program, so two machines with identical registers and memory but
+different future instructions differ at work zero. Its instruction set and
+state-hash layout are stable and fully exercised by the harness tests.
+`ToyFactory` and `generate_program` create repeatable programs for bounded
+comparisons.
 
 `FlakyFactory` wraps a `Perturbable` machine and applies one selected
 `Perturbation` at a work boundary. It supports register/PRNG XOR and forced
