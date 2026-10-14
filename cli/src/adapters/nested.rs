@@ -20,6 +20,14 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
 }
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
+    if source.status != "complete" {
+        return Err("nested replay requires a completed saved campaign".into());
+    }
+    verified_replay_stream(path, source)
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
 fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
     let read = |name: &str| -> Result<Vec<u8>> {
         let bytes = fs::read(path.join("artifacts").join(name))?;
@@ -196,7 +204,7 @@ fn execute(mut request: Request) -> Result<u8> {
             let path = crate::runs::locate(&s.run)?;
             let m = Manifest::read(&path)?;
             m.verify(&path)?;
-            let stream = verified_replay_stream(&path, &m)?;
+            let stream = verified_replay_source(&path, &m)?;
             Ok((path, m, stream))
         })
         .transpose()?;
@@ -288,6 +296,7 @@ mod tests {
         config.runner.kind = "test".into();
         let stream = b"recorded nested campaign";
         let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.status = "complete".into();
         manifest.payload = serde_json::json!({"stream_sha256":crate::runtime::digest(stream)});
         manifest.store(source.path(), "kernel", b"kernel").unwrap();
         manifest
@@ -298,7 +307,7 @@ mod tests {
 
         let source_manifest = Manifest::read(source.path()).unwrap();
         source_manifest.verify(source.path()).unwrap();
-        let first = verified_replay_stream(source.path(), &source_manifest).unwrap();
+        let first = verified_replay_source(source.path(), &source_manifest).unwrap();
         fs::write(source.path().join("stream.jsonl"), b"changed campaign").unwrap();
         let mut child_manifest =
             inherit_replay_stream(source.path(), &source_manifest, child.path(), &first).unwrap();
@@ -308,13 +317,53 @@ mod tests {
 
         let saved_child = Manifest::read(child.path()).unwrap();
         saved_child.verify(child.path()).unwrap();
-        let second = verified_replay_stream(child.path(), &saved_child).unwrap();
+        let second = verified_replay_source(child.path(), &saved_child).unwrap();
         let grandchild_manifest =
             inherit_replay_stream(child.path(), &saved_child, grandchild.path(), &second).unwrap();
         assert_eq!(first, second);
         assert_eq!(grandchild_manifest.mode, "replay");
         assert_eq!(
             fs::read(grandchild.path().join("stream.jsonl")).unwrap(),
+            stream
+        );
+    }
+
+    #[test]
+    fn failed_replay_with_a_produced_report_is_not_a_replay_source() {
+        let source = tempfile::tempdir().unwrap();
+        let grandchild = source.path().join("grandchild");
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        let stream = b"recorded nested campaign";
+        let mut replay = Manifest::new(config, "replay").unwrap();
+        replay.status = "failed".into();
+        replay.error = Some("nested replay report diverged from saved campaign".into());
+        replay.payload = serde_json::json!({
+            "stream_sha256": crate::runtime::digest(stream),
+            "executions_completed": 1
+        });
+        replay.store(source.path(), "kernel", b"kernel").unwrap();
+        replay
+            .store(source.path(), "initramfs", b"initramfs")
+            .unwrap();
+        replay.save(source.path()).unwrap();
+        fs::write(source.path().join("stream.jsonl"), stream).unwrap();
+
+        for status in ["failed", "running"] {
+            replay.status = status.into();
+            replay.save(source.path()).unwrap();
+            let saved = Manifest::read(source.path()).unwrap();
+            saved.verify(source.path()).unwrap();
+            assert!(verified_replay_source(source.path(), &saved).is_err());
+            assert!(!grandchild.exists());
+        }
+
+        replay.status = "complete".into();
+        replay.error = None;
+        replay.save(source.path()).unwrap();
+        let saved = Manifest::read(source.path()).unwrap();
+        assert_eq!(
+            verified_replay_source(source.path(), &saved).unwrap(),
             stream
         );
     }
