@@ -150,6 +150,7 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         serde_json::to_vec(&altered).unwrap(),
     )
     .unwrap();
+    std::fs::write(dir.path().join("serial.log"), b"planted console\n").unwrap();
 
     let path = dir.path().to_str().unwrap();
     for (args, expected) in [
@@ -183,6 +184,7 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         String::from_utf8_lossy(&output.stderr)
     );
     let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(shown[0]["step"], 0);
     assert_eq!(shown[0]["lines"], serde_json::json!(["saved console"]));
 }
 
