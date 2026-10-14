@@ -12,7 +12,7 @@ use std::{
     ffi::CString,
     fs::{File, OpenOptions},
     io::{self, Read, Write},
-    os::unix::ffi::OsStrExt,
+    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
@@ -210,8 +210,14 @@ struct Library {
 
 #[cfg(not(miri))]
 impl Library {
-    fn open_private(source: &Path) -> Result<(Self, String), MachineError> {
+    fn open_private(source: &Path, expected_sha256: &str) -> Result<Self, MachineError> {
         let (temporary, sha256) = private_copy(source)?;
+        if sha256 != expected_sha256 {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(MachineError::Backend(
+                "QuickNES core SHA-256 does not match the supplied identity".to_owned(),
+            ));
+        }
         let path = match CString::new(temporary.as_os_str().as_bytes()) {
             Ok(path) => path,
             Err(_) => {
@@ -238,12 +244,9 @@ impl Library {
                 "could not unlink private QuickNES core image: {error}"
             )));
         }
-        Ok((
-            Self {
-                handle: handle as usize,
-            },
-            sha256,
-        ))
+        Ok(Self {
+            handle: handle as usize,
+        })
     }
 
     fn symbol(&self, name: &'static [u8]) -> Result<*mut c_void, MachineError> {
@@ -300,7 +303,12 @@ fn private_copy(source: &Path) -> Result<(PathBuf, String), MachineError> {
             "harmony-quicknes-{}-{sequence}.{extension}",
             std::process::id()
         ));
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+        {
             Ok(mut destination) => {
                 let mut source_file = match File::open(source) {
                     Ok(file) => file,
@@ -483,12 +491,7 @@ impl QuickNesMachine {
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
         let identity = validate_sha256(core_sha256)?;
-        let (library, actual) = Library::open_private(core_path)?;
-        if actual != core_sha256 {
-            return Err(MachineError::Backend(
-                "QuickNES core SHA-256 does not match the supplied identity".to_owned(),
-            ));
-        }
+        let library = Library::open_private(core_path, core_sha256)?;
         let api = load_api(&library)?;
         let mut machine = Self::from_api(rom, identity, api)?;
         machine._library = Some(library);
@@ -1664,6 +1667,32 @@ mod tests {
         nes_to_libretro, option_value, reset_capture_state, validate_sha256, video_callback,
     };
     use crate::{Machine, Moment, StopConditions, StopReason, nes};
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn mismatched_private_core_never_reaches_the_dynamic_loader() {
+        let error = QuickNesMachine::from_rom_bytes(
+            &[],
+            std::path::Path::new("/dev/null"),
+            &"0".repeat(64),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("QuickNES core SHA-256 does not match the supplied identity")
+        );
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn private_core_copy_is_accessible_only_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let (path, _) = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        std::fs::remove_file(path).unwrap();
+        assert_eq!(mode & 0o077, 0);
+    }
 
     #[test]
     fn portable_transfer_preserves_bytes_handles_and_chunk_sharing() {
