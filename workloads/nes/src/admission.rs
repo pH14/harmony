@@ -38,8 +38,13 @@ fn postgres_code_inputs(
 ) -> Result<BTreeMap<String, Value>, Box<dyn std::error::Error>> {
     image::with_staged_read_access(staged, || -> Result<_, Box<dyn std::error::Error>> {
         let mut code_inputs = BTreeMap::new();
+        let root = staged.rootfs.canonicalize()?;
         for name in ["/workload.sql", "/usr/local/bin/postgres-workload.sh"] {
-            let bytes = std::fs::read(staged.rootfs.join(name.trim_start_matches('/')))?;
+            let path = root.join(name.trim_start_matches('/')).canonicalize()?;
+            if !path.starts_with(&root) {
+                return Err(format!("PostgreSQL source escapes the staged image: {name}").into());
+            }
+            let bytes = std::fs::read(path)?;
             code_inputs.insert(
                 name.to_owned(),
                 json!({"sha256": sha(&bytes), "size": bytes.len()}),
@@ -197,5 +202,31 @@ mod tests {
                 .mode()
                 & 0o7777;
         assert_eq!(mode, 0);
+    }
+
+    #[test]
+    fn postgres_code_inputs_reject_host_symlink_targets() {
+        let root = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("usr/local/bin")).unwrap();
+        std::fs::write(
+            root.path().join("usr/local/bin/postgres-workload.sh"),
+            b"run",
+        )
+        .unwrap();
+        let outside = host.path().join("host.sql");
+        std::fs::write(&outside, b"host secret").unwrap();
+        std::os::unix::fs::symlink(&outside, root.path().join("workload.sql")).unwrap();
+        let staged = image::StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        assert!(postgres_code_inputs(&staged).is_err());
+        std::fs::remove_file(root.path().join("workload.sql")).unwrap();
+        std::fs::write(root.path().join("safe.sql"), b"SELECT 1;").unwrap();
+        std::os::unix::fs::symlink("safe.sql", root.path().join("workload.sql")).unwrap();
+        let inputs = postgres_code_inputs(&staged).unwrap();
+        assert_eq!(inputs["/workload.sql"]["sha256"], sha(b"SELECT 1;"));
     }
 }
