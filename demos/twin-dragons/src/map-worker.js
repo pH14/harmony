@@ -15,6 +15,6 @@ onmessage = async ({ data }) => {
       else postMessage({ type: "map", level: data.level, width: map.width, height: map.height, data: map.data }, [map.data.buffer]);
     }
   } catch (e) {
-    postMessage({ type: "error", message: String(e?.message || e) });
+    postMessage({ type: "error", message: String(e?.message || e), level: data.type === "map" ? data.level : undefined });
   }
 };

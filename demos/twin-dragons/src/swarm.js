@@ -17,6 +17,11 @@ export function swarmPoint(samples, frame) {
     y: samples[a + 3] + (samples[b + 3] - samples[a + 3]) * mix, pose: samples[a + 4] };
 }
 
+export function trailRoom(samples) {
+  for (let i = 1; i < (samples?.length ?? 0); i += MOTION_STRIDE) if (samples[i] !== NO_ROOM) return samples[i];
+  return null;
+}
+
 export class Swarm {
   constructor(maxBytes, maxTrails, finishHold = 0) {
     this.maxBytes = maxBytes;

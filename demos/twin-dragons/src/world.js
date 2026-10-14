@@ -20,16 +20,13 @@ export function isMapEvidence(observation, levels) {
   );
 }
 
-export function followDiscovery(
-  observation,
-  first,
-  focusedLevel,
-  userSelected,
-  cleared,
-) {
-  return (
-    first &&
-    (!userSelected ||
-      (observation.level > focusedLevel && cleared.has(focusedLevel)))
-  );
+export function finishedLevel(observation, level) {
+  return level != null && (observation?.cleared ?? 0) > level ? level : null;
+}
+
+export function followExit(path, from, to, levels) {
+  if (from !== path.level || to === from || !levels.some((level) => level.id === to)) return false;
+  path.level = to;
+  if (!path.levels.includes(to)) path.levels.push(to);
+  return true;
 }

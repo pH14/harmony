@@ -7,7 +7,7 @@ import { GameAudio } from "./audio.js";
 import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
-import { Swarm, ghosts, MOTION_STRIDE } from "./swarm.js";
+import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -24,7 +24,8 @@ import {
   completedLevels,
   mergeProgress,
   isMapEvidence,
-  followDiscovery,
+  finishedLevel,
+  followExit,
 } from "./world.js";
 const params = new URLSearchParams(location.search);
 const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
@@ -110,6 +111,7 @@ let stateCache = new StateCache(),
   seenMaps = new Set(),
   cleared = new Set(),
   wins = new Map(),
+  path = { level: 0, levels: [0], since: 0, idle: 0 },
   stats = {};
 const views = new Map(),
   controller = new Controller();
@@ -148,6 +150,7 @@ function saveSearchView() {
     seenMaps,
     cleared,
     wins,
+    path,
     gameWon,
     latestBest,
     stats,
@@ -165,6 +168,7 @@ function activateSearchView(id) {
     seenMaps: new Set(),
     cleared: new Set(),
     wins: new Map(),
+    path: { level: null, levels: [], since: 0, idle: 0 },
     gameWon: false,
     latestBest: null,
     stats: { executions: 0, states: 1, frames: 0 },
@@ -178,6 +182,7 @@ function activateSearchView(id) {
     seenMaps,
     cleared,
     wins,
+    path,
     gameWon,
     latestBest,
     stats,
@@ -344,8 +349,10 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
   return count;
 }
 const phoneLayout = matchMedia("(max-width: 800px)");
-const INTRO_SCALE = 1.3;
-const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, jumped: 0, targets: new Map() };
+const INTRO_SCALE = 1.3,
+  PATH_STALL_MS = 8000,
+  ROOM_DWELL_MS = 10000;
+const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
   const panel = canvasPanel(c), fit = Math.min(c.width / panel.width, c.height / panel.height);
@@ -580,23 +587,67 @@ function applyCameraMode() {
   if (room != null) setRoom(room, true);
   drawMap(performance.now());
 }
-function latestRoom() {
-  const rooms = levelRooms();
-  return rooms.findLast((id) => swarmRooms.get(id)?.length) ?? rooms.findLast((id) => seenMaps.has(id));
+function roomLevel(room) {
+  return catalog.levels.find((level) => level.rooms.includes(room))?.id ?? game.areaMap?.(room)?.level ?? null;
+}
+function leadingFinisherRoom(rooms) {
+  let room = null, left = Infinity, trail = null;
+  for (const id of rooms)
+    for (const p of swarmRooms.get(id) || []) {
+      if (!p.finish || !p.samples || !rooms.includes(trailRoom(p.samples))) continue;
+      if (p.samples === camera.leader) return id;
+      const remaining = p.samples.at(-MOTION_STRIDE) - p.frame;
+      if (remaining < left) [room, left, trail] = [id, remaining, p.samples];
+    }
+  camera.leader = trail;
+  return room;
 }
 function followRoom(now, immediate = false) {
+  const lead = leadingFinisherRoom(levelRooms());
+  if (lead != null) {
+    camera.busierSince = 0;
+    return lead === mapLevel ? null : lead;
+  }
   const live = (id) => swarmRooms.get(id)?.length || 0;
   const busiest = levelRooms().reduce((best, id) => (live(id) > live(best) * 1.5 ? id : best), mapLevel);
-  if (busiest === mapLevel) {
+  if (busiest === mapLevel || (!immediate && now - camera.roomSince < ROOM_DWELL_MS)) {
     camera.busierSince = 0;
     return null;
   }
   camera.busierSince ||= now;
   return immediate || now - camera.busierSince > 2500 ? busiest : null;
 }
+function showPathLevel(level) {
+  const room = catalog.levels.find((entry) => entry.id === level)?.rooms[0];
+  if (room == null || !maps.has(room)) return;
+  if (branchPreview) branchPreview.room = room;
+  else setRoom(room);
+}
+function followStalledPath(now) {
+  if (game.separateLevels || paused || !ready || path.level == null) return;
+  let here = false, deepest = null;
+  for (const [room, points] of swarmRooms) {
+    if (!points.length) continue;
+    const level = roomLevel(room);
+    if (level === path.level) here = true;
+    else if (level != null && level > path.level && (deepest == null || level > deepest)) deepest = level;
+  }
+  if (here || deepest == null || now - path.since < PATH_STALL_MS) {
+    path.idle = 0;
+    return;
+  }
+  path.idle ||= now;
+  if (now - path.idle < PATH_STALL_MS) return;
+  const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
+  path.level = deepest;
+  if (!path.levels.includes(deepest)) path.levels.push(deepest);
+  path.since = now;
+  path.idle = 0;
+  if (onPath) showPathLevel(deepest);
+}
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
   const introRoom = intro ? mapLevel : null;
-  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
+  Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
     const c = mapCanvas(room);
     if (c) steerCamera(room, c, game.grid ? game.entry(room) : { x: 0, y: maps.get(room).height }, closeUpZoom(c) * (room === introRoom ? INTRO_SCALE : 1), 1, 1);
@@ -633,6 +684,7 @@ function updateCamera(now) {
     if (room != null) {
       setRoom(room, true);
       camera.busierSince = 0;
+      camera.roomSince = now;
       return;
     }
   }
@@ -844,7 +896,7 @@ function nextBuiltMap() {
   }
 }
 function builtMapKey(level) {
-  return `${game.id}:${game.rom.sha256}:map-v1:${level}`;
+  return `${game.id}:${game.rom.sha256}:map-v2:${level}`;
 }
 function tiledMap({ width, height, tiles }) {
   const fit = Math.min(1, 1600 / Math.max(width, height)), small = document.createElement("canvas");
@@ -872,8 +924,11 @@ function startMapWorker() {
   for (let i = 0; i < count; i++) {
     const slot = { worker: new Worker(new URL("./map-worker.js", import.meta.url), { type: "module" }), ready: false, busy: false };
     slot.worker.onmessage = ({ data }) => {
-      if (data.type === "error") return showError(data.message);
-      if (data.type === "sprites") {
+      if (data.type === "error" && data.level === undefined) return showError(data.message);
+      if (data.type === "error") {
+        console.warn(`Map ${data.level} did not build: ${data.message}`);
+        slot.busy = false;
+      } else if (data.type === "sprites") {
         imageCanvas(data).toBlob((blob) => (sprites.src = URL.createObjectURL(blob)));
         builtMaps.ready = slot.ready = true;
       } else if (data.type === "ready") {
@@ -1411,6 +1466,7 @@ function startSearch(level = bootLevel) {
   seenMaps.clear();
   cleared.clear();
   wins.clear();
+  path = { level: bootLevel, levels: [bootLevel], since: 0, idle: 0 };
   latestBest = null;
   lastAuto = 0;
   stats = {};
@@ -1498,6 +1554,8 @@ function startSearch(level = bootLevel) {
           mergeProgress(cleared, state.observation, bootLevel);
           for (const level of completedLevels(state.observation, bootLevel))
             wins.set(level, state.id);
+          const start = roomLevel(state.observation.level) ?? bootLevel;
+          Object.assign(path, { level: start, levels: [start], since: performance.now(), idle: 0 });
         }
         if (isMapEvidence(state.observation, catalog.levels)) {
           seenMaps.add(state.observation.level);
@@ -1534,7 +1592,7 @@ function startSearch(level = bootLevel) {
         drawMap(performance.now());
       } else if (data.type === "batch") {
         if (data.active !== activeSearch) return;
-        const { motion, finishes, ...batchStats } = data;
+        const { motion, finishes, exits, ...batchStats } = data;
         swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes);
         stats = batchStats;
         gameWon ||= data.won;
@@ -1542,11 +1600,12 @@ function startSearch(level = bootLevel) {
         heat.visitMotion(data.motion || [], maps, now);
         for (const point of data.points) {
           const o = point.observation,
-            map = maps.get(o.level);
-          for (const level of completedLevels(o, bootLevel))
-            if (!wins.has(level) && point.retained !== null)
-              wins.set(level, point.retained);
-          mergeProgress(cleared, o, bootLevel);
+            map = maps.get(o.level),
+            finished = finishedLevel(o, roomLevel(o.level));
+          if (finished != null) {
+            cleared.add(finished);
+            if (!wins.has(finished) && point.retained !== null) wins.set(finished, point.retained);
+          }
           if (!map && !o.loading && o.health) discoverArea(o.level);
           if (!map || !isMapEvidence(o, catalog.levels)) continue;
           const first = !seenMaps.has(o.level);
@@ -1560,23 +1619,18 @@ function startSearch(level = bootLevel) {
             if (o.level === mapLevel || first) latestBest = point.retained;
           }
           heat.retain({ ...point, observation: project(o, map) }, now);
-          const shown = branchPreview?.room ?? mapLevel;
-          if (followDiscovery(o, first, focusedLevel, userSelected, cleared) && levelIndex(o.level) > levelIndex(shown)) {
-            if (branchPreview) branchPreview.room = o.level;
-            else setRoom(o.level);
-          }
         }
-        // A clearing rollout can end before the next level finishes loading, so
-        // its first archived point there may arrive several batches later.
-        for (const index of finishes || []) {
-          if (game.separateLevels) break;
-          const from = levelIndex(motion[index]?.[1]), next = catalog.levels[from + 1]?.rooms[0];
-          const shown = branchPreview?.room ?? mapLevel;
-          if (from < 0 || from !== levelIndex(shown) || next == null || !maps.has(next)) continue;
-          if (!followDiscovery({ level: next }, !seenMaps.has(next), focusedLevel, userSelected, cleared)) continue;
-          if (branchPreview) branchPreview.room = next;
-          else setRoom(next);
-        }
+        (finishes || []).forEach((index, i) => {
+          if (game.separateLevels) return;
+          const from = roomLevel(trailRoom(motion[index]));
+          if (from == null) return;
+          cleared.add(from);
+          const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
+          if (!followExit(path, from, exits?.[i], catalog.levels)) return;
+          path.since = now;
+          path.idle = 0;
+          if (onPath) showPathLevel(path.level);
+        });
         if (
           latestBest !== null &&
           !userSelected &&
@@ -1727,12 +1781,14 @@ function updateStats() {
   setTitle("workers", "Web Workers running game rollouts in parallel");
 }
 function liveLevel() {
-  return catalog.levels.findLast((level) => level.rooms.some((room) => seenMaps.has(room)))?.id ?? bootLevel;
+  return path.level ?? bootLevel;
 }
 let levelsExpanded = false;
 function renderLevelStrip() {
   const live = liveLevel(),
-    levels = catalog.levels.filter((level) => level.id === focusedLevel || level.id === live || (level.id >= bootLevel && level.id <= live && level.rooms.some((room) => seenMaps.has(room)))),
+    after = path.levels.findIndex((id) => id > focusedLevel),
+    ids = path.levels.includes(focusedLevel) ? path.levels : path.levels.toSpliced(after < 0 ? path.levels.length : after, 0, focusedLevel),
+    levels = ids.map((id) => catalog.levels.find((level) => level.id === id)).filter(Boolean),
     recent = new Set(levels.slice(-2).map((level) => level.id).concat(focusedLevel)),
     hidden = levels.filter((level) => !recent.has(level.id)),
     collapse = hidden.length > 1,
@@ -1801,7 +1857,7 @@ function renderMapRows(owner) {
       userSelected = true;
       if (id !== mapLevel) browseRoom(id);
       followSearch();
-      camera.pinned = id === latestRoom() ? null : id;
+      camera.pinned = id;
     };
     return tab;
   }));
@@ -1940,6 +1996,7 @@ function drawMap(now) {
   const start = performance.now();
   swarmRooms = swarm.frame(activeSearch, heat.clock(now), reducedMotion.matches, Math.round(spriteBudget), true);
   updatePan(now);
+  followStalledPath(now);
   updateCamera(now);
   for (const c of document.querySelectorAll(".area-map")) {
     drawArea(c, now);
