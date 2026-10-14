@@ -112,7 +112,9 @@ host values, so it also hashes the whole setup checkpoint. Within a namespace an
 prefix, with fixed-width actions, so a cached prefix of an input is a byte
 prefix of its key. Publishing a delta under a parent requires the parent's key
 to be a proper byte prefix of the child key; unrelated ancestry is refused
-before the entry becomes visible. `CacheIndex` is the interface workers use:
+before the entry becomes visible. A lease or writable extent belongs to the
+index that issued it; foreign references cannot alias an entry or segment with
+the same local number. `CacheIndex` is the interface workers use:
 
 | Call | Result |
 |---|---|
