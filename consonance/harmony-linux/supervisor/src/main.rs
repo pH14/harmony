@@ -932,7 +932,7 @@ mod runtime {
             )?;
             supervisor.note_recovery_pending(runtime.recovery.is_pending());
             let actions = supervisor.tick(&active, &deaths);
-            report_node_exits(supervisor, &exits, tick)?;
+            report_node_exits(supervisor, &exits, runtime.recovery.is_pending(), tick)?;
             for action in actions {
                 log(tick, &action.describe());
                 apply(action, spec, bundle, nodes, supervisor, &mut runtime, tick)?;
@@ -1028,17 +1028,10 @@ mod runtime {
     fn report_node_exits(
         supervisor: &mut Supervisor,
         deaths: &[(u16, Option<ExitStatus>)],
+        recovery_pending: bool,
         tick: u64,
     ) -> Result<(), String> {
-        for node in supervisor.take_natural_deaths() {
-            let Some(exit) = deaths
-                .iter()
-                .find(|(id, _)| *id == node)
-                .and_then(|(_, status)| status.as_ref())
-                .and_then(process::unexpected_exit)
-            else {
-                continue;
-            };
+        for (node, exit) in node_exit_violations(supervisor, deaths, recovery_pending) {
             log(tick, &format!("node {node} ended on its own: {exit}"));
             process::write_record(
                 &sdk_output(),
@@ -1047,6 +1040,27 @@ mod runtime {
             .map_err(|error| format!("node exit record: {error}"))?;
         }
         Ok(())
+    }
+
+    fn node_exit_violations(
+        supervisor: &mut Supervisor,
+        deaths: &[(u16, Option<ExitStatus>)],
+        recovery_pending: bool,
+    ) -> Vec<(u16, String)> {
+        let natural_deaths = supervisor.take_natural_deaths();
+        let mut violations = Vec::new();
+        for (node, status) in deaths {
+            let Some(exit) = status.as_ref().and_then(process::unexpected_exit) else {
+                continue;
+            };
+            if !recovery_pending {
+                if !natural_deaths.contains(node) {
+                    supervisor.note_late_unexpected_death();
+                }
+                violations.push((*node, exit));
+            }
+        }
+        violations
     }
 
     fn sdk_output() -> PathBuf {
@@ -1153,8 +1167,13 @@ mod runtime {
                     events.retire(node, supervisor, tick);
                 }
                 if let Some(mut child) = entry.child.take() {
-                    let _ = process::signal_group(child.id(), libc::SIGKILL);
-                    let _ = child.wait();
+                    let status = retire_node_child(&mut child, node)?;
+                    report_node_exits(
+                        supervisor,
+                        &[(node, Some(status))],
+                        runtime.recovery.is_pending(),
+                        tick,
+                    )?;
                 }
                 let spawned = spawn_node(spec, &entry.spec)?;
                 supervisor.note_event_ready(node, false);
@@ -1216,6 +1235,19 @@ mod runtime {
             }
         }
         Ok(())
+    }
+
+    fn retire_node_child(child: &mut Child, node: u16) -> Result<ExitStatus, String> {
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("check retired node {node}: {error}"))?
+        {
+            return Ok(status);
+        }
+        let _ = process::signal_group(child.id(), libc::SIGKILL);
+        child
+            .wait()
+            .map_err(|error| format!("wait retired node {node}: {error}"))
     }
 
     fn poll_recovery(
@@ -1424,17 +1456,74 @@ mod runtime {
     #[cfg(test)]
     mod tests {
         use super::{
-            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events, inherit_event_fd,
+            Action, ActiveWindows, EventChannel, EventCommand, Supervisor, events,
+            inherit_event_fd, node_exit_violations, retire_node_child,
         };
         use process_proto::ProcessAction;
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
         use std::os::unix::net::UnixStream;
+        use std::os::unix::process::{CommandExt, ExitStatusExt};
+        use std::process::{Command, ExitStatus};
 
         fn event_faults() -> ActiveWindows {
             let mut active = ActiveWindows::new();
             active.insert(0, &ProcessAction::EventKill { rarity: 0 }, 0);
             active
+        }
+
+        #[test]
+        fn crash_completed_after_kill_decision_keeps_its_own_cause() {
+            let mut supervisor = Supervisor::new(1);
+            let mut kill = ActiveWindows::new();
+            kill.insert(0, &ProcessAction::Kill, 0);
+            assert_eq!(supervisor.tick(&kill, &[]), [Action::Kill(0)]);
+            assert_eq!(supervisor.tick(&kill, &[0]), []);
+            let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
+            assert_eq!(
+                node_exit_violations(&mut supervisor, &exits, false),
+                [(0, format!("signal {}", libc::SIGSEGV))]
+            );
+            assert_eq!(supervisor.counters().unexpected_deaths, 1);
+        }
+
+        #[test]
+        fn injected_kill_status_and_recovery_pending_do_not_raise_node_exit() {
+            let mut killed = Supervisor::new(1);
+            let mut kill = ActiveWindows::new();
+            kill.insert(0, &ProcessAction::Kill, 0);
+            assert_eq!(killed.tick(&kill, &[]), [Action::Kill(0)]);
+            assert_eq!(killed.tick(&kill, &[0]), []);
+            let exits = [(0, Some(ExitStatus::from_raw(libc::SIGKILL)))];
+            assert!(node_exit_violations(&mut killed, &exits, false).is_empty());
+            assert_eq!(killed.counters().unexpected_deaths, 0);
+
+            let mut recovering = Supervisor::new(1);
+            recovering.note_recovery_pending(true);
+            assert_eq!(
+                recovering.tick(&ActiveWindows::new(), &[0]),
+                [Action::Start(0)]
+            );
+            let exits = [(0, Some(ExitStatus::from_raw(libc::SIGSEGV)))];
+            assert!(node_exit_violations(&mut recovering, &exits, true).is_empty());
+        }
+
+        #[test]
+        fn replacing_a_completed_child_keeps_its_original_exit_status() {
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", "exit 37"])
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            assert_eq!(child.wait().unwrap().code(), Some(37));
+            let status = retire_node_child(&mut child, 0).unwrap();
+            assert_eq!(status.code(), Some(37));
+            let mut supervisor = Supervisor::new(1);
+            let exits = [(0, Some(status))];
+            assert_eq!(
+                node_exit_violations(&mut supervisor, &exits, false),
+                [(0, "exit status 37".to_owned())]
+            );
         }
 
         #[test]

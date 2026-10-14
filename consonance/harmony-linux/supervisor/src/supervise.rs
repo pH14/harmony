@@ -267,6 +267,11 @@ impl ProcessSupervisor {
         self.bump_disturbance(1);
     }
 
+    pub fn note_late_unexpected_death(&mut self) {
+        self.bump_disturbance(1);
+        self.counters.unexpected_deaths += 1;
+    }
+
     pub fn note_event_kill_armed(&mut self, node: u16, rarity: u8, start: u64) {
         if usize::from(node) >= self.nodes.len()
             || rarity >= process_proto::events::EVENT_RARITY_LIMIT

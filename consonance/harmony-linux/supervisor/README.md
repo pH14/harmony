@@ -60,6 +60,10 @@ raises (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP` or
 node and the exit. A death while any node start still waits for the ready probe
 does not violate it, because a node that fails to come back after a kill or
 restart is part of that fault.
+The supervisor also checks the final child status after signaling a scheduled
+kill or replacing a child. Its injected kills use `SIGKILL`, so a fatal signal
+or nonzero exit status proves the child ended independently before the kill
+took effect, even when that exit is reaped after the kill decision.
 
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
