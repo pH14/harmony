@@ -58,9 +58,9 @@ sequence of guest events.
   schema 4 requires this patched import and a second early check: the admitted
   host auxiliary-vector HWCAP, HWCAP2, minimum signal-stack size and platform
   bytes are passed at launch, and the kernel refuses a child whose initial
-  values differ. Earlier profiles are refused. The arm64 kernel takes its
-  hardware-capability flags separately from this auxiliary vector. A guest
-  program that executes `rdrand` or `rdseed` gets host
+  values differ. Earlier profiles are refused. The arm64 kernel imports its
+  hardware-capability flags from this auxiliary vector. A guest program that
+  executes `rdrand` or `rdseed` gets host
   randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image
