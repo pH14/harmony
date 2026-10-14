@@ -27,12 +27,26 @@ halt count to detect mismatches.
 
 `compare_runs` checks both machines immediately after spawn, then compares their
 state hashes and output digests at a caller-selected interval until they halt or
-reach a limit. It reports
-identical runs, a checkpoint bracket, or a halt-count mismatch, and records
-whether the limit—not termination—ended the
-comparison. A zero-work mismatch is reported even when the limit is zero.
+reach a limit. It reports identical runs, a checkpoint bracket, an equal-work
+terminal divergence, or a halt-count mismatch, and records whether the
+limit—not termination—ended the comparison. A zero-work mismatch is reported
+even when the limit is zero.
 If both machines have already halted at the same work count, the report records
 termination for any limit without comparing another checkpoint.
+When both machines halt at the same work count but their terminal observations
+differ, the report uses `TerminalDiverged`. This names the observed halt count
+and last matching checkpoint without claiming a first divergent work count:
+a fresh run to the halt count may stop at a pre-halt state, while the terminal
+transition happens only when asked to run farther. The CLI reports this
+divergence with exit code 2 and no bisection point. Direct bisection
+also refuses a mismatching probe that halted at a different work count from
+the requested target, because that terminal observation cannot be assigned
+the probe's work coordinate. A terminal observation reached at the requested
+work count remains bisectable.
+Already-halted machines spawned at equal nonzero work also report a differing
+initial observation as `TerminalDiverged` at their actual halt count; reporting
+it at work zero would provide an unreplayable bisection coordinate. An initial
+difference at work zero remains directly bisectable.
 `bisect_divergence` checks the initial state when the lower bound is zero,
 returns zero if the machines already differ there, and otherwise verifies the
 bracket endpoints and binary searches fresh executions in `O(log(hi - lo))`
