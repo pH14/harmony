@@ -6,7 +6,12 @@ fn harmony() -> Command {
     Command::new(env!("CARGO_BIN_EXE_harmony"))
 }
 
-fn saved_fault_run(path: &std::path::Path, bundle: serde_json::Value, outcome: serde_json::Value) {
+fn saved_fault_run(
+    path: &std::path::Path,
+    bundle: serde_json::Value,
+    outcome: serde_json::Value,
+    status: &str,
+) {
     std::fs::create_dir_all(path).unwrap();
     std::fs::write(
         path.join("manifest.json"),
@@ -14,9 +19,9 @@ fn saved_fault_run(path: &std::path::Path, bundle: serde_json::Value, outcome: s
             "format": "harmony-run-v2",
             "binary_sha256": "saved-on-another-host",
             "architecture": "other-architecture",
-            "mode": "search",
-            "status": "complete",
-            "error": null,
+            "mode": if bundle.is_null() { "run" } else { "search" },
+            "status": status,
+            "error": (status == "failed").then_some("guest application did not start"),
             "config": {
                 "workload": {"package": "faults"},
                 "runner": {"kind": "consonance", "backend": "uml"},
@@ -36,7 +41,12 @@ fn saved_fault_run(path: &std::path::Path, bundle: serde_json::Value, outcome: s
 fn show_uses_saved_faults_outcome_when_command_file_changes() {
     let dir = tempfile::tempdir().unwrap();
     let recorded = serde_json::json!({"application_sha256": "saved"});
-    saved_fault_run(dir.path(), serde_json::Value::Null, recorded.clone());
+    saved_fault_run(
+        dir.path(),
+        serde_json::Value::Null,
+        recorded.clone(),
+        "complete",
+    );
     std::fs::write(
         dir.path().join("run.json"),
         serde_json::to_vec(&serde_json::json!({"application_sha256": "altered"})).unwrap(),
@@ -54,6 +64,54 @@ fn show_uses_saved_faults_outcome_when_command_file_changes() {
     );
     let shown: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(shown["result"], recorded);
+}
+
+#[test]
+fn show_refuses_changed_command_console_with_saved_digest() {
+    use sha2::{Digest, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let original = b"saved console\n";
+    let recorded = serde_json::json!({"serial_sha256": format!("{:x}", Sha256::digest(original))});
+    saved_fault_run(dir.path(), serde_json::Value::Null, recorded, "complete");
+    std::fs::write(dir.path().join("serial.log"), original).unwrap();
+    let command = || {
+        harmony()
+            .args(["show", dir.path().to_str().unwrap(), "--logs", "--json"])
+            .output()
+            .unwrap()
+    };
+    let honest = command();
+    assert!(
+        honest.status.success(),
+        "{}",
+        String::from_utf8_lossy(&honest.stderr)
+    );
+    let shown: serde_json::Value = serde_json::from_slice(&honest.stdout).unwrap();
+    assert_eq!(shown[0]["lines"], serde_json::json!(["saved console"]));
+    std::fs::write(dir.path().join("serial.log"), b"altered console\n").unwrap();
+
+    let output = command();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recorded serial.log has changed"));
+}
+
+#[test]
+fn show_refuses_changed_failed_command_console_with_saved_digest() {
+    use sha2::{Digest, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let recorded =
+        serde_json::json!({"serial_sha256": format!("{:x}", Sha256::digest(b"saved console\n"))});
+    saved_fault_run(dir.path(), serde_json::Value::Null, recorded, "failed");
+    std::fs::write(dir.path().join("serial.log"), b"altered console\n").unwrap();
+
+    let output = harmony()
+        .args(["show", dir.path().to_str().unwrap(), "--logs", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("recorded serial.log has changed"));
 }
 
 #[test]
@@ -79,7 +137,12 @@ fn show_timeline_and_logs_use_saved_faults_witness_when_report_changes() {
         "bug_found": false, "first_bug_execution": null, "bugs": [], "replays": [witness],
         "execution_ticks": 1, "wall_seconds": 1, "execution_failures": 0
     });
-    saved_fault_run(dir.path(), serde_json::json!("node app"), recorded.clone());
+    saved_fault_run(
+        dir.path(),
+        serde_json::json!("node app"),
+        recorded.clone(),
+        "complete",
+    );
     let mut altered = recorded.clone();
     altered["replays"][0]["timeline"][0]["console"] = "altered console".into();
     std::fs::write(

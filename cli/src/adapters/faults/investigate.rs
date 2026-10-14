@@ -453,6 +453,7 @@ pub fn logs(
     json: bool,
 ) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
+    let manifest = Manifest::read(&path)?;
     let mut sections = Vec::new();
     let filter = |text: &str| -> Vec<String> {
         text.lines()
@@ -464,9 +465,18 @@ pub fn logs(
         if point.specified() {
             return Err("command logs have no action boundaries; omit point selectors".into());
         }
-        sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&fs::read_to_string(path.join("serial.log"))?)}));
+        let serial = fs::read(path.join("serial.log"))?;
+        if manifest.bundle.is_none() {
+            if let Some(expected) = manifest.record.payload["outcome"]["serial_sha256"].as_str() {
+                if crate::runtime::digest(&serial) != expected {
+                    return Err("recorded serial.log has changed".into());
+                }
+            } else if manifest.status == "complete" {
+                return Err("completed command has no saved serial digest".into());
+            }
+        }
+        sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&String::from_utf8(serial)?)}));
     } else {
-        let manifest = Manifest::read(&path)?;
         let witness = match recorded_witness(&manifest, selection.finding) {
             Ok(witness) => Some(witness),
             Err(_)
