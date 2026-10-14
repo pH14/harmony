@@ -100,8 +100,7 @@ fn compare_public_identity_portable_execution_state(
         right_snapshot.vm_state,
         "right VM state must use the current complete encoding"
     );
-    assert_eq!(left_state.contract_hash, contract::contract_hash());
-    assert_eq!(right_state.contract_hash, contract::contract_hash());
+    assert_eq!(left_state.contract_hash, right_state.contract_hash);
     left_state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&left_state.xsave.0, left_state.xsave_restore_bv)
             .expect("validate left XSAVE restore provenance");
@@ -183,7 +182,10 @@ fn public_identity_vmm(active: bool, seed: u64, xcr0: u64) -> Vmm<KvmBackend> {
     vmm.prepare_snapshot().unwrap();
     assert_eq!(
         vmm.save_vm_state().unwrap().contract_hash,
-        contract::contract_hash()
+        super::dispatch::bind_host_core_class(
+            contract::contract_hash(),
+            vmm.backend().host_core_class()
+        )
     );
     vmm
 }
@@ -318,6 +320,74 @@ fn assert_public_identity_negative_controls() {
             "portable comparison must retain {label} changes outside raw init metadata"
         );
     }
+}
+
+#[test]
+#[ignore = "requires Linux x86-64 KVM with accessible P-core and E-core pools"]
+fn public_snapshot_restore_rejects_a_different_host_core_class() {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
+
+    require_kvm();
+    let original = sched_getaffinity(None).unwrap();
+    let pool_cpu = |kind: &str| {
+        let text =
+            std::fs::read_to_string(format!("/sys/bus/event_source/devices/{kind}/cpus")).ok()?;
+        text.trim().split(',').find_map(|part| {
+            let (first, last) = part.split_once('-').unwrap_or((part, part));
+            let first = first.parse::<usize>().ok()?;
+            let last = last.parse::<usize>().ok()?;
+            (first..=last).find(|&cpu| cpu < CpuSet::MAX_CPU && original.is_set(cpu))
+        })
+    };
+    let (Some(p_cpu), Some(e_cpu)) = (pool_cpu("cpu_core"), pool_cpu("cpu_atom")) else {
+        eprintln!("host has no accessible P-core/E-core pair");
+        return;
+    };
+    struct ResetAffinity(CpuSet);
+    impl Drop for ResetAffinity {
+        fn drop(&mut self) {
+            sched_setaffinity(None, &self.0).unwrap();
+        }
+    }
+    let _reset = ResetAffinity(original);
+    let pin = |cpu: usize| {
+        let mut set = CpuSet::new();
+        set.set(cpu);
+        sched_setaffinity(None, &set).unwrap();
+    };
+
+    pin(p_cpu);
+    let mut source = public_identity_vmm(false, 0, 3);
+    let captured = source.save_vm_state().unwrap();
+    let encoded = captured.encode().unwrap();
+    let decoded = vm_state::VmState::decode(&encoded).unwrap();
+    let memory = source.guest_memory().to_vec();
+    assert_eq!(
+        source.backend().host_core_class(),
+        Some(vmm_backend::HostCoreClass::Performance)
+    );
+    drop(source);
+
+    let mut same_class = public_identity_vmm(false, 0, 3);
+    same_class.restore_snapshot(&memory, &decoded).unwrap();
+    drop(same_class);
+
+    pin(e_cpu);
+    let mut other_class = public_identity_vmm(false, 0, 3);
+    assert_eq!(
+        other_class.backend().host_core_class(),
+        Some(vmm_backend::HostCoreClass::Efficiency)
+    );
+    let before_hash = other_class.state_hash().unwrap();
+    let before_memory = other_class.guest_memory().to_vec();
+    assert!(matches!(
+        other_class.restore_snapshot(&memory, &decoded),
+        Err(crate::vmm::VmmError::Snapshot(
+            crate::snapshot::SnapshotError::ContractMismatch
+        ))
+    ));
+    assert_eq!(other_class.state_hash().unwrap(), before_hash);
+    assert_eq!(other_class.guest_memory(), before_memory);
 }
 
 #[test]

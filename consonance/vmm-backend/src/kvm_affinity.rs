@@ -2,12 +2,24 @@
 
 use std::collections::BTreeSet;
 
-use crate::{BackendError, Result};
+use crate::{BackendError, HostCoreClass, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum HostAffinity {
     Unreported,
-    Reported { allowed: BTreeSet<u16> },
+    Reported {
+        allowed: BTreeSet<u16>,
+        class: HostCoreClass,
+    },
+}
+
+impl HostAffinity {
+    pub(crate) fn class(&self) -> Option<HostCoreClass> {
+        match self {
+            Self::Unreported => None,
+            Self::Reported { class, .. } => Some(*class),
+        }
+    }
 }
 
 fn cpu_list(text: &str) -> Result<BTreeSet<u16>> {
@@ -25,13 +37,20 @@ fn cpu_list(text: &str) -> Result<BTreeSet<u16>> {
     Ok(cpus)
 }
 
-fn check_allowed_masks(allowed: &BTreeSet<u16>, pools: &[&BTreeSet<u16>]) -> Result<()> {
-    if pools.iter().any(|pool| allowed.is_subset(pool)) {
-        Ok(())
-    } else {
-        Err(BackendError::Unsupported {
+fn classify_allowed_mask(
+    allowed: &BTreeSet<u16>,
+    core: Option<&BTreeSet<u16>>,
+    atom: Option<&BTreeSet<u16>>,
+) -> Result<HostCoreClass> {
+    match (
+        core.is_some_and(|pool| allowed.is_subset(pool)),
+        atom.is_some_and(|pool| allowed.is_subset(pool)),
+    ) {
+        (true, false) => Ok(HostCoreClass::Performance),
+        (false, true) => Ok(HostCoreClass::Efficiency),
+        _ => Err(BackendError::Unsupported {
             what: "mixed or unknown hybrid CPU affinity; use taskset/cpuset to select one core-type pool for all related executions and restores",
-        })
+        }),
     }
 }
 
@@ -42,7 +61,7 @@ fn check_masks(allowed: &str, pools: &[String]) -> Result<()> {
         .iter()
         .map(|pool| cpu_list(pool))
         .collect::<Result<Vec<_>>>()?;
-    check_allowed_masks(&allowed, &pools.iter().collect::<Vec<_>>())
+    classify_allowed_mask(&allowed, pools.first(), pools.get(1)).map(|_| ())
 }
 
 fn read_affinity_file(path: &str) -> std::io::Result<String> {
@@ -75,17 +94,13 @@ pub(crate) fn check_host_affinity() -> Result<HostAffinity> {
         .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))
         .ok_or(BackendError::Internal("missing thread CPU affinity"))?;
     let allowed = cpu_list(allowed.trim())?;
-    let pools = [core.as_ref(), atom.as_ref()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
-    check_allowed_masks(&allowed, &pools)?;
-    Ok(HostAffinity::Reported { allowed })
+    let class = classify_allowed_mask(&allowed, core.as_ref(), atom.as_ref())?;
+    Ok(HostAffinity::Reported { allowed, class })
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) fn ensure_host_affinity(expected: &HostAffinity) -> Result<()> {
-    let HostAffinity::Reported { allowed } = expected else {
+    let HostAffinity::Reported { allowed, .. } = expected else {
         return Ok(());
     };
     let current = rustix::thread::sched_getaffinity(None).map_err(std::io::Error::from)?;
@@ -176,16 +191,25 @@ mod tests {
     fn discovered_pool_enforces_actual_thread_affinity() {
         use std::io::ErrorKind::NotFound;
         for (core, atom) in [(Ok("0-7"), Err(NotFound)), (Ok("0-7"), Ok(" "))] {
-            assert!(
-                with_files(core, atom, Some("Name:\ttest\nCpus_allowed_list:\t0,2-3\n")).is_ok()
+            assert_eq!(
+                with_files(core, atom, Some("Name:\ttest\nCpus_allowed_list:\t0,2-3\n"))
+                    .unwrap()
+                    .class(),
+                Some(HostCoreClass::Performance)
             );
             assert!(matches!(
                 with_files(core, atom, Some("Cpus_allowed_list:\t0,8\n")),
                 Err(BackendError::Unsupported { .. })
             ));
         }
-        assert!(with_files(Err(NotFound), Ok("8-23"), Some("Cpus_allowed_list: 8,23")).is_ok());
+        assert_eq!(
+            with_files(Err(NotFound), Ok("8-23"), Some("Cpus_allowed_list: 8,23"))
+                .unwrap()
+                .class(),
+            Some(HostCoreClass::Efficiency)
+        );
         assert!(with_files(Ok("0-7"), Ok("8-23"), Some("Cpus_allowed_list: 0-23")).is_err());
+        assert!(with_files(Ok("0-7"), Ok("0,8"), Some("Cpus_allowed_list: 0")).is_err());
     }
 
     #[test]

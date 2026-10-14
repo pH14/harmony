@@ -558,8 +558,12 @@ and execution accounting. Raw XSAVE presence remains restoration metadata; the
 logical projection below decides how it enters identity. The execution
 requirement is one qualified host core type
 for related boots and restores; see the backend README for affinity admission and
-its limits. Cross-type migration is not supported. Cross-host placement and broader
-XSAVE state lie outside the qualified set.
+its limits. On Linux KVM hosts reporting P-core/E-core topology, the captured
+class is bound into the x86 snapshot contract and the raw CPU state. Portable
+import and raw backend restore refuse a different class before changing the
+guest. A changed thread-affinity mask also refuses capture and restore. Hosts
+without reported class masks require placement qualification; cross-host
+placement and broader XSAVE state lie outside the qualified set.
 
 The supported x86 workload is the shipped 64-bit Linux kernel and initramfs on
 a 64-bit host. Application bitness is separate: 32-bit compatibility-mode

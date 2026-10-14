@@ -562,8 +562,19 @@ concurrent external changes. CPU topology is read at admission; CPU hotplug or
 topology remapping requires stopping and requalifying the worker.
 Hosts that hide hybrid topology, including nested VMs, require operator
 qualification of the underlying scheduling placement; absent masks do not prove
-homogeneity. Snapshot data does not yet encode a host core-type admission token,
-so cross-process and cross-host compatibility remain deployment requirements.
+homogeneity. Raw KVM CPU snapshots carry the admitted P-core or E-core class,
+and restore refuses a different or missing class before changing the vCPU.
+Snapshot validation also rechecks the current thread affinity, including when
+the VMM reuses a previously captured CPU record. The portable x86 VMM contract
+binds the same class, so import into the other class is refused before restore.
+On hosts without these topology masks the class is unreported and no hardware
+homogeneity can be inferred. Compatibility across different physical hosts,
+steppings, and feature sets still requires separate qualification.
+
+On the measured Core Ultra 9 285HX, six P-core captures restored on an E-core
+were previously accepted but produced different guest-written XSAVE and RAM
+after identical continuation. Same-class P-core controls matched. The class
+guard refuses those cross-class restores rather than certifying their output.
 
 On the measured Core Ultra 9 285HX, preparation on a P-core retained presence `2`,
 while moving the same vCPU to an E-core changed it to `3` with no guest instruction.

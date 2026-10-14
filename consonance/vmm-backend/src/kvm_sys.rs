@@ -11,6 +11,7 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
+use crate::HostCoreClass;
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
 #[cfg(test)]
@@ -291,6 +292,17 @@ impl KvmBackend {
 
     fn ensure_host_affinity(&self) -> Result<()> {
         crate::kvm_affinity::ensure_host_affinity(&self.host_affinity)
+    }
+
+    fn validate_host_core_class(&self, state: &VcpuState) -> Result<()> {
+        let current = self.host_affinity.class();
+        if state.host_core_class != current {
+            return Err(BackendError::HostCoreClassMismatch {
+                saved: state.host_core_class,
+                current,
+            });
+        }
+        Ok(())
     }
 
     fn reload_nested_memory_slots(&self) -> Result<()> {
@@ -1094,6 +1106,7 @@ impl Backend for KvmBackend {
             msrs,
             xsave,
             xsave_restore_bv,
+            host_core_class: self.host_affinity.class(),
             nested_state: match self.nested_state_config {
                 Some((format, size)) => {
                     // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before retaining its bytes.
@@ -1112,11 +1125,15 @@ impl Backend for KvmBackend {
     }
 
     fn validate_snapshot_state(&self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
+        self.validate_host_core_class(state)?;
         validate_kvm_xsave_mxcsr_presence(&state.xsave, state.xsave_restore_bv)
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
+        self.validate_host_core_class(state)?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(
             state,
@@ -1249,6 +1266,10 @@ impl Backend for KvmBackend {
 
     fn capabilities(&self) -> Capabilities<X86Caps> {
         kvm_capabilities()
+    }
+
+    fn host_core_class(&self) -> Option<HostCoreClass> {
+        self.host_affinity.class()
     }
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
@@ -1400,10 +1421,30 @@ mod xsave_diagnostic {
             })
             .unwrap();
         let before = backend.save().unwrap();
+        assert_eq!(backend.host_core_class(), before.host_core_class);
+        let mut wrong_class = before.clone();
+        wrong_class.host_core_class = Some(match before.host_core_class {
+            Some(HostCoreClass::Performance) => HostCoreClass::Efficiency,
+            Some(HostCoreClass::Efficiency) | None => HostCoreClass::Performance,
+        });
+        assert!(matches!(
+            backend.validate_snapshot_state(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert!(matches!(
+            backend.validate_restore_state(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert!(matches!(
+            backend.restore(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert_eq!(backend.save().unwrap(), before);
         let original = std::mem::replace(
             &mut backend.host_affinity,
             crate::kvm_affinity::HostAffinity::Reported {
                 allowed: Default::default(),
+                class: HostCoreClass::Performance,
             },
         );
         assert!(matches!(

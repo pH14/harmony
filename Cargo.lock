@@ -1190,6 +1190,7 @@ dependencies = [
  "libc",
  "memmap2",
  "proptest",
+ "rustix",
  "sha2",
  "snapshot-store",
  "tempfile",
