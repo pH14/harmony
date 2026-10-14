@@ -349,6 +349,12 @@ ROM with SHA-256 `0b3d9e1f…6dea`, the same ROM as `workloads/nes`. The page
 keeps it in IndexedDB and never uploads it. A visit without a stored ROM shows
 Twin Dragons and asks for the file.
 
+Choosing a game that needs a ROM in the game picker opens a page that takes
+the file by drag and drop or a file picker. A game with a `playthrough` entry
+also shows that YouTube video below, embedded from youtube-nocookie.com
+through the IFrame Player API, which sets the playback rate to 2. Super Mario
+Bros., Mega Man 2 and Metroid each have one.
+
 The adapter uses the RAM rules from `workloads/nes/src/smb`:
 
 | Address | Meaning |

@@ -56,7 +56,7 @@ ${game.attribution ? `<p class="game-attribution">${game.attribution}</p>` : ""}
 <aside class="state-picker" aria-label="Retained histories"><div class="section-title"><h2 id="cell-title">Saved paths</h2></div><p id="selection-hint" hidden></p><div id="state-list"></div><details class="state-disclosure"><summary>Game state</summary><div id="details" class="details"></div></details></aside></section><aside id="history-rail" class="history-rail" hidden><button id="history-reopen" aria-controls="inspector" aria-label="Expand History" aria-expanded="false" title="Expand History">‹<span>History</span></button></aside></div>
 <footer><a class="brand" href="https://github.com/pH14/harmony"><b>harmony</b></a><button id="credits">Credits & source</button><button id="theme" class="theme-button" aria-label="Switch color theme">Dark mode</button></footer>
 <div id="error" role="alert" hidden></div>
-<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Choose a starting point</h2><p>A fresh search, from any level.</p></div><div id="game-choice" class="segments game-choice" role="group" aria-label="Game"></div><p id="rom-message" class="rom-message" role="status" hidden></p><div id="level-grid" class="level-grid"></div></dialog>
+<dialog id="level-picker" aria-labelledby="level-picker-title"><div class="level-picker-heading"><button id="close-level-picker" class="close" aria-label="Close level selector">×</button><h2 id="level-picker-title">Pick a game</h2></div><div id="game-choice" class="segments game-choice" role="group" aria-label="Game"></div><section id="rom-panel" class="rom-panel" hidden><h3 id="rom-title"></h3><button id="rom-drop" class="rom-drop" type="button">Drop the ROM file here, or click to choose it</button><p id="rom-message" class="rom-message" role="status" hidden></p><div id="playthrough" class="playthrough" hidden><p>If you don’t have a ROM handy, you can watch an end-to-end playthrough</p><p id="playthrough-note" class="playthrough-note" hidden></p><div class="playthrough-frame"><div id="playthrough-video"></div></div></div></section><div id="level-grid" class="level-grid"></div></dialog>
 <dialog id="info"><button id="close-info" class="close" aria-label="Close">×</button><div id="info-content"></div></dialog></main>`;
 let heat = new Heatmap(),
   worker,
@@ -3204,14 +3204,15 @@ $("new-search").onclick = () => {
       location.assign(url);
     };
     button.onclick = () => {
-      if (choice === game) return;
-      if (choice.rom.upload && (choice !== requested || missingRom)) chooseRom(choice, play);
+      if (choice.rom.upload && (choice !== requested || missingRom)) showRomPanel(choice, play);
+      else if (choice === game) showLevelGrid();
       else play();
     };
     return button;
   }));
-  $("rom-message").hidden = !missingRom;
-  $("rom-message").textContent = missingRom ? `Choose your ${missingRom.title} ROM file to play it. It stays in this browser.` : "";
+  const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
+  if (shown) showRomPanel(shown, () => location.reload());
+  else showLevelGrid();
   $("level-grid").replaceChildren();
   for (const level of catalog.levels) {
     const card = document.createElement("button"), caption = document.createElement("span");
@@ -3243,22 +3244,97 @@ $("new-search").onclick = () => {
   $("level-picker").showModal();
 };
 $("close-level-picker").onclick = () => $("level-picker").close();
-function chooseRom(choice, play) {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".nes,application/octet-stream";
-  input.onchange = async () => {
-    const file = input.files?.[0];
-    if (!file) return;
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    $("rom-message").hidden = false;
-    if (bytes.length !== choice.rom.bytes || (await sha256Hex(bytes)) !== choice.rom.sha256)
-      $("rom-message").textContent = `That file is not the ${choice.title} ROM this demo supports. It needs the ${choice.rom.bytes.toLocaleString()}-byte ROM with SHA-256 ${choice.rom.sha256.slice(0, 12)}…`;
-    else if (!(await saveRom(choice.id, bytes)))
-      $("rom-message").textContent = "This browser blocks site storage, so the ROM cannot be kept for the page.";
-    else play();
+let playthroughPlayer = null;
+function pressGame(choice) {
+  for (const button of $("game-choice").children) button.setAttribute("aria-pressed", button.textContent === choice.title);
+}
+function showLevelGrid() {
+  pressGame(game);
+  $("rom-panel").hidden = true;
+  $("level-grid").hidden = false;
+  closePlaythrough();
+}
+function showRomPanel(choice, play) {
+  pressGame(choice);
+  $("level-grid").hidden = true;
+  $("rom-panel").hidden = false;
+  $("rom-panel").dataset.game = choice.id;
+  $("rom-title").textContent = `To explore ${choice.title} please supply the game’s ROM`;
+  $("rom-message").hidden = true;
+  const drop = $("rom-drop");
+  const accept = (file) => file && acceptRom(choice, file, play);
+  drop.onclick = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".nes,application/octet-stream";
+    input.onchange = () => accept(input.files?.[0]);
+    input.click();
   };
-  input.click();
+  drop.ondragover = (event) => {
+    event.preventDefault();
+    drop.classList.add("dragging");
+  };
+  drop.ondragleave = () => drop.classList.remove("dragging");
+  drop.ondrop = (event) => {
+    event.preventDefault();
+    drop.classList.remove("dragging");
+    accept(event.dataTransfer?.files?.[0]);
+  };
+  closePlaythrough();
+  const video = choice.playthrough;
+  $("playthrough").hidden = !video;
+  if (!video) return;
+  $("playthrough-note").hidden = !video.note;
+  $("playthrough-note").textContent = video.note || "";
+  youtubeApi()
+    .then((YT) => {
+      if ($("rom-panel").hidden || $("rom-panel").dataset.game !== choice.id || !$("level-picker").open) return;
+      let fast = false;
+      playthroughPlayer = new YT.Player("playthrough-video", {
+        host: "https://www.youtube-nocookie.com",
+        videoId: video.id,
+        playerVars: { rel: 0, playsinline: 1 },
+        events: {
+          onReady: (event) => event.target.setPlaybackRate(2),
+          onStateChange: (event) => {
+            if (event.data !== YT.PlayerState.PLAYING || fast) return;
+            fast = true;
+            event.target.setPlaybackRate(2);
+          },
+        },
+      });
+    })
+    .catch(() => ($("playthrough").hidden = true));
+}
+function closePlaythrough() {
+  playthroughPlayer?.destroy?.();
+  playthroughPlayer = null;
+  const frame = document.querySelector(".playthrough-frame");
+  if (frame && !frame.querySelector("#playthrough-video")) {
+    const div = document.createElement("div");
+    div.id = "playthrough-video";
+    frame.replaceChildren(div);
+  }
+}
+function youtubeApi() {
+  if (window.YT?.Player) return Promise.resolve(window.YT);
+  return (youtubeApi.loading ||= new Promise((resolve, reject) => {
+    window.onYouTubeIframeAPIReady = () => resolve(window.YT);
+    const script = document.createElement("script");
+    script.src = "https://www.youtube.com/iframe_api";
+    script.onerror = reject;
+    document.head.append(script);
+  }));
+}
+$("level-picker").addEventListener("close", closePlaythrough);
+async function acceptRom(choice, file, play) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  $("rom-message").hidden = false;
+  if (bytes.length !== choice.rom.bytes || (await sha256Hex(bytes)) !== choice.rom.sha256)
+    $("rom-message").textContent = `That file is not the ${choice.title} ROM this demo supports. It needs the ${choice.rom.bytes.toLocaleString()}-byte ROM with SHA-256 ${choice.rom.sha256.slice(0, 12)}…`;
+  else if (!(await saveRom(choice.id, bytes)))
+    $("rom-message").textContent = "This browser blocks site storage, so the ROM cannot be kept for the page.";
+  else play();
 }
 
 requestAnimationFrame(animate);

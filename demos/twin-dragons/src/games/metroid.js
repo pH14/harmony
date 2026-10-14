@@ -311,6 +311,7 @@ export default {
   id: "metroid",
   title: "Metroid",
   core: "quicknes",
+  playthrough: { id: "4F32JyZ3Uso", note: "2.5 hours of tortured game play!" },
   rom: {
     upload: true,
     bytes: 131088,

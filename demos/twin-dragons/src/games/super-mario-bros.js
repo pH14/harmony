@@ -251,6 +251,7 @@ export default {
   id: "super-mario-bros",
   title: "Super Mario Bros.",
   core: "quicknes",
+  playthrough: { id: "n2t0qRb2RVs" },
   rom: {
     upload: true,
     bytes: 40976,

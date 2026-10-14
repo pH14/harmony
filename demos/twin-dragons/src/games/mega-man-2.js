@@ -422,6 +422,7 @@ export default {
   id: "mega-man-2",
   title: "Mega Man 2",
   core: "quicknes",
+  playthrough: { id: "RAVZgbFCTuU" },
   rom: {
     upload: true,
     bytes: 262160,

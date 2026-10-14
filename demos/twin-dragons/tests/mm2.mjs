@@ -70,9 +70,10 @@ page.on("pageerror", (error) => errors.push(error.message));
 await page.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
 await page.goto(`${process.env.DEMO_URL || "http://127.0.0.1:4173"}/?game=mega-man-2&pace=0&workers=2`);
 await page.locator("#level-picker[open]").waitFor({ timeout: 30000 });
-assert.match(await page.locator("#rom-message").innerText(), /Choose your Mega Man 2 ROM/);
+assert.equal(await page.locator("#rom-title").innerText(), "To explore Mega Man 2 please supply the game’s ROM");
+assert.equal(await page.locator("#playthrough").isVisible(), true, "The ROM page offers a playthrough video");
 const chooser = page.waitForEvent("filechooser");
-await page.locator("#game-choice button", { hasText: "Mega Man 2" }).click();
+await page.locator("#rom-drop").click();
 await (await chooser).setFiles(path);
 const drawn = await (await page.waitForFunction(() => {
   const strip = document.querySelector('.level-overview[data-map="0"]');
