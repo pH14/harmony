@@ -462,6 +462,43 @@ fn replay_rejects_a_skip_weight_not_derived_from_the_energy_policy() {
 }
 
 #[test]
+fn replay_rejects_selector_tiers_beyond_the_archive_population_limit() {
+    let config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 18);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let original = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    for kind in ["job", "skip"] {
+        let mut lines = original.clone();
+        let line = lines
+            .iter_mut()
+            .find(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                value["event"] == kind && value["selector"]["path"] != "continuation"
+            })
+            .expect("an ordinary tier selection");
+        let mut value: serde_json::Value = serde_json::from_str(line).unwrap();
+        value["selector"]["tier_rank"] = serde_json::json!(config.archive_entry_limit);
+        *line = serde_json::to_string(&value).unwrap();
+        let error = replay_error(&lines);
+        assert!(
+            error.contains("tier rank exceeds the archive population limit"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn a_tampered_continuation_record_fails_its_replay() {
     let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
     let mut bytes = Vec::new();

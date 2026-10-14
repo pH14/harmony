@@ -45,7 +45,10 @@ fixed reserves, so a budget smaller than that working set leaves the archive
 above its limit. The archive picks the anchor, and reactivates it when no entry
 is expandable, during the maintenance after bootstrap and after each admission
 and skip. Parent selection does not change the archive, so replay reaches the
-same archive state without repeating selection. The final report selects no
+same archive state without repeating selection. The recorded parent choice is
+an input to replay, while its tier rank must be below the archive population
+limit because no selector draw can name a tier beyond that many active entries.
+The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
 schedule policy version 5
