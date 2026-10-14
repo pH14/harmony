@@ -32,6 +32,10 @@ configuration always starts `/usr/lib/harmony/supervisor` as root. The
 supervisor reads the mounted execution specification and applies its argv,
 environment, working directory, and resolved image credentials to the
 application process.
+`PreparedExecution::archived_rootfs` verifies and visits the exact rootfs CPIO
+segment already chosen for the guest image. Consumers that admit executable
+bytes or read supervisor metadata use that archived view after packing, so a
+later mutation of the staging tree cannot change what they admit.
 
 External destinations are absolute normalized paths with bounded count and
 payload size. Platform-owned paths, duplicate destinations, and file/parent
