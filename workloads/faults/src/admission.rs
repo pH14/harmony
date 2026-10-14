@@ -77,6 +77,40 @@ impl ImageReport {
         }
         Ok(())
     }
+
+    pub fn require_uml_admission(&self) -> Result<(), Box<dyn Error>> {
+        self.require_admission()?;
+        let native_entropy = self
+            .executables
+            .iter()
+            .flat_map(|executable| {
+                executable
+                    .sites
+                    .iter()
+                    .filter(|site| {
+                        matches!(
+                            site.instruction.as_str(),
+                            "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS"
+                        )
+                    })
+                    .map(|site| {
+                        format!(
+                            "{} 0x{:x} {} ({})",
+                            site.digest, site.address, site.instruction, executable.path
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        if native_entropy.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "User-mode Linux executes hardware entropy instructions natively; these image sites cannot be admitted even when reviewed:\n{}",
+                native_entropy.join("\n")
+            )
+            .into())
+        }
+    }
 }
 
 pub fn inspect_image(image: &str) -> Result<ImageReport, Box<dyn Error>> {
@@ -475,6 +509,13 @@ mod tests {
         let accepted = inspect_root(root.path()).unwrap();
         assert!(accepted.scan_passed());
         assert!(accepted.require_admission().is_ok());
+        assert!(
+            accepted
+                .require_uml_admission()
+                .unwrap_err()
+                .to_string()
+                .contains("RDRAND")
+        );
         fs::write(
             root.path().join("node"),
             elf(&[0x0f, 0xc7, 0xf0, 0xc3, 0x90], 5, 6),

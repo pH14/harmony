@@ -85,6 +85,11 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
         c.image.as_deref().ok_or("application image missing")?,
         &base,
         generated.as_deref(),
+        if c.backend == Backend::Uml {
+            faults_workload::prepare::ExecutionMode::Uml
+        } else {
+            faults_workload::prepare::ExecutionMode::Vm
+        },
     )?;
     Ok((
         Artifacts {

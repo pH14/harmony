@@ -46,6 +46,13 @@ before it builds the guest image ([`admission`](src/admission.rs)). It rejects:
   ([format](../languages/reviewed/README.md));
 - a review entry that matches no instruction in the image.
 
+For User-mode Linux, preparation rejects all four scanned hardware entropy
+instructions even when reviewed. UML runs guest user instructions natively, so
+the VM's hidden feature bits do not protect a guarded call site. This admission
+check applies to executable sections in the staged image. The existing scan
+boundary still requires cooperative workloads: dynamically generated code and
+instructions hidden in unscanned executable bytes are outside its guarantee.
+
 Each line of `/symbols/harmony-instrumented-events` holds a SHA-256 and an
 absolute image path, and must match that file. Event actions are enabled when
 this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
