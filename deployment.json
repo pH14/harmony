@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "989cc5eff",
+    "commit": "cfc221ad4",
     "build": "locally verified static build",
-    "checks": "Production build, the browser, interactions, levels-browser, replay-pause, room camera, level-finish and tour browser checks in Chrome, and the unit tests on the source branch.",
-    "asset_manifest_sha256": "030fd7acc630aaf2a96827846e55961159949582a2ddf44d251eef671ad05c36"
+    "checks": "Runtime and production build, the full browser suite, campaign oracle and unit tests on the source branch, and the Mega Man 2, Metroid, Super Mario Bros. and browser checks in Chrome on this build.",
+    "asset_manifest_sha256": "e18fe0856d77fb35d968e8bb9fd566c797fa3b754e3536a87c28f58d06fd3fa3"
   }
 }
