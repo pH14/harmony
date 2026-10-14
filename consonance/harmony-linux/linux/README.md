@@ -96,6 +96,16 @@ later JIT code, executable remapping, or file mutation.
 
 The supported workload guest is the shipped 64-bit Linux kernel and its
 initramfs. The x86 loader requires the [64-bit Linux boot entry](https://docs.kernel.org/arch/x86/boot.html).
+The x86 kernel build rejects raw RDTSC, RDTSCP, RDRAND, and RDSEED in the
+kernel proper, setup, and decompressor. Its scan checks that the known
+linker-defined code sections present in each image are marked executable before
+relying on section-based disassembly;
+an unreadable or empty disassembly also fails the build. This guards against an
+executable image whose section flags hide code from `objdump -d`. Read-only data
+shares some executable ELF segments, so segment flags alone do not identify
+instruction bytes. `test_x86_counter_scan.py` exercises the section mismatch in
+all three artifacts.
+
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during
 boot without admitting them as restorable snapshots. These checks observe boundaries;
