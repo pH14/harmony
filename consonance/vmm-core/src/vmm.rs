@@ -879,6 +879,7 @@ where
             Some(s) => s.clone(),
             None => self.backend.save()?,
         };
+        self.backend.validate_snapshot_state(&vcpu)?;
         <B::A as Vendor>::check_sealable_vcpu(&vcpu)?;
         self.check_guest_mode(&vcpu)?;
         let snapshot = self.build_snapshot_state(&vcpu)?;
@@ -6348,6 +6349,7 @@ mod tests {
         inner: MockBackend,
         save_calls: std::cell::Cell<usize>,
         fail_after: usize,
+        reject_snapshot: bool,
     }
 
     impl Backend for CountSaveBackend {
@@ -6398,6 +6400,13 @@ mod tests {
             }
             self.inner.save()
         }
+        fn validate_snapshot_state(&self, _state: &VcpuState) -> vmm_backend::Result<()> {
+            if self.reject_snapshot {
+                Err(vmm_backend::BackendError::NonportableXsaveMxcsr)
+            } else {
+                Ok(())
+            }
+        }
         fn restore(&mut self, s: &VcpuState) -> vmm_backend::Result<()> {
             self.inner.restore(s)
         }
@@ -6421,6 +6430,7 @@ mod tests {
             inner: configured_mock(Vec::new()),
             save_calls: std::cell::Cell::new(0),
             fail_after: usize::MAX,
+            reject_snapshot: false,
         };
         let mut vmm = Vmm::new(backend, GuestRam::new(4096).unwrap());
         vmm.wire_snapshot_hashing();
@@ -7043,6 +7053,7 @@ mod tests {
                 inner: configured_mock(exits()),
                 save_calls: std::cell::Cell::new(0),
                 fail_after: 1,
+                reject_snapshot: false,
             },
             GuestRam::new(0x2000).unwrap(),
         );
@@ -7079,6 +7090,7 @@ mod tests {
                 inner: configured_mock(exits()),
                 save_calls: std::cell::Cell::new(0),
                 fail_after: 1,
+                reject_snapshot: false,
             },
             GuestRam::new(0x2000).unwrap(),
         );
@@ -7133,6 +7145,25 @@ mod tests {
             matches!(v.state_hash(), Err(VmmError::Backend(_))),
             "a failing register read must not produce a hash of default CPU state"
         );
+    }
+
+    #[test]
+    fn rejected_snapshot_preserves_guest_execution_and_state_hashing() {
+        let backend = Box::new(CountSaveBackend {
+            inner: configured_mock(vec![Exit::Common(CommonExit::Shutdown)]),
+            save_calls: std::cell::Cell::new(0),
+            fail_after: usize::MAX,
+            reject_snapshot: true,
+        });
+        let mut vmm = Vmm::new(backend, GuestRam::new(0x1000).unwrap());
+        assert_eq!(vmm.run().unwrap().reason, TerminalReason::Shutdown);
+        assert!(vmm.state_hash().is_ok());
+        assert!(matches!(
+            vmm.save_vm_state(),
+            Err(VmmError::Backend(
+                vmm_backend::BackendError::NonportableXsaveMxcsr
+            ))
+        ));
     }
 
     #[test]

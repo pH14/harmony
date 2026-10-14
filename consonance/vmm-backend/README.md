@@ -596,9 +596,10 @@ is preserved. The original restore bitmap remains separately bound. This does
 not assert that raw guest XSAVE buffers with both bits absent are returned
 unchanged by the host UABI.
 
-KVM capture and restore reject a YMM-present/SSE-absent image with non-init
-MXCSR before publishing a snapshot or mutating the vCPU. A host using compacted
-restore can retain MXCSR=0x3f80 in its KVM UABI buffer while guest entry
+KVM rejects a YMM-present/SSE-absent image with non-init MXCSR when publishing
+a snapshot or before restoring the vCPU. Ordinary register reads and guest
+execution remain available. A host using compacted restore can retain
+MXCSR=0x3f80 in its KVM UABI buffer while guest entry
 initializes live MXCSR to 0x1f80. A host using standard XRSTOR may restore that
 state locally, but the snapshot would not be portable to a compacted host. The
 ignored `ymm_without_sse_noninit_mxcsr_restore_rejects_atomically` regression checks
