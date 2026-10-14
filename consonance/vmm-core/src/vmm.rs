@@ -1850,11 +1850,8 @@ where
     ) -> Result<Option<channel::HandlerFingerprint>, channel::ChannelError> {
         match self.sdk.as_ref() {
             None => Ok(None),
-            Some(sdk) => match sdk.env.handler_fingerprint() {
-                Ok(fingerprint) => Ok(Some(fingerprint)),
-                Err(channel::ChannelError::Poisoned) => Ok(None),
-                Err(error) => Err(error),
-            },
+            Some(sdk) if sdk.env.is_poisoned() => Ok(None),
+            Some(sdk) => sdk.env.handler_fingerprint().map(Some),
         }
     }
 
