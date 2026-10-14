@@ -789,6 +789,21 @@ jobs:
             'AMD NPT 32-bit PAE continuation is excluded from snapshot publication; the required amd-pae-refusal regression above proves fail-closed capture and prevents resumed execution.' \
             'The prior guest-authored PDPT A5,42 versus captured A5,99 hardware witness is retained in https://github.com/pH14/harmony/issues/314.' \
             >> "$GITHUB_STEP_SUMMARY"
+      - name: Record AMD long-mode full-VMM XRSTOR-to-init reused continuation
+        if: ${{ !cancelled() && steps.host.outcome == 'success' && steps.host.outputs.amd_npt == 'true' }}
+        continue-on-error: true
+        env:
+          XSAVE_XRSTOR_LONG_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xrstor-init-long-full-vmm
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf 'fixed_cpu=%s\nmode=64-bit long\n' "$cpu" > snapshot-report/xrstor-init-long-full-vmm.txt
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
+            -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::xrstor_init_long_mode_guest_bytes_survive_reused_continuation \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/xrstor-init-long-full-vmm.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xrstor-init-long-full-vmm.log
       - name: Explain informational XSAVE results
         if: always()
         run: |
