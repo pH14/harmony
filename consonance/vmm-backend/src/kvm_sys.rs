@@ -831,8 +831,11 @@ impl Backend for KvmBackend {
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
         self.ensure_host_affinity()?;
+        self.state_mutation_guard.begin()?;
         self.install_cpuid(&policy.cpuid)?;
-        self.install_msr_filter(&policy.msr_filter)
+        self.install_msr_filter(&policy.msr_filter)?;
+        self.state_mutation_guard.finish();
+        Ok(())
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
@@ -1241,6 +1244,71 @@ impl Backend for KvmBackend {
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+}
+
+#[cfg(test)]
+mod policy_diagnostic {
+    use super::*;
+    use crate::arch::x86::MsrRange;
+
+    #[test]
+    #[ignore = "live KVM policy boundary; requires /dev/kvm"]
+    fn rejected_msr_filter_retires_partly_reconfigured_vcpu() {
+        let mut backend = KvmBackend::new().unwrap();
+        let first = X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 1,
+                    eax: 0,
+                    ..Default::default()
+                }],
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        };
+        backend.set_policy(&first).unwrap();
+        let before = backend.vcpu.get_cpuid2(16).unwrap();
+        let before_leaf = before
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 1)
+            .unwrap()
+            .eax;
+        assert_eq!(before_leaf, 0);
+        backend.save().unwrap();
+
+        let mut rejected = first.clone();
+        rejected.cpuid.entries[0].eax = 1;
+        rejected.msr_filter.allow_inkernel = vec![MsrRange {
+            base: 0x174,
+            count: 0,
+        }];
+        assert!(matches!(
+            backend.set_policy(&rejected),
+            Err(BackendError::Io(_))
+        ));
+        let after = backend.vcpu.get_cpuid2(16).unwrap();
+        let after_leaf = after
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 1)
+            .unwrap()
+            .eax;
+        assert_eq!(after_leaf, 1);
+        assert!(backend.configured());
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.set_policy(&first),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 }
 

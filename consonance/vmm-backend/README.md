@@ -19,6 +19,12 @@ an ISA-specific exit enum.
 An x86 KVM entry failure retains the hardware failure reason and CPU reported by
 `KVM_EXIT_FAIL_ENTRY`. The structured error reaches the caller and workload
 failure trace, distinguishing invalid guest state from other entry failures.
+KVM policy installation changes the live CPUID before installing the VM-wide
+MSR filter. If either write fails, the vCPU is retired: a failed filter can
+leave new CPUID with the previous filter, which must not be captured or run as
+one coherent policy. The live `rejected_msr_filter_retires_partly_reconfigured_vcpu`
+test changes a CPUID leaf, makes KVM reject a zero-length filter range, and
+requires subsequent capture and policy installation to refuse the vCPU.
 
 Before the first policy is installed, `KvmBackend::nested_capabilities` selects
 KVM-supported VMX or SVM. `initialize_nested` checks `KVM_CAP_NESTED_STATE` and
