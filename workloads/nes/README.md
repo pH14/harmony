@@ -253,6 +253,9 @@ this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
 image in `workload.options.guest_image`.
 
 `package` exposes typed search and replay for native and prepared guest execution.
+Native search and replay require the saved core digest from the run manifest;
+the package checks the on-disk core before constructing a target, and the
+QuickNES loader checks its private copy against the same digest on every load.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search
