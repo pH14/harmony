@@ -19,7 +19,14 @@
   reserves those numbers for its lifetime and refuses profiles if another host
   resource already occupies one.
 - `HostIdentity::current` reads the first processor allowed by the calling
-  thread and its CPU model and features from `/proc/cpuinfo`. Each `Launch`
+  thread and its CPU model and features from `/proc/cpuinfo`. It also records
+  the exact CPU-info lines the pinned UML kernel imports at boot. On x86, the
+  kernel consumes lines containing `flags` or `cache_alignment` until it has
+  seen two matches; those lines may belong to processors other than the one
+  running the guest. On arm64, it consumes leading `cache_alignment` lines
+  before the first ordinary line, then uses host auxiliary-vector features.
+  `HostIdentity::identity_sha256` binds all recorded fields with lengths. Each
+  `Launch`
   admits one processor on first use and shares that admission with its clones;
   moving an ordinary launch to a thread that excludes that processor refuses
   execution. A caller can instead bind a verified expected host identity when
@@ -28,7 +35,9 @@
   in its final pre-exec step, after caller-supplied callbacks. The child fails
   to spawn if its cpuset no longer permits the processor. Qualification's
   pinned replay perturbation contends for the actual guest processor and
-  verifies the final affinity despite an earlier override callback.
+  verifies the final affinity despite an earlier override callback. The host
+  identity is checked before spawn; it does not atomically pin the host's
+  `/proc/cpuinfo` bytes until UML reads them during boot.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
@@ -118,8 +127,9 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` names the profile, host, seed, memory, boot arguments, event
-  count and event hash of a run. Schema 2 includes the selected host processor.
+- `Recording` schema 3 names the profile, full host identity, seed, memory,
+  boot arguments, event count and event hash of a run. Earlier schemas are
+  refused.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation derives identity from the admitted `Launch`;

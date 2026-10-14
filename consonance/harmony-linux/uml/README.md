@@ -219,9 +219,12 @@ must run Linux 6.12 or later, the first release where `PR_SET_TSC` traps
 counter reads, and must use 4 KiB pages: a guest page is a host mapping, and
 the arm64 profile uses 4 KiB pages. Guest
 instructions run natively, so a recording is valid only on the CPU that made
-it. `HostIdentity` records the CPU model and feature flags, and replay refuses
-a recording from a different CPU. Guests must be trusted: the UML
-SECCOMP filter does not stop guest userspace from reading UML's memory.
+it. `HostIdentity` records the CPU model, feature flags, and the exact host
+`/proc/cpuinfo` lines imported by the pinned UML kernel at boot. The x86
+kernel may read two processors' flag lines when no `cache_alignment` line
+appears. Replay refuses a different recorded host identity. Guests must be
+trusted: the UML SECCOMP filter does not stop guest userspace from reading UML's
+memory.
 
 The launcher sets `GLIBC_TUNABLES=glibc.pthread.rseq=0`. UML keeps its own
 memory image, and a glibc-registered restartable-sequence area in that image

@@ -109,13 +109,7 @@ impl UmlGuest {
     }
 
     fn identity(profile: &str, host: &uml::HostIdentity) -> String {
-        format!(
-            "profile={profile};architecture={};processor={};cpu={};features={:x}",
-            host.architecture,
-            host.processor,
-            host.cpu_model,
-            Sha256::digest(host.cpu_features.as_bytes())
-        )
+        format!("profile={profile};host={}", host.identity_sha256())
     }
 
     #[cfg(target_os = "linux")]
@@ -1424,6 +1418,7 @@ mod tests {
                 processor: 0,
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
+                boot_cpuinfo: "flags: features\n".into(),
             },
             identity: "admitted-host".into(),
             work_parent: directory.path().to_path_buf(),
@@ -1440,6 +1435,12 @@ mod tests {
         assert_eq!(std::fs::read(&launch.initramfs).unwrap(), b"initramfs");
         std::fs::write(&launch.initramfs, b"stale initramfs").unwrap();
         assert!(uml_launch(&guest, b"initramfs", &config).is_err());
+        let mut foreign_boot = guest.host.clone();
+        foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
+        assert_ne!(
+            UmlGuest::identity("admitted-profile", &guest.host),
+            UmlGuest::identity("admitted-profile", &foreign_boot)
+        );
     }
 
     #[test]
@@ -1452,6 +1453,7 @@ mod tests {
                 processor: 0,
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
+                boot_cpuinfo: "flags: features\n".into(),
             },
             identity: "admitted-host".into(),
             work_parent: PathBuf::from("work"),
