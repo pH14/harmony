@@ -66,6 +66,8 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
      recorded stream";
 
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
+const EXECUTOR_MODE: &str = "snapshot_resume_archive";
+const SELECTION_SEED_DERIVATION: &str = "sha256(campaign_seed_le)[0..8] as u64 le";
 const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
@@ -2052,8 +2054,8 @@ fn stream_header<G: Workload>(
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
         preference_portfolio: preference_portfolio_identifier::<G::Key>(),
-        executor_mode: "snapshot_resume_archive".to_owned(),
-        selection_seed_derivation: "sha256(campaign_seed_le)[0..8] as u64 le".to_owned(),
+        executor_mode: EXECUTOR_MODE.to_owned(),
+        selection_seed_derivation: SELECTION_SEED_DERIVATION.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
         action_cost_unit: workload.action_cost_unit().to_owned(),
         execution_work_unit: workload.execution_work_unit().to_owned(),
@@ -4360,6 +4362,11 @@ where
     if !progress_policy_is_supported(&header.progress_policy) {
         return Err("campaign stream progress policy is not recognized".into());
     }
+    if header.executor_mode != EXECUTOR_MODE
+        || header.selection_seed_derivation != SELECTION_SEED_DERIVATION
+    {
+        return Err("campaign stream execution provenance is not recognized".into());
+    }
     if header.workload_identity_sha256 != workload.workload_identity_sha256() {
         return Err("campaign replay workload identity does not match the recorded stream".into());
     }
@@ -6301,6 +6308,27 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         (workload, lines)
+    }
+
+    #[test]
+    fn replay_rejects_forged_execution_provenance_labels() {
+        let (workload, original_lines) = five_job_campaign_stream();
+        for (field, forged) in [
+            ("executor_mode", "not_snapshot_resume_archive"),
+            ("selection_seed_derivation", "not_sha256"),
+        ] {
+            let mut lines = original_lines.clone();
+            let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            header[field] = serde_json::json!(forged);
+            lines[0] = serde_json::to_string(&header).unwrap();
+            let result =
+                replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None);
+            assert!(
+                result.is_err(),
+                "replay certified forged {field}: {:?}",
+                result.unwrap().0
+            );
+        }
     }
 
     #[test]
