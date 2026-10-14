@@ -507,9 +507,12 @@ length or longer from the same parent is still in flight, the next job runs one
 action instead. The job in flight already tests that length, and admission in
 planned-finish order returns long jobs late, so more jobs of that length would
 repeat the same test.
-Replay cuts the redrawn suffix to the recorded limit. It rejects a drawn job
-whose limit is missing or outside 1 to 64, and a spliced or continued job that
-records a limit.
+Replay rebuilds the parent's length and the limits held by earlier in-flight
+reservations before accepting each recorded job limit. It cuts the redrawn
+suffix to the recorded limit. It rejects a drawn job whose limit is missing or
+outside 1 to 64, and a spliced or continued job that records a limit. Skip
+records only check the limit's shape and range because the stream does not
+identify which reservations were in flight when the skip was selected.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
