@@ -1606,6 +1606,12 @@ mod xsave_diagnostic {
     #[test]
     #[ignore = "native KVM restore boundary guards; requires /dev/kvm"]
     fn snapshot_restore_drains_an_acknowledged_write_completion() {
+        let logical = |mut state: VcpuState| {
+            state.xsave_restore_bv =
+                crate::arch::x86::logical_xsave_restore_bv(&state.xsave, state.xsave_restore_bv)
+                    .unwrap();
+            state
+        };
         let mut backend = KvmBackend::new().unwrap();
         let mut policy = diagnostic_policy();
         policy.msr_filter.allow_inkernel.push(MsrRange {
@@ -1620,7 +1626,7 @@ mod xsave_diagnostic {
         backend.pending = Pending::None;
         backend.completion = ACKNOWLEDGED_WRITE;
         let counts = backend.exit_counts();
-        assert_eq!(backend.save().unwrap(), before);
+        assert_eq!(logical(backend.save().unwrap()), logical(before.clone()));
         assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.exit_counts(), counts);
 
@@ -1629,16 +1635,7 @@ mod xsave_diagnostic {
         assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.pending, Pending::None);
         assert_eq!(backend.exit_counts(), counts);
-        let mut observed = backend.save().unwrap();
-        observed.xsave_restore_bv =
-            crate::arch::x86::logical_xsave_restore_bv(&observed.xsave, observed.xsave_restore_bv)
-                .unwrap();
-        replacement.xsave_restore_bv = crate::arch::x86::logical_xsave_restore_bv(
-            &replacement.xsave,
-            replacement.xsave_restore_bv,
-        )
-        .unwrap();
-        assert_eq!(observed, replacement);
+        assert_eq!(logical(backend.save().unwrap()), logical(replacement));
 
         let before_rejection = backend.save().unwrap();
         let mut inconsistent = before_rejection.clone();
