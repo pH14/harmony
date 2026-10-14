@@ -91,6 +91,28 @@ def make_allocated_code_load_executable(path):
     raise AssertionError("hidden code has no load segment")
 
 
+def rename_hidden_to_rodata(path):
+    data = bytearray(path.read_bytes())
+    section_offset = struct.unpack_from("<Q", data, 40)[0]
+    section_size, section_count, names_index = struct.unpack_from("<HHH", data, 58)
+    names_header = section_offset + names_index * section_size
+    names_offset, names_size = struct.unpack_from("<QQ", data, names_header + 24)
+    names = data[names_offset : names_offset + names_size]
+    hidden_header = None
+    rodata_name = None
+    for index in range(section_count):
+        header = section_offset + index * section_size
+        name_offset = struct.unpack_from("<I", data, header)[0]
+        name = names[name_offset:].split(b"\0", 1)[0]
+        if name == b".hidden":
+            hidden_header = header
+        elif name == b".rodata":
+            rodata_name = name_offset
+    assert hidden_header is not None and rodata_name is not None
+    struct.pack_into("<I", data, hidden_header, rodata_name)
+    path.write_bytes(data)
+
+
 class CounterScanCoverage(unittest.TestCase):
     @unittest.skipUnless(
         platform.system() == "Linux" and platform.machine() == "x86_64",
@@ -165,7 +187,24 @@ class CounterScanCoverage(unittest.TestCase):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn(f"{tag} (", result.stderr)
-                    self.assertIn("unclaimed RDSEED", result.stderr)
+                    self.assertIn("unreviewed allocated data section '.hidden'", result.stderr)
+
+            inert = root / "inert.s"
+            inert.write_text(
+                '.section .data,"aw"\n.byte 0x0f,0x31,0x0f,0xc7,0xf8\n'
+                '.section .text,"ax"\n.global _start\n_start:\nret\n'
+            )
+            run("as", "--64", "-o", str(root / "inert.o"), str(inert))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "inert.elf"), str(root / "inert.o"))
+            inert_bytes = (root / "inert.elf").read_bytes()
+            for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
+                kernel.write_bytes(safe_bytes)
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                target.write_bytes(inert_bytes)
+                with self.subTest(mode="inert-data", target=tag):
+                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
             read_only = root / "read_only.s"
             read_only.write_text(
@@ -186,6 +225,30 @@ class CounterScanCoverage(unittest.TestCase):
                 with self.subTest(mode="read-only-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            duplicate = root / "duplicate.s"
+            duplicate.write_text(
+                '.section .hidden,"a"\n.global hidden_start\nhidden_start:\nrdseed %eax\nret\n'
+                '.section .rodata,"a"\n.byte 0x00\n'
+                '.section .text,"ax"\n.global _start\n_start:\nret\n'
+            )
+            run("as", "--64", "-o", str(root / "duplicate.o"), str(duplicate))
+            run(
+                "ld", "-nostdlib", "-e", "hidden_start", "-o",
+                str(root / "duplicate.elf"), str(root / "duplicate.o"),
+            )
+            make_allocated_code_load_executable(root / "duplicate.elf")
+            rename_hidden_to_rodata(root / "duplicate.elf")
+            duplicate_bytes = (root / "duplicate.elf").read_bytes()
+            for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
+                kernel.write_bytes(safe_bytes)
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                target.write_bytes(duplicate_bytes)
+                with self.subTest(mode="duplicate-rodata", target=tag):
+                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("duplicate allocated data section '.rodata'", result.stderr)
 
 
 if __name__ == "__main__":
