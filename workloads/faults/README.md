@@ -73,7 +73,8 @@ its start, regardless of the section's executable flag, and separately decodes
 the gaps between sections. This preserves instruction alignment when a segment
 begins with headers or other data without reporting an instruction assembled
 across a section boundary. On arm64 it checks aligned instruction words across
-the whole executable load segment, so odd-length data sections are harmless. A
+the whole executable load segment, ignoring a trailing partial word that cannot
+hold an instruction, so odd-length data sections are harmless. A
 binary built to hide an x86 instruction inside another instruction's operand
 bytes can still pass.
 
