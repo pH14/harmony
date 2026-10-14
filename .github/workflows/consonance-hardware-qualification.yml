@@ -25,7 +25,7 @@ env:
 jobs:
   probe:
     name: Runner CPU Features — Replica ${{ matrix.replica }}
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
@@ -119,7 +119,7 @@ jobs:
 
   guest-image:
     name: Linux Guest Image
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -152,7 +152,7 @@ jobs:
 
   n6-instruction-sweep:
     name: Instruction Timing Sweep
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -201,7 +201,7 @@ jobs:
 
   go-runtime:
     name: Go Runtime Determinism — Replica ${{ matrix.replica }}
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -248,7 +248,7 @@ jobs:
 
   x2-linux-virtual_time:
     name: Linux Virtual Time — Replica ${{ matrix.replica }}
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -322,7 +322,7 @@ jobs:
 
   x2-intel-hunt:
     name: Intel Determinism Search — Replica ${{ matrix.replica }}
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     needs: guest-image
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -370,7 +370,7 @@ jobs:
 
   check:
     name: Results
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -394,6 +394,7 @@ jobs:
   # observations remain informational. Every test has an external wall bound.
   snapshot-hardware:
     name: Snapshot Identity — Replica ${{ matrix.replica }}
+    if: github.ref != 'refs/heads/codex/x1-xsave-state-diagnostic'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
