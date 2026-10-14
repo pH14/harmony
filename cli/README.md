@@ -247,8 +247,8 @@ the search report's stream digest and runs from the verified bytes.
 
 Hidden `harmony debug run` executes a fixed action input or an OCI command;
 `harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
-Finding replay refuses an unconfirmed saved finding, whose earlier replay did not
-reproduce its reported failure. Branching can still inspect that evidence.
+Finding replay refuses an unconfirmed saved finding, because replay did not
+establish its reported failure. Branching can still inspect that evidence.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 

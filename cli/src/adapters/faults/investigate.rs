@@ -88,7 +88,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
         let recorded_report = report(&source)?;
         let bug = &recorded_report.bugs[bug_index(finding, recorded_report.bugs.len())?];
         if !bug.confirmed {
-            return Err("this finding was not confirmed by the saved replay".into());
+            return Err("this finding was not confirmed by replay".into());
         }
     }
     let recorded = if original.bundle.is_some() {
@@ -570,7 +570,7 @@ mod tests {
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
-            "outcome":serde_json::to_value(report).unwrap()
+            "outcome":serde_json::to_value(&report).unwrap()
         });
         record.save(dir.path()).unwrap();
 
@@ -589,6 +589,26 @@ mod tests {
         .to_string();
         assert!(error.contains("not confirmed"), "{error}");
         assert!(!dir.path().join("child").exists());
+
+        report.bugs[0].confirmed = true;
+        report.write(dir.path()).unwrap();
+        record.payload["outcome"] = serde_json::to_value(&report).unwrap();
+        record.save(dir.path()).unwrap();
+        let later_error = replay(
+            Selection {
+                run: dir.path().display().to_string(),
+                finding: Some(1),
+            },
+            Destination {
+                out: Some(dir.path().join("confirmed-child")),
+                name: None,
+            },
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!later_error.contains("not confirmed"), "{later_error}");
+        assert!(dir.path().join("confirmed-child").exists());
     }
     #[test]
     fn finding_anchor_includes_recovery_and_precedes_later_recorded_actions() {
