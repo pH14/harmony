@@ -82,6 +82,8 @@ kernel is qualified separately against its linker-range page map: its
 data pages. The early identity map executes only its dedicated
 `.rodata.text` page between permanent and init text; the surrounding
 read-only data is non-executable before the final page tables take over.
+The kernel build scans the complete stripped vDSO file because the guest maps
+its embedding through the final page, even when the ELF load ends earlier.
 The scanner does not enforce the cooperative contract against
 later JIT code, executable remapping, or file mutation.
 

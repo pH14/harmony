@@ -33,9 +33,10 @@ Image scan covers zero-filled alignment tails omitted by ELF `p_filesz` and
 does not trust section or segment flags to identify executable bytes. The arm64
 linker patch places `.altinstructions` and unwind metadata on NX init-data
 pages, and the early identity map makes the ordinary read-only interval NX
-without blocking its special identity-map code. The vDSO uses ordinary user-page
-scanning on both its symbolized debug ELF and the stripped bytes embedded in
-the kernel image.
+without blocking its special identity-map code. The vDSO debug ELF uses
+ordinary user-page scanning. The exact stripped `vdso.so` is embedded whole
+and mapped executable through its final page, so `--embedded-vdso` scans every
+aligned word in the complete file, including the section table beyond `PT_LOAD`.
 These are static artifact checks; they do not trap later executable mappings,
 `mprotect`, generated code, or writes to executable files.
 

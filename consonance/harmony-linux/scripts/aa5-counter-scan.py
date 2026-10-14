@@ -82,7 +82,7 @@ def decode_timer_program(word: int):
     return TIMER_PROGRAMS.get((crm, op2))
 
 
-def executable_words(path: str):
+def executable_words(path: str, embedded_vdso: bool = False):
     """Use the AA-4 scanner's hardened ELF64 executable-section byte walk."""
     parser_path = Path(__file__).with_name("aa4-exclusive-scan.py")
     spec = importlib.util.spec_from_file_location("harmony_aa4_exec_parser", parser_path)
@@ -90,11 +90,11 @@ def executable_words(path: str):
         raise SystemExit(f"SCANNER ELF ERROR: cannot load {parser_path}")
     parser = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(parser)
-    return parser.executable_words(path)
+    return parser.executable_words(path, embedded_vdso=embedded_vdso)
 
 
-def scan(path: str):
-    words = executable_words(path)
+def scan(path: str, embedded_vdso: bool = False):
+    words = executable_words(path, embedded_vdso=embedded_vdso)
     dz = subprocess.run(["objdump", "-d", path], capture_output=True, text=True, check=True).stdout
     line_re = re.compile(r"^\s*([0-9a-f]+):\s+([0-9a-f]{8})\s+(.*)$")
     decoded = {}
@@ -165,10 +165,14 @@ def scan(path: str):
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: aa5-counter-scan.py <aarch64-elf> [<elf> ...]")
+        raise SystemExit("usage: aa5-counter-scan.py [--embedded-vdso <vdso.so>] <aarch64-elf> [<elf> ...]")
+    embedded_vdso = sys.argv[1] == "--embedded-vdso"
+    paths = sys.argv[2:] if embedded_vdso else sys.argv[1:]
+    if embedded_vdso and len(paths) != 1:
+        raise SystemExit("usage: aa5-counter-scan.py --embedded-vdso <vdso.so>")
     any_live = False
-    for path in sys.argv[1:]:
-        reads, timer_programs = scan(path)
+    for path in paths:
+        reads, timer_programs = scan(path, embedded_vdso=embedded_vdso)
         name = path.split("/")[-1]
         if reads:
             any_live = True

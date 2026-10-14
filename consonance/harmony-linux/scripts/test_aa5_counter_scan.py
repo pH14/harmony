@@ -372,6 +372,37 @@ class CounterScanTests(unittest.TestCase):
                     words = reader(str(path))
                 self.assertIn((0x1004, word, "<exec-segment 0>"), words)
 
+    def test_embedded_vdso_scans_the_complete_executable_file(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        for word, reader in ((0x885F7C20, exclusive.executable_words),
+                             (0xD53BE040, scan.executable_words)):
+            with self.subTest(word=hex(word)):
+                data = elf_sections(((".text", 6, ret),), 0)
+                data[0x3fc:0x400] = ret
+                struct.pack_into("<Q", data, 24, 0x3fc)
+                struct.pack_into("<IIQQQQQQ", data, 64,
+                                 1, 5, 0, 0, 0, 0x400, 0x400, 0x1000)
+                struct.pack_into("<Q", data, 256 + 64 + 16, 0x3fc)
+                struct.pack_into("<Q", data, 256 + 64 + 24, 0x3fc)
+                data.extend(bytes(max(0, 0x112c + 4 - len(data))))
+                struct.pack_into("<I", data, 0x112c, word)
+                with tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "embedded-vdso"
+                    path.write_bytes(data)
+                    ordinary = reader(str(path))
+                    embedded = reader(str(path), embedded_vdso=True)
+                self.assertNotIn(word, [found for _address, found, _label in ordinary])
+                self.assertIn((0x112c, word, "<embedded-vdso>"), embedded)
+
+    def test_embedded_vdso_requires_zero_offset_executable_load(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret),), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "not-an-embedded-vdso"
+            path.write_bytes(data)
+            with self.assertRaisesRegex(SystemExit, "unexpected embedded vDSO load layout"):
+                exclusive.executable_words(str(path), embedded_vdso=True)
+
     def test_overlapping_executable_segments_are_rejected(self):
         ret = (0xD65F03C0).to_bytes(4, "little")
         data = elf_sections(((".text", 6, ret), (".gap", 0, ret),

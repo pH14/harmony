@@ -118,7 +118,7 @@ def kernel_runtime_exec_ranges(path: str, entry: int):
             (symbols["__inittext_begin"], symbols["__inittext_end"]))
 
 
-def executable_words(path: str, kernel_image_path: str = None):
+def executable_words(path: str, kernel_image_path: str = None, embedded_vdso: bool = False):
     data = Path(path).read_bytes()
     elf_header = "<16sHHIQQQIHHHHHH"
     section_header = "<IIQQQQIIQQ"
@@ -357,6 +357,14 @@ def executable_words(path: str, kernel_image_path: str = None):
                 else:
                     words.append((address, word, "<kernel-image>"))
                     known[address] = word
+    if embedded_vdso:
+        if kernel_image_path or len(executable_segments) != 1 or executable_segments[0][2:4] != (0, 0):
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: unexpected embedded vDSO load layout")
+        return [
+            (offset, int.from_bytes(data[offset : offset + 4].ljust(4, b"\0"), "little"),
+             "<embedded-vdso>")
+            for offset in range(0, len(data), 4)
+        ]
     words.sort(key=lambda w: w[0])
     return words
 
@@ -401,8 +409,9 @@ def disassembly_cross_check(path: str):
     return decoded
 
 
-def scan(path: str, kernel_image_path: str = None):
-    words = executable_words(path, kernel_image_path=kernel_image_path)
+def scan(path: str, kernel_image_path: str = None, embedded_vdso: bool = False):
+    words = executable_words(path, kernel_image_path=kernel_image_path,
+                             embedded_vdso=embedded_vdso)
     decoded = disassembly_cross_check(path)
     raw_by_address = {address: word for address, word, _section in words}
     raw_mismatches = [
@@ -426,15 +435,18 @@ def scan(path: str, kernel_image_path: str = None):
 def main():
     self_test_mask()
     if len(sys.argv) < 2:
-        raise SystemExit("usage: aa4-exclusive-scan.py [--kernel-vmlinux <vmlinux> <Image>] <aarch64-elf> [<elf> ...]")
+        raise SystemExit("usage: aa4-exclusive-scan.py [--kernel-vmlinux <vmlinux> <Image>|--embedded-vdso <vdso.so>] <aarch64-elf> [<elf> ...]")
     kernel_image = sys.argv[1] == "--kernel-vmlinux"
-    paths = sys.argv[2:] if kernel_image else sys.argv[1:]
+    embedded_vdso = sys.argv[1] == "--embedded-vdso"
+    paths = sys.argv[2:] if kernel_image or embedded_vdso else sys.argv[1:]
     if kernel_image and len(paths) != 2:
         raise SystemExit("usage: aa4-exclusive-scan.py --kernel-vmlinux <vmlinux> <Image>")
+    if embedded_vdso and len(paths) != 1:
+        raise SystemExit("usage: aa4-exclusive-scan.py --embedded-vdso <vdso.so>")
     kernel_image_path = paths.pop() if kernel_image else None
     any_hits = False
     for path in paths:
-        hits = scan(path, kernel_image_path=kernel_image_path)
+        hits = scan(path, kernel_image_path=kernel_image_path, embedded_vdso=embedded_vdso)
         name = path.split("/")[-1]
         if hits:
             any_hits = True
