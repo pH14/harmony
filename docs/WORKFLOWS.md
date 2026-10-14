@@ -272,10 +272,10 @@ restored guest to the fixture's last exit.
 If a compiled kernel fails qualification, the evidence artifact retains its
 unpublished `vmlinux`, matching boot components, configuration, alternatives and
 KVM disassembly for review.
-The job also runs `inner_operation_api_smoke` and
+On Intel VMX, the job also runs `inner_operation_api_smoke` and
 `sdk_operations::outer_operation_sdk_smoke`, then runs the standard
 `harmony search --package nested` with 100 executions and a five-minute wall
-budget, followed by a replay of its recorded campaign. Evidence includes the
+budget, followed by a replay of its recorded campaign. Intel evidence includes the
 36 ordered operation-pair coverage mask, assertion failures and their layers,
 the campaign stream, and the replay report. The final evidence check requires
 nonzero executed work, a valid 36-bit pair mask, no failures, and matching
@@ -283,7 +283,10 @@ execution counts, work, stream digest and coverage/failure evidence on replay.
 It writes `qualification.json` with the tested commit and measured budget use;
 archive-entry lists may differ because replay materializes final artifacts.
 The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
-KVM-supported CPUID. The matching kernel includes both backends. The state
+KVM-supported CPUID. On AMD SVM it runs the L1/L2 boot, nested-state restore
+matrix, and omission negative control, then records that SDK operation search
+requires Intel VMX. AMD restore of an entered vCPU fails closed and uses a fresh
+VM where a factory is available. The matching kernel includes both backends. The state
 format and exposed vendor capabilities bind snapshot identity; snapshots cannot
 cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
 `nested_history_run` optionally reuses a prior run's retained kernel, base and
