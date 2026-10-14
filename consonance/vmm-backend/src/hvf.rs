@@ -454,6 +454,8 @@ pub struct HvfBackend {
     fail_policy_after_first_write: bool,
     #[cfg(test)]
     fail_fault_after_pstate: bool,
+    #[cfg(test)]
+    fail_run_after_guest: bool,
 }
 
 struct FlushStub {
@@ -526,6 +528,8 @@ impl HvfBackend {
             fail_policy_after_first_write: false,
             #[cfg(test)]
             fail_fault_after_pstate: false,
+            #[cfg(test)]
+            fail_run_after_guest: false,
         };
         let missing_actlr = || BackendError::Capability {
             cap: "HVF ACTLR_EL1 read/write for deterministic snapshots",
@@ -774,6 +778,10 @@ impl HvfBackend {
                     )
                 })?;
                 continue;
+            }
+            #[cfg(test)]
+            if self.fail_run_after_guest {
+                return Err(BackendError::Internal("injected post-run HVF failure"));
             }
             match raw.reason {
                 HV_EXIT_REASON_CANCELED => {
@@ -1031,7 +1039,13 @@ impl Backend for HvfBackend {
             return Err(BackendError::Internal("HVF run canceled by host"));
         }
         self.ensure_runnable()?;
-        self.enter_guest()
+        match self.enter_guest() {
+            Ok(exit) => Ok(exit),
+            Err(error) => {
+                self.state_poisoned = true;
+                Err(error)
+            }
+        }
     }
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
@@ -1466,6 +1480,63 @@ mod tests {
         assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1011, 4));
         assert_eq!(TLB_FLUSH_STUB[3], barrier(0b1111, 6));
         assert_eq!(TLB_FLUSH_STUB[4], 0xd400_0002);
+    }
+
+    #[test]
+    #[ignore = "live HVF guest-entry failure boundary; run on Apple silicon"]
+    fn failed_guest_run_retires_uncounted_progress() {
+        #[repr(C, align(16384))]
+        struct TestPage([u8; 16384]);
+
+        let mut page = Box::new(TestPage([0; 16384]));
+        for (index, word) in [0xd282_4680u32, 0xd400_0002u32].iter().enumerate() {
+            page.0[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        // SAFETY: Box pins the aligned page, which remains live until after backend drop.
+        unsafe { backend.map_memory(Gpa(0x4000_0000), &mut page.0) }.unwrap();
+        backend.invalidate_instruction_cache(page.0.as_ptr() as usize, page.0.len());
+        let sctlr = backend.sysreg(HV_SYS_REG_SCTLR_EL1).unwrap();
+        backend
+            .set_sysreg(HV_SYS_REG_SCTLR_EL1, sctlr & !SCTLR_M)
+            .unwrap();
+        backend
+            .set_reg(HV_REG_CPSR, PSTATE_DAIF | PSTATE_MODE_EL1H)
+            .unwrap();
+        backend.set_reg(HV_REG_PC, 0x4000_0000).unwrap();
+        let before = backend.save().unwrap();
+        backend
+            .cancel_run
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("HVF run canceled by host"))
+        ));
+        assert!(backend.save().is_ok());
+        backend
+            .cancel_run
+            .store(false, std::sync::atomic::Ordering::Release);
+        backend.fail_run_after_guest = true;
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("injected post-run HVF failure"))
+        ));
+        assert_eq!(backend.reg(0).unwrap(), 0x1234);
+        assert_eq!(backend.reg(HV_REG_PC).unwrap(), 0x4000_0008);
+        assert_eq!(backend.exit_counts(), ExitCounts::default());
+        for result in [
+            backend.prepare_snapshot(),
+            backend.save().map(|_| ()),
+            backend.read_irq_mask().map(|_| ()),
+            backend.run().map(|_| ()),
+            backend.restore(&before),
+        ] {
+            assert!(matches!(
+                result,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ));
+        }
     }
 
     #[test]

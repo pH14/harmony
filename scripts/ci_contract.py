@@ -241,6 +241,7 @@ HOST_TESTS = {
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
         "vmm-backend hvf::tests::failed_translation_flush_retires_mutated_vcpu",
         "vmm-backend hvf::tests::restore_rejects_hvc_from_guest_exception_vector",
+        "vmm-backend hvf::tests::failed_guest_run_retires_uncounted_progress",
         "vmm-backend hvf::tests::rejected_policy_preserves_live_identity",
         "vmm-backend hvf::tests::failed_policy_write_retires_mutated_vcpu",
         "vmm-backend hvf::tests::failed_fault_completion_retires_partly_changed_vcpu",

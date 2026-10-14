@@ -325,6 +325,14 @@ A watchdog cancellation requested before the stub's guest entry is consumed by
 that entry and retires no instruction, so the stub entry is retried once. The
 cancellation latch outlives the exit and `run` still refuses the guest.
 
+An error after HVF guest entry retires the backend. The vCPU may have executed
+instructions before `hv_vcpu_run` or exit decoding failed, while no exit was
+reported or counted. A pre-entry watchdog cancellation leaves the backend
+capturable, but a post-entry error refuses later guest entry, preparation,
+capture, and restore. The live failure-injection test executes a guest register
+write before returning an injected post-run error and checks that the uncounted
+state cannot be published.
+
 The guest's virtual counter runs off the host counter and neither backend can
 trap a guest read of it, so a restore that left the counter alone handed the
 guest every tick of host time spent between the snapshot and the restore. Both
