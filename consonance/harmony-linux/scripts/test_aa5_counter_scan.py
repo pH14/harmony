@@ -261,11 +261,12 @@ class CounterScanTests(unittest.TestCase):
 
     def test_kernel_linker_ranges_require_aligned_known_layout(self):
         names = (
-            "_text", "_stext", "_etext", "__start_rodata", "__inittext_begin",
+            "_text", "_stext", "_etext", "__start_rodata",
+            "__rodata_text_begin", "__rodata_text_end", "__inittext_begin",
             "__inittext_end", "__initdata_begin", "__initdata_end", "_data", "_end",
         )
-        values = (0x1000, 0x2000, 0x3000, 0x3000, 0x4000,
-                  0x5000, 0x5000, 0x6000, 0x6000, 0x7000)
+        values = (0x1000, 0x2000, 0x3000, 0x3000, 0x4000, 0x5000,
+                  0x6000, 0x7000, 0x7000, 0x8000, 0x8000, 0x9000)
 
         def read_ranges(addresses, entry=0x1000):
             listing = "".join(f"{value:016x} T {name}\n" for name, value in zip(names, addresses))
@@ -273,13 +274,25 @@ class CounterScanTests(unittest.TestCase):
             with patch.object(exclusive.subprocess, "run", return_value=result):
                 return exclusive.kernel_runtime_exec_ranges("vmlinux", entry)
 
-        self.assertEqual(read_ranges(values), ((0x2000, 0x3000), (0x4000, 0x5000)))
+        self.assertEqual(read_ranges(values),
+                         ((0x2000, 0x3000), (0x4000, 0x5000), (0x6000, 0x7000)))
         with self.assertRaisesRegex(SystemExit, "unexpected entrypoint"):
             read_ranges(values, entry=0x2000)
         with self.assertRaisesRegex(SystemExit, "unaligned linker boundary"):
             read_ranges(values[:4] + (0x4004,) + values[5:])
         with self.assertRaisesRegex(SystemExit, "unexpected linker layout"):
             read_ranges(values[:3] + (0x4000,) + values[4:])
+        with self.assertRaisesRegex(SystemExit, "unexpected linker layout"):
+            read_ranges(values[:5] + (0x6000,) + values[6:])
+        listing = "".join(
+            f"{value:016x} T {name}\n"
+            for name, value in zip(names, values)
+            if name != "__rodata_text_end"
+        )
+        result = subprocess.CompletedProcess([], 0, stdout=listing)
+        with patch.object(exclusive.subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(SystemExit, "missing __rodata_text_end"):
+                exclusive.kernel_runtime_exec_ranges("vmlinux", values[0])
 
     def test_page_rounded_executable_mapping_rejects_counter_in_other_segment(self):
         data = executable_page_alias()
