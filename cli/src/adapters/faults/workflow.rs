@@ -211,14 +211,25 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
     finish(&out, &mut manifest, result)
 }
 
+fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
+    let bytes = fs::read(out.join("artifacts/vocabulary.json"))?;
+    let expected = manifest
+        .artifacts
+        .get("vocabulary.json")
+        .ok_or("recorded vocabulary.json artifact is missing")?;
+    if crate::runtime::digest(&bytes) != *expected {
+        return Err("recorded artifact vocabulary.json changed during load".into());
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn search_faults(
     out: &Path,
     manifest: &Manifest,
     start: &SearchStart,
 ) -> Result<faults_workload::Report> {
     let artifacts = manifest.fault_artifacts(out)?;
-    let vocabulary: FaultVocabulary =
-        serde_json::from_slice(&fs::read(out.join("artifacts/vocabulary.json"))?)?;
+    let vocabulary = read_vocabulary(out, manifest)?;
     let options = manifest.options(out);
     let resources = package::resources(&options)?;
     let worker = if manifest.config.backend == Backend::Uml {
@@ -330,6 +341,49 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn search_refuses_vocabulary_changed_after_initial_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        let saved = FaultVocabulary::new(1, vec![1, 2]).unwrap();
+        record
+            .store(
+                directory.path(),
+                "vocabulary.json",
+                &serde_json::to_vec(&saved).unwrap(),
+            )
+            .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(directory.path()).unwrap();
+        let manifest = Manifest::read(directory.path()).unwrap();
+        manifest.record.verify(directory.path()).unwrap();
+        let substituted = FaultVocabulary::new(1, vec![]).unwrap();
+        fs::write(
+            directory.path().join("artifacts/vocabulary.json"),
+            serde_json::to_vec(&substituted).unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            read_vocabulary(directory.path(), &manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("vocabulary.json changed during load")
+        );
+
+        fs::write(
+            directory.path().join("artifacts/vocabulary.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_vocabulary(directory.path(), &manifest).unwrap(), saved);
+    }
 
     #[test]
     fn captured_kernel_is_the_prepared_kernel_after_source_changes() {
