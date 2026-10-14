@@ -286,7 +286,7 @@ EOF
 
     printf 'not an ELF\n' > "$d/malformed.elf"
     if all_sites '' "$d/malformed.elf" >/dev/null 2>&1; then
-        echo "FAIL: self-test — an unreadable kernel ELF passed the disassembly gate" >&2
+        echo "FAIL: self-test — an unreadable kernel ELF passed the disassembly check" >&2
         exit 1
     fi
 
