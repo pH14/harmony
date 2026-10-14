@@ -66,6 +66,16 @@ fn require_kvm() {
     );
 }
 
+fn amd_compatible_host() -> bool {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .expect("read host CPU vendor")
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, value)| {
+            key.trim() == "vendor_id" && matches!(value.trim(), "AuthenticAMD" | "HygonGenuine")
+        })
+}
+
 fn compare_public_identity_portable_execution_state(
     left: &[u8],
     right: &[u8],
@@ -329,6 +339,7 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
         atomic::{AtomicUsize, Ordering},
     };
     require_kvm();
+    let amd_host = amd_compatible_host();
     assert_public_identity_negative_controls();
     let mut failures = Vec::new();
     for seed in [0, 2, 3] {
@@ -388,14 +399,16 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
                                 .unwrap(),
                             control_proto::Reply::Unit
                         );
+                        let fresh_restore = mode == RestoreMode::Memcpy
+                            || (mode == RestoreMode::InPlace && amd_host);
                         assert_eq!(
                             server.in_place_fallbacks(),
-                            0,
-                            "reuse must not silently fall back"
+                            u64::from(mode == RestoreMode::InPlace && amd_host),
+                            "AMD reuse must fall back to a fresh VM"
                         );
                         assert_eq!(
                             creations.load(Ordering::SeqCst) - restores_before,
-                            usize::from(mode == RestoreMode::Memcpy)
+                            usize::from(fresh_restore)
                         );
                         let (b, b_bytes, b_hash) = public_capture(&mut server);
                         let b_state = server.vmm_mut().unwrap().save_vm_state().unwrap();
