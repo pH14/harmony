@@ -69,6 +69,10 @@
   stops moving for the progress limit fails with `SessionError::Hung`. The
   session pauses the guest before each answer, takes a `Checkpoint` there,
   restores one in place, or starts a fresh process that restores one at boot.
+  At restore, the console collector drains output already written by the
+  paused guest and clears its diagnostic tail before the new branch runs. This
+  keeps text from a discarded branch out of later crash classification and
+  diagnostics. Its cumulative byte count still enforces the host output limit.
   The host owns the guest's physical memory file and an image file, both
   memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
   session's `Checkpoints` page store plus the services state at the capture.

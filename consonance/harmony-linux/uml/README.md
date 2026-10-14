@@ -183,7 +183,10 @@ and asserts the symbols the profile depends on.
   `schedule` runs four workers that yield and exchange pipe messages;
   `timers` uses sleeps, interval timers, `timerfd`, `poll` and `select`;
   `counter` reads the CPU counter (`rdtsc` or `cntvct_el0`) around system
-  calls, and on arm64 the counter frequency.
+  calls, and on arm64 the counter frequency. `console_branch` pulls a branch
+  payload before choosing whether to print a panic-shaped console line, so
+  checkpoint qualification can verify that restoring the other branch removes
+  the abandoned line from later diagnostics.
 - `linux/patches/um/` holds the UML series: SECCOMP userspace as the only
   mode, virtual time and its costs, the host bridge, the boot seed, counter
   emulation, host child signals, the fixed memory layout, checkpoints, and

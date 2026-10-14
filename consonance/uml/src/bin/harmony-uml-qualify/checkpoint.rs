@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io;
 use std::time::{Duration, Instant};
 
-use environment::input_spec::nominal_factory;
+use environment::input_spec::{ServiceConfig, nominal_factory};
 use serde_json::{Value, json};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use uml::{
@@ -93,7 +93,74 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
             json!({"reference": summary(&reference)}),
         ));
     }
+    checks.push(console_branch_restore(options, profile));
     Ok(checks)
+}
+
+fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value {
+    let result = (|| -> Result<Value, SessionError> {
+        let mut base = seeded(options, "console_branch", SEED);
+        base.console_limit_bytes = u64::MAX;
+        let checkpoints = Checkpoints::new();
+        let mut session = start(profile, &base, false, &checkpoints, None)?;
+        if session.run_to(1)? != Stop::Event {
+            return Ok(json!({"error": "the fixture did not reach setup"}));
+        }
+        let checkpoint = session.capture(Capture::default())?;
+        let factory = nominal_factory();
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        session.branch(SEED, handler, vec![vec![b'P']])?;
+        if session.run_to(2)? != Stop::Event {
+            return Ok(json!({"error": "the abandoned branch did not reach its event"}));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let marker = "Kernel panic: abandoned branch sentinel";
+        let abandoned_contains_marker = session.console_tail().contains(marker);
+        session.restore(&checkpoint)?;
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        session.branch(SEED, handler, vec![vec![b'S']])?;
+        let restored = session.run()?;
+
+        let other = Checkpoints::new();
+        let mut fresh = start(profile, &base, false, &other, None)?;
+        if fresh.run_to(1)? != Stop::Event {
+            return Ok(json!({"error": "the fresh fixture did not reach setup"}));
+        }
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        fresh.branch(SEED, handler, vec![vec![b'S']])?;
+        let reference = fresh.run()?;
+        Ok(json!({
+            "abandoned_contains_marker": abandoned_contains_marker,
+            "restored_contains_marker": String::from_utf8_lossy(&restored.console).contains(marker),
+            "fresh_contains_marker": String::from_utf8_lossy(&reference.console).contains(marker),
+            "restored_reason": format!("{:?}", restored.reason),
+            "fresh_reason": format!("{:?}", reference.reason),
+            "restored_completed": completed(&restored),
+            "fresh_completed": completed(&reference),
+            "event_match": restored.events == reference.events,
+        }))
+    })();
+    match result {
+        Ok(detail) => check(
+            "checkpoint_console_branch_restore",
+            detail["abandoned_contains_marker"] == json!(true)
+                && detail["restored_contains_marker"] == json!(false)
+                && detail["fresh_contains_marker"] == json!(false)
+                && detail["restored_completed"] == json!(true)
+                && detail["fresh_completed"] == json!(true)
+                && detail["restored_reason"] == detail["fresh_reason"]
+                && detail["event_match"] == json!(true),
+            detail,
+        ),
+        Err(error) => check(
+            "checkpoint_console_branch_restore",
+            false,
+            json!({"error": error.to_string()}),
+        ),
+    }
 }
 
 fn shifted_artifact_fds(

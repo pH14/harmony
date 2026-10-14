@@ -1110,6 +1110,7 @@ dependencies = [
  "environment",
  "hypercall-proto",
  "libc",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

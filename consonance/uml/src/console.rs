@@ -30,6 +30,10 @@ impl ConsoleTail {
         self.total
     }
 
+    pub fn clear_bytes(&mut self) {
+        self.bytes.clear();
+    }
+
     pub fn bytes(&self) -> Vec<u8> {
         self.bytes.iter().copied().collect()
     }
@@ -86,5 +90,17 @@ mod tests {
         tail.push(b"abc");
         assert!(tail.bytes().is_empty());
         assert_eq!(tail.total(), 3);
+    }
+
+    #[test]
+    fn clearing_a_branch_keeps_the_host_output_budget() {
+        let mut tail = ConsoleTail::new(8);
+        tail.push(b"old text");
+        tail.clear_bytes();
+        assert!(tail.bytes().is_empty());
+        assert_eq!(tail.total(), 8);
+        tail.push(b"new");
+        assert_eq!(tail.bytes(), b"new");
+        assert_eq!(tail.total(), 11);
     }
 }
