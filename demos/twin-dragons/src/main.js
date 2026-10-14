@@ -1866,6 +1866,28 @@ function renderMapRows(owner) {
   }
 }
 let panHold = null, panLast = 0;
+function holdingPan(c, dir, axis) {
+  return panHold?.canvas === c && panHold.dir === dir && panHold.axis === axis;
+}
+function holdPan(c, dir, axis) {
+  if (!holdingPan(c, dir, axis)) panHold = { canvas: c, dir, axis, since: performance.now() };
+  panHold.until = 0;
+}
+function releasePan(c, dir, axis) {
+  if (!holdingPan(c, dir, axis)) return;
+  if (performance.now() - panHold.since < 300) panHold.until = performance.now() + 450;
+  else panHold = null;
+}
+function panRoom(c) {
+  const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
+  const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale, halfY = c.height / 2 / scale;
+  return {
+    left: view.x - half - map.x > 1,
+    right: map.x + map.width - view.x - half > 1,
+    up: view.y - halfY - map.y > 1,
+    down: map.y + map.height - view.y - halfY > 1,
+  };
+}
 function panEdge(c, dir, axis = "x") {
   const edge = document.createElement("button");
   edge.className = "pan-edge";
@@ -1875,16 +1897,9 @@ function panEdge(c, dir, axis = "x") {
   edge.setAttribute("aria-label", axis === "y" ? (dir < 0 ? "Look up" : "Look down") : dir < 0 ? "Look left" : "Look right");
   const path = axis === "y" ? (dir < 0 ? "M5.5 14.5 12 8l6.5 6.5" : "M5.5 9.5 12 16l6.5-6.5") : dir < 0 ? "M14.5 5.5 8 12l6.5 6.5" : "M9.5 5.5 16 12l-6.5 6.5";
   edge.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`;
-  const mine = () => panHold?.canvas === c && panHold.dir === dir && panHold.axis === axis;
-  const start = () => {
-    if (!mine()) panHold = { canvas: c, dir, axis, since: performance.now() };
-    panHold.until = 0;
-  };
-  const end = () => {
-    if (!mine()) return;
-    if (performance.now() - panHold.since < 300) panHold.until = performance.now() + 450;
-    else panHold = null;
-  };
+  const mine = () => holdingPan(c, dir, axis);
+  const start = () => holdPan(c, dir, axis);
+  const end = () => releasePan(c, dir, axis);
   edge.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") start(); });
   edge.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse" && mine()) panHold = null; });
   edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
@@ -1923,15 +1938,12 @@ function updatePan(now) {
 function updateRoomChrome(c) {
   const part = c.parentElement;
   if (!part) return;
-  const id = Number(c.dataset.map), map = canvasPanel(c), view = roomView(id, c);
-  const scale = Math.min(c.width / map.width, c.height / map.height) * view.zoom, half = c.width / 2 / scale, halfY = c.height / 2 / scale;
-  const before = view.x - half - map.x, after = map.x + map.width - view.x - half;
-  const above = !game.vertical && view.y - halfY - map.y > 1, below = !game.vertical && map.y + map.height - view.y - halfY > 1;
-  const key = `${before > 1},${after > 1},${above},${below}`;
+  const pan = panRoom(c), above = !game.vertical && pan.up, below = !game.vertical && pan.down;
+  const key = `${pan.left},${pan.right},${above},${below}`;
   if (part.dataset.chrome === key) return;
   part.dataset.chrome = key;
-  part.dataset.panLeft = before > 1;
-  part.dataset.panRight = after > 1;
+  part.dataset.panLeft = pan.left;
+  part.dataset.panRight = pan.right;
   part.dataset.panUp = above;
   part.dataset.panDown = below;
 }
@@ -2256,8 +2268,14 @@ function bindMap(c) {
       };
     }
     if (e.key.startsWith("Arrow") && hoverCell) {
-      const next = mapCanvas(level, { x: hoverCell.x * 32 + 16, y: cellTop(hoverCell.y) + 16 });
+      const target = { x: hoverCell.x * 32 + 16, y: cellTop(hoverCell.y) + 16 }, next = mapCanvas(level, target);
       if (next && next !== c) { next.focus({ preventScroll: true }); next.scrollIntoView({ block: "nearest" }); }
+      const shown = next || c, view = roomView(level, shown), panel = canvasPanel(shown);
+      const scale = Math.min(shown.width / panel.width, shown.height / panel.height) * view.zoom;
+      if (Math.abs(target.x - view.x) > shown.width / 2 / scale - 32 || Math.abs(target.y - view.y) > shown.height / 2 / scale - 32) {
+        moveCameraByHand();
+        scrollRoom(level, target);
+      }
     }
     if (e.key === "Enter") {
       e.preventDefault();
@@ -2691,7 +2709,24 @@ $("search-speed").oninput = () => {
   showPace();
   worker?.postMessage({ type: "pace", pace });
 };
+const ARROW_PANS = { ArrowLeft: [-1, "x", "left"], ArrowRight: [1, "x", "right"], ArrowUp: [-1, "y", "up"], ArrowDown: [1, "y", "down"] };
 window.addEventListener("keydown", (e) => {
+  const arrow = ARROW_PANS[e.key];
+  if (
+    arrow &&
+    !controlMode &&
+    !e.ctrlKey &&
+    !e.metaKey &&
+    !e.altKey &&
+    !e.target.closest("input,select,textarea,[contenteditable=true],[role=slider],#guided-tour,.area-map")
+  ) {
+    const c = mapCanvas(branchPreview?.room ?? mapLevel);
+    if (c && panRoom(c)[arrow[2]]) {
+      e.preventDefault();
+      holdPan(c, arrow[0], arrow[1]);
+    }
+    return;
+  }
   if (e.code === "Escape") {
     if (controlMode) stopControl();
     else if (!$("inspector").hidden && !$("info").open) {
@@ -2715,6 +2750,8 @@ window.addEventListener("keydown", (e) => {
   }
 });
 window.addEventListener("keyup", (e) => {
+  const arrow = ARROW_PANS[e.key];
+  if (arrow && panHold) releasePan(panHold.canvas, arrow[0], arrow[1]);
   controller.release(e.code);
   if (controlMode && keyButtons[e.code]) e.preventDefault();
 });
