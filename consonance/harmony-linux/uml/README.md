@@ -23,6 +23,12 @@ Every guest input comes from the profile, the boot arguments, or the host
 bridge. A run with the same profile, seed and host CPU produces the same
 sequence of guest events.
 
+The launcher still creates a private, randomly named host tempdir for each
+boot. Both owned UML kernels omit that path from their normal startup console
+messages, because the captured console becomes replay evidence. Launch
+qualification compares the complete console bytes across repeated boots of
+one profile.
+
 - Virtual time starts at zero and moves only by the cost model. Each guest
   system call costs `CONFIG_HARMONY_UML_SYSCALL_VNS` (100,000 ns) before it
   runs; `clock_gettime`, `gettimeofday`, `time` and each counter read cost

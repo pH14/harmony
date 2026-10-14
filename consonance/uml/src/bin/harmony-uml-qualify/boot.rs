@@ -84,18 +84,28 @@ fn pinned_auxv(
 fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {
     let mut walls = Vec::new();
     let mut failures = Vec::new();
+    let mut first_console = None;
     for cycle in 0..options.cycles {
         let exit = Guest::spawn(&launch(options, "boot"), profile)
             .map_err(io::Error::other)?
             .wait()?;
         walls.push(exit.wall.as_millis());
+        let console_matches_first = first_console
+            .get_or_insert_with(|| exit.console.clone())
+            .as_slice()
+            == exit.console;
         let passed = exit.reason == ExitReason::Exited(0)
             && contains(&exit, "HARMONY_UML PASS")
             && contains(&exit, SECCOMP_OK)
             && !contains(&exit, PTRACE_CHECK)
-            && clean(&exit);
+            && clean(&exit)
+            && console_matches_first;
         if !passed {
-            failures.push(json!({"cycle": cycle, "exit": summary(&exit)}));
+            failures.push(json!({
+                "cycle": cycle,
+                "console_matches_first": console_matches_first,
+                "exit": summary(&exit),
+            }));
         }
     }
     let mut sorted = walls.clone();
