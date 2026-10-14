@@ -332,6 +332,31 @@ fn saved(request: Request) -> Result<u8> {
                 return Err("repeat must be positive".into());
             }
             original.verify(&path)?;
+            if request.operation == Operation::Replay {
+                let expected = &original.payload["witness"];
+                let victory = expected["victory"]
+                    .as_bool()
+                    .ok_or("this recording has no saved victory witness to replay")?;
+                if original.payload["repeats"]
+                    .as_array()
+                    .is_some_and(|repeats| {
+                        repeats.is_empty() || repeats.iter().any(|repeat| repeat != expected)
+                    })
+                {
+                    return Err(
+                        "saved NES repeats disagree; exact replay cannot be verified".into(),
+                    );
+                }
+                if selection.finding.is_some() && !victory {
+                    return Err("this finding was not confirmed by its saved witness".into());
+                }
+                if original.payload["finding"].as_bool() != Some(victory) {
+                    return Err("saved NES finding and witness disagree".into());
+                }
+                if original.status != "complete" {
+                    return Err("a failed NES recording cannot certify exact replay".into());
+                }
+            }
             let mut input = original.payload["input"].clone();
             if request.operation == Operation::Branch {
                 if request.exec.is_some() || request.exec_file.is_some() || request.shell {
@@ -640,6 +665,76 @@ mod tests {
             checkpoint_origin_input(source.path(), &manifest).unwrap(),
             serde_json::json!({"actions":[]})
         );
+    }
+
+    #[test]
+    fn replay_refuses_a_failed_run_with_disagreeing_saved_repeats() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("replay");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "run").unwrap();
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest.status = "failed".into();
+        manifest.payload = serde_json::json!({
+            "input":{"actions":[]},"finding":false,
+            "witness":{"victory":false,"snapshot_sha256":"second"},
+            "repeats":[
+                {"victory":true,"snapshot_sha256":"first"},
+                {"victory":false,"snapshot_sha256":"second"}
+            ]
+        });
+        manifest.save(source.path()).unwrap();
+        let request = Request {
+            operation: Operation::Replay,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: None,
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = saved(request).unwrap_err().to_string();
+        assert!(error.contains("saved NES repeats disagree"), "{error}");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn replay_refuses_a_finding_without_saved_victory() {
+        let source = tempfile::tempdir().unwrap();
+        let children = tempfile::tempdir().unwrap();
+        let destination = children.path().join("replay");
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.store(source.path(), "input", b"rom").unwrap();
+        manifest.status = "complete".into();
+        manifest.payload = serde_json::json!({
+            "input":{"actions":[]},"finding":true,
+            "witness":{"victory":false,"snapshot_sha256":"missed"}
+        });
+        manifest.save(source.path()).unwrap();
+        let request = Request {
+            operation: Operation::Replay,
+            selection: Some(crate::selection::Selection {
+                run: source.path().display().to_string(),
+                finding: Some(1),
+            }),
+            destination: crate::runs::Destination {
+                out: Some(destination.clone()),
+                name: None,
+            },
+            ..Default::default()
+        };
+        let error = saved(request).unwrap_err().to_string();
+        assert!(error.contains("finding was not confirmed"), "{error}");
+        assert!(!destination.exists());
     }
 
     #[test]
