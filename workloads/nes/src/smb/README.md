@@ -31,8 +31,13 @@ of one reaches a long enough job after a few doublings.
 ## Archive key
 
 The progress tier is the world, the level and the level's progress in bands of
-64 sixteen-pixel columns. The searcher gives each tier half the draws of the
-tier ahead of it.
+64 sixteen-pixel columns. The searcher gives each tier an eighth of the draws
+of the tier ahead of it, so the band must not fall along the route through a
+level. The camera column restarts in each area, and in 8-4 the route passes
+through an underwater area after the castle's third band. A state therefore
+keeps the highest band its parent held in the same level. A pipe that sends
+Mario back within the same area, as 8-4's wrong pipes do, drops that inherited
+band, so those states rank by their own column.
 
 The place is the room Mario entered the level section through, his column
 (the camera's column plus his column on the screen), his height bucket, whether
