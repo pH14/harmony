@@ -37,6 +37,8 @@ segmented calls; custom adapters must establish the same property.
 state hashes and output digests at a caller-selected interval until they halt or
 reach a limit. `MatchingCheckpoints` means only that the sampled states and
 outputs agree; a transient difference between checkpoints can go unobserved.
+The serialized report carries `checkpoint_every` and `requested_limit`, so this
+claim identifies its sampling plan even when the run halts before the limit.
 The other verdicts report a checkpoint bracket, an equal-work terminal
 divergence, or a halt-count mismatch. The report records whether the limit—not
 termination—ended the comparison. A zero-work mismatch is reported

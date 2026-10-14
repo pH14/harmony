@@ -101,6 +101,8 @@ fn verify_reached_replay<F: SubjectFactory>(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompareReport {
     pub verdict: Verdict,
+    pub checkpoint_every: u64,
+    pub requested_limit: u64,
     pub checkpoints_compared: u64,
     pub halted_at: Option<u64>,
     pub limit_reached: bool,
@@ -146,6 +148,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                 a: (initial_a == RunOutcome::Halted).then_some(ma.work()),
                 b: (initial_b == RunOutcome::Halted).then_some(mb.work()),
             },
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at: None,
             limit_reached: false,
@@ -157,6 +161,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                 a: Some(ma.work()),
                 b: Some(mb.work()),
             },
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at: None,
             limit_reached: false,
@@ -183,6 +189,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         };
         return Ok(CompareReport {
             verdict,
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at,
             limit_reached: false,
@@ -191,6 +199,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     if initial_a == RunOutcome::Halted {
         return Ok(CompareReport {
             verdict: Verdict::MatchingCheckpoints,
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at: Some(ma.work()),
             limit_reached: false,
@@ -216,6 +226,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                             last_match,
                             first_mismatch: t,
                         },
+                        checkpoint_every,
+                        requested_limit: limit,
                         checkpoints_compared,
                         halted_at: None,
                         limit_reached: false,
@@ -231,6 +243,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                             a: Some(wa),
                             b: Some(wb),
                         },
+                        checkpoint_every,
+                        requested_limit: limit,
                         checkpoints_compared,
                         halted_at: None,
                         limit_reached: false,
@@ -247,6 +261,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                 };
                 return Ok(CompareReport {
                     verdict,
+                    checkpoint_every,
+                    requested_limit: limit,
                     checkpoints_compared,
                     halted_at: Some(wa),
                     limit_reached: false,
@@ -258,6 +274,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                         a: Some(wa),
                         b: None,
                     },
+                    checkpoint_every,
+                    requested_limit: limit,
                     checkpoints_compared,
                     halted_at: None,
                     limit_reached: false,
@@ -269,6 +287,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                         a: None,
                         b: Some(wb),
                     },
+                    checkpoint_every,
+                    requested_limit: limit,
                     checkpoints_compared,
                     halted_at: None,
                     limit_reached: false,
@@ -278,6 +298,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     }
     Ok(CompareReport {
         verdict: Verdict::MatchingCheckpoints,
+        checkpoint_every,
+        requested_limit: limit,
         checkpoints_compared,
         halted_at: None,
         limit_reached: true,

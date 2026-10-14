@@ -13,7 +13,8 @@ When a checkpoint differs, `unison` re-executes the subject from work zero and
 probes each work count through the first mismatching checkpoint to identify the
 first divergent work count. A matching checkpoint cannot exclude an earlier
 transient difference. A bounded run with `matching_checkpoints` is certified
-only at its tested checkpoints through the limit.
+only at its tested checkpoints through the limit. The report includes its
+checkpoint interval and requested limit so a saved verdict retains that scope.
 
 ## O2: conformance
 

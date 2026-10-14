@@ -110,3 +110,29 @@ fn matching_sampled_checkpoints_do_not_claim_global_identity() {
         1
     );
 }
+
+#[test]
+fn matching_reports_bind_their_sampling_plan() {
+    let a = Factory(false);
+    let every_four = compare_runs(&a, &a, 7, 4, 8).unwrap();
+    let every_five = compare_runs(&a, &a, 7, 5, 8).unwrap();
+    assert_eq!(every_four.checkpoints_compared, 2);
+    assert_eq!(every_five.checkpoints_compared, 2);
+    assert_eq!(every_four.checkpoint_every, 4);
+    assert_eq!(every_five.checkpoint_every, 5);
+    assert_ne!(
+        serde_json::to_value(every_four).unwrap(),
+        serde_json::to_value(every_five).unwrap()
+    );
+
+    let short = compare_runs(&a, &a, 7, 100, 1).unwrap();
+    let long = compare_runs(&a, &a, 7, 100, 100).unwrap();
+    assert_eq!(short.checkpoints_compared, 1);
+    assert_eq!(long.checkpoints_compared, 1);
+    assert_eq!(short.requested_limit, 1);
+    assert_eq!(long.requested_limit, 100);
+    assert_ne!(
+        serde_json::to_value(short).unwrap(),
+        serde_json::to_value(long).unwrap()
+    );
+}
