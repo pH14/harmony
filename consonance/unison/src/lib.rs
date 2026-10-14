@@ -325,15 +325,17 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
     struct WhollyObservableMachine {
         hash: [u8; 32],
+        work: u64,
     }
     impl Subject for WhollyObservableMachine {
         fn run_to(&mut self, _target: u64) -> Result<RunOutcome, SubjectError> {
             Ok(RunOutcome::Halted)
         }
         fn work(&self) -> u64 {
-            0
+            self.work
         }
         fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
             Ok(self.hash)
@@ -342,13 +344,25 @@ mod tests {
             self.hash
         }
     }
+    impl SubjectFactory for WhollyObservableMachine {
+        type M = Self;
+        fn spawn(&self, _: u64) -> Self {
+            self.clone()
+        }
+    }
 
     #[test]
     fn a_wholly_observable_machine_states_that_its_digests_coincide() {
-        let a = WhollyObservableMachine { hash: [7u8; 32] };
+        let a = WhollyObservableMachine {
+            hash: [7u8; 32],
+            work: 0,
+        };
         assert_eq!(a.observable_digest(), a.state_hash().unwrap());
         assert_eq!(a.observable_digest(), [7u8; 32]);
-        let b = WhollyObservableMachine { hash: [9u8; 32] };
+        let b = WhollyObservableMachine {
+            hash: [9u8; 32],
+            work: 0,
+        };
         assert_ne!(a.observable_digest(), b.observable_digest());
     }
 
@@ -405,17 +419,38 @@ mod tests {
     }
 
     #[test]
-    fn zero_limit_reports_an_initial_halt_as_termination() {
+    fn initial_halt_reports_termination_for_any_limit() {
         let halted = FlakyFactory {
             inner: factory(),
             diverge_at: 0,
             perturb: Perturbation::ForceHalt,
         };
-        let report = compare_runs(&halted, &halted, 3, 10, 0).unwrap();
-        assert_eq!(report.verdict, Verdict::Identical);
-        assert_eq!(report.checkpoints_compared, 0);
-        assert_eq!(report.halted_at, Some(0));
-        assert!(!report.limit_reached);
+        for limit in [0, 10] {
+            let report = compare_runs(&halted, &halted, 3, 10, limit).unwrap();
+            assert_eq!(report.verdict, Verdict::Identical);
+            assert_eq!(report.checkpoints_compared, 0);
+            assert_eq!(report.halted_at, Some(0));
+            assert!(!report.limit_reached);
+        }
+    }
+
+    #[test]
+    fn unequal_initial_halt_counts_are_not_identical() {
+        let a = WhollyObservableMachine {
+            hash: [7u8; 32],
+            work: 1,
+        };
+        let b = WhollyObservableMachine {
+            hash: [7u8; 32],
+            work: 2,
+        };
+        assert_eq!(
+            compare_runs(&a, &b, 3, 10, 0).unwrap().verdict,
+            Verdict::HaltMismatch {
+                a: Some(1),
+                b: Some(2),
+            }
+        );
     }
 
     #[test]
