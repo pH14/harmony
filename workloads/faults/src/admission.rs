@@ -567,6 +567,11 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                         return Err("partially mapped executable ELF section".into());
                     };
                     mapped_sections += 1;
+                    if elf.architecture() == object::Architecture::Aarch64
+                        && sh_flags & u64::from(object::elf::SHF_EXECINSTR) == 0
+                    {
+                        return Err("AArch64 executable load contains an allocated non-executable section; link with separate code pages".into());
+                    }
                     if elf.architecture() == object::Architecture::X86_64 {
                         let offset = usize::try_from(section.address() - start)?;
                         let section_end = offset
@@ -616,18 +621,6 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                             continue;
                         }
                         let other_offset = other.p_offset(elf.endian());
-                        let other_file_size = other.p_filesz(elf.endian());
-                        let other_file_start = other_offset / page_bytes * page_bytes;
-                        let other_file_end = if other_file_size == 0 {
-                            other_file_start
-                        } else {
-                            other_offset
-                                .checked_add(other_file_size)
-                                .and_then(|end| end.checked_add(page_bytes - 1))
-                                .ok_or("loaded ELF file-page overflow")?
-                                / page_bytes
-                                * page_bytes
-                        };
                         let other_address = other.p_vaddr(elf.endian());
                         if other_offset % page_bytes != other_address % page_bytes {
                             return Err("unaligned loaded AArch64 ELF mapping".into());
@@ -644,12 +637,8 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                                 / page_bytes
                                 * page_bytes
                         };
-                        if (other_file_start < mapped_file_end
-                            && mapped_file_start < other_file_end)
-                            || (other_memory_start < end_address
-                                && mapped_address < other_memory_end)
-                        {
-                            return Err("executable AArch64 ELF page alias".into());
+                        if other_memory_start < end_address && mapped_address < other_memory_end {
+                            return Err("executable AArch64 ELF memory-page alias".into());
                         }
                     }
                     let mapped_file_end = mapped_file_end.min(bytes.len() as u64);
@@ -833,6 +822,20 @@ mod tests {
         bytes
     }
 
+    fn arm_elf_with_readonly_data_in_code_load() -> Vec<u8> {
+        let code = [0xd65f03c0_u32.to_le_bytes(), *b"PATH"].concat();
+        let mut bytes = arm_elf(&code, code.len());
+        bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+        bytes[288..296].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[388..392].copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+        bytes[392..400].copy_from_slice(&u64::from(object::elf::SHF_ALLOC).to_le_bytes());
+        bytes[400..408].copy_from_slice(&0x1004_u64.to_le_bytes());
+        bytes[408..416].copy_from_slice(&4100_u64.to_le_bytes());
+        bytes[416..424].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[432..440].copy_from_slice(&4_u64.to_le_bytes());
+        bytes
+    }
+
     #[test]
     fn arm_exclusive_retry_sequence_fails_public_vm_admission() {
         let code = [0x885f7c20_u32, 0x88027c20, 0xd65f03c0]
@@ -903,13 +906,40 @@ mod tests {
     }
 
     #[test]
-    fn arm_executable_pages_cannot_alias_a_loaded_data_page() {
+    fn arm_readonly_data_in_executable_load_fails_clearly() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("probe"),
+            arm_elf_with_readonly_data_in_code_load(),
+        )
+        .unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("allocated non-executable section"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_file_page_reuse_at_distinct_memory_pages_is_admitted() {
         let ret = 0xd65f03c0_u32.to_le_bytes();
-        for (offset, address) in [(4100, 0x3004), (8196, 0x1004)] {
-            let bytes = arm_elf_with_data_load(arm_elf(&ret, ret.len()), offset, address);
-            let error = scan_elf(&bytes, "probe").unwrap_err().to_string();
-            assert!(error.contains("page alias"), "{offset}: {error}");
-        }
+        let bytes = arm_elf_with_data_load(arm_elf(&ret, ret.len()), 4100, 0x3004);
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), bytes).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(report.scan_errors.is_empty(), "{:?}", report.scan_errors);
+        assert!(report.require_for(ExecutionMode::Vm).is_ok());
+    }
+
+    #[test]
+    fn arm_executable_memory_pages_cannot_alias_a_loaded_data_page() {
+        let ret = 0xd65f03c0_u32.to_le_bytes();
+        let bytes = arm_elf_with_data_load(arm_elf(&ret, ret.len()), 8196, 0x1004);
+        let error = scan_elf(&bytes, "probe").unwrap_err().to_string();
+        assert!(error.contains("memory-page alias"), "{error}");
     }
 
     #[test]
@@ -1177,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn arm_noncode_allocated_sections_need_not_be_word_aligned() {
+    fn arm_noncode_allocated_sections_in_executable_load_fail_even_if_unaligned() {
         let code: Vec<u8> = [0xd53b2400_u32, 0xd65f03c0]
             .into_iter()
             .flat_map(u32::to_le_bytes)
@@ -1185,8 +1215,8 @@ mod tests {
         let mut bytes = arm_elf(&code, code.len());
         bytes[264..272].copy_from_slice(&2_u64.to_le_bytes());
         bytes[288..296].copy_from_slice(&3_u64.to_le_bytes());
-        let sites = scan_elf(&bytes, "").unwrap().unwrap();
-        assert_eq!(sites[0].instruction, "RNDR");
+        let error = scan_elf(&bytes, "").unwrap_err().to_string();
+        assert!(error.contains("allocated non-executable section"));
     }
 
     #[test]
