@@ -4,6 +4,8 @@ The instruction scanners reject unsupported instructions in shipped guest
 executables. Their planted negative controls must continue to fail. The N6
 entropy scanner reads executable ELF load segments, because section headers can
 mislabel code without changing the bytes or permissions the guest loader maps.
+It also decodes contained allocated sections from their starts so x86 headers
+or padding at the front of a segment cannot shift the instruction boundary.
 Its hidden-section negative control clears the `.text` executable flag while
 leaving `PT_LOAD` executable and must still be rejected.
 

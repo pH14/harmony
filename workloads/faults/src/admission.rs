@@ -9,8 +9,8 @@ use std::{
 };
 
 use iced_x86::{Decoder, DecoderOptions, Mnemonic};
-use object::Object;
 use object::read::elf::ProgramHeader;
+use object::{Object, ObjectSection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -373,6 +373,38 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 let code = header
                     .data(elf.endian(), bytes)
                     .map_err(|()| "executable ELF segment outside file")?;
+                let mut mapped_sections = 0;
+                for section in elf.sections() {
+                    let object::SectionFlags::Elf { sh_flags } = section.flags() else {
+                        continue;
+                    };
+                    if sh_flags & u64::from(object::elf::SHF_ALLOC) == 0 || section.size() == 0 {
+                        continue;
+                    }
+                    section
+                        .address()
+                        .checked_add(section.size())
+                        .ok_or("mapped ELF section address overflow")?;
+                    let Some(section_code) = header
+                        .data_range(elf.endian(), bytes, section.address(), section.size())
+                        .map_err(|()| "mapped ELF section outside file")?
+                    else {
+                        continue;
+                    };
+                    mapped_sections += 1;
+                    for (address, instruction) in
+                        scan_code(elf.architecture(), section.address(), section_code)?
+                    {
+                        sites.push(InstructionSite {
+                            digest: digest.to_owned(),
+                            address,
+                            instruction: instruction.into(),
+                        });
+                    }
+                }
+                if mapped_sections == 0 {
+                    return Err("executable ELF segment without a mapped section".into());
+                }
                 for (address, instruction) in scan_code(elf.architecture(), start, code)? {
                     sites.push(InstructionSite {
                         digest: digest.to_owned(),
@@ -582,14 +614,11 @@ mod tests {
     }
 
     #[test]
-    fn executable_segments_are_scanned_without_executable_sections() {
+    fn executable_segments_without_mapped_sections_fail() {
         let mut stripped = elf(&[0x0f, 0xc7, 0xf0], 5, 6);
         stripped[40..48].copy_from_slice(&0_u64.to_le_bytes());
         stripped[60..64].copy_from_slice(&0_u32.to_le_bytes());
-        assert_eq!(
-            scan_elf(&stripped, "").unwrap().unwrap()[0].instruction,
-            "RDRAND"
-        );
+        assert!(scan_elf(&stripped, "").is_err());
         let mut data = elf(&[0x0f, 0xc7, 0xf0], 5, 6);
         data[264..272].copy_from_slice(&2_u64.to_le_bytes());
         assert_eq!(
@@ -613,6 +642,36 @@ mod tests {
         assert!(
             report.require_for(ExecutionMode::Uml).is_err(),
             "{report:?}"
+        );
+    }
+
+    #[test]
+    fn mapped_section_starts_preserve_x86_decoding_after_segment_headers() {
+        let mut bytes = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        for (offset, value) in [
+            (24, 0x400180_u64),
+            (72, 383),
+            (80, 0x40017f),
+            (88, 0x40017f),
+            (96, 5),
+            (104, 5),
+            (272, 0x400180),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[383] = 0xe8;
+        assert!(
+            scan_code(object::Architecture::X86_64, 0x40017f, &bytes[383..388])
+                .unwrap()
+                .is_empty()
+        );
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x400180, "RDRAND")]
         );
     }
 
