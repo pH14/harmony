@@ -424,7 +424,7 @@ impl Store {
             }
             previous = Some(gfn);
         }
-        let mut verified_pages = self.verify_snapshot_pages(near)?;
+        let mut verified_pages = self.verified_snapshot_pages(near)?;
         let mut rebase = Rebase::default();
         for (index, &(gfn, hash)) in target.iter().enumerate() {
             let (near_hash, _) =
@@ -475,7 +475,13 @@ impl Store {
         }
     }
 
-    fn verify_snapshot_pages(
+    pub fn verify_snapshot_pages(&self, snap: SnapshotId) -> Result<(), StoreError> {
+        self.live_layer(snap)?;
+        self.verified_snapshot_pages(snap)?;
+        Ok(())
+    }
+
+    fn verified_snapshot_pages(
         &self,
         snap: SnapshotId,
     ) -> Result<BTreeSet<NonZeroUsize>, StoreError> {
@@ -1924,6 +1930,25 @@ mod tests {
         assert!(matches!(
             store.page_ref_eq(child, 1, child, 1),
             Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+    }
+
+    #[test]
+    fn snapshot_verification_checks_inherited_resident_pages() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let child = snap_with(&mut store, base, &[(1, 0x22)]);
+        store.verify_snapshot_pages(child).unwrap();
+
+        let PageRef::Data(id) = store.resolve(child.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        assert!(matches!(
+            store.verify_snapshot_pages(child),
+            Err(StoreError::PageIntegrity { gfn: 0 })
         ));
     }
 

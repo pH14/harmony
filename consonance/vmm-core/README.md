@@ -90,7 +90,11 @@ with its sidecar before deriving pages or minting a handle. Both imports verify
 that the installed service factory can instantiate the recorded policy and
 restore the captured handler state before committing the snapshot. Sparse
 sidecars also carry the source base snapshot's RAM digest. Export and import
-compute that digest once per base snapshot and cache it. Cache deltas use setup
+compute that digest once per base snapshot and cache it, verifying every
+distinct resident base page before reusing the cached digest. A separate release
+microbenchmark on Apple silicon measured 30.11 ms per check for 8,192 distinct
+4 KiB pages (32 MiB) and 0.45 ms when those frames shared one interned page;
+the check hashes each distinct resident page once. Cache deltas use setup
 as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does

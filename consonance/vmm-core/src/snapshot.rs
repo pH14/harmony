@@ -74,6 +74,10 @@ impl SnapshotEngine {
         self.store.store_stats()
     }
 
+    pub(crate) fn verify_snapshot_pages(&self, snap: SnapshotId) -> Result<(), SnapshotError> {
+        Ok(self.store.verify_snapshot_pages(snap)?)
+    }
+
     pub fn stats(&self, snap: SnapshotId) -> Result<SnapStats, SnapshotError> {
         Ok(self.store.stats(snap)?)
     }

@@ -499,6 +499,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .get(&base.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
         if let Some(digest) = meta.base_ram_digest.get() {
+            self.engine.verify_snapshot_pages(base_id)?;
             return Ok(digest);
         }
         let memory_len = self
@@ -5266,6 +5267,65 @@ mod tests {
             Ok(Reply::Unit)
         );
         assert_eq!(hash(&mut matched), source_hash);
+    }
+
+    #[test]
+    fn sparse_base_digest_rechecks_resident_pages_after_first_export() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        source.export_sparse_snapshot(base, base).unwrap();
+        let base_id = source.store_id(base).unwrap();
+        source
+            .engine
+            .corrupt_page_for_test(base_id, 0, 0, 1)
+            .unwrap();
+        assert!(matches!(
+            source.export_sparse_snapshot(base, base),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+        assert!(matches!(
+            source.export_sparse_delta(base, None, base),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+    }
+
+    #[test]
+    fn sparse_base_digest_rechecks_resident_pages_before_second_import() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        let portable = source.export_sparse_snapshot(base, base).unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_base = snap(&mut destination);
+        destination
+            .import_sparse_snapshot(destination_base, portable.clone())
+            .unwrap();
+        let destination_base_id = destination.store_id(destination_base).unwrap();
+        destination
+            .engine
+            .corrupt_page_for_test(destination_base_id, 0, 0, 1)
+            .unwrap();
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_sparse_snapshot(destination_base, portable),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
     }
 
     #[test]
