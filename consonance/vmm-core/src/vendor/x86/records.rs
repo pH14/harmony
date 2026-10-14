@@ -10,6 +10,8 @@ use crate::vmm::PvclockSnapshot;
 
 use crate::snapshot::SnapshotError;
 
+use super::devices::{UART_LCR_DLAB, UART_PORT_BASE, UART_PORT_LCR};
+
 pub(crate) fn to_vm_regs(r: &vmm_backend::VcpuRegs) -> VcpuRegs {
     VcpuRegs {
         rax: r.rax,
@@ -665,6 +667,9 @@ pub(crate) fn decode_device_blob(blob: &[u8]) -> Result<DeviceState, SnapshotErr
         .try_into()
         .map_err(|_| bad("uart regs len"))?;
     let dlab = r.bool().ok_or(bad("bad uart dlab"))?;
+    if dlab != (regs[(UART_PORT_LCR - UART_PORT_BASE) as usize] & UART_LCR_DLAB != 0) {
+        return Err(bad("uart dlab disagrees with line control register"));
+    }
     let dlm = r.u8().ok_or(bad("truncated uart dlm"))?;
     let lapic = match r.u8().ok_or(bad("truncated lapic flag"))? {
         0 => None,
@@ -982,7 +987,7 @@ mod tests {
             uart: UartState {
                 capture: b"GUEST_READY PASS\n".to_vec(),
                 input: b"pending".to_vec(),
-                regs: [0x01, 0x02, 0xC7, 0x03, 0x03, 0x00, 0x00, 0x00],
+                regs: [0x01, 0x02, 0xC7, 0x83, 0x03, 0x00, 0x00, 0x00],
                 dlab: true,
                 dlm: 0x09,
             },
@@ -1003,6 +1008,22 @@ mod tests {
         let decoded = decode_device_blob(&blob.0).unwrap();
         assert_eq!(decoded, d);
         assert_eq!(decoded.report_stream, vec![0x1111_1111, 0, 0xDEAD_BEEF]);
+    }
+
+    #[test]
+    fn device_blob_rejects_uart_dlab_disagreeing_with_lcr() {
+        for (lcr, dlab) in [(0x03, true), (0x83, false)] {
+            let mut d = DeviceState::default();
+            d.uart.regs[3] = lcr;
+            d.uart.dlab = dlab;
+            let blob = encode_device_blob(&d);
+            assert!(matches!(
+                decode_device_blob(&blob.0),
+                Err(SnapshotError::DeviceBlob(
+                    "uart dlab disagrees with line control register"
+                ))
+            ));
+        }
     }
 
     #[test]
