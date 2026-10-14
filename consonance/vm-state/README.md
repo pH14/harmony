@@ -9,15 +9,16 @@ hypervisor dependencies.
 
 ## Format
 
-X86 version 8 and Arm version 9 use a little-endian TLV container: a 10-byte
+X86 version 8 and Arm version 10 use a little-endian TLV container: a 10-byte
 header (magic, version, architecture tag, and section count) followed by sections in ascending tag
 order. X86 records always use the current SREGS and DEBUGREGS layouts with the
 captured CPU fields (`flags` and `pdptrs`). The engine-state and
 `xsave_restore_bv` and nested-state sections are optional within this current
 format. Arm
-retains its complete architecture-specific record set. Arm version 9 rejects
-older records that lack proof of the HVF `ACTLR_EL1` capture boundary. Older
-output versions are rejected rather than decoded or re-emitted.
+retains its complete architecture-specific record set. Arm version 10 rejects
+older records that lack proof of the HVF `ACTLR_EL1` and pointer-authentication
+key capture boundaries. Older output versions are rejected rather than decoded
+or re-emitted.
 Fixed-layout records use zerocopy wire types; variable sections are
 length-delimited. MSRs use `BTreeMap` order, and timer entries retain their
 firing order, so encoding is independent of insertion order.

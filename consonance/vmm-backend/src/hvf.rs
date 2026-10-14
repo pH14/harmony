@@ -31,6 +31,9 @@ const HV_REG_CPSR: u32 = 34;
 
 const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
 const HV_SYS_REG_ACTLR_EL1: u16 = 0xc081;
+const HV_PAUTH_KEY_SYSREGS: [u16; 10] = [
+    0xc108, 0xc109, 0xc10a, 0xc10b, 0xc110, 0xc111, 0xc112, 0xc113, 0xc118, 0xc119,
+];
 const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
 const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
 const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
@@ -540,6 +543,18 @@ impl HvfBackend {
         {
             return Err(missing_actlr());
         }
+        let missing_pauth_keys = || BackendError::Capability {
+            cap: "HVF pointer-authentication key read/write for deterministic snapshots",
+        };
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            backend.sysreg(reg).map_err(|_| missing_pauth_keys())?;
+            backend
+                .set_sysreg(reg, 0)
+                .map_err(|_| missing_pauth_keys())?;
+            if backend.sysreg(reg).map_err(|_| missing_pauth_keys())? != 0 {
+                return Err(missing_pauth_keys());
+            }
+        }
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
     }
@@ -926,6 +941,9 @@ impl Backend for HvfBackend {
         }
         self.state_poisoned = true;
         self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            self.set_sysreg(reg, 0)?;
+        }
         for (reg, value) in writes {
             self.set_sysreg(reg, value)?;
             #[cfg(test)]
@@ -1159,6 +1177,13 @@ impl Backend for HvfBackend {
                 what: "save HVF with noncanonical ACTLR_EL1",
             });
         }
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            if self.sysreg(reg)? != 0 {
+                return Err(BackendError::Unsupported {
+                    what: "save HVF with noncanonical pointer-authentication key",
+                });
+            }
+        }
         let mut state = Arm64VcpuState::default();
         for (reg, slot) in state.core.x.iter_mut().enumerate() {
             *slot = self.reg(reg as u32)?;
@@ -1273,6 +1298,9 @@ impl Backend for HvfBackend {
         self.state_poisoned = true;
         self.flush_guest_translations()?;
         self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            self.set_sysreg(reg, 0)?;
+        }
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }

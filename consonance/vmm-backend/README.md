@@ -370,11 +370,22 @@ value of `0x2` survived uninterrupted execution but read back as zero after a
 fresh restore. HVF refuses capture while `ACTLR_EL1` is nonzero, and policy
 installation and restore clear it to the fresh-vCPU zero baseline. Backend
 creation probes ACTLR read/write and refuses a host without that capability;
-Apple documents the register API from macOS 15. The Arm
-portable record now uses wire version 9 so snapshots created before this
-capture check are rejected. The live
+Apple documents the register API from macOS 15. The live
 `guest_actlr_state_refuses_capture_and_clean_restore_resets_it` test checks
 capture refusal and clean reused and fresh restores.
+
+HVF also allows EL1 guests to write and read all ten pointer-authentication key
+halves even when the advertised feature ID disables pointer authentication.
+Those keys are absent from the portable vCPU record. On the measured host, each
+guest-written key read back as `0x1234` without restore and zero after cold
+restore. HVF now refuses capture if any key half is nonzero, and policy
+installation and restore clear all ten keys to the fresh-vCPU zero baseline.
+Backend creation probes read/write access to each key and refuses a host that
+cannot establish this boundary. Arm portable records use wire version 10 to
+reject older snapshots that lacked proof of the ACTLR and key capture checks.
+The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
+covers all ten keys, capture refusal, and clean reused, fresh, and policy
+restores.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before

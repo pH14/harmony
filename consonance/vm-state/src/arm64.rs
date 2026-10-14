@@ -840,6 +840,16 @@ mod tests {
     }
 
     #[test]
+    fn pre_pauth_arm_record_is_rejected() {
+        let mut old = sample().encode().unwrap();
+        old[4..6].copy_from_slice(&9u16.to_le_bytes());
+        assert_eq!(
+            Arm64VmState::decode(&old),
+            Err(VmStateError::UnsupportedVersion(9))
+        );
+    }
+
+    #[test]
     fn retained_state_sections_reject_noncanonical_boolean_and_reserved_bytes() {
         let good = sample().encode().unwrap();
 

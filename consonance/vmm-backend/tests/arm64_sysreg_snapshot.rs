@@ -517,6 +517,63 @@ fn guest_actlr_state_refuses_capture_and_clean_restore_resets_it() {
 }
 
 #[test]
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+#[ignore = "live HVF; registered in HOST_TESTS"]
+fn guest_pauth_keys_refuse_capture_and_clean_restore_resets_them() {
+    for (name, sysreg) in [
+        ("APIAKeyLo", 0xc108u32),
+        ("APIAKeyHi", 0xc109),
+        ("APIBKeyLo", 0xc10a),
+        ("APIBKeyHi", 0xc10b),
+        ("APDAKeyLo", 0xc110),
+        ("APDAKeyHi", 0xc111),
+        ("APDBKeyLo", 0xc112),
+        ("APDBKeyHi", 0xc113),
+        ("APGAKeyLo", 0xc118),
+        ("APGAKeyHi", 0xc119),
+    ] {
+        let program = [
+            0xd282_4680,
+            0xd500_0000 | sysreg << 5,
+            0xd503_3fdf,
+            0xd520_0000 | sysreg << 5,
+            0xd2a1_2001,
+            0xf900_0020,
+            0xd520_0000 | sysreg << 5,
+            0xf900_0020,
+            0x1400_0000,
+        ];
+        let mut source = Guest::new(live_backend(), &program);
+        let mut clean = source.save();
+        clean.core.pc = RAM + 24;
+        clean.core.x[1] = OUTPUT;
+        assert_eq!(source.next_store(), 0x1234, "{name} first read");
+        assert!(
+            matches!(
+                source.backend.save(),
+                Err(vmm_backend::BackendError::Unsupported { what })
+                    if what == "save HVF with noncanonical pointer-authentication key"
+            ),
+            "{name} capture"
+        );
+        assert_eq!(source.next_store(), 0x1234, "{name} uninterrupted read");
+        source.restore(&clean);
+        assert_eq!(source.next_store(), 0, "{name} reused restore");
+        drop(source);
+
+        let mut cold = Guest::new(live_backend(), &program);
+        cold.restore(&clean);
+        assert_eq!(cold.next_store(), 0, "{name} fresh restore");
+        drop(cold);
+
+        let mut policy = Guest::new(live_backend(), &program);
+        assert_eq!(policy.next_store(), 0x1234, "{name} policy setup");
+        policy.backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(policy.next_store(), 0, "{name} policy reset");
+    }
+}
+
+#[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn kvm_irq_mask_read_matches_full_capture() {
