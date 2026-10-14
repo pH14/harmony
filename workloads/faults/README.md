@@ -246,9 +246,11 @@ processor and CPU-info lines UML imports at boot, join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest
-boot. The staged initramfs is checked against the requested image, then the
-sealed bytes are checked again before boot, so the identity names the image the
-session actually runs. The UML identity hashes kernel arguments with their
+boot. Saved searches and command runs also bind the profile loaded for guest
+execution to the recording's verified profile identity. The staged initramfs
+is checked against the requested image, then the sealed bytes are checked
+again before boot, so the identity names the image the session actually runs.
+The UML identity hashes kernel arguments with their
 lengths, preserving the boundaries used at boot when a live session or cache
 entry is reused. Search admits one processor from the selected coordinator
 placement for the whole campaign.
@@ -419,7 +421,8 @@ resulting state as a durable root. A root binds the prepared boot identity to a
 cache extent containing pages and device/service sidecars, plus the standing
 fault windows still active at its snapshot moment. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
-All workers start from the imported root, and later action prefixes/checkpoints
+The CLI verifies and loads the saved root once before starting a search, then
+passes those bytes to every worker. Later action prefixes/checkpoints
 are relative to it. A continuation retains inherited standing windows, including
 an unfired event kill armed before the root, while it adds its new action windows.
 Commands and interactive input are diagnostic evidence, not

@@ -306,10 +306,16 @@ and standalone command runs likewise bind the record built by the execution
 producer before completion.
 Derived runs also verify the bytes copied from each source artifact against its
 recorded hash, so a replacement between source verification and inheritance is
-rejected. UML also pins the exact physical processor identity selected by the fastest
-core pool's coordinator placement; the manifest and faults campaign use the
-same processor. Standalone command runs and replays bind that saved identity
-before launching the guest. KVM and HVF application replay compare final state,
+rejected. Faults recordings capture the kernel and initramfs actually prepared for
+execution, and completed reports must name those saved digests. Saved faults
+execution checks the kernel, initramfs and search vocabulary at their final
+read against the manifest; rooted search passes the verified root bytes to its
+workers. UML search and command execution also check the loaded profile's
+identity against the verified recording before guest launch. UML also pins the
+exact physical processor identity selected by the fastest core pool's
+coordinator placement; the manifest and faults campaign use the same processor.
+Standalone command runs and replays bind that saved identity before launching
+the guest. KVM and HVF application replay compare final state,
 assertions, actions and recovery evidence. UML application replay records
 assertions, actions and recovery evidence but cannot establish full-state
 identity. Plain UML command replay compares application output and
