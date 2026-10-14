@@ -1925,17 +1925,27 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(vns) })));
             }
 
-            let next_wake = [
+            let scheduled_wake = [
                 self.schedule.keys().next().copied(),
                 self.reseed_schedule.keys().next().copied(),
-                until.deadline.map(|deadline| deadline.0),
             ]
             .into_iter()
             .flatten()
             .min();
+            let next_wake = [scheduled_wake, until.deadline.map(|deadline| deadline.0)]
+                .into_iter()
+                .flatten()
+                .min();
             vmm.set_idle_wake_vns(next_wake);
 
-            match vmm.step()? {
+            let step = vmm.step()?;
+            if until.deadline.is_some_and(|deadline| {
+                scheduled_wake.is_none_or(|scheduled| deadline.0 < scheduled)
+                    && vmm.last_step_control_idle_landing_vns == Some(deadline.0)
+            }) {
+                self.timeline_tainted = true;
+            }
+            match step {
                 Step::Continued => {}
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
@@ -10147,6 +10157,149 @@ mod tests {
                 vtime: Moment(deadline)
             })
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
+    fn an_idle_deadline_wake_refuses_a_false_reproducer() {
+        let mut live = idle_server();
+        assert_eq!(
+            live.handle(&Request::Hello(server_caps())).unwrap(),
+            Ok(Reply::Hello(server_caps()))
+        );
+        let base = match live.handle(&Request::Snapshot).unwrap().unwrap() {
+            Reply::Snapshot { id, .. } => id,
+            reply => panic!("unexpected snapshot reply: {reply:?}"),
+        };
+        assert_eq!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(1_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(1_000),
+            }))
+        );
+        assert_eq!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
+        let (landed, tainted) = match live.handle(&Request::Snapshot).unwrap().unwrap() {
+            Reply::Snapshot { id, tainted, .. } => (id, tainted),
+            reply => panic!("unexpected snapshot reply: {reply:?}"),
+        };
+        assert!(tainted);
+        let landed_hash = match live
+            .handle(&Request::Hash {
+                scope: control_proto::HashScope::Whole,
+            })
+            .unwrap()
+            .unwrap()
+        {
+            Reply::Hash(hash) => hash,
+            reply => panic!("unexpected hash reply: {reply:?}"),
+        };
+        assert_eq!(
+            live.handle(&Request::Replay(landed)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(live.vmm().unwrap().effective_vns(), Some(1_000));
+        assert_eq!(
+            live.handle(&Request::Hash {
+                scope: control_proto::HashScope::Whole,
+            })
+            .unwrap(),
+            Ok(Reply::Hash(landed_hash))
+        );
+        assert_eq!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
+        assert_eq!(
+            live.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
+    fn a_staged_effect_at_the_idle_deadline_keeps_the_reproducer() {
+        let mut live = idle_server();
+        live.handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let effect = EnvHostEffect::XorMemory {
+            gpa: 0x40,
+            bytes: vec![0xA5],
+        };
+        assert_eq!(
+            live.handle(&Request::Perturb {
+                fault: HostFault(effect.encode()),
+                at: Moment(1_000),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(1_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(1_000),
+            }))
+        );
+        let reproducer = match live.handle(&Request::RecordedEnv).unwrap().unwrap() {
+            Reply::Recorded(reproducer) => reproducer,
+            reply => panic!("unexpected recorded env reply: {reply:?}"),
+        };
+
+        let mut replay = idle_server();
+        replay
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let base = match replay.handle(&Request::Snapshot).unwrap().unwrap() {
+            Reply::Snapshot { id, .. } => id,
+            reply => panic!("unexpected snapshot reply: {reply:?}"),
+        };
+        assert_eq!(
+            replay
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: reproducer
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            replay
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Quiescent {
+                vtime: Moment(1_000)
+            }))
+        );
+        assert_eq!(live.vmm().unwrap().guest_memory()[0x40], 0xA5);
+        assert_eq!(replay.vmm().unwrap().guest_memory()[0x40], 0xA5);
     }
 
     #[test]
