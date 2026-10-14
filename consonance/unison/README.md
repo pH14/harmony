@@ -15,8 +15,8 @@ machine for a seed. `state_hash` covers all architectural state. The separate
 seed-sensitive output without confusing latent PRNG/device state for an
 observable difference.
 `run_to(t)` must report `ReachedTarget` only at work count `t` and must not
-advance past `t` while reporting `Halted`. Comparisons and bisection reject
-either inconsistency; equal state hashes cannot certify runs sampled at
+advance past `t` while reporting `Halted`, or move the work counter backward.
+Comparisons and bisection reject these inconsistencies; equal state hashes cannot certify runs sampled at
 different work counts. An already-halted subject can report its existing work
 count above a requested target without advancing. Comparison uses the actual
 halt count to detect mismatches.

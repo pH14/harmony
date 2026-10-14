@@ -116,6 +116,56 @@ fn comparison_refuses_a_subject_that_halts_after_the_requested_target() {
     ));
 }
 
+struct RegressingFactory;
+
+struct RegressingSubject {
+    work: u64,
+}
+
+impl SubjectFactory for RegressingFactory {
+    type M = RegressingSubject;
+
+    fn spawn(&self, _: u64) -> Self::M {
+        RegressingSubject { work: 0 }
+    }
+}
+
+impl Subject for RegressingSubject {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        if target < 2 {
+            self.work = target;
+            Ok(RunOutcome::ReachedTarget)
+        } else {
+            self.work = 0;
+            Ok(RunOutcome::Halted)
+        }
+    }
+
+    fn work(&self) -> u64 {
+        self.work
+    }
+
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+        Ok([0; 32])
+    }
+
+    fn observable_digest(&self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
+#[test]
+fn comparison_refuses_a_subject_whose_work_regresses_on_halt() {
+    assert_eq!(
+        compare_runs(&RegressingFactory, &RegressingFactory, 0, 1, 2),
+        Err(SubjectError::InconsistentWork {
+            target: 2,
+            actual: 0,
+            outcome: RunOutcome::Halted,
+        })
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
 
