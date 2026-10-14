@@ -1155,6 +1155,15 @@ fn stop_reservations_after_objective(
     stop_campaign_on_objective && objective_found
 }
 
+fn stop_reservations_after_work_budget(
+    work_budget: Option<u64>,
+    bootstrap_execution_work: u64,
+    job_execution_work: u64,
+) -> bool {
+    work_budget
+        .is_some_and(|budget| bootstrap_execution_work.saturating_add(job_execution_work) >= budget)
+}
+
 #[derive(Serialize)]
 #[serde(bound = "")]
 pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
@@ -3040,12 +3049,11 @@ where
                           reserved: &mut u64|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
                 if *reserved >= config.execution_budget
-                    || work_budget.is_some_and(|budget| {
-                        counters
-                            .bootstrap_execution_work
-                            .saturating_add(counters.job_execution_work)
-                            >= budget
-                    })
+                    || stop_reservations_after_work_budget(
+                        work_budget,
+                        counters.bootstrap_execution_work,
+                        counters.job_execution_work,
+                    )
                     || stop_reservations_after_objective(
                         config.stop_campaign_on_objective,
                         core.objective_witness.is_some(),
@@ -4552,6 +4560,14 @@ where
     {
         return Err("campaign replay selected work after its objective stop".into());
     }
+    if stop_reservations_after_work_budget(
+        header.work_budget,
+        counters.bootstrap_execution_work,
+        counters.job_execution_work,
+    ) && !replay_job_parents.is_empty()
+    {
+        return Err("campaign replay selected work after its work budget".into());
+    }
     let mut duration_admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -4609,6 +4625,13 @@ where
                     core.objective_witness.is_some(),
                 ) {
                     return Err("campaign replay selected work after its objective stop".into());
+                }
+                if stop_reservations_after_work_budget(
+                    header.work_budget,
+                    counters.bootstrap_execution_work,
+                    counters.job_execution_work,
+                ) {
+                    return Err("campaign replay selected work after its work budget".into());
                 }
                 if (skip.mixture_weight, skip.splice_weight)
                     != mixture_weights(&core.mixture_energy, replay_mixture)
@@ -5050,6 +5073,14 @@ where
                 ) && replay_job_parents.get(next_slot).is_some()
                 {
                     return Err("campaign replay selected work after its objective stop".into());
+                }
+                if stop_reservations_after_work_budget(
+                    header.work_budget,
+                    counters.bootstrap_execution_work,
+                    counters.job_execution_work.saturating_add(execution_work),
+                ) && replay_job_parents.get(next_slot).is_some()
+                {
+                    return Err("campaign replay selected work after its work budget".into());
                 }
                 if let Some(parent_id) = replay_job_parents.get(next_slot) {
                     let (energy, continuation) = continuation_attempt(
@@ -6177,6 +6208,19 @@ mod tests {
                 .expect_err("replay certified five jobs under a one-job budget")
                 .to_string();
         assert!(error.contains("recorded execution budget"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_reservations_after_its_work_budget() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["work_budget"] = serde_json::json!(1);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified five jobs under a one-work-unit budget")
+                .to_string();
+        assert!(error.contains("after its work budget"), "{error}");
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
