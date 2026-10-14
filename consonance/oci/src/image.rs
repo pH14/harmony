@@ -4397,7 +4397,7 @@ mod tests {
     #[test]
     fn staging_root_limit_uses_resolved_path() {
         let dir = tempfile::tempdir().unwrap();
-        let actual = dir.path().join("a".repeat(150)).join("b".repeat(80));
+        let actual = dir.path().join("a".repeat(150)).join("b".repeat(120));
         std::fs::create_dir_all(&actual).unwrap();
         let alias = dir.path().join("alias");
         std::os::unix::fs::symlink(&actual, &alias).unwrap();
