@@ -82,7 +82,7 @@ fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
     enter_real_mode_at(backend, 0x1000);
 }
 
-fn native_entropy_endpoint(instruction: &[u8], cpuid: CpuidModel) -> u64 {
+fn native_entropy_endpoint(instruction: &[u8], cpuid: CpuidModel) -> u32 {
     let mut backend = new_backend_or_explain();
     let mut mem = GuestMem::new(0x10000);
     setup_real_mode(
