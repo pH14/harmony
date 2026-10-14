@@ -260,6 +260,9 @@ image in `workload.options.guest_image`.
 Native search and replay require the saved core digest from the run manifest;
 the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
+For a saved search origin, the CLI checks the ROM and, for Consonance, the
+kernel and initramfs against the inherited manifest at their final read before
+passing those bytes to the package.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search
