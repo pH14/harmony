@@ -19,6 +19,8 @@ const memoryMiB = 1024;
 const CASES = [
   { id: "twin-dragons", rom: join(demo, "public/twin-dragons.nes"), executions: 600 },
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
+  { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
+  { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
 ];
 const selected = process.env.ORACLE_GAMES?.split(",");
 

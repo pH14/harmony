@@ -235,7 +235,8 @@ fn to_bcd(value: u16) -> u8 {
     u8::try_from((value / 10) * 16 + value % 10).unwrap_or(u8::MAX)
 }
 const BOSS_MISSILE_AWARD: u8 = 75;
-const BCD_BORROW_HEALTH: u16 = 8000;
+pub const BCD_BORROW_HEALTH: u16 = 8000;
+const FACING: usize = 0x4d;
 
 fn bcd(byte: u8) -> u16 {
     u16::from(byte >> 4) * 10 + u16::from(byte & 0x0f)
@@ -290,6 +291,11 @@ fn boss_health(wram: &[u8], cartridge: &[u8], area: u8) -> Result<u16, MachineEr
     }
     let remaining = MOTHER_BRAIN_HITS_TO_KILL.saturating_sub(read_byte(wram, MOTHER_BRAIN_HITS)?);
     Ok(u16::from(remaining) * TOURIAN_HEALTH_PER_HIT)
+}
+
+#[must_use]
+pub fn faces_left(wram: &[u8]) -> bool {
+    wram.get(FACING).is_some_and(|facing| *facing != 0)
 }
 
 pub fn decode_state(wram: &[u8], cartridge: &[u8]) -> Result<MetroidMechanicalState, MachineError> {
@@ -416,6 +422,11 @@ impl MetroidSnapshot {
     #[must_use]
     pub fn emulator_state_bytes_len(&self) -> usize {
         self.emulator_state.len()
+    }
+
+    #[must_use]
+    pub fn emulator_state(&self) -> &[u8] {
+        &self.emulator_state
     }
 }
 
@@ -763,6 +774,37 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> MetroidTarget<M> {
     #[must_use]
     pub fn last_action_observations(&self) -> &[MetroidObservations] {
         &self.action_observations
+    }
+
+    pub fn snapshot_of_state(
+        &mut self,
+        state: &Vec<u8>,
+        frame_count: u64,
+    ) -> Result<MetroidSnapshot, Box<dyn Error>> {
+        self.machine
+            .restore_nes(state)
+            .map_err(|error| error.to_string())?;
+        let wram = self
+            .machine
+            .read_wram()
+            .map_err(|error| error.to_string())?;
+        let cartridge = self.cartridge().map_err(|error| error.to_string())?;
+        let decoded = decode_state(&wram, &cartridge).map_err(|error| error.to_string())?;
+        let mut observation = make_observation(
+            frame_count,
+            decoded,
+            decoded.boss_health_ceiling(),
+            &wram,
+            decode_boss_defeats(&cartridge).map_err(|error| error.to_string())?,
+            TourianEvents::default(),
+        );
+        observation.dead = self.terminal_policy.is_dead(decoded);
+        self.failed = false;
+        self.current_wram = wram;
+        self.observation = observation;
+        self.action_observations = vec![self.observation.clone()];
+        self.snapshot()
+            .ok_or_else(|| "failed to snapshot the restored state".into())
     }
 
     fn cartridge(&self) -> Result<Vec<u8>, MachineError> {

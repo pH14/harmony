@@ -24,9 +24,10 @@ implementation for the Consonance machine. The `test-support` feature exposes
 test constructors and the scripted Super Tilt Bro machine to the tests of
 `nes-workload`.
 
-Twin Dragons and Super Mario Bros. also have a `campaign` module with their
-`Workload` implementation. `TwinDragonsGame<M>` and `SmbGame<M, P>` are generic
-over the backend and build each target from a boxed factory, so the native
+Twin Dragons, Super Mario Bros., Mega Man 2 and Metroid also have a `campaign`
+module with their `Workload` implementation. `TwinDragonsGame<M>`,
+`SmbGame<M, P>`, `Mm2Game<M>` and `MetroidGame<M>` are generic over the backend
+and build each target from a boxed factory, so the native
 workload and the browser demo share every trait implementation: the native one
 passes a QuickNES or Consonance factory, and `demos/twin-dragons` passes one
 over the browser core. LZ4 snapshot packing is available on every target for
@@ -35,8 +36,8 @@ from the searcher, which leaves out emulator state, so a browser campaign and a
 native one produce the same decision stream.
 
 [`../nes`](../nes/README.md) re-exports these modules and keeps everything
-else: campaign drivers and configuration, the other games' `Workload`
-implementations, streams, films, evaluation, packaging, guest preparation and
+else: campaign drivers and configuration, Super Tilt Bro's `Workload`
+implementation, streams, films, evaluation, packaging, guest preparation and
 binaries. The game READMEs under `../nes/src` document the RAM maps and
 policies of each game.
 

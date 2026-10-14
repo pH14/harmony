@@ -317,8 +317,7 @@ function createSearch(seed, root, prefix) {
       explorer: campaignSearch(engine, identity, { seed, root, prefix, memoryMiB: budget.snapshotsMiB }),
       campaign: true,
     };
-  const explorer = root === undefined ? new Explorer(engine.game.id, seed) :
-    Explorer.from_history(engine.game.id, seed, JSON.stringify(prefix));
+  const explorer = root === undefined ? new Explorer(seed) : Explorer.from_history(seed, JSON.stringify(prefix));
   explorer.set_snapshot_budget(budget.snapshotsMiB * 1048576);
   return { explorer, campaign: false };
 }

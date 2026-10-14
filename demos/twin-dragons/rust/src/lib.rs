@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 mod campaign;
+mod mega_man;
+mod metroid;
 mod smb;
 mod twin_dragons;
 
@@ -32,36 +34,22 @@ pub struct Action {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum Game {
-    TobuTobuGirl,
-    MegaMan2,
-    Metroid,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Observation {
-    pub game: Game,
     pub x: u16,
     pub y: u16,
     pub health: u8,
     pub level: u16,
-    pub next_level: u8,
     pub gamestate: u8,
     pub goal: bool,
-    pub on_ground: bool,
-    pub facing: u8,
     pub loading: bool,
     pub cleared: u8,
     pub scene: u8,
     pub climb: u16,
     pub time: u8,
-    pub fuel: u8,
-    #[serde(default)]
-    pub clock: u16,
 }
 
 const LEVEL_COUNT: u8 = 3;
+const TOBU_RAM_BYTES: usize = 0x400;
 const TOBU_IN_LEVEL: u8 = 4;
 const TOBU_ENDING: u8 = 10;
 const TOBU_LEVEL_COMPLETE: u8 = 2;
@@ -69,136 +57,29 @@ const TOBU_BAND: u16 = 1024;
 const TOBU_MAP_HEIGHTS: [u16; 3] = [2000, 2896, 3792];
 const TOBU_SPRITE_LEFT: u16 = 24;
 const TOBU_SPRITE_CENTER: u16 = 155;
-const MM2_ORDER: [u8; 14] = [7, 5, 6, 1, 3, 0, 2, 4, 8, 9, 10, 11, 12, 13];
-const MM2_LEVEL_COUNT: u8 = 14;
-const MM2_SCREEN_HEIGHT: u16 = 224;
-const MM2_CROP_TOP: u8 = 8;
-const MM2_BAND: u16 = 128;
-const MM2_FULL: u8 = 28;
-const METROID_AREAS: [(u16, u16, u16, u16); 5] = [
-    (1, 1, 30, 19),
-    (13, 9, 18, 16),
-    (1, 16, 12, 15),
-    (14, 23, 17, 8),
-    (1, 3, 10, 9),
-];
-const METROID_AREA_OF: [u16; 5] = [0, 1, 2, 4, 3];
-const METROID_SCREEN_HEIGHT: u16 = 240;
-const METROID_CARTRIDGE: usize = 0x800;
-const MM2_STAGES: [(u8, &[u8]); 14] = [
-    (0, &[0x47, 0x40, 0x4a, 0x40, 0x20, 0x20, 0x00]),
-    (0, &[0x49, 0x40, 0x28, 0x20, 0x00]),
-    (
-        0,
-        &[
-            0x44, 0x40, 0x20, 0x20, 0x20, 0x80, 0x80, 0x44, 0x40, 0x40, 0x40, 0x22, 0x20, 0x00,
-        ],
-    ),
-    (0, &[0x44, 0x40, 0x40, 0x40, 0x26, 0x24, 0x20, 0x00]),
-    (
-        0,
-        &[
-            0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x44, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40,
-            0x40, 0x22, 0x20, 0x00,
-        ],
-    ),
-    (
-        0,
-        &[0x46, 0x40, 0x40, 0x40, 0x40, 0x40, 0x40, 0x24, 0x20, 0x00],
-    ),
-    (0, &[0x49, 0x40, 0x28, 0x20, 0x00]),
-    (
-        0,
-        &[
-            0x80, 0x80, 0x81, 0x80, 0x80, 0x80, 0x81, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80,
-            0x21, 0x20, 0x00,
-        ],
-    ),
-    (24, &[0x88, 0x80, 0x80, 0x80, 0x80, 0x80, 0x04]),
-    (22, &[0x45, 0x40, 0x40, 0x40, 0x45, 0x40, 0x40, 0x00]),
-    (
-        24,
-        &[0x40, 0x40, 0x40, 0x44, 0x40, 0x40, 0x40, 0x40, 0x22, 0x00],
-    ),
-    (
-        22,
-        &[
-            0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x41, 0x40, 0x40, 0x40, 0x40, 0x23, 0x00,
-        ],
-    ),
-    (24, &[0x00]),
-    (22, &[0x40, 0x40, 0x40, 0x25, 0x00]),
-];
+fn admissible(o: Observation) -> bool {
+    !o.loading || o.gamestate == TOBU_ENDING
+}
 
-impl Game {
-    fn parse(id: &str) -> Result<Game, &'static str> {
-        match id {
-            "tobu-tobu-girl" => Ok(Game::TobuTobuGirl),
-            "mega-man-2" => Ok(Game::MegaMan2),
-            "metroid" => Ok(Game::Metroid),
-            _ => Err("unknown game"),
-        }
+fn level_complete(o: Observation) -> bool {
+    o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE
+}
+
+fn validate_actions(actions: &[Action]) -> Result<(), &'static str> {
+    if actions.len() > 10000 {
+        return Err("History too long");
     }
-    fn ram_bytes(self) -> usize {
-        match self {
-            Game::MegaMan2 => 0x800,
-            Game::TobuTobuGirl => 0x400,
-            Game::Metroid => 0x2800,
+    let mut frames = 0_u32;
+    for a in actions {
+        if a.frames == 0 || a.buttons & 48 == 48 || a.buttons & 192 == 192 {
+            return Err("Invalid controller action");
         }
+        frames += u32::from(a.frames);
     }
-    fn decode(self, ram: &[u8]) -> Result<Observation, &'static str> {
-        match self {
-            Game::TobuTobuGirl => decode_tobu(ram),
-            Game::MegaMan2 => decode_mm2(ram),
-            Game::Metroid => decode_metroid(ram),
-        }
+    if frames > 200000 {
+        return Err("History too long");
     }
-    fn admissible(self, o: Observation) -> bool {
-        match self {
-            Game::TobuTobuGirl => !o.loading || o.gamestate == TOBU_ENDING,
-            Game::MegaMan2 => (o.health != 0 && !o.loading && !o.goal) || o.won(),
-            Game::Metroid => (o.health != 0 && !o.loading) || o.won(),
-        }
-    }
-    fn level_complete(self, o: Observation) -> bool {
-        match self {
-            Game::TobuTobuGirl => o.gamestate == TOBU_IN_LEVEL && o.scene == TOBU_LEVEL_COMPLETE,
-            Game::MegaMan2 => o.health != 0 && !o.won() && o.goal,
-            Game::Metroid => false,
-        }
-    }
-    fn starts_at_level_one(self, o: Observation) -> bool {
-        match self {
-            Game::TobuTobuGirl | Game::MegaMan2 | Game::Metroid => !o.loading && o.level == 0,
-        }
-    }
-    fn validate_actions(self, actions: &[Action]) -> Result<(), &'static str> {
-        if actions.len() > 10000 {
-            return Err("History too long");
-        }
-        let mut frames = 0_u32;
-        for a in actions {
-            let menu_buttons = matches!(self, Game::TobuTobuGirl | Game::MegaMan2);
-            let blocked = match self {
-                Game::Metroid => 8,
-                _ if menu_buttons => 0,
-                _ => 12,
-            };
-            if a.frames == 0
-                || (!menu_buttons && a.frames > 120)
-                || a.buttons & blocked != 0
-                || a.buttons & 48 == 48
-                || a.buttons & 192 == 192
-            {
-                return Err("Invalid controller action");
-            }
-            frames += u32::from(a.frames);
-        }
-        if frames > 200000 {
-            return Err("History too long");
-        }
-        Ok(())
-    }
+    Ok(())
 }
 
 impl ArchiveKey for Observation {
@@ -207,37 +88,18 @@ impl ArchiveKey for Observation {
     type Identity = (u16, u16);
     type Lineage = ();
     fn place(self) -> Self::Place {
-        match self.game {
-            Game::TobuTobuGirl => (
-                self.level,
-                self.loading,
-                self.climb / 32,
-                (self.x + TOBU_SPRITE_LEFT) / 32,
-            ),
-            Game::MegaMan2 => (
-                self.level,
-                self.loading,
-                self.x / 32,
-                (self.y / 32) << 8 | u16::from(self.time),
-            ),
-            Game::Metroid => (self.level, self.loading, self.x / 32, self.y / 32),
-        }
+        (
+            self.level,
+            self.loading,
+            self.climb / 32,
+            (self.x + TOBU_SPRITE_LEFT) / 32,
+        )
     }
     fn progress(self) -> Self::Progress {
-        match self.game {
-            Game::TobuTobuGirl => (self.cleared, self.climb / TOBU_BAND),
-            Game::MegaMan2 => (
-                self.cleared,
-                (self.climb / MM2_BAND) * 32 + u16::from(self.time),
-            ),
-            Game::Metroid => (self.cleared, 0),
-        }
+        (self.cleared, self.climb / TOBU_BAND)
     }
     fn identity(self) -> Self::Identity {
-        match self.game {
-            Game::TobuTobuGirl => (0, 0),
-            Game::MegaMan2 | Game::Metroid => (self.x / 16 % 2, self.y / 16 % 2),
-        }
+        (0, 0)
     }
     fn capacity() -> usize {
         1
@@ -249,15 +111,7 @@ impl ArchiveKey for Observation {
         1
     }
     fn preference_cmp(self, _: usize, other: Self) -> Ordering {
-        match self.game {
-            Game::TobuTobuGirl => {
-                (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb))
-            }
-            Game::MegaMan2 => (self.cleared, self.health).cmp(&(other.cleared, other.health)),
-            Game::Metroid => {
-                (self.cleared, self.fuel, self.clock).cmp(&(other.cleared, other.fuel, other.clock))
-            }
-        }
+        (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb))
     }
     fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
         self
@@ -267,16 +121,12 @@ impl ArchiveKey for Observation {
 
 impl Observation {
     fn won(self) -> bool {
-        match self.game {
-            Game::TobuTobuGirl => self.gamestate == TOBU_ENDING,
-            Game::MegaMan2 => self.cleared >= MM2_LEVEL_COUNT,
-            Game::Metroid => self.goal,
-        }
+        self.gamestate == TOBU_ENDING
     }
 }
 
 pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
-    if ram.len() != 0x400 {
+    if ram.len() != TOBU_RAM_BYTES {
         return Err("emulator memory must contain 1 KiB of work RAM bank 0");
     }
     let gamestate = ram[0xa5];
@@ -290,187 +140,18 @@ pub fn decode_tobu(ram: &[u8]) -> Result<Observation, &'static str> {
         level
     };
     Ok(Observation {
-        game: Game::TobuTobuGirl,
         x: u16::from(ram[0xc2]).saturating_sub(TOBU_SPRITE_LEFT),
         y: (TOBU_MAP_HEIGHTS[usize::from(level.min(2))] + u16::from(ram[0xc3]))
             .saturating_sub(TOBU_SPRITE_CENTER + climb),
         health: u8::from(in_level || gamestate == TOBU_ENDING),
         level: u16::from(level),
-        next_level: 0,
         gamestate,
         goal: ram[0x235] != 0,
-        on_ground: false,
-        facing: 0,
         loading: !in_level,
         cleared,
         scene,
         climb,
         time: ram[0xb0],
-        fuel: ram[0x23a],
-        clock: 0,
-    })
-}
-
-fn mm2_cell(stage: u8, screen: u8) -> (u16, u16) {
-    let (start, entries) = MM2_STAGES[usize::from(stage.min(13))];
-    let mut placed = Vec::new();
-    let (mut col, mut row, mut first) = (0_i32, 0_i32, i32::from(start));
-    for &entry in entries {
-        let count = i32::from(entry & 31) + 1;
-        for k in 0..count {
-            placed.push((first + k, col + k, row));
-        }
-        first += count;
-        col += count - 1;
-        if entry & 0x40 != 0 {
-            row += 1;
-        } else if entry & 0x80 != 0 {
-            row -= 1;
-        } else if entry & 0x20 != 0 {
-            col += 1;
-        }
-    }
-    let top = placed.iter().map(|p| p.2).min().unwrap_or(0);
-    let found = placed
-        .iter()
-        .find(|p| p.0 == i32::from(screen))
-        .or_else(|| placed.iter().find(|p| p.0 == i32::from(start)))
-        .copied()
-        .unwrap_or((0, 0, 0));
-    (found.1 as u16, (found.2 - top) as u16)
-}
-
-pub fn decode_mm2(ram: &[u8]) -> Result<Observation, &'static str> {
-    if ram.len() != 0x800 {
-        return Err("emulator memory must contain 2 KiB work RAM");
-    }
-    let stage = ram[0x2a];
-    let state = ram[0x2c];
-    let bank = ram[0x29];
-    let phase = ram[0xb1];
-    let level = MM2_ORDER.iter().position(|&s| s == stage).unwrap_or(0) as u8;
-    let (col, row) = mm2_cell(stage, ram[0x440]);
-    let start = MM2_STAGES[usize::from(stage.min(13))].0;
-    let dead = ram[0x6c0] == 0 || state == 0 || (state == 1 && ram[0x4a0] >= 0xe0);
-    let in_play = bank == 0x0e && stage < 14 && (2..=10).contains(&state);
-    let last_castle_boss = stage != 12 || (ram[0xbc] == 0xff && ram[0xb3] == 12);
-    let complete = bank == 0x0e
-        && stage < 14
-        && if stage < 8 {
-            phase >= 0xfe
-        } else {
-            phase == 0xff && last_castle_boss
-        };
-    let won = stage == 13 && complete;
-    let boss_damage = if phase >= 0xfe {
-        MM2_FULL
-    } else if phase >= 2 && ram[0x6c1] > 0 {
-        MM2_FULL.saturating_sub(ram[0x6c1])
-    } else {
-        0
-    };
-    Ok(Observation {
-        game: Game::MegaMan2,
-        x: col * 256 + u16::from(ram[0x460]),
-        y: (row * MM2_SCREEN_HEIGHT + u16::from(ram[0x4a0].saturating_sub(MM2_CROP_TOP)))
-            .min(row * MM2_SCREEN_HEIGHT + MM2_SCREEN_HEIGHT - 1),
-        health: if dead { 0 } else { ram[0x6c0] },
-        level: u16::from(level),
-        next_level: 0,
-        gamestate: phase,
-        goal: complete,
-        on_ground: state == 3,
-        facing: u8::from(ram[0x420] & 0x40 != 0),
-        loading: !in_play,
-        cleared: if won {
-            MM2_LEVEL_COUNT
-        } else {
-            level + u8::from(complete)
-        },
-        scene: ram[0x38],
-        climb: u16::from(ram[0x440].saturating_sub(start)) * 256 + u16::from(ram[0x460]),
-        time: boss_damage,
-        fuel: 0,
-        clock: 0,
-    })
-}
-
-fn bcd(byte: u8) -> u16 {
-    u16::from(byte >> 4) * 10 + u16::from(byte & 15)
-}
-
-fn metroid_cell(ram: &[u8]) -> (u8, u8) {
-    let direction = ram[0x49];
-    let vertical = direction < 2;
-    let backward = direction == 0 || direction == 2;
-    let scroll = ram[if vertical { 0xfc } else { 0xfd }];
-    let in_selected = ram[0x30c] == u8::from(ram[0xff] & 3 != 0);
-    let ahead = scroll == 0 || in_selected == backward;
-    let step = |v: u8| {
-        if ahead {
-            v
-        } else if backward {
-            v.wrapping_add(1)
-        } else {
-            v.wrapping_sub(1)
-        }
-    };
-    if vertical {
-        (ram[0x50], step(ram[0x4f]))
-    } else {
-        (step(ram[0x50]), ram[0x4f])
-    }
-}
-
-pub fn decode_metroid(ram: &[u8]) -> Result<Observation, &'static str> {
-    if ram.len() != 0x2800 {
-        return Err("emulator memory must contain 2 KiB work RAM and 8 KiB cartridge RAM");
-    }
-    let cart = |address: usize| ram[METROID_CARTRIDGE + address - 0x6000];
-    let level = METROID_AREA_OF
-        .get(usize::from(ram[0x74] & 15))
-        .copied()
-        .unwrap_or(0);
-    let (x0, y0, cols, rows) = METROID_AREAS[usize::from(level)];
-    let (cx, cy) = metroid_cell(ram);
-    let x = ((i32::from(cx) - i32::from(x0)) * 256 + i32::from(ram[0x30e]))
-        .clamp(0, i32::from(cols) * 256 - 1);
-    let y = ((i32::from(cy) - i32::from(y0)) * i32::from(METROID_SCREEN_HEIGHT)
-        + i32::from(ram[0x30d]))
-    .clamp(0, i32::from(rows * METROID_SCREEN_HEIGHT) - 1);
-    let health = bcd(ram[0x107]) * 100 + bcd(ram[0x106]);
-    let playing = ram[0x1e] == 3;
-    let dead = playing && (health == 0 || health >= 8000);
-    let won = cart(0x6883) != 0;
-    let door = ram[0x56];
-    let cleared = cart(0x6878).count_ones() as u8
-        + cart(0x6877).min(6)
-        + (cart(0x687b) >> 7)
-        + (cart(0x687c) >> 7)
-        + u8::from(won);
-    let pose = ram[0x300];
-    Ok(Observation {
-        game: Game::Metroid,
-        x: x as u16,
-        y: y as u16,
-        health: if dead {
-            0
-        } else {
-            health.div_ceil(10).min(255) as u8
-        },
-        level,
-        next_level: 0,
-        gamestate: ram[0x1e],
-        goal: won,
-        on_ground: pose <= 1 || pose == 0xff,
-        facing: u8::from(ram[0x4d] == 0),
-        loading: !playing || (door != 0 && door != 5),
-        cleared,
-        scene: ram[0x74],
-        climb: 0,
-        time: 0,
-        fuel: cart(0x6879),
-        clock: health,
     })
 }
 
@@ -533,7 +214,6 @@ struct State {
 
 #[wasm_bindgen]
 pub struct Explorer {
-    game: Game,
     archive: Archive<Action, Observation, (), ()>,
     snapshots: BTreeMap<usize, Box<[u8]>>,
     digests: BTreeMap<usize, u64>,
@@ -584,18 +264,17 @@ fn js_error(e: impl std::fmt::Display) -> JsValue {
 #[wasm_bindgen]
 impl Explorer {
     #[wasm_bindgen(constructor)]
-    pub fn new(game: &str, seed: u32) -> Result<Explorer, JsValue> {
-        Self::root(Game::parse(game).map_err(js_error)?, seed, Vec::new(), true)
+    pub fn new(seed: u32) -> Result<Explorer, JsValue> {
+        Self::root(seed, Vec::new(), true)
     }
 
-    pub fn from_history(game: &str, seed: u32, history: &str) -> Result<Explorer, JsValue> {
-        let game = Game::parse(game).map_err(js_error)?;
+    pub fn from_history(seed: u32, history: &str) -> Result<Explorer, JsValue> {
         if history.len() > 1000000 {
             return Err(js_error("History file too large"));
         }
         let prefix: Vec<Action> = serde_json::from_str(history).map_err(js_error)?;
-        game.validate_actions(&prefix).map_err(js_error)?;
-        Self::root(game, seed, prefix, false)
+        validate_actions(&prefix).map_err(js_error)?;
+        Self::root(seed, prefix, false)
     }
 
     pub fn state_count(&self) -> usize {
@@ -606,14 +285,9 @@ impl Explorer {
         self.snapshot_bytes
     }
 
-    fn root(
-        game: Game,
-        seed: u32,
-        prefix: Vec<Action>,
-        genesis: bool,
-    ) -> Result<Explorer, JsValue> {
-        let obs = game.decode(&memory()?).map_err(js_error)?;
-        if !game.admissible(obs) || (genesis && !game.starts_at_level_one(obs)) {
+    fn root(seed: u32, prefix: Vec<Action>, genesis: bool) -> Result<Explorer, JsValue> {
+        let obs = decode_tobu(&memory()?).map_err(js_error)?;
+        if !admissible(obs) || (genesis && (obs.loading || obs.level != 0)) {
             return Err(js_error("Game setup did not reach level one"));
         }
         let mut archive = Archive::new(|a: &Action| u64::from(a.frames));
@@ -637,7 +311,6 @@ impl Explorer {
         let root = compress_snapshot(&raw);
         let snapshot_bytes = root.len();
         Ok(Self {
-            game,
             archive,
             rng: RomuDuoJrRand::with_seed(u64::from(seed)),
             executions: 0,
@@ -713,10 +386,7 @@ impl Explorer {
             let mut actions = Vec::new();
             let count = 1 + below(&mut self.rng, 24);
             for action_count in (prefix.len()..).take(count) {
-                let mut action = draw(&mut self.rng, previous);
-                if self.game == Game::Metroid && below(&mut self.rng, 8) == 0 {
-                    action.buttons ^= 4;
-                }
+                let action = draw(&mut self.rng, previous);
                 if frame + u32::from(action.frames) > 200_000 || action_count >= 10_000 {
                     break;
                 }
@@ -756,7 +426,7 @@ impl Explorer {
             .pending
             .pop_front()
             .ok_or_else(|| js_error("no rollout is pending"))?;
-        let ram_bytes = self.game.ram_bytes();
+        let ram_bytes = TOBU_RAM_BYTES;
         let stride = ram_bytes + self.snapshot_size;
         let transition: Vec<Action> = transition
             .iter()
@@ -794,9 +464,9 @@ impl Explorer {
                 frame += u32::from(action.frames);
             }
             suffix.extend(actions);
-            let obs = self.game.decode(ram).map_err(js_error)?;
-            if !self.game.admissible(obs) {
-                if self.game.level_complete(obs) && !transition.is_empty() && index + 1 == last {
+            let obs = decode_tobu(ram).map_err(js_error)?;
+            if !admissible(obs) {
+                if level_complete(obs) && !transition.is_empty() && index + 1 == last {
                     continue;
                 }
                 self.deaths += 1;
@@ -914,18 +584,13 @@ mod tests {
     #[test]
     fn human_histories_reject_invalid_inputs_and_bound_total_work() {
         assert!(
-            Game::Metroid
-                .validate_actions(&[Action {
-                    buttons: 128,
-                    frames: 1
-                }])
-                .is_ok()
+            validate_actions(&[Action {
+                buttons: 8,
+                frames: 200
+            }])
+            .is_ok()
         );
         for action in [
-            Action {
-                buttons: 8,
-                frames: 1,
-            },
             Action {
                 buttons: 48,
                 frames: 1,
@@ -938,34 +603,28 @@ mod tests {
                 buttons: 0,
                 frames: 0,
             },
-            Action {
-                buttons: 0,
-                frames: 121,
-            },
         ] {
-            assert!(Game::Metroid.validate_actions(&[action]).is_err());
+            assert!(validate_actions(&[action]).is_err());
         }
         assert!(
-            Game::Metroid
-                .validate_actions(&vec![
-                    Action {
-                        buttons: 0,
-                        frames: 120
-                    };
-                    1667
-                ])
-                .is_err()
+            validate_actions(&vec![
+                Action {
+                    buttons: 0,
+                    frames: 120
+                };
+                1667
+            ])
+            .is_err()
         );
         assert!(
-            Game::Metroid
-                .validate_actions(&vec![
-                    Action {
-                        buttons: 0,
-                        frames: 1
-                    };
-                    10001
-                ])
-                .is_err()
+            validate_actions(&vec![
+                Action {
+                    buttons: 0,
+                    frames: 1
+                };
+                10001
+            ])
+            .is_err()
         );
     }
 

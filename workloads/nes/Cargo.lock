@@ -318,6 +318,7 @@ version = "0.1.0"
 dependencies = [
  "lz4_flex",
  "machine",
+ "postcard",
  "searcher",
  "serde",
  "serde_json",

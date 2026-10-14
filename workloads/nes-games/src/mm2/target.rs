@@ -37,7 +37,7 @@ const PLAYER_SCREEN: usize = 0x440;
 const LEVEL_ROOM: usize = 0x20;
 const CURRENT_BANK: usize = 0x29;
 const MENU_BANK: u8 = 0x0d;
-const GAMEPLAY_BANK: u8 = 0x0e;
+pub const GAMEPLAY_BANK: u8 = 0x0e;
 const SELECTED_WEAPON: usize = 0xa9;
 const MENU_CURSOR: usize = 0xfd;
 const MENU_PAGE: usize = 0xfe;
@@ -62,6 +62,7 @@ const OBJECT_ID_TABLE: usize = 0x400;
 const OBJECT_FLAG_TABLE: usize = 0x420;
 const OBJECT_SLOTS: usize = 0x20;
 const OBJECT_ACTIVE: u8 = 0x80;
+const PLAYER_FACING_RIGHT: u8 = 0x40;
 const ITEM_OBJECT_FIRST: u8 = 0x38;
 const ITEM_OBJECT_LAST: u8 = 0x3a;
 const BOSS_HEALTH: usize = 0x6c1;
@@ -74,7 +75,7 @@ pub const BOSS_PHASE_DEFEATED: u8 = 0xfe;
 const BOSS_PHASE_CLEARED: u8 = 0xff;
 pub const FULL_BOSS_HEALTH: u8 = 28;
 
-const PLAYER_STATE_STANDING: u8 = 0x03;
+pub const PLAYER_STATE_STANDING: u8 = 0x03;
 const PLAYER_STATE_HIT: u8 = 0x02;
 const PLAYER_STATE_AIRBORNE: u8 = 0x06;
 const PLAYER_STATE_LADDER: u8 = 0x09;
@@ -263,6 +264,17 @@ impl Mm2MechanicalState {
             && self.last_castle_boss()
     }
 
+    #[must_use]
+    pub fn stage_cleared(self) -> bool {
+        if self.stage < MM2_FIRST_WILY_STAGE {
+            self.boss_phase >= BOSS_PHASE_DEFEATED
+        } else {
+            self.stage <= MM2_LAST_WILY_STAGE
+                && self.boss_phase == BOSS_PHASE_CLEARED
+                && self.last_castle_boss()
+        }
+    }
+
     fn last_castle_boss(self) -> bool {
         self.stage != WILY5_STAGE || (self.refights == u8::MAX && self.current_boss == WILY_MACHINE)
     }
@@ -352,6 +364,12 @@ impl Mm2MechanicalState {
             && self.boss_phase == BOSS_PHASE_CLEARED
             && self.weapons_obtained == u8::MAX
     }
+}
+
+#[must_use]
+pub fn facing_right(wram: &[u8]) -> bool {
+    wram.get(OBJECT_FLAG_TABLE)
+        .is_some_and(|flags| flags & PLAYER_FACING_RIGHT != 0)
 }
 
 pub fn decode_state(wram: &[u8]) -> Result<Mm2MechanicalState, MachineError> {
@@ -582,6 +600,11 @@ impl Mm2Snapshot {
     pub fn emulator_state_bytes_len(&self) -> usize {
         self.emulator_state.len()
     }
+
+    #[must_use]
+    pub fn emulator_state(&self) -> &[u8] {
+        &self.emulator_state
+    }
 }
 
 const BOOT_TO_STAGE_SELECT: [ButtonChord; 3] = [
@@ -666,14 +689,10 @@ fn at_stage_select(wram: &[u8]) -> bool {
     wram.get(MENU_MODE).copied() == Some(MENU_MODE_STAGE_SELECT)
 }
 
-#[cfg(unix)]
-pub fn walk_to_stage_select(
-    rom: &[u8],
-    core_path: &Path,
-    core_sha256: &str,
+pub fn walk_to_stage_select<M: Machine + NesMemory>(
+    mut machine: M,
     chords: &[ButtonChord],
 ) -> Result<Vec<ButtonChord>, MachineError> {
-    let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
     for chunk in chords.chunks(64) {
         run_chords(&mut machine, chunk)?;
     }
@@ -1088,6 +1107,30 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Mm2Target<M> {
     #[must_use]
     pub fn last_action_observations(&self) -> &[Mm2Observations] {
         &self.action_observations
+    }
+
+    pub fn snapshot_of_state(
+        &mut self,
+        state: &Vec<u8>,
+        frame_count: u64,
+    ) -> Result<Mm2Snapshot, Box<dyn Error>> {
+        self.machine
+            .restore_nes(state)
+            .map_err(|error| error.to_string())?;
+        let wram = self
+            .machine
+            .read_wram()
+            .map_err(|error| error.to_string())?;
+        let decoded = decode_state(&wram).map_err(|error| error.to_string())?;
+        self.failed = false;
+        self.current_wram = wram;
+        self.observation = Mm2Observations {
+            arrived: decoded.arrived_at(Mm2Stage(decoded.stage)),
+            ..self.make_observation(frame_count, decoded)
+        };
+        self.action_observations = vec![self.observation.clone()];
+        self.snapshot()
+            .ok_or_else(|| "failed to snapshot the restored state".into())
     }
 
     pub fn survives_probe(&mut self, buttons: u8, frames: u16) -> bool {

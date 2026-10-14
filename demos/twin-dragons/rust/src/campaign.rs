@@ -30,7 +30,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
-use crate::{smb::Smb, snapshot_digest, twin_dragons::TwinDragons};
+use crate::{
+    mega_man::MegaMan, metroid::Metroid, smb::Smb, snapshot_digest, twin_dragons::TwinDragons,
+};
 
 const WINDOW: usize = 16;
 const TRAIL_STRIDE: usize = 4;
@@ -111,14 +113,25 @@ struct Trail {
 
 thread_local! {
     static TRAILS: RefCell<BTreeMap<u32, Trail>> = const { RefCell::new(BTreeMap::new()) };
-    static GENESIS_PATH: RefCell<Option<Option<Vec<ButtonChord>>>> = const { RefCell::new(None) };
+    static RECORDED_PATH: RefCell<Option<Option<RecordedPath>>> = const { RefCell::new(None) };
+}
+
+struct RecordedPath {
+    actions: Vec<ButtonChord>,
+    from_power_on: bool,
+}
+
+fn recording<T>(run: impl FnOnce() -> T) -> (T, Option<RecordedPath>) {
+    RECORDED_PATH.set(Some(None));
+    let value = run();
+    (value, RECORDED_PATH.take().flatten())
 }
 
 struct Held {
     state: Vec<u8>,
     elapsed: u64,
     trail: usize,
-    path: Option<usize>,
+    path: Option<(usize, bool)>,
 }
 
 pub struct JsMachine {
@@ -136,7 +149,7 @@ pub struct JsMachine {
     frames: Vec<[u8; WRAM_SIZE]>,
     save_ram_range: Option<Range<usize>>,
     save_ram_frames: Vec<u8>,
-    path: Option<Vec<ButtonChord>>,
+    path: Option<RecordedPath>,
 }
 
 impl JsMachine {
@@ -164,7 +177,12 @@ impl JsMachine {
             frames: Vec::new(),
             save_ram_range: None,
             save_ram_frames: Vec::new(),
-            path: GENESIS_PATH.with_borrow(Option::is_some).then(Vec::new),
+            path: RECORDED_PATH
+                .with_borrow(Option::is_some)
+                .then(|| RecordedPath {
+                    actions: Vec::new(),
+                    from_power_on: true,
+                }),
         })
     }
 
@@ -183,9 +201,10 @@ impl JsMachine {
         core_restore(self.core, &held.state).map_err(backend)?;
         self.elapsed = held.elapsed;
         let trail = held.trail;
-        match (held.path, self.path.as_mut()) {
-            (Some(len), Some(path)) => path.truncate(len),
-            _ => self.path = None,
+        if let Some(path) = self.path.as_mut() {
+            let (len, from_power_on) = held.path.unwrap_or((0, false));
+            path.actions.truncate(len);
+            path.from_power_on = from_power_on;
         }
         self.memory = core_ram(self.core).map_err(backend)?;
         self.staged.clear();
@@ -231,7 +250,7 @@ impl JsMachine {
 impl Drop for JsMachine {
     fn drop(&mut self) {
         if let Some(path) = self.path.take() {
-            GENESIS_PATH.set(Some(Some(path)));
+            RECORDED_PATH.set(Some(Some(path)));
         }
     }
 }
@@ -245,7 +264,10 @@ impl Machine for JsMachine {
             state,
             elapsed: self.elapsed,
             trail: self.trail_len(),
-            path: self.path.as_ref().map(Vec::len),
+            path: self
+                .path
+                .as_ref()
+                .map(|path| (path.actions.len(), path.from_power_on)),
         };
         Ok(self.hold(held))
     }
@@ -288,7 +310,7 @@ impl Machine for JsMachine {
             self.begin_trail();
             let hold = chord.bounded_hold_frames();
             if let Some(path) = self.path.as_mut() {
-                path.push(ButtonChord::new(chord.buttons, hold));
+                path.actions.push(ButtonChord::new(chord.buttons, hold));
             }
             let bytes = core_frames(self.core, chord.buttons, hold).map_err(backend)?;
             if bytes.len() != usize::from(hold) * size {
@@ -538,6 +560,16 @@ fn steps<G: BrowserGame>(
     Ok(steps)
 }
 
+fn actions(chords: &[ButtonChord]) -> Vec<Action> {
+    chords
+        .iter()
+        .map(|chord| Action {
+            buttons: chord.buttons,
+            frames: chord.bounded_hold_frames(),
+        })
+        .collect()
+}
+
 fn raw_state(packed: &[u8]) -> Result<Vec<u8>, MachineError> {
     let declared = packed
         .get(..4)
@@ -585,12 +617,16 @@ trait SearchApi {
 }
 
 struct Search<G: BrowserGame> {
+    game: &'static G,
+    root: Option<G::Snapshot>,
+    genesis_actions: usize,
     coordinator: CampaignCoordinator<'static, G>,
     stream: Rc<RefCell<Vec<u8>>>,
     recorded: Option<String>,
     prefix: Vec<ButtonChord>,
     pending: BTreeMap<usize, Vec<Step<G::View>>>,
     views: BTreeMap<u64, G::View>,
+    frames_at: BTreeMap<u64, u64>,
     digests: BTreeMap<u64, u64>,
     points: Vec<Point<G::View>>,
     frames: u64,
@@ -627,25 +663,28 @@ impl<G: BrowserGame> Search<G> {
             u64::from(options.executions),
             options.memory_mib as usize,
         )));
-        let (origin, raw) = match options.root {
+        let frames: u64 = prefix
+            .iter()
+            .map(|action| u64::from(action.bounded_hold_frames()))
+            .sum();
+        let (origin, raw, root, genesis_actions) = match options.root {
             None => {
-                let mut target = game.new_target()?;
-                game.reset(&mut target);
-                (
-                    CampaignOrigin::Genesis,
-                    core_capture(options.core).map_err(backend)?,
-                )
+                let (raw, path) = recording(|| {
+                    let mut target = game.new_target()?;
+                    game.reset(&mut target);
+                    core_capture(options.core).map_err(|error| backend(error).to_string())
+                });
+                let genesis_actions = path.map_or(0, |path| path.actions.len());
+                (CampaignOrigin::Genesis, raw?, None, genesis_actions)
             }
             Some(raw) => {
-                let frames = prefix
-                    .iter()
-                    .map(|action| u64::from(action.bounded_hold_frames()))
-                    .sum();
+                let checkpoint = root_checkpoint(game, options.core, &raw, frames)?;
+                let root = checkpoint.snapshots.entries[0].snapshot.clone();
                 (
-                    CampaignOrigin::SnapshotRoot {
-                        checkpoint: root_checkpoint(game, options.core, &raw, frames)?,
-                    },
+                    CampaignOrigin::SnapshotRoot { checkpoint },
                     raw,
+                    Some(root),
+                    0,
                 )
             }
         };
@@ -660,12 +699,16 @@ impl<G: BrowserGame> Search<G> {
             CampaignExecutionOptions::default(),
         )?;
         let mut search = Self {
+            game,
+            root,
+            genesis_actions,
             coordinator,
             stream,
             recorded: options.record.then(String::new),
             prefix,
             pending: BTreeMap::new(),
             views: BTreeMap::new(),
+            frames_at: BTreeMap::from([(0, frames)]),
             digests: BTreeMap::new(),
             points: Vec::new(),
             frames: 0,
@@ -731,6 +774,7 @@ impl<G: BrowserGame> Search<G> {
                     && !self.views.contains_key(&id)
                 {
                     self.views.insert(id, step.view);
+                    self.frames_at.insert(id, step.frame);
                     self.digests.insert(id, digest);
                 }
                 self.points.push(Point {
@@ -741,6 +785,39 @@ impl<G: BrowserGame> Search<G> {
             }
         }
         Ok(admitted)
+    }
+}
+
+impl<G: BrowserGame> Search<G> {
+    fn played(&self, input: &[ButtonChord]) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+        let (played, path) = recording(|| -> Result<(), Box<dyn Error>> {
+            let mut target = self.game.new_target()?;
+            match &self.root {
+                Some(root) => self.game.restore(&mut target, root)?,
+                None => self.game.reset(&mut target),
+            }
+            let mut milestones = G::Milestones::default();
+            for action in input {
+                self.game
+                    .apply_action(&mut target, action, &mut milestones)?;
+                if self.game.execution_disposition(&target).is_terminal() {
+                    break;
+                }
+            }
+            Ok(())
+        });
+        played?;
+        let path = path.ok_or("the replay recorded no controller path")?;
+        let skip = if path.from_power_on {
+            self.genesis_actions
+        } else {
+            0
+        };
+        Ok(path
+            .actions
+            .get(skip..)
+            .ok_or("the replay path is shorter than its starting point")?
+            .to_vec())
     }
 }
 
@@ -813,16 +890,25 @@ impl<G: BrowserGame> SearchApi for Search<G> {
             .views
             .get(&id)
             .ok_or_else(|| js_error("unknown state"))?;
-        let actions: Vec<Action> = self
-            .prefix
-            .iter()
-            .chain(archive.entry_input(index).map_err(js_error)?.actions.iter())
-            .map(|action| Action {
-                buttons: action.buttons,
-                frames: action.bounded_hold_frames(),
-            })
-            .collect();
-        let frames = actions.iter().map(|action| u64::from(action.frames)).sum();
+        let input = archive.entry_input(index).map_err(js_error)?.actions;
+        let mut chords = self.prefix.clone();
+        chords.extend(&input);
+        let sum = |chords: &[ButtonChord]| -> u64 {
+            chords
+                .iter()
+                .map(|chord| u64::from(chord.bounded_hold_frames()))
+                .sum()
+        };
+        if self
+            .frames_at
+            .get(&id)
+            .is_some_and(|&frames| frames != sum(&chords))
+        {
+            chords.truncate(self.prefix.len());
+            chords.extend(self.played(&input).map_err(js_error)?);
+        }
+        let frames = sum(&chords);
+        let actions = actions(&chords);
         serde_json::to_string(&State {
             id,
             observation,
@@ -969,6 +1055,8 @@ impl CampaignSearch {
         let search: Box<dyn SearchApi> = match game {
             "twin-dragons" => Box::new(Search::<TwinDragons>::new(options).map_err(js_error)?),
             "super-mario-bros" => Box::new(Search::<Smb>::new(options).map_err(js_error)?),
+            "mega-man-2" => Box::new(Search::<MegaMan>::new(options).map_err(js_error)?),
+            "metroid" => Box::new(Search::<Metroid>::new(options).map_err(js_error)?),
             _ => return Err(unknown(game)),
         };
         Ok(Self(search))
@@ -1036,6 +1124,12 @@ impl CampaignWorker {
             "super-mario-bros" => Box::new(
                 Worker::<Smb>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
             ),
+            "mega-man-2" => Box::new(
+                Worker::<MegaMan>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
+            "metroid" => Box::new(
+                Worker::<Metroid>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
             _ => return Err(unknown(game)),
         };
         Ok(Self(worker))
@@ -1060,23 +1154,16 @@ impl CampaignWorker {
 
 fn genesis_of<G: BrowserGame>(core: u32, rom: &[u8]) -> Result<String, Box<dyn Error>> {
     let game = G::create(core, rom, "genesis", "");
-    GENESIS_PATH.set(Some(None));
-    let target = game.new_target().map(|mut target| {
-        game.reset(&mut target);
-        drop(target);
+    let (target, path) = recording(|| {
+        game.new_target().map(|mut target| {
+            game.reset(&mut target);
+        })
     });
-    let path = GENESIS_PATH.take().flatten();
     target?;
-    let path = path.ok_or("the genesis state has no recorded path from power-on")?;
-    Ok(serde_json::to_string(
-        &path
-            .iter()
-            .map(|chord| Action {
-                buttons: chord.buttons,
-                frames: chord.bounded_hold_frames(),
-            })
-            .collect::<Vec<_>>(),
-    )?)
+    let path = path
+        .filter(|path| path.from_power_on)
+        .ok_or("the genesis state has no recorded path from power-on")?;
+    Ok(serde_json::to_string(&actions(&path.actions))?)
 }
 
 #[wasm_bindgen]
@@ -1084,6 +1171,8 @@ pub fn campaign_genesis(game: &str, core: u32, rom: &[u8]) -> Result<String, JsV
     match game {
         "twin-dragons" => genesis_of::<TwinDragons>(core, rom),
         "super-mario-bros" => genesis_of::<Smb>(core, rom),
+        "mega-man-2" => genesis_of::<MegaMan>(core, rom),
+        "metroid" => genesis_of::<Metroid>(core, rom),
         _ => return Err(unknown(game)),
     }
     .map_err(js_error)

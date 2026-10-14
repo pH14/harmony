@@ -75,13 +75,14 @@ rollout worker holds its own QuickNES instance. The page starts every worker and
 hands the coordinator a `MessageChannel` port to each rollout worker, because
 some browsers fail to load a worker started from inside another worker.
 
-Twin Dragons and Super Mario Bros. run the same search as their native
-workloads. `rust/src/campaign.rs` holds `JsMachine`, a `machine::Machine`,
+Twin Dragons, Super Mario Bros., Mega Man 2 and Metroid run the same search
+as their native workloads. `rust/src/campaign.rs` holds `JsMachine`, a `machine::Machine`,
 `NesBackend` and `NesMemory` that drives the browser QuickNES core through
 `globalThis.harmonyCores`, and a coordinator and rollout worker that are generic
 over `BrowserGame`. Each game implements `BrowserGame` in its own file
-(`rust/src/twin_dragons.rs`, `rust/src/smb.rs`): it builds the `nes-games`
-workload (`TwinDragonsGame`, `SmbGame`) over `JsMachine` from a target factory,
+(`rust/src/twin_dragons.rs`, `rust/src/smb.rs`, `rust/src/mega_man.rs`,
+`rust/src/metroid.rs`): it builds the `nes-games` workload (`TwinDragonsGame`,
+`SmbGame`, `Mm2Game`, `MetroidGame`) over `JsMachine` from a target factory,
 names the run and draw mixture, and maps the workload's decoded state to the
 page's observation and motion samples. `CampaignSearch` and `CampaignWorker`
 take the game id. The coordinator worker owns a Dissonance
@@ -94,18 +95,28 @@ independent of the device's worker count, so its decision stream equals the
 native campaign run with 16 workers. The archive key, draw, milestones,
 admission rules and objective are the workload's; the game READMEs under
 `workloads/nes/src` describe them. Twin Dragons draws from the controller
-alphabet like `twin-dragons-campaign`; Super Mario Bros. uses the
-`energy_splice:6` mixture of `smb-campaign` and the search benchmarks. Each
+alphabet like `twin-dragons-campaign`; the other three use the
+`energy_splice:6` mixture of `nes-eval` and the search benchmarks. Each
 rollout worker samples motion inside `JsMachine` and reports whether the
 rollout cleared a level. The coordinator releases a trail with the batch only
 once its job is admitted. Level-load frames are not archived, so a clearing
 rollout often ends before the next level loads.
 
-The other games still use the older `Explorer` in `rust/src/lib.rs`. Rollouts
-have 1 to 24 controller actions. Each action holds its buttons for 2 to 12
-frames or 6 to 18 frames, with equal odds. The coordinator plans rollouts in
-rounds of 16, four rounds ahead, and merges results in plan order. Rollout
-workers return the 2 KiB work RAM and the raw snapshot after each action, plus a
+A target can press buttons the archived input does not hold: the Mega Man 2
+whole-game target walks through the weapon screen and stage select after each
+boss. `JsMachine` records every action the core runs, and the coordinator keeps
+each state's frame count. When a state's frame count differs from the sum of
+its archived actions, `state` replays the input through a fresh target and
+returns the recorded actions, so replay, forks and Play from here use the
+actions the core really ran.
+
+Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
+older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside
+it. Rollouts have 1 to 24 controller actions. Each action holds its buttons for
+2 to 12 frames or 6 to 18 frames, with equal odds. The coordinator plans
+rollouts in rounds of 16, four rounds ahead, and merges results in plan order.
+Rollout workers return the 1 KiB work RAM bank and the raw snapshot after each
+action, plus a
 motion trail. Each worker caches up to 64 parent snapshots by id.
 
 The first search uses seed 27, and Restart increments it. The Twin Dragons
@@ -297,13 +308,13 @@ in the meantime. The automatic replay pick plays while the search runs.
 Each game is a module in `src/games/` that names its core, ROM, RAM size,
 level count, screen and sprite sizes, controls, credits, rollout pace and
 history limits, and supplies `decode` and `boot`. `src/emulator.js` lists the
-games and cores. A game with `campaign: true` (Twin Dragons, Super Mario Bros.)
-decodes in Rust through its `*_observation` export and searches with its
-`nes-games` workload through `src/campaign.js`. A game on the older `Explorer`
-path also supplies `ended` and `motion`, and one with a scripted level change
-supplies `levelComplete` and `transition`. The Rust `Game` enum in
-`rust/src/lib.rs` holds the matching decoder and archive key for those games,
-and `tests/*.mjs` check that the two decoders agree.
+games and cores. Every NES game has `campaign: true`: it decodes in Rust through
+its `*_observation` export and searches with its `nes-games` workload through
+`src/campaign.js`. Tobu Tobu Girl, on the older `Explorer` path, also supplies
+`ended`, `motion`, `levelComplete` and `transition`, and `tests/tobu.mjs` checks
+that its JavaScript and Rust decoders agree. `maxActionFrames` and
+`menuButtons` bound the controller actions an imported history may hold;
+Mega Man 2, Metroid and Tobu Tobu Girl allow Start and Select.
 
 ### Tobu Tobu Girl Deluxe
 
@@ -425,15 +436,17 @@ Wily stages share banks with the Robot Masters and start at the room and screen
 in the checkpoint tables at `$3B33` and `$3B39`. `layout(stage)` places each
 screen on a grid of 256 by 224 cells from that table, so a map is one image per
 stage. `boot(level)` picks Heat Man from stage select and writes the target
-stage during the load. A Wily boot also awards every weapon.
+stage during the load.
 
-The archive place is (level, loading, x / 32, y / 32 and boss damage), progress
-is (levels cleared, half-screens along the route × 32 + boss damage), and the
-preference is more health. A rollout ends at death, a defeated boss or a menu.
-After a Robot Master, `transition` waits for the weapon screen, presses Start
-until stage select appears, and picks the next unbeaten stage in the order
-above, or Wily once all eight are beaten. After a Wily stage it waits for the
-next stage.
+The search is the whole-game `Mm2Game` workload from `nes-games`, as
+`nes-eval` runs it with `whole_game`. `workloads/nes/src/mm2/README.md`
+describes its archive key, chords, Start taps, weapon menu and admission
+rules. The target picks each next stage itself after a boss.
+`rust/src/mega_man.rs` builds the page's observation from the workload's
+decoders. A level jump becomes a `CampaignOrigin::SnapshotRoot` only when the
+workload's admission probe accepts it. A jump writes the weapons, items and
+full weapon energy of every stage before it, so the Wily 1 jump matches a
+player who has just beaten Quick Man.
 
 The map builder flies Mega Man through each room at fixed heights, keeps his
 health full, clears enemies, hides sprites and rolls back to a snapshot on
@@ -442,10 +455,11 @@ the map whenever the camera is still in the expected room. It finds a room's
 exit by trying a grid of positions with the exit's direction held, with
 rendering off. A try ends once Mega Man stands still for 30 frames. Crash
 Man's map takes about 2 seconds to build. The Wily 2, 3 and 6 maps stop
-partway, because the builder does not yet find some of their exits. Seed 3
-climbs about 420 pixels of Crash Man's stage in 3,000 rollouts. `tests/mm2.mjs`
-reads the ROM from `MM2_ROM` or `~/workspace/roms/mm2.nes` and skips when it is
-absent.
+partway, because the builder does not yet find some of their exits.
+`tests/mm2.mjs` searches from the first stage and from the Wily 1 jump, replays
+the farthest state exactly, and branches from a played history that opens and
+closes the weapon menu with Start. It reads the ROM from `MM2_ROM` or
+`~/workspace/roms/mm2.nes` and skips when it is absent.
 
 ### Metroid
 
@@ -475,16 +489,13 @@ copy back after a game changes it.
 | `$6877`–`$687C` | energy tanks, equipment, missiles, missile capacity, Kraid and Ridley |
 | `$6883` | ending |
 
-Samus's map cell is the map position corrected by the scroll direction and
-name table, as in `workloads/nes/src/metroid`. Each area's map is the bounding
-box of its cells, and the table of which area owns each of the 32 × 32 world
-cells comes from a search over doors and passable screen edges. A rollout ends
-at death, a health reading of 800 or more (a BCD borrow), or the ending. A
-state inside a door transition is loading. The archive place is (area, loading,
-x / 32, y / 32), progress is the count of equipment bits, tanks and defeated
-bosses, and the preference is more missiles, then more health. The draw adds a
-Select press to one action in eight, because Select switches to missiles. Start
-pauses the game and is never drawn.
+The search is the new-game `MetroidGame` workload from `nes-games`, as
+`nes-eval` runs it. `workloads/nes/src/metroid/README.md` describes its map
+cell, archive key, chords and terminal policy. `rust/src/metroid.rs` places
+Samus's map cell on the area map. Each area's map is the bounding box of its
+cells, and the table of which area owns each of the 32 × 32 world cells comes
+from a search over doors and passable screen edges. A state inside a door
+transition is loading. A history may press Start, which pauses the game.
 
 The maps are drawn from the ROM's level data with no emulation. The world map
 at `$A53E` in bank 0 gives each cell's room. Each area bank holds the room,
@@ -493,9 +504,10 @@ behind `$9560`. The pattern tables are copied in the order of the area's entries
 in the table at `$C6E0`. Door caps are drawn as bars in their palette colors.
 Enemies, items and elevators are sprites and are not drawn. Each screen is a
 separate 256 × 240 bitmap, because a whole area is too large for one canvas on
-a phone, and the strip beside the view draws a reduced copy. Seed 3 moves
-Samus about 600 pixels from the start in 3,000 rollouts. `tests/metroid.mjs`
-reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
+a phone, and the strip beside the view draws a reduced copy.
+`tests/metroid.mjs` searches from the new game, replays the farthest state
+exactly, and branches from a played history that pauses and resumes with
+Start. It reads the ROM from `METROID_ROM` or `~/workspace/roms/Metroid (USA).nes` and
 skips when it is absent.
 
 ## Verification and publishing
@@ -533,7 +545,8 @@ workers and in the browser coordinator in Node on the same seed and execution
 budget, and requires every job and skip line of the two decision streams to be
 equal. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Super
 Mario Bros. runs `nes-eval` with `energy_splice:6`, a window of 16 and a
-1,024 MiB memory budget for 400 executions. `ORACLE_GAMES` (comma-separated
+1,024 MiB memory budget for 400 executions, Mega Man 2 runs it with
+`whole_game` for 400, and Metroid for 160. `ORACLE_GAMES` (comma-separated
 game ids), `ORACLE_SEED` (default 1) and `ORACLE_EXECUTIONS` set the run. A
 game without a ROM at the path `tests/core-oracle.mjs` uses is skipped. It
 needs the native core like `tests/core-oracle.mjs`. The workloads digest each

@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 import metroid, { buildMap, buildSprites, MAP_SIZES } from "../src/games/metroid.js";
 import { createEngine } from "../src/emulator.js";
 import { snapshotDigest } from "../src/media.js";
-import { RoundSearch, ROUND_PATHS } from "../src/rollout.js";
-import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
+import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
+import { validateTape } from "../src/heat.js";
 import { chromium } from "@playwright/test";
 import { TOUR_KEY } from "../src/tour.js";
 
@@ -20,8 +20,6 @@ try {
 }
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, metroid, { rom, wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)) });
-globalThis.harmonyEngine = engine;
-await init({ module_or_path: await readFile(new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url)) });
 
 const root = engine.boot(0);
 const start = engine.observation();
@@ -41,24 +39,43 @@ const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds Samus");
 console.log("Area maps and the sprite sheet build from the ROM.");
 
-engine.restore(root);
-const search = new Explorer(metroid.id, 3),
-  rounds = new RoundSearch(search, [engine]);
-let farthest = null;
-for (let tries = 0; tries < 3000; tries += ROUND_PATHS) {
-  const { batch } = rounds.round();
-  for (const point of batch.points)
-    if (point.retained !== null && (!farthest || Math.abs(point.observation.x - start.x) > Math.abs(farthest.observation.x - start.x))) farthest = point;
+const identity = coreIdentity("browser"),
+  worker = campaignWorker(engine, identity);
+function farthestFrom(search) {
+  let farthest = null;
+  while (runCampaign(search, worker, { jobs: 16 }))
+    for (const point of JSON.parse(search.take_batch()).points)
+      if (point.retained !== null && (!farthest || Math.abs(point.observation.x - start.x) > Math.abs(farthest.observation.x - start.x))) farthest = point;
+  assert.ok(farthest, "The search retains states in Brinstar");
+  return farthest;
 }
-assert.ok(farthest, "The search retains states in Brinstar");
-const state = JSON.parse(search.state(farthest.retained));
-engine.restore(root);
-for (const action of state.actions) engine.run(action.buttons, action.frames);
-assert.equal(snapshotDigest(engine.capture()), search.digest(farthest.retained), "The archived state replays exactly from its controller history");
-const decoded = engine.observation();
-for (const key of Object.keys(decoded)) assert.equal(decoded[key], state.observation[key], `Browser and Rust decoders agree on ${key}`);
+function replays(search, point, from) {
+  const state = JSON.parse(search.state(point.retained));
+  engine.restore(from);
+  for (const action of state.actions) engine.run(action.buttons, action.frames);
+  assert.equal(snapshotDigest(engine.capture()), search.digest(point.retained), "The archived state replays exactly from its controller history");
+  assert.deepEqual(engine.observation(), state.observation, "The replayed state decodes to the archived observation");
+  return state;
+}
+const search = campaignSearch(engine, identity, { seed: 3, executions: 2000 }),
+  farthest = farthestFrom(search);
+replays(search, farthest, root);
 console.log(`Brinstar: farthest state ${Math.abs(farthest.observation.x - start.x)} pixels from the start; exact replay passed.`);
 search.free();
+
+const paused = [{ buttons: 0x80, frames: 40 }, { buttons: 8, frames: 4 }, { buttons: 0, frames: 60 }, { buttons: 8, frames: 4 }, { buttons: 0x80, frames: 30 }];
+engine.restore(root);
+for (const action of paused) engine.run(action.buttons, action.frames);
+assert.equal(
+  validateTape({ format: "harmony-metroid-browser-v1", rom_sha256: metroid.rom.sha256, core_revision: engine.revision, endpoint_sha256: "0".repeat(64), actions: paused }, metroid, engine.revision),
+  138,
+  "A history that pauses with Start is a valid branch point",
+);
+const branch = campaignSearch(engine, identity, { seed: 5, executions: 300, root: engine.capture(), prefix: paused }),
+  branched = replays(branch, farthestFrom(branch), root);
+assert.deepEqual(branched.actions.slice(0, paused.length), paused, "The branch keeps the paused history as its prefix");
+console.log("A history that presses Start branches, and its states replay exactly from power-on.");
+branch.free();
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } }),

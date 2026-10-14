@@ -36,7 +36,7 @@ const target = win ? tobu.levelCount : 1,
   root = engine.boot(0);
 for (const seed of [27]) {
   engine.restore(root);
-  const search = new Explorer(tobu.id, seed),
+  const search = new Explorer(seed),
     rounds = new RoundSearch(search, [engine]);
   let found = null, tries = 0;
   for (; tries < budget && !found; tries += ROUND_PATHS) {

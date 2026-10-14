@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 import mm2, { buildMap, buildSprites, layout, MAP_SIZES, ORDER } from "../src/games/mega-man-2.js";
 import { createEngine } from "../src/emulator.js";
 import { snapshotDigest } from "../src/media.js";
-import { RoundSearch, ROUND_PATHS } from "../src/rollout.js";
-import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
+import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
+import { validateTape } from "../src/heat.js";
 import { chromium } from "@playwright/test";
 import { TOUR_KEY } from "../src/tour.js";
 
@@ -20,8 +20,6 @@ try {
 }
 const base = new URL("../public/", import.meta.url);
 const engine = await createEngine(base, mm2, { rom, wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)) });
-globalThis.harmonyEngine = engine;
-await init({ module_or_path: await readFile(new URL("../rust/pkg/twin_dragons_browser_bg.wasm", import.meta.url)) });
 
 for (let level = 0; level < mm2.levelCount; level++) {
   engine.boot(level);
@@ -44,24 +42,47 @@ const sheet = buildSprites(engine);
 assert.ok(sheet.data.some((v, i) => i % 4 === 3 && v > 0), "The sprite sheet holds Mega Man");
 console.log("Stage maps and the sprite sheet build from the ROM.");
 
-const root = engine.boot(0);
-const search = new Explorer(mm2.id, 3),
-  rounds = new RoundSearch(search, [engine]);
-let deepest = null;
-for (let tries = 0; tries < 3000; tries += ROUND_PATHS) {
-  const { batch } = rounds.round();
-  for (const point of batch.points)
-    if (point.retained !== null && (!deepest || point.observation.climb > deepest.observation.climb)) deepest = point;
+const identity = coreIdentity("browser"),
+  worker = campaignWorker(engine, identity);
+for (const level of [0, ORDER.indexOf(8)]) {
+  const root = engine.boot(level),
+    search = campaignSearch(engine, identity, { seed: 3, executions: 3000, ...(level ? { root } : {}) });
+  let deepest = null;
+  while (runCampaign(search, worker, { jobs: 16 }))
+    for (const point of JSON.parse(search.take_batch()).points)
+      if (point.retained !== null && (!deepest || point.observation.climb > deepest.observation.climb)) deepest = point;
+  const name = mm2.catalog.levels[level].label;
+  assert.ok(deepest, `The search retains states in ${name}`);
+  const state = JSON.parse(search.state(deepest.retained));
+  engine.restore(root);
+  for (const action of state.actions) engine.run(action.buttons, action.frames);
+  assert.equal(snapshotDigest(engine.capture()), search.digest(deepest.retained), "The archived state replays exactly from its controller history");
+  assert.deepEqual(engine.observation(), state.observation, "The replayed state decodes to the archived observation");
+  console.log(`${name}: deepest state at screen climb ${deepest.observation.climb}; exact replay passed.`);
+  search.free();
 }
-assert.ok(deepest, "The search retains states in Crash Man's stage");
-const state = JSON.parse(search.state(deepest.retained));
-engine.restore(root);
-for (const action of state.actions) engine.run(action.buttons, action.frames);
-assert.equal(snapshotDigest(engine.capture()), search.digest(deepest.retained), "The archived state replays exactly from its controller history");
-const decoded = engine.observation();
-for (const key of Object.keys(decoded)) assert.equal(decoded[key], state.observation[key], `Browser and Rust decoders agree on ${key}`);
-console.log(`Crash Man: deepest state at screen climb ${deepest.observation.climb}; exact replay passed.`);
-search.free();
+
+{
+  const root = engine.boot(0),
+    menu = [{ buttons: 0x80, frames: 30 }, { buttons: 8, frames: 4 }, { buttons: 0, frames: 60 }, { buttons: 8, frames: 4 }, { buttons: 0, frames: 90 }];
+  for (const action of menu) engine.run(action.buttons, action.frames);
+  assert.equal(
+    validateTape({ format: "harmony-mega-man-2-browser-v1", rom_sha256: mm2.rom.sha256, core_revision: engine.revision, endpoint_sha256: "0".repeat(64), actions: menu }, mm2, engine.revision),
+    188,
+    "A history that opens the weapon menu is a valid branch point",
+  );
+  const branch = campaignSearch(engine, identity, { seed: 5, executions: 300, root: engine.capture(), prefix: menu });
+  let point = null;
+  while (runCampaign(branch, worker, { jobs: 16 }))
+    for (const p of JSON.parse(branch.take_batch()).points) if (p.retained !== null) point = p;
+  const state = JSON.parse(branch.state(point.retained));
+  engine.restore(root);
+  for (const action of state.actions) engine.run(action.buttons, action.frames);
+  assert.equal(snapshotDigest(engine.capture()), branch.digest(point.retained), "A state found after the branch replays exactly from the stage start");
+  assert.deepEqual(state.actions.slice(0, menu.length), menu, "The branch keeps the menu history as its prefix");
+  console.log("A history that presses Start branches, and its states replay exactly from the stage start.");
+  branch.free();
+}
 
 const browser = await chromium.launch({ headless: true, ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const page = await browser.newPage({ viewport: { width: 1280, height: 900 } }),

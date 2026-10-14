@@ -1,29 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-const MODE = 0x1e,
-  PLAYING = 3,
-  SCROLL_DIRECTION = 0x49,
-  FACING = 0x4d,
-  MAP_Y = 0x4f,
-  MAP_X = 0x50,
-  DOOR = 0x56,
-  AREA = 0x74,
-  SCROLL_Y = 0xfc,
+import { metroid_observation } from "../../rust/pkg/twin_dragons_browser.js";
+
+const FACING = 0x4d,
   SCROLL_X = 0xfd,
-  PPU_CONTROL = 0xff,
-  HEALTH_LOW = 0x106,
-  HEALTH_HIGH = 0x107,
-  POSE = 0x300,
-  SAMUS_TABLE = 0x30c,
   SAMUS_Y = 0x30d,
   SAMUS_X = 0x30e,
-  CARTRIDGE = 0x800 - 0x6000,
-  TANKS = 0x6877 + CARTRIDGE,
-  EQUIPMENT = 0x6878 + CARTRIDGE,
-  MISSILES = 0x6879 + CARTRIDGE,
-  KRAID = 0x687b + CARTRIDGE,
-  RIDLEY = 0x687c + CARTRIDGE,
-  ENDING = 0x6883 + CARTRIDGE,
-  START = 8,
   SCREEN_WIDTH = 256,
   SCREEN_HEIGHT = 240;
 
@@ -37,7 +18,6 @@ const AREAS = [
   { name: "Ridley's Lair", letter: "r", bank: 5, gfx: [4, 5, 10, 18, 19, 25, 22] },
   { name: "Tourian", letter: "t", bank: 3, gfx: [5, 10, 11, 12, 13, 14, 26, 28, 25, 22] },
 ];
-const AREA_OF = [0, 1, 2, 4, 3];
 for (const area of AREAS) {
   area.cells = [];
   for (let i = 0; i < 1024; i++) if (OWNERS[i] === area.letter) area.cells.push([i & 31, i >> 5]);
@@ -47,7 +27,6 @@ for (const area of AREAS) {
   area.rows = Math.max(...area.cells.map((c) => c[1])) - area.y0 + 1;
 }
 export const MAP_SIZES = AREAS.map((a) => ({ width: a.cols * SCREEN_WIDTH, height: a.rows * SCREEN_HEIGHT }));
-export const AREA_ORIGINS = AREAS.map((a) => [a.x0, a.y0]);
 
 function distances(area, start) {
   const owned = new Set(area.cells.map(([x, y]) => y * 32 + x)), far = new Map([[start, 0]]), queue = [start];
@@ -76,65 +55,8 @@ export function entry(level) {
   return { x: (cx - area.x0) * SCREEN_WIDTH + 128, y: (cy - area.y0) * SCREEN_HEIGHT + 120 };
 }
 
-function bcd(byte) {
-  return (byte >> 4) * 10 + (byte & 15);
-}
-function bits(byte) {
-  let n = 0;
-  for (; byte; byte &= byte - 1) n++;
-  return n;
-}
-function samusCell(ram) {
-  const direction = ram[SCROLL_DIRECTION], vertical = direction < 2, backward = direction === 0 || direction === 2;
-  const scroll = ram[vertical ? SCROLL_Y : SCROLL_X];
-  const inSelected = ram[SAMUS_TABLE] === (ram[PPU_CONTROL] & 3 ? 1 : 0);
-  const ahead = scroll === 0 || inSelected === backward;
-  const step = (v) => (ahead ? v : backward ? v + 1 : v - 1) & 0xff;
-  return vertical ? [ram[MAP_X], step(ram[MAP_Y])] : [step(ram[MAP_X]), ram[MAP_Y]];
-}
-function areaOf(ram) {
-  return AREA_OF[ram[AREA] & 15] ?? 0;
-}
-function healthTenths(ram) {
-  return bcd(ram[HEALTH_HIGH]) * 100 + bcd(ram[HEALTH_LOW]);
-}
-function inPlay(ram) {
-  return ram[MODE] === PLAYING;
-}
-function dead(ram) {
-  const health = healthTenths(ram);
-  return inPlay(ram) && (health === 0 || health >= 8000);
-}
-function won(ram) {
-  return ram[ENDING] !== 0;
-}
-function mapPoint(ram) {
-  const level = areaOf(ram), area = AREAS[level], [cx, cy] = samusCell(ram);
-  const x = (cx - area.x0) * SCREEN_WIDTH + ram[SAMUS_X], y = (cy - area.y0) * SCREEN_HEIGHT + ram[SAMUS_Y];
-  return [level, Math.max(0, Math.min(MAP_SIZES[level].width - 1, x)), Math.max(0, Math.min(MAP_SIZES[level].height - 1, y))];
-}
-
-export function decode(ram) {
-  const [level, x, y] = mapPoint(ram), health = healthTenths(ram), door = ram[DOOR];
-  const cleared = bits(ram[EQUIPMENT]) + Math.min(6, ram[TANKS]) + (ram[KRAID] >> 7) + (ram[RIDLEY] >> 7) + (won(ram) ? 1 : 0);
-  return {
-    x,
-    y,
-    health: dead(ram) ? 0 : Math.min(255, Math.ceil(health / 10)),
-    level,
-    next_level: 0,
-    gamestate: ram[MODE],
-    goal: won(ram),
-    on_ground: ram[POSE] <= 1 || ram[POSE] === 0xff,
-    facing: ram[FACING] ? 0 : 1,
-    loading: !inPlay(ram) || (door !== 0 && door !== 5),
-    cleared,
-    scene: ram[AREA],
-    climb: 0,
-    time: 0,
-    fuel: ram[MISSILES],
-    clock: health,
-  };
+export function decode(memory) {
+  return JSON.parse(metroid_observation(memory));
 }
 
 function offset(bank, address) {
@@ -265,16 +187,6 @@ export function buildMap(engine, level) {
   return { ...MAP_SIZES[level], tiles, reached: tiles.length };
 }
 
-function bootToPlay(engine) {
-  const ram = engine.ramView();
-  engine.run(0, 300);
-  for (let press = 0; press < 2; press++) {
-    engine.run(START, 4);
-    engine.run(0, 180);
-  }
-  for (let wait = 0; wait < 600 && !inPlay(ram); wait++) engine.run(0, 1);
-}
-
 export function buildSprites(engine) {
   engine.boot(0);
   const ram = engine.ramView(),
@@ -324,6 +236,8 @@ export default {
   route: routeOrder,
   entry,
   pace: 300,
+  maxActionFrames: 255,
+  menuButtons: true,
   system: "NES",
   assets: "",
   screen: { width: 256, height: 240 },
@@ -338,14 +252,5 @@ export default {
   buildMap,
   buildSprites,
   decode,
-  ended: (ram) => dead(ram) || won(ram),
-  levelComplete: () => false,
-  transition: () => [],
-  motion(ram) {
-    const [level, x, y] = mapPoint(ram), valid = inPlay(ram) && !dead(ram) && (ram[DOOR] === 0 || ram[DOOR] === 5);
-    return [valid ? level : 65535, x, y, ram[FACING] ? 1 : 0];
-  },
-  boot(engine) {
-    bootToPlay(engine);
-  },
+  campaign: true,
 };

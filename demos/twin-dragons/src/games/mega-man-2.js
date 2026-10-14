@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
+import { mega_man_observation } from "../../rust/pkg/twin_dragons_browser.js";
+
 const STAGE = 0x2a,
   PLAYER_STATE = 0x2c,
   WEAPONS = 0x9a,
@@ -10,17 +12,11 @@ const STAGE = 0x2a,
   CAMERA_FINE = 0x1f,
   CAMERA_STATE = 0x1b,
   BANK = 0x29,
-  MENU_MODE = 0xf7,
-  CURRENT_BOSS = 0xb3,
-  REFIGHTS = 0xbc,
   PLAYER_X = 0x460,
   PLAYER_Y = 0x4a0,
   PLAYER_FLAGS = 0x420,
   HEALTH = 0x6c0,
-  BOSS_HEALTH = 0x6c1,
-  BOSS_PHASE = 0xb1,
   GAMEPLAY = 0x0e,
-  STAGE_SELECT = 0x90,
   STANDING = 3,
   AIRBORNE = 6,
   LADDER = 9,
@@ -28,12 +24,6 @@ const STAGE = 0x2a,
   FALLEN = 1,
   DYING = 0,
   FULL = 28,
-  DEFEATED = 0xfe,
-  CLEARED = 0xff,
-  WILY5 = 12,
-  FINAL = 13,
-  WILY_MACHINE = 12,
-  A = 1,
   START = 8,
   UP = 0x10,
   DOWN = 0x20,
@@ -110,61 +100,8 @@ export function levelName(id) {
 function levelOf(stage) {
   return Math.max(0, ORDER.indexOf(stage));
 }
-function cell(ram) {
-  const lay = LAYOUTS[ram[STAGE]] || LAYOUTS[0];
-  return lay.cells.get(ram[SCREEN]) || lay.cells.get(lay.start);
-}
-function playerX(ram) {
-  return cell(ram)[0] * 256 + ram[PLAYER_X];
-}
-function playerY(ram) {
-  return Math.min(cell(ram)[1] * SCREEN_HEIGHT + SCREEN_HEIGHT - 1, cell(ram)[1] * SCREEN_HEIGHT + Math.max(0, ram[PLAYER_Y] - CROP_TOP));
-}
-function dead(ram) {
-  return ram[HEALTH] === 0 || ram[PLAYER_STATE] === DYING || (ram[PLAYER_STATE] === FALLEN && ram[PLAYER_Y] >= 0xe0);
-}
-function inPlay(ram) {
-  return ram[BANK] === GAMEPLAY && ram[STAGE] < 14 && ram[PLAYER_STATE] >= 2 && ram[PLAYER_STATE] <= LADDER_TOP;
-}
-function lastCastleBoss(ram) {
-  return ram[STAGE] !== WILY5 || (ram[REFIGHTS] === 0xff && ram[CURRENT_BOSS] === WILY_MACHINE);
-}
-function complete(ram) {
-  if (ram[BANK] !== GAMEPLAY || ram[STAGE] >= 14) return false;
-  if (ram[STAGE] < 8) return ram[BOSS_PHASE] >= DEFEATED;
-  return ram[BOSS_PHASE] === CLEARED && lastCastleBoss(ram);
-}
-function won(ram) {
-  return ram[STAGE] === FINAL && complete(ram);
-}
-function bossDamage(ram) {
-  if (ram[BOSS_PHASE] >= DEFEATED) return FULL;
-  return ram[BOSS_PHASE] >= 2 && ram[BOSS_HEALTH] > 0 ? Math.max(0, FULL - ram[BOSS_HEALTH]) : 0;
-}
-
 export function decode(ram) {
-  if (ram.length !== 2048) throw new Error("Invalid Mega Man 2 memory");
-  const level = levelOf(ram[STAGE]),
-    lay = LAYOUTS[ram[STAGE]] || LAYOUTS[0],
-    loading = !inPlay(ram),
-    done = complete(ram);
-  return {
-    x: playerX(ram),
-    y: playerY(ram),
-    health: dead(ram) ? 0 : ram[HEALTH],
-    level,
-    gamestate: ram[BOSS_PHASE],
-    goal: done,
-    on_ground: ram[PLAYER_STATE] === STANDING,
-    facing: ram[PLAYER_FLAGS] & 0x40 ? 1 : 0,
-    loading,
-    cleared: won(ram) ? LEVEL_COUNT : level + (done ? 1 : 0),
-    scene: ram[ROOM],
-    climb: Math.max(0, ram[SCREEN] - lay.start) * 256 + ram[PLAYER_X],
-    time: bossDamage(ram),
-    fuel: 0,
-    clock: 0,
-  };
+  return JSON.parse(mega_man_observation(ram));
 }
 
 function record(actions, buttons, frames) {
@@ -235,29 +172,6 @@ function boot(engine, id) {
   }
   if (!arrived(ram, stage)) throw new Error("Mega Man 2 did not reach the castle");
   award(ram, 0xff);
-}
-
-function transition(engine) {
-  const drive = driver(engine, false),
-    ram = engine.ramView(),
-    stage = ram[STAGE];
-  if (stage >= 8) {
-    drive.until((r) => arrived(r, stage + 1), 8000);
-    return drive.actions;
-  }
-  drive.until((r) => r[WEAPONS] & (1 << stage), 1800);
-  drive.run(0, 900);
-  for (let round = 0; round < 16 && ram[MENU_MODE] !== STAGE_SELECT; round++) {
-    drive.run(DOWN, 4);
-    drive.run(0, 30);
-    drive.run(START, 4);
-    drive.run(0, 300);
-  }
-  if (ram[MENU_MODE] !== STAGE_SELECT) throw new Error("Mega Man 2 did not return to stage select");
-  const next = ORDER.find((s) => s < 8 && !(ram[WEAPONS] & (1 << s))) ?? 8;
-  select(drive, next);
-  drive.until((r) => arrived(r, next), next < 8 ? 1200 : 8000);
-  return drive.actions;
 }
 
 const LANES = [0x30, 0x60, 0x90, 0xb0, 0x20, 0x48, 0x78, 0xa0, 0xc0];
@@ -450,12 +364,6 @@ export default {
   buildMap,
   buildSprites,
   decode,
-  ended: (ram) => dead(ram) || complete(ram) || ram[BANK] !== GAMEPLAY,
-  levelComplete: (ram) => !dead(ram) && complete(ram) && !won(ram),
-  transition,
-  motion(ram) {
-    const valid = inPlay(ram) && !dead(ram);
-    return [valid ? levelOf(ram[STAGE]) : 65535, playerX(ram), playerY(ram), ram[PLAYER_FLAGS] & 0x40 ? 0 : 1];
-  },
+  campaign: true,
   boot,
 };

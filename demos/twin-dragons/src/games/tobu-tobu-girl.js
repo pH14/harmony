@@ -45,7 +45,6 @@ export function decode(ram) {
     scene,
     climb: climb(ram),
     time: ram[TIME],
-    fuel: ram[0x23a],
     goal: ram[0x235] !== 0,
     loading: !playing,
     cleared: gamestate === ENDING ? LEVEL_COUNT : level,
