@@ -1110,11 +1110,21 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
 }
 
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
-    let members = read_members(archive)?;
+    let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
+    let members = read_members(pinned.path())?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
-    untar(archive, dest)
+    untar(pinned.path(), dest)
+}
+
+fn pin_archive(archive: &Path, staging: &Path) -> Result<tempfile::NamedTempFile, ImageError> {
+    let pinned = tempfile::Builder::new()
+        .prefix("checked-archive-")
+        .suffix(".tar")
+        .tempfile_in(staging)?;
+    std::fs::copy(archive, pinned.path())?;
+    Ok(pinned)
 }
 
 fn writable_layer_mode(mode: u32) -> u32 {
@@ -1307,15 +1317,16 @@ fn apply_layer_tracked(
     owners: &mut Ownership,
     portable_names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
 ) -> Result<(), ImageError> {
-    let members = read_members(layer)?;
+    let staging = rootfs.parent().unwrap_or(rootfs);
+    let pinned = pin_archive(layer, staging)?;
+    let members = read_members(pinned.path())?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
     let opaque_modes = apply_whiteouts(&members, rootfs)?;
     let implicit_dirs = implicit_layer_dirs(&members);
-    let staging = rootfs.parent().unwrap_or(rootfs);
     let staged = tempfile::tempdir_in(staging)?;
-    untar(layer, staged.path())?;
+    untar(pinned.path(), staged.path())?;
     let mut preserved_modes = BTreeMap::new();
     merge_layer(
         staged.path(),
@@ -1833,6 +1844,72 @@ mod tests {
         extract_checked(&tarball, &dest).unwrap();
         assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"hi");
         assert!(extract_checked(Path::new("/nonexistent.tar"), &dest).is_err());
+    }
+
+    #[test]
+    fn archive_replacement_after_validation_cannot_change_extraction() {
+        if let Some(kind) = std::env::var_os("HARMONY_ARCHIVE_SWAP_CHILD") {
+            let original =
+                PathBuf::from(std::env::var_os("HARMONY_ARCHIVE_SWAP_ORIGINAL").unwrap());
+            let dest = PathBuf::from(std::env::var_os("HARMONY_ARCHIVE_SWAP_DEST").unwrap());
+            std::fs::create_dir(&dest).unwrap();
+            if kind == "layer" {
+                apply_layer(&original, &dest, &mut Ownership::default()).unwrap();
+            } else {
+                extract_checked(&original, &dest).unwrap();
+            }
+            assert_eq!(std::fs::read(dest.join("accepted")).unwrap(), b"checked");
+            assert!(!dest.join("a").exists());
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let wrapper = bin.join("tar");
+        std::fs::write(
+            &wrapper,
+            b"#!/bin/sh\ncp \"$HARMONY_ARCHIVE_SWAP_REPLACEMENT\" \"$HARMONY_ARCHIVE_SWAP_ORIGINAL\"\nexec /usr/bin/tar \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let replacement = write_archive(
+            dir.path(),
+            "replacement.tar",
+            &[
+                raw_member(b"A", b'0', "", b"first"),
+                raw_member(b"a", b'0', "", b"second"),
+            ]
+            .concat(),
+        );
+        for kind in ["outer", "layer"] {
+            let original = write_archive(
+                dir.path(),
+                &format!("{kind}.tar"),
+                &raw_member(b"accepted", b'0', "", b"checked"),
+            );
+            let dest = dir.path().join(format!("{kind}-dest"));
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::archive_replacement_after_validation_cannot_change_extraction",
+                ])
+                .env("HARMONY_ARCHIVE_SWAP_CHILD", kind)
+                .env("HARMONY_ARCHIVE_SWAP_ORIGINAL", &original)
+                .env("HARMONY_ARCHIVE_SWAP_REPLACEMENT", &replacement)
+                .env("HARMONY_ARCHIVE_SWAP_DEST", &dest)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .status()
+                .unwrap();
+            assert!(status.success(), "{kind} extracted unchecked bytes");
+            assert_eq!(
+                std::fs::read(&original).unwrap(),
+                std::fs::read(&replacement).unwrap()
+            );
+        }
     }
 
     #[test]
@@ -3457,7 +3534,7 @@ mod tests {
     }
 
     #[test]
-    fn read_members_reads_compressed_layers() {
+    fn compressed_layers_are_read_and_extracted() {
         let dir = tempfile::tempdir().unwrap();
         let plain = tar_layer(dir.path(), "layer", &[("etc/passwd", b"root")]);
         let expected: Vec<String> = read_members(&plain)
@@ -3482,6 +3559,10 @@ mod tests {
                 .map(Member::shown)
                 .collect();
             assert_eq!(names, expected, "{tool}");
+            let dest = dir.path().join(format!("extract-{tool}"));
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&compressed, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("etc/passwd")).unwrap(), b"root");
         }
     }
 
