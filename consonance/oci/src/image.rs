@@ -904,6 +904,11 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
         if block.iter().all(|byte| *byte == 0) {
             require_trailing_zeros(&mut stream)?;
             stream.finish()?;
+            if long_name.is_some() || long_link.is_some() || pax_header_seen {
+                return Err(ImageError::Tar(
+                    "archive ends with an orphaned extension header".into(),
+                ));
+            }
             return Ok(members);
         }
         verify_checksum(&block)?;
@@ -3006,6 +3011,107 @@ mod tests {
                 ));
                 assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
             }
+        }
+    }
+
+    #[test]
+    fn orphan_name_link_and_pax_extensions_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                "gnu-name",
+                raw_member(b"././@LongLink", b'L', "", b"next\0"),
+            ),
+            (
+                "gnu-link",
+                raw_member(b"././@LongLink", b'K', "", b"next\0"),
+            ),
+            (
+                "pax-path",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "next").as_bytes(),
+                ),
+            ),
+            (
+                "pax-comment",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("comment", "next").as_bytes(),
+                ),
+            ),
+            (
+                "empty-gnu-name",
+                raw_member(b"././@LongLink", b'L', "", b""),
+            ),
+            (
+                "empty-gnu-link",
+                raw_member(b"././@LongLink", b'K', "", b""),
+            ),
+            ("empty-pax", raw_member(b"PaxHeaders/0", b'x', "", b"")),
+        ];
+        for (label, extension) in cases {
+            for (prefix_label, prefix) in [
+                ("alone", Vec::new()),
+                ("after-file", raw_member(b"file", b'0', "", b"content")),
+            ] {
+                let archive = write_archive(
+                    dir.path(),
+                    &format!("orphan-{label}-{prefix_label}.tar"),
+                    &[prefix, extension.clone()].concat(),
+                );
+                let dest = dir.path().join(format!("orphan-{label}-{prefix_label}"));
+                std::fs::create_dir(&dest).unwrap();
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn consumed_name_link_and_pax_extensions_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                "gnu-name",
+                raw_member(b"././@LongLink", b'L', "", b"next\0"),
+                "next",
+            ),
+            (
+                "gnu-link",
+                raw_member(b"././@LongLink", b'K', "", b"next\0"),
+                "file",
+            ),
+            (
+                "pax-comment",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("comment", "next").as_bytes(),
+                ),
+                "file",
+            ),
+        ];
+        for (label, extension, name) in cases {
+            let archive = write_archive(
+                dir.path(),
+                &format!("consumed-{label}.tar"),
+                &[extension, raw_member(b"file", b'0', "", b"content")].concat(),
+            );
+            let dest = dir.path().join(format!("consumed-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join(name)).unwrap(), b"content");
         }
     }
 

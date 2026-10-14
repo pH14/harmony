@@ -128,6 +128,10 @@ by terminal `/.` is rejected, including repeated slashes or dot components:
 macOS tar can extract it as a file or link while GNU tar treats it as a
 directory and errors. Directory members keep this spelling, and a pax or GNU
 override to a portable name remains valid.
+GNU long-name and long-link records and local PAX headers must have a following
+member, even when their payload is empty or contains only ignored metadata.
+macOS tar rejects orphaned extension records as damaged while GNU tar ignores
+them, so staging rejects the archive before extraction.
 Symlink targets must have a nonempty ASCII base header target and a nonempty
 ASCII effective target after any pax or GNU override, with no embedded NUL.
 An empty base target can become a regular file on macOS but a symlink on Linux;
