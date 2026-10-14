@@ -582,6 +582,7 @@ mod tests {
             output: dir.path().to_path_buf(),
             uml_profile: None,
             root: None,
+            checkpoint_owner: None,
         };
         let mut report = Report::new(
             "search",
@@ -658,6 +659,7 @@ mod tests {
             output: dir.path().to_path_buf(),
             uml_profile: None,
             root: None,
+            checkpoint_owner: None,
         };
         let mut report = Report::new(
             "search",
