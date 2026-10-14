@@ -81,7 +81,9 @@ invalidate cached results without importing process-fault semantics.
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
 runtime readiness, orders arms and disarms, and only credits an event kill when
-its report matches the acknowledged rarity and window-start identity. While a
+its report matches the acknowledged rarity and window-start identity. A report
+that arrives before its arm acknowledgement has been fully read stays buffered
+until that acknowledgement is available. While a
 park is in effect, each tick's status reply gives its fire count and whether a
 thread is held. The runtime acknowledges a disarm at once, and the park stays
 in effect until a status reply shows it neither armed nor holding a thread.

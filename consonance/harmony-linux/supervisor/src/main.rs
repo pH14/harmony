@@ -573,6 +573,15 @@ mod runtime {
             }
             loop {
                 if self.report_len == self.report_buf.len() {
+                    if let Ok(EventReport::Kill(report)) = decode_report(&self.report_buf)
+                        && self.kill_armed != Some(report.rarity)
+                        && self.pending.as_ref().is_some_and(|(command, _, _)| {
+                            matches!(command, EventCommand::ArmKill { rarity, .. } if *rarity == report.rarity)
+                        })
+                        && !self.poll_pending(node, supervisor, tick, process_dead)
+                    {
+                        return;
+                    }
                     match decode_report(&self.report_buf) {
                         Ok(EventReport::Hello) if !self.retired && !process_dead => {
                             if !self.ready {
@@ -1827,6 +1836,43 @@ mod runtime {
                 1,
                 "death between reap and drive must retain buffered report"
             );
+        }
+
+        #[test]
+        #[cfg_attr(miri, ignore = "Miri does not support nonblocking socketpair ioctl")]
+        fn kill_report_waits_for_its_arm_acknowledgement() {
+            let (control, mut child_control) = UnixStream::pair().unwrap();
+            let (report, mut child_report) = UnixStream::pair().unwrap();
+            let mut channel = EventChannel::new(control, report).unwrap();
+            let mut supervisor = Supervisor::new(1);
+            let command = EventCommand::ArmKill {
+                rarity: 0,
+                start: 17,
+            };
+            channel.ready = true;
+            channel.queue(command);
+            channel.drive(0, &mut supervisor, 1);
+
+            let mut request = [0_u8; events::EVENT_CONTROL_FRAME_SIZE];
+            child_control.read_exact(&mut request).unwrap();
+            let reply = events::encode_command(command);
+            child_control.write_all(&reply[..8]).unwrap();
+            child_report
+                .write_all(&events::encode_kill_report(events::KillReport {
+                    rarity: 0,
+                    site: 0xfeed,
+                }))
+                .unwrap();
+
+            channel.drain_reports(0, &mut supervisor, 1, false);
+            assert_eq!(supervisor.counters().event_kill_fires, 0);
+            assert_eq!(channel.report_len, events::EVENT_REPORT_SIZE);
+
+            child_control.write_all(&reply[8..]).unwrap();
+            channel.drain_reports(0, &mut supervisor, 2, false);
+            assert_eq!(supervisor.counters().event_kill_fires, 1);
+            assert_eq!(supervisor.counters().event_kill_site, 0xfeed);
+            assert_eq!(channel.report_len, 0);
         }
 
         #[test]
