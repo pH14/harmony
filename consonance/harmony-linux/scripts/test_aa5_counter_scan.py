@@ -199,8 +199,10 @@ class CounterScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "reviewed-data"
             path.write_bytes(data)
+            image = Path(temporary) / "Image"
+            image.write_bytes(ret + ldxr_shaped_data)
             with patch.object(exclusive, "kernel_runtime_exec_ranges", return_value=((0x1000, 0x1004),)):
-                words = exclusive.executable_words(str(path), kernel_image=True)
+                words = exclusive.executable_words(str(path), kernel_image_path=str(image))
         self.assertIn((0x1000, 0xD65F03C0, ".text"), words)
         self.assertNotIn(0x885F7C20, [word for _address, word, _name in words])
 
@@ -244,8 +246,10 @@ class CounterScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "kernel-modver"
             path.write_bytes(data)
+            image = Path(temporary) / "Image"
+            image.write_bytes(ret + ldxr_shaped_data)
             with patch.object(exclusive, "kernel_runtime_exec_ranges", return_value=((0x1000, 0x1004),)):
-                words = exclusive.executable_words(str(path), kernel_image=True)
+                words = exclusive.executable_words(str(path), kernel_image_path=str(image))
         self.assertNotIn(0x885F7C20, [word for _address, word, _name in words])
 
     def test_kernel_data_label_inside_executable_runtime_range_is_scanned(self):
@@ -255,9 +259,41 @@ class CounterScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "kernel-executable-data"
             path.write_bytes(data)
+            image = Path(temporary) / "Image"
+            image.write_bytes(ret + ldxr)
             with patch.object(exclusive, "kernel_runtime_exec_ranges", return_value=((0x1000, 0x1008),)):
-                words = exclusive.executable_words(str(path), kernel_image=True)
+                words = exclusive.executable_words(str(path), kernel_image_path=str(image))
         self.assertIn((0x1004, 0x885F7C20, "<exec-segment 0>"), words)
+
+    def test_kernel_runtime_executable_range_must_be_file_backed_pfx(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret),), 0)
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "kernel-hidden-executable-range"
+            path.write_bytes(data)
+            image = Path(temporary) / "Image"
+            image.write_bytes(ret)
+            with patch.object(exclusive, "kernel_runtime_exec_ranges",
+                              return_value=((0x1000, 0x1004), (0x2000, 0x3000))):
+                with self.assertRaisesRegex(SystemExit, "starts outside PF_X load"):
+                    exclusive.executable_words(str(path), kernel_image_path=str(image))
+
+    def test_kernel_boot_image_executable_alignment_tail_is_scanned(self):
+        ret = (0xD65F03C0).to_bytes(4, "little")
+        ldxr = (0x885F7C20).to_bytes(4, "little")
+        data = elf_sections(((".text", 6, ret),), 0)
+        image_bytes = bytearray(8192)
+        image_bytes[:4096] = data[4096:8192].ljust(4096, b"\0")
+        image_bytes[4096:4100] = ldxr
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "kernel-with-executable-alignment-tail"
+            path.write_bytes(data)
+            image = Path(temporary) / "Image"
+            image.write_bytes(image_bytes)
+            with patch.object(exclusive, "kernel_runtime_exec_ranges",
+                              return_value=((0x1000, 0x3000),)):
+                words = exclusive.executable_words(str(path), kernel_image_path=str(image))
+        self.assertIn((0x2000, 0x885F7C20, "<kernel-image>"), words)
 
     def test_kernel_linker_ranges_require_aligned_known_layout(self):
         names = (
