@@ -30,6 +30,8 @@ pub struct Manifest {
     pub settle: bool,
     pub uml_host: Option<serde_json::Value>,
     pub uml_entropy_admitted: bool,
+    #[serde(skip)]
+    expected_outcome: Option<serde_json::Value>,
 }
 impl Deref for Manifest {
     type Target = crate::runs::Manifest;
@@ -78,6 +80,7 @@ impl Manifest {
             settle: true,
             uml_host,
             uml_entropy_admitted,
+            expected_outcome: None,
         })
     }
     pub fn read(path: &Path) -> Result<Self> {
@@ -94,9 +97,24 @@ impl Manifest {
             settle: state.settle,
             uml_host,
             uml_entropy_admitted: state.uml_entropy_admitted,
+            expected_outcome: None,
         })
     }
+    pub fn pin_outcome(&mut self, outcome: impl Serialize) -> Result<()> {
+        self.expected_outcome = Some(serde_json::to_value(outcome)?);
+        Ok(())
+    }
     pub fn save(&self, path: &Path) -> Result<()> {
+        let outcome = self.outcome(path)?;
+        if self
+            .expected_outcome
+            .as_ref()
+            .is_some_and(|expected| expected != &outcome)
+        {
+            return Err(
+                format!("{} differs from the returned outcome", self.outcome_file()).into(),
+            );
+        }
         let mut record = self.record.clone();
         record.config = self.config.shared()?;
         record.payload = serde_json::to_value(State {
@@ -104,7 +122,7 @@ impl Manifest {
             actions: self.actions.clone(),
             settle: self.settle,
             uml_entropy_admitted: self.uml_entropy_admitted,
-            outcome: self.outcome(path)?,
+            outcome,
         })?;
         record.save(path)
     }
@@ -118,6 +136,7 @@ impl Manifest {
     pub fn inherit(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         let mut child = self.clone();
         child.record = self.record.inherit(source, destination, mode)?;
+        child.expected_outcome = None;
         Ok(child)
     }
     pub fn options(&self, path: &Path) -> faults_workload::Options {
