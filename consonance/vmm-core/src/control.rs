@@ -12,9 +12,10 @@ use control_proto::{
     encode_reply,
 };
 use environment::{
-    channel::{Effect, NominalHandler, RecordedEnv, ServiceHandler},
+    channel::{ChannelError, Effect, NominalHandler, RecordedEnv, ServiceHandler},
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
+use hypercall_proto::Service as _;
 use snapshot_store::SnapshotId;
 use vm_state::SnapshotRecords;
 use vmm_backend::Backend;
@@ -74,6 +75,13 @@ fn restore_defers_materialization(mode: RestoreMode) -> bool {
     mode == RestoreMode::InPlace
 }
 
+#[derive(Clone, Copy)]
+enum SparsePageVerification {
+    Base,
+    BaseAndTarget(SnapshotId),
+    AlreadyVerified,
+}
+
 fn restore_error_is_precommit(error: &VmmError) -> bool {
     matches!(
         error,
@@ -113,6 +121,26 @@ pub enum ServeError {
     Service(#[from] environment::channel::ChannelError),
     #[error("server poisoned by a prior fatal error")]
     Poisoned,
+}
+
+fn capture_refusal<T>(error: VmmError) -> Result<Result<T, ControlError>, ServeError> {
+    match error {
+        VmmError::ContractViolation(reason) => Ok(Err(ControlError::SnapshotRefused { reason })),
+        VmmError::Backend(vmm_backend::BackendError::Unsupported { what }) => {
+            Ok(Err(ControlError::SnapshotRefused {
+                reason: what.to_owned(),
+            }))
+        }
+        VmmError::Backend(error @ vmm_backend::BackendError::NonportableXsaveMxcsr) => {
+            Ok(Err(ControlError::SnapshotRefused {
+                reason: error.to_string(),
+            }))
+        }
+        VmmError::Channel(ChannelError::TooLarge) => Ok(Err(ControlError::SnapshotRefused {
+            reason: "recorded service state exceeds snapshot capacity".into(),
+        })),
+        other => Err(other.into()),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -182,37 +210,10 @@ struct SnapshotMeta {
     trace_schedules: u64,
     tainted: bool,
     state_hash: Option<[u8; 32]>,
+    base_ram_digest: std::cell::Cell<Option<[u8; 32]>>,
     state_blob_suffix: Vec<u8>,
     policy: ServiceConfig,
     control_state: Vec<u8>,
-}
-
-fn validate_control_hash_suffix(
-    mut suffix: &[u8],
-    control: &[u8],
-) -> Result<(), PortableSnapshotError> {
-    let malformed = || PortableSnapshotError::Malformed("sparse control hash preimage");
-    while !suffix.is_empty() {
-        let header = suffix.get(..12).ok_or_else(malformed)?;
-        let length = u64::from_le_bytes(header[4..12].try_into().map_err(|_| malformed())?);
-        let length = usize::try_from(length).map_err(|_| malformed())?;
-        let end = 12_usize.checked_add(length).ok_or_else(malformed)?;
-        let payload = suffix.get(12..end).ok_or_else(malformed)?;
-        let tail = &suffix[end..];
-        if &header[..4] == b"CPLN" {
-            return if !control.is_empty() && payload == control && tail.is_empty() {
-                Ok(())
-            } else {
-                Err(malformed())
-            };
-        }
-        suffix = tail;
-    }
-    if control.is_empty() {
-        Ok(())
-    } else {
-        Err(malformed())
-    }
 }
 
 fn hash_state_blob_parts(memory: &[u8], suffix: &[u8]) -> [u8; 32] {
@@ -224,22 +225,72 @@ fn hash_state_blob_parts(memory: &[u8], suffix: &[u8]) -> [u8; 32] {
     hasher.finalize().into()
 }
 
+fn append_taint_hash(suffix: &mut Vec<u8>, tainted: bool) {
+    if tainted {
+        crate::vmm::put_chunk(suffix, b"TANT", &[1]);
+    }
+}
+
 fn reseed_marker_requires_arrival(marker: u64, restored_floor: u64) -> bool {
     marker > restored_floor
 }
 
+fn validate_control_import_sections<'a>(
+    sdk: Option<&'a SdkSnapshot>,
+    control_state: &[u8],
+) -> Result<&'a SdkSnapshot, PortableSnapshotError> {
+    let sdk = sdk.ok_or(PortableSnapshotError::Malformed(
+        "control snapshot missing SDK state",
+    ))?;
+    if control_state.is_empty() {
+        return Err(PortableSnapshotError::Malformed(
+            "control snapshot missing control state",
+        ));
+    }
+    Ok(sdk)
+}
+
 impl<B: Backend<A: Vendor>> ControlServer<B> {
-    fn preflight_imported_vm_state(
+    fn project_imported_hash_suffix(
         &self,
         vm_state: &<B::A as Vendor>::Snapshot,
-    ) -> Result<(), PortableSnapshotError> {
+        sdk: &SdkSnapshot,
+        control_state: &[u8],
+        tainted: bool,
+    ) -> Result<Vec<u8>, PortableSnapshotError> {
         let Some(vmm) = self.vmm.as_ref() else {
             return Err(PortableSnapshotError::Malformed(
                 "portable VM state restore validation unavailable",
             ));
         };
-        vmm.preflight_restore_vm_state(vm_state)
-            .map_err(map_restore_preflight_error)
+        if !vmm.snapshot_hashing_wired() {
+            return Err(PortableSnapshotError::Malformed(
+                "control snapshot requires VM-state hashing",
+            ));
+        }
+        let mut suffix = vmm
+            .project_state_blob_suffix_from_snapshot(vm_state, sdk)
+            .map_err(map_restore_preflight_error)?;
+        crate::vmm::put_chunk(&mut suffix, b"CPLN", control_state);
+        append_taint_hash(&mut suffix, tainted);
+        Ok(suffix)
+    }
+
+    fn preflight_imported_service(
+        &self,
+        sdk: &SdkSnapshot,
+        policy: &ServiceConfig,
+    ) -> Result<(), PortableSnapshotError> {
+        let handler = (self.service_factory)(policy)?;
+        if handler.identity() != policy.identity || handler.configuration() != policy.configuration
+        {
+            return Err(PortableSnapshotError::Malformed(
+                "portable service implementation differs from policy",
+            ));
+        }
+        let mut environment = RecordedEnv::new(0, handler);
+        sdk.recorded.restore_into(&mut environment)?;
+        Ok(())
     }
 
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
@@ -414,7 +465,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(target, target_id)?;
+        let sidecar = self.sparse_sidecar(
+            base,
+            target,
+            target_id,
+            SparsePageVerification::BaseAndTarget(target_id),
+        )?;
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
@@ -436,8 +492,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(target, target_id)?;
         let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
+        let sidecar = self.sparse_sidecar(
+            setup,
+            target,
+            target_id,
+            SparsePageVerification::AlreadyVerified,
+        )?;
         let (mut cost, pages) = self.export_telemetry.get();
         cost.add(started.elapsed().as_nanos());
         self.export_telemetry
@@ -456,11 +517,57 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))
     }
 
+    fn sparse_base_ram_digest(
+        &self,
+        base: SnapId,
+        verification: SparsePageVerification,
+    ) -> Result<[u8; 32], PortableSnapshotError> {
+        let base_id = self.store_id(base)?;
+        let meta = self
+            .snapshot_meta
+            .get(&base.0)
+            .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
+        if let Some(digest) = meta.base_ram_digest.get() {
+            match verification {
+                SparsePageVerification::Base => self.engine.verify_snapshot_pages(base_id)?,
+                SparsePageVerification::BaseAndTarget(target_id) => {
+                    self.engine.verify_snapshots(&[base_id, target_id])?;
+                }
+                SparsePageVerification::AlreadyVerified => {}
+            }
+            return Ok(digest);
+        }
+        let memory_len = self
+            .engine
+            .mem_pages()
+            .checked_mul(snapshot_store::PAGE_SIZE as u64)
+            .ok_or(PortableSnapshotError::Malformed(
+                "sparse base RAM length overflow",
+            ))?;
+        let mut hasher = Sha256::new();
+        hasher.update(b"consonance-sparse-base-ram-v1\0");
+        hasher.update(memory_len.to_le_bytes());
+        for gfn in 0..self.engine.mem_pages() {
+            hasher.update(self.engine.read_page(base_id, gfn)?);
+        }
+        let digest = hasher.finalize().into();
+        if let SparsePageVerification::BaseAndTarget(target_id) = verification
+            && target_id != base_id
+        {
+            self.engine.verify_snapshot_pages(target_id)?;
+        }
+        meta.base_ram_digest.set(Some(digest));
+        Ok(digest)
+    }
+
     fn sparse_sidecar(
         &self,
+        base: SnapId,
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
+        verification: SparsePageVerification,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
+        let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -481,6 +588,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
             tainted: meta.tainted,
+            base_ram_digest,
             state_blob_suffix: &meta.state_blob_suffix,
         })
     }
@@ -502,6 +610,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
         let receipt = self.import_sparse_untimed(
+            base,
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
@@ -536,6 +645,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let mut written = 0usize;
         let receipt = self.import_sparse_untimed(
+            setup,
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
@@ -550,6 +660,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 };
                 let rows: Vec<_> = pages.iter().map(|&(gfn, hash, _)| (gfn, hash)).collect();
                 let rebase = engine.rebase(setup_id, near_id, &rows)?;
+                let mut keep = rebase.keep.iter().copied().peekable();
+                for (index, &(gfn, hash, data)) in pages.iter().enumerate() {
+                    if keep.peek().copied() == Some(index) {
+                        keep.next();
+                    } else if blake3::hash(data).as_bytes() != hash {
+                        return Err(SnapshotError::Store(
+                            snapshot_store::StoreError::PageIntegrity { gfn },
+                        )
+                        .into());
+                    }
+                }
                 let mut merged: Vec<(u64, &[u8; 32], &[u8; 4096])> = rebase
                     .keep
                     .iter()
@@ -573,6 +694,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     fn import_sparse_untimed(
         &mut self,
+        setup: SnapId,
         base: SnapId,
         gfns: impl Iterator<Item = u64>,
         sidecar: &[u8],
@@ -600,9 +722,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
+        let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
-        self.preflight_imported_vm_state(&decoded)?;
         if decoded.vtime().snapshot_vns != portable.at {
             return Err(PortableSnapshotError::Malformed(
                 "sparse sidecar V-time does not match vendor VM state",
@@ -621,7 +743,23 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         ControlState::decode_for_policy(&portable.control_state, &portable.policy)
             .map_err(PortableSnapshotError::Malformed)?;
-        validate_control_hash_suffix(&portable.state_blob_suffix, &portable.control_state)?;
+        if self.project_imported_hash_suffix(
+            &decoded,
+            sdk,
+            &portable.control_state,
+            portable.tainted,
+        )? != portable.state_blob_suffix
+        {
+            return Err(PortableSnapshotError::Malformed(
+                "sparse state hash preimage",
+            ));
+        }
+        if self.sparse_base_ram_digest(setup, SparsePageVerification::Base)?
+            != portable.base_ram_digest
+        {
+            return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
+        }
+        self.preflight_imported_service(sdk, &portable.policy)?;
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -652,6 +790,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules: portable.trace_schedules,
                 tainted: portable.tainted,
                 state_hash: None,
+                base_ram_digest: std::cell::Cell::new(None),
                 state_blob_suffix: portable.state_blob_suffix,
                 policy: portable.policy,
                 control_state: portable.control_state,
@@ -733,9 +872,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         )
         .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
         let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
+        let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
-        self.preflight_imported_vm_state(&decoded)?;
         if decoded.vtime().snapshot_vns != portable.at {
             return Err(PortableSnapshotError::Malformed(
                 "portable V-time does not match vendor VM state",
@@ -746,6 +885,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         ControlState::decode_for_policy(&portable.control_state, &portable.policy)
             .map_err(PortableSnapshotError::Malformed)?;
+        let suffix = self.project_imported_hash_suffix(
+            &decoded,
+            sdk,
+            &portable.control_state,
+            portable.tainted,
+        )?;
+        if hash_state_blob_parts(&portable.memory, &suffix) != portable.state_hash {
+            return Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage",
+            ));
+        }
+        self.preflight_imported_service(sdk, &portable.policy)?;
         let id = self.next_snap;
         let next_snap = self
             .next_snap
@@ -777,6 +928,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules: portable.trace_schedules,
                 tainted: portable.tainted,
                 state_hash: Some(portable.state_hash),
+                base_ram_digest: std::cell::Cell::new(None),
                 state_blob_suffix: Vec::new(),
                 policy: portable.policy,
                 control_state: portable.control_state,
@@ -861,13 +1013,27 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                     };
                     let mut recorded = self.recorded.clone();
-                    recorded.record_answer(
+                    recorded.record_bound_answer(
                         at,
                         question.service(),
                         question.request_id(),
+                        Sha256::digest(question.payload()).into(),
                         response.clone(),
                     )?;
-                    if recorded.try_encode().is_err() {
+                    if self
+                        .project_pending_recorded(&recorded)
+                        .try_encode_reproducer_with_binding_reserve()
+                        .is_err()
+                    {
+                        return Ok(Err(ControlError::MalformedEnvironment));
+                    }
+                    if self
+                        .vmm
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .sdk_snapshot_after_answer(at, &question, &response)
+                        .is_err()
+                    {
                         return Ok(Err(ControlError::MalformedEnvironment));
                     }
                     if let Err(error) = self
@@ -886,9 +1052,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
                     let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                    let mut suffix = vmm.state_blob_suffix()?;
+                    let mut suffix = match vmm.state_blob_suffix() {
+                        Ok(suffix) => suffix,
+                        Err(error) => return capture_refusal(error),
+                    };
                     self.capture_control_state()
                         .encode_and_append_hash(&mut suffix);
+                    append_taint_hash(&mut suffix, self.timeline_tainted);
                     let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
                     Ok(Ok(Reply::Hash(hash_state_blob_parts(
                         vmm.guest_memory(),
@@ -913,7 +1083,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Read { gpa, len } => self.read(*gpa, *len),
             Request::Regs => {
                 let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
-                Ok(Ok(Reply::Regs(regs_view(vmm))))
+                match regs_view(vmm) {
+                    Ok(view) => Ok(Ok(Reply::Regs(view))),
+                    Err(error) => capture_refusal(error),
+                }
             }
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
             Request::RecordedEnv => Ok(self.recorded_env_reply()),
@@ -954,8 +1127,27 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .and_then(|v| v.effective_vns())
             .unwrap_or(0);
         self.validate_host_fault(&decoded, at.0, floor)?;
+        let mut projected = self.project_pending_recorded(&self.recorded);
+        projected.record_effect(at.0, decoded.clone());
+        if projected
+            .try_encode_reproducer_with_binding_reserve()
+            .is_err()
+        {
+            return Err(ControlError::MalformedEnvironment);
+        }
         self.schedule.insert(at.0, decoded);
         Ok(Reply::Unit)
+    }
+
+    fn project_pending_recorded(&self, recorded: &EnvSpec) -> EnvSpec {
+        let mut projected = recorded.clone();
+        for (&at, effect) in &self.schedule {
+            projected.record_effect(at, effect.clone());
+        }
+        for (&at, &seed) in &self.reseed_schedule {
+            projected.record_reseed(at, seed);
+        }
+        projected
     }
 
     fn validate_host_fault(&self, fault: &Effect, at: u64, floor: u64) -> Result<(), ControlError> {
@@ -1065,17 +1257,29 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn snapshot(&mut self) -> Result<Result<Reply, ControlError>, ServeError> {
+        if !self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .snapshot_hashing_wired()
+        {
+            return Ok(Err(ControlError::SnapshotRefused {
+                reason: "control snapshots require VM-state hashing".into(),
+            }));
+        }
         self.last_seal_dirty_gfns = None;
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
         let (vm_state, vcpu) = match vmm.capture_vm_state() {
             Ok(s) => s,
-            Err(VmmError::ContractViolation(reason)) => {
-                return Ok(Err(ControlError::SnapshotRefused { reason }));
-            }
-            Err(e) => return Err(e.into()),
+            Err(error) => return capture_refusal(error),
         };
         let sdk_channel = match vmm.sdk_snapshot() {
             Ok(state) => state,
+            Err(ChannelError::TooLarge) => {
+                return Ok(Err(ControlError::SnapshotRefused {
+                    reason: "recorded service state exceeds snapshot capacity".into(),
+                }));
+            }
             Err(error) => {
                 self.retire_vmm();
                 return Err(ServeError::Service(error));
@@ -1097,6 +1301,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         });
         let control = self.capture_control_state();
         let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
+        append_taint_hash(&mut state_blob_suffix, self.timeline_tainted);
         let policy = self.recorded.config().clone();
         let parent = self.derive_parent.take();
         let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
@@ -1142,6 +1347,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace_schedules,
                 tainted: self.timeline_tainted,
                 state_hash: None,
+                base_ram_digest: std::cell::Cell::new(None),
                 state_blob_suffix,
                 policy,
                 control_state,
@@ -1240,17 +1446,20 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
         let mut payloads: Option<Vec<Vec<u8>>> = None;
         let mut answers = BTreeMap::new();
+        let mut answer_bindings = BTreeMap::new();
         let mut env_policy: Option<ServiceConfig> = None;
+        let mut branch_plan: Option<EnvSpec> = None;
         let seed = match env {
             None => None,
             Some(env) => {
                 if env.blob_version != EnvSpec::BLOB_VERSION {
                     return Ok(Err(ControlError::BadEnvVersion(env.blob_version)));
                 }
-                let spec = match EnvSpec::decode(&env.bytes) {
+                let spec = match EnvSpec::decode_reproducer(&env.bytes) {
                     Ok(spec) => spec,
                     Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                 };
+                branch_plan = Some(spec.clone());
                 host = spec
                     .effects()
                     .iter()
@@ -1260,6 +1469,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 payloads = spec.payloads().map(<[Vec<u8>]>::to_vec);
                 env_policy = Some(spec.config().clone());
                 answers = spec.answers().clone();
+                answer_bindings = spec.request_bindings().clone();
                 Some(spec.seed())
             }
         };
@@ -1276,7 +1486,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             _ => return Ok(Err(ControlError::Unsupported)),
         };
+        if seed.is_some() {
+            let decode_env = RecordedEnv::new(0, prepared_handler.clone());
+            if decode_env.handler().identity() != restore_config.identity
+                || decode_env.handler().configuration() != restore_config.configuration
+            {
+                return Ok(Err(ControlError::Unsupported));
+            }
+        }
         let mut prepared_env = RecordedEnv::new(seed.unwrap_or(0), prepared_handler);
+        if seed.is_some()
+            && (prepared_env.handler().identity() != restore_config.identity
+                || prepared_env.handler().configuration() != restore_config.configuration)
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         if let Some(snapshot) = self.sdk_snaps.get(&snap.0).filter(|_| seed.is_none())
             && snapshot
                 .channel
@@ -1290,7 +1514,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(ControlError::MalformedEnvironment));
         }
         for (&(at, service, request), answer) in &answers {
-            prepared_env.record_service_request(at, service, request, answer.clone());
+            match answer_bindings.get(&(at, service, request)) {
+                Some(&digest) => prepared_env.record_bound_service_request(
+                    at,
+                    service,
+                    request,
+                    digest,
+                    answer.clone(),
+                ),
+                None => prepared_env.record_service_request(at, service, request, answer.clone()),
+            }
         }
         let Some(&store_id) = self.snaps.get(&snap.0) else {
             return Ok(Err(ControlError::UnknownSnapshot(snap)));
@@ -1316,6 +1549,47 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Some(mapping)
         };
         let restored_floor = vm_state.vtime().snapshot_vns;
+        if let Some(mut plan) = branch_plan {
+            if !reseeds.is_empty() && !reseeds.contains_key(&restored_floor) {
+                plan.record_reseed(restored_floor, 0);
+            }
+            if plan.try_encode_reproducer_with_binding_reserve().is_err() {
+                return Ok(Err(ControlError::MalformedEnvironment));
+            }
+        }
+        if let Some(branch_seed) = seed {
+            let effective_reseed = if reseeds.is_empty() {
+                Some(branch_seed)
+            } else {
+                reseeds.get(&restored_floor).copied()
+            };
+            let handler_seed = if self.vmm.as_ref().is_some_and(Vmm::vtime_wired) {
+                let mut entropy =
+                    hypercall_proto::SeededEntropy::new(effective_reseed.unwrap_or(1));
+                if effective_reseed.is_none()
+                    && entropy.restore_state(vm_state.entropy_bytes()).is_err()
+                {
+                    return Ok(Err(ControlError::RestoreFailed));
+                }
+                u64::from_le_bytes(
+                    entropy
+                        .save_state()
+                        .try_into()
+                        .expect("entropy state is eight bytes"),
+                )
+            } else {
+                0
+            };
+            prepared_env.reseed(handler_seed);
+            if prepared_env.handler().identity() != restore_config.identity
+                || prepared_env.handler().configuration() != restore_config.configuration
+            {
+                return Ok(Err(ControlError::Unsupported));
+            }
+            if prepared_env.snapshot_state_with_binding_reserve().is_err() {
+                return Ok(Err(ControlError::MalformedEnvironment));
+            }
+        }
         let mut seen: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
         for (m, fault) in &host {
             if let Err(e) = self.check_fault_admissible(fault, *m, restored_floor) {
@@ -1337,6 +1611,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             {
                 return Ok(Err(ControlError::Unsupported));
             }
+        }
+        if seed.is_some()
+            && (reseeds.is_empty() || reseeds.contains_key(&restored_floor))
+            && !self.vmm.as_ref().is_some_and(|v| v.vtime_wired())
+        {
+            return Ok(Err(ControlError::Unsupported));
         }
         self.finish_session_trace_segment();
         let in_place = self.restore_mode == RestoreMode::InPlace;
@@ -1434,16 +1714,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .answers()
                 .map(|(key, value)| (key, value.clone()))
                 .collect();
+            answer_bindings = snapshot.channel.recorded.request_bindings().collect();
         }
         for ((at, service, request), answer) in answers {
-            self.recorded
-                .record_answer(at, service, request, answer)
-                .map_err(ServeError::Service)?;
+            match answer_bindings.get(&(at, service, request)) {
+                Some(&digest) => self
+                    .recorded
+                    .record_bound_answer(at, service, request, digest, answer),
+                None => self.recorded.record_answer(at, service, request, answer),
+            }
+            .map_err(ServeError::Service)?;
         }
         self.recorded.set_payloads(active_payloads);
-        if seed.is_some() {
-            prepared_env.reseed(self.recorded.seed());
-        }
         let sdk_env = prepared_env;
         let sdk_policy = self.recorded.config().clone();
         self.vmm
@@ -1469,14 +1751,12 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .unwrap_or(0);
             self.recorded.record_reseed(restored_floor, stream);
         }
-        if let Some(control) = source_control {
-            self.exec_nonce = control.exec_nonce;
-            if seed.is_none() {
-                self.schedule = control.pending.effects().clone();
-                self.reseed_schedule = control.pending.reseeds().clone();
-                self.schedule_poisoned = control.poisoned;
-                self.recorded = control.recorded;
-            }
+        self.exec_nonce = source_control.exec_nonce;
+        if seed.is_none() {
+            self.schedule = source_control.pending.effects().clone();
+            self.reseed_schedule = source_control.pending.reseeds().clone();
+            self.schedule_poisoned = source_control.poisoned;
+            self.recorded = source_control.recorded;
         }
         {
             let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
@@ -1523,6 +1803,35 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn run(
+        &mut self,
+        until: &control_proto::StopConditions,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
+        let result = self.run_inner(until);
+        if result.is_ok() {
+            self.sync_recorded_request_bindings()?;
+        }
+        result
+    }
+
+    fn sync_recorded_request_bindings(&mut self) -> Result<(), ServeError> {
+        let bindings = self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .sdk_request_bindings();
+        for (key, digest) in bindings {
+            if self.recorded.request_bindings().get(&key) == Some(&digest) {
+                continue;
+            }
+            if let Some(answer) = self.recorded.answers().get(&key).cloned() {
+                self.recorded
+                    .record_bound_answer(key.0, key.1, key.2, digest, answer)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn run_inner(
         &mut self,
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
@@ -1663,6 +1972,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        if self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .pending_service_question()
+            .is_some()
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         self.timeline_tainted = true;
         let nonce = self.exec_nonce;
         self.exec_nonce = self.exec_nonce.wrapping_add(1);
@@ -1686,6 +2004,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 session.finish_timeout();
                 break;
             }
+            vmm.set_idle_wake_vns(Some(deadline.0));
             match vmm.step()? {
                 Step::Continued => {}
                 Step::SdkStop => {
@@ -1715,12 +2034,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if self.timeline_tainted {
             return Err(ControlError::Tainted);
         }
-        let mut recorded = self.recorded.clone();
-        recorded.set_payloads(self.vmm.as_ref().and_then(Vmm::sdk_remaining_payloads));
         Ok(Reply::Recorded(Reproducer {
             blob_version: EnvSpec::BLOB_VERSION,
-            bytes: recorded
-                .try_encode()
+            bytes: self
+                .recorded
+                .try_encode_reproducer()
                 .map_err(|_| ControlError::MalformedEnvironment)?,
         }))
     }
@@ -1751,12 +2069,12 @@ fn page_console(serial: &[u8], offset: usize) -> (u32, Vec<u8>) {
     (total, serial[start..end].to_vec())
 }
 
-fn regs_view<B: Backend<A: Vendor>>(vmm: &mut Vmm<B>) -> RegsView {
+fn regs_view<B: Backend<A: Vendor>>(vmm: &mut Vmm<B>) -> Result<RegsView, VmmError> {
     let vns = vmm.effective_vns().unwrap_or(0);
-    let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu());
+    let mut view = <B::A as Vendor>::regs_view(&vmm.inspect_vcpu()?);
     view.moment = Moment(vns);
     view.vtime = vns;
-    view
+    Ok(view)
 }
 
 fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
@@ -2248,6 +2566,41 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct MaxStateExternalService(Vec<u8>);
+    impl environment::channel::ServiceHandler for MaxStateExternalService {
+        fn identity(&self) -> &[u8] {
+            b"test-max-state-external-v1"
+        }
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(self.0.clone())
+        }
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            if state.len() != environment::channel::MAX_CHANNEL_BYTES {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            self.0 = state.to_vec();
+            Ok(())
+        }
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
     #[test]
     #[cfg_attr(
         miri,
@@ -2255,6 +2608,7 @@ mod tests {
     )]
     fn host_service_response_is_stopped_recorded_and_replayed() {
         use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+        use sha2::{Digest, Sha256};
         let mut s = payload_server();
         hello(&mut s);
         let config = ServiceConfig {
@@ -2387,6 +2741,10 @@ mod tests {
         assert_eq!(ServiceAnswer::decode(bytes).unwrap(), answer);
         let recorded = s.recorded_env().clone();
         assert_eq!(recorded.answers().get(&(at, 19, 77)), Some(&answer));
+        assert_eq!(
+            recorded.request_bindings().get(&(at, 19, 77)),
+            Some(&Sha256::digest(b"choose").into())
+        );
 
         let mut cold = payload_server();
         cold.set_service_factory(std::sync::Arc::clone(&s.service_factory));
@@ -2432,12 +2790,69 @@ mod tests {
         )
         .unwrap()
         .unwrap();
+        let mut changed_payload = payload.clone();
+        changed_payload[10..].copy_from_slice(b"other!");
+        let mut changed_frame = [0; 4096];
+        let changed_len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            13,
+            &changed_payload,
+            &mut changed_frame,
+        )
+        .unwrap();
+        let vmm = s.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, changed_len)
+            .unwrap()
+            .copy_from_slice(&changed_frame[..changed_len]);
+        assert_eq!(
+            vmm.service_doorbell(changed_len as u32).unwrap(),
+            crate::vmm::Step::Continued
+        );
+        assert_eq!(
+            hypercall_proto::decode(vmm.guest_slice(0xf000, 4096).unwrap())
+                .unwrap()
+                .0
+                .status,
+            hypercall_proto::Status::BadRequest as u16
+        );
         assert_eq!(ring(&mut s), crate::vmm::Step::Continued);
         assert_eq!(
             s.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
             response
         );
         assert_eq!(hash(&mut s), expected_hash);
+
+        let mut unbound = recorded.clone();
+        unbound.record_answer(at, 19, 77, answer.clone()).unwrap();
+        assert!(unbound.request_bindings().is_empty());
+        s.restore(
+            origin,
+            Some(&Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: unbound.encode(),
+            }),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ring(&mut s), crate::vmm::Step::Continued);
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        let exported = match s.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        let exported = EnvSpec::decode_reproducer(&exported.bytes).unwrap();
+        assert_eq!(
+            exported.request_bindings().get(&(at, 19, 77)),
+            Some(&Sha256::digest(b"choose").into())
+        );
     }
 
     #[test]
@@ -2954,7 +3369,9 @@ mod tests {
                     write: Some(0),
                 })]);
             backend.set_policy(&Arm64Policy::default()).unwrap();
-            Vmm::new(backend, GuestRam::new(RAM).unwrap())
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm
         };
         let mut live = make_vmm();
         assert_eq!(live.step().unwrap(), crate::vmm::Step::Continued);
@@ -4009,6 +4426,685 @@ mod tests {
         miri,
         ignore = "reaches snapshot restore (materialize uses tempfile+mmap); payload tape semantics are covered by the Miri-run vmm and environment unit tests"
     )]
+    fn recorded_environment_replays_consumed_payloads_from_its_origin() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let first = vec![0x81, 4];
+        let second = vec![0, 2];
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: payload_env(7, vec![first.clone(), second]),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            ring_payload(&mut server, 2),
+            (hypercall_proto::Status::Ok as u16, first.clone())
+        );
+        let expected = hash(&mut server);
+        let reproducer = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: reproducer,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            ring_payload(&mut server, 2),
+            (hypercall_proto::Status::Ok as u16, first)
+        );
+        assert_eq!(hash(&mut server), expected);
+    }
+
+    fn near_reproducer_limit(margin: usize, future_reseed: bool) -> Reproducer {
+        let mut spec = EnvSpec::seeded(7);
+        if future_reseed {
+            spec.record_reseed(600, 9);
+        }
+        let empty_size = spec.encode().len();
+        let mut one = spec.clone();
+        one.record_effect(601, EnvHostEffect::write_memory(0, vec![0]).unwrap());
+        let effect_overhead = one.encode().len() - empty_size - 1;
+        let count = (EnvSpec::MAX_REPRODUCER_BYTES - margin - empty_size) / (RAM + effect_overhead);
+        for index in 0..count {
+            spec.record_effect(
+                601 + index as u64,
+                EnvHostEffect::write_memory(0, vec![index as u8; RAM]).unwrap(),
+            );
+        }
+        let remaining = EnvSpec::MAX_REPRODUCER_BYTES - margin - spec.encode().len();
+        if remaining > effect_overhead {
+            spec.record_effect(
+                601 + count as u64,
+                EnvHostEffect::write_memory(0, vec![0; remaining - effect_overhead]).unwrap(),
+            );
+        }
+        assert!(spec.encode().len() <= EnvSpec::MAX_REPRODUCER_BYTES - margin);
+        Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.try_encode_reproducer().unwrap(),
+        }
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn a_multi_message_payload_history_round_trips_through_recorded_env() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_payloads(Some(vec![vec![1; 700_000], vec![2; 700_000]]));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert!(bytes.len() > environment::channel::MAX_CHANNEL_BYTES);
+        let branch = Request::Branch {
+            snap: origin,
+            env: Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes,
+            },
+        };
+        let mut request_frame = Vec::new();
+        control_proto::encode_request(7, &branch, &mut request_frame).unwrap();
+        let (seq, decoded, consumed) = control_proto::decode_request(&request_frame)
+            .unwrap()
+            .unwrap();
+        assert_eq!((seq, consumed), (7, request_frame.len()));
+        assert_eq!(decoded, branch);
+        assert_eq!(server.handle(&decoded).unwrap(), Ok(Reply::Unit));
+        let before = hash(&mut server);
+        let reproducer = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert!(reproducer.bytes.len() > environment::channel::MAX_CHANNEL_BYTES);
+        let mut reply_frame = Vec::new();
+        control_proto::encode_reply(
+            8,
+            &Ok(Reply::Recorded(reproducer.clone())),
+            &mut reply_frame,
+        )
+        .unwrap();
+        let (seq, decoded, consumed) = control_proto::decode_reply(&reply_frame).unwrap().unwrap();
+        assert_eq!((seq, consumed), (8, reply_frame.len()));
+        assert_eq!(decoded, Ok(Reply::Recorded(reproducer.clone())));
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: reproducer,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut server), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn branch_rejects_payloads_without_service_snapshot_headroom() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: Vec::new(),
+        });
+        spec.set_payloads(Some(vec![Vec::new(); 8]));
+        let payload_bytes = environment::channel::MAX_RECORDED_STATE_BYTES - spec.encode().len();
+        let mut payloads = vec![vec![0; payload_bytes / 8]; 8];
+        payloads[0].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.encode();
+        assert_eq!(bytes.len(), environment::channel::MAX_RECORDED_STATE_BYTES);
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn branch_reserves_capacity_for_first_use_service_bindings() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let mut spec = EnvSpec::seeded(7);
+        spec.record_answer(at, 19, 77, environment::channel::Answer::Data(vec![42]))
+            .unwrap();
+        let mut payloads = vec![Vec::new(); 8];
+        spec.set_payloads(Some(payloads.clone()));
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 31 - spec.encode().len();
+        for payload in &mut payloads {
+            *payload = vec![0; payload_bytes / 8];
+        }
+        payloads[0].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 31);
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+
+        let mut payloads = spec.payloads().unwrap().to_vec();
+        payloads[0].pop();
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 32);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(EnvHostEffect::write_memory(0, vec![1]).unwrap().encode()),
+                    at: Moment(at + 1),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        let mut request = 19_u16.to_le_bytes().to_vec();
+        request.extend(77_u64.to_le_bytes());
+        request.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &request,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::Continued
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(at)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { .. }))
+        ));
+        let exported = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(exported.bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES);
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn resolving_another_service_request_preserves_unbound_answer_capacity() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+
+        let mut server = payload_server();
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        let expected = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |actual| {
+            if actual != &expected {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(ExternalService(0)))
+        }));
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let origin = snap(&mut server);
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(config);
+        spec.record_answer(at, 19, 78, ServiceAnswer::Nominal)
+            .unwrap();
+        let mut payloads = vec![Vec::new(); 8];
+        spec.set_payloads(Some(payloads.clone()));
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 70 - spec.encode().len();
+        for payload in &mut payloads {
+            *payload = vec![0; payload_bytes / 8];
+        }
+        payloads[0].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 70);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let mut request = 19_u16.to_le_bytes().to_vec();
+        request.extend(77_u64.to_le_bytes());
+        request.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &request,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(at)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(ServiceAnswer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn resolved_full_tape_remains_branchable_with_maximum_handler_state() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"test-max-state-external-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        let expected_config = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |actual| {
+            if actual != &expected_config {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(MaxStateExternalService(vec![
+                0;
+                environment::channel::MAX_CHANNEL_BYTES
+            ])))
+        }));
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                server.recorded.seed(),
+                Box::new(MaxStateExternalService(vec![
+                    0;
+                    environment::channel::MAX_CHANNEL_BYTES
+                ])),
+            ),
+            &config,
+        );
+        let origin = snap(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(config);
+        let mut payloads = vec![Vec::new(); 9];
+        payloads[0] = vec![0; 100];
+        spec.set_payloads(Some(payloads.clone()));
+        let payload_bytes = EnvSpec::MAX_REPRODUCER_BYTES - 56 - spec.encode().len();
+        for payload in &mut payloads[1..] {
+            *payload = vec![0; payload_bytes / 8];
+        }
+        payloads[1].extend(vec![0; payload_bytes % 8]);
+        spec.set_payloads(Some(payloads));
+        let bytes = spec.try_encode_reproducer().unwrap();
+        assert_eq!(bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES - 56);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes,
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let full_state = server
+            .vmm()
+            .unwrap()
+            .sdk_snapshot()
+            .unwrap()
+            .unwrap()
+            .recorded
+            .encode()
+            .len();
+        assert!(full_state <= environment::channel::MAX_RECORDED_STATE_BYTES);
+        assert_eq!(
+            ring_payload(&mut server, 100),
+            (hypercall_proto::Status::Ok as u16, vec![0; 100])
+        );
+        let unread_state = server
+            .vmm()
+            .unwrap()
+            .sdk_snapshot()
+            .unwrap()
+            .unwrap()
+            .recorded
+            .encode()
+            .len();
+        assert!(unread_state < full_state);
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(at)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(vec![1, 9]),
+                    }),
+                })
+                .unwrap(),
+            Ok(Reply::Stop(_))
+        ));
+        let reproducer = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(reproducer)) => reproducer,
+            other => panic!("recorded environment reply: {other:?}"),
+        };
+        assert_eq!(reproducer.bytes.len(), EnvSpec::MAX_REPRODUCER_BYTES);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: origin,
+                    env: reproducer,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_service_state_refuses_snapshot_without_retiring_the_vm() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let config = ServiceConfig::default();
+        let mut oversized = RecordedEnv::new(
+            7,
+            Box::new(environment::channel::NominalHandler)
+                as Box<dyn environment::channel::ServiceHandler>,
+        );
+        oversized
+            .set_payloads(Some(vec![
+                vec![0; environment::channel::MAX_CHANNEL_BYTES];
+                8
+            ]))
+            .unwrap();
+        server.vmm.as_mut().unwrap().enable_sdk(oversized, &config);
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotRefused { .. })
+        ));
+        assert!(matches!(
+            server
+                .handle(&Request::Hash {
+                    scope: HashScope::Whole,
+                })
+                .unwrap(),
+            Err(ControlError::SnapshotRefused { .. })
+        ));
+        assert!(server.vmm().is_some());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                7,
+                Box::new(environment::channel::NominalHandler)
+                    as Box<dyn environment::channel::ServiceHandler>,
+            ),
+            &config,
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Hash {
+                    scope: HashScope::Whole,
+                })
+                .unwrap(),
+            Ok(Reply::Hash(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn fault_that_would_overflow_the_recorded_environment_is_rejected() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let env = near_reproducer_limit(1024, false);
+        assert_eq!(
+            server
+                .handle(&Request::Branch { snap: origin, env })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::write_memory(0, vec![0; 2048])
+                            .unwrap()
+                            .encode()
+                    ),
+                    at: Moment(at),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn pending_faults_share_the_recorded_environment_size_budget() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut one_effect = EnvSpec::seeded(7);
+        let empty_size = one_effect.encode().len();
+        one_effect.record_effect(501, EnvHostEffect::write_memory(0, vec![0; 512]).unwrap());
+        let effect_size = one_effect.encode().len() - empty_size;
+        let env = near_reproducer_limit(effect_size + 1, false);
+        assert_eq!(
+            server
+                .handle(&Request::Branch { snap: origin, env })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::write_memory(0, vec![0; 512])
+                            .unwrap()
+                            .encode()
+                    ),
+                    at: Moment(at),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::write_memory(0, vec![1; 512])
+                            .unwrap()
+                            .encode()
+                    ),
+                    at: Moment(at + 1),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "snapshot restore materializes store mappings through tempfile+mmap"
+    )]
+    fn branch_rejects_a_future_reseed_that_exhausts_recording_capacity() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let env = near_reproducer_limit(8, true);
+        let before = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Branch { snap: origin, env })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize uses tempfile+mmap); payload tape semantics are covered by the Miri-run vmm and environment unit tests"
+    )]
     fn payload_branch_snapshot_replay_and_exhaustion_close_the_control_loop() {
         let mut s = payload_server();
         hello(&mut s);
@@ -4028,13 +5124,16 @@ mod tests {
 
         assert_eq!(
             ring_payload(&mut s, 2),
-            (hypercall_proto::Status::Ok as u16, chord_a)
+            (hypercall_proto::Status::Ok as u16, chord_a.clone())
         );
-        let remaining = match s.handle(&Request::RecordedEnv).unwrap() {
+        let recorded = match s.handle(&Request::RecordedEnv).unwrap() {
             Ok(Reply::Recorded(reproducer)) => EnvSpec::decode(&reproducer.bytes).unwrap(),
             other => panic!("recorded environment reply: {other:?}"),
         };
-        assert_eq!(remaining.payloads(), Some([chord_b.clone()].as_slice()));
+        assert_eq!(
+            recorded.payloads(),
+            Some([chord_a.clone(), chord_b.clone()].as_slice())
+        );
 
         let mid = snap(&mut s);
         assert_eq!(
@@ -4042,13 +5141,13 @@ mod tests {
             (hypercall_proto::Status::Ok as u16, chord_b.clone())
         );
         assert_eq!(s.handle(&Request::Replay(mid)).unwrap(), Ok(Reply::Unit));
-        let replay_remaining = match s.handle(&Request::RecordedEnv).unwrap() {
+        let replay_recorded = match s.handle(&Request::RecordedEnv).unwrap() {
             Ok(Reply::Recorded(reproducer)) => EnvSpec::decode(&reproducer.bytes).unwrap(),
             other => panic!("recorded environment after replay: {other:?}"),
         };
         assert_eq!(
-            replay_remaining.payloads(),
-            Some([chord_b.clone()].as_slice())
+            replay_recorded.payloads(),
+            Some([chord_a.clone(), chord_b.clone()].as_slice())
         );
         assert_eq!(
             ring_payload(&mut s, 2),
@@ -4123,6 +5222,160 @@ mod tests {
         );
         let _ = hash(&mut s);
         let _ = snap(&mut s);
+    }
+
+    #[derive(Clone)]
+    struct ReseedingService {
+        configuration: Vec<u8>,
+        trigger: u8,
+        reseeds: u8,
+        zero_only: bool,
+    }
+
+    impl environment::channel::ServiceHandler for ReseedingService {
+        fn identity(&self) -> &[u8] {
+            b"reseed-contract-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &self.configuration
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::Answered(
+                environment::channel::Answer::Data(self.configuration.clone()),
+            ))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(environment::channel::ChannelError::Malformed)
+            }
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            if self.zero_only {
+                if seed == 0 {
+                    self.configuration = b"after".to_vec();
+                }
+                return;
+            }
+            if seed == 0 {
+                return;
+            }
+            self.reseeds += 1;
+            if self.reseeds == self.trigger {
+                self.configuration = b"after".to_vec();
+            } else if self.trigger == 1 && self.reseeds == 2 {
+                self.configuration = b"before".to_vec();
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn branch_rejects_service_contract_drift_from_either_reseed() {
+        for (late, zero_only) in [(false, false), (true, false), (false, true)] {
+            if cfg!(miri) && late {
+                continue;
+            }
+            let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+            hello(&mut s);
+            let base = snap(&mut s);
+            let before = hash(&mut s);
+            let branch_seed = 7;
+            let trigger = if late { 2 } else { 1 };
+            let nominal = nominal_factory();
+            s.set_service_factory(std::sync::Arc::new(move |config| {
+                if config.identity == b"reseed-contract-v1" {
+                    Ok(Box::new(ReseedingService {
+                        configuration: config.configuration.clone(),
+                        trigger,
+                        reseeds: 0,
+                        zero_only,
+                    }))
+                } else {
+                    nominal(config)
+                }
+            }));
+            let mut spec = EnvSpec::seeded(branch_seed);
+            spec.set_config(ServiceConfig {
+                identity: b"reseed-contract-v1".to_vec(),
+                configuration: b"before".to_vec(),
+            });
+            let env = Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            };
+            assert_eq!(
+                s.handle(&Request::Branch { snap: base, env }).unwrap(),
+                Err(ControlError::Unsupported),
+                "late reseed: {late}, zero only: {zero_only}"
+            );
+            assert_eq!(
+                hash(&mut s),
+                before,
+                "late reseed: {late}, zero only: {zero_only}"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "seedless Replay materializes snapshot-store mappings")]
+    fn replay_reports_restore_failure_for_decode_seed_drift() {
+        let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut s);
+        let policy = ServiceConfig {
+            identity: b"reseed-contract-v1".to_vec(),
+            configuration: b"before".to_vec(),
+        };
+        s.recorded.set_config(policy.clone());
+        s.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                7,
+                Box::new(ReseedingService {
+                    configuration: b"before".to_vec(),
+                    trigger: 1,
+                    reseeds: 0,
+                    zero_only: true,
+                }),
+            ),
+            &policy,
+        );
+        let nominal = nominal_factory();
+        s.set_service_factory(std::sync::Arc::new(move |config| {
+            if config.identity == b"reseed-contract-v1" {
+                Ok(Box::new(ReseedingService {
+                    configuration: config.configuration.clone(),
+                    trigger: 1,
+                    reseeds: 0,
+                    zero_only: true,
+                }))
+            } else {
+                nominal(config)
+            }
+        }));
+        let base = snap(&mut s);
+        let before = hash(&mut s);
+        assert_eq!(replay(&mut s, base), Err(ControlError::RestoreFailed));
+        assert_eq!(hash(&mut s), before);
     }
 
     #[test]
@@ -4498,6 +5751,307 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
+        ignore = "portable import and replay use mapped snapshot storage"
+    )]
+    fn unsupported_service_import_rejects_before_commit_and_matching_service_replays() {
+        #[derive(Clone)]
+        struct RefusingService;
+        impl environment::channel::ServiceHandler for RefusingService {
+            fn identity(&self) -> &[u8] {
+                b"test-service-v1"
+            }
+            fn configuration(&self) -> &[u8] {
+                &[7]
+            }
+            fn respond(
+                &mut self,
+                _: environment::Moment,
+                _: &environment::channel::Question,
+            ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+            {
+                Ok(environment::channel::ServiceResponse::Answered(
+                    environment::channel::Answer::Nominal,
+                ))
+            }
+            fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+                Ok(Vec::new())
+            }
+            fn restore_state(
+                &mut self,
+                _: &[u8],
+            ) -> Result<(), environment::channel::ChannelError> {
+                Err(environment::channel::ChannelError::Malformed)
+            }
+            fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+                Box::new(self.clone())
+            }
+        }
+
+        let mut source = payload_server();
+        hello(&mut source);
+        let policy = ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: vec![7],
+        };
+        source.recorded.set_config(policy.clone());
+        source.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                0xBA5E,
+                Box::new(TestService {
+                    response: vec![7],
+                    calls: 0,
+                }),
+            ),
+            &policy,
+        );
+        let cut = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(cut, &mut full).unwrap();
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+
+        let mut full_destination = payload_server();
+        full_destination.set_service_factory(nominal_factory());
+        hello(&mut full_destination);
+        let full_before = full_destination.snapshot_store_stats();
+        let full_next = full_destination.next_snap;
+        let full_hash = hash(&mut full_destination);
+        assert!(matches!(
+            full_destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Environment(_))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.next_snap, full_next);
+        assert_eq!(hash(&mut full_destination), full_hash);
+        full_destination.set_service_factory(std::sync::Arc::new(|_| {
+            Ok(Box::new(TestService {
+                response: vec![8],
+                calls: 0,
+            }))
+        }));
+        assert!(matches!(
+            full_destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable service implementation differs from policy"
+            ))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.next_snap, full_next);
+        assert_eq!(hash(&mut full_destination), full_hash);
+        full_destination
+            .set_service_factory(std::sync::Arc::new(|_| Ok(Box::new(RefusingService))));
+        assert!(matches!(
+            full_destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Environment(
+                environment::channel::ChannelError::Malformed
+            ))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.next_snap, full_next);
+        assert_eq!(hash(&mut full_destination), full_hash);
+        full_destination.set_service_factory(nominal_factory());
+        let full_base = snap(&mut full_destination);
+        assert_eq!(
+            full_destination
+                .handle(&Request::Replay(full_base))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut full_destination), full_hash);
+
+        let mut sparse_destination = payload_server();
+        sparse_destination.set_service_factory(nominal_factory());
+        hello(&mut sparse_destination);
+        let base = snap(&mut sparse_destination);
+        let sparse_before = sparse_destination.snapshot_store_stats();
+        let sparse_next = sparse_destination.next_snap;
+        let sparse_hash = hash(&mut sparse_destination);
+        assert!(matches!(
+            sparse_destination.import_sparse_snapshot(base, sparse.clone()),
+            Err(PortableSnapshotError::Environment(_))
+        ));
+        assert_eq!(sparse_destination.snapshot_store_stats(), sparse_before);
+        assert_eq!(sparse_destination.next_snap, sparse_next);
+        assert_eq!(hash(&mut sparse_destination), sparse_hash);
+        assert_eq!(
+            sparse_destination.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut sparse_destination), sparse_hash);
+
+        let mut matched_full = payload_server();
+        hello(&mut matched_full);
+        let imported = matched_full
+            .import_portable_snapshot(full.as_slice())
+            .unwrap();
+        assert_eq!(
+            matched_full.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut matched_full), source_hash);
+
+        let mut matched_sparse = payload_server();
+        hello(&mut matched_sparse);
+        let matched_base = snap(&mut matched_sparse);
+        let imported = matched_sparse
+            .import_sparse_snapshot(matched_base, sparse)
+            .unwrap();
+        assert_eq!(
+            matched_sparse
+                .handle(&Request::Replay(imported.id))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut matched_sparse), source_hash);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "portable import and replay use mapped snapshot storage"
+    )]
+    fn imported_control_snapshots_require_sdk_and_control_state() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        source
+            .handle(&Request::Perturb {
+                fault: HostFault(upset(0x40).encode()),
+                at: Moment(501),
+            })
+            .unwrap()
+            .unwrap();
+        let cut = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        let portable = super::PortableSnapshot::read_from(
+            artifact.as_slice(),
+            source.vmm().unwrap().guest_memory().len(),
+        )
+        .unwrap();
+        assert!(portable.sdk.is_some());
+        assert_eq!(portable.state_hash, source_hash);
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let imported = destination
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert_eq!(imported.state_hash, source_hash);
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), source_hash);
+
+        let mut without_sdk = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: None,
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: 0,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut without_sdk)
+        .unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let before = hash(&mut destination);
+        assert!(matches!(
+            destination.import_portable_snapshot(without_sdk.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot missing SDK state"
+            ))
+        ));
+        assert_eq!(destination.latest_snapshot(), None);
+        assert_eq!(hash(&mut destination), before);
+
+        let mut without_control = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &[],
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut without_control)
+        .unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let before = hash(&mut destination);
+        assert!(matches!(
+            destination.import_portable_snapshot(without_control.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot missing control state"
+            ))
+        ));
+        assert_eq!(destination.latest_snapshot(), None);
+        assert_eq!(hash(&mut destination), before);
+
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+        let decoded = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
+        assert!(decoded.sdk.is_some());
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let imported = destination
+            .import_sparse_snapshot(base, sparse.clone())
+            .unwrap();
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), source_hash);
+
+        let sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &decoded.vm_state,
+            sdk: None,
+            policy: &decoded.policy,
+            control_state: &decoded.control_state,
+            at: decoded.at,
+            sdk_events: 0,
+            trace_events: decoded.trace_events,
+            trace_schedules: decoded.trace_schedules,
+            tainted: decoded.tainted,
+            base_ram_digest: decoded.base_ram_digest,
+            state_blob_suffix: &decoded.state_blob_suffix,
+        })
+        .unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before = hash(&mut destination);
+        assert!(matches!(
+            destination.import_sparse_snapshot(
+                base,
+                super::SparsePortableSnapshot {
+                    pages: sparse.pages,
+                    sidecar,
+                },
+            ),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot missing SDK state"
+            ))
+        ));
+        assert_eq!(destination.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut destination), before);
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
         ignore = "the replay half materializes a snapshot-store mapping, while sparse export/import validation is exercised by Miri-safe unit tests"
     )]
     fn sparse_portable_snapshot_replays_from_a_corresponding_base() {
@@ -4558,6 +6112,203 @@ mod tests {
         );
         assert_eq!(run_all(&mut source), run_all(&mut destination));
         assert_eq!(hash(&mut source), hash(&mut destination));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "sparse replay materializes snapshot-store mappings")]
+    fn sparse_import_requires_the_source_base_ram_for_pages_and_deltas() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let source_base = snap(&mut source);
+        let mut source_image = source.vmm().unwrap().guest_memory().to_vec();
+        source_image[4096..8192].fill(0xa5);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&source_image)
+            .unwrap();
+        let target = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let sparse = source.export_sparse_snapshot(source_base, target).unwrap();
+        assert_eq!(sparse.pages.len(), 1);
+        let delta = source
+            .export_sparse_delta(source_base, None, target)
+            .unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let mut destination_image = destination.vmm().unwrap().guest_memory().to_vec();
+        destination_image[3 * 4096..4 * 4096].fill(0x5a);
+        destination
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&destination_image)
+            .unwrap();
+        let destination_base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let before_hash = hash(&mut destination);
+        assert!(matches!(
+            destination.import_sparse_snapshot(destination_base, sparse.clone()),
+            Err(PortableSnapshotError::Malformed("sparse base RAM differs"))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        assert_eq!(hash(&mut destination), before_hash);
+        assert!(matches!(
+            destination.import_sparse_delta(
+                destination_base,
+                destination_base,
+                &delta.pages,
+                &delta.sidecar,
+            ),
+            Err(PortableSnapshotError::Malformed("sparse base RAM differs"))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        assert_eq!(
+            destination
+                .handle(&Request::Replay(destination_base))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut destination), before_hash);
+
+        let mut matched = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut matched);
+        let matched_base = snap(&mut matched);
+        let imported = matched
+            .import_sparse_snapshot(matched_base, sparse)
+            .unwrap();
+        assert_eq!(
+            matched.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut matched), source_hash);
+    }
+
+    #[test]
+    fn sparse_base_digest_rechecks_resident_pages_after_first_export() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        source.export_sparse_snapshot(base, base).unwrap();
+        let base_id = source.store_id(base).unwrap();
+        source
+            .engine
+            .corrupt_page_for_test(base_id, 0, 0, 1)
+            .unwrap();
+        assert!(matches!(
+            source.export_sparse_snapshot(base, base),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+        assert!(matches!(
+            source.export_sparse_delta(base, None, base),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+    }
+
+    #[test]
+    fn sparse_delta_rechecks_base_pages_replaced_in_target() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        source.export_sparse_snapshot(setup, setup).unwrap();
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[..4096].fill(0xA5);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        let target = snap(&mut source);
+        let setup_id = source.store_id(setup).unwrap();
+        source
+            .engine
+            .corrupt_page_for_test(setup_id, 0, 0, 1)
+            .unwrap();
+        assert!(matches!(
+            source.export_sparse_delta(setup, Some(parent), target),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+    }
+
+    #[test]
+    fn sparse_base_digest_rechecks_resident_pages_before_second_import() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let base = snap(&mut source);
+        let portable = source.export_sparse_snapshot(base, base).unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_base = snap(&mut destination);
+        destination
+            .import_sparse_snapshot(destination_base, portable.clone())
+            .unwrap();
+        let destination_base_id = destination.store_id(destination_base).unwrap();
+        destination
+            .engine
+            .corrupt_page_for_test(destination_base_id, 0, 0, 1)
+            .unwrap();
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_sparse_snapshot(destination_base, portable),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 0
+                })
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+    }
+
+    #[test]
+    fn sparse_delta_rechecks_target_pages_omitted_from_delta() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xA5);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        let target = snap(&mut source);
+        let anchor = source.export_sparse_delta(setup, None, parent).unwrap();
+        assert_eq!(
+            anchor.pages.iter().map(|page| page.0).collect::<Vec<_>>(),
+            vec![1]
+        );
+        let parent_id = source.store_id(parent).unwrap();
+        source
+            .engine
+            .corrupt_page_for_test(parent_id, 1, 0, 1)
+            .unwrap();
+        assert!(matches!(
+            source.export_sparse_delta(setup, Some(parent), target),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 1
+                })
+            ))
+        ));
     }
 
     #[test]
@@ -4641,6 +6392,24 @@ mod tests {
             .restore_guest_memory(&near_image)
             .unwrap();
         let near = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let latest = destination.latest_snapshot();
+        let mut corrupted_reused = *resolved[1].2;
+        corrupted_reused[9] ^= 1;
+        let corrupted = vec![
+            resolved[0],
+            (resolved[1].0, resolved[1].1, &corrupted_reused),
+        ];
+        assert!(matches!(
+            destination.import_sparse_delta(destination_setup, near, &corrupted, &sidecar),
+            Err(PortableSnapshotError::Snapshot(
+                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
+                    gfn: 3
+                })
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), latest);
         let pages_before = destination.host_telemetry().import_pages;
         let rebased = destination
             .import_sparse_delta(destination_setup, near, &resolved, &sidecar)
@@ -4732,6 +6501,7 @@ mod tests {
             trace_events: decoded.trace_events,
             trace_schedules: decoded.trace_schedules,
             tainted: decoded.tainted,
+            base_ram_digest: decoded.base_ram_digest,
             state_blob_suffix: &decoded.state_blob_suffix,
         })
         .unwrap();
@@ -4771,6 +6541,470 @@ mod tests {
         let after = destination.snapshot_store_stats();
         assert_eq!(after.snapshots, before.snapshots);
         assert_eq!(after.stored_unique_pages, before.stored_unique_pages);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn full_import_rejects_rehashed_envelope_with_mismatched_sdk_state() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let cut = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        let portable = super::PortableSnapshot::read_from(
+            artifact.as_slice(),
+            source.vmm().unwrap().guest_memory().len(),
+        )
+        .unwrap();
+        let mut sdk = portable.sdk.unwrap();
+        sdk.pending_snapshot = !sdk.pending_snapshot;
+        let mut altered = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: Some(&sdk),
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut altered)
+        .unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let before_hash = hash(&mut destination);
+        let before_store = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_portable_snapshot(altered.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before_store);
+        assert_eq!(destination.latest_snapshot(), None);
+        assert_eq!(hash(&mut destination), before_hash);
+        assert_eq!(portable.state_hash, source_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn sparse_import_rejects_sidecar_with_mismatched_sdk_state() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let cut = snap(&mut source);
+        let source_hash = hash(&mut source);
+        let exported = source.export_sparse_snapshot(cut, cut).unwrap();
+        let sidecar = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
+        let mut sdk = sidecar.sdk.unwrap();
+        sdk.pending_snapshot = !sdk.pending_snapshot;
+        let altered_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &sidecar.vm_state,
+            sdk: Some(&sdk),
+            policy: &sidecar.policy,
+            control_state: &sidecar.control_state,
+            at: sidecar.at,
+            sdk_events: sidecar.sdk_events,
+            trace_events: sidecar.trace_events,
+            trace_schedules: sidecar.trace_schedules,
+            tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
+            state_blob_suffix: &sidecar.state_blob_suffix,
+        })
+        .unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before_hash = hash(&mut destination);
+        let before_store = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_sparse_snapshot(
+                base,
+                super::SparsePortableSnapshot {
+                    pages: exported.pages,
+                    sidecar: altered_sidecar,
+                },
+            ),
+            Err(PortableSnapshotError::Malformed(
+                "sparse state hash preimage"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before_store);
+        assert_eq!(destination.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut destination), before_hash);
+        assert_eq!(hash(&mut source), source_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn imported_event_history_must_match_the_claimed_hash() {
+        let mut source = seal_cut_server();
+        hello(&mut source);
+        let base = snap(&mut source);
+        assert!(matches!(
+            run_seeking_snapshot(&mut source),
+            StopReason::SnapshotPoint { .. }
+        ));
+        let (cut, _, _, _) = snap_cut(&mut source);
+        let original_events = drain_sdk(&mut source);
+        assert_eq!(original_events.len(), 1);
+        let source_hash = hash(&mut source);
+
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        let portable = super::PortableSnapshot::read_from(artifact.as_slice(), BIG_RAM).unwrap();
+        let mut sdk = portable.sdk.unwrap();
+        sdk.events[0].2.push(0x5a);
+        let mut changed_full = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: Some(&sdk),
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut changed_full)
+        .unwrap();
+        let mut full_destination = seal_cut_server();
+        hello(&mut full_destination);
+        let full_before = full_destination.snapshot_store_stats();
+        let full_before_hash = hash(&mut full_destination);
+        assert!(matches!(
+            full_destination.import_portable_snapshot(changed_full.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage"
+            ))
+        ));
+        assert_eq!(full_destination.snapshot_store_stats(), full_before);
+        assert_eq!(full_destination.latest_snapshot(), None);
+        assert_eq!(hash(&mut full_destination), full_before_hash);
+        let imported = full_destination
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert_eq!(
+            full_destination
+                .handle(&Request::Replay(imported.id))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(drain_sdk(&mut full_destination), original_events);
+        assert_eq!(hash(&mut full_destination), source_hash);
+
+        let sparse = source.export_sparse_snapshot(base, cut).unwrap();
+        let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
+        let mut sdk = sidecar.sdk.unwrap();
+        sdk.events[0].2.push(0x5a);
+        let changed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &sidecar.vm_state,
+            sdk: Some(&sdk),
+            policy: &sidecar.policy,
+            control_state: &sidecar.control_state,
+            at: sidecar.at,
+            sdk_events: sidecar.sdk_events,
+            trace_events: sidecar.trace_events,
+            trace_schedules: sidecar.trace_schedules,
+            tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
+            state_blob_suffix: &sidecar.state_blob_suffix,
+        })
+        .unwrap();
+        let mut sparse_destination = seal_cut_server();
+        hello(&mut sparse_destination);
+        let sparse_base = snap(&mut sparse_destination);
+        let sparse_before = sparse_destination.snapshot_store_stats();
+        let sparse_before_hash = hash(&mut sparse_destination);
+        assert!(matches!(
+            sparse_destination.import_sparse_snapshot(
+                sparse_base,
+                super::SparsePortableSnapshot {
+                    pages: sparse.pages.clone(),
+                    sidecar: changed_sidecar,
+                },
+            ),
+            Err(PortableSnapshotError::Malformed(
+                "sparse state hash preimage"
+            ))
+        ));
+        assert_eq!(sparse_destination.snapshot_store_stats(), sparse_before);
+        assert_eq!(sparse_destination.latest_snapshot(), Some(sparse_base));
+        assert_eq!(hash(&mut sparse_destination), sparse_before_hash);
+        let imported = sparse_destination
+            .import_sparse_snapshot(sparse_base, sparse)
+            .unwrap();
+        assert_eq!(
+            sparse_destination
+                .handle(&Request::Replay(imported.id))
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(drain_sdk(&mut sparse_destination), original_events);
+        assert_eq!(hash(&mut sparse_destination), source_hash);
+        assert_eq!(hash(&mut source), source_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn imported_taint_must_match_the_claimed_hash() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        exec(&mut source, "ls /");
+        let (cut, tainted) = snap_tainted(&mut source);
+        assert!(tainted);
+        let source_hash = hash(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(cut, &mut full).unwrap();
+        let portable = super::PortableSnapshot::read_from(
+            full.as_slice(),
+            source.vmm().unwrap().guest_memory().len(),
+        )
+        .unwrap();
+        assert!(portable.tainted);
+        let mut cleared_full = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: false,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut cleared_full)
+        .unwrap();
+        let mut original_full = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut original_full);
+        let original = original_full
+            .import_portable_snapshot(full.as_slice())
+            .unwrap();
+        assert!(original.tainted);
+        assert_eq!(original.state_hash, source_hash);
+        assert_eq!(replay(&mut original_full, original.id), Ok(Reply::Unit));
+        assert_eq!(hash(&mut original_full), source_hash);
+        assert_eq!(
+            recorded_env_res(&mut original_full),
+            Err(ControlError::Tainted)
+        );
+        let mut altered_full = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut altered_full);
+        let before_store = altered_full.snapshot_store_stats();
+        let before_hash = hash(&mut altered_full);
+        assert!(matches!(
+            altered_full.import_portable_snapshot(cleared_full.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage"
+            ))
+        ));
+        assert_eq!(altered_full.snapshot_store_stats(), before_store);
+        assert_eq!(altered_full.latest_snapshot(), None);
+        assert_eq!(hash(&mut altered_full), before_hash);
+
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+        let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
+        assert!(sidecar.tainted);
+        let cleared_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
+            vm_state: &sidecar.vm_state,
+            sdk: sidecar.sdk.as_ref(),
+            policy: &sidecar.policy,
+            control_state: &sidecar.control_state,
+            at: sidecar.at,
+            sdk_events: sidecar.sdk_events,
+            trace_events: sidecar.trace_events,
+            trace_schedules: sidecar.trace_schedules,
+            tainted: false,
+            base_ram_digest: sidecar.base_ram_digest,
+            state_blob_suffix: &sidecar.state_blob_suffix,
+        })
+        .unwrap();
+        let mut original_sparse = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut original_sparse);
+        let base = snap(&mut original_sparse);
+        let original = original_sparse
+            .import_sparse_snapshot(base, sparse.clone())
+            .unwrap();
+        assert!(original.tainted);
+        assert_eq!(replay(&mut original_sparse, original.id), Ok(Reply::Unit));
+        assert_eq!(hash(&mut original_sparse), source_hash);
+        assert_eq!(
+            recorded_env_res(&mut original_sparse),
+            Err(ControlError::Tainted)
+        );
+        let mut altered_sparse = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut altered_sparse);
+        let base = snap(&mut altered_sparse);
+        let before_store = altered_sparse.snapshot_store_stats();
+        let before_hash = hash(&mut altered_sparse);
+        assert!(matches!(
+            altered_sparse.import_sparse_snapshot(
+                base,
+                super::SparsePortableSnapshot {
+                    pages: sparse.pages,
+                    sidecar: cleared_sidecar,
+                },
+            ),
+            Err(PortableSnapshotError::Malformed(
+                "sparse state hash preimage"
+            ))
+        ));
+        assert_eq!(altered_sparse.snapshot_store_stats(), before_store);
+        assert_eq!(altered_sparse.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut altered_sparse), before_hash);
+        assert_eq!(hash(&mut source), source_hash);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn full_and_sparse_import_reject_valid_but_unclaimed_vm_state() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let cut = snap(&mut source);
+        let full = full_artifact_with_vm_state(&source, cut, |state| {
+            state.regs.rax ^= 1;
+        });
+        let sparse = sparse_artifact_with_vm_state(&source, cut, cut, |state| {
+            state.regs.rax ^= 1;
+        });
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before = ImportStateBefore::capture(&mut destination);
+        let full_result = destination
+            .import_portable_snapshot(full.as_slice())
+            .map(|_| ());
+        assert!(matches!(
+            &full_result,
+            Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage"
+            ))
+        ));
+        assert_import_rejection_preserves_server(&mut destination, &before, full_result);
+        let sparse_result = destination.import_sparse_snapshot(base, sparse).map(|_| ());
+        assert!(matches!(
+            &sparse_result,
+            Err(PortableSnapshotError::Malformed(
+                "sparse state hash preimage"
+            ))
+        ));
+        assert_import_rejection_preserves_server(&mut destination, &before, sparse_result);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn control_snapshot_and_import_require_vm_state_hashing() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        source.vmm_mut().unwrap().snapshot_hashing = false;
+        let before_hash = hash(&mut source);
+        let before_store = source.snapshot_store_stats();
+        assert!(matches!(
+            source.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotRefused { reason })
+                if reason == "control snapshots require VM-state hashing"
+        ));
+        assert_eq!(source.snapshot_store_stats(), before_store);
+        assert_eq!(source.latest_snapshot(), None);
+        assert_eq!(hash(&mut source), before_hash);
+
+        source.vmm_mut().unwrap().wire_snapshot_hashing();
+        let cut = snap(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(cut, &mut full).unwrap();
+        let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        destination.vmm_mut().unwrap().snapshot_hashing = false;
+        let before_hash = hash(&mut destination);
+        let before_store = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_portable_snapshot(full.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot requires VM-state hashing"
+            ))
+        ));
+        assert!(matches!(
+            destination.import_sparse_snapshot(base, sparse.clone()),
+            Err(PortableSnapshotError::Malformed(
+                "control snapshot requires VM-state hashing"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before_store);
+        assert_eq!(destination.latest_snapshot(), Some(base));
+        assert_eq!(hash(&mut destination), before_hash);
+        destination.vmm_mut().unwrap().wire_snapshot_hashing();
+        assert!(
+            destination
+                .import_portable_snapshot(full.as_slice())
+                .is_ok()
+        );
+        assert!(destination.import_sparse_snapshot(base, sparse).is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot import uses mapped snapshot storage")]
+    fn full_import_rejects_rehashed_envelope_with_unclaimed_control_state() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let cut = snap(&mut source);
+        let mut artifact = Vec::new();
+        source.export_portable_snapshot(cut, &mut artifact).unwrap();
+        let portable = super::PortableSnapshot::read_from(
+            artifact.as_slice(),
+            source.vmm().unwrap().guest_memory().len(),
+        )
+        .unwrap();
+        let mut control = super::ControlState::decode(&portable.control_state).unwrap();
+        control.exec_nonce += 1;
+        let changed_control = control.encode();
+        let mut altered = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &changed_control,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut altered)
+        .unwrap();
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let before = ImportStateBefore::capture(&mut destination);
+        let result = destination
+            .import_portable_snapshot(altered.as_slice())
+            .map(|_| ());
+        assert!(matches!(
+            result,
+            Err(PortableSnapshotError::Malformed(
+                "portable state hash preimage"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before.stats);
+        assert_eq!(destination.latest_snapshot(), before.latest);
+        assert_eq!(
+            destination.vmm_mut().unwrap().state_hash().unwrap(),
+            before.hash
+        );
     }
 
     fn full_artifact_with_vm_state(
@@ -4829,6 +7063,7 @@ mod tests {
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
             tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
             control_state: &sidecar.control_state,
         })
@@ -5101,9 +7336,7 @@ mod tests {
         hello(&mut source);
         let cut = snap(&mut source);
         let meta = source.snapshot_meta.get_mut(&cut.0).unwrap();
-        let mut changed = super::ControlState::decode(&meta.control_state)
-            .unwrap()
-            .unwrap();
+        let mut changed = super::ControlState::decode(&meta.control_state).unwrap();
         changed.exec_nonce += 1;
         meta.control_state = changed.encode();
         let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
@@ -5115,7 +7348,7 @@ mod tests {
         assert!(matches!(
             destination.import_sparse_snapshot(base, sparse),
             Err(PortableSnapshotError::Malformed(
-                "sparse control hash preimage"
+                "sparse state hash preimage"
             ))
         ));
         assert_eq!(destination.snapshot_store_stats(), before);
@@ -5262,7 +7495,7 @@ mod tests {
         let _ = hash(&mut s);
     }
 
-    struct RestoreFailBackend(MockBackend);
+    struct RestoreFailBackend(MockBackend, bool);
     impl Backend for RestoreFailBackend {
         type A = vmm_backend::X86;
 
@@ -5311,6 +7544,16 @@ mod tests {
         fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
             self.0.save()
         }
+        fn validate_snapshot_state(
+            &self,
+            _state: &vmm_backend::VcpuState,
+        ) -> vmm_backend::Result<()> {
+            if self.1 {
+                Err(vmm_backend::BackendError::NonportableXsaveMxcsr)
+            } else {
+                Ok(())
+            }
+        }
         fn validate_restore_state(
             &self,
             state: &vmm_backend::VcpuState,
@@ -5336,6 +7579,59 @@ mod tests {
     }
 
     #[test]
+    fn nonportable_mxcsr_snapshot_refusal_keeps_control_session_usable() {
+        let build = |reject_snapshot| {
+            let mut backend = MockBackend::with_exits(vec![
+                Exit::Arch(X86Exit::Rdmsr { index: 0x10 }),
+                Exit::Common(CommonExit::Idle),
+            ]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(
+                RestoreFailBackend(backend, reject_snapshot),
+                GuestRam::new(RAM).unwrap(),
+            );
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm.restore_guest_memory(&vec![0u8; RAM]).unwrap();
+            vmm
+        };
+        let mut live = build(true);
+        live.step().unwrap();
+        let mut server = ControlServer::new(live, Box::new(move || Ok(build(false))));
+        assert!(
+            server
+                .handle(&Request::Hello(server_caps()))
+                .unwrap()
+                .is_ok()
+        );
+        let before_hash = server.vmm_mut().unwrap().state_hash().unwrap();
+        let before_store = server.snapshot_store_stats();
+        let snapshot_result = server.handle(&Request::Snapshot);
+        assert!(
+            matches!(
+                &snapshot_result,
+                Ok(Err(ControlError::SnapshotRefused { reason }))
+                    if reason == &vmm_backend::BackendError::NonportableXsaveMxcsr.to_string()
+            ),
+            "unexpected snapshot result: {snapshot_result:?}"
+        );
+        assert_eq!(server.snapshot_store_stats(), before_store);
+        assert_eq!(server.latest_snapshot(), None);
+        assert_eq!(server.vmm_mut().unwrap().state_hash().unwrap(), before_hash);
+        assert!(matches!(
+            server.handle(&Request::Hash {
+                scope: HashScope::Whole
+            }),
+            Ok(Ok(Reply::Hash(_)))
+        ));
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn backend_restore_shape_is_preflighted_before_portable_import() {
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
@@ -5352,7 +7648,7 @@ mod tests {
                 msr_filter: vmm_backend::MsrFilter::default(),
             })
             .unwrap();
-            let mut v = Vmm::new(RestoreFailBackend(m), GuestRam::new(RAM).unwrap());
+            let mut v = Vmm::new(RestoreFailBackend(m, false), GuestRam::new(RAM).unwrap());
             v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap());
             v.wire_snapshot_hashing();
             v.wire_lapic(
@@ -5408,7 +7704,7 @@ mod tests {
                 msr_filter: vmm_backend::MsrFilter::default(),
             })
             .unwrap();
-            let mut v = Vmm::new(RestoreFailBackend(m), GuestRam::new(RAM).unwrap());
+            let mut v = Vmm::new(RestoreFailBackend(m, false), GuestRam::new(RAM).unwrap());
             v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
             v.wire_snapshot_hashing();
             v.restore_guest_memory(&vec![0u8; RAM]).unwrap();
@@ -7057,6 +9353,106 @@ mod tests {
     #[test]
     #[cfg_attr(
         miri,
+        ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
+    )]
+    fn branch_without_vtime_rejects_seed_before_replacing_the_vm() {
+        let make_vm = || {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_snapshot_hashing();
+            Ok(vmm)
+        };
+        let mut server = ControlServer::new(make_vm().unwrap(), Box::new(make_vm));
+        hello(&mut server);
+        let base = snap(&mut server);
+        let before = hash(&mut server);
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(7),
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
+    )]
+    fn branch_without_vtime_rejects_floor_reseed_before_replacing_the_vm() {
+        let make_vm = || {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_snapshot_hashing();
+            Ok(vmm)
+        };
+        let mut server = ControlServer::new(make_vm().unwrap(), Box::new(make_vm));
+        hello(&mut server);
+        let base = snap(&mut server);
+        let before = hash(&mut server);
+        let mut spec = EnvSpec::seeded(7);
+        spec.record_reseed(0, 99);
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: spec.encode(),
+                    },
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
+    )]
+    fn branch_with_vtime_still_accepts_seed() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let base = snap(&mut server);
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(7),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(server.vmm().unwrap().vtime_wired());
+        assert!(server.handle(&Request::Snapshot).unwrap().is_ok());
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
         ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
     )]
     fn recoverable_restore_failure_clears_the_stale_schedule() {
@@ -7368,6 +9764,80 @@ mod tests {
                 vtime: Moment(deadline)
             })
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
+    fn exec_idle_wake_matches_live_and_replayed_snapshots() {
+        let make = |exits| {
+            let mut backend = MockBackend::with_exits(exits);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            backend.set_state(vmm_backend::VcpuState {
+                regs: vmm_backend::VcpuRegs {
+                    rflags: (1 << 9) | 0x2,
+                    ..Default::default()
+                },
+                ..Default::default()
+            });
+            let mut vmm = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 7).unwrap());
+            vmm.wire_snapshot_hashing();
+            vmm.wire_lapic(
+                lapic::Lapic::new(lapic::LapicConfig {
+                    apic_id: 0,
+                    timer_hz: 24_000_000,
+                })
+                .unwrap(),
+            );
+            vmm
+        };
+        let idle = || Exit::Common(CommonExit::Idle);
+        let mut server = ControlServer::new(
+            make(vec![idle(), idle()]),
+            Box::new(move || Ok(make(vec![idle()]))),
+        );
+        hello(&mut server);
+        let cutoff = 500;
+        assert_eq!(
+            run_with_deadline(&mut server, cutoff),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(cutoff)
+            }))
+        );
+        assert_eq!(server.vmm().unwrap().idle_wake_vns, Some(cutoff));
+        let cut = snap(&mut server);
+        let before = hash(&mut server);
+        let exec = Request::Exec {
+            cmd: "true".into(),
+            deadline: Moment(cutoff + 100),
+        };
+        let live = server.handle(&exec);
+        assert_eq!(server.vmm().unwrap().effective_vns(), Some(cutoff + 100));
+        let live_hash = hash(&mut server);
+
+        assert_eq!(
+            server.handle(&Request::Replay(cut)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert_eq!(server.vmm().unwrap().idle_wake_vns, None);
+        let replayed = server.handle(&exec);
+        assert_eq!(server.vmm().unwrap().effective_vns(), Some(cutoff + 100));
+        assert_eq!(hash(&mut server), live_hash);
+        assert!(
+            matches!(live, Ok(Ok(Reply::ExecResult { ok: false, .. }))),
+            "live {live:?}, replayed {replayed:?}"
+        );
+        assert!(
+            matches!(replayed, Ok(Ok(Reply::ExecResult { ok: false, .. }))),
+            "replayed {replayed:?}"
+        );
+        assert_eq!(live.unwrap().unwrap(), replayed.unwrap().unwrap());
     }
 
     fn idle_seeded_env(seed: u64) -> Reproducer {
@@ -7961,6 +10431,84 @@ mod tests {
         assert!(!ok, "deadline-0 exec on a non-shell mock does not complete");
         assert!(output.is_empty());
         assert_eq!(recorded_env_res(&mut s), Err(ControlError::Tainted));
+    }
+
+    #[test]
+    fn exec_rejects_pending_service_decision_without_staging_serial_input() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+
+        let mut s = payload_server();
+        hello(&mut s);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        s.recorded.set_config(config.clone());
+        s.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(s.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = s.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        let at = vmm.effective_vns().unwrap();
+        let before = hash(&mut s);
+        let queued = s.vmm().unwrap().devices().uart.pending_input();
+
+        assert_eq!(
+            s.handle(&Request::Exec {
+                cmd: "echo rejected".into(),
+                deadline: Moment(at + 100),
+            })
+            .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut s), before);
+        assert_eq!(s.vmm().unwrap().devices().uart.pending_input(), queued);
+        assert_eq!(s.exec_nonce, 0);
+        assert!(matches!(recorded_env_res(&mut s), Ok(Reply::Recorded(_))));
+        assert_eq!(
+            s.vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
+        assert_eq!(
+            s.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(at)),
+                    on: StopMask::NONE,
+                },
+                resolve: Some(Resolution {
+                    vtime: Moment(at),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(ServiceAnswer::Nominal.encode()),
+                }),
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(at) }))
+        );
+        assert!(s.vmm().unwrap().pending_service_question().is_none());
+        assert_eq!(s.vmm().unwrap().devices().uart.pending_input(), queued);
     }
 
     #[test]

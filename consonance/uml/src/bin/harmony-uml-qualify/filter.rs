@@ -159,11 +159,66 @@ pub fn deny_seccomp_install(command: &mut Command) {
 }
 
 pub fn deny_personality_change(command: &mut Command) {
+    personality_change_filter(command, false);
+}
+
+pub fn deny_personality_change_preserving_layout(command: &mut Command) {
+    personality_change_filter(command, true);
+}
+
+fn personality_change_filter(command: &mut Command, preserve_layout: bool) {
     let mut program = personality_program();
-    // SAFETY: the closure runs in the forked child before exec. It installs a
-    // program allocated before the fork and calls only prctl(2), which is
-    // async-signal-safe; it performs no allocation or locking.
+    // SAFETY: the forked child only calls personality(2) and prctl(2) before
+    // exec using a filter allocated before the fork, without shared-memory
+    // access or allocation.
     unsafe {
-        command.pre_exec(move || install(&mut program));
+        command.pre_exec(move || {
+            if !preserve_layout {
+                let current = libc::personality(u32::MAX as libc::c_ulong);
+                if current < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                if current & libc::ADDR_NO_RANDOMIZE != 0
+                    && libc::personality(
+                        (current as libc::c_ulong) & !(libc::ADDR_NO_RANDOMIZE as libc::c_ulong),
+                    ) < 0
+                {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+            install(&mut program)
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(not(miri))]
+    fn randomized_round_clears_the_launcher_fixed_layout() {
+        let mut command = Command::new("sh");
+        command.arg("-c").arg("cat /proc/self/personality");
+        // SAFETY: this test changes only the forked child's personality before
+        // exec; the syscall touches no shared memory or Rust allocator state.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        deny_personality_change(&mut command);
+        let output = match command.output() {
+            Ok(output) => output,
+            Err(error) if error.raw_os_error() == Some(libc::EPERM) => return,
+            Err(error) => panic!("randomized layout probe failed: {error}"),
+        };
+        assert!(output.status.success());
+        let flags =
+            u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
+        assert_eq!(flags & libc::ADDR_NO_RANDOMIZE as u32, 0);
     }
 }

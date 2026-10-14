@@ -119,8 +119,10 @@ state cells; coverage is reported separately. The CLI writes the campaign
 stream, report and each failure with its level and input seeds. Replaying the
 stream reproduces the complete outer restore sequence. The workload identity
 includes the host's nested-host contract hash, so a stream recorded on a host
-with different VMX or SVM capabilities is rejected before replay starts. A run
-that makes no virtual-time progress within the session's 20-second host bound
+with different VMX or SVM capabilities is rejected before replay starts. The
+CLI checks the source report's stream digest and passes the same verified bytes
+to the driver for every repeat. A campaign that makes no virtual-time progress
+within the session's 20-second host bound
 stops the campaign with an error and records no failure, because the state at
 that point depends on host timing.
 

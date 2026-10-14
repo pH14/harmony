@@ -111,6 +111,12 @@ Consonance chooses KVM, then HVF, then UML according to host availability.
 `--runner` selects an execution implementation; `--backend` constrains its backend.
 UML runs on Linux without hardware virtualization, including ordinary containers.
 An explicit UML profile selects UML when the backend is automatic.
+Preparation applies an explicit UML backend or profile's policy even when the
+current host cannot launch UML.
+UML admission rejects scanned hardware entropy instructions even if a VM
+review lists them. `prepare`, `check`, `search` and plain `debug run` apply the
+selected backend's policy. A saved UML run from before this policy cannot be
+replayed or branched because its guest image was not admitted under this rule.
 
 Consonance artifact overrides are `kernel`, `base_initramfs` and `uml_profile`
 inside `runner.options`. `check` provisions checksummed versioned artifacts.
@@ -218,7 +224,9 @@ permits 5,000 new executions, in addition to finishing any work already queued a
 removes the previous execution ceiling. Checkpoints are written periodically and
 at completion; an interrupted search can retain an earlier checkpoint. NES retains
 its checkpoint journal and origin input under `package/`. A new seed intentionally
-changes the draw sequence.
+changes the draw sequence. The journal identifies the latest retained checkpoint;
+the additional execution budget uses its verified header's reserved count, so a
+stale journal count cannot change the continuation budget.
 
 Names resolve beneath `.harmony/runs`; commands also accept a saved directory.
 `--name NAME` chooses a name; `--out DIRECTORY` chooses an explicit fresh directory.
@@ -232,12 +240,15 @@ Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
 `runner.options.kernel` pointing to a kernel built with nested KVM support.
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
-implemented by this package.
+implemented by this package. Replay requires the saved campaign stream to match
+the search report's stream digest and runs from the verified bytes.
 
 ## Developer qualification
 
 Hidden `harmony debug run` executes a fixed action input or an OCI command;
 `harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
+Finding replay refuses an unconfirmed saved finding, because replay did not
+establish its reported failure. Branching can still inspect that evidence.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
@@ -249,16 +260,34 @@ fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
-Replay verifies the exact CLI executable, architecture and saved artifact hashes;
-UML also pins host identity. Application replay compares final state, assertions,
-actions and recovery evidence. Plain UML replay compares application output and
+Replay verifies the exact CLI executable, architecture and saved artifact hashes.
+Faults replay, branching and search from a branch also compare the saved
+`report.json` or `run.json` outcome with its manifest copy before using that
+evidence. Replay and branch selection use that verified manifest copy, even
+if a source outcome file changes later. Search resume restores its
+checkpoint and does not consume the report;
+an interrupted report write does not invalidate an earlier checkpoint.
+After a faults package returns, completion compares the saved report with the
+in-memory result before recording its outcome. A replaced or missing report
+cannot become a completed search, replay, or branch result. Command replay
+and standalone command runs likewise bind the record built by the execution
+producer before completion.
+UML also pins the exact physical processor identity selected by the fastest
+core pool's coordinator placement; the manifest and faults campaign use the
+same processor. Standalone command runs and replays bind that saved identity
+before launching the guest. KVM and HVF application replay compare final state,
+assertions, actions and recovery evidence. UML application replay records
+assertions, actions and recovery evidence but cannot establish full-state
+identity. Plain UML command replay compares application output and
 bridge events while retaining raw boot logs as diagnostics. Hardware command
 replay also compares the full serial digest. NES replay compares its typed witness
 and snapshot digest. Removing a saved directory removes its saved evidence.
 
 Exit 0 means successful operation, including verified reproduction of a finding.
 Application search exits 1 for findings or unmet reachability assertions; a failed
-application command also exits 1. Exit 2 denotes invalid input, infrastructure
+application command also exits 1. UML application replay records observed
+assertions and stops, but exits 2 because a canonical full-state digest is not
+available to verify exact reproduction. Exit 2 also denotes invalid input, infrastructure
 failure or replay divergence. Search budgets and seeds must fit TOML's signed
 64-bit integer range.
 
@@ -270,5 +299,7 @@ same dispatch and storage interfaces without application or NES types.
 
 - `bash cli/tests/investigation.sh DIRECTORY` exercises preparation, guest commands,
   local scripts, interactive shells, snapshot restoration, continuation and tamper refusal.
-- `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY` exercises plain
-  command replay as an unprivileged UML user and rejects planted output divergence.
+- `bash cli/tests/uml-command.sh IMAGE PROFILE INITRAMFS DIRECTORY [REJECTED_IMAGE]`
+  exercises plain command replay as an unprivileged UML user, rejects planted
+  output divergence, and optionally verifies that a reviewed hardware-entropy
+  image is refused before launch.

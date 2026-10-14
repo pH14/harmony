@@ -54,7 +54,12 @@ sequence of guest events.
   names both. A guest program that executes `rdrand` or `rdseed` gets host
   randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
-  CPU it happens to run on; workloads must not use them.
+  CPU it happens to run on; workloads must not use them. Fault-workload image
+  preparation, search and command runs refuse scanned hardware entropy
+  instructions for UML, including reviewed call sites. The current x86
+  Bookworm language and historical images contain such sites and are refused
+  for UML until built without them. This does not trap an instruction supplied
+  by dynamic code or hidden from the executable-section scan.
 - Host stops and continues of stub processes no longer raise guest
   interrupts. A stub that dies without the kernel killing it panics the
   guest.
@@ -178,7 +183,10 @@ and asserts the symbols the profile depends on.
   `schedule` runs four workers that yield and exchange pipe messages;
   `timers` uses sleeps, interval timers, `timerfd`, `poll` and `select`;
   `counter` reads the CPU counter (`rdtsc` or `cntvct_el0`) around system
-  calls, and on arm64 the counter frequency.
+  calls, and on arm64 the counter frequency. `console_branch` pulls a branch
+  payload before choosing whether to print a panic-shaped console line, so
+  checkpoint qualification can verify that restoring the other branch removes
+  the abandoned line from later diagnostics.
 - `linux/patches/um/` holds the UML series: SECCOMP userspace as the only
   mode, virtual time and its costs, the host bridge, the boot seed, counter
   emulation, host child signals, the fixed memory layout, checkpoints, and

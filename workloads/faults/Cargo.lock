@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "adler2"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -115,6 +121,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc32fast"
+version = "1.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01a7799fd6b852db0e61728dde9a204c423b44d689dbd432522543614b490e78"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "crypto-common"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -151,6 +166,7 @@ name = "environment"
 version = "0.1.0"
 dependencies = [
  "hypercall-proto",
+ "sha2",
  "thiserror",
 ]
 
@@ -254,6 +270,7 @@ dependencies = [
 name = "hypercall-proto"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "thiserror",
 ]
 
@@ -334,6 +351,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "miniz_oxide"
+version = "0.9.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
+dependencies = [
+ "adler2",
+]
+
+[[package]]
 name = "object"
 version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -346,8 +372,10 @@ dependencies = [
 name = "oci-support"
 version = "0.1.0"
 dependencies = [
+ "crc32fast",
  "execution-proto",
  "guest-image",
+ "miniz_oxide",
  "serde",
  "serde_json",
  "sha2",
@@ -570,9 +598,11 @@ checksum = "b6f5e870be6c3b371b77fe0ee0bafb859fa4964b4404c27de1d380043c4dda20"
 name = "uml"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "environment",
  "hypercall-proto",
  "libc",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -608,6 +638,7 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "rustix",
  "thiserror",
 ]
 
@@ -615,6 +646,7 @@ dependencies = [
 name = "vmm-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "control-proto",
  "environment",
  "gicv3",

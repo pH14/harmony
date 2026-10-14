@@ -1,7 +1,28 @@
 # Platform scripts
 
 The instruction scanners reject unsupported instructions in shipped guest
-executables. Their planted negative controls must continue to fail.
+executables. Their planted negative controls must continue to fail. The N6
+entropy scanner reads executable ELF load segments, because section headers can
+mislabel code without changing the bytes or permissions the guest loader maps.
+On x86 it decodes contained allocated sections from their starts and scans the
+gaps between them, so headers or padding cannot shift an instruction boundary
+or create a false hit across a section boundary. Arm64 is checked as aligned
+words across the whole executable segment, regardless of section lengths.
+Its hidden-section negative control clears the `.text` executable flag while
+leaving `PT_LOAD` executable and must still be rejected.
+
+The counter scanner also rejects physical and virtual timer-value reads
+(`CNTP_TVAL_EL0` and `CNTV_TVAL_EL0`). These expose a remaining interval derived
+from the live counter even when no timer is programmed. The raw executable-word
+walk covers both ordinary instructions and words marked as data by mapping
+symbols. Timer programming remains prohibited; owned code uses the Harmony
+clock and clockevent instead.
+
+The scanner also rejects physical and virtual timer control reads and writes.
+The owned arm64 kernel no longer touches those controls: its virtual timer
+shutdown disarms the Harmony MMIO clockevent, and its unreachable physical
+timer paths stop if selected. A control write could enable a host-time timer;
+KVM also omits physical timer control from its saved vCPU state.
 
 `build-platform-runtime.sh` builds the native architecture's kernel, static
 supervisor, OCI runtime, and OCI smoke fixture, then seals their manifest. Run

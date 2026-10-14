@@ -146,6 +146,7 @@ pub fn canonicalize_sregs(sregs: &mut VcpuSregs) {
 const XSTATE_BV: usize = 512;
 const XCOMP_BV: usize = 520;
 const XSAVE_HEADER_END: usize = XCOMP_BV + 8;
+const XSAVE_RESERVED: std::ops::Range<usize> = XSAVE_HEADER_END..576;
 const X87_CONTROL: std::ops::Range<usize> = 0..24;
 const X87_ST: std::ops::Range<usize> = 32..160;
 const SSE_MXCSR: std::ops::Range<usize> = 24..28;
@@ -209,6 +210,12 @@ pub fn canonicalize_xsave_with_restore_bv(image: &mut [u8]) -> Option<u64> {
 }
 
 pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<u8>> {
+    if image
+        .get(XSAVE_RESERVED)
+        .is_some_and(|reserved| reserved.iter().any(|&byte| byte != 0))
+    {
+        return Err(BackendError::InvalidState);
+    }
     let Some(restore_bv) = restore_bv else {
         return Ok(image.to_vec());
     };
@@ -227,6 +234,44 @@ pub fn restore_xsave_image(image: &[u8], restore_bv: Option<u64>) -> Result<Vec<
         return Err(BackendError::InvalidState);
     }
     Ok(restored)
+}
+
+pub fn kvm_restore_xsave_image(
+    image: &[u8],
+    restore_bv: Option<u64>,
+    supported_bv: u64,
+) -> Result<Vec<u8>> {
+    let restored = restore_xsave_image(image, restore_bv)?;
+    let Some((xstate_bv, xcomp_bv)) = standard_xsave_header(&restored) else {
+        return Err(BackendError::InvalidState);
+    };
+    let mxcsr = u32::from_le_bytes(
+        restored[SSE_MXCSR]
+            .try_into()
+            .map_err(|_| BackendError::InvalidState)?,
+    );
+    if xcomp_bv != 0 || xstate_bv & !supported_bv != 0 || mxcsr & !0xffff != 0 {
+        return Err(BackendError::InvalidState);
+    }
+    validate_kvm_xsave_mxcsr_presence(&restored, Some(xstate_bv))?;
+    Ok(restored)
+}
+
+pub(crate) fn validate_kvm_xsave_mxcsr_presence(
+    image: &[u8],
+    restore_bv: Option<u64>,
+) -> Result<()> {
+    let Some((canonical_bv, xcomp_bv)) = standard_xsave_header(image) else {
+        return Err(BackendError::InvalidState);
+    };
+    if xcomp_bv != 0 {
+        return Err(BackendError::InvalidState);
+    }
+    let mxcsr = image.get(SSE_MXCSR).ok_or(BackendError::InvalidState)?;
+    if restore_bv.unwrap_or(canonical_bv) & 2 == 0 && mxcsr != SSE_INIT_MXCSR {
+        return Err(BackendError::NonportableXsaveMxcsr);
+    }
+    Ok(())
 }
 
 pub fn logical_xsave_restore_bv(image: &[u8], restore_bv: Option<u64>) -> Result<Option<u64>> {
@@ -463,6 +508,92 @@ mod tests {
             restore_xsave_image(&short, Some(1)),
             Err(BackendError::InvalidState)
         ));
+    }
+
+    #[test]
+    fn restore_rejects_nonzero_reserved_xsave_header_bytes() {
+        for offset in [528, 543, 575] {
+            for restore_bv in [None, Some(0)] {
+                let mut image = init_image(0);
+                image[offset] = 1;
+                let before = image.clone();
+                assert!(matches!(
+                    restore_xsave_image(&image, restore_bv),
+                    Err(BackendError::InvalidState)
+                ));
+                assert_eq!(image, before);
+            }
+        }
+    }
+
+    #[test]
+    fn kvm_restore_rejects_unrepresentable_xsave_before_mutating_source() {
+        let image = init_image(0);
+        let supported = 0x7;
+        assert_eq!(
+            kvm_restore_xsave_image(&image, None, supported).unwrap(),
+            image
+        );
+        assert_eq!(
+            kvm_restore_xsave_image(&image, Some(0), supported).unwrap(),
+            image
+        );
+
+        let mut compacted = image.clone();
+        compacted[XCOMP_BV..XSAVE_HEADER_END].copy_from_slice(&(1u64 << 63).to_le_bytes());
+        assert!(matches!(
+            kvm_restore_xsave_image(&compacted, None, supported),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(restore_xsave_image(&compacted, None).unwrap(), compacted);
+
+        let mut unsupported = image.clone();
+        unsupported[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&(1u64 << 63).to_le_bytes());
+        for restore_bv in [None, Some(1u64 << 63)] {
+            assert!(matches!(
+                kvm_restore_xsave_image(&unsupported, restore_bv, supported),
+                Err(BackendError::InvalidState)
+            ));
+        }
+
+        let mut reserved_mxcsr = image.clone();
+        reserved_mxcsr[SSE_MXCSR].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
+        reserved_mxcsr[XSTATE_BV..XSTATE_BV + 8].copy_from_slice(&2u64.to_le_bytes());
+        for restore_bv in [None, Some(2)] {
+            assert!(matches!(
+                kvm_restore_xsave_image(&reserved_mxcsr, restore_bv, supported),
+                Err(BackendError::InvalidState)
+            ));
+        }
+        assert_eq!(
+            kvm_restore_xsave_image(&image, None, supported).unwrap(),
+            image
+        );
+    }
+
+    #[test]
+    fn kvm_snapshot_rejects_nonportable_mxcsr_presence() {
+        let mut without_sse = init_image(4);
+        without_sse[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        for restore_bv in [None, Some(4)] {
+            assert!(matches!(
+                kvm_restore_xsave_image(&without_sse, restore_bv, 7),
+                Err(BackendError::NonportableXsaveMxcsr)
+            ));
+            assert!(matches!(
+                validate_kvm_xsave_mxcsr_presence(&without_sse, restore_bv),
+                Err(BackendError::NonportableXsaveMxcsr)
+            ));
+        }
+
+        without_sse[SSE_MXCSR].copy_from_slice(&SSE_INIT_MXCSR);
+        assert!(kvm_restore_xsave_image(&without_sse, Some(4), 7).is_ok());
+        assert!(validate_kvm_xsave_mxcsr_presence(&without_sse, Some(4)).is_ok());
+
+        let mut with_sse = init_image(6);
+        with_sse[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
+        assert!(kvm_restore_xsave_image(&with_sse, Some(6), 7).is_ok());
+        assert!(validate_kvm_xsave_mxcsr_presence(&with_sse, Some(6)).is_ok());
     }
 
     #[test]

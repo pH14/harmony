@@ -14,6 +14,7 @@ pub mod maze;
 pub mod passive_clock;
 pub mod resource;
 pub mod route;
+pub mod targets;
 pub mod trap;
 pub mod worlds;
 use worlds::{State, World};
@@ -226,6 +227,7 @@ pub struct Evidence {
     pub backtrack_first_items: Vec<Option<u64>>,
     pub map_first: Vec<Option<u64>>,
     pub map_first_tier: Vec<Option<u64>>,
+    pub map_first_boss_room: Option<u64>,
     pub map_first_stocked: Option<u64>,
     pub map_first_hit_stock: Option<u8>,
     pub map_max_hits: u8,
@@ -233,6 +235,8 @@ pub struct Evidence {
     pub job_start_work: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passive_clock: Option<passive_clock::Evidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub targets: Option<targets::Evidence>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -789,7 +793,13 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         }
                     }
                     e.map_first_tier.resize(usize::from(w.top_tier()) + 1, None);
-                    e.map_first_tier[0] = Some(0);
+                    for first in &mut e.map_first_tier[..=usize::from(w.tier(w.initial()))] {
+                        first.get_or_insert(0);
+                    }
+                    if w.rooted {
+                        e.map_first_boss_room.get_or_insert(0);
+                        e.map_first_stocked.get_or_insert(0);
+                    }
                     if w.tier(after) > w.tier(before) {
                         e.map_first_tier[usize::from(w.tier(after))].get_or_insert(reached_work);
                     }
@@ -801,11 +811,16 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     {
                         e.map_first_stocked.get_or_insert(reached_work);
                     }
+                    if w.boss_stock > 0 && after.item && after.arm == 0 && after.cell == layout.goal
+                    {
+                        e.map_first_boss_room.get_or_insert(reached_work);
+                    }
                     if w.boss_stock > 0
                         && after.item
                         && after.arm == 0
                         && after.cell == layout.goal
                         && after.stock + after.shield >= w.boss_stock + w.shield
+                        && (w.arena == 0 || after.stock == w.farm_cap)
                         && after.hits == 0
                         && (!w.boss_hits_back || after.health >= w.boss_stock)
                     {
@@ -817,6 +832,25 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                     e.map_max_hits = e.map_max_hits.max(after.hits);
                 }
                 (World::Graph(_), State::Graph(_), State::Graph(_)) => {}
+                (World::Targets(w), State::Targets(before), State::Targets(after)) => {
+                    let t = e.targets.get_or_insert_with(Default::default);
+                    let levels = usize::from(w.cannons) + 1;
+                    t.first_down_execution.resize(levels, None);
+                    t.first_down_work.resize(levels, None);
+                    t.first_down_execution[0].get_or_insert(0);
+                    t.first_down_work[0].get_or_insert(0);
+                    for down in usize::from(w.down(before)) + 1..=usize::from(w.down(after)) {
+                        t.first_down_execution[down].get_or_insert(sequence);
+                        t.first_down_work[down].get_or_insert(reached_work);
+                    }
+                    if after.stock < before.stock {
+                        let (landed, double, decoy) = w.shot_outcome(before, after);
+                        t.shots += 1;
+                        t.landed += u64::from(landed);
+                        t.double_kills += u64::from(double);
+                        t.decoy_hits += u64::from(decoy);
+                    }
+                }
                 (World::Crossing(w), State::Crossing(before), State::Crossing(after)) => {
                     if w.rooted {
                         e.crossing_first_entry_work.get_or_insert(0);

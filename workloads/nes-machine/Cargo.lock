@@ -157,6 +157,7 @@ name = "environment"
 version = "0.1.0"
 dependencies = [
  "hypercall-proto",
+ "sha2",
  "thiserror",
 ]
 
@@ -214,6 +215,7 @@ dependencies = [
 name = "hypercall-proto"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "thiserror",
 ]
 
@@ -508,6 +510,7 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "rustix",
  "thiserror",
 ]
 
@@ -515,6 +518,7 @@ dependencies = [
 name = "vmm-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "control-proto",
  "environment",
  "gicv3",

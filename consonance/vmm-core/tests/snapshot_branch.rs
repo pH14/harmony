@@ -140,11 +140,11 @@ fn rejected_in_flight_kvm_events_restore_is_state_hash_exact() {
     assert_eq!(a.step().unwrap(), Step::Continued);
 
     assert!(
-        a.has_inflight_event_injection(),
+        a.has_inflight_event_injection().unwrap(),
         "the prior codec's predicate fail-closed-rejected this point"
     );
     assert!(
-        a.has_active_event_injection(),
+        a.has_active_event_injection().unwrap(),
         "a genuine in-flight injection, not an inert residual"
     );
 

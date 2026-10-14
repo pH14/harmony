@@ -290,7 +290,7 @@ mod tests {
         let backend = MockArm64Backend::new();
         let mut vmm = compose(backend, &tiny_image(), "console=ttyAMA0", ram_len).unwrap();
 
-        let vcpu = vmm.inspect_vcpu();
+        let vcpu = vmm.inspect_vcpu().unwrap();
         assert_eq!(vcpu.core.pc, RAM_BASE);
         assert_eq!(vcpu.core.pstate, entry::PSTATE_EL1H_DAIF);
         let dtb_gpa = vcpu.core.x[0];
@@ -327,7 +327,7 @@ mod tests {
         )
         .unwrap();
 
-        let dtb_gpa = vmm.inspect_vcpu().core.x[0];
+        let dtb_gpa = vmm.inspect_vcpu().unwrap().core.x[0];
         let dtb_off = usize::try_from(dtb_gpa - RAM_BASE).unwrap();
         let memory = vmm.guest_memory();
         let parsed = dtb::parse(&memory[dtb_off..]).unwrap();
@@ -375,6 +375,9 @@ mod tests {
                 arch: Arm64Caps {
                     in_kernel_gic: false,
                     asid_bits,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
+                    gic_ctlr_fixed_bits: 0,
                 },
             })
         };
@@ -399,11 +402,11 @@ mod tests {
         let from_sixteen = sixteen.save_vm_state().unwrap();
         assert_eq!(
             from_eight.contract_hash,
-            contract::contract_hash(Arm64AsidBits::Eight)
+            contract::runtime_contract_hash(eight.backend().capabilities().arch)
         );
         assert_eq!(
             from_sixteen.contract_hash,
-            contract::contract_hash(Arm64AsidBits::Sixteen)
+            contract::runtime_contract_hash(sixteen.backend().capabilities().arch)
         );
         eight.restore_vm_state(&from_eight).unwrap();
         sixteen.restore_vm_state(&from_sixteen).unwrap();

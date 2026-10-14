@@ -589,6 +589,7 @@ impl StreamCounts {
                 }
             }
             CampaignStreamRecord::Skip(_) => self.skips += 1,
+            CampaignStreamRecord::End(_) => {}
         }
         Ok(())
     }

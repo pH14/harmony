@@ -19,7 +19,8 @@ use crate::arch::x86::{
     CpuidEntry, CpuidModel, MsrFilter, NestedFormat, X86, X86Caps, X86Completion, X86Policy,
 };
 use crate::arch::x86::{
-    canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv, restore_xsave_image,
+    canonicalize_regs, canonicalize_sregs, canonicalize_xsave_with_restore_bv,
+    kvm_restore_xsave_image, validate_kvm_xsave_mxcsr_presence,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -49,12 +50,18 @@ const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 pub struct KvmBackend {
     vcpu: VcpuFd,
     vm: VmFd,
+    host_affinity: crate::kvm_affinity::HostAffinity,
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
     nested_state_config: Option<(NestedFormat, usize)>,
     nested_physical_bits: u32,
-    nested_state_guard: crate::arch::x86::NestedStateGuard,
+    sysenter_virtual_bits: u32,
+    supported_xsave_bv: u64,
+    event_valid_flags: u32,
+    host_amd_compatible: bool,
+    sysenter_32bit: bool,
+    state_mutation_guard: crate::arch::x86::StateMutationGuard,
     regions: MemRegions,
     mem_slot_count: u32,
     dirty_log: bool,
@@ -80,7 +87,7 @@ pub struct KvmBackend {
 
 impl KvmBackend {
     pub fn new() -> Result<KvmBackend> {
-        crate::kvm_affinity::check_host_affinity()?;
+        let host_affinity = crate::kvm_affinity::check_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
@@ -95,6 +102,26 @@ impl KvmBackend {
         })
         .map_err(kvm_err)?;
         let vcpu = vm.create_vcpu(0).map_err(kvm_err)?;
+        let event_valid_flags = vcpu.get_vcpu_events().map_err(kvm_err)?.flags;
+        let supported = kvm
+            .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
+        let host_vendor = supported
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 0 && entry.index == 0)
+            .ok_or(BackendError::Internal(
+                "KVM supported CPUID omitted the host vendor",
+            ))?;
+        let host_amd_compatible =
+            amd_compatible_vendor(host_vendor.ebx, host_vendor.edx, host_vendor.ecx);
+        let sysenter_virtual_bits = kvm_sysenter_virtual_bits(supported.as_slice());
+        let supported_xsave_bv = supported
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 0xD && entry.index == 0)
+            .map(|entry| u64::from(entry.eax) | (u64::from(entry.edx) << 32) | 3)
+            .unwrap_or(3);
         let mmap_size = kvm.get_vcpu_mmap_size().map_err(kvm_err)?;
         if mmap_size < size_of::<kvm_run>() {
             return Err(BackendError::Internal("kvm_run mmap size too small"));
@@ -105,12 +132,18 @@ impl KvmBackend {
         Ok(KvmBackend {
             vcpu,
             vm,
+            host_affinity,
             run,
             mmap_size,
             xsave2_size,
             nested_state_config: None,
             nested_physical_bits: 0,
-            nested_state_guard: Default::default(),
+            sysenter_virtual_bits,
+            supported_xsave_bv,
+            event_valid_flags,
+            host_amd_compatible,
+            sysenter_32bit: host_amd_compatible,
+            state_mutation_guard: Default::default(),
             regions: MemRegions::new(),
             mem_slot_count: 0,
             dirty_log: true,
@@ -140,6 +173,7 @@ impl KvmBackend {
     }
 
     pub fn nested_capabilities(&self) -> Result<(NestedFormat, Option<CpuidEntry>)> {
+        self.ensure_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         let supported = kvm
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
@@ -188,6 +222,7 @@ impl KvmBackend {
         indices: &[u32],
         feature_control: u64,
     ) -> Result<BTreeMap<u32, u64>> {
+        self.ensure_host_affinity()?;
         if self.cpuid_installed || self.msr_filter_installed {
             return Err(BackendError::Internal(
                 "nested initialization requires a fresh vCPU",
@@ -250,6 +285,10 @@ impl KvmBackend {
         self.cpuid_installed && self.msr_filter_installed
     }
 
+    fn ensure_host_affinity(&self) -> Result<()> {
+        crate::kvm_affinity::ensure_host_affinity(&self.host_affinity)
+    }
+
     fn reload_nested_memory_slots(&self) -> Result<()> {
         crate::arch::x86::reload_nested_memory_slots(
             &self.mapped_slots,
@@ -271,7 +310,8 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
         let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
@@ -310,11 +350,12 @@ impl KvmBackend {
     }
 
     fn enter_guest(&mut self) -> Result<Exit<X86>> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         loop {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
             }
+            self.ensure_host_affinity()?;
             match plan_irq_entry(
                 self.run_page(),
                 self.pending_irq,
@@ -673,6 +714,7 @@ impl KvmBackend {
         let cpuid = CpuId::from_entries(&entries)
             .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
         self.vcpu.set_cpuid2(&cpuid).map_err(kvm_err)?;
+        self.sysenter_32bit = self.host_amd_compatible && !guest_intel_vendor(model);
         self.cpuid_installed = true;
         Ok(())
     }
@@ -724,7 +766,8 @@ impl KvmBackend {
     }
 
     fn run_guarded_entry(&mut self) -> Result<()> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
         self.check_completion_clear()?;
         // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
         let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
@@ -765,6 +808,7 @@ impl Backend for KvmBackend {
     type A = X86;
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.install_cpuid(&policy.cpuid)?;
         self.install_msr_filter(&policy.msr_filter)
     }
@@ -824,7 +868,8 @@ impl Backend for KvmBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
                 what: "drain_dirty_pages (dirty logging disabled)",
@@ -861,11 +906,7 @@ impl Backend for KvmBackend {
                 },
             )
         };
-        let mut gfns = if self.nested_state_config.is_some() {
-            self.nested_state_guard.mutate(drain)?
-        } else {
-            drain()?
-        };
+        let mut gfns = self.state_mutation_guard.mutate(drain)?;
         gfns.sort_unstable();
         gfns.dedup();
         Ok(gfns)
@@ -873,6 +914,7 @@ impl Backend for KvmBackend {
 
     #[cfg(feature = "xsave-diagnostics")]
     fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.diagnostic_rip.is_some() || !self.diagnostic_hits.is_empty() {
             return Err(BackendError::Internal("diagnostic breakpoint already used"));
         }
@@ -901,6 +943,7 @@ impl Backend for KvmBackend {
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {
+        self.ensure_host_affinity()?;
         match event {
             Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
@@ -911,6 +954,7 @@ impl Backend for KvmBackend {
     }
 
     fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.pending_irq = vector;
         Ok(())
     }
@@ -920,6 +964,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -934,6 +979,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -944,6 +990,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -966,6 +1013,7 @@ impl Backend for KvmBackend {
     }
 
     fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.ensure_host_affinity()?;
         if let Some(exit) = self.completion_exit.take() {
             return Ok(Some(exit));
         }
@@ -986,7 +1034,8 @@ impl Backend for KvmBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
         // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
@@ -1030,10 +1079,53 @@ impl Backend for KvmBackend {
         })
     }
 
+    fn validate_snapshot_state(&self, state: &VcpuState) -> Result<()> {
+        validate_kvm_xsave_mxcsr_presence(&state.xsave, state.xsave_restore_bv)
+    }
+
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
-        self.nested_state_guard.ensure_healthy()?;
+        self.state_mutation_guard.ensure_healthy()?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
-        validate_restore_shape(state, self.msr_filter.as_ref(), xsave_len)?;
+        validate_restore_shape(
+            state,
+            self.msr_filter.as_ref(),
+            xsave_len,
+            self.sysenter_virtual_bits,
+            self.sysenter_32bit,
+        )?;
+        if state.events.flags | kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD != self.event_valid_flags
+        {
+            return Err(BackendError::InvalidState);
+        }
+        let events = &state.events;
+        if events.interrupt_soft != 0
+            || events.sipi_vector != 0
+            || events.interrupt_shadow & !3 != 0
+            || events.nmi_pending > 2
+            || (events.exception_pending == 0 && events.exception_has_payload != 0)
+            || (events.smi_smm == 0 && events.smi_inside_nmi != 0)
+            || events.smi_latched_init != 0
+            || (self.event_valid_flags & kvm_bindings::KVM_VCPUEVENT_VALID_TRIPLE_FAULT == 0
+                && events.triple_fault_pending != 0)
+            || [
+                events.exception_injected,
+                events.exception_has_error_code,
+                events.exception_pending,
+                events.exception_has_payload,
+                events.interrupt_injected,
+                events.nmi_injected,
+                events.nmi_masked,
+                events.smi_smm,
+                events.smi_pending,
+                events.smi_inside_nmi,
+                events.smi_latched_init,
+                events.triple_fault_pending,
+            ]
+            .iter()
+            .any(|&bit| bit > 1)
+        {
+            return Err(BackendError::InvalidState);
+        }
         match (self.nested_state_config, &state.nested_state) {
             (Some((format, maximum)), Some(bytes)) => {
                 format.validate(bytes, maximum)?;
@@ -1046,14 +1138,24 @@ impl Backend for KvmBackend {
                 ));
             }
         }
-        restore_xsave_image(&state.xsave, state.xsave_restore_bv).map(|_| ())
+        kvm_restore_xsave_image(
+            &state.xsave,
+            state.xsave_restore_bv,
+            self.supported_xsave_bv,
+        )
+        .map(|_| ())
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.check_completion_clear()?;
-        self.drain_staged_completion()?;
         self.validate_restore_state(state)?;
-        let xsave = restore_xsave_image(&state.xsave, state.xsave_restore_bv)?;
+        self.drain_staged_completion()?;
+        let xsave = kvm_restore_xsave_image(
+            &state.xsave,
+            state.xsave_restore_bv,
+            self.supported_xsave_bv,
+        )?;
 
         let restore = || {
             if let Some((format, _)) = self.nested_state_config {
@@ -1094,11 +1196,7 @@ impl Backend for KvmBackend {
 
             Ok(())
         };
-        if self.nested_state_config.is_some() {
-            self.nested_state_guard.mutate(restore)?;
-        } else {
-            restore()?;
-        }
+        self.state_mutation_guard.mutate(restore)?;
 
         self.run_page().set_cr8(state.sregs.cr8);
         self.pending_irq = None;
@@ -1139,6 +1237,60 @@ mod xsave_diagnostic {
         staged: true,
         acknowledged: true,
     };
+
+    #[test]
+    #[ignore = "live KVM affinity boundary; requires /dev/kvm"]
+    fn changed_affinity_refuses_cpu_operations_without_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        backend
+            .set_policy(&X86Policy {
+                cpuid: CpuidModel::default(),
+                msr_filter: MsrFilter {
+                    allow_inkernel: vec![MsrRange {
+                        base: 0x174,
+                        count: 3,
+                    }],
+                },
+            })
+            .unwrap();
+        let before = backend.save().unwrap();
+        let original = std::mem::replace(
+            &mut backend.host_affinity,
+            crate::kvm_affinity::HostAffinity::Reported {
+                allowed: Default::default(),
+            },
+        );
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.restore(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.drain_dirty_pages(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.complete_read(0),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.finish_exit(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        backend.host_affinity = original;
+        assert_eq!(backend.save().unwrap(), before);
+    }
 
     #[test]
     #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
@@ -1309,7 +1461,12 @@ mod xsave_diagnostic {
     #[ignore = "native KVM restore boundary guards; requires /dev/kvm"]
     fn snapshot_restore_drains_an_acknowledged_write_completion() {
         let mut backend = KvmBackend::new().unwrap();
-        backend.set_policy(&diagnostic_policy()).unwrap();
+        let mut policy = diagnostic_policy();
+        policy.msr_filter.allow_inkernel.push(MsrRange {
+            base: 0xc000_0100,
+            count: 1,
+        });
+        backend.set_policy(&policy).unwrap();
         let before = backend.save().unwrap();
         let mut replacement = before.clone();
         replacement.regs.rip ^= 0x100;
@@ -1327,6 +1484,73 @@ mod xsave_diagnostic {
         assert_eq!(backend.pending, Pending::None);
         assert_eq!(backend.exit_counts(), counts);
         assert_eq!(backend.save().unwrap(), replacement);
+
+        let before_rejection = backend.save().unwrap();
+        let mut inconsistent = before_rejection.clone();
+        inconsistent.sregs.fs.base ^= 1;
+        inconsistent.regs.rax ^= 1;
+        backend.completion = ACKNOWLEDGED_WRITE;
+        assert!(matches!(
+            backend.restore(&inconsistent),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.completion, ACKNOWLEDGED_WRITE);
+        assert_eq!(backend.pending, Pending::None);
+        backend.completion = Stage::CLEAR;
+        let after_rejection = backend.save().unwrap();
+        assert_eq!(after_rejection.regs, before_rejection.regs);
+        assert_eq!(after_rejection.sregs, before_rejection.sregs);
+        assert_eq!(after_rejection.msrs, before_rejection.msrs);
+    }
+
+    #[test]
+    #[ignore = "live x86 KVM dirty-log failure boundary; requires /dev/kvm"]
+    fn failed_dirty_drain_cannot_retry_after_prior_slot_was_cleared() {
+        let program = [0xc6, 0x06, 0x00, 0x30, 0x42, 0xf4];
+        let mut control = entry_fixture(&program, 3, 3);
+        control.backend.drain_dirty_pages().unwrap();
+        assert!(matches!(
+            control.backend.run(),
+            Ok(Exit::Common(CommonExit::Idle))
+        ));
+        assert_eq!(control.ram.as_mut_bytes()[0x3000], 0x42);
+        assert!(control.backend.drain_dirty_pages().unwrap().contains(&3));
+
+        let mut fixture = entry_fixture(&program, 3, 3);
+        fixture.backend.drain_dirty_pages().unwrap();
+        assert!(matches!(
+            fixture.backend.run(),
+            Ok(Exit::Common(CommonExit::Idle))
+        ));
+        assert_eq!(fixture.ram.as_mut_bytes()[0x3000], 0x42);
+        let restore_state = fixture.backend.save().unwrap();
+        fixture
+            .backend
+            .dirty_slots
+            .push((u32::MAX, 0x10000, 0x1000));
+        assert!(matches!(
+            fixture.backend.drain_dirty_pages(),
+            Err(BackendError::Io(_))
+        ));
+        fixture.backend.dirty_slots.pop();
+        let retry = fixture.backend.drain_dirty_pages();
+        println!("DIRTY_DRAIN_RETRY {retry:?}");
+        assert!(matches!(
+            retry,
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            fixture.backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            fixture.backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            fixture.backend.restore(&restore_state),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 
     struct EntryFixture {
@@ -1605,41 +1829,29 @@ mod xsave_diagnostic {
     }
 
     #[test]
-    #[ignore = "requires Linux KVM with AVX and a fresh XSAVE_MXCSR_REPORT_DIR"]
-    fn ymm_without_sse_uabi_mxcsr_bytes_survive_capture_and_restore() {
-        let root =
-            PathBuf::from(std::env::var_os("XSAVE_MXCSR_REPORT_DIR").expect("report directory"));
-        fs::create_dir(&root).unwrap();
-        let program = if std::env::var_os("XSAVE_ENTRY_LONG_MODE").is_some() {
-            [0x0f, 0xae, 0x1c, 0x25, 0x00, 0x20, 0x00, 0x00, 0xf4]
-        } else {
-            [0x67, 0x0f, 0xae, 0x1d, 0x00, 0x20, 0x00, 0x00, 0xf4]
-        };
-        let mut original = entry_fixture(&program, 0, 7);
-        let mut state = original.backend.save().unwrap();
+    #[ignore = "requires Linux KVM with AVX"]
+    fn ymm_without_sse_noninit_mxcsr_restore_rejects_atomically() {
+        let mut fixture = entry_fixture(&[0xf4], 0, 7);
+        let before = fixture.backend.save().unwrap();
+        let mut state = before.clone();
         state.xsave[XSTATE_BV].copy_from_slice(&4u64.to_le_bytes());
         state.xsave[SSE_MXCSR].copy_from_slice(&0x3f80u32.to_le_bytes());
         state.xsave[576] = 0x5a;
         state.xsave_restore_bv = Some(4);
-        original.backend.restore(&state).unwrap();
-        let saved = retain_entry(&mut original, &root, "captured");
-        assert_eq!(saved.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
-        let continued = entry_endpoint(&mut original, &root, "continued");
-        let mut cold = entry_fixture(&program, 0, 7);
-        restore_entry(&mut cold, &saved);
-        let restored = entry_endpoint(&mut cold, &root, "restored");
-        assert_eq!(restored.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
-        assert_eq!(continued.state.xsave[SSE_MXCSR], 0x3f80u32.to_le_bytes());
-        fs::write(
-            root.join("guest-mxcsr.txt"),
-            format!(
-                "continued={:02x?} restored={:02x?}\n",
-                &continued.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4],
-                &restored.ram[GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + 4]
-            ),
-        )
-        .unwrap();
-        assert_eq!(continued.ram, restored.ram);
+        state.regs.rip ^= 0x100;
+        assert!(matches!(
+            fixture.backend.validate_snapshot_state(&state),
+            Err(BackendError::NonportableXsaveMxcsr)
+        ));
+        assert!(matches!(
+            fixture.backend.validate_restore_state(&state),
+            Err(BackendError::NonportableXsaveMxcsr)
+        ));
+        assert!(matches!(
+            fixture.backend.restore(&state),
+            Err(BackendError::NonportableXsaveMxcsr)
+        ));
+        assert_eq!(fixture.backend.save().unwrap(), before);
     }
 
     #[test]

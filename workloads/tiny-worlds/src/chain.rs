@@ -54,7 +54,8 @@ impl LocalState {
             WorldState::Chain(_)
             | WorldState::Graph(_)
             | WorldState::Crossing(_)
-            | WorldState::PassiveClock(_) => {
+            | WorldState::PassiveClock(_)
+            | WorldState::Targets(_) => {
                 unreachable!("validated non-nested, non-graph stage")
             }
         }
@@ -98,9 +99,11 @@ impl Config {
             }
             if matches!(
                 stage.world,
-                World::Graph(_) | World::Crossing(_) | World::PassiveClock(_)
+                World::Graph(_) | World::Crossing(_) | World::PassiveClock(_) | World::Targets(_)
             ) {
-                return Err("graph, crossing and passive-clock stages are unsupported".into());
+                return Err(
+                    "graph, crossing, passive-clock and targets stages are unsupported".into(),
+                );
             }
             if matches!(&stage.world, World::Map(w) if w.boss_stock > 0) {
                 return Err("map stages with a boss are unsupported".into());

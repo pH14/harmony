@@ -12,15 +12,17 @@ pub use nested::{
 };
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use nested::{
-    NestedStateGuard, canonicalize_nested_metadata, drain_dirty_pages_with_nested_reprotection,
+    StateMutationGuard, canonicalize_nested_metadata, drain_dirty_pages_with_nested_reprotection,
     guest_physical_bits, nested_probe, reload_nested_memory_slots, validate_nested_addresses,
 };
 
 pub use config::{CpuidEntry, CpuidModel, MsrFilter, MsrRange};
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use state::validate_kvm_xsave_mxcsr_presence;
 pub use state::{
     DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
     canonicalize_regs, canonicalize_sregs, canonicalize_xsave, canonicalize_xsave_with_restore_bv,
-    logical_xsave_restore_bv, restore_xsave_image,
+    kvm_restore_xsave_image, logical_xsave_restore_bv, restore_xsave_image,
 };
 
 use crate::arch::{Arch, ArchExit};

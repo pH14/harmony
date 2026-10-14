@@ -18,6 +18,11 @@ corresponding volatile 32-bit register store for an MMIO doorbell (used by
 arm64). `IoDoorbell` is the seam used by loopback tests and alternate VMM
 integrations. The public `VmcallTransport` name is retained for API stability;
 the production mechanism is the port/MMIO doorbell described above.
+The MMIO ring places a hardware release barrier before the register store and
+a full barrier after it returns. This publishes the request page before the
+host handles the trap and orders the register store before reads of the
+host-written response page. The Linux `/dev/harmony` driver also brackets its
+synchronous doorbell exchange with `virt_wmb()` and `virt_rmb()`.
 
 ## Exchange safety
 

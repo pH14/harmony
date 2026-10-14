@@ -50,24 +50,70 @@ cargo test -p vmm-core --lib vendor::arm64::contract -- --ignored
 ```
 
 `dispatch` routes GIC, PL011, doorbell, and pvclock MMIO to the modeled devices.
+Pvclock MMIO rejects invalid or duplicate registration, unsupported clockevent
+control values and asserted-PPI deadline writes before charging the access to
+virtual time. These protocol rejections leave the clock and device state intact.
 The userspace `gicv3` model is used by the HVF composition; stock arm64 KVM
 owns its GIC in the kernel and does not expose an arbitrary userspace INTID
 injection fabric. The shared run loop therefore treats that distinction as a
-backend boundary.
+backend boundary. The public pending-interrupt query reports the asserted
+clockevent PPI on KVM and the userspace GIC's pending INTID on HVF.
 
 When the paravirtual clockevent is due, `dispatch` queries the backend's IRQ
-mask and defers delivery while `PSTATE.I` is set. HVF supplies that bit directly;
-backends without the query retain the full-state read. Idle handling uses the
-same query before deciding whether it may advance to a wake deadline. Due-timer
-polling remains behind the existing registration, deadline, and virtual-clock
+mask and defers delivery while `PSTATE.I` is set. HVF and ARM KVM supply that
+bit directly; backends without the query retain the full-state read. Idle
+handling uses the same query before deciding whether it may advance to a wake
+deadline. For KVM, idle reads the clockevent PPI and relevant CPU-interface
+registers directly and applies the same PPI deliverability rules as the
+userspace GIC. This bounded read remains available when pending SPI or routing
+state makes full snapshot capture inadmissible. A disabled, group-masked,
+priority-masked, or active clockevent PPI neither causes an immediate idle
+retry nor makes a future clockevent deadline an idle wakeup. KVM idle also
+compares the PPI's priority group against the CPU-interface active-priority
+registers and binary point;
+an active interrupt can block preemption even when its raw priority is lower.
+When the host's preemption width cannot be inferred unambiguously from the
+targeted GIC fields, idle fails closed instead of guessing whether the
+clockevent can wake the guest. Idle also fails closed when a guest binary-point
+change leaves an active priority for which KVM's trapped
+interrupt-acknowledgment path and direct hardware acknowledgment could
+disagree.
+Due-timer polling remains behind the existing registration, deadline, and virtual-clock
 checks, and idle polling remains behind the virtual-clock check. It changes
 neither virtual time nor the schedule, deferral, delivery, and acknowledgement
 records. Snapshot capture still reads complete architectural state.
 
 `records` converts live arm64 vCPU and GIC state to the `vm-state` records. The
 architectural comparator in the parent module compares vCPU and canonical GIC
-fields independently of snapshot hashes.
+fields independently of snapshot hashes. Context ID, auxiliary memory
+attributes, translation results, cache selection, and auxiliary fault status
+registers survive capture and restore and affect both full and component
+identities. VM-state version 8 carries these fields explicitly.
 
-Device blobs use the current version 13 format. Presence fields describe the
+The runtime arm64 contract extends the fixed CPU baseline and host ASID width
+with the three SMCCC workaround firmware levels observed by the backend after
+the guest CPU policy is installed and the backend's PSCI implementation
+profile. It also includes KVM's immutable GIC CPU-interface capability fields.
+HVF and KVM answer some PSCI HVCs differently, so their profiles are not
+replay-compatible. Snapshot restore requires the same runtime contract.
+The same hash is an unconditional state-hash chunk and diagnostic component,
+including when full snapshot hashing is disabled.
+
+Device blobs use the current version 16 format and retain unread serial input
+in FIFO order. Presence fields describe the
 optional GIC, doorbell, and pvclock records; pvclock records preserve the page
 GPA, registration capability, and pending-versus-armed handshake state.
+The GIC record includes both binary point registers, CPU-interface control,
+both group enables, and active-priority registers alongside distributor and
+redistributor state. It also includes per-INTID trigger configuration, so a
+guest-programmed SPI edge/level choice survives snapshot restore and enters
+architectural comparison and state identity.
+The record omits SPI routing because the only supported single-vCPU route is
+zero: KVM rejects capture of any nonzero `GICD_IROUTER` value, and restore
+clears all routes to zero. Consequently there is no additional device-blob
+field or version change for the route policy.
+The KVM backend also refuses capture or state hashing while any SPI is pending
+or has an asserted input line, because its hidden delivery queue can differ
+after guest routing changes even when the captured GIC registers agree. KVM
+restore rejects such records before mutation; the userspace GIC continues to
+capture its represented pending-SPI state.

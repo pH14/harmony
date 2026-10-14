@@ -74,6 +74,14 @@ impl SnapshotEngine {
         self.store.store_stats()
     }
 
+    pub(crate) fn verify_snapshot_pages(&self, snap: SnapshotId) -> Result<(), SnapshotError> {
+        Ok(self.store.verify_snapshot_pages(snap)?)
+    }
+
+    pub(crate) fn verify_snapshots(&self, snaps: &[SnapshotId]) -> Result<(), SnapshotError> {
+        Ok(self.store.verify_snapshots(snaps)?)
+    }
+
     pub fn stats(&self, snap: SnapshotId) -> Result<SnapStats, SnapshotError> {
         Ok(self.store.stats(snap)?)
     }
@@ -591,6 +599,7 @@ mod tests {
                 clock_offset: 0xdead_beef,
                 report_stream: vec![1, 2, 3],
                 uart_capture: b"integrity".to_vec(),
+                uart_input: b"pending".to_vec(),
                 uart_regs: [13, 1, 0x70, 0x301, 0x10],
                 gic: Some(gic.snapshot()),
                 doorbell: Vec::new(),

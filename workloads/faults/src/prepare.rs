@@ -2,6 +2,7 @@
 
 use std::error::Error;
 
+use crate::admission::ExecutionMode;
 use crate::bundle::FaultVocabulary;
 use oci_support::bundle::LaunchRequest;
 use oci_support::image::StagedImage;
@@ -18,40 +19,46 @@ pub struct Prepared {
 pub fn prepare_oci(image: &str, base: &[u8]) -> Result<Prepared, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    prepare_staged(&staged, base, None)
+    prepare_staged(&staged, base, None, ExecutionMode::Vm)
 }
 
 pub fn prepare_oci_with_bundle(
     image: &str,
     base: &[u8],
     bundle: Option<&str>,
+    mode: ExecutionMode,
 ) -> Result<Prepared, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    prepare_staged(&staged, base, bundle)
+    prepare_staged(&staged, base, bundle, mode)
 }
 
 fn prepare_staged(
     staged: &StagedImage,
     base: &[u8],
     supplied: Option<&str>,
+    mode: ExecutionMode,
 ) -> Result<Prepared, Box<dyn Error>> {
     if base.is_empty() {
         return Err("fault search requires a guest base image".into());
     }
-    let root = staged.rootfs.canonicalize()?;
-    let admission = crate::admission::inspect_root(&root)?;
-    admission.require_admission()?;
-    let bundle = match supplied {
-        Some(text) => text.to_owned(),
-        None => {
-            let document = root.join(BUNDLE_PATH).canonicalize()?;
-            if !document.starts_with(&root) {
-                return Err("the bundle must reside inside the staged image".into());
-            }
-            String::from_utf8(std::fs::read(document)?)?
-        }
-    };
+    let (admission, bundle) =
+        oci_support::image::with_staged_read_access(staged, || -> Result<_, Box<dyn Error>> {
+            let root = staged.rootfs.canonicalize()?;
+            let admission = crate::admission::inspect_root(&root)?;
+            admission.require_for(mode)?;
+            let bundle = match supplied {
+                Some(text) => text.to_owned(),
+                None => {
+                    let document = root.join(BUNDLE_PATH).canonicalize()?;
+                    if !document.starts_with(&root) {
+                        return Err("the bundle must reside inside the staged image".into());
+                    }
+                    String::from_utf8(std::fs::read(document)?)?
+                }
+            };
+            Ok((admission, bundle))
+        })?;
     let vocabulary =
         FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
     let request = if supplied.is_some() {
@@ -104,8 +111,9 @@ ready /usr/bin/servicectl endpoint health
     #[test]
     fn preparation_uses_the_canonical_supervisor_and_keeps_the_bundle_alphabet() {
         let root = tempfile::tempdir().unwrap();
-        let first = prepare_staged(&image(root.path()), b"base", None).unwrap();
-        let repeated = prepare_staged(&image(root.path()), b"base", None).unwrap();
+        let first = prepare_staged(&image(root.path()), b"base", None, ExecutionMode::Vm).unwrap();
+        let repeated =
+            prepare_staged(&image(root.path()), b"base", None, ExecutionMode::Vm).unwrap();
         assert_eq!(first.vocabulary.nodes(), 1);
         assert_eq!(first.vocabulary.hooks(), [1, 2]);
         assert_eq!(first.bundle, BUNDLE);
@@ -116,7 +124,8 @@ ready /usr/bin/servicectl endpoint health
     #[test]
     fn preparation_marks_the_existing_bundle_for_structured_supervision() {
         let root = tempfile::tempdir().unwrap();
-        let prepared = prepare_staged(&image(root.path()), b"base", None).unwrap();
+        let prepared =
+            prepare_staged(&image(root.path()), b"base", None, ExecutionMode::Vm).unwrap();
         let request = LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE);
         let execution = oci_support::bundle::prepare(&image(root.path()), &request).unwrap();
         assert_eq!(
@@ -148,12 +157,12 @@ ready /usr/bin/servicectl endpoint health
             b"f05c4a6fcf5bba49af1a80cf4015c096f55a4869c7df89cb85fa8737e993c995  /opt/service/node\n",
         )
         .unwrap();
-        let prepared = prepare_staged(&staged, b"base", None).unwrap();
+        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
         assert!(prepared.vocabulary.instrumented_events());
 
         std::fs::remove_file(root.path().join("symbols/service.sym.tsv")).unwrap();
         assert!(
-            !prepare_staged(&staged, b"base", None)
+            !prepare_staged(&staged, b"base", None, ExecutionMode::Vm)
                 .unwrap()
                 .vocabulary
                 .instrumented_events()
@@ -170,7 +179,7 @@ ready /usr/bin/servicectl endpoint health
         )
         .unwrap();
         assert!(
-            prepare_staged(&staged, b"base", None)
+            prepare_staged(&staged, b"base", None, ExecutionMode::Vm)
                 .err()
                 .unwrap()
                 .to_string()
@@ -181,10 +190,45 @@ ready /usr/bin/servicectl endpoint health
     #[test]
     fn an_empty_base_image_is_rejected_before_control_assembly() {
         let root = tempfile::tempdir().unwrap();
-        let error = prepare_staged(&image(root.path()), &[], None)
+        let error = prepare_staged(&image(root.path()), &[], None, ExecutionMode::Vm)
             .err()
             .unwrap();
         assert!(error.to_string().contains("guest base image"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preparation_reads_unreadable_staged_files_and_restores_their_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        std::fs::write(root.path().join("secret"), b"hidden").unwrap();
+        for path in ["secret", BUNDLE_PATH, "etc/harmony"] {
+            std::fs::set_permissions(root.path().join(path), std::fs::Permissions::from_mode(0o0))
+                .unwrap();
+        }
+        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
+        assert_eq!(prepared.bundle, BUNDLE);
+        for path in ["secret", "etc/harmony"] {
+            let mode = std::fs::symlink_metadata(root.path().join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, 0, "{path}");
+        }
+        std::fs::set_permissions(
+            root.path().join("etc/harmony"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mode = std::fs::symlink_metadata(root.path().join(BUNDLE_PATH))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0);
     }
 
     #[cfg(unix)]
@@ -194,9 +238,14 @@ ready /usr/bin/servicectl endpoint health
         let external = tempfile::NamedTempFile::new().unwrap();
         std::fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
         std::os::unix::fs::symlink(external.path(), root.path().join(BUNDLE_PATH)).unwrap();
-        let error = prepare_staged(&staged(root.path().to_path_buf()), b"base", None)
-            .err()
-            .unwrap();
+        let error = prepare_staged(
+            &staged(root.path().to_path_buf()),
+            b"base",
+            None,
+            ExecutionMode::Vm,
+        )
+        .err()
+        .unwrap();
         assert!(error.to_string().contains("inside the staged image"));
     }
 }

@@ -2,6 +2,7 @@
 
 use std::{collections::BTreeMap, fmt};
 
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::Moment;
@@ -9,8 +10,8 @@ use crate::Moment;
 pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
 const SNAPSHOT_MAGIC: u32 = u32::from_le_bytes(*b"EVC1");
-const SNAPSHOT_VERSION: u16 = 1;
-const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
+const SNAPSHOT_VERSION: u16 = 2;
+pub const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 
 pub const SERVICE_ENTROPY: u16 = 1;
 pub const SERVICE_PAYLOAD: u16 = 2;
@@ -194,6 +195,8 @@ pub enum ChannelError {
     TooLarge,
     #[error("malformed channel state")]
     Malformed,
+    #[error("request identity was reused with different payload bytes")]
+    RequestIdentityMismatch,
     #[error("service handler state was rejected: {0}")]
     Handler(String),
 }
@@ -271,6 +274,28 @@ pub struct HandlerSnapshot {
     state: Vec<u8>,
 }
 
+fn check_handler_contract(
+    handler: &dyn ServiceHandler,
+    identity: &[u8],
+    configuration: &[u8],
+) -> Result<(), ChannelError> {
+    if handler.identity() != identity || handler.configuration() != configuration {
+        return Err(ChannelError::Handler(
+            "handler identity or configuration differs from the snapshot".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_handler_state(handler: &dyn ServiceHandler, state: &[u8]) -> Result<(), ChannelError> {
+    if handler.snapshot_state()? != state {
+        return Err(ChannelError::Handler(
+            "handler state differs from the snapshot after restore".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 impl HandlerSnapshot {
     pub fn capture(handler: &dyn ServiceHandler) -> Result<Self, ChannelError> {
         let identity = handler.identity().to_vec();
@@ -291,7 +316,10 @@ impl HandlerSnapshot {
         factory: &F,
     ) -> Result<F::Handler, ChannelError> {
         let mut handler = factory.build(&self.identity, &self.configuration)?;
+        check_handler_contract(&handler, &self.identity, &self.configuration)?;
         handler.restore_state(&self.state)?;
+        check_handler_contract(&handler, &self.identity, &self.configuration)?;
+        check_handler_state(&handler, &self.state)?;
         Ok(handler)
     }
 
@@ -315,7 +343,7 @@ impl HandlerSnapshot {
 pub struct RecordedState {
     stream_state: u64,
     moment: Moment,
-    overrides: BTreeMap<DecisionKey, Answer>,
+    overrides: BTreeMap<DecisionKey, RecordedAnswer>,
     payloads: Option<Vec<Vec<u8>>>,
     handler: HandlerSnapshot,
 }
@@ -324,12 +352,20 @@ impl RecordedState {
     pub fn answers(&self) -> impl Iterator<Item = ((Moment, u16, u64), &Answer)> {
         self.overrides
             .iter()
-            .map(|(key, answer)| ((key.moment, key.service, key.request_id), answer))
+            .map(|(key, record)| ((key.moment, key.service, key.request_id), &record.answer))
+    }
+
+    pub fn request_bindings(&self) -> impl Iterator<Item = ((Moment, u16, u64), [u8; 32])> + '_ {
+        self.overrides.iter().filter_map(|(key, record)| {
+            record
+                .request_sha256
+                .map(|digest| ((key.moment, key.service, key.request_id), digest))
+        })
     }
 
     pub fn capture<H: ServiceHandler>(environment: &RecordedEnv<H>) -> Result<Self, ChannelError> {
-        for answer in environment.overrides.values() {
-            if let Answer::Data(bytes) = answer {
+        for record in environment.overrides.values() {
+            if let Answer::Data(bytes) = &record.answer {
                 check_len(bytes.len())?;
             }
         }
@@ -348,9 +384,12 @@ impl RecordedState {
 
     fn encoded_len(&self) -> usize {
         let mut size = 39usize;
-        for answer in self.overrides.values() {
+        for record in self.overrides.values() {
             size = size.saturating_add(19);
-            if let Answer::Data(bytes) = answer {
+            if record.request_sha256.is_some() {
+                size = size.saturating_add(32);
+            }
+            if let Answer::Data(bytes) = &record.answer {
                 size = size.saturating_add(4).saturating_add(bytes.len());
             }
         }
@@ -377,11 +416,11 @@ impl RecordedState {
         put_u64(out, self.stream_state);
         put_u64(out, self.moment);
         put_len(out, self.overrides.len());
-        for (key, answer) in &self.overrides {
+        for (key, record) in &self.overrides {
             put_u64(out, key.moment);
             put_u16(out, key.service);
             put_u64(out, key.request_id);
-            put_answer(out, answer);
+            put_recorded_answer(out, record);
         }
         match &self.payloads {
             None => out.push(0),
@@ -431,7 +470,7 @@ impl RecordedState {
                 return Err(ChannelError::Malformed);
             }
             previous = Some(key);
-            overrides.insert(key, read_answer(&mut reader)?);
+            overrides.insert(key, read_recorded_answer(&mut reader)?);
         }
         let payloads = match reader.u8()? {
             0 => None,
@@ -464,15 +503,19 @@ impl RecordedState {
         &self,
         environment: &mut RecordedEnv<H>,
     ) -> Result<(), ChannelError> {
-        if environment.handler.identity() != self.handler.identity
-            || environment.handler.configuration() != self.handler.configuration
-        {
-            return Err(ChannelError::Handler(
-                "handler identity or configuration differs from the snapshot".to_owned(),
-            ));
-        }
+        check_handler_contract(
+            &environment.handler,
+            &self.handler.identity,
+            &self.handler.configuration,
+        )?;
         let mut handler = environment.handler.clone();
         handler.restore_state(&self.handler.state)?;
+        check_handler_contract(
+            &handler,
+            &self.handler.identity,
+            &self.handler.configuration,
+        )?;
+        check_handler_state(&handler, &self.handler.state)?;
         environment.handler = handler;
         environment.stream_state = self.stream_state;
         environment.moment = self.moment;
@@ -525,7 +568,7 @@ impl ServiceHandler for NominalHandler {
 
 pub struct RecordedEnv<H: ServiceHandler> {
     stream_state: u64,
-    overrides: BTreeMap<DecisionKey, Answer>,
+    overrides: BTreeMap<DecisionKey, RecordedAnswer>,
     moment: Moment,
     payloads: Option<Vec<Vec<u8>>>,
     payload_cursor: usize,
@@ -562,6 +605,14 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
 }
 
 impl<H: ServiceHandler> RecordedEnv<H> {
+    pub fn request_bindings(&self) -> impl Iterator<Item = ((Moment, u16, u64), [u8; 32])> + '_ {
+        self.overrides.iter().filter_map(|(key, record)| {
+            record
+                .request_sha256
+                .map(|digest| ((key.moment, key.service, key.request_id), digest))
+        })
+    }
+
     pub fn new(seed: u64, handler: H) -> Self {
         let mut environment = Self {
             stream_state: normalize_seed(seed),
@@ -605,12 +656,42 @@ impl<H: ServiceHandler> RecordedEnv<H> {
                 service,
                 request_id,
             },
-            answer,
+            RecordedAnswer {
+                answer,
+                request_sha256: None,
+            },
+        );
+    }
+
+    pub fn record_bound_service_request(
+        &mut self,
+        moment: Moment,
+        service: u16,
+        request_id: u64,
+        request_sha256: [u8; 32],
+        answer: Answer,
+    ) {
+        self.overrides.insert(
+            DecisionKey {
+                moment,
+                service,
+                request_id,
+            },
+            RecordedAnswer {
+                answer,
+                request_sha256: Some(request_sha256),
+            },
         );
     }
 
     pub fn record_question(&mut self, moment: Moment, question: &Question, answer: Answer) {
-        self.record_service_request(moment, question.service(), question.request_id(), answer);
+        self.record_bound_service_request(
+            moment,
+            question.service(),
+            question.request_id(),
+            Sha256::digest(question.payload()).into(),
+            answer,
+        );
     }
 
     pub fn set_payloads(&mut self, payloads: Option<Vec<Vec<u8>>>) -> Result<(), ChannelError> {
@@ -655,8 +736,16 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             service: question.service(),
             request_id: question.request_id(),
         };
-        if let Some(answer) = self.overrides.get(&key) {
-            return Ok(ServiceResponse::Answered(answer.clone()));
+        if let Some(record) = self.overrides.get_mut(&key) {
+            let digest: [u8; 32] = Sha256::digest(question.payload()).into();
+            match record.request_sha256 {
+                Some(bound) if bound != digest => {
+                    return Err(ChannelError::RequestIdentityMismatch);
+                }
+                Some(_) => {}
+                None => record.request_sha256 = Some(digest),
+            }
+            return Ok(ServiceResponse::Answered(record.answer.clone()));
         }
         if let Some(answer) = self.decide_core_supply(question)? {
             return Ok(ServiceResponse::Answered(answer));
@@ -666,6 +755,13 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         if let ServiceResponse::Answered(answer) = &response {
             if let Answer::Data(bytes) = answer {
                 check_len(bytes.len())?;
+            }
+            if candidate.identity() != self.handler.identity()
+                || candidate.configuration() != self.handler.configuration()
+            {
+                return Err(ChannelError::Handler(
+                    "handler identity or configuration changed while answering".to_owned(),
+                ));
             }
             self.handler = candidate;
         }
@@ -678,6 +774,23 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn snapshot_state(&self) -> Result<RecordedState, ChannelError> {
         RecordedState::capture(self)
+    }
+
+    pub fn snapshot_state_with_binding_reserve(&self) -> Result<RecordedState, ChannelError> {
+        let state = self.snapshot_state()?;
+        let unbound = state
+            .overrides
+            .values()
+            .filter(|record| record.request_sha256.is_none())
+            .count();
+        if state
+            .encoded_len()
+            .saturating_add(unbound.saturating_mul(Sha256::output_size()))
+            > MAX_RECORDED_STATE_BYTES
+        {
+            return Err(ChannelError::TooLarge);
+        }
+        Ok(state)
     }
 
     pub fn remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
@@ -789,6 +902,23 @@ fn put_answer(out: &mut Vec<u8>, answer: &Answer) {
     }
 }
 
+fn put_recorded_answer(out: &mut Vec<u8>, record: &RecordedAnswer) {
+    match record.request_sha256 {
+        None => put_answer(out, &record.answer),
+        Some(digest) => {
+            out.push(if matches!(record.answer, Answer::Nominal) {
+                2
+            } else {
+                3
+            });
+            out.extend_from_slice(&digest);
+            if let Answer::Data(bytes) = &record.answer {
+                put_bytes(out, bytes);
+            }
+        }
+    }
+}
+
 fn read_answer(reader: &mut Reader<'_>) -> Result<Answer, ChannelError> {
     match reader.u8()? {
         0 => Ok(Answer::Nominal),
@@ -797,11 +927,44 @@ fn read_answer(reader: &mut Reader<'_>) -> Result<Answer, ChannelError> {
     }
 }
 
+fn read_recorded_answer(reader: &mut Reader<'_>) -> Result<RecordedAnswer, ChannelError> {
+    let Some(&tag) = reader.bytes.get(reader.cursor) else {
+        return Err(ChannelError::Malformed);
+    };
+    if tag <= 1 {
+        return Ok(RecordedAnswer {
+            answer: read_answer(reader)?,
+            request_sha256: None,
+        });
+    }
+    reader.u8()?;
+    if tag > 3 {
+        return Err(ChannelError::Malformed);
+    }
+    let mut digest = [0; 32];
+    digest.copy_from_slice(reader.take(32)?);
+    let answer = if tag == 2 {
+        Answer::Nominal
+    } else {
+        Answer::Data(reader.bytes()?.to_vec())
+    };
+    Ok(RecordedAnswer {
+        answer,
+        request_sha256: Some(digest),
+    })
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct DecisionKey {
     moment: Moment,
     service: u16,
     request_id: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RecordedAnswer {
+    answer: Answer,
+    request_sha256: Option<[u8; 32]>,
 }
 
 struct Reader<'a> {
@@ -1002,6 +1165,224 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct ChangingContractHandler {
+        identity: Vec<u8>,
+        configuration: Vec<u8>,
+        state: Vec<u8>,
+        respond_change: Option<bool>,
+    }
+
+    impl ChangingContractHandler {
+        fn new(identity: u8, configuration: u8, state: [u8; 2]) -> Self {
+            Self {
+                identity: vec![identity],
+                configuration: vec![configuration],
+                state: state.to_vec(),
+                respond_change: None,
+            }
+        }
+    }
+
+    impl ServiceHandler for ChangingContractHandler {
+        fn identity(&self) -> &[u8] {
+            &self.identity
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &self.configuration
+        }
+
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            if question.service() == 19 {
+                match self.respond_change {
+                    Some(true) => self.identity = vec![9],
+                    Some(false) => self.configuration = vec![9],
+                    None => {}
+                }
+            }
+            Ok(ServiceResponse::Answered(Answer::Data(
+                self.configuration.clone(),
+            )))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(self.state.clone())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [identity, configuration] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.identity = vec![*identity];
+            self.configuration = vec![*configuration];
+            self.state = state.to_vec();
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    struct ChangingContractFactory {
+        identity: u8,
+        configuration: u8,
+    }
+
+    impl ServiceHandlerFactory for ChangingContractFactory {
+        type Handler = ChangingContractHandler;
+
+        fn build(
+            &self,
+            _identity: &[u8],
+            _configuration: &[u8],
+        ) -> Result<Self::Handler, ChannelError> {
+            Ok(ChangingContractHandler::new(
+                self.identity,
+                self.configuration,
+                [0, 0],
+            ))
+        }
+    }
+
+    #[derive(Clone)]
+    struct IgnoringStateHandler(u8);
+
+    impl ServiceHandler for IgnoringStateHandler {
+        fn identity(&self) -> &[u8] {
+            b"ignoring-state-handler"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b"fixed"
+        }
+
+        fn respond(
+            &mut self,
+            _moment: Moment,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Data(vec![self.0])))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [_] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    struct IgnoringStateFactory(u8);
+
+    impl ServiceHandlerFactory for IgnoringStateFactory {
+        type Handler = IgnoringStateHandler;
+
+        fn build(
+            &self,
+            _identity: &[u8],
+            _configuration: &[u8],
+        ) -> Result<Self::Handler, ChannelError> {
+            Ok(IgnoringStateHandler(self.0))
+        }
+    }
+
+    #[test]
+    fn recorded_restore_rejects_contract_mutation_without_changing_environment() {
+        let source = RecordedEnv::new(1, ChangingContractHandler::new(1, 2, [3, 4]));
+        let saved = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(9, ChangingContractHandler::new(1, 2, [1, 2]));
+        let before = target.snapshot_state().unwrap().encode();
+        assert!(saved.restore_into(&mut target).is_err());
+        assert_eq!(target.snapshot_state().unwrap().encode(), before);
+        assert_eq!(target.handler().identity(), &[1]);
+        assert_eq!(target.handler().configuration(), &[2]);
+        assert_eq!(
+            target
+                .decide(&Question::new(7, Vec::new()).unwrap())
+                .unwrap(),
+            ServiceResponse::Answered(Answer::Data(vec![2]))
+        );
+    }
+
+    #[test]
+    fn handler_snapshot_rejects_factory_contract_before_restore() {
+        let snapshot =
+            HandlerSnapshot::capture(&ChangingContractHandler::new(1, 2, [1, 2])).unwrap();
+        for factory in [
+            ChangingContractFactory {
+                identity: 9,
+                configuration: 2,
+            },
+            ChangingContractFactory {
+                identity: 1,
+                configuration: 9,
+            },
+        ] {
+            assert!(snapshot.restore(&factory).is_err());
+        }
+        let handler = snapshot
+            .restore(&ChangingContractFactory {
+                identity: 1,
+                configuration: 2,
+            })
+            .unwrap();
+        assert_eq!(handler.identity(), &[1]);
+        assert_eq!(handler.configuration(), &[2]);
+        assert_eq!(handler.snapshot_state().unwrap(), vec![1, 2]);
+    }
+
+    #[test]
+    fn handler_snapshot_rejects_contract_mutation_after_restore() {
+        let snapshot =
+            HandlerSnapshot::capture(&ChangingContractHandler::new(1, 2, [3, 4])).unwrap();
+        assert!(
+            snapshot
+                .restore(&ChangingContractFactory {
+                    identity: 1,
+                    configuration: 2,
+                })
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn recorded_restore_rejects_ignored_handler_state_without_changing_environment() {
+        let source = RecordedEnv::new(1, IgnoringStateHandler(7));
+        let saved = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(9, IgnoringStateHandler(9));
+        let before = target.snapshot_state().unwrap().encode();
+        assert!(saved.restore_into(&mut target).is_err());
+        assert_eq!(target.snapshot_state().unwrap().encode(), before);
+        assert_eq!(
+            target
+                .decide(&Question::new(7, Vec::new()).unwrap())
+                .unwrap(),
+            ServiceResponse::Answered(Answer::Data(vec![9]))
+        );
+    }
+
+    #[test]
+    fn handler_snapshot_rejects_ignored_state_after_restore() {
+        let snapshot = HandlerSnapshot::capture(&IgnoringStateHandler(7)).unwrap();
+        assert!(snapshot.restore(&IgnoringStateFactory(9)).is_err());
+        let handler = snapshot.restore(&IgnoringStateFactory(7)).unwrap();
+        assert_eq!(handler.snapshot_state().unwrap(), snapshot.state());
+    }
+
     #[test]
     fn opaque_handler_state_round_trips_and_factory_checks_identity() {
         let question = Question::new(7, vec![1, 2]).unwrap();
@@ -1122,6 +1503,31 @@ mod tests {
     }
 
     #[test]
+    fn recorded_answer_rejects_same_identity_with_different_request_bytes() {
+        let mut env = RecordedEnv::new(1, Handler { counter: 0 });
+        let original = Question::with_request_id(11, 7, b"first".to_vec()).unwrap();
+        env.record_question(4, &original, Answer::Data(vec![7]));
+        env.set_moment(4);
+        let changed = Question::with_request_id(11, 7, b"second".to_vec()).unwrap();
+        assert_eq!(
+            env.decide(&changed),
+            Err(ChannelError::RequestIdentityMismatch)
+        );
+        assert_eq!(
+            env.decide(&original),
+            Ok(ServiceResponse::Answered(Answer::Data(vec![7])))
+        );
+        let restored_state =
+            RecordedState::decode(&env.snapshot_state().unwrap().encode()).unwrap();
+        let mut restored = RecordedEnv::new(1, Handler { counter: 0 });
+        restored_state.restore_into(&mut restored).unwrap();
+        assert_eq!(
+            restored.decide(&changed),
+            Err(ChannelError::RequestIdentityMismatch)
+        );
+    }
+
+    #[test]
     fn aggregate_snapshot_limit_matches_decoder_for_responses_and_payloads() {
         let mut env = RecordedEnv::nominal(17);
         for id in 0..7 {
@@ -1162,11 +1568,70 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_reserves_capacity_for_first_use_answer_binding() {
+        let mut env = RecordedEnv::nominal(17);
+        env.record_service_request(7, 19, 77, Answer::Nominal);
+        env.set_payloads(Some(vec![Vec::new(); 8])).unwrap();
+        let overhead = env.snapshot_state().unwrap().encoded_len();
+        let payload_bytes = MAX_RECORDED_STATE_BYTES - 31 - overhead;
+        let mut entries = vec![vec![0; payload_bytes / 8]; 8];
+        entries[0].extend(vec![0; payload_bytes % 8]);
+        env.set_payloads(Some(entries.clone())).unwrap();
+        assert_eq!(
+            env.snapshot_state().unwrap().encoded_len(),
+            MAX_RECORDED_STATE_BYTES - 31
+        );
+        assert_eq!(
+            env.snapshot_state_with_binding_reserve(),
+            Err(ChannelError::TooLarge)
+        );
+        entries[0].pop();
+        env.set_payloads(Some(entries)).unwrap();
+        assert_eq!(
+            env.snapshot_state_with_binding_reserve()
+                .unwrap()
+                .encoded_len(),
+            MAX_RECORDED_STATE_BYTES - 32
+        );
+        env.set_moment(7);
+        let question = Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        assert_eq!(
+            env.decide(&question),
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        );
+        assert_eq!(
+            env.snapshot_state().unwrap().encoded_len(),
+            MAX_RECORDED_STATE_BYTES
+        );
+    }
+
+    #[test]
     fn invalid_handler_answer_does_not_commit_handler_state() {
         let mut env = RecordedEnv::new(17, Handler { counter: 0 });
         let question = Question::new(u16::MAX, vec![]).unwrap();
         assert!(env.decide(&question).is_err());
         assert_eq!(env.handler().counter, 0);
+    }
+
+    #[test]
+    fn answered_request_rejects_handler_contract_drift_without_committing() {
+        for change_identity in [true, false] {
+            let mut handler = ChangingContractHandler::new(1, 2, [3, 4]);
+            handler.respond_change = Some(change_identity);
+            let mut env = RecordedEnv::new(17, handler);
+            let before = env.snapshot_state().unwrap().encode();
+            assert!(matches!(
+                env.decide(&Question::new(19, Vec::new()).unwrap()),
+                Err(ChannelError::Handler(_))
+            ));
+            assert_eq!(env.snapshot_state().unwrap().encode(), before);
+            assert_eq!(env.handler().identity(), &[1]);
+            assert_eq!(env.handler().configuration(), &[2]);
+            assert_eq!(
+                env.decide(&Question::new(20, Vec::new()).unwrap()),
+                Ok(ServiceResponse::Answered(Answer::Data(vec![2])))
+            );
+        }
     }
 
     #[test]

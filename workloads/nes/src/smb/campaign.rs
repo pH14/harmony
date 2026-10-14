@@ -942,7 +942,14 @@ mod tests {
         ] {
             assert!(header.contains(identifier), "header lacks {identifier}");
         }
-        for line in text.lines().skip(1) {
+        let records = text.lines().skip(1).collect::<Vec<_>>();
+        let end: SmbCampaignStreamRecord = serde_json::from_str(records.last().unwrap()).unwrap();
+        let SmbCampaignStreamRecord::End(end) = end else {
+            panic!("campaign stream needs a terminal record");
+        };
+        assert_eq!(end.jobs, 32);
+        assert_eq!(end.executions_completed, 32);
+        for line in &records[..records.len() - 1] {
             assert!(line.contains("\"selector\""));
             assert!(
                 line.contains("\"tiers\"")
@@ -1068,9 +1075,14 @@ mod tests {
         let expected_executions =
             u64::try_from(reservations.len()).expect("short prefix count fits u64");
         let prefix = format!("{}\n", prefix_lines.join("\n"));
-        let (rebuilt, checkpoint) =
-            replay_smb_campaign_checkpointed(&rom, prefix.as_bytes(), None, None)
-                .expect("rebuild recorded prefix");
+        let (rebuilt, checkpoint) = crate::search::campaign::replay_campaign_prefix_checkpointed(
+            &test_game(&rom),
+            prefix.as_bytes(),
+            None,
+            None,
+        )
+        .expect("rebuild recorded prefix");
+        assert_eq!(rebuilt.mode, "campaign-prefix");
         assert!(expected_executions > 0);
         assert_eq!(rebuilt.executions_completed, expected_executions);
         assert!(rebuilt.executions_completed < 32);
@@ -1203,6 +1215,7 @@ mod tests {
             .filter_map(|record| match record {
                 SmbCampaignStreamRecord::Job(job) => job.draw_checkpoint_before,
                 SmbCampaignStreamRecord::Skip(skip) => skip.draw_checkpoint_before,
+                SmbCampaignStreamRecord::End(_) => None,
             })
             .collect::<Vec<_>>();
         assert!(

@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 use crate::channel::{
-    Answer, ChannelError, Effect, MAX_CHANNEL_BYTES, NominalHandler, RecordedEnv, ServiceHandler,
+    Answer, ChannelError, Effect, MAX_CHANNEL_BYTES, MAX_RECORDED_STATE_BYTES, NominalHandler,
+    RecordedEnv, ServiceHandler,
 };
 use std::{collections::BTreeMap, sync::Arc};
+
+use sha2::{Digest, Sha256};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceConfig {
@@ -59,9 +62,11 @@ pub struct InputSpec {
     reseeds: BTreeMap<u64, u64>,
     payloads: Option<Vec<Vec<u8>>>,
     answers: BTreeMap<(u64, u16, u64), Answer>,
+    request_bindings: BTreeMap<(u64, u16, u64), [u8; 32]>,
 }
 impl InputSpec {
-    pub const BLOB_VERSION: u16 = 5;
+    pub const BLOB_VERSION: u16 = 6;
+    pub const MAX_REPRODUCER_BYTES: usize = MAX_RECORDED_STATE_BYTES - MAX_CHANNEL_BYTES;
     pub fn seeded(seed: u64) -> Self {
         Self {
             seed,
@@ -70,6 +75,7 @@ impl InputSpec {
             reseeds: BTreeMap::new(),
             payloads: None,
             answers: BTreeMap::new(),
+            request_bindings: BTreeMap::new(),
         }
     }
     pub fn seed(&self) -> u64 {
@@ -102,6 +108,9 @@ impl InputSpec {
     pub fn answers(&self) -> &BTreeMap<(u64, u16, u64), Answer> {
         &self.answers
     }
+    pub fn request_bindings(&self) -> &BTreeMap<(u64, u16, u64), [u8; 32]> {
+        &self.request_bindings
+    }
     pub fn record_answer(
         &mut self,
         at: u64,
@@ -115,7 +124,22 @@ impl InputSpec {
         {
             return Err(ChannelError::TooLarge);
         }
-        self.answers.insert((at, service, request), answer);
+        let key = (at, service, request);
+        self.answers.insert(key, answer);
+        self.request_bindings.remove(&key);
+        Ok(())
+    }
+    pub fn record_bound_answer(
+        &mut self,
+        at: u64,
+        service: u16,
+        request: u64,
+        request_sha256: [u8; 32],
+        answer: Answer,
+    ) -> Result<(), ChannelError> {
+        self.record_answer(at, service, request, answer)?;
+        self.request_bindings
+            .insert((at, service, request), request_sha256);
         Ok(())
     }
     pub fn materialize(
@@ -131,9 +155,21 @@ impl InputSpec {
             ));
         }
         let mut env = RecordedEnv::new(self.seed, handler);
+        if env.handler().identity() != self.config.identity
+            || env.handler().configuration() != self.config.configuration
+        {
+            return Err(ChannelError::Handler(
+                "reseed changed the service contract".into(),
+            ));
+        }
         env.set_payloads(self.payloads.clone())?;
         for (&(at, service, request), answer) in &self.answers {
-            env.record_service_request(at, service, request, answer.clone());
+            match self.request_bindings.get(&(at, service, request)) {
+                Some(&digest) => {
+                    env.record_bound_service_request(at, service, request, digest, answer.clone())
+                }
+                None => env.record_service_request(at, service, request, answer.clone()),
+            }
         }
         Ok(env)
     }
@@ -167,10 +203,20 @@ impl InputSpec {
             out.extend(at.to_le_bytes());
             out.extend(service.to_le_bytes());
             out.extend(request.to_le_bytes());
-            match answer {
-                Answer::Nominal => out.push(0),
-                Answer::Data(bytes) => {
+            let digest = self.request_bindings.get(&(*at, *service, *request));
+            match (answer, digest) {
+                (Answer::Nominal, None) => out.push(0),
+                (Answer::Data(bytes), None) => {
                     out.push(1);
+                    put(&mut out, bytes);
+                }
+                (Answer::Nominal, Some(digest)) => {
+                    out.push(2);
+                    out.extend(digest);
+                }
+                (Answer::Data(bytes), Some(digest)) => {
+                    out.push(3);
+                    out.extend(digest);
                     put(&mut out, bytes);
                 }
             }
@@ -182,8 +228,33 @@ impl InputSpec {
         Self::decode(&bytes)?;
         Ok(bytes)
     }
+    pub fn try_encode_reproducer(&self) -> Result<Vec<u8>, ChannelError> {
+        let bytes = self.encode();
+        Self::decode_reproducer(&bytes)?;
+        Ok(bytes)
+    }
+
+    pub fn try_encode_reproducer_with_binding_reserve(&self) -> Result<Vec<u8>, ChannelError> {
+        let bytes = self.try_encode_reproducer()?;
+        let unbound = self.answers.len() - self.request_bindings.len();
+        if bytes
+            .len()
+            .saturating_add(unbound.saturating_mul(Sha256::output_size()))
+            > Self::MAX_REPRODUCER_BYTES
+        {
+            return Err(ChannelError::TooLarge);
+        }
+        Ok(bytes)
+    }
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         if bytes.len() > MAX_CHANNEL_BYTES {
+            return Err(ChannelError::TooLarge);
+        }
+        Self::decode_snapshot(bytes)
+    }
+
+    pub fn decode_reproducer(bytes: &[u8]) -> Result<Self, ChannelError> {
+        if bytes.len() > Self::MAX_REPRODUCER_BYTES {
             return Err(ChannelError::TooLarge);
         }
         Self::decode_snapshot(bytes)
@@ -233,9 +304,15 @@ impl InputSpec {
                 return Err(ChannelError::Malformed);
             }
             previous = Some(key);
-            let answer = match r.take(1)?[0] {
-                0 => Answer::Nominal,
-                1 => Answer::data(r.bytes()?.to_vec())?,
+            let tag = r.take(1)?[0];
+            if matches!(tag, 2 | 3) {
+                let mut digest = [0; 32];
+                digest.copy_from_slice(r.take(32)?);
+                result.request_bindings.insert(key, digest);
+            }
+            let answer = match tag {
+                0 | 2 => Answer::Nominal,
+                1 | 3 => Answer::data(r.bytes()?.to_vec())?,
                 _ => return Err(ChannelError::Malformed),
             };
             result.answers.insert(key, answer);
@@ -311,6 +388,78 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct ReseedChangesContract {
+        reseeded: bool,
+        change_identity: bool,
+    }
+
+    impl ServiceHandler for ReseedChangesContract {
+        fn identity(&self) -> &[u8] {
+            if self.reseeded && self.change_identity {
+                b"other-contract"
+            } else {
+                b"reseed-changes-contract"
+            }
+        }
+
+        fn configuration(&self) -> &[u8] {
+            if self.reseeded && !self.change_identity {
+                b"after"
+            } else {
+                b"before"
+            }
+        }
+
+        fn respond(
+            &mut self,
+            _moment: crate::Moment,
+            _question: &crate::channel::Question,
+        ) -> Result<crate::channel::ServiceResponse, ChannelError> {
+            Ok(crate::channel::ServiceResponse::Answered(Answer::Data(
+                self.configuration().to_vec(),
+            )))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(ChannelError::Malformed)
+            }
+        }
+
+        fn reseed(&mut self, _seed: u64) {
+            self.reseeded = true;
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn materialize_rejects_service_contract_changed_by_initial_reseed() {
+        let mut spec = InputSpec::seeded(7);
+        spec.set_config(ServiceConfig {
+            identity: b"reseed-changes-contract".to_vec(),
+            configuration: b"before".to_vec(),
+        });
+        for change_identity in [false, true] {
+            let factory: ServiceFactory = Arc::new(move |_| {
+                Ok(Box::new(ReseedChangesContract {
+                    reseeded: false,
+                    change_identity,
+                }))
+            });
+            assert!(spec.materialize(&factory).is_err());
+        }
+    }
     mod buffered_reference {
         use crate as environment;
         include!("../qualification/reference-input-spec.rs");
@@ -347,7 +496,11 @@ mod tests {
                 spec.set_payloads(payloads);
                 spec.record_answer(11, 19, 3, Answer::Data(vec![4, 5]))
                     .unwrap();
+                spec.record_bound_answer(11, 19, 4, [0x73; 32], Answer::Data(vec![6, 7]))
+                    .unwrap();
                 spec.record_answer(11, 19, 7, Answer::Nominal).unwrap();
+                spec.record_bound_answer(11, 19, 8, [0xa5; 32], Answer::Nominal)
+                    .unwrap();
                 let encoded = spec.encode();
                 assert_eq!(encoded, buffered_reference::encode(&spec));
                 assert_eq!(InputSpec::decode_snapshot(&encoded).unwrap(), spec);
@@ -415,6 +568,26 @@ mod tests {
         assert_eq!(
             env.decide(&unknown).unwrap(),
             ServiceResponse::Answered(Answer::Nominal)
+        );
+    }
+
+    #[test]
+    fn bound_answer_reproducer_rejects_a_changed_request_after_materialization() {
+        use crate::channel::Question;
+        use sha2::{Digest, Sha256};
+
+        let mut spec = InputSpec::seeded(7);
+        let digest = Sha256::digest(b"first").into();
+        spec.record_bound_answer(4, 19, 11, digest, Answer::Data(vec![42]))
+            .unwrap();
+        let replay = InputSpec::decode_reproducer(&spec.try_encode_reproducer().unwrap()).unwrap();
+        assert_eq!(replay.request_bindings().get(&(4, 19, 11)), Some(&digest));
+        let mut env = replay.materialize(&nominal_factory()).unwrap();
+        env.set_moment(4);
+        let changed = Question::with_request_id(11, 19, b"second".to_vec()).unwrap();
+        assert_eq!(
+            env.decide(&changed),
+            Err(ChannelError::RequestIdentityMismatch)
         );
     }
     #[test]
@@ -549,7 +722,13 @@ mod tests {
         let bytes = spec.encode();
         assert!(bytes.len() > MAX_CHANNEL_BYTES);
         assert_eq!(InputSpec::decode(&bytes), Err(ChannelError::TooLarge));
+        assert_eq!(InputSpec::try_encode_reproducer(&spec).unwrap(), bytes);
+        assert_eq!(InputSpec::decode_reproducer(&bytes).unwrap(), spec);
         assert_eq!(InputSpec::decode_snapshot(&bytes).unwrap(), spec);
+        assert_eq!(
+            InputSpec::decode_reproducer(&vec![0; InputSpec::MAX_REPRODUCER_BYTES + 1]),
+            Err(ChannelError::TooLarge)
+        );
     }
 
     #[test]

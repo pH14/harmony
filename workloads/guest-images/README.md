@@ -36,6 +36,12 @@ entrypoint is the application workload. The outer platform runtime supplies
 process, and owns signals and the final VM terminal. PostgreSQL benchmark
 variants share `postgres-workload.sh`; the campaign and UUID
 supervisors remain separate payloads so their fault behavior is preserved.
+The UUID supervisor draws its branch value after the base snapshot through the
+seeded `/dev/harmony` entropy transaction. Native RDRAND can return host entropy
+even when guest CPUID hides it, so the image build rejects any RDRAND or RDSEED
+in the supervisor object and exercises the device request and failure path.
+Run that check alone with `python3 workloads/guest-images/test_uuid_entropy.py`
+on Linux x86-64.
 
 The x86 PostgreSQL ledger fixture uses PostgreSQL's built-in UUID generation
 and disables JIT. It omits the unused uuid-ossp, XML2, SELinux and LLVM JIT

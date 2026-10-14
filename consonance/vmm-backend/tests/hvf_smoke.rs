@@ -310,6 +310,18 @@ fn warm_translation_to_page_a(guest: &mut Guest) {
 
 #[test]
 #[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn smccc_workaround_two_is_unavailable_to_the_frozen_guest() {
+    let mut guest = Guest::new(&[0xd400_0002, str_x(0, 4), B_SELF]);
+    guest.start.core.x[0] = 0x8000_0001;
+    guest.start.core.x[1] = 0x8000_7fff;
+    guest.start.core.x[4] = MMIO_GPA;
+    guest.restart();
+
+    assert_eq!(guest.next_store(), u64::MAX);
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
 fn restore_drops_guest_translations_cached_before_it() {
     let mut guest = Guest::new(&read_page(false));
 
@@ -425,7 +437,7 @@ fn every_vcpu_state_class_survives_a_restore() {
         }),
         ("vtimer", |state| {
             state.vtimer.cntv_cval_el0 ^= 0x1234;
-            state.vtimer.cntv_ctl_el0 ^= 0b01;
+            state.vtimer.cntv_ctl_el0 ^= 0b10;
         }),
         ("pending-interrupts", |state| {
             state.interrupts.irq = !state.interrupts.irq;
@@ -453,9 +465,12 @@ fn every_vcpu_state_class_survives_a_restore() {
 fn restore_rejects_a_timer_state_hvf_cannot_hold() {
     let mut guest = Guest::new(&[B_SELF]);
     let baseline = guest.save();
-    let invalid: [(&str, Perturbation); 2] = [
+    let invalid: [(&str, Perturbation); 3] = [
         ("unmasked", |state| state.vtimer.masked = false),
         ("control-bits", |state| state.vtimer.cntv_ctl_el0 |= 0b100),
+        ("control-enabled", |state| {
+            state.vtimer.cntv_ctl_el0 |= 0b001
+        }),
     ];
     for (name, perturb) in invalid {
         let mut state = baseline;
@@ -471,6 +486,50 @@ fn restore_rejects_a_timer_state_hvf_cannot_hold() {
             same_state(&guest.save(), &baseline),
             "{name}: a rejected restore changed the vCPU"
         );
+    }
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn restore_rejects_pstate_bits_hvf_discards_before_mutation() {
+    let mut guest = Guest::new(&[B_SELF]);
+    let baseline = guest.save();
+    let mut invalid = baseline;
+    invalid.core.x[0] = 0x1234;
+    invalid.core.pstate |= 1 << 32;
+    assert!(matches!(
+        guest.backend.validate_restore_state(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(matches!(
+        guest.backend.restore(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(same_state(&guest.save(), &baseline));
+}
+
+#[test]
+#[ignore = "live HVF; run on Apple silicon with --ignored (see the vmm-backend README)"]
+fn restore_rejects_fp_status_bits_hvf_discards_before_mutation() {
+    let mut guest = Guest::new(&[B_SELF]);
+    let baseline = guest.save();
+    for fpcr in [true, false] {
+        let mut invalid = baseline;
+        invalid.core.x[0] = 0x1234;
+        if fpcr {
+            invalid.simd_fp.fpcr |= 1 << 32;
+        } else {
+            invalid.simd_fp.fpsr |= 1 << 32;
+        }
+        assert!(matches!(
+            guest.backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            guest.backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(same_state(&guest.save(), &baseline));
     }
 }
 

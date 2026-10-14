@@ -24,7 +24,14 @@ planned-finish order and that reservations form a contiguous sequence. One coord
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Reserved jobs pin the snapshot they actually restore, including a
+for replay. Schema version 11 appends a terminal record only after the campaign
+has drained its jobs and finished successfully. Replay requires that record and
+checks its job, skip, and admission totals, so a stream cut after a complete
+JSON line cannot be certified as a finished campaign. Callers that deliberately
+rebuild an intermediate state use `replay_campaign_prefix_checkpointed`, whose
+report mode is `campaign-prefix` and is not a completed-campaign certificate.
+Reserved jobs pin the
+snapshot they actually restore, including a
 parent's keyframe. If retention removes that snapshot from the active population,
 its memory stays charged until the last reservation is admitted. Live execution
 and serial replay release these pins at the same recorded boundary, independent
@@ -636,7 +643,8 @@ checkpoints are kept; only the last two interval checkpoints are kept.
 
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
-list it by entry id and offset. The writer counts the kept checkpoints that
+list it by entry id, offset, length, and SHA-256. Resume checks each referenced
+snapshot's bytes before decoding it. The writer counts the kept checkpoints that
 list each stored snapshot. Deleting an interval checkpoint decrements the
 counts of the snapshots it listed. A snapshot no kept checkpoint lists leaves
 the writer's map, and on Linux its byte range in the store becomes a hole
@@ -645,8 +653,13 @@ keeps its length and every other offset stays valid, so no checkpoint file
 changes. The writer syncs the directory after deleting a pruned checkpoint and
 before punching, so a crash cannot bring back a checkpoint whose snapshots are
 gone. On macOS, and on a Linux filesystem without hole punching, the freed
-bytes stay in the file. Each `.ckpt` file holds its header, that index, and
-the postcard body. `checkpoints.jsonl` records write time and sizes:
+bytes stay in the file. Each `.ckpt` file holds its header, that index, the
+postcard body, and a trailing SHA-256 of those preceding bytes. Resume reads
+the format name first, then checks the checksum before decoding the rest of the
+header or body, so byte changes that remain valid postcard data fail closed
+instead of changing the continuation. These
+checks detect corruption, not deliberate rewriting of a checkpoint and its
+checksum. `checkpoints.jsonl` records write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
 kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
 what the write's pruning released. The
@@ -672,8 +685,11 @@ from the recorded one, so stream draw-table hashes after a resume differ from an
 uninterrupted run. A resumed stream cannot be replayed. The checkpoint stores
 every reservation between the next admission and the last reservation, whether
 queued, running or finished, and the resumed run dispatches them again, so it
-may use a different worker count. Workloads opt in through
-`Reporting::evidence_checkpoint` and `Reporting::evidence_from_checkpoint`.
+may use a different worker count. If the checkpoint was taken while a budget
+was draining the reservation queue, a larger resumed budget fills the vacant
+slots up to the recorded window before admitting another result. Workloads opt
+in through `Reporting::evidence_checkpoint` and
+`Reporting::evidence_from_checkpoint`.
 
 
 ## Host hashing

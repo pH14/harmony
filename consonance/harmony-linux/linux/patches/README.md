@@ -44,6 +44,10 @@ virtual clock event, fixed counter and cache topology, interrupt handling,
 canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
+With the Harmony clock, the kernel's virtual timer shutdown uses only the MMIO
+clockevent, and the physical timer paths stop if reached. This removes all
+architected timer control instructions from the shipped arm64 image so the
+instruction scanner can reject them without exceptions.
 
 The um series applies after the common series to the separate User-mode Linux
 source tree. It makes SECCOMP userspace the only UML mode, charges virtual

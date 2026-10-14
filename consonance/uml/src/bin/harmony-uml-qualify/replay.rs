@@ -2,6 +2,7 @@
 
 use std::io;
 use std::os::unix::process::CommandExt;
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
@@ -43,13 +44,68 @@ pub fn checks(
 ) -> io::Result<Vec<Value>> {
     let cpus = allowed_cpus()?;
     let mut checks = Vec::new();
+    checks.push(host_layout_modes(options, profile)?);
     for fixture in FIXTURES {
         checks.push(replays(options, profile, host, fixture, &cpus)?);
     }
     checks.push(replays(options, profile, host, "counter", &cpus)?);
     checks.push(seed_changes_events(options, profile)?);
-    checks.push(refusal(profile, host));
+    checks.push(refusal(profile));
     Ok(checks)
+}
+
+fn host_layout_modes(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {
+    let mut probe = Command::new("/bin/true");
+    // SAFETY: the child calls personality(2) only on itself before exec,
+    // without allocation or shared-memory access.
+    unsafe {
+        probe.pre_exec(|| {
+            if libc::personality(libc::ADDR_NO_RANDOMIZE as libc::c_ulong) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let supported = match probe.status() {
+        Ok(status) if status.success() => true,
+        Err(error) if error.raw_os_error() == Some(libc::EPERM) => false,
+        Ok(status) => return Err(io::Error::other(format!("layout probe exited {status}"))),
+        Err(error) => return Err(error),
+    };
+    let launch = seeded(options, "values", SEED);
+    let run = |randomized| -> io::Result<(u32, Exit)> {
+        let work = launch.work_directory()?;
+        let mut command = launch
+            .command(profile, work.path())
+            .map_err(io::Error::other)?;
+        if randomized {
+            filter::deny_personality_change(&mut command);
+        } else {
+            filter::deny_personality_change_preserving_layout(&mut command);
+        }
+        let guest = Guest::start(command, work, &launch).map_err(io::Error::other)?;
+        let flags = std::fs::read_to_string(format!("/proc/{}/personality", guest.pid()))?;
+        let flags = u32::from_str_radix(flags.trim(), 16).map_err(io::Error::other)?;
+        Ok((flags, guest.wait()?))
+    };
+    let (fixed_flags, fixed_exit) = run(false)?;
+    let (randomized_flags, randomized_exit) = run(true)?;
+    let bit = libc::ADDR_NO_RANDOMIZE as u32;
+    let passed = (!supported || fixed_flags & bit != 0)
+        && randomized_flags & bit == 0
+        && completed(&fixed_exit)
+        && completed(&randomized_exit);
+    Ok(check(
+        "host_layout_modes",
+        passed,
+        json!({
+            "host_allows_fixed_layout": supported,
+            "fixed_personality": format!("{fixed_flags:08x}"),
+            "randomized_personality": format!("{randomized_flags:08x}"),
+            "fixed_exit": summary(&fixed_exit),
+            "randomized_exit": summary(&randomized_exit),
+        }),
+    ))
 }
 
 pub fn seeded(options: &Options, fixture: &str, seed: u64) -> Launch {
@@ -71,7 +127,7 @@ pub fn completed(exit: &Exit) -> bool {
 fn replays(
     options: &Options,
     profile: &VerifiedProfile,
-    host: &HostIdentity,
+    _host: &HostIdentity,
     fixture: &str,
     cpus: &[usize],
 ) -> io::Result<Value> {
@@ -80,6 +136,7 @@ fn replays(
         .map_err(io::Error::other)?
         .wait()?;
     let reference_hash = event_hash(&reference.events);
+    let admitted = base.host_identity().map_err(io::Error::other)?;
     if !completed(&reference) {
         return Ok(check(
             &format!("replay_{fixture}"),
@@ -99,7 +156,16 @@ fn replays(
                         return;
                     }
                     let perturbation = PERTURBATIONS[index % PERTURBATIONS.len()];
-                    let outcome = perturbed(profile, &base, perturbation, cpus[index % cpus.len()]);
+                    let requested = cpus[index % cpus.len()];
+                    let override_cpu = if perturbation == Perturbation::Pinned {
+                        cpus.iter()
+                            .copied()
+                            .find(|cpu| *cpu != admitted.processor)
+                            .unwrap_or(requested)
+                    } else {
+                        requested
+                    };
+                    let outcome = perturbed(profile, &base, perturbation, override_cpu, &admitted);
                     results
                         .lock()
                         .unwrap_or_else(PoisonError::into_inner)
@@ -132,7 +198,7 @@ fn replays(
     }
     walls.sort_unstable();
 
-    let cuts = cut_replays(options, profile, host, &base, &reference.events)?;
+    let cuts = cut_replays(options, profile, &base, &reference.events)?;
     let cuts_passed = cuts.iter().all(|cut| cut["passed"] == json!(true));
     Ok(check(
         &format!("replay_{fixture}"),
@@ -144,6 +210,7 @@ fn replays(
             "final_virtual_ns": reference.events.last().map(|event| event.moment),
             "replays": options.replays,
             "perturbations": counts,
+            "pinned_guest_processor": admitted.processor,
             "wall_ms_median": walls.get(walls.len() / 2),
             "wall_ms_max": walls.last(),
             "mismatches": mismatches,
@@ -155,7 +222,6 @@ fn replays(
 fn cut_replays(
     options: &Options,
     profile: &VerifiedProfile,
-    host: &HostIdentity,
     base: &Launch,
     reference: &[Event],
 ) -> io::Result<Vec<Value>> {
@@ -166,14 +232,11 @@ fn cut_replays(
     for step in 1..=options.cuts {
         let cut = (step * reference.len() / options.cuts).max(1);
         let path = directory.path().join(format!("cut-{cut}.json"));
-        let recording = Recording::new(profile, host, base, SEED, &reference[..cut])
-            .map_err(io::Error::other)?;
+        let recording =
+            Recording::new(profile, base, &reference[..cut]).map_err(io::Error::other)?;
         std::fs::write(&path, serde_json::to_vec_pretty(&recording)?)?;
         let loaded: Recording = serde_json::from_slice(&std::fs::read(&path)?)?;
-        let refused = loaded
-            .check(profile, host)
-            .err()
-            .map(|error| error.to_string());
+        let refused = loaded.check(profile).err().map(|error| error.to_string());
         let mut launch = loaded.launch(options.work.clone());
         launch.console_tail_bytes = base.console_tail_bytes;
         launch.wall_limit = base.wall_limit;
@@ -221,24 +284,25 @@ fn seed_changes_events(options: &Options, profile: &VerifiedProfile) -> io::Resu
     ))
 }
 
-fn refusal(profile: &VerifiedProfile, host: &HostIdentity) -> Value {
-    let base = Launch::new(std::env::temp_dir());
-    let recording = match Recording::new(profile, host, &base, SEED, &[]) {
+fn refusal(profile: &VerifiedProfile) -> Value {
+    let mut base = Launch::new(std::env::temp_dir());
+    base.bridge = Some(Bridge::new(SEED));
+    let recording = match Recording::new(profile, &base, &[]) {
         Ok(recording) => recording,
         Err(error) => return check("replay_refuses_other_host", false, json!(error.to_string())),
     };
-    let mut other_cpu = host.clone();
-    other_cpu.cpu_model.push_str(";stepping=other");
-    let mut other_features = host.clone();
-    other_features.cpu_features.push_str(" other");
+    let mut other_cpu = recording.clone();
+    other_cpu.host.cpu_model.push_str(";stepping=other");
+    let mut other_features = recording.clone();
+    other_features.host.cpu_features.push_str(" other");
     let mut other_profile = recording.clone();
     other_profile.profile_identity_sha256 = "0".repeat(64);
     let results = [
-        recording.check(profile, &other_cpu),
-        recording.check(profile, &other_features),
-        other_profile.check(profile, host),
+        other_cpu.check(profile),
+        other_features.check(profile),
+        other_profile.check(profile),
     ];
-    let passed = recording.check(profile, host).is_ok()
+    let passed = recording.check(profile).is_ok()
         && matches!(results[0], Err(ReplayRefused::Host { .. }))
         && matches!(results[1], Err(ReplayRefused::Host { .. }))
         && matches!(results[2], Err(ReplayRefused::Profile { .. }));
@@ -294,6 +358,7 @@ fn perturbed(
     launch: &Launch,
     perturbation: Perturbation,
     cpu: usize,
+    host: &HostIdentity,
 ) -> io::Result<Exit> {
     let work = launch.work_directory()?;
     let mut command = launch
@@ -319,7 +384,7 @@ fn perturbed(
         for _ in 0..busy {
             scope.spawn(|| {
                 if perturbation == Perturbation::Pinned {
-                    let _ = pin(cpu);
+                    let _ = pin(host.processor);
                 }
                 while !stop.load(Ordering::Relaxed) {
                     std::hint::spin_loop();
@@ -334,6 +399,17 @@ fn perturbed(
                 return Err(error);
             }
         };
+        #[cfg(target_os = "linux")]
+        if perturbation == Perturbation::Pinned {
+            let observed = allowed_cpus_for(guest.pid())?;
+            if observed != [host.processor] {
+                stop.store(true, Ordering::Relaxed);
+                return Err(io::Error::other(format!(
+                    "UML guest affinity {observed:?} did not match enforced host processor {}",
+                    host.processor
+                )));
+            }
+        }
         if perturbation == Perturbation::Paused {
             let group = guest.pid();
             let stop = &stop;
@@ -374,10 +450,14 @@ fn pin(cpu: usize) -> io::Result<()> {
 }
 
 fn allowed_cpus() -> io::Result<Vec<usize>> {
+    allowed_cpus_for(0)
+}
+
+fn allowed_cpus_for(pid: i32) -> io::Result<Vec<usize>> {
     // SAFETY: cpu_set_t is plain data for which all-zero bytes are the empty set.
     let mut set: libc::cpu_set_t = unsafe { std::mem::zeroed() };
     // SAFETY: `set` is a live, writable cpu_set_t of the size passed.
-    if unsafe { libc::sched_getaffinity(0, size_of::<libc::cpu_set_t>(), &mut set) } != 0 {
+    if unsafe { libc::sched_getaffinity(pid, size_of::<libc::cpu_set_t>(), &mut set) } != 0 {
         return Err(io::Error::last_os_error());
     }
     let cpus: Vec<usize> = (0..libc::CPU_SETSIZE as usize)

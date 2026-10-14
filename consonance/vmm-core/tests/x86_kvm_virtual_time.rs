@@ -136,11 +136,14 @@ fn deliver(
 
 fn checkpoint_hash(backend: &mut KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"x1-live-state-v1\0");
+    hasher.update(b"x1-live-state-v2\0");
     hasher.update(checkpoint.vns.to_le_bytes());
     hasher.update(checkpoint.pending_interrupts.to_le_bytes());
     hasher.update(checkpoint.event_index.to_le_bytes());
-    hasher.update(format!("{:?}", backend.save().unwrap()).as_bytes());
+    let mut state = backend.save().unwrap();
+    state.xsave_restore_bv =
+        vmm_backend::logical_xsave_restore_bv(&state.xsave, state.xsave_restore_bv).unwrap();
+    hasher.update(format!("{state:?}").as_bytes());
     hasher.finalize().into()
 }
 

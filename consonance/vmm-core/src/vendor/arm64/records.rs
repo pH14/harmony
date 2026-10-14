@@ -49,6 +49,12 @@ pub(crate) fn to_vm_sysregs(s: &Arm64SysregFile) -> Arm64Sysregs {
         tpidr_el1: s.tpidr_el1,
         tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
+        contextidr_el1: s.contextidr_el1,
+        amair_el1: s.amair_el1,
+        par_el1: s.par_el1,
+        csselr_el1: s.csselr_el1,
+        afsr0_el1: s.afsr0_el1,
+        afsr1_el1: s.afsr1_el1,
     }
 }
 
@@ -67,6 +73,12 @@ pub(crate) fn from_vm_sysregs(s: &Arm64Sysregs) -> Arm64SysregFile {
         tpidr_el1: s.tpidr_el1,
         tpidrro_el0: s.tpidrro_el0,
         cntkctl_el1: s.cntkctl_el1,
+        contextidr_el1: s.contextidr_el1,
+        amair_el1: s.amair_el1,
+        par_el1: s.par_el1,
+        csselr_el1: s.csselr_el1,
+        afsr0_el1: s.afsr0_el1,
+        afsr1_el1: s.afsr1_el1,
     }
 }
 
@@ -129,9 +141,16 @@ pub(crate) fn gic_from_backend(s: &Arm64GicState) -> gicv3::GicState {
         pending: s.pending,
         active: s.active,
         line_level: s.line_level,
+        config: s.config,
         priority: s.priority,
         pmr: s.pmr,
+        bpr0: s.bpr0,
+        bpr1: s.bpr1,
+        ctlr: s.ctlr,
+        igrpen0: s.igrpen0,
         igrpen1: s.igrpen1,
+        ap0r: s.ap0r,
+        ap1r: s.ap1r,
         cntv_ctl: s.cntv_ctl,
         cntv_cval: s.cntv_cval,
         timer_fired: s.timer_fired,
@@ -150,9 +169,16 @@ pub(crate) fn gic_to_backend(s: &gicv3::GicState) -> Arm64GicState {
         pending: s.pending,
         active: s.active,
         line_level: s.line_level,
+        config: s.config,
         priority: s.priority,
         pmr: s.pmr,
+        bpr0: s.bpr0,
+        bpr1: s.bpr1,
+        ctlr: s.ctlr,
+        igrpen0: s.igrpen0,
         igrpen1: s.igrpen1,
+        ap0r: s.ap0r,
+        ap1r: s.ap1r,
         cntv_ctl: s.cntv_ctl,
         cntv_cval: s.cntv_cval,
         timer_fired: s.timer_fired,
@@ -190,7 +216,7 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
-const DEVICE_BLOB_VERSION: u16 = 13;
+const DEVICE_BLOB_VERSION: u16 = 16;
 const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -215,6 +241,7 @@ pub(crate) struct Arm64DeviceState {
     pub clock_offset: u64,
     pub report_stream: Vec<u32>,
     pub uart_capture: Vec<u8>,
+    pub uart_input: Vec<u8>,
     pub uart_regs: [u32; 5],
     pub gic: Option<gicv3::GicState>,
     pub doorbell: Vec<u8>,
@@ -249,9 +276,21 @@ pub(crate) fn encode_gic_state(out: &mut Vec<u8>, s: &gicv3::GicState) {
             put_u32(out, *w);
         }
     }
+    for word in s.config {
+        put_u32(out, word);
+    }
     out.extend_from_slice(&s.priority);
     out.push(s.pmr);
+    out.push(s.bpr0);
+    out.push(s.bpr1);
+    out.extend_from_slice(&s.ctlr.to_le_bytes());
+    out.push(u8::from(s.igrpen0));
     out.push(u8::from(s.igrpen1));
+    for file in [&s.ap0r, &s.ap1r] {
+        for value in file {
+            put_u32(out, *value);
+        }
+    }
     out.extend_from_slice(&s.cntv_ctl.to_le_bytes());
     out.extend_from_slice(&s.cntv_cval.to_le_bytes());
     out.push(u8::from(s.timer_fired));
@@ -270,14 +309,33 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         }
     }
     let [group, enable, pending, active, line_level] = files;
+    let mut config = [0; 64];
+    for word in &mut config {
+        *word = c.u32()?;
+    }
     let mut priority = [0u8; 1020];
     priority.copy_from_slice(c.take(1020)?);
     let pmr_byte = c.take(1)?[0];
+    let bpr0 = c.take(1)?[0];
+    let bpr1 = c.take(1)?[0];
+    let ctlr = c.u64()?;
+    let igrpen0 = match c.take(1)?[0] {
+        0 => false,
+        1 => true,
+        _ => return Err(SnapshotError::DeviceBlob("bad igrpen0 flag")),
+    };
     let igrpen1 = match c.take(1)?[0] {
         0 => false,
         1 => true,
         _ => return Err(SnapshotError::DeviceBlob("bad igrpen1 flag")),
     };
+    let mut ap0r = [0; 4];
+    let mut ap1r = [0; 4];
+    for file in [&mut ap0r, &mut ap1r] {
+        for value in file {
+            *value = c.u32()?;
+        }
+    }
     let cntv_ctl = c.u64()?;
     let cntv_cval = c.u64()?;
     let timer_fired = match c.take(1)?[0] {
@@ -296,9 +354,16 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         pending,
         active,
         line_level,
+        config,
         priority,
         pmr: pmr_byte,
+        bpr0,
+        bpr1,
+        ctlr,
+        igrpen0,
         igrpen1,
+        ap0r,
+        ap1r,
         cntv_ctl,
         cntv_cval,
         timer_fired,
@@ -342,6 +407,8 @@ pub(crate) fn encode_device_blob(d: &Arm64DeviceState) -> vm_state::DeviceBlob {
         v.push(u8::from(pv.virtual_time));
         encode_clockevent_state(&mut v, pv.clockevent);
     }
+    put_u32(&mut v, d.uart_input.len() as u32);
+    v.extend_from_slice(&d.uart_input);
     vm_state::DeviceBlob(v)
 }
 
@@ -504,6 +571,8 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
     } else {
         None
     };
+    let input_len = c.u32()? as usize;
+    let uart_input = c.take(input_len)?.to_vec();
     if c.pos != bytes.len() {
         return Err(SnapshotError::DeviceBlob("trailing bytes"));
     }
@@ -511,6 +580,7 @@ pub(crate) fn decode_device_blob(bytes: &[u8]) -> Result<Arm64DeviceState, Snaps
         clock_offset,
         report_stream,
         uart_capture,
+        uart_input,
         uart_regs,
         gic,
         doorbell,
@@ -527,6 +597,7 @@ mod tests {
             clock_offset: 0xDEAD_BEEF,
             report_stream: vec![1, 2, 3],
             uart_capture: b"hello".to_vec(),
+            uart_input: b"pending".to_vec(),
             uart_regs: [13, 1, 0x70, 0x301, 0x10],
             gic: None,
             doorbell: Vec::new(),
@@ -542,11 +613,20 @@ mod tests {
         })
         .unwrap();
         gic.raise(40).unwrap();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0x0c08, 0x20000, 0)
+            .unwrap();
         gic.set_pmr(0x80);
         gic.write_cntv_cval(125);
         gic.write_cntv_ctl(gicv3::CNTV_CTL_ENABLE);
+        let mut gic_state = gic.snapshot();
+        gic_state.bpr0 = 7;
+        gic_state.bpr1 = 6;
+        gic_state.ctlr = 0x8402;
+        gic_state.igrpen0 = true;
+        gic_state.ap0r[0] = 0x1234;
+        gic_state.ap1r[0] = 0x5678;
         Arm64DeviceState {
-            gic: Some(gic.snapshot()),
+            gic: Some(gic_state),
             ..sample()
         }
     }
@@ -701,9 +781,13 @@ mod tests {
             d
         }] {
             let good = encode_device_blob(&base).0;
-            let len_field = good.len() - DOORBELL_BLOB_LEN - 4;
-            let mut crafted = good[..len_field].to_vec();
-            crafted.extend_from_slice(&0u32.to_le_bytes());
+            let len_field = good.len() - 4 - base.uart_input.len() - 1 - DOORBELL_BLOB_LEN - 4;
+            assert_eq!(
+                &good[len_field..len_field + 4],
+                &(DOORBELL_BLOB_LEN as u32).to_le_bytes()
+            );
+            let mut crafted = good;
+            crafted[len_field..len_field + 4].copy_from_slice(&0u32.to_le_bytes());
             assert!(
                 matches!(
                     decode_device_blob(&crafted),
@@ -724,14 +808,14 @@ mod tests {
         assert!(decode_device_blob(&impossible).is_err());
 
         let mut bad_bool = good;
-        let line_flag = bad_bool.len() - 17;
+        let line_flag = bad_bool.len() - 17 - 4 - sample_with_pvclock().uart_input.len();
         bad_bool[line_flag] = 2;
         assert!(decode_device_blob(&bad_bool).is_err());
 
         let mut missing_gpa_state = sample_with_pvclock();
         missing_gpa_state.pvclock.as_mut().unwrap().armed = false;
         let mut missing_gpa = encode_device_blob(&missing_gpa_state).0;
-        let armed_flag = missing_gpa.len() - 20;
+        let armed_flag = missing_gpa.len() - 20 - 4 - missing_gpa_state.uart_input.len();
         let gpa_flag = armed_flag - 10;
         missing_gpa.drain(gpa_flag + 1..gpa_flag + 9);
         missing_gpa[gpa_flag] = 0;
@@ -751,7 +835,7 @@ mod tests {
         let mut pending = sample_with_pvclock();
         pending.pvclock.as_mut().unwrap().armed = false;
         let mut bad_armed = encode_device_blob(&pending).0;
-        let armed_flag = bad_armed.len() - 20;
+        let armed_flag = bad_armed.len() - 20 - 4 - pending.uart_input.len();
         bad_armed[armed_flag] = 2;
         assert!(decode_device_blob(&bad_armed).is_err());
     }
@@ -765,6 +849,12 @@ mod tests {
         live.core.pstate = 0x3c5;
         live.sysregs.sctlr_el1 = 0x30d0_0800;
         live.sysregs.cntkctl_el1 = 3;
+        live.sysregs.contextidr_el1 = 4660;
+        live.sysregs.amair_el1 = 4661;
+        live.sysregs.par_el1 = 4662;
+        live.sysregs.csselr_el1 = 4663;
+        live.sysregs.afsr0_el1 = 4664;
+        live.sysregs.afsr1_el1 = 4665;
         live.mp_state = vmm_backend::MpState::Halted;
 
         let mut snap = Arm64VmState::default();

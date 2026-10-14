@@ -1,0 +1,418 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+#![cfg(feature = "mock")]
+
+use vmm_backend::{Arm64, Arm64Policy, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
+
+const RAM: u64 = 0x4000_0000;
+const OUTPUT: u64 = 0x0900_0000;
+
+#[repr(C, align(16384))]
+struct GuestMemory([u8; 16384]);
+
+struct Guest<B: Backend<A = Arm64>> {
+    backend: B,
+    _memory: Box<GuestMemory>,
+}
+
+impl<B: Backend<A = Arm64>> Guest<B> {
+    fn new(mut backend: B, program: &[u32]) -> Self {
+        let mut memory = Box::new(GuestMemory([0; 16384]));
+        for (slot, word) in memory.0.chunks_exact_mut(4).zip(program) {
+            slot.copy_from_slice(&word.to_le_bytes());
+        }
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        // SAFETY: the boxed, page-aligned allocation stays at the same address and
+        // outlives the backend, which is the first field dropped. The host only
+        // accesses its bytes while the backend is stopped.
+        unsafe { backend.map_memory(Gpa(RAM), &mut memory.0) }.unwrap();
+        backend.invalidate_instruction_cache(memory.0.as_ptr() as usize, memory.0.len());
+        let mut initial = backend.save().unwrap();
+        initial.core.pc = RAM;
+        initial.core.pstate = 0x3c5;
+        initial.sysregs.sctlr_el1 &= !1;
+        backend.restore(&initial).unwrap();
+        Self {
+            backend,
+            _memory: memory,
+        }
+    }
+
+    fn next_store(&mut self) -> u64 {
+        match self.backend.run().unwrap() {
+            Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(OUTPUT),
+                write: Some(value),
+                ..
+            }) => value,
+            other => panic!("expected an observation, got {other:?}"),
+        }
+    }
+
+    fn save(&mut self) -> Arm64VcpuState {
+        self.backend.save().unwrap()
+    }
+
+    fn restore(&mut self, state: &Arm64VcpuState) {
+        self.backend.restore(state).unwrap();
+    }
+}
+
+#[test]
+fn aligned_guest_mapping_survives_capture_and_restore() {
+    let backend = vmm_backend::MockArm64Backend::with_exits(vec![Exit::Common(CommonExit::Mmio {
+        gpa: Gpa(OUTPUT),
+        size: 8,
+        write: Some(7),
+    })]);
+    let mut guest = Guest::new(backend, &[0x1400_0000]);
+    let state = guest.save();
+    assert_eq!(state.core.pc, RAM);
+    assert_eq!(guest._memory.0.as_ptr() as usize % 16384, 0);
+    assert_eq!(&guest._memory.0[..4], &0x1400_0000u32.to_le_bytes());
+    guest.restore(&state);
+    assert_eq!(guest.next_store(), 7);
+}
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64", not(miri)))]
+fn live_backend() -> impl Backend<A = Arm64> {
+    vmm_backend::HvfBackend::new().unwrap()
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+fn live_backend() -> impl Backend<A = Arm64> {
+    vmm_backend::Arm64KvmBackend::new(vmm_backend::LiveKvm::new().unwrap())
+}
+
+#[test]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "macos", target_os = "linux"),
+    not(miri)
+))]
+#[ignore = "live ARM hypervisor; registered in HOST_TESTS"]
+fn guest_system_registers_survive_reused_and_fresh_restore() {
+    let mut failures = Vec::new();
+    for (name, msr, mrs) in [
+        ("CONTEXTIDR_EL1", 0xd518_d020, 0xd538_d021),
+        ("AMAIR_EL1", 0xd518_a300, 0xd538_a301),
+        ("PAR_EL1", 0xd518_7400, 0xd538_7401),
+        ("CSSELR_EL1", 0xd51a_0000, 0xd53a_0001),
+        ("AFSR0_EL1", 0xd518_5100, 0xd538_5101),
+        ("AFSR1_EL1", 0xd518_5120, 0xd538_5121),
+    ] {
+        let movz = |r: u32, imm: u32| 0xd280_0000 | (imm << 5) | r;
+        let program = [
+            0xd2a1_2009,
+            movz(0, 0x1234),
+            msr,
+            0xd503_3fdf,
+            0xf900_0120,
+            mrs,
+            0xf900_0121,
+            movz(0, 0x5678),
+            msr,
+            0xd503_3fdf,
+            mrs,
+            0xf900_0121,
+            mrs,
+            0xf900_0121,
+            0x1400_0000,
+        ];
+        let mut reference = Guest::new(live_backend(), &program);
+        assert_eq!(reference.next_store(), 0x1234);
+        let uninterrupted = reference.next_store();
+        drop(reference);
+        let mut guest = Guest::new(live_backend(), &program);
+        assert_eq!(guest.next_store(), 0x1234);
+        let cut = guest.save();
+        let original = guest.next_store();
+        let immediate_detour = guest.next_store();
+        let detour = guest.next_store();
+        let observable = original != detour;
+        if matches!(name, "CONTEXTIDR_EL1" | "PAR_EL1" | "CSSELR_EL1") {
+            assert!(
+                observable,
+                "{name} detour must change the guest's next read"
+            );
+        }
+        guest.restore(&cut);
+        let reused = guest.next_store();
+        drop(guest);
+        let mut fresh = Guest::new(live_backend(), &program);
+        fresh.restore(&cut);
+        let cold = fresh.next_store();
+        let sensitivity = if observable {
+            "observable"
+        } else {
+            "not observable on this host"
+        };
+        eprintln!(
+            "{name}: {sensitivity}; uninterrupted={uninterrupted:#x} captured={original:#x} immediate-detour={immediate_detour:#x} detour-after-exit={detour:#x} reused={reused:#x} fresh={cold:#x}"
+        );
+        if uninterrupted != original || original != reused || original != cold {
+            failures.push((name, uninterrupted, original, reused, cold));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "system register continuations differ: {failures:?}"
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_gic_cpu_interface_survives_fresh_restore() {
+    for (name, msr, mrs, value) in [
+        ("BPR0", 0xd518_c860, 0xd538_c860, 7),
+        ("BPR1", 0xd518_cc60, 0xd538_cc60, 7),
+        ("AP0R0", 0xd518_c880, 0xd538_c880, 1),
+        ("AP1R0", 0xd518_c900, 0xd538_c900, 1),
+        ("CTLR", 0xd518_cc80, 0xd538_cc80, 2),
+        ("IGRPEN0", 0xd518_ccc0, 0xd538_ccc0, 1),
+    ] {
+        let program = [
+            0xd2a1_2004,
+            0xd280_0000 | (value << 5),
+            msr,
+            0xd503_3fdf,
+            mrs,
+            0xf900_0080,
+            mrs,
+            0xf900_0080,
+            0x1400_0000,
+        ];
+        let mut source = Guest::new(live_backend(), &program);
+        let first = source.next_store();
+        let cut = source.save();
+        let uninterrupted = source.next_store();
+        drop(source);
+        let mut target = Guest::new(live_backend(), &program);
+        target.restore(&cut);
+        let resumed = target.next_store();
+        assert_eq!(first, uninterrupted, "{name} uninterrupted");
+        assert_eq!(first, resumed, "{name} fresh restore");
+    }
+
+    let cbpr_program = [
+        0xd2a1_2004,
+        0xd280_0020,
+        0xd518_cc80,
+        0xd503_3fdf,
+        0xd538_cc80,
+        0xf900_0080,
+        0x1400_0000,
+    ];
+    let mut guest = Guest::new(live_backend(), &cbpr_program);
+    assert_ne!(guest.next_store() & 1, 0);
+    assert!(matches!(
+        guest.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_gic_spi_trigger_survives_fresh_restore() {
+    let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let program = [
+        movz(1, 0x0800, 16),
+        movk(1, 0x0c08, 0),
+        movz(4, 0x0900, 16),
+        0xb940_0020,
+        0xf900_0080,
+        movz(0, 2, 16),
+        0xb900_0020,
+        0xb940_0020,
+        0xf900_0080,
+        0xb940_0020,
+        0xf900_0080,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    let initial = source.next_store();
+    assert_eq!(initial, 0);
+    let first = source.next_store();
+    let cut = source.save();
+    assert_eq!(cut.gic.as_ref().unwrap().config[2] as u64, first);
+    let uninterrupted = source.next_store();
+    drop(source);
+    let mut target = Guest::new(live_backend(), &program);
+    let fresh = target.save().gic.unwrap().config[2];
+    assert_eq!(fresh, 0);
+    target.restore(&cut);
+    assert_eq!(target.save().gic.as_ref().unwrap().config[2] as u64, first);
+    let resumed = target.next_store();
+    eprintln!(
+        "GICD_ICFGR2 initial={initial:#x} fresh={fresh:#x} programmed={first:#x} uninterrupted={uninterrupted:#x} restored={resumed:#x}"
+    );
+    assert_eq!(first, 0x20000);
+    assert_eq!(uninterrupted, first);
+    assert_eq!(resumed, first);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_nonzero_spi_route_rejects_capture_and_zero_route_restores() {
+    let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let program = |route| {
+        [
+            movz(1, 0x0800, 16),
+            movk(1, 0x6100, 0),
+            movz(4, 0x0900, 16),
+            movz(0, route, 0),
+            0xf900_0020,
+            0xf940_0020,
+            0xf900_0080,
+            0xf940_0020,
+            0xf900_0080,
+            0x1400_0000,
+        ]
+    };
+    let mut source = Guest::new(live_backend(), &program(0));
+    assert_eq!(source.next_store(), 0);
+    let cut = source.save();
+    assert_eq!(source.next_store(), 0);
+    drop(source);
+
+    let mut reused = Guest::new(live_backend(), &program(1));
+    let guest_route = reused.next_store();
+    assert_eq!(guest_route, 1);
+    assert!(matches!(
+        reused.backend.save(),
+        Err(vmm_backend::BackendError::Unsupported { .. })
+    ));
+    reused.restore(&cut);
+    let restored = reused.next_store();
+    assert_eq!(restored, 0);
+
+    let mut fresh = Guest::new(live_backend(), &program(1));
+    fresh.restore(&cut);
+    let cold = fresh.next_store();
+    assert_eq!(cold, 0);
+    eprintln!(
+        "GICD_IROUTER32 guest={guest_route:#x} capture=rejected reused={restored:#x} fresh={cold:#x}"
+    );
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn kvm_irq_mask_read_matches_full_capture() {
+    let mut guest = Guest::new(live_backend(), &[0x1400_0000]);
+    let mut state = guest.save();
+    assert!(state.core.pstate & (1 << 7) != 0);
+    assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(true));
+    state.core.pstate &= !(1 << 7);
+    guest.restore(&state);
+    assert_eq!(guest.backend.read_irq_mask().unwrap(), Some(false));
+    assert_eq!(guest.save().core.pstate & (1 << 7), 0);
+}
+
+#[test]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "macos", target_os = "linux"),
+    not(miri)
+))]
+#[ignore = "live ARM hypervisor; registered in HOST_TESTS"]
+fn smccc_workaround_features_match_backend_levels() {
+    let mut guest = Guest::new(live_backend(), &[0xd400_0002, 0xf900_0080, 0x1400_0000]);
+    let levels = guest.backend.capabilities().arch.smccc_workaround_levels;
+    for (index, feature) in [0x8000_8000, 0x8000_7fff, 0x8000_3fff]
+        .into_iter()
+        .enumerate()
+    {
+        let mut state = guest.save();
+        state.core.pc = RAM;
+        state.core.x[0] = 0x8000_0001;
+        state.core.x[1] = feature;
+        state.core.x[4] = OUTPUT;
+        guest.restore(&state);
+        let observed = guest.next_store();
+        let expected = match (index, levels[index]) {
+            (0 | 2, 0) => u64::MAX,
+            (0 | 2, 1) => 0,
+            (0 | 2, 2) => 1,
+            (1, 0) => u64::MAX,
+            (1, 3) => u64::MAX - 1,
+            _ => panic!(
+                "unknown workaround feature {feature:#x}, level {}, HVC answer {observed:#x}",
+                levels[index]
+            ),
+        };
+        assert_eq!(
+            observed, expected,
+            "feature {feature:#x}, level {}",
+            levels[index]
+        );
+    }
+}
+
+#[test]
+#[cfg(all(
+    target_arch = "aarch64",
+    any(target_os = "macos", target_os = "linux"),
+    not(miri)
+))]
+#[ignore = "live ARM hypervisor; registered in HOST_TESTS"]
+fn psci_profile_matches_guest_hvc() {
+    use vmm_backend::Arm64PsciProfile;
+
+    let mut guest = Guest::new(live_backend(), &[0xd400_0002, 0xf900_0080, 0x1400_0000]);
+    let profile = guest.backend.capabilities().arch.psci_profile;
+    for (name, function, argument, hvf, kvm) in [
+        ("version", 0x8400_0000, 0, 0x1_0000, 0x1_0000),
+        (
+            "features CPU_SUSPEND32",
+            0x8400_000a,
+            0x8400_0001,
+            u64::MAX,
+            0,
+        ),
+        (
+            "features CPU_SUSPEND64",
+            0x8400_000a,
+            0xc400_0001,
+            u64::MAX,
+            0,
+        ),
+        ("features CPU_OFF", 0x8400_000a, 0x8400_0002, u64::MAX, 0),
+        ("features CPU_ON64", 0x8400_000a, 0xc400_0003, u64::MAX, 0),
+        (
+            "features AFFINITY_INFO64",
+            0x8400_000a,
+            0xc400_0004,
+            u64::MAX,
+            0,
+        ),
+        ("CPU_ON self", 0xc400_0003, 0, u64::MAX - 3, u64::MAX - 3),
+        ("CPU_ON absent", 0xc400_0003, 1, u64::MAX - 3, u64::MAX - 1),
+        ("AFFINITY_INFO self", 0xc400_0004, 0, u64::MAX - 6, 0),
+        (
+            "AFFINITY_INFO absent",
+            0xc400_0004,
+            1,
+            u64::MAX - 6,
+            u64::MAX - 1,
+        ),
+    ] {
+        let mut state = guest.save();
+        state.core.pc = RAM;
+        state.core.x[0] = function;
+        state.core.x[1] = argument;
+        state.core.x[2] = 0;
+        state.core.x[3] = 0;
+        state.core.x[4] = OUTPUT;
+        guest.restore(&state);
+        let expected = match profile {
+            Arm64PsciProfile::HvfSingleVcpu => hvf,
+            Arm64PsciProfile::KvmPsci10 => kvm,
+        };
+        assert_eq!(guest.next_store(), expected, "{name}, profile {profile:?}");
+    }
+}

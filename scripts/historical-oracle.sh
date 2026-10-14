@@ -11,7 +11,7 @@
 # reported separately. A declared clean sample must reach the detector on the
 # same affected version and stay free of the case's assertion. A reproducer
 # must violate the case's assertion with the detector's evidence in every fresh
-# replay and reach one state digest.
+# replay. KVM also requires one state digest; UML records unavailable identity.
 set -euo pipefail
 
 : "${ORACLE_ASSERTION:?}" "${ORACLE_EVIDENCE:?}"
@@ -42,6 +42,24 @@ check() {
     fi
 }
 
+check_replay_identity() {
+    if [[ "${BACKEND:-consonance}" == uml ]]; then
+        check replay-mismatch \
+            '(.replays | length) > 0 and all(.replays[];
+                .state_hash_encoding == "unavailable" and .state_hash == "")'
+        echo 'pass: observed replay; state identity unavailable (#554)'
+    else
+        check replay-mismatch \
+            '(.replays | length) > 0
+                and all(.replays[];
+                    .state_hash != null and .state_hash != ""
+                    and .state_hash_encoding != "unavailable")
+                and ([.replays[].state_hash_encoding] | unique | length) == 1
+                and ([.replays[].state_hash] | unique | length) == 1'
+        echo pass
+    fi
+}
+
 assertion=${ORACLE_ASSERTION}
 evidence=${ORACLE_EVIDENCE}
 
@@ -56,20 +74,12 @@ case "${mode}" in
         # The package's campaign already performs one fresh replay for each
         # recorded bug. Its summary must carry the same detector evidence and
         # prove that no cached prefix answered it.
-        verified=$(jq -r --arg assertion "${assertion}" \
-            --arg evidence "${evidence}" '
-            any(.bugs[]?;
-                .confirmed == true
-                and ((.violations // []) | index($assertion)) != null
-                and ((.sometimes // []) | index($evidence)) != null
-                and (.replay != null)
-                and (.replay.bug == true)
-                and (((.replay.violations // []) | index($assertion)) != null)
-                and (((.replay.sometimes // []) | index($evidence)) != null)
-                and (.replay.guest_horizons == (.replay.actions_applied + .replay.settle_actions))
-                and (.replay.settle_ticks >= .replay.settle_actions)
-            )' "${report}")
-        [[ "${verified}" == true ]] && { echo pass; exit 0; }
+        if jq -e --arg assertion "${assertion}" --arg evidence "${evidence}" \
+            -f "$(dirname "$0")/historical-confirmed-finding.jq" "${report}" \
+            >/dev/null 2>&1; then
+            echo pass
+            exit 0
+        fi
 
         replayed=$(jq -r --arg assertion "${assertion}" '
             any(.bugs[]?;
@@ -111,8 +121,7 @@ case "${mode}" in
             ))' "${report}" >/dev/null 2>&1 || fail replay-inconclusive
         check replay-inconclusive \
             'all(.replays[]; .bug == false and ((.violations // []) | length) == 0)'
-        check replay-mismatch '[.replays[].state_hash] | unique | length == 1'
-        echo pass
+        check_replay_identity
         ;;
     reproduce)
         repeats=${3:?replay count is required}
@@ -130,8 +139,7 @@ case "${mode}" in
                 and ((.violations // []) | index($assertion)) != null
                 and ((.sometimes // []) | index($evidence)) != null)' \
             "${report}" >/dev/null 2>&1 || fail reproduce-miss
-        check replay-mismatch '[.replays[].state_hash] | unique | length == 1'
-        echo pass
+        check_replay_identity
         ;;
     *)
         fail "infra-failure (unknown mode ${mode})"

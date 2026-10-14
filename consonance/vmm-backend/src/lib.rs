@@ -40,9 +40,9 @@ mod kvm_sys;
 
 pub use arch::arm64::{
     ARM64_GIC_BITMAP_WORDS, ARM64_GIC_PRIORITY_BYTES, Arm64, Arm64AsidBits, Arm64Caps,
-    Arm64Completion, Arm64CoreRegs, Arm64DebugState, Arm64Exit, Arm64GicState, Arm64Injection,
-    Arm64InterruptState, Arm64Policy, Arm64SimdFpState, Arm64SysregFile, Arm64VcpuState,
-    Arm64VtimerState, GicIntId, IdRegModel, SysregTrapPolicy,
+    Arm64Completion, Arm64CoreRegs, Arm64DebugState, Arm64Exit, Arm64GicIdleState, Arm64GicState,
+    Arm64Injection, Arm64InterruptState, Arm64Policy, Arm64PsciProfile, Arm64SimdFpState,
+    Arm64SysregFile, Arm64VcpuState, Arm64VtimerState, GicIntId, IdRegModel, SysregTrapPolicy,
 };
 pub use arch::x86::{
     CpuidEntry, CpuidModel, DebugRegs, DescriptorTable, Injection, MsrFilter, MsrRange, Segment,

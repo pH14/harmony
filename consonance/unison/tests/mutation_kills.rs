@@ -47,14 +47,15 @@ fn bisect_runs_executed_is_exact() {
     let (toy, flaky) = persistent(1);
     let p = bisect_divergence(&toy, &flaky, 9, 0, 16).unwrap();
     assert_eq!(p.first_divergent_work, 1);
-    assert_eq!(p.runs_executed, 10);
+    assert_eq!(p.runs_executed, 12);
 }
 
 #[test]
-fn bisect_trusts_lo_zero_as_start_of_time() {
+fn bisect_checks_initial_state_before_claiming_the_first_step() {
     let (toy, flaky) = persistent(0);
     let p = bisect_divergence(&toy, &flaky, 9, 0, 16).unwrap();
-    assert_eq!(p.first_divergent_work, 1);
+    assert_eq!(p.first_divergent_work, 0);
+    assert_eq!(p.runs_executed, 2);
 }
 
 #[test]

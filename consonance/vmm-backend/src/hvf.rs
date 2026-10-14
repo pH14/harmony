@@ -30,6 +30,12 @@ const HV_REG_FPSR: u32 = 33;
 const HV_REG_CPSR: u32 = 34;
 
 const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
+const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
+const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
+const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
+const HV_SYS_REG_CSSELR_EL1: u16 = 0xd000;
+const HV_SYS_REG_AFSR0_EL1: u16 = 0xc288;
+const HV_SYS_REG_AFSR1_EL1: u16 = 0xc289;
 const HV_SYS_REG_DBGBVR0_EL1: u16 = 0x8004;
 const HV_SYS_REG_DBGBCR0_EL1: u16 = 0x8005;
 const HV_SYS_REG_DBGWVR0_EL1: u16 = 0x8006;
@@ -398,7 +404,9 @@ fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&state.core)
         || state.mp_state != MpState::Runnable
         || !state.vtimer.masked
-        || state.vtimer.cntv_ctl_el0 & !0b11 != 0
+        || state.vtimer.cntv_ctl_el0 & !0b10 != 0
+        || u32::try_from(state.simd_fp.fpcr).is_err()
+        || u32::try_from(state.simd_fp.fpsr).is_err()
     {
         return Err(BackendError::InvalidState);
     }
@@ -486,7 +494,7 @@ impl HvfBackend {
             let _ = unsafe { hv_vm_destroy() };
             return Err(error);
         }
-        Ok(Self {
+        let backend = Self {
             vcpu,
             exit,
             configured: false,
@@ -500,7 +508,9 @@ impl HvfBackend {
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
             host_id_regs: std::collections::BTreeMap::new(),
-        })
+        };
+        backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
+        Ok(backend)
     }
 
     fn ensure_flush_stub(&mut self) -> Result<u64> {
@@ -646,7 +656,7 @@ impl HvfBackend {
             SMCCC_VERSION => SMCCC_VERSION_1_1,
             SMCCC_ARCH_FEATURES => match self.reg(1)? {
                 SMCCC_ARCH_WORKAROUND_1 => 1,
-                SMCCC_ARCH_WORKAROUND_2 => (-2i64) as u64,
+                SMCCC_ARCH_WORKAROUND_2 => PSCI_NOT_SUPPORTED,
                 SMCCC_ARCH_WORKAROUND_3 => 0,
                 _ => PSCI_NOT_SUPPORTED,
             },
@@ -1101,6 +1111,12 @@ impl Backend for HvfBackend {
         state.sysregs.tpidr_el1 = self.sysreg(HV_SYS_REG_TPIDR_EL1)?;
         state.sysregs.tpidrro_el0 = self.sysreg(HV_SYS_REG_TPIDRRO_EL0)?;
         state.sysregs.cntkctl_el1 = self.sysreg(HV_SYS_REG_CNTKCTL_EL1)?;
+        state.sysregs.contextidr_el1 = self.sysreg(HV_SYS_REG_CONTEXTIDR_EL1)?;
+        state.sysregs.amair_el1 = self.sysreg(HV_SYS_REG_AMAIR_EL1)?;
+        state.sysregs.par_el1 = self.sysreg(HV_SYS_REG_PAR_EL1)?;
+        state.sysregs.csselr_el1 = self.sysreg(HV_SYS_REG_CSSELR_EL1)?;
+        state.sysregs.afsr0_el1 = self.sysreg(HV_SYS_REG_AFSR0_EL1)?;
+        state.sysregs.afsr1_el1 = self.sysreg(HV_SYS_REG_AFSR1_EL1)?;
         for index in 0..16u16 {
             state.debug.breakpoint_value[index as usize] =
                 self.sysreg(HV_SYS_REG_DBGBVR0_EL1 + index * 8)?;
@@ -1121,6 +1137,9 @@ impl Backend for HvfBackend {
             hv_vcpu_get_trap_debug_reg_accesses(self.vcpu, &mut state.debug.trap_debug_reg_accesses)
         })?;
         state.vtimer.cntv_ctl_el0 = self.sysreg(HV_SYS_REG_CNTV_CTL_EL0)? & 0b11;
+        if state.vtimer.cntv_ctl_el0 & 1 != 0 {
+            return Err(BackendError::InvalidState);
+        }
         state.vtimer.cntv_cval_el0 = self.sysreg(HV_SYS_REG_CNTV_CVAL_EL0)?;
         // SAFETY: outputs are live and this is the owning thread.
         hv("hv_vcpu_get_vtimer_mask", unsafe {
@@ -1156,14 +1175,18 @@ impl Backend for HvfBackend {
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
-        validate_restore_vcpu_state(state)
+        validate_restore_vcpu_state(state)?;
+        if state.core.pstate >> 32 != 0 {
+            return Err(BackendError::InvalidState);
+        }
+        Ok(())
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        validate_restore_vcpu_state(state)?;
+        self.validate_restore_state(state)?;
         self.flush_guest_translations()?;
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
@@ -1196,6 +1219,12 @@ impl Backend for HvfBackend {
         self.set_sysreg(HV_SYS_REG_TPIDR_EL1, state.sysregs.tpidr_el1)?;
         self.set_sysreg(HV_SYS_REG_TPIDRRO_EL0, state.sysregs.tpidrro_el0)?;
         self.set_sysreg(HV_SYS_REG_CNTKCTL_EL1, state.sysregs.cntkctl_el1)?;
+        self.set_sysreg(HV_SYS_REG_CONTEXTIDR_EL1, state.sysregs.contextidr_el1)?;
+        self.set_sysreg(HV_SYS_REG_AMAIR_EL1, state.sysregs.amair_el1)?;
+        self.set_sysreg(HV_SYS_REG_PAR_EL1, state.sysregs.par_el1)?;
+        self.set_sysreg(HV_SYS_REG_CSSELR_EL1, state.sysregs.csselr_el1)?;
+        self.set_sysreg(HV_SYS_REG_AFSR0_EL1, state.sysregs.afsr0_el1)?;
+        self.set_sysreg(HV_SYS_REG_AFSR1_EL1, state.sysregs.afsr1_el1)?;
         for index in 0..16u16 {
             self.set_sysreg(
                 HV_SYS_REG_DBGBVR0_EL1 + index * 8,
@@ -1260,6 +1289,9 @@ impl Backend for HvfBackend {
             arch: Arm64Caps {
                 in_kernel_gic: false,
                 asid_bits: Arm64AsidBits::Eight,
+                smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                psci_profile: crate::arch::arm64::Arm64PsciProfile::HvfSingleVcpu,
+                gic_ctlr_fixed_bits: 0,
             },
         }
     }

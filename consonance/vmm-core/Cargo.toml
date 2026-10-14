@@ -37,6 +37,7 @@ thiserror = "2"
 # State + contract hashing (rule-5 whitelist). 32-byte SHA-256 matches
 # `unison::Machine::state_hash`.
 sha2 = "0.10"
+blake3 = "1"
 # Page-aligned, pinned host backing for `GuestRam` (rule-5 whitelist). Only used
 # off-Miri; under Miri `GuestRam` falls back to a `Vec<u8>` (see src/vmm.rs).
 memmap2 = "0.9"

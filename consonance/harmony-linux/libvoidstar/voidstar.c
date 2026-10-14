@@ -135,17 +135,22 @@ static int read_all(int fd, unsigned char *data, size_t size)
 void fuzz_json_data(const char *data, size_t size)
 {
     int fd;
+    int result;
 
     if ((data == NULL && size != 0) || size > (size_t)SSIZE_MAX)
-        return;
+        abort();
     if (device_lock() != 0)
-        return;
+        abort();
     fd = HARMONY_OPEN(harmony_device_path, O_WRONLY | O_CLOEXEC);
-    if (fd >= 0) {
-        (void)write_all(fd, (const unsigned char *)data, size);
-        (void)HARMONY_CLOSE(fd);
+    if (fd < 0) {
+        device_unlock();
+        abort();
     }
+    result = write_all(fd, (const unsigned char *)data, size);
+    (void)HARMONY_CLOSE(fd);
     device_unlock();
+    if (result != 0)
+        abort();
 }
 
 uint64_t fuzz_get_random(void)
@@ -157,19 +162,21 @@ uint64_t fuzz_get_random(void)
     size_t index;
 
     if (device_lock() != 0)
-        return 0;
+        abort();
     fd = HARMONY_OPEN(harmony_device_path, O_RDWR | O_CLOEXEC);
-    if (fd < 0)
-        goto out;
+    if (fd < 0) {
+        device_unlock();
+        abort();
+    }
     if (write_all(fd, &request, sizeof(request)) != 0 ||
         read_all(fd, bytes, sizeof(bytes)) != 0) {
         (void)HARMONY_CLOSE(fd);
-        goto out;
+        device_unlock();
+        abort();
     }
     (void)HARMONY_CLOSE(fd);
     for (index = 0; index < sizeof(bytes); index++)
         value |= (uint64_t)bytes[index] << (index * CHAR_BIT);
-out:
     device_unlock();
     return value;
 }

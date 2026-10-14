@@ -3,7 +3,8 @@
 use std::collections::VecDeque;
 
 use crate::arch::arm64::{
-    Arm64, Arm64Completion, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState, GicIntId,
+    Arm64, Arm64Completion, Arm64Exit, Arm64GicIdleState, Arm64Injection, Arm64Policy,
+    Arm64VcpuState, GicIntId,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -50,6 +51,9 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
     arch: crate::arch::arm64::Arm64Caps {
         in_kernel_gic: false,
         asid_bits: crate::arch::arm64::Arm64AsidBits::Eight,
+        smccc_workaround_levels: crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+        psci_profile: crate::arch::arm64::Arm64PsciProfile::HvfSingleVcpu,
+        gic_ctlr_fixed_bits: 0,
     },
 };
 
@@ -248,6 +252,14 @@ impl Backend for MockArm64Backend {
 
     fn take_accepted_interrupt(&mut self) -> Option<GicIntId> {
         self.accepted_irq.pop_front()
+    }
+
+    fn read_arm64_gic_idle_state(&mut self, intid: u32) -> Result<Option<Arm64GicIdleState>> {
+        Ok(self
+            .state
+            .gic
+            .as_ref()
+            .and_then(|gic| Arm64GicIdleState::from_gic(gic, intid)))
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
@@ -461,6 +473,10 @@ mod tests {
             arch: crate::arch::arm64::Arm64Caps {
                 in_kernel_gic: true,
                 asid_bits: crate::arch::arm64::Arm64AsidBits::Sixteen,
+                smccc_workaround_levels:
+                    crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
+                gic_ctlr_fixed_bits: 0x88400,
             },
         };
         let mock = MockArm64Backend::with_capabilities(caps);

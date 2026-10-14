@@ -120,6 +120,7 @@ representation or action choice affects the same world transitions.
 | `graph` | Walk a long line of nodes, with hashed jumps, to its last node. | Hide the progress tier. |
 | `crossing` | Reach a short exit while a large pool of flat-tier places competes for attempts. | Hide partial exit progress. |
 | `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
+| `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -226,11 +227,14 @@ reports include the `layout` (doors per room, regions, item, key, door, goal,
 region entry, farms, ordered items, and room distances; item and key are null
 when absent), `evidence.map_first` (first work entering the inner region,
 holding the item, leaving it with the item, and at the goal),
-`evidence.map_first_tier` (first work at each tier), `evidence.map_first_stocked`
-(first work arriving in a boss room holding the item and enough stock, and
-enough health when the boss hits back), and `parent_timeline`, which lists
+`evidence.map_first_tier` (first work at each tier),
+`evidence.map_first_boss_room` (first work arriving in a boss room holding the
+item), `evidence.map_first_stocked` (first work arriving in a boss room holding
+the item and enough stock, and enough health when the boss hits back), and `parent_timeline`, which lists
 each job's start work, its parent's tier, and its parent place in order. A room
 is its place divided by 16; boss hit counts are places 1,024 plus the hits.
+In an arena, a boss-room place is 2,048 plus the shield level plus the hits,
+times `arena`, plus the spot, which reads 0 once a hit has landed.
 As a known limit, the map spreads draws faster than Metroid. After the item
 it leaves the item room at once and settles with 0.8–0.9 of top-tier draws
 outside the inner region, where Metroid stays on 6–12 map cells for about 0.4
@@ -258,6 +262,49 @@ feed the slot preferences and neither changes the tier.
 | `locked` | The inner region is chosen as for `item_optional`. Its door opens only while holding a key in the outer room farthest from the start other than the door room; the goal is the outer room farthest from the door other than the key room and needs the item. The key raises the tier to 1 and the item to 2. | Varia in Brinstar after the lower tier reached the Tourian shaft: the lower tier's frontier is far from the pickup, and the new tier must walk back across the map. |
 | `timing` | 0, or a period of 2–16. Every action is rotated by a hidden phase that advances by one each step modulo `timing`, so a recorded suffix replayed from a holder with another phase takes different actions. At 5, about one replayed suffix in five lands, and at 10 about one in ten. A period that is a multiple of 4 lands one in four, because rotations by phases four apart are equal. | Enemy positions and frame timing that the key does not see. |
 | `gauntlet` | Needs `items` of 2 or more and farms. The last item is the outer room nearest the door, and the farms are the outer rooms farthest from it. Every farm gives health, but only on one arrival in eight, and health stops at the entry-to-goal room count plus 2. One outer arrival in four loses one health. An inner arrival loses one health unless the room and the last three actions fall in one combination of 64, and a hit at one health or less kills the run, which then ignores every action. Each of these draws is a fixed function of the room and the last three actions. Searches build health after the last item is first picked up, by farming while holding both items. When the last item is first picked up, no holder with fewer items has health to carry there. | Tourian: the last item arrives at the entry low on energy after a long walk from the refills, and only an arrival near full energy crosses a region with no refills. |
+| `arena` | 1–8 standing spots; needs `shield`. Entering the goal room holding the item shuts its doors, so every press there is a shot that spends one stock. While the shield is up, a shot lands one time in `shield_odds`. Once the shield is down, a shot hits the boss only from the spot that the hit count names. Every other shot is wasted. The spot is a fixed function of the room and the last three actions. Before the first hit, the place is the spot and the shield level; each hit count is one place. A stocked arrival needs full stock. | Boobeam Trap in Mega Man 2: the shutter closes behind the player, every Crash Bomb spends energy, a bomb counts only where it is placed, and the places with no cannon down (positions times barrier damage) are many. |
+| `rooted` | Needs `arena`. The campaign starts in the goal room holding the item, with full stock and health, and its stocked arrival is at work 0. | A rooted segment from the full-stock state at the boss door. |
+
+The arena reproduces the Boobeam Trap timeline from power-on. In three Mega
+Man 2 power-on runs, the searcher first reached the Boobeam door drained, and
+first arrived there with full stock 1.8 to 2.8 times later. One run killed
+Boobeam; the other two reached the 250 million try budget without a kill.
+Rooted segments from the full-stock door state, with a fresh archive, killed
+on 5 or 6 of 6 seeds within 20 million tries. The game loses its time between
+the first drained arrival and the first stocked one, and the fight from a
+stocked state is fast.
+
+The calibrated arena is an 8 by 8 map with `loops` 0, `corridor` 4, `shaft` 4,
+`inner` 48, `farms` 8, `farm_cap` 16, `boss_stock` 6, `shield` 6,
+`shield_odds` 4, `tail_slots` and `arena` 8. It measured these values over 32
+layouts, with 1,000,000 work from room 0 and 100,000 work for `rooted`. World
+values are work, and intervals are 95% intervals of the median. The kill
+budgets in the third and fourth rows are 2.5 and 0.2 times the median first
+arrival, the ratios of the game's 250 million and 20 million try budgets to
+its first arrivals.
+
+| Measure | Mega Man 2 tries | World work |
+| --- | --- | --- |
+| First boss-room arrival | 85.4M, 100.4M, 106.6M | 72,800 (69,400–80,100), 32/32 |
+| First stocked arrival over first arrival | 1.8–2.8 | 2.30 (1.98–2.64), 31/32 stocked |
+| Kill from power-on within 2.5 times the first arrival | 1 of 3, at 235.3M | 14/32 within 182,000 |
+| Rooted kills within 0.2 times the first arrival | 5 or 6 of 6 | 27/32 within 14,600 |
+| Median rooted kill | 4.5M–8.8M | 5,200 (3,700–7,100), 31/32 within 100,000 |
+| Median rooted kill over median first arrival | 5%–9% | 7.2% (5.1%–9.8%) |
+
+From room 0, the median kill is 190,300 (167,800–200,600) work, and 31 of 32
+layouts kill within 1,000,000. The world fights faster from a stocked state
+than the game. After the first stocked arrival, the boss room takes 68% of the
+draws and the kill follows a median 7,400 work later, 1.4 times the rooted
+kill. In the game's one power-on kill, the kill followed the stocked arrival by
+39 million tries, and in an earlier power-on run the room took 13.5% of the
+top tier's draws.
+
+The one layout without a kill in either arm has no winning sequence of shots,
+and the reachability check rejects it. Arena reachability follows every shot,
+including the misses, and keeps the most stock for each combination of the
+other state values, among them the action history that places shots. It stops exploring a fight state whose
+stock or health cannot cover the shots still needed.
 
 The graph world is sized for scaled runs. It has `nodes` states in a line,
 each also carrying stock and health from 0 to 15. Action 0 moves to the next
@@ -290,6 +337,59 @@ forecasts compare search attempts without treating action work as attempts.
 parent tier, parent place). `skipped_draws` counts draws whose parent and
 suffix were already executed; they produce no job.
 
+## Boss room with targets
+
+The `targets` world is the Boobeam Trap fight in Mega Man 2, started at the
+door with full weapon energy and full health. The room is a line of `width`
+positions and the player starts at position 0. Actions 0 and 1 step right and
+left, action 2 stands, and action 3 throws a bomb. The `cannons` cannons and
+`decoys` decoy barriers sit at distinct positions from 3 up, drawn from
+`layout`. The first `guarded` cannons each stand behind a barrier. The goal is
+every cannon destroyed with health left.
+
+Every bomb spends one of the `bombs`. A bomb lands only when it is thrown at a
+target's position after one of `aims` of the 64 possible histories of three
+actions, and each position has its own fixed set. A landed bomb on a guarded
+cannon breaks the barrier, and after `double_aims` of those histories it also
+destroys the cannon. Once the barrier is gone, a landed bomb destroys the
+cannon. A landed bomb on a decoy breaks the decoy. Every other bomb
+is wasted, so random input spends most of them. With 5 cannons, 3 of them
+guarded, and 7 bombs, a win needs at least one double kill, as in the game.
+After every action while a cannon stands, the player loses one health when a
+fixed function of the position and the last three actions, modulo
+`drain_odds`, is below the number of standing cannons. A player at 0 health
+stops.
+
+The place is the cannons destroyed, the intact barriers and decoys, the
+position divided by 2, and the last `posture_actions` actions. The last
+actions stand in for the game's posture and platforms. The identity is the
+position modulo 2. The key's stock is the bombs left and its health is the
+health. `broken=true` hides the cannons destroyed. Reports give the cannon and
+decoy positions in `layout`. `evidence.targets` gives the first execution and
+work at each count of cannons destroyed, and counts bombs thrown, bombs
+landed, double kills and decoys broken.
+
+The world starts where a rooted segment starts and models the fight; the
+`arena` map option models the trip to the door. In Mega Man 2, rooted segments
+from the full-stock door state, with a fresh archive and 20 million tries,
+killed on 5 or 6 of 6 seeds at medians of 4.5 to 8.8 million tries. The world
+measured these values over 32 layouts at 1,000,000 work. Tries are executions
+to the kill, and a miss counts as infinite in the median.
+
+| Settings | Layouts | Kills | Median tries (95% interval) |
+| --- | --- | --- | --- |
+| `width` 16, 5 cannons, 3 guarded, 2 decoys, 7 bombs, 28 health, `aims` 32, `double_aims` 24, `drain_odds` 32, `posture_actions` 2 | 32 | 25 | 32,000 (20,500–infinite) |
+| As above with `posture_actions` 1 and `drain_odds` 64 | 32 | 32 | 7,000 |
+| As the first row with `width` 12 | 16 | 16 | 11,000 |
+
+The second row matches the game's rooted kill rate. The first row misses on 7
+of 32 layouts, where the game missed on at most 1 of 6 seeds. Every miss
+reached 4 cannons down within 12,000 tries and then ran about 975,000 more
+tries without destroying the last cannon. The split by last actions
+spreads draws over many places at every damage level. After the first arrival
+at 4 cannons down, parents with 4 down take a median 3% of the draws with
+`posture_actions` 2, against 8% with `posture_actions` 1.
+
 ## Configuration bounds
 
 Every parameter is required except the optional map fields. Bounds keep
@@ -307,14 +407,15 @@ family's and passive clock's reachability hold by construction.
 | Route | `length` 2–16; `pattern` encodes two-bit actions per position; `attack` 0–3; boolean `shifted`, `upgrade_required`, and `ranked_upgrade`. |
 | Backtrack | `barriers` 1–4; `segment` 1–8; `(barriers + 1) * segment` ≤ 32; `pattern` encodes two-bit actions per position and its first action differs from 3; `placement` is `tier`, `identity`, or `preference`. |
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
-| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
+| Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
+| Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, `crossing`, and `passive_clock` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, and `targets` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
@@ -392,7 +493,8 @@ uv run workloads/tiny-worlds/panel.py
 It builds the executable, draws every seed at runtime, runs six seeds per arm
 (twelve for the engaged and level-as-tier tight-ammunition boss arms) in six
 processes, and prints one PASS or FAIL line per rule. It writes no files. A run
-takes under a minute on a ten-core laptop with `--jobs 10`. `--seeds` and
+takes about three minutes on a ten-core laptop with `--jobs 10`, about one of
+them on the Boobeam Trap arena. `--seeds` and
 `--jobs` change the sample and parallelism; `--binary` uses a prebuilt
 executable instead of the fresh build.
 
@@ -407,6 +509,7 @@ executable instead of the fresh build.
 | Growing gaps | Eight-by-eight map with the item ranked or hidden, one layout per seed; the return trip is shorter than the first trip, and per room of path the walk from the door to the goal takes longer than the return trip. |
 | Farm loop | Eight-by-eight map with `inner` 20 and 4 farms against the same layout and seed without farms, 200,000 work each. The median ratio of the trip from leaving the item region to the goal stays under 10x, which six-seed medians on the current searcher stayed below in 20,000 resamples of 300 pairs. The current searcher measures 5.87x. Resetting a cell's draw count only on its 1st, 2nd, 4th, 8th and later carried-in preference win measures 2.50x, with six-seed medians up to 4.47x in 20,000 resamples. That change is clearly bad on the gauntlet worlds: net extra goal misses are 9.0% of layouts, and 12.9% with hidden timing. |
 | Boss damage as a tier | Twelve layouts of the boss behind a shield, each with `hit_tier` on and off on the same seed, 600,000 work each. Damage as a tier loses more kills than it gains. On the current searcher it loses 41% of 32 layouts and gains none, the loss seen in Metroid, where every engaged Mother Brain state descended from one drained first hit. |
+| Boobeam Trap arena | Eighteen layouts of the calibrated arena, each from room 0 with 250,000 work and `rooted` with 20,000 work on the same seed. The median ratio of the first full-stock arrival to the first boss-room arrival stays within 1.5–3x, and fewer runs from room 0 kill within 2.5 times the median first arrival than rooted runs kill within 0.2 times it. Mega Man 2 shows both: the first full-stock arrival at the Boobeam door comes 1.8–2.8 times after the first drained arrival, and power-on runs kill less often than rooted segments at those budgets. A layout that the reachability check rejects as unwinnable is replaced by a fresh one. The kill rule fails as undecided when 2.5 times the median first arrival passes 250,000 work or 0.2 times it passes 20,000, because runs censored inside the window would count as misses. On the current searcher, 50 repeats with fresh seeds failed neither rule, and 18-layout resamples of their 900 layouts fail either rule in 0.5% of 20,000. The room-0 runs use 250,000 work because at 200,000 work the first full-stock arrival falls past the budget on enough layouts that the ratio rule fails in 3.9% of resamples. |
 
 Timing rules compare medians in which an unsolved run counts as the work
 budget on the side that must be slower and as unbounded on the side that must

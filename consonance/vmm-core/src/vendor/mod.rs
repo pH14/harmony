@@ -4,17 +4,26 @@ use control_proto::RegsView;
 use vmm_backend::{Arch, Backend, Exit, Gpa};
 
 use crate::virtual_time::NormalizedEventClass;
-use crate::vmm::{Step, Vmm, VmmError};
+use crate::vmm::{PvclockSnapshot, Step, Vmm, VmmError};
 
 pub mod arm64;
 pub mod x86;
+
+pub struct SnapshotHashParts {
+    pub doorbell: Option<Vec<u8>>,
+    pub serial: Vec<u8>,
+    pub device: Vec<u8>,
+    pub vendor_chunks: Vec<u8>,
+    pub clock_offset: u64,
+    pub pvclock: Option<PvclockSnapshot>,
+}
 
 pub trait Vendor: Arch + Sized {
     type Devices;
 
     type RestorePrep;
 
-    type Snapshot: vm_state::SnapshotRecords;
+    type Snapshot: vm_state::SnapshotRecords + Clone;
 
     fn new_devices() -> Self::Devices;
 
@@ -62,7 +71,9 @@ pub trait Vendor: Arch + Sized {
 
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
-    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64>;
+    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
+        vmm: &mut Vmm<B>,
+    ) -> Result<Option<u64>, VmmError>;
 
     fn has_pending_guest_interrupt<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
@@ -82,6 +93,16 @@ pub trait Vendor: Arch + Sized {
 
     fn hash_device_chunks(vcpu: &Self::VcpuState, devices: &Self::Devices, out: &mut Vec<u8>);
 
+    fn contract_identity_hash<B: Backend<A = Self>>(_vmm: &Vmm<B>) -> Option<[u8; 32]> {
+        None
+    }
+
+    fn project_snapshot_hash_parts(
+        snapshot: &Self::Snapshot,
+    ) -> Result<SnapshotHashParts, VmmError>;
+
+    fn project_logical_snapshot(snapshot: &mut Self::Snapshot, vcpu: &Self::VcpuState);
+
     fn regs_view(vcpu: &Self::VcpuState) -> RegsView;
 
     fn vcpu_components(vcpu: &Self::VcpuState, out: &mut Vec<(&'static str, [u8; 32])>);
@@ -100,6 +121,10 @@ pub trait Vendor: Arch + Sized {
     fn check_sealable_vcpu(vcpu: &Self::VcpuState) -> Result<(), VmmError>;
 
     fn check_long_mode_vcpu(_vcpu: &Self::VcpuState) -> Result<(), VmmError> {
+        Ok(())
+    }
+
+    fn validate_vtime_clock_offset(_clock_offset: u64) -> Result<(), VmmError> {
         Ok(())
     }
 

@@ -41,7 +41,9 @@ ARM_TRAPS_OFF_PATTERN = re.compile(
 )
 TRAP_ROWS = {
     "arm64-physical-counter",
+    "arm64-live-timer-value",
     "arm64-live-timer-programming",
+    "arm64-live-timer-control",
     "arm64-pmu",
     "x86-unrelated-gp",
     "x86-pmu",

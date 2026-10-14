@@ -21,6 +21,16 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
+The image identity always includes kernel, initramfs, RAM size, seed, setup run
+budget, command line, and guest contract. Sessions booted with setup payloads
+also bind their ordered, length-delimited payload bytes; the empty list keeps
+the ordinary session identity. `identity_with_config_and_payloads` computes
+the same identity before boot. A nonempty `identity_tag` adds a
+workload domain; it does not replace those setup inputs. Sparse snapshot pages
+are relative to setup RAM, so a session checks this identity before importing
+pages from another session. Tagged snapshots made with the earlier identity
+calculation do not match the new domain.
+
 `SessionConfig::with_nested_host()` selects the named nested-host contract on
 Linux x86, using VMX or SVM according to host KVM support. The choice travels through worker configuration and changes image
 identity even with an identity tag, so ordinary and nested snapshots cannot
@@ -78,14 +88,16 @@ by adapters that need page and sidecar sharing across related checkpoints.
 Its serde fields remain `base`, `image_identity`, `pages`, and `sidecar`; the
 sharing metadata is host-local and is never written to the wire. An export
 base must have the same setup and identity, and unchanged pages/chunks are
-retained by reference until a snapshot is serialized.
+retained by reference until a snapshot is serialized. The embedded sidecar
+binds the source setup RAM, so changing only the outer `image_identity` cannot
+import its pages over a setup with different RAM.
 `SparseSnapshot::logical_identity` returns a copy whose x86 sidecar carries the
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
-The embedded complete and sparse portable snapshots use format version 6.
-Older embedded versions are rejected. The outer sparse archive layout remains
-version 2.
+Embedded complete portable snapshots use format version 7; sparse sidecars use
+version 8. Older embedded versions are rejected. The outer sparse archive layout
+remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
 presence metadata; exported artifacts retain those bytes and checksum them.
@@ -98,7 +110,11 @@ service. `SearchSession::cache_identity` names the setup state. It is the
 state hash, except for User-mode Linux, whose setup image holds per-process
 host values, so it also hashes the whole setup checkpoint. Within a namespace an entry's key is the byte encoding of its action
 prefix, with fixed-width actions, so a cached prefix of an input is a byte
-prefix of its key. `CacheIndex` is the interface workers use:
+prefix of its key. Publishing a delta under a parent requires the parent's key
+to be a proper byte prefix of the child key; unrelated ancestry is refused
+before the entry becomes visible. A lease or writable extent belongs to the
+index that issued it; foreign references cannot alias an entry or segment with
+the same local number. `CacheIndex` is the interface workers use:
 
 | Call | Result |
 |---|---|
@@ -146,7 +162,13 @@ eviction asks the worker with the largest store to shrink.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
-setup and imports it; the store checks each page against its hash.
+setup and imports it; the store checks each page against its hash. Hardware
+session cache extents carry the publishing session's image identity beside the
+sparse sidecar. Import checks every extent's identity before changing the
+snapshot store, including when a caller passes a lease from another namespace.
+User-mode Linux root extents bind the launch identity, and later cache extents
+also bind the setup checkpoint digest. Their imports check the binding before
+creating a checkpoint, even when a caller passes a foreign lease.
 `cache::plan_memory` takes the free memory (the lower of `MemAvailable`
 and each enclosing cgroup's limit minus usage on Linux; free, file-backed and
 purgeable pages on macOS) less a 1 GiB reserve, fits as many workers as the
@@ -175,7 +197,17 @@ arguments, seed, setup budget and the progress limit after which a guest that
 makes no virtual-time progress is reported as `SessionError::Hung`. Boot runs
 the guest to its setup snapshot point and captures it. Each snapshot is a full
 `uml::Checkpoint`; a restore is in place while the guest is paused and starts
-a fresh process otherwise. A publish exports the checkpoint into one extent,
+a fresh process otherwise. The initramfs override is pinned before the first
+boot; its sealed bytes define the root identity and serve every later fresh
+process. Boot checks their SHA-256 against the caller's admitted initramfs
+digest. The caller supplies the admitted profile and exact host processor
+identity; boot checks both against the pinned profile and
+processor before starting a guest. The root identity includes that host
+identity and the exact boot argument list and initramfs bytes, with explicit
+field boundaries. An import from a different physical processor or launch
+input is refused before the checkpoint store changes. Fresh restore spawns
+recheck the same admitted processor and host identity. A publish exports the
+checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
 or inject interrupts. `store_bytes` is the allocated size of every held
@@ -219,11 +251,15 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
+UML terminal classification waits for the host console collector to finish, so
+the final kernel output cannot race the panic decision. Crash diagnostics report
+the settled exit status whether the bridge closure or process exit was seen first.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic
 setup. UML roots contain all nonzero guest and private-image pages, plus service
-sidecars, and bind the profile, initramfs, memory, arguments and seed. They can be
+sidecars, and bind the profile, exact host processor identity, initramfs,
+memory, arguments and seed. They can be
 imported over a fresh launch whose host-private setup bytes differ. Cache deltas
 still require their original setup identity. Neither interface interprets
 workload commands.

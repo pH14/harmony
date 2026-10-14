@@ -1,0 +1,49 @@
+arm64: leave architected timer controls untouched under the Harmony clock
+
+The Harmony clockevent runs through MMIO and the virtual timer PPI. Its
+shutdown path still read and wrote CNTV_CTL_EL0 just to clear ENABLE, while
+the compiled physical timer handler and shutdown path retained CNTP_CTL_EL0
+accesses even though the DT requires the virtual PPI. These instructions
+prevent the executable-image audit from banning timer control accesses. An
+admitted control write can enable KVM's physical timer, whose state is not in
+the snapshot: a cold restore then changes the guest's next CNTP_CTL_EL0 read.
+
+Under the Harmony clock, disarm only the MMIO clockevent. Fail if the unused
+physical handler or shutdown path is reached. The timer-control scanner can
+then reject all physical and virtual control instructions in the image.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+---
+--- a/drivers/clocksource/arm_arch_timer.c
++++ b/drivers/clocksource/arm_arch_timer.c
+@@ -596,6 +596,9 @@
+ static irqreturn_t arch_timer_handler_phys(int irq, void *dev_id)
+ {
+ 	struct clock_event_device *evt = dev_id;
++
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK))
++		panic("Harmony physical timer IRQ cannot be registered");
+ 
+ 	return timer_handler(ARCH_TIMER_PHYS_ACCESS, evt);
+ }
+@@ -615,8 +618,6 @@
+ static int arch_timer_shutdown_virt(struct clock_event_device *clk)
+ {
+ 	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK)) {
+-		/* Keep KVM's live-domain virtual timer disabled for the VM's life. */
+-		arch_timer_shutdown(ARCH_TIMER_VIRT_ACCESS, clk);
+ 		harmony_arm_clockevent_disarm();
+ 		return 0;
+ 	}
+@@ -626,6 +627,9 @@
+ 
+ static int arch_timer_shutdown_phys(struct clock_event_device *clk)
+ {
++	if (IS_ENABLED(CONFIG_HARMONY_ARM_PVCLOCK))
++		panic("Harmony physical timer cannot be selected");
++
+ 	return arch_timer_shutdown(ARCH_TIMER_PHYS_ACCESS, clk);
+ }
+ 

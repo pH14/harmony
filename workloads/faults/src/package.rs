@@ -61,6 +61,7 @@ pub struct BugSummary {
 #[serde(rename_all = "snake_case")]
 pub enum StateHashEncoding {
     EngineDigest,
+    Unavailable,
     #[default]
     LegacySha256OfDigest,
 }
@@ -137,7 +138,7 @@ impl ReplaySummary {
     #[must_use]
     pub fn from_observation(
         observation: &FaultObservations,
-        state_digest: [u8; 32],
+        state_digest: Option<[u8; 32]>,
         actions_applied: u64,
         guest_horizons: u64,
     ) -> Self {
@@ -145,8 +146,15 @@ impl ReplaySummary {
             run: 1,
             bug: observation.is_bug(),
             stop: observation.stop,
-            state_hash: state_digest_hex(&state_digest),
-            state_hash_encoding: StateHashEncoding::EngineDigest,
+            state_hash: state_digest
+                .as_ref()
+                .map(state_digest_hex)
+                .unwrap_or_default(),
+            state_hash_encoding: if state_digest.is_some() {
+                StateHashEncoding::EngineDigest
+            } else {
+                StateHashEncoding::Unavailable
+            },
             violations: observation.violations().into_iter().collect(),
             sometimes: observation.sometimes().into_iter().collect(),
             actions_applied,
@@ -442,6 +450,14 @@ mod live {
         options.validate()?;
         let workers = u32::try_from(resources.placement.workers.len())?;
         let config = config(options)?;
+        #[cfg(target_os = "linux")]
+        if let GuestBackend::Uml(guest) = &config.backend {
+            let cpu = resources
+                .placement
+                .coordinator
+                .ok_or("User-mode Linux search needs an admitted coordinator host processor")?;
+            guest.verify_processor(cpu)?;
+        }
         let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
@@ -521,7 +537,13 @@ mod live {
         let windows = ActionWindows {
             root_seal: archive.root_seal,
         };
-        let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
+        let inherited = config
+            .root
+            .as_ref()
+            .map(|root| crate::consonance::root_standing(root))
+            .transpose()?
+            .unwrap_or_default();
+        let written = write_bug_reports(windows, &inherited, &archive.bugs, &options.output)?;
         if let Some(first) = written.first() {
             std::fs::write(
                 options.output.join("first-bug-input.json"),
@@ -597,17 +619,28 @@ mod live {
                     .as_ref()
                     .map(|witness| witness.state_hash.clone())
                     .unwrap_or_default(),
-                state_hash_encoding: witness
-                    .as_ref()
-                    .map_or(StateHashEncoding::default(), |witness| {
-                        witness.state_hash_encoding
-                    }),
+                state_hash_encoding: witness.as_ref().map_or_else(
+                    || {
+                        if config.uml().is_some() {
+                            StateHashEncoding::Unavailable
+                        } else {
+                            StateHashEncoding::default()
+                        }
+                    },
+                    |witness| witness.state_hash_encoding,
+                ),
                 confirmed,
                 replay: witness,
             });
         }
         report.first_bug_execution = first_confirmed_bug(&report.bugs);
         report.bug_found = report.first_bug_execution.is_some();
+        if let Some(first) = report.bugs.iter().find(|bug| bug.confirmed) {
+            std::fs::write(
+                options.output.join("first-bug-input.json"),
+                serde_json::to_vec_pretty(&first.actions)?,
+            )?;
+        }
         report.wall_seconds = started.elapsed().as_secs();
         report.watchdog_cutoffs = archive.watchdog_cutoffs;
         report.execution_failures = campaign_report.campaign.execution_failures;
@@ -723,7 +756,11 @@ mod live {
         let observation = target.observation();
         let mut summary = ReplaySummary::from_observation(
             observation,
-            target.state_hash()?,
+            if config.uml().is_some() {
+                None
+            } else {
+                Some(target.state_hash()?)
+            },
             actions_applied,
             target.guest_horizons_run(),
         );
@@ -970,6 +1007,27 @@ mod tests {
     }
 
     #[test]
+    fn missing_full_state_digest_keeps_observation_confirmation_but_is_explicit() {
+        let stop = FaultStop::Assertion { point: 2 };
+        let observation = FaultObservations {
+            stop,
+            ..FaultObservations::default()
+        };
+        let mut replay = ReplaySummary::from_observation(&observation, None, 1, 1);
+        replay.bug = true;
+        replay.violations = ids(&[2]);
+        assert!(replay_confirms_bug(stop, &ids(&[2]), &replay));
+        assert!(replay.state_hash.is_empty());
+        assert_eq!(replay.state_hash_encoding, StateHashEncoding::Unavailable);
+        let value = serde_json::to_value(&replay).unwrap();
+        assert_eq!(value["state_hash_encoding"], "unavailable");
+        assert_eq!(
+            serde_json::from_value::<ReplaySummary>(value).unwrap(),
+            replay
+        );
+    }
+
+    #[test]
     fn a_stop_only_bug_is_confirmed_by_the_same_stop() {
         assert!(replay_confirms_bug(
             FaultStop::Crash,
@@ -1055,7 +1113,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let summary = ReplaySummary::from_observation(&observation, state_digest, 1, 1);
+        let summary = ReplaySummary::from_observation(&observation, Some(state_digest), 1, 1);
         assert_eq!(summary.check, observation.check);
         assert_eq!((summary.event_kill_fires, summary.event_park_fires), (2, 3));
         assert_eq!((summary.settle_actions, summary.settle_ticks), (0, 0));

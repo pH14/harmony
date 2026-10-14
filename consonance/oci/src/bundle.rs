@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use super::cpio::{CpioError, Writer};
-use super::image::{ImageError, Ownership, StagedImage};
+use super::exact;
+use super::image::{ImageError, Ownership, StagedImage, with_host_read_access};
 use execution_proto::{ExecutionSpec, SpecError, VERSION};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 pub const CONTROL_ROOT: &str = "/harmony-oci";
 pub const ROOTFS_ROOT: &str = "/harmony-oci/rootfs";
@@ -31,8 +31,6 @@ pub enum BundleError {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Spec(#[from] SpecError),
-    #[error("gzip failed: {0}")]
-    Gzip(String),
     #[error("external input count {count} exceeds {limit}")]
     ExternalInputCount { count: usize, limit: usize },
     #[error("external input bytes {bytes} exceeds {limit}")]
@@ -140,6 +138,17 @@ pub fn prepare(
 ) -> Result<PreparedExecution, BundleError> {
     image.config.validate()?;
     let external_inputs = validate_external_inputs(&request.external_inputs)?;
+    with_host_read_access(&image.rootfs, |original_modes| {
+        prepare_readable(image, request, &external_inputs, original_modes)
+    })
+}
+
+fn prepare_readable(
+    image: &StagedImage,
+    request: &LaunchRequest,
+    external_inputs: &[ValidatedExternalInput],
+    original_modes: &BTreeMap<PathBuf, u32>,
+) -> Result<PreparedExecution, BundleError> {
     for destination in [
         "/proc",
         "/dev",
@@ -156,13 +165,14 @@ pub fn prepare(
     ] {
         validate_mount_path(&image.rootfs, destination)?;
     }
-    for input in &external_inputs {
+    for input in external_inputs {
         validate_mount_path(&image.rootfs, &input.destination)?;
     }
     if request.kvm {
         validate_mount_path(&image.rootfs, KVM_DEVICE)?;
     }
-    let credentials = image.config.resolve_process_credentials(&image.rootfs)?;
+    let credentials = super::credentials::resolve(image.config.user.as_deref(), &image.rootfs)
+        .map_err(ImageError::from)?;
     let execution = ExecutionSpec {
         version: VERSION,
         argv: argv(&image.config, &request.command),
@@ -174,9 +184,10 @@ pub fn prepare(
         bundle: request.bundle.clone(),
     };
     execution.validate()?;
-    let rootfs_segment = build_rootfs_segment(&image.rootfs, &image.owners)?;
+    let rootfs_segment =
+        build_rootfs_segment_readable(&image.rootfs, &image.owners, original_modes)?;
     let control_segment =
-        build_control_segment_validated(&execution, &external_inputs, request.kvm)?;
+        build_control_segment_validated(&execution, external_inputs, request.kvm)?;
     let identity = execution_identity(&rootfs_segment, &control_segment, &execution)?;
     Ok(PreparedExecution {
         rootfs_segment,
@@ -192,7 +203,12 @@ fn validate_mount_path(rootfs: &Path, destination: &str) -> Result<(), BundleErr
         let Component::Normal(component) = component else {
             continue;
         };
-        path.push(component);
+        path = match exact::entry(&path, component) {
+            Ok(Some(found)) => found,
+            Ok(None) => break,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        };
         match std::fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
                 return Err(BundleError::MountSymlink {
@@ -207,15 +223,37 @@ fn validate_mount_path(rootfs: &Path, destination: &str) -> Result<(), BundleErr
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn build_rootfs_segment(
     rootfs: &Path,
     owners: &Ownership,
 ) -> Result<Vec<u8>, BundleError> {
+    with_host_read_access(rootfs, |original_modes| {
+        build_rootfs_segment_readable(rootfs, owners, original_modes)
+    })
+}
+
+fn build_rootfs_segment_readable(
+    rootfs: &Path,
+    owners: &Ownership,
+    original_modes: &BTreeMap<PathBuf, u32>,
+) -> Result<Vec<u8>, BundleError> {
     let mut writer = Writer::new();
     writer.dir("harmony-oci", 0o755);
     writer.dir("harmony-oci/rootfs", 0o755);
-    writer.tree_owned(rootfs, "harmony-oci/rootfs", &|path| owners.owner_of(path))?;
-    gzip(&writer.finish())
+    writer.tree_owned_with_modes(
+        rootfs,
+        "harmony-oci/rootfs",
+        &|path| owners.owner_of(path),
+        &|path, staged_mode| {
+            let original = original_modes
+                .get(&rootfs.join(path))
+                .copied()
+                .unwrap_or(staged_mode);
+            owners.mode_of(path, original)
+        },
+    )?;
+    Ok(gzip(&writer.finish()))
 }
 
 #[cfg(test)]
@@ -265,7 +303,7 @@ fn build_control_segment_validated(
             &input.data,
         );
     }
-    gzip(&writer.finish())
+    Ok(gzip(&writer.finish()))
 }
 
 fn argv(config: &super::image::RuntimeConfig, command: &[String]) -> Vec<String> {
@@ -579,26 +617,22 @@ fn digest_field(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-fn gzip(data: &[u8]) -> Result<Vec<u8>, BundleError> {
-    let mut input = tempfile::NamedTempFile::new()?;
-    std::io::Write::write_all(&mut input, data)?;
-    let output = Command::new("gzip")
-        .args(["-n", "-1", "-c"])
-        .arg(input.path())
-        .output()?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(BundleError::Gzip(
-            String::from_utf8_lossy(&output.stderr).into_owned(),
-        ))
-    }
+fn gzip(data: &[u8]) -> Vec<u8> {
+    let compressed = miniz_oxide::deflate::compress_to_vec(data, 1);
+    let mut output = Vec::with_capacity(compressed.len() + 18);
+    output.extend_from_slice(&[0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 255]);
+    output.extend_from_slice(&compressed);
+    output.extend_from_slice(&crc32fast::hash(data).to_le_bytes());
+    output.extend_from_slice(&(data.len() as u32).to_le_bytes());
+    output
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::image::RuntimeConfig;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
 
     fn image() -> StagedImage {
         let dir = tempfile::tempdir().unwrap();
@@ -916,6 +950,13 @@ mod tests {
     }
 
     #[test]
+    fn mount_destination_checks_require_exact_component_spelling() {
+        let rootfs = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink("/outside", rootfs.path().join("TMP")).unwrap();
+        validate_mount_path(rootfs.path(), "/tmp").unwrap();
+    }
+
+    #[test]
     fn external_input_bounds_are_enforced() {
         assert_eq!(MAX_EXTERNAL_INPUT_BYTES, 67_108_864);
         let maximum_count: Vec<_> = (0..MAX_EXTERNAL_INPUTS)
@@ -988,6 +1029,37 @@ mod tests {
                 byte
             );
         }
+    }
+
+    #[test]
+    fn prepared_identity_is_portable_for_a_large_rootfs() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let payload: Vec<u8> = (0..1 << 20)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                (state >> 56) as u8
+            })
+            .collect();
+        let path = dir.path().join("payload");
+        std::fs::write(&path, payload).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let image = StagedImage {
+            rootfs: dir.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let prepared = prepare(&image, &LaunchRequest::new(vec!["/payload".into()])).unwrap();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&prepared.rootfs_segment)),
+            "07b518ca1704197efe27b6e33670a5665366854a59943501273d10a8ae273b3f"
+        );
+        assert_eq!(
+            prepared.identity_hex(),
+            "cc22e0ae8c440f7edd93b48485fa1a3504bd95072e91a5fcbea6935b589b2f05"
+        );
     }
 
     #[test]

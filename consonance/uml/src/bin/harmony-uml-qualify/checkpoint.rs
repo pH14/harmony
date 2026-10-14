@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use std::fs::File;
 use std::io;
 use std::time::{Duration, Instant};
 
-use environment::input_spec::nominal_factory;
+use environment::input_spec::{ServiceConfig, nominal_factory};
 use serde_json::{Value, json};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use uml::{
-    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, Session, SessionError, Stop,
-    VerifiedProfile, event_hash,
+    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, MemoryError, Profile, Session,
+    SessionError, Stop, VerifiedProfile, event_hash,
 };
 
 use crate::filter;
@@ -67,6 +68,12 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
         .map_err(io::Error::other)?
         .wait()?;
     if let Some(points) = points(&reference) {
+        checks.push(shifted_artifact_fds(
+            profile,
+            &base,
+            &reference.events,
+            &points,
+        ));
         checks.push(omitted_host_memory(
             profile,
             &base,
@@ -86,7 +93,172 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
             json!({"reference": summary(&reference)}),
         ));
     }
+    checks.push(console_branch_restore(options, profile));
+    checks.push(console_terminal(options, profile));
     Ok(checks)
+}
+
+fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
+    let result = (|| -> Result<Value, SessionError> {
+        let base = seeded(options, "console_branch", SEED);
+        let checkpoints = Checkpoints::new();
+        let mut session = start(profile, &base, false, &checkpoints, None)?;
+        if session.run_to(1)? != Stop::Event {
+            return Ok(json!({"error": "the terminal fixture did not reach setup"}));
+        }
+        let factory = nominal_factory();
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        session.branch(SEED, handler, vec![vec![b'P']])?;
+        let mut terminal = None;
+        for _ in 0..4 {
+            match session.run_until(u64::MAX)? {
+                Stop::Exhausted(_) => {}
+                Stop::Stopped(reason) => {
+                    terminal = Some(Some(reason));
+                    break;
+                }
+                Stop::Closed => {
+                    terminal = Some(None);
+                    break;
+                }
+                stop => return Ok(json!({"error": format!("unexpected stop {stop:?}")})),
+            }
+        }
+        let Some(terminal) = terminal else {
+            return Ok(json!({"error": "the terminal fixture repeated exhausted stops"}));
+        };
+        let before_events = session.events().len();
+        let resolved = session.settle_terminal_console(terminal, base.wall_limit)?;
+        let after_events = session.events().len();
+        let tail = session.console_tail();
+        Ok(json!({
+            "marker": tail.contains("Kernel panic: abandoned branch sentinel"),
+            "before_events": before_events,
+            "after_events": after_events,
+            "terminal": format!("{terminal:?}"),
+            "resolved": format!("{resolved:?}"),
+        }))
+    })();
+    match result {
+        Ok(detail) => check(
+            "checkpoint_console_terminal",
+            detail["marker"] == json!(true)
+                && detail["before_events"] == detail["after_events"]
+                && detail["before_events"].as_u64().unwrap_or(0) >= 3
+                && detail["resolved"] == json!("Exited(0)"),
+            detail,
+        ),
+        Err(error) => check(
+            "checkpoint_console_terminal",
+            false,
+            json!({"error": error.to_string()}),
+        ),
+    }
+}
+
+fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value {
+    let result = (|| -> Result<Value, SessionError> {
+        let mut base = seeded(options, "console_branch", SEED);
+        base.console_limit_bytes = u64::MAX;
+        let checkpoints = Checkpoints::new();
+        let mut session = start(profile, &base, false, &checkpoints, None)?;
+        if session.run_to(1)? != Stop::Event {
+            return Ok(json!({"error": "the fixture did not reach setup"}));
+        }
+        let checkpoint = session.capture(Capture::default())?;
+        let factory = nominal_factory();
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        session.branch(SEED, handler, vec![vec![b'P']])?;
+        if session.run_to(2)? != Stop::Event {
+            return Ok(json!({"error": "the abandoned branch did not reach its event"}));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        let marker = "Kernel panic: abandoned branch sentinel";
+        let abandoned_contains_marker = session.console_tail().contains(marker);
+        session.restore(&checkpoint)?;
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        session.branch(SEED, handler, vec![vec![b'S']])?;
+        let restored = session.run()?;
+
+        let other = Checkpoints::new();
+        let mut fresh = start(profile, &base, false, &other, None)?;
+        if fresh.run_to(1)? != Stop::Event {
+            return Ok(json!({"error": "the fresh fixture did not reach setup"}));
+        }
+        let handler = factory(&ServiceConfig::default())
+            .map_err(|error| SessionError::Protocol(error.to_string()))?;
+        fresh.branch(SEED, handler, vec![vec![b'S']])?;
+        let reference = fresh.run()?;
+        Ok(json!({
+            "abandoned_contains_marker": abandoned_contains_marker,
+            "restored_contains_marker": String::from_utf8_lossy(&restored.console).contains(marker),
+            "fresh_contains_marker": String::from_utf8_lossy(&reference.console).contains(marker),
+            "restored_reason": format!("{:?}", restored.reason),
+            "fresh_reason": format!("{:?}", reference.reason),
+            "restored_completed": completed(&restored),
+            "fresh_completed": completed(&reference),
+            "event_match": restored.events == reference.events,
+        }))
+    })();
+    match result {
+        Ok(detail) => check(
+            "checkpoint_console_branch_restore",
+            detail["abandoned_contains_marker"] == json!(true)
+                && detail["restored_contains_marker"] == json!(false)
+                && detail["fresh_contains_marker"] == json!(false)
+                && detail["restored_completed"] == json!(true)
+                && detail["fresh_completed"] == json!(true)
+                && detail["restored_reason"] == detail["fresh_reason"]
+                && detail["event_match"] == json!(true),
+            detail,
+        ),
+        Err(error) => check(
+            "checkpoint_console_branch_restore",
+            false,
+            json!({"error": error.to_string()}),
+        ),
+    }
+}
+
+fn shifted_artifact_fds(
+    profile: &VerifiedProfile,
+    base: &Launch,
+    reference: &[Event],
+    points: &Points,
+) -> Value {
+    let outcome = (|| -> Result<Option<Value>, SessionError> {
+        let checkpoints = Checkpoints::new();
+        let mut source = start(profile, base, false, &checkpoints, None)?;
+        if let Some(failure) = pause(&mut source, points.first, reference)? {
+            return Ok(Some(failure));
+        }
+        let checkpoint = source.capture(Capture::default())?;
+        source.kill()?;
+        let held: Vec<File> = (0..24)
+            .map(|_| File::open("/dev/null"))
+            .collect::<io::Result<_>>()?;
+        let shifted = Profile::load(profile.directory()).map_err(io::Error::other)?;
+        let restored = start(&shifted, base, false, &checkpoints, Some(&checkpoint))?;
+        let failure = finished(restored.run()?, reference)?;
+        drop(held);
+        Ok(failure)
+    })();
+    match outcome {
+        Ok(None) => check("checkpoint_shifted_artifact_fds", true, json!({"held": 24})),
+        Ok(Some(failure)) => check(
+            "checkpoint_shifted_artifact_fds",
+            false,
+            json!({"held": 24, "failure": failure}),
+        ),
+        Err(error) => check(
+            "checkpoint_shifted_artifact_fds",
+            false,
+            json!({"held": 24, "error": error.to_string()}),
+        ),
+    }
 }
 
 fn points(reference: &Exit) -> Option<Points> {
@@ -336,6 +508,27 @@ fn import(
         Some(failure) => return Ok(json!({"failures": [failure]})),
         None => second.capture(Capture::default())?.digest()? == setup.digest()?,
     };
+    let before = other.stats();
+    let events = second.events().to_vec();
+    let rejected = matches!(
+        second.restore(&setup),
+        Err(SessionError::Memory(MemoryError::ForeignSnapshot))
+    );
+    let unchanged = other.stats() == before && second.events() == events;
+    failures.push((!rejected || !unchanged).then(|| {
+        json!({"step": "foreign in-place restore", "rejected": rejected, "unchanged": unchanged})
+    }));
+    let boot_failure = match start(profile, base, false, &other, Some(&setup)) {
+        Err(SessionError::Memory(MemoryError::ForeignSnapshot)) => None,
+        Ok(unexpected) => {
+            unexpected.kill()?;
+            Some(json!({"step": "foreign fresh restore was accepted"}))
+        }
+        Err(error) => Some(
+            json!({"step": "foreign fresh restore returned the wrong error", "error": error.to_string()}),
+        ),
+    };
+    failures.push(boot_failure);
     second.kill()?;
     Ok(json!({
         "pages": rows.len(),
@@ -367,7 +560,7 @@ fn omitted_host_memory(
         session.restore(&omitted)?;
         Ok(diverged(session.run()?, reference))
     })();
-    omission("planted_omission_host_memory", outcome)
+    omission("planted_omission_host_memory", outcome, false)
 }
 
 fn omitted_bridge_state(
@@ -387,18 +580,40 @@ fn omitted_bridge_state(
             return Ok(json!({"setup": failure}));
         }
         let current = session.capture(Capture::default())?;
+        let bridge_digest = session.bridge_state_digest()?;
         session.restore(&first.with_bridge_of(&current))?;
-        Ok(diverged(session.run()?, reference))
+        let same_bridge_digest = session.bridge_state_digest()? == bridge_digest;
+        let state_hash_unavailable = matches!(
+            session.state_hash(),
+            Err(SessionError::StateHashUnavailable)
+        );
+        let mut detail = match session.run() {
+            Ok(exit) => diverged(exit, reference),
+            Err(error @ (SessionError::Stopped(_) | SessionError::Protocol(_))) => {
+                json!({"diverged": true, "error": error.to_string()})
+            }
+            Err(error) => return Err(error),
+        };
+        detail["same_bridge_digest"] = json!(same_bridge_digest);
+        detail["state_hash_unavailable"] = json!(state_hash_unavailable);
+        Ok(detail)
     })();
-    omission("planted_omission_bridge_state", outcome)
+    omission("planted_omission_bridge_state", outcome, true)
 }
 
-fn omission(name: &str, outcome: Result<Value, SessionError>) -> Value {
+fn omission(name: &str, outcome: Result<Value, SessionError>, require_unavailable: bool) -> Value {
     match outcome {
-        Ok(detail) => check(name, detail["diverged"] == json!(true), detail),
+        Ok(detail) => check(
+            name,
+            detail["diverged"] == json!(true)
+                && (!require_unavailable
+                    || detail["same_bridge_digest"] == json!(true)
+                        && detail["state_hash_unavailable"] == json!(true)),
+            detail,
+        ),
         Err(error @ (SessionError::Stopped(_) | SessionError::Protocol(_))) => check(
             name,
-            true,
+            !require_unavailable,
             json!({"diverged": true, "error": error.to_string()}),
         ),
         Err(error) => check(name, false, json!({"error": error.to_string()})),
@@ -426,7 +641,7 @@ fn start(
     if randomized {
         filter::deny_personality_change(&mut command);
     }
-    Session::start(command, work, base, checkpoints, restore)
+    Session::start(command, work, base, checkpoints, restore, None)
 }
 
 fn pause(
@@ -465,7 +680,7 @@ impl Costs {
         let started = now();
         let checkpoint = session.capture(capture)?;
         self.capture_ms.push(milliseconds(started.elapsed()));
-        self.image_bytes.push(checkpoint.bytes());
+        self.image_bytes.push(checkpoint.bytes()?);
         self.owned_bytes.push(checkpoint.owned_pages() * 4096);
         Ok(checkpoint)
     }

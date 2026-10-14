@@ -56,10 +56,7 @@ impl<R: Borrow<InputSpec>> ControlState<R> {
 }
 
 impl ControlState {
-    pub fn decode(bytes: &[u8]) -> Result<Option<Self>, &'static str> {
-        if bytes.is_empty() {
-            return Ok(None);
-        }
+    pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut input = bytes;
         if take(&mut input, 8)? != b"HCSTATE1" {
             return Err("control state magic");
@@ -106,23 +103,17 @@ impl ControlState {
         {
             return Err("failed control moment is absent from the pending plan");
         }
-        Ok(Some(Self {
+        Ok(Self {
             recorded,
             pending,
             poisoned,
             exec_nonce,
-        }))
+        })
     }
 
-    pub fn decode_for_policy(
-        bytes: &[u8],
-        policy: &ServiceConfig,
-    ) -> Result<Option<Self>, &'static str> {
+    pub fn decode_for_policy(bytes: &[u8], policy: &ServiceConfig) -> Result<Self, &'static str> {
         let state = Self::decode(bytes)?;
-        if state
-            .as_ref()
-            .is_some_and(|state| state.recorded.config() != policy)
-        {
+        if state.recorded.config() != policy {
             return Err("recorded control policy differs from the snapshot policy");
         }
         Ok(state)
@@ -191,19 +182,16 @@ mod tests {
     }
 
     #[test]
-    fn control_round_trip_and_legacy_absence() {
+    fn control_round_trip_rejects_absence() {
         let state = state();
         assert_eq!(
             ControlState::decode(&state.encode()).unwrap(),
-            Some(state.clone())
+            state.clone()
         );
-        assert_eq!(ControlState::decode(&[]).unwrap(), None);
+        assert_eq!(ControlState::decode(&[]), Err("truncated control state"));
         let mut runnable = state;
         runnable.poisoned = None;
-        assert_eq!(
-            ControlState::decode(&runnable.encode()).unwrap(),
-            Some(runnable)
-        );
+        assert_eq!(ControlState::decode(&runnable.encode()).unwrap(), runnable);
     }
 
     #[test]
@@ -226,7 +214,7 @@ mod tests {
                 (state.pending.encode().len() > MAX_CHANNEL_BYTES),
                 !large_recorded
             );
-            assert_eq!(ControlState::decode(&state.encode()).unwrap(), Some(state));
+            assert_eq!(ControlState::decode(&state.encode()).unwrap(), state);
         }
     }
 
@@ -300,10 +288,7 @@ mod tests {
         assert_eq!(&suffix[..4], b"CPLN");
         assert_eq!(&suffix[4..12], &(encoded.len() as u64).to_le_bytes());
         assert_eq!(&suffix[12..], encoded.as_slice());
-        assert_eq!(
-            ControlState::decode(&encoded).unwrap(),
-            Some(baseline.clone())
-        );
+        assert_eq!(ControlState::decode(&encoded).unwrap(), baseline.clone());
         for altered in [
             ControlState {
                 exec_nonce: 18,

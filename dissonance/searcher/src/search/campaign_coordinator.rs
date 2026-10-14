@@ -11,16 +11,17 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CONSECUTIVE_SKIP_LIMIT, CampaignConfig, CampaignCounters, CampaignExecutionOptions,
-    CampaignJobRecord, CampaignJobResult, CampaignOrigin, CampaignOriginRecord, CampaignOutcome,
-    CampaignProgressRecord, CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader,
-    CampaignStreamRecord, CampaignTypes, CompletedJob, CoordinatorCore, DEFAULT_MIXTURE_WEIGHT,
-    JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob,
-    StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign, build_report,
-    continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
-    finish_record, initial_draw_state, memory_is_within_reserve, planned_finish, profile_elapsed,
-    profile_now, progress_checkpoint_due, progress_record, record_compaction_elapsed,
-    record_mixture_outcome, resolve_origin, restore_search_checkpoint, retained_archive_indexes,
+    CONSECUTIVE_SKIP_LIMIT, CampaignConfig, CampaignCounters, CampaignEndRecord,
+    CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
+    CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord, CampaignSkipRecord,
+    CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CompletedJob,
+    CoordinatorCore, DEFAULT_MIXTURE_WEIGHT, JobSpecRecord, LONGEST_SPLICE_TAIL,
+    LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
+    archive_entry_limit_is_valid, bootstrap_campaign, build_report, continuation_arrival,
+    continuation_attempt, derive_selection_seed, execution_work_delta, finish_record,
+    initial_draw_state, memory_is_within_reserve, planned_finish, profile_elapsed, profile_now,
+    progress_checkpoint_due, progress_record, record_compaction_elapsed, record_mixture_outcome,
+    resolve_origin, restore_search_checkpoint, retained_archive_indexes,
     stop_reservations_after_objective, stream_header, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
@@ -30,6 +31,7 @@ use crate::search::checkpoint::{CheckpointReader, CheckpointWriter};
 use crate::search::draw::{DrawMixture, EnergyStrategy, MixtureDraw, energy_strategy};
 use crate::search::draw_tables::{DrawTableHeader, DrawTables};
 use crate::search::duration::DurationPolicies;
+use crate::search::empirical_steps::EmpiricalStepCheckpoint;
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, HostTimes, IdleClock, IdleReason, Moment, WorkerTelemetry, nanos_since, now,
@@ -312,11 +314,9 @@ where
             }
             coordinator.pending.insert(job.reservation, job.pending);
         }
-        if coordinator.pending.is_empty() {
-            for _ in 0..config.window {
-                if !coordinator.reserve()? {
-                    break;
-                }
+        for _ in coordinator.pending.len()..config.window {
+            if !coordinator.reserve()? {
+                break;
             }
         }
         Ok(coordinator)
@@ -490,10 +490,11 @@ where
             config,
             header,
             origin_record,
-            writer,
+            mut writer,
             progress,
             mut core,
             mut counters,
+            reserved,
             draw_state,
             duration_policies,
             mut telemetry,
@@ -538,6 +539,13 @@ where
                 sink,
             )?;
         }
+        writer.write_line(
+            &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
+                jobs: reserved,
+                skips: counters.duplicates_skipped,
+                executions_completed: core.sequence,
+            }),
+        )?;
         let stream_sha256 = writer.finish()?;
         counters.draw_state_memory_bytes = workload
             .draw_state_memory_bytes(&draw_state)

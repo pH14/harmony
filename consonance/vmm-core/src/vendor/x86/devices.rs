@@ -89,6 +89,10 @@ impl Uart8250 {
         self.read(port)
     }
 
+    pub(crate) fn pending_input(&self) -> Vec<u8> {
+        self.rx.iter().copied().collect()
+    }
+
     pub(crate) fn inject_input(&mut self, bytes: &[u8]) {
         self.rx.extend(bytes.iter().copied());
     }
@@ -143,12 +147,19 @@ impl Uart8250 {
         self.dlm
     }
 
-    pub(crate) fn restore(&mut self, capture: Vec<u8>, regs: [u8; 8], dlab: bool, dlm: u8) {
+    pub(crate) fn restore(
+        &mut self,
+        capture: Vec<u8>,
+        regs: [u8; 8],
+        dlab: bool,
+        dlm: u8,
+        input: Vec<u8>,
+    ) {
         self.capture = capture;
         self.regs = regs;
         self.dlab = dlab;
         self.dlm = dlm;
-        self.rx.clear();
+        self.rx = input.into();
     }
 }
 
@@ -162,8 +173,10 @@ pub struct LegacyPlatform {
 const PCI_CONFIG_ADDRESS: u16 = 0x0CF8;
 const PCI_CONFIG_DATA_LO: u16 = 0x0CFC;
 const PCI_CONFIG_DATA_HI: u16 = 0x0CFF;
-const PIC_MASTER_DATA: u16 = 0x0021;
-const PIC_SLAVE_DATA: u16 = 0x00A1;
+pub(crate) const PIC_MASTER_COMMAND: u16 = 0x0020;
+pub(crate) const PIC_MASTER_DATA: u16 = 0x0021;
+pub(crate) const PIC_SLAVE_COMMAND: u16 = 0x00A0;
+pub(crate) const PIC_SLAVE_DATA: u16 = 0x00A1;
 const I8042_STATUS_PORT: u16 = 0x0064;
 const I8042_STATUS_FAST_CLEAR: u8 = 0x01;
 
@@ -398,7 +411,7 @@ mod tests {
     fn restore_clears_injected_input() {
         let mut u = Uart8250::new();
         u.inject_input(b"leftover");
-        u.restore(vec![], [0; 8], false, 0);
+        u.restore(vec![], [0; 8], false, 0, vec![]);
         assert!(!u.rx_has_input());
         assert_eq!(u.read(UART_PORT_BASE), Some(0));
     }

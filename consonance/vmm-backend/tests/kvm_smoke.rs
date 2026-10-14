@@ -2,9 +2,16 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use vmm_backend::{
-    Backend, CommonExit, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend, MsrFilter, MsrRange,
-    VcpuState, X86Exit, X86Policy,
+    Backend, BackendError, CommonExit, CpuidEntry, CpuidModel, Exit, ExitCounts, Gpa, KvmBackend,
+    MsrFilter, MsrRange, VcpuState, X86Exit, X86Policy,
 };
+
+fn logical_endpoint_state(mut state: VcpuState) -> VcpuState {
+    state.xsave_restore_bv =
+        vmm_backend::logical_xsave_restore_bv(&state.xsave, state.xsave_restore_bv)
+            .expect("valid XSAVE state at completed guest endpoint");
+    state
+}
 
 struct GuestMem {
     ptr: *mut u8,
@@ -169,7 +176,7 @@ fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
                 endpoint.regs.rbx, 1,
                 "INC executes exactly once on continuation"
             );
-            endpoints.push(endpoint);
+            endpoints.push(logical_endpoint_state(endpoint));
         }
         assert_eq!(
             endpoints[0], endpoints[1],
@@ -428,7 +435,7 @@ fn endpoint(
         "{}: INC BX did not run once",
         operation.name()
     );
-    (state, mem.as_mut_slice().to_vec())
+    (logical_endpoint_state(state), mem.as_mut_slice().to_vec())
 }
 
 #[test]
@@ -817,7 +824,10 @@ fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
                 }
                 let counts_before_hlt = backend.exit_counts();
                 let endpoint = continue_msr_guest(&mut backend, response, counts_before_hlt);
-                endpoints.push((endpoint, mem.as_mut_slice().to_vec()));
+                endpoints.push((
+                    logical_endpoint_state(endpoint),
+                    mem.as_mut_slice().to_vec(),
+                ));
             }
             assert_eq!(
                 endpoints[0], endpoints[1],
@@ -834,6 +844,10 @@ fn serviced_msr_is_exactly_snapshottable_without_guest_execution() {
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored"]
 fn save_restore_round_trips_on_real_kvm() {
+    const EFER: u32 = 0xc000_0080;
+    const FS_BASE: u32 = 0xc000_0100;
+    const GS_BASE: u32 = 0xc000_0101;
+
     let mut backend = new_backend_or_explain();
     let mut mem = GuestMem::new(0x10000);
     // SAFETY: as above.
@@ -856,6 +870,590 @@ fn save_restore_round_trips_on_real_kvm() {
     backend.restore(&a).expect("restore a");
     let b = backend.save().expect("save b");
     assert_eq!(a, b, "restore→save must be a fixpoint on real KVM");
+
+    let mut aliases = new_backend_or_explain();
+    aliases
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel::default(),
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![
+                    MsrRange {
+                        base: EFER,
+                        count: 1,
+                    },
+                    MsrRange {
+                        base: FS_BASE,
+                        count: 2,
+                    },
+                ],
+            },
+        })
+        .expect("set alias policy");
+    let mut coherent = aliases.save().expect("save aliases");
+    coherent.sregs.efer = 0x100;
+    coherent.sregs.fs.base = 0x1234_5000;
+    coherent.sregs.gs.base = 0x6789_0000;
+    coherent.msrs.insert(EFER, coherent.sregs.efer);
+    coherent.msrs.insert(FS_BASE, coherent.sregs.fs.base);
+    coherent.msrs.insert(GS_BASE, coherent.sregs.gs.base);
+    aliases
+        .restore(&coherent)
+        .expect("restore coherent aliases");
+    let baseline = aliases.save().expect("save coherent aliases");
+    assert_eq!(baseline.sregs.efer, baseline.msrs[&EFER]);
+    assert_eq!(baseline.sregs.fs.base, baseline.msrs[&FS_BASE]);
+    assert_eq!(baseline.sregs.gs.base, baseline.msrs[&GS_BASE]);
+    assert_eq!(baseline.sregs.efer, 0x100);
+    assert_eq!(baseline.sregs.fs.base, 0x1234_5000);
+    assert_eq!(baseline.sregs.gs.base, 0x6789_0000);
+
+    for index in [EFER, FS_BASE, GS_BASE] {
+        let mut inconsistent = baseline.clone();
+        inconsistent.regs.rax ^= 1;
+        match index {
+            EFER => inconsistent.sregs.efer ^= 0x100,
+            FS_BASE => inconsistent.sregs.fs.base ^= 1,
+            GS_BASE => inconsistent.sregs.gs.base ^= 1,
+            _ => unreachable!(),
+        }
+        assert!(matches!(
+            aliases.validate_restore_state(&inconsistent),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            aliases.restore(&inconsistent),
+            Err(BackendError::InvalidState)
+        ));
+        let after = aliases.save().expect("save after rejected restore");
+        assert_eq!(after.regs, baseline.regs, "{index:#x} changed registers");
+        assert_eq!(after.sregs, baseline.sregs, "{index:#x} changed sregs");
+        assert_eq!(after.msrs, baseline.msrs, "{index:#x} changed MSRs");
+    }
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn sysenter_restore_rejects_values_kvm_cannot_preserve() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+    backend
+        .set_policy(&X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 0,
+                    ebx: u32::from_le_bytes(*b"Genu"),
+                    edx: u32::from_le_bytes(*b"ineI"),
+                    ecx: u32::from_le_bytes(*b"ntel"),
+                    ..Default::default()
+                }],
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        })
+        .expect("set Intel-compatible test policy");
+    let baseline = backend.save().expect("save baseline");
+
+    for (index, value) in [(0x174, 1 << 32), (0x175, 1 << 63), (0x176, 1 << 56)] {
+        let mut invalid = baseline.clone();
+        invalid.regs.rax ^= 1;
+        invalid.msrs.insert(index, value);
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut canonical = baseline.clone();
+    canonical.msrs.insert(0x174, u64::from(u32::MAX));
+    canonical.msrs.insert(0x175, 0x0000_7fff_ffff_ffff);
+    canonical.msrs.insert(0x176, 0xffff_8000_0000_0000);
+    backend
+        .restore(&canonical)
+        .expect("restore canonical values");
+    let restored = backend.save().expect("save canonical values");
+    assert_eq!(restored.msrs, canonical.msrs);
+    assert_eq!(restored.regs, canonical.regs);
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn cr8_restore_rejects_out_of_range_priority_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+    configure(&mut backend);
+    let baseline = backend.save().expect("save baseline");
+
+    let mut invalid = baseline.clone();
+    invalid.sregs.cr8 = 0x10;
+    invalid.regs.rax ^= 1;
+    assert!(matches!(
+        backend.validate_restore_state(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(matches!(
+        backend.restore(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert_eq!(backend.save().expect("save after rejection"), baseline);
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr8 = 0x0f;
+    backend.restore(&valid).expect("restore valid CR8");
+    let restored = backend.save().expect("save valid CR8");
+    assert_eq!(restored.sregs.cr8, 0x0f);
+    assert_eq!(restored.regs, valid.regs);
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn rflags_restore_rejects_nonarchitectural_bits_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    // SAFETY: guest RAM is page-aligned, remains allocated until after the backend is dropped, and no host slice aliases it while the guest runs.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map_memory");
+    configure(&mut backend);
+    let baseline = backend.save().expect("save baseline");
+
+    let mut invalid = baseline.clone();
+    invalid.regs.rflags &= !2;
+    invalid.regs.rax ^= 1;
+    assert!(matches!(
+        backend.validate_restore_state(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(matches!(
+        backend.restore(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert_eq!(backend.save().expect("save after rejection"), baseline);
+
+    for bit in [3, 5, 15, 22, 63] {
+        let mut invalid = baseline.clone();
+        invalid.regs.rflags |= 1 << bit;
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.regs.rflags |= 1;
+    valid.regs.rax ^= 1;
+    backend.restore(&valid).expect("restore valid RFLAGS");
+    let restored = backend.save().expect("save valid RFLAGS");
+    assert_eq!(restored, valid);
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn rflags_vm_restore_rejects_real_mode_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+    assert_eq!(baseline.sregs.cr0 & 1, 0);
+
+    let mut invalid = baseline.clone();
+    invalid.regs.rflags |= 1 << 17;
+    invalid.regs.rax ^= 1;
+    assert!(matches!(
+        backend.validate_restore_state(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert!(matches!(
+        backend.restore(&invalid),
+        Err(BackendError::InvalidState)
+    ));
+    assert_eq!(backend.save().expect("save after rejection"), baseline);
+
+    let mut valid = baseline.clone();
+    valid.regs.rflags |= 1;
+    valid.regs.rax ^= 1;
+    backend
+        .restore(&valid)
+        .expect("restore valid real-mode flags");
+    assert_eq!(backend.save().expect("save valid real-mode flags"), valid);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn segment_encoding_restore_rejects_oversized_fields_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for field in 0..4 {
+        let mut invalid = baseline.clone();
+        match field {
+            0 => invalid.sregs.cs.type_ |= 0x10,
+            1 => invalid.sregs.cs.dpl = 4,
+            2 => invalid.sregs.tr.type_ |= 0x10,
+            _ => invalid.sregs.ds.dpl = 4,
+        }
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.ds.dpl = 3;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate legal DPL");
+    backend.restore(&valid).expect("restore legal DPL");
+    assert_eq!(backend.save().expect("save legal DPL").sregs.ds.dpl, 3);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn segment_one_bit_restore_rejects_oversized_flags_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for field in 0..4 {
+        let mut invalid = baseline.clone();
+        match field {
+            0 => invalid.sregs.cs.present = 2,
+            1 => invalid.sregs.ds.l = 2,
+            2 => invalid.sregs.tr.unusable = 2,
+            _ => invalid.sregs.ldt.avl = 2,
+        }
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.ds.avl = 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate AVL");
+    backend.restore(&valid).expect("restore AVL");
+    assert_eq!(backend.save().expect("save AVL").sregs.ds.avl, 1);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn xsave_reserved_header_restore_rejects_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+    assert!(baseline.xsave.len() >= 576);
+
+    for offset in [528, 543, 575] {
+        let mut invalid = baseline.clone();
+        invalid.xsave[offset] = 1;
+        invalid.sregs.cr2 ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate XSAVE");
+    backend.restore(&valid).expect("restore XSAVE");
+    assert_eq!(
+        backend.save().expect("save valid XSAVE").sregs.cr2,
+        valid.sregs.cr2
+    );
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn xsave_header_inputs_restore_rejects_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+    assert!(baseline.xsave.len() >= 576);
+
+    for variant in 0..6 {
+        let mut invalid = baseline.clone();
+        invalid.sregs.cr2 ^= 1;
+        match variant {
+            0 => {
+                invalid.xsave_restore_bv = None;
+                invalid.xsave[520..528].copy_from_slice(&(1u64 << 63).to_le_bytes());
+            }
+            1 => {
+                invalid.xsave_restore_bv = None;
+                invalid.xsave[520..528].copy_from_slice(&1u64.to_le_bytes());
+            }
+            2 | 3 => {
+                invalid.xsave_restore_bv = (variant == 2).then_some(1u64 << 63);
+                invalid.xsave[512..520].copy_from_slice(&(1u64 << 63).to_le_bytes());
+            }
+            _ => {
+                invalid.xsave_restore_bv = (variant == 4).then_some(2);
+                invalid.xsave[512..520].copy_from_slice(&2u64.to_le_bytes());
+                invalid.xsave[24..28].copy_from_slice(&0x0001_1f80u32.to_le_bytes());
+            }
+        }
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    valid.xsave_restore_bv = Some(2);
+    valid.xsave[512..520].copy_from_slice(&2u64.to_le_bytes());
+    valid.xsave[24..28].copy_from_slice(&0x1f81u32.to_le_bytes());
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate standard XSAVE");
+    backend.restore(&valid).expect("restore standard XSAVE");
+    let observed = backend.save().expect("save valid XSAVE");
+    assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
+    assert_eq!(observed.xsave[24..28], 0x1f81u32.to_le_bytes());
+    assert_eq!(observed.xsave[512..520], 2u64.to_le_bytes());
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn event_flags_restore_checks_effective_set_mask_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+    assert_ne!(
+        baseline.events.flags & kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD,
+        0
+    );
+
+    for flags in [
+        baseline.events.flags & !kvm_bindings::KVM_VCPUEVENT_VALID_SHADOW,
+        baseline.events.flags | kvm_bindings::KVM_VCPUEVENT_VALID_SIPI_VECTOR,
+    ] {
+        let mut invalid = baseline.clone();
+        invalid.events.flags = flags;
+        invalid.sregs.cr2 ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.events.flags &= !kvm_bindings::KVM_VCPUEVENT_VALID_PAYLOAD;
+    valid.sregs.cr2 ^= 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate effective event restore flags");
+    backend
+        .restore(&valid)
+        .expect("restore effective event flags");
+    let observed = backend.save().expect("save restored state");
+    assert_eq!(observed.events.flags, baseline.events.flags);
+    assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn event_shape_restore_rejects_noncanonical_fields_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for variant in 0..7 {
+        let mut invalid = baseline.clone();
+        invalid.sregs.cr2 ^= 1;
+        match variant {
+            0 => invalid.events.nmi_pending = 4,
+            1 => invalid.events.interrupt_soft = 1,
+            2 => invalid.events.sipi_vector = 1,
+            3 => invalid.events.interrupt_shadow = 4,
+            4 => invalid.events.exception_pending = 2,
+            5 => invalid.events.nmi_masked = 2,
+            _ => invalid.events.triple_fault_pending = 1,
+        }
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate canonical events");
+    backend.restore(&valid).expect("restore canonical events");
+    let observed = backend.save().expect("save restored state");
+    assert_eq!(observed.events, baseline.events);
+    assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+
+    let mut pending_nmis = baseline.clone();
+    pending_nmis.events.nmi_pending = 2;
+    backend
+        .validate_restore_state(&pending_nmis)
+        .expect("validate two pending NMIs");
+    backend
+        .restore(&pending_nmis)
+        .expect("restore two pending NMIs");
+    assert_eq!(
+        backend
+            .save()
+            .expect("save pending NMIs")
+            .events
+            .nmi_pending,
+        2
+    );
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn event_dependent_fields_restore_rejects_unrestorable_values_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for variant in 0..3 {
+        let mut invalid = baseline.clone();
+        invalid.sregs.cr2 ^= 1;
+        match variant {
+            0 => invalid.events.exception_has_payload = 1,
+            1 => invalid.events.smi_inside_nmi = 1,
+            _ => invalid.events.smi_latched_init = 1,
+        }
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.cr2 ^= 1;
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate captured events");
+    backend.restore(&valid).expect("restore captured events");
+    let observed = backend.save().expect("save restored state");
+    assert_eq!(observed.events, baseline.events);
+    assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn unusable_segment_restore_requires_canonical_shape_before_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let baseline = backend.save().expect("save baseline");
+
+    for field in 0..4 {
+        let mut invalid = baseline.clone();
+        match field {
+            0 => invalid.sregs.cs.present = 0,
+            1 => invalid.sregs.ds.unusable = 1,
+            2 => invalid.sregs.tr.present = 0,
+            _ => invalid.sregs.ldt.unusable = 1,
+        }
+        invalid.regs.rax ^= 1;
+        assert!(matches!(
+            backend.validate_restore_state(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(backend.save().expect("save after rejection"), baseline);
+    }
+
+    let mut valid = baseline.clone();
+    valid.sregs.ldt = vmm_backend::Segment {
+        base: valid.sregs.ldt.base,
+        selector: valid.sregs.ldt.selector,
+        unusable: 1,
+        ..Default::default()
+    };
+    backend
+        .validate_restore_state(&valid)
+        .expect("validate unusable LDT");
+    backend.restore(&valid).expect("restore unusable LDT");
+    assert_eq!(
+        backend.save().expect("save unusable LDT").sregs.ldt,
+        valid.sregs.ldt
+    );
+    assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
 }
 
 #[test]
@@ -1112,4 +1710,27 @@ fn resume_flag_preserves_instruction_breakpoint_continuation() {
         original.ram == cold.ram,
         "original and cold endpoint RAM differ"
     );
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored"]
+fn nonnested_failed_restore_poisoned_after_partial_mutation() {
+    let mut mem = GuestMem::new(0x10000);
+    let mut backend = new_backend_or_explain();
+    setup_real_mode(&mut backend, &mut mem, &[0xf4]);
+    let mut invalid = backend.save().expect("save baseline");
+    invalid.sregs.cr2 ^= 0x1000;
+    invalid.debugregs.flags = 1;
+    backend
+        .validate_restore_state(&invalid)
+        .expect("debug-register ioctl failure is after shape preflight");
+    assert!(backend.restore(&invalid).is_err());
+    assert!(matches!(
+        backend.save(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+    assert!(matches!(
+        backend.run(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
 }

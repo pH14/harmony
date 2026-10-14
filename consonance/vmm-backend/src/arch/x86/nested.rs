@@ -9,15 +9,15 @@ pub const SVM_GIF_SET: u16 = 1 << 8;
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
 #[derive(Default)]
-pub(crate) struct NestedStateGuard {
+pub(crate) struct StateMutationGuard {
     poisoned: std::cell::Cell<bool>,
 }
 
 #[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
-impl NestedStateGuard {
+impl StateMutationGuard {
     pub(crate) fn ensure_healthy(&self) -> Result<()> {
         if self.poisoned.get() {
-            Err(BackendError::Internal("nested state mutation failed"))
+            Err(BackendError::Internal("backend state mutation failed"))
         } else {
             Ok(())
         }
@@ -296,7 +296,7 @@ mod tests {
     fn nested_reload_failure_prevents_guest_entry_and_retry() {
         let slots = [1, 2];
         for fail_at in 1..=4 {
-            let guard = NestedStateGuard::default();
+            let guard = StateMutationGuard::default();
             let mut calls = Vec::new();
             assert!(
                 guard
@@ -322,7 +322,7 @@ mod tests {
                     .is_err()
             );
         }
-        let guard = NestedStateGuard::default();
+        let guard = StateMutationGuard::default();
         assert!(guard.mutate(|| Ok(())).is_ok());
         assert!(guard.ensure_healthy().is_ok());
         assert!(

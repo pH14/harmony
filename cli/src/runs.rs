@@ -265,12 +265,8 @@ pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
                     .ok_or("invalid checkpoint filename")?,
             );
             if candidate.is_file() {
-                return Ok((
-                    candidate,
-                    record["reserved"]
-                        .as_u64()
-                        .ok_or("checkpoint journal has no reserved execution count")?,
-                ));
+                let reserved = searcher::search::checkpoint::read_header(&candidate)?.reserved;
+                return Ok((candidate, reserved));
             }
         }
     }
@@ -280,6 +276,32 @@ pub fn checkpoint_record(path: &Path) -> Result<(PathBuf, u64)> {
 #[cfg(test)]
 mod checkpoint_tests {
     use super::*;
+    use searcher::search::checkpoint::{
+        CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
+    };
+    use sha2::{Digest, Sha256};
+
+    fn write_checkpoint(path: &Path, executions: u64, reserved: u64) {
+        let header = CheckpointHeader {
+            format: SEARCH_CHECKPOINT_FORMAT.into(),
+            reason: "interval".into(),
+            workload_identity_sha256: String::new(),
+            campaign_seed: 1,
+            window: 1,
+            archive_entry_limit: 8,
+            memory_budget_mib: None,
+            policies: BTreeMap::new(),
+            executions,
+            reserved,
+            admitted: executions as usize,
+            planned_clock: 0,
+        };
+        let mut bytes = postcard::to_allocvec(&header).unwrap();
+        bytes.extend_from_slice(&postcard::to_allocvec(&Vec::<StoredSnapshot>::new()).unwrap());
+        let checksum = Sha256::digest(&bytes);
+        bytes.extend_from_slice(&checksum);
+        fs::write(path, bytes).unwrap();
+    }
 
     #[test]
     fn interrupted_checkpoint_append_preserves_the_previous_checkpoint() {
@@ -287,7 +309,7 @@ mod checkpoint_tests {
         let directory = root.path().join("checkpoints");
         fs::create_dir(&directory).unwrap();
         let checkpoint = directory.join("checkpoint.bin");
-        fs::write(&checkpoint, b"checkpoint").unwrap();
+        write_checkpoint(&checkpoint, 4, 7);
         let journal = directory.join("checkpoints.jsonl");
         for suffix in ["", "{", "{\"file\":", "{\"file\":\"next"] {
             fs::write(
@@ -306,5 +328,20 @@ mod checkpoint_tests {
         assert!(checkpoint_record(root.path()).is_err());
         fs::write(&journal, "{\"file\":\"checkpoint.bin\"}\n{\n").unwrap();
         assert!(checkpoint_record(root.path()).is_err());
+    }
+
+    #[test]
+    fn checkpoint_budget_uses_verified_header_instead_of_journal_count() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("checkpoints");
+        fs::create_dir(&directory).unwrap();
+        let checkpoint = directory.join("checkpoint.ckpt");
+        write_checkpoint(&checkpoint, 3, 3);
+        fs::write(
+            directory.join("checkpoints.jsonl"),
+            "{\"file\":\"checkpoint.ckpt\",\"reserved\":7}\n",
+        )
+        .unwrap();
+        assert_eq!(checkpoint_record(root.path()).unwrap(), (checkpoint, 3));
     }
 }

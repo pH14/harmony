@@ -10,6 +10,71 @@ use vmm_core::vmm::{GuestRam, Step, TerminalReason, Vmm, VmmError};
 
 const RAM: usize = 0x4000;
 
+#[test]
+fn arm64_system_registers_survive_codec_and_affect_identity() {
+    use vmm_core::vendor::arm64::{
+        Arm64ArchitecturalState, Arm64ArchitectureDifference, compare_arm64_architecture,
+    };
+    type Mutator = fn(&mut Arm64VcpuState);
+    let cases: [(&str, Mutator); 6] = [
+        ("contextidr_el1", |s| s.sysregs.contextidr_el1 = 0x1234),
+        ("amair_el1", |s| s.sysregs.amair_el1 = 0x1234),
+        ("par_el1", |s| s.sysregs.par_el1 = 0x1234),
+        ("csselr_el1", |s| s.sysregs.csselr_el1 = 0x1234),
+        ("afsr0_el1", |s| s.sysregs.afsr0_el1 = 0x1234),
+        ("afsr1_el1", |s| s.sysregs.afsr1_el1 = 0x1234),
+    ];
+    for hashing in [false, true] {
+        let mut baseline = vmm(vec![]);
+        if hashing {
+            baseline.wire_snapshot_hashing();
+        }
+        let baseline_hash = baseline.state_hash().unwrap();
+        for (name, mutate) in cases {
+            let mut state = Arm64VcpuState::default();
+            mutate(&mut state);
+            let mut backend = MockArm64Backend::new();
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            backend.set_state(state);
+            let mut source = Vmm::new(backend, GuestRam::new(RAM).unwrap());
+            if hashing {
+                source.wire_snapshot_hashing();
+            }
+            assert_ne!(source.state_hash().unwrap(), baseline_hash, "{name}");
+            let encoded = source.save_vm_state().unwrap().encode().unwrap();
+            let snapshot = Arm64VmState::decode(&encoded).unwrap();
+            let mut restored = vmm(vec![]);
+            restored.restore_vm_state(&snapshot).unwrap();
+            assert_eq!(
+                restored.vcpu_record().unwrap().sysregs,
+                state.sysregs,
+                "{name}"
+            );
+
+            let expected = Arm64ArchitecturalState {
+                vcpu: Arm64VcpuState::default(),
+                gic: None,
+            };
+            let changed = Arm64ArchitecturalState {
+                vcpu: state,
+                gic: None,
+            };
+            let difference = compare_arm64_architecture(&expected, &changed).unwrap_err();
+            let Arm64ArchitectureDifference::Vcpu { field, index: None } = difference else {
+                panic!("wrong difference for {name}: {difference:?}");
+            };
+            assert_eq!(field, format!("sysregs.{name}"));
+            let mut text = Vec::new();
+            changed.write_text(&mut text).unwrap();
+            assert!(
+                String::from_utf8(text)
+                    .unwrap()
+                    .contains(&format!("sysregs.{name} 0000000000001234\n"))
+            );
+        }
+    }
+}
+
 fn vmm(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
     let mut b = MockArm64Backend::with_exits(exits);
     b.set_policy(&Arm64Policy::default()).unwrap();
@@ -86,7 +151,7 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
     b.set_policy(&Arm64Policy::default()).unwrap();
     b.set_state(vcpu);
     let mut v = Vmm::new(b, GuestRam::new(RAM).unwrap());
-    v.inject_serial_input(b"never-snapshotted");
+    v.inject_serial_input(b"snapshot-input");
 
     let s: Arm64VmState = v.save_vm_state().unwrap();
     assert_eq!(s.regs.pc, 0x0020_0000);
@@ -103,7 +168,7 @@ fn arm64_snapshot_round_trip_is_restore_transparent() {
 
     let mut fresh = vmm(vec![]);
     fresh.restore_snapshot(v.guest_memory(), &decoded).unwrap();
-    assert_eq!(fresh.inspect_vcpu(), v.inspect_vcpu());
+    assert_eq!(fresh.inspect_vcpu().unwrap(), v.inspect_vcpu().unwrap());
     assert_eq!(
         fresh.state_hash().unwrap(),
         v.state_hash().unwrap(),
@@ -598,6 +663,7 @@ fn arm64_clockevent_is_level_triggered_and_snapshot_complete() {
     assert!(v.has_pending_guest_interrupt().unwrap());
     assert!(
         v.state_components()
+            .unwrap()
             .iter()
             .any(|(label, _)| *label == "arm-clockevent"),
         "non-default clockevent state must be independently localizable"
@@ -801,17 +867,25 @@ fn arm64_clockevent_protocol_faults_and_disarm_are_fail_closed() {
         }),
     ]);
     wire_virtual_time_clock(&mut disarm);
-    for _ in 0..4 {
+    for _ in 0..3 {
         assert_eq!(disarm.step().unwrap(), Step::Continued);
     }
-    assert!(!disarm.has_pending_guest_interrupt().unwrap());
     assert!(
         !disarm
             .state_components()
+            .unwrap()
             .iter()
             .any(|(label, _)| *label == "arm-clockevent"),
         "a fully disarmed never-fired device returns to canonical default state"
     );
+    assert_eq!(disarm.step().unwrap(), Step::Continued);
+    assert!(!disarm.has_pending_guest_interrupt().unwrap());
+    assert!(matches!(
+        disarm.state_components(),
+        Err(VmmError::Backend(
+            vmm_backend::BackendError::PendingCompletion
+        ))
+    ));
 
     for control in [0, 3, u64::from(u32::MAX) + 1] {
         let mut bad = vmm(vec![Exit::Common(CommonExit::Mmio {
@@ -917,8 +991,8 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
 
     assert_ne!(a.state_hash().unwrap(), b.state_hash().unwrap());
 
-    let ca = a.state_components();
-    let cb = b.state_components();
+    let ca = a.state_components().unwrap();
+    let cb = b.state_components().unwrap();
     let gic_a = ca
         .iter()
         .find(|(l, _)| *l == "gic")
@@ -944,7 +1018,13 @@ fn arm64_state_components_localizes_a_gic_only_divergence() {
     }
 
     let mut unwired = vmm(vec![]);
-    assert!(!unwired.state_components().iter().any(|(l, _)| *l == "gic"));
+    assert!(
+        !unwired
+            .state_components()
+            .unwrap()
+            .iter()
+            .any(|(l, _)| *l == "gic")
+    );
 }
 
 #[test]
@@ -958,7 +1038,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
 
     let base = Arm64VcpuState::default();
     let mut baseline = make(base);
-    let baseline_components = baseline.state_components();
+    let baseline_components = baseline.state_components().unwrap();
 
     let mut general = base;
     general.core.x[30] = 1;
@@ -987,7 +1067,7 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
             candidate.state_hash().unwrap(),
             "{expected} must feed the canonical VCPU hash"
         );
-        let candidate_components = candidate.state_components();
+        let candidate_components = candidate.state_components().unwrap();
         let differing: Vec<&str> = baseline_components
             .iter()
             .filter_map(|(label, digest)| {
@@ -1006,7 +1086,11 @@ fn arm64_hvf_retained_classes_are_hash_observable() {
         restored
             .restore_snapshot(candidate.guest_memory(), &snapshot)
             .unwrap();
-        assert_eq!(restored.inspect_vcpu(), state, "{expected} restore");
+        assert_eq!(
+            restored.inspect_vcpu().unwrap(),
+            state,
+            "{expected} restore"
+        );
         assert_eq!(
             restored.state_hash().unwrap(),
             candidate.state_hash().unwrap(),
@@ -1098,7 +1182,7 @@ fn arm64_boot_composes_a_ready_vmm() {
     let backend = MockArm64Backend::new();
     let mut v = bringup::boot(backend, &image, "console=ttyAMA0", 16 * 1024 * 1024).unwrap();
 
-    let vcpu = v.inspect_vcpu();
+    let vcpu = v.inspect_vcpu().unwrap();
     assert_eq!(vcpu.core.pc, 0x4000_0000);
     assert_eq!(vcpu.core.pstate, 0x3c5);
     let dtb_gpa = vcpu.core.x[0];

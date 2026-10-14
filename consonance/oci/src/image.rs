@@ -2,9 +2,11 @@
 
 use crate::credentials;
 pub use crate::credentials::{CredentialsError, ProcessCredentials};
+use crate::exact;
 use guest_image::Owner;
 use serde::Deserialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
@@ -35,6 +37,10 @@ pub enum ImageError {
     InvalidRuntimeField { field: &'static str },
     #[error("image names a path outside its layout or rootfs: {0}")]
     UnsafePath(String),
+    #[error("image path is non-ASCII and not portable across host filesystems: {0}")]
+    NonPortableName(String),
+    #[error("image path {path:?} aliases {other:?} on case-insensitive hosts")]
+    CaseCollision { path: String, other: String },
     #[error("tar: {0}")]
     Tar(String),
     #[error(transparent)]
@@ -105,7 +111,18 @@ impl RuntimeConfig {
         rootfs: &Path,
     ) -> Result<ProcessCredentials, ImageError> {
         self.validate()?;
-        Ok(credentials::resolve(self.user.as_deref(), rootfs)?)
+        match credentials::resolve(self.user.as_deref(), rootfs) {
+            Ok(credentials) => Ok(credentials),
+            Err(
+                CredentialsError::Rootfs { source, .. }
+                | CredentialsError::AccountFile { source, .. },
+            ) if source.kind() == std::io::ErrorKind::PermissionDenied => {
+                with_host_read_access(rootfs, |_| {
+                    credentials::resolve(self.user.as_deref(), rootfs).map_err(ImageError::from)
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -134,6 +151,7 @@ pub struct StagedImage {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Ownership {
     owners: BTreeMap<PathBuf, Owner>,
+    modes: BTreeMap<PathBuf, u32>,
 }
 
 impl Ownership {
@@ -153,15 +171,33 @@ impl Ownership {
         self.owners.insert(path, owner);
     }
 
+    pub fn mode_of(&self, path: &Path, staged_mode: u32) -> u32 {
+        self.modes
+            .get(&normalized(path))
+            .copied()
+            .unwrap_or(staged_mode)
+    }
+
+    fn record_mode(&mut self, path: &Path, mode: u32) {
+        let path = normalized(path);
+        if !path.as_os_str().is_empty() {
+            self.modes.insert(path, mode);
+        }
+    }
+
     fn remove_tree(&mut self, path: &Path) {
         let path = normalized(path);
         self.owners
+            .retain(|recorded, _| !recorded.starts_with(&path));
+        self.modes
             .retain(|recorded, _| !recorded.starts_with(&path));
     }
 
     fn remove_below(&mut self, path: &Path) {
         let path = normalized(path);
         self.owners
+            .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
+        self.modes
             .retain(|recorded, _| recorded == &path || !recorded.starts_with(&path));
     }
 }
@@ -195,12 +231,24 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
 
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
     let tarball_path = Path::new(image);
-    if tarball_path.exists() {
-        stage_from_path(tarball_path, stage_dir)
-    } else {
-        let tarball = export_from_tool(image, stage_dir)?;
-        stage_from_path(&tarball, stage_dir)
+    let explicit_path =
+        tarball_path.is_absolute() || image.starts_with("./") || image.starts_with("../");
+    let local_candidate = explicit_path || exact::local_candidate(tarball_path)?;
+    if local_candidate && !exact::path(tarball_path)? {
+        return Err(ImageError::UnsafePath(image.to_string()));
     }
+    std::fs::create_dir_all(stage_dir)?;
+    let isolated = tempfile::Builder::new()
+        .prefix("image-stage-")
+        .tempdir_in(stage_dir)?;
+    let staged = if local_candidate {
+        stage_from_path(tarball_path, isolated.path())
+    } else {
+        let tarball = export_from_tool(image, isolated.path())?;
+        stage_from_path(&tarball, isolated.path())
+    }?;
+    let _ = isolated.keep();
+    Ok(staged)
 }
 
 fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError> {
@@ -230,6 +278,9 @@ fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError
 }
 
 fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageError> {
+    if !exact::path(input)? {
+        return Err(ImageError::UnsafePath(input.display().to_string()));
+    }
     let layout = if input.is_dir() {
         input.to_path_buf()
     } else {
@@ -239,9 +290,15 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
         dir
     };
 
-    let (layers, config_blob) = if layout.join("manifest.json").is_file() {
+    let manifest = contained_join(&layout, "manifest.json")
+        .ok()
+        .is_some_and(|path| path.is_file());
+    let index = contained_join(&layout, "index.json")
+        .ok()
+        .is_some_and(|path| path.is_file());
+    let (layers, config_blob) = if manifest {
         docker_save_layers(&layout)?
-    } else if layout.join("index.json").is_file() {
+    } else if index {
         oci_layout_layers(&layout)?
     } else {
         return Err(ImageError::Unrecognized(input.to_path_buf()));
@@ -251,8 +308,9 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
     let rootfs = stage_dir.join("rootfs");
     std::fs::create_dir_all(&rootfs)?;
     let mut owners = Ownership::default();
+    let mut portable_names = BTreeMap::new();
     for layer in &layers {
-        apply_layer(layer, &rootfs, &mut owners)?;
+        apply_layer_tracked(layer, &rootfs, &mut owners, &mut portable_names)?;
     }
     Ok(StagedImage {
         rootfs,
@@ -357,7 +415,78 @@ pub fn resolve_process_credentials(
     config.resolve_process_credentials(rootfs)
 }
 
+pub(crate) fn with_host_read_access<T, E>(
+    rootfs: &Path,
+    action: impl FnOnce(&BTreeMap<PathBuf, u32>) -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<std::io::Error>,
+{
+    let mut changed = Vec::new();
+    let prepared = allow_tree_reads(rootfs, &mut changed);
+    let original_modes = changed.iter().cloned().collect();
+    let result = prepared
+        .map_err(E::from)
+        .and_then(|_| action(&original_modes));
+    let restored = restore_tree_modes(changed);
+    match (result, restored) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Ok(value), Ok(())) => Ok(value),
+    }
+}
+
+pub fn with_staged_read_access<T, E>(
+    staged: &StagedImage,
+    action: impl FnOnce() -> Result<T, E>,
+) -> Result<T, E>
+where
+    E: From<std::io::Error>,
+{
+    with_host_read_access(&staged.rootfs, |_| action())
+}
+
+fn allow_tree_reads(path: &Path, changed: &mut Vec<(PathBuf, u32)>) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    let needed = if meta.is_dir() {
+        0o500
+    } else if meta.is_file() {
+        0o400
+    } else {
+        return Ok(());
+    };
+    let mode = meta.permissions().mode() & 0o7777;
+    if mode & needed != needed {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | needed))?;
+        changed.push((path.to_path_buf(), mode));
+    }
+    if meta.is_dir() {
+        let mut entries: Vec<_> = std::fs::read_dir(path)?.collect::<Result<_, _>>()?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            allow_tree_reads(&entry.path(), changed)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_tree_modes(changed: Vec<(PathBuf, u32)>) -> std::io::Result<()> {
+    let mut error = None;
+    for (path, mode) in changed.into_iter().rev() {
+        if let Err(failed) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)) {
+            error.get_or_insert(failed);
+        }
+    }
+    match error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
 fn check_relative(path: &Path) -> Result<(), ImageError> {
+    if path.as_os_str().as_bytes().contains(&0) {
+        return Err(ImageError::UnsafePath(path.to_string_lossy().into_owned()));
+    }
     for component in path.components() {
         match component {
             Component::Normal(_) | Component::CurDir => {}
@@ -375,7 +504,54 @@ fn contained_join(root: &Path, relative: &str) -> Result<PathBuf, ImageError> {
         return Err(ImageError::UnsafePath(relative.to_string()));
     }
     let real_root = root.canonicalize()?;
-    let resolved = resolve_deepest(&real_root.join(relative))?;
+    let mut exact_path = real_root.clone();
+    let mut pending: VecDeque<OsString> = Path::new(relative)
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_os_string()),
+            _ => None,
+        })
+        .collect();
+    let mut symlink_hops = 0;
+    while let Some(part) = pending.pop_front() {
+        if part == OsStr::new("..") {
+            if exact_path == real_root {
+                return Err(ImageError::UnsafePath(relative.to_string()));
+            }
+            exact_path.pop();
+            continue;
+        }
+        let Some(next) = exact::entry(&exact_path, &part)? else {
+            return Err(ImageError::Io(std::io::ErrorKind::NotFound.into()));
+        };
+        if std::fs::symlink_metadata(&next)?.file_type().is_symlink() {
+            symlink_hops += 1;
+            if symlink_hops > 40 {
+                return Err(ImageError::UnsafePath(relative.to_string()));
+            }
+            let target = std::fs::read_link(&next)?;
+            if target.is_absolute() {
+                return Err(ImageError::UnsafePath(relative.to_string()));
+            }
+            let mut target_parts = Vec::new();
+            for component in target.components() {
+                match component {
+                    Component::CurDir => {}
+                    Component::ParentDir => target_parts.push(OsString::from("..")),
+                    Component::Normal(part) => target_parts.push(part.to_os_string()),
+                    Component::RootDir | Component::Prefix(_) => {
+                        return Err(ImageError::UnsafePath(relative.to_string()));
+                    }
+                }
+            }
+            for part in target_parts.into_iter().rev() {
+                pending.push_front(part);
+            }
+            continue;
+        }
+        exact_path = next;
+    }
+    let resolved = resolve_deepest(&exact_path)?;
     if !resolved.starts_with(&real_root) {
         return Err(ImageError::UnsafePath(relative.to_string()));
     }
@@ -423,6 +599,13 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
     let mut keys: Vec<(Vec<u8>, &Member)> = Vec::new();
     for member in members {
         check_relative(member.path())?;
+        if member.path().components().any(|component| {
+            matches!(component, Component::Normal(part) if part.as_bytes().starts_with(b"._"))
+        }) {
+            return Err(ImageError::Tar(
+                "archive carries an AppleDouble metadata name".into(),
+            ));
+        }
         let key = member_key(member.path());
         if key.is_empty() {
             continue;
@@ -439,17 +622,174 @@ fn check_members(members: &[Member]) -> Result<(), ImageError> {
             }
         }
     }
+    let mut kinds: BTreeMap<Vec<u8>, u8> = BTreeMap::new();
+    for (_, member) in keys {
+        let exact = normalized(member.path()).as_os_str().as_bytes().to_vec();
+        if let Some(kind) = kinds.insert(exact, member.kind) {
+            if kind != member.kind {
+                return Err(ImageError::Tar(
+                    "archive changes a member's type at the same path".into(),
+                ));
+            }
+            if kind == b'2' {
+                return Err(ImageError::Tar(
+                    "archive repeats a symlink at the same path".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_portable_names(
+    members: &[Member],
+    names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), ImageError> {
+    for member in members {
+        check_portable_path(member.path(), names, true)?;
+    }
+    Ok(())
+}
+
+fn check_portable_path(
+    path: &Path,
+    names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    insert: bool,
+) -> Result<Vec<u8>, ImageError> {
+    check_relative(path)?;
+    let mut folded = Vec::new();
+    let mut exact = Vec::new();
+    for component in path.components() {
+        let Component::Normal(part) = component else {
+            continue;
+        };
+        let bytes = part.as_bytes();
+        if !bytes.is_ascii() {
+            return Err(ImageError::NonPortableName(
+                path.to_string_lossy().into_owned(),
+            ));
+        }
+        if !folded.is_empty() {
+            folded.push(b'/');
+            exact.push(b'/');
+        }
+        folded.extend(bytes.to_ascii_lowercase());
+        exact.extend_from_slice(bytes);
+        if let Some(other) = names.get(&folded) {
+            if other != &exact {
+                return Err(ImageError::CaseCollision {
+                    path: path.to_string_lossy().into_owned(),
+                    other: String::from_utf8_lossy(other).into_owned(),
+                });
+            }
+        } else if insert {
+            names.insert(folded.clone(), exact.clone());
+        }
+    }
+    Ok(folded)
+}
+
+fn remove_portable_tree(names: &mut BTreeMap<Vec<u8>, Vec<u8>>, key: &[u8], include_root: bool) {
+    let mut prefix = key.to_vec();
+    prefix.push(b'/');
+    names.retain(|candidate, _| {
+        !((include_root && candidate == key) || key.is_empty() || candidate.starts_with(&prefix))
+    });
+}
+
+fn check_layer_portable_names(
+    members: &[Member],
+    names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), ImageError> {
+    for member in members {
+        match whiteout(member.path()) {
+            Some(Whiteout::Opaque(directory)) => {
+                check_portable_path(member.path(), names, false)?;
+                check_portable_path(directory, names, false)?;
+            }
+            Some(Whiteout::Entry(target)) => {
+                check_portable_path(member.path(), names, false)?;
+                check_portable_path(&target, names, false)?;
+            }
+            None => {}
+        }
+    }
+    for member in members {
+        match whiteout(member.path()) {
+            Some(Whiteout::Opaque(directory)) => {
+                let key = member_key(directory);
+                remove_portable_tree(names, &key, false);
+            }
+            Some(Whiteout::Entry(target)) => {
+                let key = member_key(&target);
+                remove_portable_tree(names, &key, true);
+            }
+            None => {}
+        }
+    }
+    for member in members {
+        if whiteout(member.path()).is_some() {
+            continue;
+        }
+        let key = check_portable_path(member.path(), names, true)?;
+        if !member.is_dir {
+            remove_portable_tree(names, &key, false);
+        }
+    }
+    for member in members {
+        if whiteout(member.path()).is_some() {
+            check_portable_path(member.path(), names, false)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_hardlinks(members: &[Member]) -> Result<(), ImageError> {
+    let mut seen = BTreeSet::new();
+    for member in members {
+        if let Some(target) = &member.hardlink_target {
+            let path = Path::new(std::ffi::OsStr::from_bytes(target));
+            check_relative(path)?;
+            if !target.is_ascii() {
+                return Err(ImageError::NonPortableName(
+                    path.to_string_lossy().into_owned(),
+                ));
+            }
+            let exact = normalized(path);
+            if exact == normalized(member.path()) {
+                return Err(ImageError::UnsafePath(format!(
+                    "hardlink {} points to itself",
+                    member.shown()
+                )));
+            }
+            if exact.as_os_str().is_empty() || !seen.contains(&exact) {
+                return Err(ImageError::UnsafePath(format!(
+                    "hardlink {} has no earlier matching target {}",
+                    member.shown(),
+                    path.display()
+                )));
+            }
+        }
+        seen.insert(normalized(member.path()));
+    }
     Ok(())
 }
 
 const TAR_BLOCK: usize = 512;
+const MAX_PORTABLE_TIMESTAMP_SECONDS: u64 = i64::MAX as u64 / 1_000_000_000;
 const MAX_MEMBERS: usize = 1 << 20;
 const MAX_HEADER_DATA: u64 = 1 << 16;
+const MAX_PORTABLE_SYMLINK_TARGET: usize = 1023;
+const MAX_PORTABLE_MEMBER_PATH: usize = 768;
+const MAX_PORTABLE_STAGING_ROOT: usize = 254;
 
 struct Member {
     name: Vec<u8>,
+    kind: u8,
     is_dir: bool,
+    mode: u32,
     owner: Owner,
+    hardlink_target: Option<Vec<u8>>,
 }
 
 impl Member {
@@ -470,6 +810,22 @@ struct ArchiveReader {
 impl Read for ArchiveReader {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.reader.read(buf)
+    }
+}
+
+impl ArchiveReader {
+    fn finish(&mut self) -> Result<(), ImageError> {
+        let Some(mut child) = self.child.take() else {
+            return Ok(());
+        };
+        let status = child.wait()?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(ImageError::Tar(format!(
+                "archive decompressor exited with {status}"
+            )))
+        }
     }
 }
 
@@ -505,7 +861,7 @@ fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
             child: None,
         });
     };
-    let mut child = Command::new(tool)
+    let mut child = archive_tool(tool)
         .arg("-dc")
         .arg(archive)
         .stdout(Stdio::piped())
@@ -524,19 +880,62 @@ fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
     })
 }
 
+fn archive_tool(tool: &str) -> Command {
+    let mut command = Command::new(tool);
+    command
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var_os("PATH").unwrap_or_else(|| std::ffi::OsString::from("/usr/bin:/bin")),
+        )
+        .env("LC_ALL", "C");
+    command
+}
+
 fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     let mut stream = open_archive(archive)?;
     let mut members: Vec<Member> = Vec::new();
     let mut long_name: Option<Vec<u8>> = None;
+    let mut long_link: Option<Vec<u8>> = None;
     let mut pax = Pax::default();
+    let mut pax_header_seen = false;
     let mut block = [0u8; TAR_BLOCK];
     while read_block(&mut stream, &mut block)? {
         if block.iter().all(|byte| *byte == 0) {
             require_trailing_zeros(&mut stream)?;
+            stream.finish()?;
+            if long_name.is_some() || long_link.is_some() || pax_header_seen {
+                return Err(ImageError::Tar(
+                    "archive ends with an orphaned extension header".into(),
+                ));
+            }
             return Ok(members);
         }
         verify_checksum(&block)?;
+        let magic = &block[257..265];
+        if magic.starts_with(b"ustar")
+            && &block[257..263] != b"ustar\0"
+            && magic != b"ustar  \0"
+            && !tar_field(&block[345..500]).is_empty()
+        {
+            return Err(ImageError::Tar(
+                "ambiguous tar header has a nonempty prefix field".into(),
+            ));
+        }
+        if magic == b"ustar  \0" && block[386..495].iter().any(|byte| *byte != 0) {
+            return Err(ImageError::Tar(
+                "GNU tar header carries unsupported sparse metadata".into(),
+            ));
+        }
         let size = parse_octal(&block[124..136])?;
+        if size >= i64::MAX as u64 {
+            return Err(ImageError::Tar("tar member size is too large".into()));
+        }
+        if parse_octal(&block[136..148])? > MAX_PORTABLE_TIMESTAMP_SECONDS {
+            return Err(ImageError::Tar("tar timestamp is too large".into()));
+        }
+        check_device_number(&block[329..337])?;
+        check_device_number(&block[337..345])?;
         match block[156] {
             b'L' => {
                 let mut data = header_data(&mut stream, size)?;
@@ -548,9 +947,19 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 long_name = Some(data);
             }
             b'K' => {
-                header_data(&mut stream, size)?;
+                let mut data = header_data(&mut stream, size)?;
+                data.truncate(
+                    data.iter()
+                        .position(|byte| *byte == 0)
+                        .unwrap_or(data.len()),
+                );
+                long_link = Some(data);
             }
             b'x' => {
+                if pax_header_seen {
+                    return Err(ImageError::Tar("member has multiple pax headers".into()));
+                }
+                pax_header_seen = true;
                 let data = header_data(&mut stream, size)?;
                 parse_pax(&data, &mut pax)?;
             }
@@ -565,6 +974,12 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                 ));
             }
             typeflag => {
+                pax_header_seen = false;
+                if !matches!(typeflag, 0 | b'0' | b'1' | b'2' | b'5') {
+                    return Err(ImageError::Tar(
+                        "archive carries an unsupported member type".into(),
+                    ));
+                }
                 if members.len() == MAX_MEMBERS {
                     return Err(ImageError::Tar(format!(
                         "archive has more than {MAX_MEMBERS} members"
@@ -575,16 +990,112 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
                     size: pax_size,
                     uid,
                     gid,
+                    link_path,
                 } = std::mem::take(&mut pax);
+                let no_data_kind = match typeflag {
+                    b'1' => Some("hardlink"),
+                    b'2' => Some("symlink"),
+                    b'5' => Some("directory"),
+                    _ => None,
+                };
+                if let Some(kind) = no_data_kind
+                    && (size != 0 || pax_size.is_some_and(|size| size != 0))
+                {
+                    return Err(ImageError::Tar(format!(
+                        "{kind} member has nonzero data size"
+                    )));
+                }
                 let gnu_name = long_name.take();
+                let gnu_link = long_link.take();
+                if path.is_some() && gnu_name.is_some() {
+                    return Err(ImageError::Tar(
+                        "member has conflicting GNU and pax name overrides".into(),
+                    ));
+                }
+                if link_path.is_some() && gnu_link.is_some() {
+                    return Err(ImageError::Tar(
+                        "member has conflicting GNU and pax link overrides".into(),
+                    ));
+                }
                 let owner = Owner {
                     uid: owner_id(uid, &block[108..116])?,
                     gid: owner_id(gid, &block[116..124])?,
                 };
+                let name = path.or(gnu_name).unwrap_or_else(|| ustar_name(&block));
+                if name.is_empty() {
+                    return Err(ImageError::Tar("archive member has an empty name".into()));
+                }
+                if host_dependent_tar_prefix(&name) {
+                    return Err(ImageError::Tar(
+                        "archive member has a host-dependent prefix".into(),
+                    ));
+                }
+                if name.len() > MAX_PORTABLE_MEMBER_PATH {
+                    return Err(ImageError::Tar("archive member path is too long".into()));
+                }
+                if typeflag != b'5' && name.ends_with(b"/") {
+                    return Err(ImageError::Tar(
+                        "non-directory member has a trailing slash".into(),
+                    ));
+                }
+                if typeflag != b'5' && has_terminal_dot_after_named_component(&name) {
+                    return Err(ImageError::Tar(
+                        "non-directory member has a host-dependent terminal dot".into(),
+                    ));
+                }
+                let header_link = tar_field(&block[157..257]);
+                if typeflag == b'1' && (header_link.is_empty() || !header_link.is_ascii()) {
+                    return Err(ImageError::Tar(
+                        "hardlink member has a nonportable header target".into(),
+                    ));
+                }
+                if typeflag == b'1'
+                    && link_path
+                        .as_deref()
+                        .or(gnu_link.as_deref())
+                        .unwrap_or(&header_link)
+                        .len()
+                        > MAX_PORTABLE_MEMBER_PATH
+                {
+                    return Err(ImageError::Tar("hardlink target is too long".into()));
+                }
+                if typeflag == b'1'
+                    && host_dependent_tar_prefix(
+                        link_path
+                            .as_deref()
+                            .or(gnu_link.as_deref())
+                            .unwrap_or(&header_link),
+                    )
+                {
+                    return Err(ImageError::Tar(
+                        "hardlink target has a host-dependent prefix".into(),
+                    ));
+                }
+                if typeflag == b'2' {
+                    let portable = |target: &[u8]| {
+                        !target.is_empty()
+                            && target.len() <= MAX_PORTABLE_SYMLINK_TARGET
+                            && target.is_ascii()
+                            && !target.contains(&0)
+                    };
+                    let effective = link_path
+                        .as_deref()
+                        .or(gnu_link.as_deref())
+                        .unwrap_or(&header_link);
+                    if !portable(&header_link) || !portable(effective) {
+                        return Err(ImageError::Tar(
+                            "symlink member has a nonportable target".into(),
+                        ));
+                    }
+                }
                 members.push(Member {
-                    name: path.or(gnu_name).unwrap_or_else(|| ustar_name(&block)),
+                    name,
+                    kind: if typeflag == 0 { b'0' } else { typeflag },
                     is_dir: typeflag == b'5',
+                    mode: (parse_octal(&block[100..108])? & 0o7777) as u32,
                     owner,
+                    hardlink_target: (typeflag == b'1')
+                        .then(|| link_path.or(gnu_link).unwrap_or(header_link)),
                 });
                 let size = pax_size.unwrap_or(size);
                 let data = size
@@ -682,42 +1193,81 @@ fn parse_octal(field: &[u8]) -> Result<u64, ImageError> {
                 .ok_or_else(|| ImageError::Tar("tar header field is too large".into()))
         });
     }
-    let digits = field.split(|byte| *byte == 0).next().unwrap_or_default();
-    let text = std::str::from_utf8(digits)
-        .map_err(|_| ImageError::Tar("tar header field is not octal".into()))?
-        .trim();
-    if text.is_empty() {
-        return Ok(0);
+    let invalid = || ImageError::Tar("tar header field is not octal".into());
+    let digits = match field.iter().position(|byte| *byte == 0) {
+        Some(end) => {
+            if field[end..].iter().any(|byte| !matches!(*byte, 0 | b' ')) {
+                return Err(invalid());
+            }
+            &field[..end]
+        }
+        None => field,
+    };
+    let start = digits.iter().take_while(|byte| **byte == b' ').count();
+    let digits = &digits[start..];
+    let end = digits
+        .iter()
+        .rposition(|byte| *byte != b' ')
+        .map_or(0, |at| at + 1);
+    let digits = &digits[..end];
+    if digits.is_empty() {
+        return if field.first() == Some(&0) {
+            Ok(0)
+        } else {
+            Err(invalid())
+        };
     }
-    u64::from_str_radix(text, 8)
-        .map_err(|_| ImageError::Tar("tar header field is not octal".into()))
+    if !digits.iter().all(|byte| (b'0'..=b'7').contains(byte)) {
+        return Err(invalid());
+    }
+    u64::from_str_radix(std::str::from_utf8(digits).map_err(|_| invalid())?, 8)
+        .map_err(|_| invalid())
+}
+
+fn check_device_number(field: &[u8]) -> Result<(), ImageError> {
+    if field.iter().all(|byte| matches!(*byte, 0 | b' ')) || matches!(field[0], 0x80 | 0xff) {
+        return Ok(());
+    }
+    parse_octal(field).map(|_| ())
+}
+
+fn host_dependent_tar_prefix(name: &[u8]) -> bool {
+    name.first() == Some(&b'\\') || (name.get(1) == Some(&b':') && name[0].is_ascii_alphabetic())
+}
+
+fn has_terminal_dot_after_named_component(name: &[u8]) -> bool {
+    name.strip_suffix(b"/.").is_some_and(|prefix| {
+        prefix
+            .split(|byte| *byte == b'/')
+            .any(|component| !component.is_empty() && component != b".")
+    })
 }
 
 fn owner_id(pax: Option<u64>, field: &[u8]) -> Result<u32, ImageError> {
-    let id = match pax {
-        Some(id) => id,
-        None => parse_octal(field)?,
-    };
+    let header = parse_octal(field)?;
+    u32::try_from(header).map_err(|_| ImageError::Tar("tar owner id is too large".into()))?;
+    let id = pax.unwrap_or(header);
     u32::try_from(id).map_err(|_| ImageError::Tar("tar owner id is too large".into()))
 }
 
 fn ustar_name(block: &[u8; TAR_BLOCK]) -> Vec<u8> {
-    let field = |from: usize, to: usize| {
-        block[from..to]
-            .split(|byte| *byte == 0)
-            .next()
-            .unwrap_or_default()
-            .to_vec()
-    };
-    let name = field(0, 100);
+    let name = tar_field(&block[0..100]);
     if &block[257..263] != b"ustar\0" {
         return name;
     }
-    let prefix = field(345, 500);
+    let prefix = tar_field(&block[345..500]);
     if prefix.is_empty() {
         return name;
     }
     [prefix, vec![b'/'], name].concat()
+}
+
+fn tar_field(bytes: &[u8]) -> Vec<u8> {
+    bytes
+        .split(|byte| *byte == 0)
+        .next()
+        .unwrap_or_default()
+        .to_vec()
 }
 
 #[derive(Default)]
@@ -726,6 +1276,7 @@ struct Pax {
     size: Option<u64>,
     uid: Option<u64>,
     gid: Option<u64>,
+    link_path: Option<Vec<u8>>,
 }
 
 fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
@@ -736,6 +1287,9 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             .iter()
             .position(|byte| *byte == b' ')
             .ok_or_else(malformed)?;
+        if space == 0 || !rest[..space].iter().all(u8::is_ascii_digit) {
+            return Err(malformed());
+        }
         let length: usize = std::str::from_utf8(&rest[..space])
             .map_err(|_| malformed())?
             .parse()
@@ -749,29 +1303,44 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
             .position(|byte| *byte == b'=')
             .ok_or_else(malformed)?;
         let (key, value) = record.split_at(equals);
+        if key.is_empty()
+            || key
+                .iter()
+                .any(|byte| *byte == 0 || byte.is_ascii_whitespace())
+        {
+            return Err(malformed());
+        }
         let value = &value[1..];
-        let value = value.strip_suffix(b"\n").unwrap_or(value);
+        let value = value.strip_suffix(b"\n").ok_or_else(malformed)?;
         match key {
             b"path" => pax.path = Some(value.to_vec()),
+            b"linkpath" => pax.link_path = Some(value.to_vec()),
             b"size" => {
-                let size = std::str::from_utf8(value)
-                    .ok()
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| ImageError::Tar("unreadable pax size record".into()))?;
-                pax.size = Some(size);
+                pax.size = Some(parse_pax_decimal(value, "size")?);
             }
             b"uid" | b"gid" => {
-                let id = std::str::from_utf8(value)
-                    .ok()
-                    .and_then(|text| text.parse().ok())
-                    .ok_or_else(|| ImageError::Tar("unreadable pax owner record".into()))?;
+                let id = parse_pax_decimal(value, "owner")?;
                 if key == b"uid" {
                     pax.uid = Some(id);
                 } else {
                     pax.gid = Some(id);
                 }
             }
-            key if key.starts_with(b"GNU.sparse.") => {
+            b"mtime" | b"atime" | b"ctime" => check_pax_timestamp(value)?,
+            b"SCHILY.fflags" => {
+                return Err(ImageError::Tar(
+                    "archive carries platform-specific file flags".into(),
+                ));
+            }
+            key if key.starts_with(b"SCHILY.acl.") => {
+                return Err(ImageError::Tar(
+                    "archive carries platform-specific ACL metadata".into(),
+                ));
+            }
+            key if key == b"SCHILY.realsize"
+                || key == b"SUN.holesdata"
+                || key.starts_with(b"GNU.sparse.") =>
+            {
                 return Err(ImageError::Tar(
                     "archive uses an unsupported sparse pax record".into(),
                 ));
@@ -783,16 +1352,104 @@ fn parse_pax(records: &[u8], pax: &mut Pax) -> Result<(), ImageError> {
     Ok(())
 }
 
+fn parse_pax_decimal(value: &[u8], kind: &str) -> Result<u64, ImageError> {
+    let invalid = || ImageError::Tar(format!("unreadable pax {kind} record"));
+    if value.is_empty() || !value.iter().all(u8::is_ascii_digit) {
+        return Err(invalid());
+    }
+    std::str::from_utf8(value)
+        .map_err(|_| invalid())?
+        .parse()
+        .map_err(|_| invalid())
+}
+
+fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
+    let invalid = || ImageError::Tar("invalid pax timestamp".into());
+    let (whole, fraction) = match value.iter().position(|byte| *byte == b'.') {
+        Some(at) => (&value[..at], Some(&value[at + 1..])),
+        None => (value, None),
+    };
+    let (negative, whole) = match whole.strip_prefix(b"-") {
+        Some(digits) => (true, digits),
+        None => (false, whole),
+    };
+    if whole.is_empty()
+        || !whole.iter().all(u8::is_ascii_digit)
+        || fraction.is_some_and(|digits| !digits.iter().all(u8::is_ascii_digit))
+    {
+        return Err(invalid());
+    }
+    let seconds = std::str::from_utf8(whole)
+        .map_err(|_| invalid())?
+        .parse::<u64>()
+        .map_err(|_| invalid())?;
+    let fraction = fraction.unwrap_or_default();
+    if negative && fraction.iter().any(|digit| *digit != b'0') {
+        return Err(invalid());
+    }
+    let mut fractional_nanos = [b'0'; 9];
+    for (out, digit) in fractional_nanos.iter_mut().zip(fraction) {
+        *out = *digit;
+    }
+    if seconds > MAX_PORTABLE_TIMESTAMP_SECONDS
+        || (!negative
+            && seconds == MAX_PORTABLE_TIMESTAMP_SECONDS
+            && (fractional_nanos > *b"854775807"
+                || (fractional_nanos == *b"854775807"
+                    && fraction
+                        .get(9..)
+                        .is_some_and(|remaining| remaining.iter().any(|digit| *digit != b'0')))))
+    {
+        return Err(invalid());
+    }
+    Ok(())
+}
+
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
-    check_members(&read_members(archive)?)?;
-    untar(archive, dest)
+    check_portable_staging_root(dest)?;
+    let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
+    let members = read_members(pinned.path())?;
+    check_members(&members)?;
+    check_portable_names(&members, &mut BTreeMap::new())?;
+    check_hardlinks(&members)?;
+    untar(pinned.path(), dest)
+}
+
+fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
+    let resolved = path.canonicalize()?;
+    if path
+        .as_os_str()
+        .as_bytes()
+        .len()
+        .max(resolved.as_os_str().as_bytes().len())
+        > MAX_PORTABLE_STAGING_ROOT
+    {
+        return Err(ImageError::Tar("archive staging path is too long".into()));
+    }
+    Ok(())
+}
+
+fn pin_archive(archive: &Path, staging: &Path) -> Result<tempfile::NamedTempFile, ImageError> {
+    let pinned = tempfile::Builder::new()
+        .prefix("checked-archive-")
+        .suffix(".tar")
+        .tempfile_in(staging)?;
+    std::fs::copy(archive, pinned.path())?;
+    Ok(pinned)
 }
 
 fn writable_layer_mode(mode: u32) -> u32 {
     mode | 0o700
 }
 
-fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
+fn merge_layer(
+    staged: &Path,
+    rootfs: &Path,
+    relative: &Path,
+    implicit_dirs: &BTreeSet<PathBuf>,
+    opaque_modes: &BTreeMap<PathBuf, u32>,
+    preserved_modes: &mut BTreeMap<PathBuf, u32>,
+) -> Result<(), ImageError> {
     let mut entries: Vec<_> = std::fs::read_dir(staged)?.collect::<Result<Vec<_>, _>>()?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
@@ -802,6 +1459,7 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
         }
         let source = staged.join(&name);
         let target = rootfs.join(&name);
+        let path = relative.join(&name);
         let meta = std::fs::symlink_metadata(&source)?;
         let existing = std::fs::symlink_metadata(&target).ok();
         if meta.is_dir() {
@@ -816,11 +1474,28 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
                 }
                 None => std::fs::create_dir(&target)?,
             }
-            let mode = meta.permissions().mode() & 0o7777;
+            let mode = match &existing {
+                Some(found) if found.is_dir() && implicit_dirs.contains(&path) => {
+                    let mode = opaque_modes
+                        .get(&path)
+                        .copied()
+                        .unwrap_or(found.permissions().mode() & 0o7777);
+                    preserved_modes.insert(path.clone(), mode);
+                    mode
+                }
+                _ => meta.permissions().mode() & 0o7777,
+            };
             let open = std::fs::Permissions::from_mode(writable_layer_mode(mode));
             std::fs::set_permissions(&source, open.clone())?;
             std::fs::set_permissions(&target, open)?;
-            merge_layer(&source, &target)?;
+            merge_layer(
+                &source,
+                &target,
+                &path,
+                implicit_dirs,
+                opaque_modes,
+                preserved_modes,
+            )?;
             std::fs::set_permissions(&target, std::fs::Permissions::from_mode(mode))?;
         } else {
             match &existing {
@@ -834,28 +1509,102 @@ fn merge_layer(staged: &Path, rootfs: &Path) -> Result<(), ImageError> {
     Ok(())
 }
 
-fn resolve_under(rootfs: &Path, relative: &Path) -> Result<Option<PathBuf>, ImageError> {
-    let Ok(real_root) = rootfs.canonicalize() else {
-        return Ok(None);
-    };
-    let Some(name) = relative.file_name() else {
-        return Ok(Some(real_root));
-    };
-    let parent = rootfs.join(relative.parent().unwrap_or(Path::new("")));
-    let Ok(real_parent) = parent.canonicalize() else {
-        return Ok(None);
-    };
-    if !real_parent.starts_with(&real_root) {
-        return Err(ImageError::UnsafePath(relative.display().to_string()));
+fn open_directory(path: &Path, opened: &mut BTreeMap<PathBuf, u32>) -> Result<(), ImageError> {
+    let mode = std::fs::symlink_metadata(path)?.permissions().mode() & 0o7777;
+    if mode & 0o700 != 0o700 {
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(writable_layer_mode(mode)),
+        )?;
+        opened.entry(path.to_path_buf()).or_insert(mode);
     }
-    Ok(Some(real_parent.join(name)))
+    Ok(())
+}
+
+fn open_tree(path: &Path, opened: &mut BTreeMap<PathBuf, u32>) -> Result<(), ImageError> {
+    if !std::fs::symlink_metadata(path)?.is_dir() {
+        return Ok(());
+    }
+    open_directory(path, opened)?;
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            open_tree(&entry.path(), opened)?;
+        }
+    }
+    Ok(())
+}
+
+fn restore_directories(opened: BTreeMap<PathBuf, u32>) -> Result<(), ImageError> {
+    let mut opened: Vec<_> = opened.into_iter().collect();
+    opened.sort_by_key(|(path, _)| std::cmp::Reverse(path.components().count()));
+    for (path, mode) in opened {
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.is_dir() => {
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
+            }
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
+fn resolve_under(
+    rootfs: &Path,
+    relative: &Path,
+    opened: &mut BTreeMap<PathBuf, u32>,
+) -> Result<Option<PathBuf>, ImageError> {
+    let Ok(mut cursor) = rootfs.canonicalize() else {
+        return Ok(None);
+    };
+    let parts: Vec<_> = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect();
+    for (at, part) in parts.iter().enumerate() {
+        if !std::fs::symlink_metadata(&cursor)?.is_dir() {
+            return Ok(None);
+        }
+        open_directory(&cursor, opened)?;
+        let next = match exact::entry(&cursor, part) {
+            Ok(Some(next)) => next,
+            Ok(None) => return Ok(None),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        if at + 1 < parts.len() && std::fs::symlink_metadata(&next)?.file_type().is_symlink() {
+            return Err(ImageError::UnsafePath(relative.display().to_string()));
+        }
+        cursor = next;
+    }
+    Ok(Some(cursor))
 }
 
 fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
-    let out = Command::new("tar")
+    let out = archive_tool("sh")
+        .arg("-c")
+        .arg("umask 022; exec tar \"$@\"")
+        .arg("tar")
         .arg("-xpf")
         .arg(tarball)
         .arg("--no-same-owner")
+        .arg("--no-xattrs")
         .arg("-C")
         .arg(dest)
         .output()?;
@@ -868,19 +1617,68 @@ fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
     }
 }
 
+#[cfg(test)]
 fn apply_layer(layer: &Path, rootfs: &Path, owners: &mut Ownership) -> Result<(), ImageError> {
-    let members = read_members(layer)?;
-    check_members(&members)?;
-    apply_whiteouts(&members, rootfs)?;
+    apply_layer_tracked(layer, rootfs, owners, &mut BTreeMap::new())
+}
+
+fn apply_layer_tracked(
+    layer: &Path,
+    rootfs: &Path,
+    owners: &mut Ownership,
+    portable_names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+) -> Result<(), ImageError> {
+    check_portable_staging_root(rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
+    let pinned = pin_archive(layer, staging)?;
+    let members = read_members(pinned.path())?;
+    check_members(&members)?;
+    check_layer_portable_names(&members, portable_names)?;
+    check_hardlinks(&members)?;
     let staged = tempfile::tempdir_in(staging)?;
-    untar(layer, staged.path())?;
-    merge_layer(staged.path(), rootfs)?;
-    record_owners(&members, owners);
+    check_portable_staging_root(staged.path())?;
+    let opaque_modes = apply_whiteouts(&members, rootfs)?;
+    let implicit_dirs = implicit_layer_dirs(&members);
+    untar(pinned.path(), staged.path())?;
+    let mut preserved_modes = BTreeMap::new();
+    merge_layer(
+        staged.path(),
+        rootfs,
+        Path::new(""),
+        &implicit_dirs,
+        &opaque_modes,
+        &mut preserved_modes,
+    )?;
+    record_owners(&members, owners, &implicit_dirs, &preserved_modes);
     Ok(())
 }
 
-fn record_owners(members: &[Member], owners: &mut Ownership) {
+fn implicit_layer_dirs(members: &[Member]) -> BTreeSet<PathBuf> {
+    let explicit_dirs: BTreeSet<PathBuf> = members
+        .iter()
+        .filter(|member| member.is_dir && whiteout(member.path()).is_none())
+        .map(|member| normalized(member.path()))
+        .collect();
+    let mut implicit_dirs = BTreeSet::new();
+    for member in members {
+        let path = normalized(member.path());
+        let mut parent = path.parent();
+        while let Some(dir) = parent.filter(|dir| !dir.as_os_str().is_empty()) {
+            if !explicit_dirs.contains(dir) {
+                implicit_dirs.insert(dir.to_path_buf());
+            }
+            parent = dir.parent();
+        }
+    }
+    implicit_dirs
+}
+
+fn record_owners(
+    members: &[Member],
+    owners: &mut Ownership,
+    implicit_dirs: &BTreeSet<PathBuf>,
+    preserved_modes: &BTreeMap<PathBuf, u32>,
+) {
     for member in members {
         let path = member.path();
         match whiteout(path) {
@@ -889,15 +1687,31 @@ fn record_owners(members: &[Member], owners: &mut Ownership) {
             None => {}
         }
     }
+    for dir in implicit_dirs {
+        if !preserved_modes.contains_key(dir) {
+            owners.remove_tree(dir);
+            owners.record(dir, Owner::ROOT);
+            owners.record_mode(dir, 0o755);
+        }
+    }
     for member in members {
         let path = member.path();
         if whiteout(path).is_some() {
             continue;
         }
+        let (owner, mode) =
+            member
+                .hardlink_target
+                .as_ref()
+                .map_or((member.owner, member.mode), |target| {
+                    let target = Path::new(OsStr::from_bytes(target));
+                    (owners.owner_of(target), owners.mode_of(target, member.mode))
+                });
         if !member.is_dir {
             owners.remove_tree(path);
         }
-        owners.record(path, member.owner);
+        owners.record(path, owner);
+        owners.record_mode(path, mode);
     }
 }
 
@@ -916,42 +1730,64 @@ fn whiteout(path: &Path) -> Option<Whiteout<'_>> {
     }
 }
 
-fn apply_whiteouts(members: &[Member], rootfs: &Path) -> Result<(), ImageError> {
-    for member in members {
-        let path = member.path();
-        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-            continue;
-        };
-        if name == ".wh..wh..opq" {
-            let parent = path.parent().unwrap_or(Path::new(""));
-            let Some(dir) = resolve_under(rootfs, parent)? else {
+fn apply_whiteouts(
+    members: &[Member],
+    rootfs: &Path,
+) -> Result<BTreeMap<PathBuf, u32>, ImageError> {
+    let mut opened = BTreeMap::new();
+    let result = (|| {
+        let mut opaque_modes = BTreeMap::new();
+        for member in members {
+            let path = member.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            let Ok(meta) = std::fs::symlink_metadata(&dir) else {
-                continue;
-            };
-            if meta.is_symlink() {
-                return Err(ImageError::UnsafePath(member.shown()));
-            }
-            if meta.is_dir() {
-                std::fs::remove_dir_all(&dir)?;
-                std::fs::create_dir_all(&dir)?;
-            }
-        } else if let Some(hidden) = name.strip_prefix(".wh.") {
-            let Some(target) = resolve_under(rootfs, &path.with_file_name(hidden))? else {
-                continue;
-            };
-            let Ok(meta) = std::fs::symlink_metadata(&target) else {
-                continue;
-            };
-            if meta.is_dir() {
-                std::fs::remove_dir_all(&target)?;
-            } else {
-                std::fs::remove_file(&target)?;
+            if name == ".wh..wh..opq" {
+                let parent = path.parent().unwrap_or(Path::new(""));
+                let Some(dir) = resolve_under(rootfs, parent, &mut opened)? else {
+                    continue;
+                };
+                let Ok(meta) = std::fs::symlink_metadata(&dir) else {
+                    continue;
+                };
+                if meta.is_symlink() {
+                    return Err(ImageError::UnsafePath(member.shown()));
+                }
+                if meta.is_dir() {
+                    let mode = opened
+                        .get(&dir)
+                        .copied()
+                        .unwrap_or(meta.permissions().mode() & 0o7777);
+                    opaque_modes.entry(normalized(parent)).or_insert(mode);
+                    open_tree(&dir, &mut opened)?;
+                    std::fs::remove_dir_all(&dir)?;
+                    std::fs::create_dir_all(&dir)?;
+                }
+            } else if let Some(hidden) = name.strip_prefix(".wh.") {
+                let Some(target) =
+                    resolve_under(rootfs, &path.with_file_name(hidden), &mut opened)?
+                else {
+                    continue;
+                };
+                let Ok(meta) = std::fs::symlink_metadata(&target) else {
+                    continue;
+                };
+                if meta.is_dir() {
+                    open_tree(&target, &mut opened)?;
+                    std::fs::remove_dir_all(&target)?;
+                } else {
+                    std::fs::remove_file(&target)?;
+                }
             }
         }
+        Ok(opaque_modes)
+    })();
+    let restored = restore_directories(opened);
+    match (result, restored) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(modes), Ok(())) => Ok(modes),
     }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1026,6 +1862,7 @@ mod tests {
     fn blob_path_splits_the_digest() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("blobs/sha256")).unwrap();
+        std::fs::write(dir.path().join("blobs/sha256/abc"), b"blob").unwrap();
         assert_eq!(
             blob_path(dir.path(), "sha256:abc").unwrap(),
             dir.path().canonicalize().unwrap().join("blobs/sha256/abc")
@@ -1147,6 +1984,8 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.path().join("c.json"), b"{\"config\":{}}").unwrap();
+        std::fs::write(dir.path().join("l1.tar"), b"").unwrap();
+        std::fs::write(dir.path().join("l2.tar"), b"").unwrap();
         let (layers, config) = docker_save_layers(dir.path()).unwrap();
         let real = dir.path().canonicalize().unwrap();
         assert_eq!(layers, [real.join("l1.tar"), real.join("l2.tar")]);
@@ -1169,6 +2008,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(blobs.join("c"), b"cfg").unwrap();
+        std::fs::write(blobs.join("l"), b"").unwrap();
         let (layers, config) = oci_layout_layers(dir.path()).unwrap();
         assert_eq!(layers, [blobs.canonicalize().unwrap().join("l")]);
         assert_eq!(config, b"cfg");
@@ -1186,6 +2026,7 @@ mod tests {
         }
         let tarball = dir.join(format!("{name}.tar"));
         let status = Command::new("tar")
+            .env("COPYFILE_DISABLE", "1")
             .arg("-cf")
             .arg(&tarball)
             .arg("-C")
@@ -1198,6 +2039,116 @@ mod tests {
     }
 
     #[test]
+    fn staging_a_second_image_in_the_same_directory_has_no_prior_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = |name: &str, file: &str, data: &[u8]| {
+            let layout = dir.path().join(name);
+            std::fs::create_dir_all(&layout).unwrap();
+            std::fs::write(
+                layout.join("manifest.json"),
+                br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+            )
+            .unwrap();
+            std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+            let layer = tar_layer(dir.path(), name, &[(file, data)]);
+            std::fs::copy(layer, layout.join("layer.tar")).unwrap();
+            layout
+        };
+        let first = layout("first", "old", b"old");
+        let second = layout("second", "new", b"new");
+        let reused = dir.path().join("reused");
+        std::fs::create_dir_all(&reused).unwrap();
+
+        let original = stage(first.to_str().unwrap(), &reused).unwrap();
+        assert_eq!(std::fs::read(original.rootfs.join("old")).unwrap(), b"old");
+        let after_reuse = stage(second.to_str().unwrap(), &reused).unwrap();
+        let fresh_dir = dir.path().join("fresh");
+        std::fs::create_dir_all(&fresh_dir).unwrap();
+        let fresh = stage(second.to_str().unwrap(), &fresh_dir).unwrap();
+
+        assert_ne!(original.rootfs, after_reuse.rootfs);
+        assert_eq!(std::fs::read(original.rootfs.join("old")).unwrap(), b"old");
+        assert!(!after_reuse.rootfs.join("old").exists());
+        assert_eq!(
+            std::fs::read(after_reuse.rootfs.join("new")).unwrap(),
+            b"new"
+        );
+        assert_eq!(
+            super::super::bundle::build_rootfs_segment(&after_reuse.rootfs, &after_reuse.owners)
+                .unwrap(),
+            super::super::bundle::build_rootfs_segment(&fresh.rootfs, &fresh.owners).unwrap()
+        );
+    }
+
+    #[test]
+    fn staging_an_oci_archive_after_a_docker_archive_uses_only_the_oci_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let docker = dir.path().join("docker");
+        std::fs::create_dir_all(&docker).unwrap();
+        std::fs::write(
+            docker.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(
+            docker.join("config.json"),
+            br#"{"config":{"Cmd":["/old"]}}"#,
+        )
+        .unwrap();
+        let old_layer = tar_layer(dir.path(), "old-layer", &[("old", b"old")]);
+        std::fs::copy(old_layer, docker.join("layer.tar")).unwrap();
+
+        let oci = dir.path().join("oci");
+        let blobs = oci.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            oci.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{"Cmd":["/new"]}}"#).unwrap();
+        let new_layer = tar_layer(dir.path(), "new-layer", &[("new", b"new")]);
+        std::fs::copy(new_layer, blobs.join("l")).unwrap();
+
+        let archive = |layout: &Path, name: &str, entries: &[&str]| {
+            let path = dir.path().join(name);
+            let status = Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
+                .arg("-cf")
+                .arg(&path)
+                .arg("-C")
+                .arg(layout)
+                .args(entries)
+                .status()
+                .unwrap();
+            assert!(status.success());
+            path
+        };
+        let docker_archive = archive(
+            &docker,
+            "docker-archive.tar",
+            &["manifest.json", "config.json", "layer.tar"],
+        );
+        let oci_archive = archive(&oci, "oci-archive.tar", &["index.json", "blobs"]);
+        let reused = dir.path().join("reused");
+        let original = stage(docker_archive.to_str().unwrap(), &reused).unwrap();
+        assert_eq!(original.config.cmd, ["/old"]);
+
+        let after_reuse = stage(oci_archive.to_str().unwrap(), &reused).unwrap();
+        assert_eq!(after_reuse.config.cmd, ["/new"]);
+        assert_eq!(
+            std::fs::read(after_reuse.rootfs.join("new")).unwrap(),
+            b"new"
+        );
+        assert!(!after_reuse.rootfs.join("old").exists());
+    }
+
+    #[test]
     fn extract_checked_extracts_into_dest() {
         let dir = tempfile::tempdir().unwrap();
         let tarball = tar_layer(dir.path(), "t", &[("hello.txt", b"hi")]);
@@ -1206,6 +2157,78 @@ mod tests {
         extract_checked(&tarball, &dest).unwrap();
         assert_eq!(std::fs::read(dest.join("hello.txt")).unwrap(), b"hi");
         assert!(extract_checked(Path::new("/nonexistent.tar"), &dest).is_err());
+    }
+
+    #[test]
+    fn archive_replacement_after_validation_cannot_change_extraction() {
+        if let Some(kind) = std::env::var_os("HARMONY_ARCHIVE_SWAP_CHILD") {
+            let original =
+                PathBuf::from(std::env::var_os("HARMONY_ARCHIVE_SWAP_ORIGINAL").unwrap());
+            let dest = PathBuf::from(std::env::var_os("HARMONY_ARCHIVE_SWAP_DEST").unwrap());
+            std::fs::create_dir(&dest).unwrap();
+            if kind == "layer" {
+                apply_layer(&original, &dest, &mut Ownership::default()).unwrap();
+            } else {
+                extract_checked(&original, &dest).unwrap();
+            }
+            assert_eq!(std::fs::read(dest.join("accepted")).unwrap(), b"checked");
+            assert!(!dest.join("a").exists());
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let wrapper = bin.join("tar");
+        std::fs::write(
+            &wrapper,
+            b"#!/bin/sh\ndir=${0%/*}\ncat \"$dir/replacement\" > \"$dir/original\"\nexec /usr/bin/tar \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let replacement = write_archive(
+            dir.path(),
+            "replacement.tar",
+            &[
+                raw_member(b"A", b'0', "", b"first"),
+                raw_member(b"a", b'0', "", b"second"),
+            ]
+            .concat(),
+        );
+        std::os::unix::fs::symlink(&replacement, bin.join("replacement")).unwrap();
+        for kind in ["outer", "layer"] {
+            let original = write_archive(
+                dir.path(),
+                &format!("{kind}.tar"),
+                &raw_member(b"accepted", b'0', "", b"checked"),
+            );
+            let original_link = bin.join("original");
+            if original_link.exists() {
+                std::fs::remove_file(&original_link).unwrap();
+            }
+            std::os::unix::fs::symlink(&original, &original_link).unwrap();
+            let dest = dir.path().join(format!("{kind}-dest"));
+            let status = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::archive_replacement_after_validation_cannot_change_extraction",
+                ])
+                .env("HARMONY_ARCHIVE_SWAP_CHILD", kind)
+                .env("HARMONY_ARCHIVE_SWAP_ORIGINAL", &original)
+                .env("HARMONY_ARCHIVE_SWAP_REPLACEMENT", &replacement)
+                .env("HARMONY_ARCHIVE_SWAP_DEST", &dest)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .status()
+                .unwrap();
+            assert!(status.success(), "{kind} extracted unchecked bytes");
+            assert_eq!(
+                std::fs::read(&original).unwrap(),
+                std::fs::read(&replacement).unwrap()
+            );
+        }
     }
 
     #[test]
@@ -1367,6 +2390,29 @@ mod tests {
     }
 
     #[test]
+    fn a_whiteout_cannot_follow_an_internal_symlink_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(rootfs.join("actual")).unwrap();
+        std::fs::write(rootfs.join("actual/sentinel"), b"unchanged").unwrap();
+        std::os::unix::fs::symlink("actual", rootfs.join("link")).unwrap();
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &raw_member(b"link/.wh.sentinel", b'0', "", b""),
+        );
+
+        assert!(matches!(
+            apply_layer(&upper, &rootfs, &mut Ownership::default()),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(
+            std::fs::read(rootfs.join("actual/sentinel")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
     fn whiteout_of_a_symlink_removes_only_the_link() {
         let dir = tempfile::tempdir().unwrap();
         let (rootfs, victim) = planted(dir.path());
@@ -1390,6 +2436,7 @@ mod tests {
         let base = dir.path().join("base.tar");
         assert!(
             Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&base)
                 .arg("-C")
@@ -1456,6 +2503,2071 @@ mod tests {
     }
 
     #[test]
+    fn case_distinct_layer_members_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let body = [
+            raw_member(b"A", b'0', "", b"first"),
+            raw_member(b"a", b'0', "", b"second"),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "case-files.tar", &body);
+
+        assert!(matches!(
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        let names: Vec<_> = std::fs::read_dir(&rootfs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["sentinel"]);
+        assert_eq!(
+            std::fs::read(rootfs.join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+    }
+
+    #[test]
+    fn case_distinct_ancestor_components_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let body = [
+            raw_member(b"Dir/first", b'0', "", b"first"),
+            raw_member(b"dir/second", b'0', "", b"second"),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "case-ancestors.tar", &body);
+
+        assert!(matches!(
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        assert_eq!(std::fs::read_dir(rootfs).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn case_distinct_names_across_layers_are_rejected_before_the_upper_merge() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = write_archive(
+            dir.path(),
+            "lower.tar",
+            &raw_member(b"A", b'0', "", b"lower"),
+        );
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &raw_member(b"a", b'0', "", b"upper"),
+        );
+        let mut owners = Ownership::default();
+        let mut names = BTreeMap::new();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+
+        assert!(matches!(
+            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        let entries: Vec<_> = std::fs::read_dir(&rootfs)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["A"]);
+        assert_eq!(std::fs::read(rootfs.join("A")).unwrap(), b"lower");
+    }
+
+    #[test]
+    fn staging_rejects_case_distinct_names_across_layers() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["lower.tar","upper.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        write_archive(&layout, "lower.tar", &raw_member(b"A", b'0', "", b"lower"));
+        write_archive(&layout, "upper.tar", &raw_member(b"a", b'0', "", b"upper"));
+        let staging = dir.path().join("staging");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn a_whiteout_cannot_hide_a_differently_cased_lower_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = write_archive(
+            dir.path(),
+            "lower.tar",
+            &raw_member(b"Foo", b'0', "", b"lower"),
+        );
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &raw_member(b".wh.foo", b'0', "", b""),
+        );
+        let mut owners = Ownership::default();
+        let mut names = BTreeMap::new();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+
+        assert!(matches!(
+            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names),
+            Err(ImageError::CaseCollision { .. })
+        ));
+        assert_eq!(std::fs::read(rootfs.join("Foo")).unwrap(), b"lower");
+    }
+
+    #[test]
+    fn an_exact_whiteout_allows_a_new_case_after_removal() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = write_archive(
+            dir.path(),
+            "lower.tar",
+            &raw_member(b"Foo", b'0', "", b"lower"),
+        );
+        let upper = write_archive(
+            dir.path(),
+            "upper.tar",
+            &[
+                raw_member(b".wh.Foo", b'0', "", b""),
+                raw_member(b"foo", b'0', "", b"upper"),
+            ]
+            .concat(),
+        );
+        let mut owners = Ownership::default();
+        let mut names = BTreeMap::new();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+        apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names).unwrap();
+
+        assert_eq!(std::fs::read(rootfs.join("foo")).unwrap(), b"upper");
+        assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn layout_control_files_require_exact_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("MANIFEST.JSON"),
+            br#"[{"Config":"config.json","Layers":[]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("staging")),
+            Err(ImageError::Unrecognized(_))
+        ));
+    }
+
+    #[test]
+    fn docker_save_layers_can_reuse_a_prior_layer_by_relative_symlink() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir_all(layout.join("a")).unwrap();
+        std::fs::create_dir_all(layout.join("b")).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["a/layer.tar","b/layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        write_archive(
+            &layout.join("a"),
+            "layer.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        std::os::unix::fs::symlink("../a/layer.tar", layout.join("b/layer.tar")).unwrap();
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("staging")).unwrap();
+        assert_eq!(std::fs::read(staged.rootfs.join("file")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn layout_type_ignores_a_case_alias_symlinked_manifest() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let blobs = layout.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            layout.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{}}"#).unwrap();
+        std::os::unix::fs::symlink("INDEX.JSON", layout.join("manifest.json")).unwrap();
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("stage")).unwrap();
+        assert!(staged.rootfs.is_dir());
+    }
+
+    #[test]
+    fn staging_refuses_a_case_aliased_layout_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let blobs = layout.join("blobs/sha256");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::write(
+            layout.join("index.json"),
+            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            blobs.join("m"),
+            br#"{"config":{"digest":"sha256:c"},"layers":[]}"#,
+        )
+        .unwrap();
+        std::fs::write(blobs.join("c"), br#"{"config":{}}"#).unwrap();
+
+        let aliased = dir.path().join("LAYOUT");
+        assert!(matches!(
+            stage_from_path(&aliased, &dir.path().join("stage")),
+            Err(ImageError::UnsafePath(_))
+        ));
+        let staging = dir.path().join("public-stage");
+        assert!(matches!(
+            stage(aliased.to_str().unwrap(), &staging),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(!staging.exists());
+
+        let parent = dir.path().join("Parent");
+        std::fs::create_dir(&parent).unwrap();
+        std::os::unix::fs::symlink("../layout", parent.join("image")).unwrap();
+        let aliased_parent = dir.path().join("parent/image");
+        assert!(matches!(
+            stage(aliased_parent.to_str().unwrap(), &staging),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(!staging.exists());
+
+        let bad_target = parent.join("bad-target");
+        std::os::unix::fs::symlink("../LAYOUT", &bad_target).unwrap();
+        assert!(matches!(
+            stage(bad_target.to_str().unwrap(), &staging),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert!(!staging.exists());
+
+        let exact_link = parent.join("image");
+        let staged = stage(exact_link.to_str().unwrap(), &staging).unwrap();
+        assert!(staged.rootfs.is_dir());
+    }
+
+    #[test]
+    fn case_aliased_local_entry_does_not_shadow_image_reference() {
+        if let Ok(mode) = std::env::var("HARMONY_IMAGE_REF_CHILD") {
+            match mode.as_str() {
+                "alias" => {
+                    assert!(matches!(
+                        stage("./app", Path::new("explicit-stage")),
+                        Err(ImageError::UnsafePath(_))
+                    ));
+                    assert!(!Path::new("explicit-stage").exists());
+                    let staged = stage("app", Path::new("stage")).unwrap();
+                    assert!(staged.rootfs.is_dir());
+                }
+                "bad-link" | "dangling-link" => {
+                    assert!(matches!(
+                        stage("app", Path::new("rejected-stage")),
+                        Err(ImageError::UnsafePath(_))
+                    ));
+                    assert!(!Path::new("rejected-stage").exists());
+                }
+                _ => panic!("unknown test mode"),
+            }
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir(&work).unwrap();
+        std::fs::create_dir(work.join("App")).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "image.tar",
+            &[
+                raw_member(
+                    b"manifest.json",
+                    b'0',
+                    "",
+                    br#"[{"Config":"config.json","Layers":[]}]"#,
+                ),
+                raw_member(b"config.json", b'0', "", br#"{"config":{}}"#),
+            ]
+            .concat(),
+        );
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let tool = bin.join("docker");
+        std::fs::write(
+            &tool,
+            b"#!/bin/sh\nif [ \"$1\" = --version ]; then exit 0; fi\nif [ \"$1\" = image ] && [ \"$2\" = inspect ]; then echo sha256:fixture; exit 0; fi\nif [ \"$1\" = image ] && [ \"$2\" = save ]; then cp \"$FAKE_IMAGE_TAR\" \"$4\"; exit $?; fi\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let child = |mode| {
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::case_aliased_local_entry_does_not_shadow_image_reference",
+                ])
+                .current_dir(&work)
+                .env("HARMONY_IMAGE_REF_CHILD", mode)
+                .env("FAKE_IMAGE_TAR", &archive)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .status()
+                .unwrap()
+        };
+        assert!(child("alias").success());
+        std::fs::remove_dir(work.join("App")).unwrap();
+        std::fs::create_dir(work.join("layout")).unwrap();
+        std::os::unix::fs::symlink("LAYOUT", work.join("app")).unwrap();
+        assert!(child("bad-link").success());
+        std::fs::remove_file(work.join("app")).unwrap();
+        std::os::unix::fs::symlink("missing", work.join("app")).unwrap();
+        assert!(child("dangling-link").success());
+    }
+
+    #[test]
+    fn layout_symlink_targets_require_exact_names_and_stay_inside_the_layout() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir_all(layout.join("a")).unwrap();
+        std::fs::create_dir_all(layout.join("b")).unwrap();
+        std::fs::write(layout.join("a/layer.tar"), b"layer").unwrap();
+        for (name, target) in [("case", "../a/LAYER.TAR"), ("escape", "../../outside")] {
+            std::os::unix::fs::symlink(target, layout.join("b/layer.tar")).unwrap();
+            assert!(
+                contained_join(&layout, "b/layer.tar").is_err(),
+                "{name} symlink resolved"
+            );
+            std::fs::remove_file(layout.join("b/layer.tar")).unwrap();
+        }
+    }
+
+    #[test]
+    fn archive_names_outside_ascii_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "unicode.tar",
+            &raw_member(b"caf\xc3\xa9", b'0', "", b"data"),
+        );
+
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::NonPortableName(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn host_dependent_drive_prefix_names_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("raw", raw_member(b"a:b", b'0', "", b"data")),
+            (
+                "pax",
+                [
+                    raw_member(
+                        b"PaxHeaders/0",
+                        b'x',
+                        "",
+                        pax_record("path", "a:b").as_bytes(),
+                    ),
+                    raw_member(b"valid", b'0', "", b"data"),
+                ]
+                .concat(),
+            ),
+            (
+                "gnu",
+                [
+                    raw_member(b"././@LongLink", b'L', "", b"a:b\0"),
+                    raw_member(b"valid", b'0', "", b"data"),
+                ]
+                .concat(),
+            ),
+        ];
+        for (label, body) in cases {
+            let archive = write_archive(dir.path(), &format!("drive-name-{label}.tar"), &body);
+            let dest = dir.path().join(format!("drive-name-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn leading_backslash_member_names_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            ("raw", raw_member(b"\\foo", b'0', "", b"data")),
+            (
+                "pax",
+                [
+                    raw_member(
+                        b"PaxHeaders/0",
+                        b'x',
+                        "",
+                        pax_record("path", "\\foo").as_bytes(),
+                    ),
+                    raw_member(b"valid", b'0', "", b"data"),
+                ]
+                .concat(),
+            ),
+            (
+                "gnu",
+                [
+                    raw_member(b"././@LongLink", b'L', "", b"\\foo\0"),
+                    raw_member(b"valid", b'0', "", b"data"),
+                ]
+                .concat(),
+            ),
+        ];
+        for (label, body) in cases {
+            let archive = write_archive(dir.path(), &format!("backslash-name-{label}.tar"), &body);
+            let dest = dir.path().join(format!("backslash-name-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn terminal_dot_non_directory_names_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (kind, target) in [(b'0', ""), (b'1', "source"), (b'2', "source")] {
+            let data: &[u8] = if kind == b'0' { b"payload" } else { b"" };
+            for (label, body) in [
+                ("raw", raw_member(b"d/.", kind, target, data)),
+                ("repeated-slash", raw_member(b"d//.", kind, target, data)),
+                ("repeated-dot", raw_member(b"d/./.", kind, target, data)),
+                ("leading-dot", raw_member(b"./d/.", kind, target, data)),
+                (
+                    "pax",
+                    [
+                        raw_member(
+                            b"PaxHeaders/0",
+                            b'x',
+                            "",
+                            pax_record("path", "d/.").as_bytes(),
+                        ),
+                        raw_member(b"valid", kind, target, data),
+                    ]
+                    .concat(),
+                ),
+                (
+                    "gnu",
+                    [
+                        raw_member(b"././@LongLink", b'L', "", b"d/.\0"),
+                        raw_member(b"valid", kind, target, data),
+                    ]
+                    .concat(),
+                ),
+            ] {
+                let archive = write_archive(
+                    dir.path(),
+                    &format!("terminal-dot-{kind}-{label}.tar"),
+                    &[raw_member(b"source", b'0', "", b"source"), body].concat(),
+                );
+                let dest = dir.path().join(format!("terminal-dot-{kind}-{label}"));
+                std::fs::create_dir(&dest).unwrap();
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn orphan_name_link_and_pax_extensions_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                "gnu-name",
+                raw_member(b"././@LongLink", b'L', "", b"next\0"),
+            ),
+            (
+                "gnu-link",
+                raw_member(b"././@LongLink", b'K', "", b"next\0"),
+            ),
+            (
+                "pax-path",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "next").as_bytes(),
+                ),
+            ),
+            (
+                "pax-comment",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("comment", "next").as_bytes(),
+                ),
+            ),
+            (
+                "empty-gnu-name",
+                raw_member(b"././@LongLink", b'L', "", b""),
+            ),
+            (
+                "empty-gnu-link",
+                raw_member(b"././@LongLink", b'K', "", b""),
+            ),
+            ("empty-pax", raw_member(b"PaxHeaders/0", b'x', "", b"")),
+        ];
+        for (label, extension) in cases {
+            for (prefix_label, prefix) in [
+                ("alone", Vec::new()),
+                ("after-file", raw_member(b"file", b'0', "", b"content")),
+            ] {
+                let archive = write_archive(
+                    dir.path(),
+                    &format!("orphan-{label}-{prefix_label}.tar"),
+                    &[prefix, extension.clone()].concat(),
+                );
+                let dest = dir.path().join(format!("orphan-{label}-{prefix_label}"));
+                std::fs::create_dir(&dest).unwrap();
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn consumed_name_link_and_pax_extensions_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let cases = [
+            (
+                "gnu-name",
+                raw_member(b"././@LongLink", b'L', "", b"next\0"),
+                "next",
+            ),
+            (
+                "gnu-link",
+                raw_member(b"././@LongLink", b'K', "", b"next\0"),
+                "file",
+            ),
+            (
+                "pax-comment",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("comment", "next").as_bytes(),
+                ),
+                "file",
+            ),
+        ];
+        for (label, extension, name) in cases {
+            let archive = write_archive(
+                dir.path(),
+                &format!("consumed-{label}.tar"),
+                &[extension, raw_member(b"file", b'0', "", b"content")].concat(),
+            );
+            let dest = dir.path().join(format!("consumed-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join(name)).unwrap(), b"content");
+        }
+    }
+
+    #[test]
+    fn directory_terminal_dots_and_overridden_base_names_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "portable-terminal-dot.tar",
+            &[
+                raw_member(b"d/.", b'5', "", b""),
+                raw_member(b"d/child", b'0', "", b"child"),
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "pax-valid").as_bytes(),
+                ),
+                raw_member(b"d/.", b'0', "", b"pax"),
+                raw_member(b"././@LongLink", b'L', "", b"gnu-valid\0"),
+                raw_member(b"d/.", b'0', "", b"gnu"),
+            ]
+            .concat(),
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        assert_eq!(read_members(&archive).unwrap().len(), 4);
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("d/child")).unwrap(), b"child");
+        assert_eq!(std::fs::read(dest.join("pax-valid")).unwrap(), b"pax");
+        assert_eq!(std::fs::read(dest.join("gnu-valid")).unwrap(), b"gnu");
+    }
+
+    #[test]
+    fn host_dependent_drive_prefix_hardlink_targets_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let setup = [
+            raw_member(b"./a:b", b'0', "", b"first"),
+            raw_member(b"b", b'0', "", b"second"),
+        ]
+        .concat();
+        let cases = [
+            ("raw", raw_member(b"copy", b'1', "a:b", b"")),
+            (
+                "pax",
+                [
+                    raw_member(
+                        b"PaxHeaders/0",
+                        b'x',
+                        "",
+                        pax_record("linkpath", "a:b").as_bytes(),
+                    ),
+                    raw_member(b"copy", b'1', "./a:b", b""),
+                ]
+                .concat(),
+            ),
+            (
+                "gnu",
+                [
+                    raw_member(b"././@LongLink", b'K', "", b"a:b\0"),
+                    raw_member(b"copy", b'1', "./a:b", b""),
+                ]
+                .concat(),
+            ),
+        ];
+        for (label, link) in cases {
+            let archive = write_archive(
+                dir.path(),
+                &format!("drive-link-{label}.tar"),
+                &[setup.as_slice(), link.as_slice()].concat(),
+            );
+            let dest = dir.path().join(format!("drive-link-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn leading_backslash_hardlink_targets_are_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let setup = [
+            raw_member(b"./\\foo", b'0', "", b"first"),
+            raw_member(b"foo", b'0', "", b"second"),
+        ]
+        .concat();
+        let cases = [
+            ("raw", raw_member(b"copy", b'1', "\\foo", b"")),
+            (
+                "pax",
+                [
+                    raw_member(
+                        b"PaxHeaders/0",
+                        b'x',
+                        "",
+                        pax_record("linkpath", "\\foo").as_bytes(),
+                    ),
+                    raw_member(b"copy", b'1', "./\\foo", b""),
+                ]
+                .concat(),
+            ),
+            (
+                "gnu",
+                [
+                    raw_member(b"././@LongLink", b'K', "", b"\\foo\0"),
+                    raw_member(b"copy", b'1', "./\\foo", b""),
+                ]
+                .concat(),
+            ),
+        ];
+        for (label, link) in cases {
+            let archive = write_archive(
+                dir.path(),
+                &format!("backslash-link-{label}.tar"),
+                &[setup.as_slice(), link.as_slice()].concat(),
+            );
+            let dest = dir.path().join(format!("backslash-link-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn portable_colon_paths_and_overridden_drive_prefixes_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let portable = write_archive(
+            dir.path(),
+            "portable-colon.tar",
+            &[
+                raw_member(b"./a:b", b'0', "", b"first"),
+                raw_member(b"copy", b'1', "./a:b", b""),
+                raw_member(b"link", b'2', "a:b", b""),
+            ]
+            .concat(),
+        );
+        let portable_dest = dir.path().join("portable");
+        std::fs::create_dir(&portable_dest).unwrap();
+        assert_eq!(read_members(&portable).unwrap().len(), 3);
+        extract_checked(&portable, &portable_dest).unwrap();
+        assert_eq!(std::fs::read(portable_dest.join("copy")).unwrap(), b"first");
+        assert_eq!(
+            std::fs::read_link(portable_dest.join("link")).unwrap(),
+            Path::new("a:b")
+        );
+
+        let overridden = write_archive(
+            dir.path(),
+            "overridden-drive.tar",
+            &[
+                raw_member(b"./a:b", b'0', "", b"first"),
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "valid").as_bytes(),
+                ),
+                raw_member(b"a:b", b'0', "", b"first"),
+                raw_member(
+                    b"PaxHeaders/1",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "./a:b").as_bytes(),
+                ),
+                raw_member(b"copy", b'1', "a:b", b""),
+            ]
+            .concat(),
+        );
+        let overridden_dest = dir.path().join("overridden");
+        std::fs::create_dir(&overridden_dest).unwrap();
+        assert_eq!(read_members(&overridden).unwrap().len(), 3);
+        extract_checked(&overridden, &overridden_dest).unwrap();
+        assert_eq!(
+            std::fs::read(overridden_dest.join("valid")).unwrap(),
+            b"first"
+        );
+        assert_eq!(
+            std::fs::read(overridden_dest.join("copy")).unwrap(),
+            b"first"
+        );
+    }
+
+    #[test]
+    fn portable_backslash_paths_and_overridden_base_fields_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "portable-backslash.tar",
+            &[
+                raw_member(b"./\\foo", b'0', "", b"first"),
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", "valid").as_bytes(),
+                ),
+                raw_member(b"\\foo", b'0', "", b"other"),
+                raw_member(
+                    b"PaxHeaders/1",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "./\\foo").as_bytes(),
+                ),
+                raw_member(b"copy", b'1', "\\foo", b""),
+                raw_member(b"link", b'2', "\\foo", b""),
+            ]
+            .concat(),
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        assert_eq!(read_members(&archive).unwrap().len(), 4);
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("copy")).unwrap(), b"first");
+        assert_eq!(std::fs::read(dest.join("./\\foo")).unwrap(), b"first");
+        assert_eq!(std::fs::read(dest.join("valid")).unwrap(), b"other");
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("\\foo")
+        );
+    }
+
+    #[test]
+    fn hardlink_target_requires_an_earlier_case_exact_archive_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let body = [
+            raw_member(b"A", b'0', "", b"data"),
+            raw_member(b"link", b'1', "a", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "case-hardlink.tar", &body);
+
+        assert!(matches!(
+            apply_layer(&layer, &rootfs, &mut Ownership::default()),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+        assert_eq!(
+            std::fs::read(rootfs.join("sentinel")).unwrap(),
+            b"unchanged"
+        );
+
+        let body = [
+            raw_member(b"A", b'0', "", b"data"),
+            raw_member(b"link", b'1', "A", b""),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "exact-hardlink.tar", &body);
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
+        assert_eq!(std::fs::read(rootfs.join("link")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn hardlink_target_accepts_portable_dot_and_separator_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, target) in [
+            ("dot", "d/./f"),
+            ("separator", "d//f"),
+            ("leading-dot", "./d/f"),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                &format!("normalized-hardlink-{label}.tar"),
+                &[
+                    raw_member(b"d/f", b'0', "", b"content"),
+                    raw_member(b"copy", b'1', target, b""),
+                ]
+                .concat(),
+            );
+            let dest = dir.path().join(format!("normalized-hardlink-{label}"));
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("copy")).unwrap(), b"content");
+        }
+    }
+
+    #[test]
+    fn self_referential_repeated_hardlink_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "self-hardlink.tar",
+            &[
+                raw_member(b"target", b'0', "", b"content"),
+                raw_member(b"link", b'1', "target", b""),
+                raw_member(b"link", b'1', "link", b""),
+            ]
+            .concat(),
+        );
+
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::UnsafePath(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn noncanonical_ustar_prefix_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[257..263].copy_from_slice(b"ustar ");
+        member[345..351].copy_from_slice(b"prefix");
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "noncanonical-prefix.tar", &member);
+
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn gnu_timestamp_field_is_not_treated_as_a_path_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[257..265].copy_from_slice(b"ustar  \0");
+        member[345..357].copy_from_slice(b"00000000001\0");
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "gnu-time-header.tar", &member);
+
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn gnu_sparse_metadata_on_regular_file_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[257..265].copy_from_slice(b"ustar  \0");
+        member[483..495].copy_from_slice(b"00000000010\0");
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "gnu-sparse-regular.tar", &member);
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn gnu_sparse_map_cannot_hide_a_later_member() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut first = raw_member(b"first", b'0', "", b"");
+        first[257..265].copy_from_slice(b"ustar  \0");
+        first[386..398].copy_from_slice(b"00000000001\0");
+        first[398..410].copy_from_slice(b"00000000001\0");
+        first[482] = b'1';
+        reseal(&mut first);
+        let archive = write_archive(
+            dir.path(),
+            "gnu-sparse-map.tar",
+            &[first, raw_member(b"later", b'0', "", b"data")].concat(),
+        );
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn invalid_tar_timestamps_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, timestamp) in [("invalid", b"xxxxxxxxxxxx"), ("negative", b"-0000000001\0")] {
+            let mut member = raw_member(b"payload", b'0', "", b"data");
+            member[136..148].copy_from_slice(timestamp);
+            reseal(&mut member);
+            let archive = write_archive(dir.path(), &format!("{label}.tar"), &member);
+            let dest = dir.path().join(label);
+            std::fs::create_dir(&dest).unwrap();
+
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn out_of_range_binary_tar_timestamp_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        let mut timestamp = [0u8; 12];
+        timestamp[0] = 0x80;
+        timestamp[4] = 0x80;
+        member[136..148].copy_from_slice(&timestamp);
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "huge-mtime.tar", &member);
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn host_nanosecond_overflow_in_tar_timestamp_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        let mut timestamp = [0u8; 12];
+        timestamp[0] = 0x80;
+        timestamp[4..12].copy_from_slice(&9_223_372_037_u64.to_be_bytes());
+        member[136..148].copy_from_slice(&timestamp);
+        reseal(&mut member);
+        let archive = write_archive(dir.path(), "host-ns-overflow.tar", &member);
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn nonportable_pax_timestamps_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for key in ["mtime", "atime", "ctime"] {
+            for (label, value) in [
+                ("invalid", "abc"),
+                ("plus", "+1"),
+                ("spaces", " "),
+                ("missing-integer", ".5"),
+                ("too-large", "99999999999999999999"),
+                ("too-negative", "-9223372036854775808.9"),
+                ("negative-fraction", "-0.1"),
+                ("host-nanosecond-overflow", "16725225600"),
+                ("host-nanosecond-edge", "9223372036.854775808"),
+                ("host-nanosecond-fraction", "9223372036.8547758071"),
+                ("negative-host-nanosecond-overflow", "-9223372037"),
+            ] {
+                let body = [
+                    raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                    raw_member(b"payload", b'0', "", b"data"),
+                ]
+                .concat();
+                let case = format!("{key}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &body);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn portable_pax_timestamps_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        for value in [
+            "0",
+            "-1.0",
+            "-0.0",
+            "123.456789",
+            "0.",
+            "9223372036.854775807",
+        ] {
+            let body = [
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("mtime", value).as_bytes(),
+                ),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("valid-mtime-{value}.tar"), &body);
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn signed_pax_size_and_owner_fields_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (key, value) in [("size", "+4"), ("uid", "+1"), ("gid", "+1")] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("plus-{key}.tar"), &body);
+            let dest = dir.path().join(key);
+            std::fs::create_dir(&dest).unwrap();
+
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn padded_pax_size_and_owner_fields_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        for (key, value) in [("size", "0004"), ("uid", "0001"), ("gid", "0001")] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("padded-{key}.tar"), &body);
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+        }
+    }
+
+    #[test]
+    fn malformed_pax_record_framing_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, record) in [
+            ("plus-uid", b"+10 uid=1\n".as_slice()),
+            ("plus-size", b"+11 size=4\n".as_slice()),
+            ("missing-newline", b"9 uid=123".as_slice()),
+            ("extra-space", b"14  path=Evil\n".as_slice()),
+            ("extra-tab", b"14 \tpath=Evil\n".as_slice()),
+            ("nul-key", b"15 path\0x=Evil\n".as_slice()),
+        ] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", record),
+                raw_member(b"payload", b'0', "", b"data"),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("bad-pax-{label}.tar"), &body);
+            let dest = dir.path().join(label);
+            std::fs::create_dir(&dest).unwrap();
+
+            assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::Tar(_))
+            ));
+            assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn ambiguous_tar_numeric_fields_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, field) in [
+            ("mode", 100..108),
+            ("uid", 108..116),
+            ("gid", 116..124),
+            ("mtime", 136..148),
+        ] {
+            for (label, bytes) in [
+                ("nul-junk", b"1\0x".as_slice()),
+                ("plus", b"+1".as_slice()),
+                ("newline", b"\n1".as_slice()),
+                ("spaces", b" ".as_slice()),
+            ] {
+                let mut member = raw_member(b"payload", b'0', "", b"data");
+                member[field.clone()].fill(if label == "spaces" { b' ' } else { 0 });
+                if label != "spaces" {
+                    member[field.start..field.start + bytes.len()].copy_from_slice(bytes);
+                }
+                reseal(&mut member);
+                let case = format!("{name}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &member);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn pax_owner_override_does_not_hide_an_invalid_base_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, field) in [("uid", 108..116), ("gid", 116..124)] {
+            for (label, bytes) in [
+                ("spaces", b"        ".as_slice()),
+                ("junk", b"abcdef\0 ".as_slice()),
+                ("too-large", b"\x80\xff\xff\xff\xff\xff\xff\xff".as_slice()),
+            ] {
+                let mut member = raw_member(b"payload", b'0', "", b"data");
+                member[field.clone()].copy_from_slice(bytes);
+                reseal(&mut member);
+                let body = [
+                    raw_member(b"PaxHeaders/0", b'x', "", pax_record(name, "0").as_bytes()),
+                    member,
+                ]
+                .concat();
+                let case = format!("pax-{name}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &body);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn pax_owner_override_accepts_an_all_nul_base_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut member = raw_member(b"payload", b'0', "", b"data");
+        member[108..124].fill(0);
+        reseal(&mut member);
+        let pax = [pax_record("uid", "3000000"), pax_record("gid", "3000000")].concat();
+        let body = [
+            raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes()),
+            member,
+        ]
+        .concat();
+        let archive = write_archive(dir.path(), "all-nul-base-owner.tar", &body);
+
+        assert_eq!(
+            read_members(&archive).unwrap()[0].owner,
+            Owner {
+                uid: 3_000_000,
+                gid: 3_000_000
+            }
+        );
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+    }
+
+    #[test]
+    fn malformed_device_number_fields_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, field) in [("major", 329..337), ("minor", 337..345)] {
+            for (label, bytes) in [
+                ("plus", b"     +1\0".as_slice()),
+                ("junk", b"abcdef\0 ".as_slice()),
+                ("nul-junk", b"0\0garbag".as_slice()),
+                ("binary-lead-81", b"\x81\0\0\0\0\0\0\0".as_slice()),
+                ("binary-lead-fe", b"\xfe\0\0\0\0\0\0\0".as_slice()),
+            ] {
+                let mut member = raw_member(b"payload", b'0', "", b"data");
+                member[field.clone()].copy_from_slice(bytes);
+                reseal(&mut member);
+                let case = format!("device-{name}-{label}");
+                let archive = write_archive(dir.path(), &format!("{case}.tar"), &member);
+                let dest = dir.path().join(case);
+                std::fs::create_dir(&dest).unwrap();
+
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn portable_device_number_fields_remain_admitted() {
+        let dir = tempfile::tempdir().unwrap();
+        for (name, bytes) in [
+            ("spaces", b"        ".as_slice()),
+            ("spaces-nul", b"       \0".as_slice()),
+            ("nul-spaces", b"\0       ".as_slice()),
+            ("positive-binary", b"\x80\0\0\0\0\0\0\0".as_slice()),
+            ("binary", b"\xff\0\0\0\0\0\0\0".as_slice()),
+        ] {
+            let mut member = raw_member(b"payload", b'0', "", b"data");
+            member[329..337].copy_from_slice(bytes);
+            member[337..345].copy_from_slice(bytes);
+            reseal(&mut member);
+            let archive = write_archive(dir.path(), &format!("{name}.tar"), &member);
+            assert_eq!(read_members(&archive).unwrap().len(), 1);
+
+            let dest = dir.path().join(name);
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+        }
+    }
+
+    #[test]
+    fn hardlink_with_data_is_rejected_before_rootfs_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let raw = [
+            raw_member(b"a", b'0', "", b"original"),
+            raw_member(b"link", b'1', "a", b"replacement"),
+        ]
+        .concat();
+        let record = pax_record("size", "11");
+        let mut pax_link = raw_member(b"link", b'1', "a", b"replacement");
+        pax_link[124..136].copy_from_slice(b"00000000000\0");
+        reseal(&mut pax_link);
+        let pax = [
+            raw_member(b"a", b'0', "", b"original"),
+            raw_member(b"PaxHeaders/0", b'x', "", record.as_bytes()),
+            pax_link,
+        ]
+        .concat();
+        for (name, body) in [("raw-hardlink.tar", raw), ("pax-hardlink.tar", pax)] {
+            let layer = write_archive(dir.path(), name, &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "hardlink member has nonzero data size"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn symlink_and_directory_data_are_rejected_before_rootfs_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let record = pax_record("size", "11");
+        let cases = [
+            (
+                "symlink",
+                b'2',
+                b"link".as_slice(),
+                "target",
+                raw_member(b"target", b'0', "", b"data"),
+                Vec::new(),
+            ),
+            (
+                "directory",
+                b'5',
+                b"dir/".as_slice(),
+                "",
+                Vec::new(),
+                raw_member(b"dir/item", b'0', "", b"data"),
+            ),
+        ];
+        for (kind, flag, name, target, before, after) in cases {
+            let raw_entry = raw_member(name, flag, target, b"replacement");
+            let mut pax_member = raw_entry.clone();
+            pax_member[124..136].copy_from_slice(b"00000000000\0");
+            reseal(&mut pax_member);
+            let raw = [before.clone(), raw_entry, after.clone()].concat();
+            let pax = [
+                before,
+                raw_member(b"PaxHeaders/0", b'x', "", record.as_bytes()),
+                pax_member,
+                after,
+            ]
+            .concat();
+            for (variant, body) in [("raw", raw), ("pax", pax)] {
+                let layer = write_archive(dir.path(), &format!("{kind}-{variant}.tar"), &body);
+                assert!(matches!(
+                    apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                    Err(ImageError::Tar(message)) if message == format!("{kind} member has nonzero data size")
+                ));
+                assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+                assert_eq!(
+                    std::fs::read(rootfs.join("sentinel")).unwrap(),
+                    b"unchanged"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn regular_member_with_trailing_slash_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        for (name, payload) in [
+            ("payload", b"replacement".to_vec()),
+            ("hidden", raw_member(b"hidden", b'3', "", b"")),
+        ] {
+            let layer = write_archive(
+                dir.path(),
+                &format!("slash-regular-{name}.tar"),
+                &raw_member(b"dir/", b'0', "", &payload),
+            );
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_name_override_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let pax = pax_record("path", "");
+        for (name, header) in [
+            ("pax", raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes())),
+            ("gnu", raw_member(b"././@LongLink", b'L', "", b"\0")),
+        ] {
+            let body = [header, raw_member(b"dir/", b'0', "", b"replacement")].concat();
+            let layer = write_archive(dir.path(), &format!("empty-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive member has an empty name"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn overridden_trailing_slash_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let pax = pax_record("path", "dir/");
+        for (name, header) in [
+            ("pax", raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes())),
+            ("gnu", raw_member(b"././@LongLink", b'L', "", b"dir/\0")),
+        ] {
+            let body = [header, raw_member(b"safe", b'0', "", b"replacement")].concat();
+            let layer = write_archive(dir.path(), &format!("slash-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_pax_and_gnu_name_overrides_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let gnu = raw_member(b"././@LongLink", b'L', "", b"dir/\0");
+        let pax = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("path", "safe").as_bytes(),
+        );
+        let hidden = raw_member(b"evil", b'0', "", b"bad");
+        for (name, headers) in [
+            ("gnu-pax", [gnu.clone(), pax.clone()].concat()),
+            ("pax-gnu", [pax.clone(), gnu.clone()].concat()),
+        ] {
+            let body = [headers, raw_member(b"raw", b'0', "", &hidden)].concat();
+            let layer = write_archive(dir.path(), &format!("mixed-name-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "member has conflicting GNU and pax name overrides"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn mixed_pax_and_gnu_link_overrides_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let gnu = raw_member(b"././@LongLink", b'K', "", b"missing\0");
+        let pax = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("linkpath", "source").as_bytes(),
+        );
+        for (name, headers) in [
+            ("gnu-pax", [gnu.clone(), pax.clone()].concat()),
+            ("pax-gnu", [pax.clone(), gnu.clone()].concat()),
+        ] {
+            let body = [
+                raw_member(b"source", b'0', "", b"data"),
+                headers,
+                raw_member(b"link", b'1', "source", b""),
+            ]
+            .concat();
+            let layer = write_archive(dir.path(), &format!("mixed-link-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "member has conflicting GNU and pax link overrides"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn multiple_pax_headers_for_one_member_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        let path = raw_member(
+            b"PaxHeaders/0",
+            b'x',
+            "",
+            pax_record("path", "safe").as_bytes(),
+        );
+        let time = raw_member(
+            b"PaxHeaders/1",
+            b'x',
+            "",
+            pax_record("mtime", "0").as_bytes(),
+        );
+        let hidden = raw_member(b"evil", b'0', "", b"bad");
+        for (name, headers) in [
+            ("path-time", [path.clone(), time.clone()].concat()),
+            ("time-path", [time.clone(), path.clone()].concat()),
+        ] {
+            let body = [headers, raw_member(b"dir/", b'0', "", &hidden)].concat();
+            let layer = write_archive(dir.path(), &format!("double-pax-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "member has multiple pax headers"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn same_path_type_changes_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        std::fs::write(outside.join("victim"), b"unchanged").unwrap();
+        let symlink = raw_member(b"node", b'2', "../outside/victim", b"");
+        let regular = raw_member(b"node", b'0', "", b"new");
+        for (name, body) in [
+            ("symlink-file", [symlink.clone(), regular.clone()].concat()),
+            ("file-symlink", [regular.clone(), symlink.clone()].concat()),
+        ] {
+            let layer = write_archive(dir.path(), &format!("type-change-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive changes a member's type at the same path"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+            assert_eq!(std::fs::read(outside.join("victim")).unwrap(), b"unchanged");
+        }
+    }
+
+    #[test]
+    fn repeated_symlinks_at_one_path_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        for (name, first, second) in [
+            ("ab", "../outside/a", "../outside/b"),
+            ("ba", "../outside/b", "../outside/a"),
+        ] {
+            let body = [
+                raw_member(b"node", b'2', first, b""),
+                raw_member(b"node", b'2', second, b""),
+            ]
+            .concat();
+            let layer = write_archive(dir.path(), &format!("symlink-repeat-{name}.tar"), &body);
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive repeats a symlink at the same path"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn repeated_regular_members_at_one_path_keep_the_last_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let body = [
+            raw_member(b"node", b'0', "", b"first"),
+            raw_member(b"node", b'0', "", b"last"),
+        ]
+        .concat();
+        let layer = write_archive(dir.path(), "regular-repeat.tar", &body);
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
+        assert_eq!(std::fs::read(rootfs.join("node")).unwrap(), b"last");
+    }
+
+    #[test]
+    fn nonportable_member_types_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        std::fs::write(rootfs.join("sentinel"), b"unchanged").unwrap();
+        for (flag, data) in [(b'A', b"x".as_slice()), (b'3', b"".as_slice())] {
+            let layer = write_archive(
+                dir.path(),
+                &format!("type-{}.tar", flag as char),
+                &raw_member(b"item", flag, "", data),
+            );
+            assert!(matches!(
+                apply_layer(&layer, &rootfs, &mut Ownership::default()),
+                Err(ImageError::Tar(message)) if message == "archive carries an unsupported member type"
+            ));
+            assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
+            assert_eq!(
+                std::fs::read(rootfs.join("sentinel")).unwrap(),
+                b"unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn hardlink_target_checks_pax_and_gnu_longlink_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let pax = pax_record("linkpath", "a");
+        for (name, header) in [
+            (
+                "pax-hardlink.tar",
+                raw_member(b"PaxHeaders/0", b'x', "", pax.as_bytes()),
+            ),
+            (
+                "gnu-hardlink.tar",
+                raw_member(b"././@LongLink", b'K', "", b"a\0"),
+            ),
+        ] {
+            let body = [
+                raw_member(b"A", b'0', "", b"data"),
+                header,
+                raw_member(b"link", b'1', "A", b""),
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), name, &body);
+            assert!(matches!(
+                extract_checked(&archive, &dest),
+                Err(ImageError::UnsafePath(_))
+            ));
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0);
+        }
+    }
+
+    #[test]
+    fn symlink_targets_require_portable_header_and_override_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        for (name, header, base) in [
+            (
+                "pax-empty-base.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "target").as_bytes(),
+                ),
+                "",
+            ),
+            (
+                "gnu-empty-base.tar",
+                raw_member(b"././@LongLink", b'K', "", b"target\0"),
+                "",
+            ),
+            (
+                "pax-empty-override.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "").as_bytes(),
+                ),
+                "base",
+            ),
+            (
+                "pax-unicode-override.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "targét").as_bytes(),
+                ),
+                "base",
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[header, raw_member(b"link", b'2', base, b"")].concat(),
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
+        let archive = write_archive(
+            dir.path(),
+            "portable-override.tar",
+            &[
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "target").as_bytes(),
+                ),
+                raw_member(b"link", b'2', "base", b""),
+            ]
+            .concat(),
+        );
+        extract_checked(&archive, &dest).unwrap();
+        assert_eq!(
+            std::fs::read_link(dest.join("link")).unwrap(),
+            Path::new("target")
+        );
+    }
+
+    #[test]
+    fn oversized_symlink_target_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let target = "x".repeat(1024);
+        for (name, header) in [
+            (
+                "pax-long-link.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", &target).as_bytes(),
+                ),
+            ),
+            (
+                "gnu-long-link.tar",
+                raw_member(b"././@LongLink", b'K', "", format!("{target}\0").as_bytes()),
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[header, raw_member(b"link", b'2', "x", b"")].concat(),
+            );
+            assert!(
+                matches!(read_members(&archive), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn overlong_archive_paths_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let name = vec!["x".repeat(80); 13].join("/");
+        let archive = write_archive(
+            dir.path(),
+            "overlong-path.tar",
+            &[
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("path", &name).as_bytes(),
+                ),
+                raw_member(b"short", b'0', "", b"data"),
+            ]
+            .concat(),
+        );
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn deep_staging_roots_are_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir
+            .path()
+            .join("a".repeat(80))
+            .join("b".repeat(80))
+            .join("c".repeat(80));
+        std::fs::create_dir_all(&dest).unwrap();
+        let archive = write_archive(
+            dir.path(),
+            "short-path.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn staging_root_limit_uses_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let actual = dir.path().join("a".repeat(150)).join("b".repeat(120));
+        std::fs::create_dir_all(&actual).unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&actual, &alias).unwrap();
+        assert!(alias.as_os_str().as_bytes().len() <= MAX_PORTABLE_STAGING_ROOT);
+        assert!(
+            actual.canonicalize().unwrap().as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT
+        );
+        let archive = write_archive(
+            dir.path(),
+            "short-via-alias.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        assert!(matches!(
+            extract_checked(&archive, &alias),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(actual).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn staging_root_limit_also_uses_spelled_path() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("x")).unwrap();
+        let mut padded = dir.path().to_path_buf();
+        for _ in 0..60 {
+            padded.push("x");
+            padded.push("..");
+        }
+        assert!(padded.as_os_str().as_bytes().len() > MAX_PORTABLE_STAGING_ROOT);
+        assert!(
+            padded.canonicalize().unwrap().as_os_str().as_bytes().len()
+                <= MAX_PORTABLE_STAGING_ROOT
+        );
+        let archive = write_archive(
+            dir.path(),
+            "short-via-padding.tar",
+            &raw_member(b"file", b'0', "", b"data"),
+        );
+        assert!(matches!(
+            extract_checked(&archive, &padded),
+            Err(ImageError::Tar(_))
+        ));
+        assert!(!dir.path().join("file").exists());
+    }
+
+    #[test]
+    fn extraction_ignores_inherited_tar_environment() {
+        if std::env::var_os("HARMONY_OCI_TAR_ENV_TEST_CHILD").is_some() {
+            let dir = tempfile::tempdir().unwrap();
+            let dest = dir.path().join("layout");
+            std::fs::create_dir(&dest).unwrap();
+            let archive = write_archive(
+                dir.path(),
+                "nested.tar",
+                &[
+                    raw_member(b"a/file", b'0', "", b"data"),
+                    raw_member(b"a\\b", b'0', "", b"other"),
+                ]
+                .concat(),
+            );
+            extract_checked(&archive, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("a/file")).unwrap(), b"data");
+            assert_eq!(std::fs::read(dest.join("a\\b")).unwrap(), b"other");
+            assert!(!dest.join("file").exists());
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::extraction_ignores_inherited_tar_environment",
+            ])
+            .env("HARMONY_OCI_TAR_ENV_TEST_CHILD", "1")
+            .env("TAR_OPTIONS", "--strip-components=1")
+            .env("TAR_READER_OPTIONS", "hdrcharset=SHIFT_JIS")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn padded_hardlink_target_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        let target = format!("{}A", "./".repeat(600));
+        for (name, header) in [
+            (
+                "pax-padded-hardlink.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", &target).as_bytes(),
+                ),
+            ),
+            (
+                "gnu-padded-hardlink.tar",
+                raw_member(b"././@LongLink", b'K', "", format!("{target}\0").as_bytes()),
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[
+                    raw_member(b"A", b'0', "", b"payload"),
+                    header,
+                    raw_member(b"link", b'1', "A", b""),
+                ]
+                .concat(),
+            );
+            assert!(
+                matches!(read_members(&archive), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
+    }
+
+    #[test]
+    fn hardlink_override_requires_a_nonempty_base_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("layout");
+        std::fs::create_dir(&dest).unwrap();
+        for (name, header) in [
+            (
+                "pax-empty-hardlink.tar",
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("linkpath", "A").as_bytes(),
+                ),
+            ),
+            (
+                "gnu-empty-hardlink.tar",
+                raw_member(b"././@LongLink", b'K', "", b"A\0"),
+            ),
+        ] {
+            let archive = write_archive(
+                dir.path(),
+                name,
+                &[
+                    raw_member(b"A", b'0', "", b"payload"),
+                    header,
+                    raw_member(b"link", b'1', "", b""),
+                ]
+                .concat(),
+            );
+            assert!(
+                matches!(read_members(&archive), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert!(
+                matches!(extract_checked(&archive, &dest), Err(ImageError::Tar(_))),
+                "{name}"
+            );
+            assert_eq!(std::fs::read_dir(&dest).unwrap().count(), 0, "{name}");
+        }
+    }
+
+    #[test]
     fn apply_layer_refuses_a_symlink_stored_with_a_trailing_slash() {
         let dir = tempfile::tempdir().unwrap();
         let (rootfs, victim) = planted(dir.path());
@@ -1466,7 +4578,7 @@ mod tests {
         );
         assert!(matches!(
             apply_layer(&layer, &rootfs, &mut Ownership::default()),
-            Err(ImageError::UnsafePath(_))
+            Err(ImageError::Tar(message)) if message == "non-directory member has a trailing slash"
         ));
         assert!(victim.join("sentinel").exists());
         assert!(!victim.join("pwn").exists());
@@ -1504,7 +4616,7 @@ mod tests {
             dir.path(),
             "newline.tar",
             &[
-                ("pad\nlink/", b'0', ""),
+                ("pad\nlink/", b'5', ""),
                 ("link", b'2', "../../victim"),
                 ("link/pwn", b'0', ""),
             ],
@@ -1698,6 +4810,49 @@ mod tests {
     }
 
     #[test]
+    fn pax_size_override_refuses_a_base_size_that_overflows_host_tar() {
+        let dir = tempfile::tempdir().unwrap();
+        for (label, size, admitted) in [
+            ("max-minus-one", i64::MAX as u64 - 1, true),
+            ("max", i64::MAX as u64, false),
+            ("max-plus-one", i64::MAX as u64 + 1, false),
+        ] {
+            let mut member = raw_member(b"payload", b'0', "", b"data");
+            let mut encoded = [0u8; 12];
+            encoded[0] = 0x80;
+            encoded[4..].copy_from_slice(&size.to_be_bytes());
+            member[124..136].copy_from_slice(&encoded);
+            reseal(&mut member);
+            let body = [
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record("size", "4").as_bytes(),
+                ),
+                member,
+            ]
+            .concat();
+            let archive = write_archive(dir.path(), &format!("{label}.tar"), &body);
+            let dest = dir.path().join(label);
+            std::fs::create_dir(&dest).unwrap();
+
+            if admitted {
+                assert_eq!(read_members(&archive).unwrap().len(), 1);
+                extract_checked(&archive, &dest).unwrap();
+                assert_eq!(std::fs::read(dest.join("payload")).unwrap(), b"data");
+            } else {
+                assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+                assert!(matches!(
+                    extract_checked(&archive, &dest),
+                    Err(ImageError::Tar(_))
+                ));
+                assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+            }
+        }
+    }
+
+    #[test]
     fn read_members_refuses_unmodeled_header_forms() {
         let dir = tempfile::tempdir().unwrap();
         let member = raw_member(b"file", b'0', "", b"");
@@ -1745,6 +4900,236 @@ mod tests {
     }
 
     #[test]
+    fn stage_rejects_platform_file_flags_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("SCHILY.fflags", "uchg").as_bytes(),
+            ),
+            raw_member(b"foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive carries platform-specific file flags"
+        ));
+        assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 0);
+
+        let harmless = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("mtime", "0").as_bytes(),
+            ),
+            raw_member(b"foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &harmless);
+        let staged = stage(layout.to_str().unwrap(), &staging).unwrap();
+        assert_eq!(
+            std::fs::read(staged.rootfs.join("foo")).unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn stage_rejects_nested_appledouble_name_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let mut apple_double = Vec::new();
+        apple_double.extend_from_slice(&0x0005_1607u32.to_be_bytes());
+        apple_double.extend_from_slice(&0x0002_0000u32.to_be_bytes());
+        apple_double.extend_from_slice(b"Mac OS X        ");
+        apple_double.extend_from_slice(&2u16.to_be_bytes());
+        apple_double.extend_from_slice(&9u32.to_be_bytes());
+        apple_double.extend_from_slice(&50u32.to_be_bytes());
+        apple_double.extend_from_slice(&32u32.to_be_bytes());
+        apple_double.extend_from_slice(&2u32.to_be_bytes());
+        apple_double.extend_from_slice(&82u32.to_be_bytes());
+        apple_double.extend_from_slice(&8u32.to_be_bytes());
+        apple_double.extend_from_slice(&[0; 32]);
+        apple_double.extend_from_slice(b"forkdata");
+        let body = [
+            raw_member(b"dir/sub/._foo", b'0', "", &apple_double),
+            raw_member(b"dir/sub/foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive carries an AppleDouble metadata name"
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stage_rejects_platform_acl_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let acl = "group:everyone:d::deny:12,owner@:rwpaARWcCos::allow,group@:raRcs::allow,everyone@:raRcs::allow";
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("SCHILY.acl.ace", acl).as_bytes(),
+            ),
+            raw_member(b"foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive carries platform-specific ACL metadata"
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+
+        for key in ["SCHILY.acl.access", "SCHILY.acl.default"] {
+            let body = [
+                raw_member(
+                    b"PaxHeaders/0",
+                    b'x',
+                    "",
+                    pax_record(key, "u::rwx").as_bytes(),
+                ),
+                raw_member(b"foo", b'0', "", b"payload"),
+            ]
+            .concat();
+            let layer = write_archive(dir.path(), &format!("{key}.tar"), &body);
+            assert!(matches!(
+                read_members(&layer),
+                Err(ImageError::Tar(message)) if message == "archive carries platform-specific ACL metadata"
+            ));
+        }
+    }
+
+    #[test]
+    fn stage_ignores_host_extended_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let staging = dir.path().join("stage");
+
+        for (key, value) in [
+            ("SCHILY.xattr.com.apple.rootless", "x"),
+            ("LIBARCHIVE.xattr.com.apple.rootless", "eA=="),
+        ] {
+            let body = [
+                raw_member(b"PaxHeaders/0", b'x', "", pax_record(key, value).as_bytes()),
+                raw_member(b"foo", b'0', "", b"payload"),
+            ]
+            .concat();
+            write_archive(&layout, "layer.tar", &body);
+            let staged = stage(layout.to_str().unwrap(), &staging).unwrap();
+            assert_eq!(
+                std::fs::read(staged.rootfs.join("foo")).unwrap(),
+                b"payload"
+            );
+        }
+    }
+
+    #[test]
+    fn stage_rejects_schily_sparse_size_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("SCHILY.realsize", "70").as_bytes(),
+            ),
+            raw_member(b"foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive uses an unsupported sparse pax record"
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn stage_rejects_solaris_sparse_holes_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let body = [
+            raw_member(
+                b"PaxHeaders/0",
+                b'x',
+                "",
+                pax_record("SUN.holesdata", " 0 3 5 7").as_bytes(),
+            ),
+            raw_member(b"foo", b'0', "", b"payload"),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let staging = dir.path().join("stage");
+
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &staging),
+            Err(ImageError::Tar(message)) if message == "archive uses an unsupported sparse pax record"
+        ));
+        assert_eq!(std::fs::read_dir(staging).unwrap().count(), 0);
+    }
+
+    #[test]
     fn read_members_reads_a_binary_size_field() {
         let dir = tempfile::tempdir().unwrap();
         let mut member = raw_member(b"big", b'0', "", b"data");
@@ -1763,7 +5148,7 @@ mod tests {
     }
 
     #[test]
-    fn read_members_reads_compressed_layers() {
+    fn compressed_layers_are_read_and_extracted() {
         let dir = tempfile::tempdir().unwrap();
         let plain = tar_layer(dir.path(), "layer", &[("etc/passwd", b"root")]);
         let expected: Vec<String> = read_members(&plain)
@@ -1788,7 +5173,78 @@ mod tests {
                 .map(Member::shown)
                 .collect();
             assert_eq!(names, expected, "{tool}");
+            let dest = dir.path().join(format!("extract-{tool}"));
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&compressed, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("etc/passwd")).unwrap(), b"root");
         }
+    }
+
+    #[test]
+    fn decompression_ignores_inherited_host_options() {
+        if std::env::var_os("HARMONY_OCI_XZ_ENV_TEST_CHILD").is_some() {
+            let dir = tempfile::tempdir().unwrap();
+            let plain = tar_layer(dir.path(), "layer", &[("file", b"data")]);
+            let compressed = dir.path().join("layer.xz");
+            let output = Command::new("xz")
+                .arg("-c")
+                .arg(&plain)
+                .env_remove("XZ_DEFAULTS")
+                .stdout(std::fs::File::create(&compressed).unwrap())
+                .status()
+                .unwrap();
+            assert!(output.success());
+            assert_eq!(read_members(&compressed).unwrap()[0].shown(), "file");
+            let dest = dir.path().join("out");
+            std::fs::create_dir(&dest).unwrap();
+            extract_checked(&compressed, &dest).unwrap();
+            assert_eq!(std::fs::read(dest.join("file")).unwrap(), b"data");
+            return;
+        }
+        if Command::new("xz").arg("--version").output().is_err() {
+            return;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::decompression_ignores_inherited_host_options",
+            ])
+            .env("HARMONY_OCI_XZ_ENV_TEST_CHILD", "1")
+            .env("XZ_DEFAULTS", "--memlimit-decompress=1MiB")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn corrupt_gzip_trailer_is_rejected_before_extraction() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = write_archive(
+            dir.path(),
+            "plain.tar",
+            &raw_member(b"payload", b'0', "", b"data"),
+        );
+        let output = Command::new("gzip").arg("-c").arg(&plain).output().unwrap();
+        assert!(output.status.success());
+        let mut compressed = output.stdout;
+        let trailer = compressed.len() - 8;
+        compressed[trailer] ^= 1;
+        let archive = dir.path().join("bad-crc.tar.gz");
+        std::fs::write(&archive, compressed).unwrap();
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+
+        assert!(matches!(read_members(&archive), Err(ImageError::Tar(_))));
+        assert!(matches!(
+            extract_checked(&archive, &dest),
+            Err(ImageError::Tar(_))
+        ));
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
     }
 
     #[test]
@@ -1828,6 +5284,7 @@ mod tests {
         let layer = dir.path().join("ok.tar");
         assert!(
             Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&layer)
                 .arg("-C")
@@ -1861,6 +5318,7 @@ mod tests {
         let layer = dir.path().join("ro.tar");
         assert!(
             Command::new("tar")
+                .env("COPYFILE_DISABLE", "1")
                 .arg("-cf")
                 .arg(&layer)
                 .arg("-C")
@@ -1880,6 +5338,126 @@ mod tests {
         assert_eq!(mode, 0o555);
         for path in [stage.join("ro"), rootfs.join("ro")] {
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    #[test]
+    fn preparation_reads_unreadable_guest_paths_without_changing_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{"User":"svc"}}"#).unwrap();
+        let body = [
+            raw_member_with_mode(b"secret", b'0', "", b"data", Owner::ROOT, 0),
+            raw_member_with_mode(b"sealed/", b'5', "", b"", Owner::ROOT, 0),
+            raw_member_with_mode(b"sealed/secret", b'0', "", b"hidden", Owner::ROOT, 0),
+            raw_member_with_mode(b"etc/", b'5', "", b"", Owner::ROOT, 0),
+            raw_member_with_mode(
+                b"etc/passwd",
+                b'0',
+                "",
+                b"svc:x:123:456::/home/svc:/bin/sh\n",
+                Owner::ROOT,
+                0,
+            ),
+            raw_member_with_mode(b"etc/group", b'0', "", b"svc:x:456:\n", Owner::ROOT, 0),
+            raw_member_with_mode(b"usr/", b'5', "", b"", Owner::ROOT, 0),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &body);
+        let stage_dir = dir.path().join("stage");
+        std::fs::create_dir(&stage_dir).unwrap();
+        let staged = stage(layout.to_str().unwrap(), &stage_dir).unwrap();
+        assert_eq!(staged.owners.mode_of(Path::new("secret"), 0o644), 0);
+        assert_eq!(staged.owners.mode_of(Path::new("sealed"), 0o755), 0);
+        let packed = crate::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap();
+        for path in ["secret", "sealed"] {
+            let staged_path = staged.rootfs.join(path);
+            let mode = std::fs::symlink_metadata(staged_path)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, 0, "{path}");
+        }
+        std::fs::set_permissions(
+            staged.rootfs.join("sealed"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(staged.rootfs.join("sealed/secret"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0
+        );
+        for path in ["secret", "sealed", "sealed/secret"] {
+            let staged_path = staged.rootfs.join(path);
+            std::fs::set_permissions(staged_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert_eq!(
+            packed,
+            crate::bundle::build_rootfs_segment(&staged.rootfs, &staged.owners).unwrap()
+        );
+        let fallback_required = match std::fs::read(staged.rootfs.join("etc/passwd")) {
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => true,
+            Ok(_) => false,
+            Err(error) => panic!("unexpected account-file read error: {error}"),
+        };
+        let credentials = staged
+            .config
+            .resolve_process_credentials(&staged.rootfs)
+            .unwrap();
+        assert_eq!((credentials.uid, credentials.gid), (123, 456));
+        let assert_preparation_modes = || {
+            for path in ["etc", "usr"] {
+                let mode = std::fs::symlink_metadata(staged.rootfs.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777;
+                assert_eq!(mode, 0, "{path}");
+            }
+            std::fs::set_permissions(
+                staged.rootfs.join("etc"),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
+            for path in ["etc/passwd", "etc/group"] {
+                let mode = std::fs::symlink_metadata(staged.rootfs.join(path))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777;
+                assert_eq!(mode, 0, "{path}");
+            }
+            std::fs::set_permissions(
+                staged.rootfs.join("etc"),
+                std::fs::Permissions::from_mode(0o0),
+            )
+            .unwrap();
+        };
+        if fallback_required {
+            assert_preparation_modes();
+        }
+        let request = crate::bundle::LaunchRequest::new(vec!["/bin/true".into()]);
+        let prepared = crate::bundle::prepare(&staged, &request).unwrap();
+        assert_eq!((prepared.execution.uid, prepared.execution.gid), (123, 456));
+        assert_eq!(prepared.rootfs_segment, packed);
+        assert_preparation_modes();
+        for path in ["etc", "usr"] {
+            std::fs::set_permissions(
+                staged.rootfs.join(path),
+                std::fs::Permissions::from_mode(0o700),
+            )
+            .unwrap();
         }
     }
 
@@ -1931,6 +5509,127 @@ mod tests {
         assert!(!rootfs.join("d/old").exists());
         assert_eq!(std::fs::read(rootfs.join("d/new")).unwrap(), b"new");
         assert!(!rootfs.join("d/.wh..wh..opq").exists());
+    }
+
+    #[test]
+    fn whiteout_removes_child_from_nested_read_only_lower_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = [
+            raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member_with_mode(b"ro/nested/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member(b"ro/nested/old", b'0', "", b"old"),
+            raw_member_with_mode(b"ro/sub/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member(b"ro/sub/inside", b'0', "", b"inside"),
+        ]
+        .concat();
+        let upper = [
+            raw_member(b"ro/nested/.wh.old", b'0', "", b""),
+            raw_member(b"ro/.wh.sub", b'0', "", b""),
+        ]
+        .concat();
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        let result = apply_layer(&upper, &rootfs, &mut owners);
+        let ro_mode = std::fs::symlink_metadata(rootfs.join("ro"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        let nested_mode = std::fs::symlink_metadata(rootfs.join("ro/nested"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        if rootfs.join("ro/sub").is_dir() {
+            std::fs::set_permissions(
+                rootfs.join("ro/sub"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        for path in ["ro", "ro/nested"] {
+            std::fs::set_permissions(rootfs.join(path), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        result.unwrap();
+        assert!(!rootfs.join("ro/nested/old").exists());
+        assert!(!rootfs.join("ro/sub").exists());
+        assert_eq!(ro_mode, 0o555);
+        assert_eq!(nested_mode, 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro/nested"), 0), 0o555);
+    }
+
+    #[test]
+    fn opaque_whiteout_clears_read_only_lower_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = [
+            raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member_with_mode(b"ro/nested/", b'5', "", b"", Owner::ROOT, 0o555),
+            raw_member(b"ro/nested/old", b'0', "", b"old"),
+        ]
+        .concat();
+        let upper = [
+            raw_member(b"ro/.wh.missing", b'0', "", b""),
+            raw_member(b"ro/.wh..wh..opq", b'0', "", b""),
+            raw_member(b"ro/new", b'0', "", b"new"),
+        ]
+        .concat();
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        let result = apply_layer(&upper, &rootfs, &mut owners);
+        let mode = std::fs::symlink_metadata(rootfs.join("ro"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        if rootfs.join("ro/nested").is_dir() {
+            std::fs::set_permissions(
+                rootfs.join("ro/nested"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        std::fs::set_permissions(rootfs.join("ro"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        result.unwrap();
+        assert!(!rootfs.join("ro/nested").exists());
+        assert_eq!(std::fs::read(rootfs.join("ro/new")).unwrap(), b"new");
+        assert_eq!(mode, 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
+    }
+
+    #[test]
+    fn upper_file_fills_read_only_implicit_parent_without_changing_its_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = raw_member_with_mode(b"ro/", b'5', "", b"", Owner::ROOT, 0o555);
+        let upper = raw_member(b"ro/new", b'0', "", b"new");
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        let result = apply_layer(&upper, &rootfs, &mut owners);
+        let mode = std::fs::symlink_metadata(rootfs.join("ro"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        std::fs::set_permissions(rootfs.join("ro"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        result.unwrap();
+        assert_eq!(std::fs::read(rootfs.join("ro/new")).unwrap(), b"new");
+        assert_eq!(mode, 0o555);
+        assert_eq!(owners.mode_of(Path::new("ro"), 0), 0o555);
     }
 
     const SERVICE: Owner = Owner { uid: 70, gid: 70 };
@@ -2112,6 +5811,133 @@ mod tests {
         }
     }
 
+    #[test]
+    fn implicit_layer_parent_has_a_fixed_mode() {
+        let Some(marker) = std::env::var_os("HARMONY_OCI_UMASK_TEST_MARKER") else {
+            let marker = tempfile::NamedTempFile::new().unwrap();
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg("umask 077; exec \"$@\"")
+                .arg("sh")
+                .arg(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::implicit_layer_parent_has_a_fixed_mode",
+                    "--nocapture",
+                ])
+                .env("HARMONY_OCI_UMASK_TEST_MARKER", marker.path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "restricted-umask child failed: {} {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(std::fs::read(marker.path()).unwrap(), b"ok");
+            return;
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir_all(&rootfs).unwrap();
+        let member = raw_member_with_mode(b"implicit/file", b'0', "", b"data", Owner::ROOT, 0o644);
+        let layer = write_archive(dir.path(), "implicit.tar", &member);
+
+        apply_layer(&layer, &rootfs, &mut Ownership::default()).unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(rootfs.join("implicit"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o755
+        );
+        assert_eq!(
+            std::fs::read(rootfs.join("implicit/file")).unwrap(),
+            b"data"
+        );
+        std::fs::write(marker, b"ok").unwrap();
+    }
+
+    #[test]
+    fn implicit_upper_parent_preserves_lower_directory_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = raw_member_with_mode(b"restricted/", b'5', "", b"", SERVICE, 0o700);
+        let upper =
+            raw_member_with_mode(b"restricted/file", b'0', "", b"payload", Owner::ROOT, 0o644);
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        apply_layer(&upper, &rootfs, &mut owners).unwrap();
+
+        let mode = std::fs::symlink_metadata(rootfs.join("restricted"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o700);
+        assert_eq!(owners.mode_of(Path::new("restricted"), mode), 0o700);
+        assert_eq!(owners.owner_of(Path::new("restricted")), SERVICE);
+        assert_eq!(
+            std::fs::read(rootfs.join("restricted/file")).unwrap(),
+            b"payload"
+        );
+
+        let explicit = raw_member_with_mode(b"restricted/", b'5', "", b"", Owner::ROOT, 0o750);
+        let explicit = write_archive(dir.path(), "explicit.tar", &explicit);
+        apply_layer(&explicit, &rootfs, &mut owners).unwrap();
+        let mode = std::fs::symlink_metadata(rootfs.join("restricted"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o750);
+        assert_eq!(owners.mode_of(Path::new("restricted"), mode), 0o750);
+        assert_eq!(owners.owner_of(Path::new("restricted")), Owner::ROOT);
+    }
+
+    #[test]
+    fn opaque_upper_parent_preserves_lower_directory_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let rootfs = dir.path().join("rootfs");
+        std::fs::create_dir(&rootfs).unwrap();
+        let lower = [
+            raw_member_with_mode(b"restricted/", b'5', "", b"", SERVICE, 0o700),
+            raw_member(b"restricted/old", b'0', "", b"old"),
+        ]
+        .concat();
+        let upper = [
+            raw_member(b"restricted/.wh..wh..opq", b'0', "", b""),
+            raw_member(b"restricted/.wh..wh..opq", b'0', "", b""),
+            raw_member(b"restricted/new", b'0', "", b"new"),
+        ]
+        .concat();
+        let lower = write_archive(dir.path(), "lower.tar", &lower);
+        let upper = write_archive(dir.path(), "upper.tar", &upper);
+        let mut owners = Ownership::default();
+
+        apply_layer(&lower, &rootfs, &mut owners).unwrap();
+        apply_layer(&upper, &rootfs, &mut owners).unwrap();
+
+        let mode = std::fs::symlink_metadata(rootfs.join("restricted"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0o700);
+        assert_eq!(owners.mode_of(Path::new("restricted"), mode), 0o700);
+        assert_eq!(owners.owner_of(Path::new("restricted")), SERVICE);
+        assert!(!rootfs.join("restricted/old").exists());
+        assert_eq!(
+            std::fs::read(rootfs.join("restricted/new")).unwrap(),
+            b"new"
+        );
+    }
+
     fn cpio_entry(bytes: &[u8], at: usize) -> (String, Owner, usize) {
         let field = |i: usize| {
             let text = std::str::from_utf8(&bytes[at + 6 + 8 * i..at + 6 + 8 * (i + 1)]).unwrap();
@@ -2198,6 +6024,87 @@ mod tests {
         assert_eq!(owners["harmony-oci/rootfs/node"], Owner::ROOT);
         assert_eq!(owners["harmony-oci/rootfs"], Owner::ROOT);
     }
+
+    #[test]
+    fn preparation_preserves_special_modes_from_layer_headers() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        std::fs::create_dir_all(&layout).unwrap();
+        std::fs::write(
+            layout.join("manifest.json"),
+            br#"[{"Config":"config.json","Layers":["layer.tar","upper.tar"]}]"#,
+        )
+        .unwrap();
+        std::fs::write(layout.join("config.json"), br#"{"config":{}}"#).unwrap();
+        let layer = [
+            raw_member_with_mode(b"bin/", b'5', "", b"", Owner::ROOT, 0o755),
+            raw_member_with_mode(b"bin/tool", b'0', "", b"exec", Owner::ROOT, 0o4755),
+            raw_member_with_mode(b"bin/tool-link", b'1', "bin/tool", b"", SERVICE, 0),
+            raw_member_with_mode(b"shared/", b'5', "", b"", Owner::ROOT, 0o2775),
+            raw_member_with_mode(b"shared/implicit/data", b'0', "", b"x", Owner::ROOT, 0o644),
+            raw_member_with_mode(b"overlaid/", b'5', "", b"", Owner::ROOT, 0o2775),
+        ]
+        .concat();
+        write_archive(&layout, "layer.tar", &layer);
+        write_archive(
+            &layout,
+            "upper.tar",
+            &raw_member(b"overlaid/child", b'0', "", b"upper"),
+        );
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("staging")).unwrap();
+        let prepared = super::super::bundle::prepare(
+            &staged,
+            &super::super::bundle::LaunchRequest::new(Vec::new()),
+        )
+        .unwrap();
+        let inflated = Command::new("gzip")
+            .arg("-dc")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                use std::io::Write as _;
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(&prepared.rootfs_segment)?;
+                child.wait_with_output()
+            })
+            .unwrap();
+        assert!(inflated.status.success());
+        let mut at = 0;
+        let mut metadata = BTreeMap::new();
+        loop {
+            let mode = u32::from_str_radix(
+                std::str::from_utf8(&inflated.stdout[at + 14..at + 22]).unwrap(),
+                16,
+            )
+            .unwrap();
+            let (name, owner, next) = cpio_entry(&inflated.stdout, at);
+            if name == "TRAILER!!!" {
+                break;
+            }
+            metadata.insert(name, (mode & 0o7777, owner));
+            at = next;
+        }
+        assert_eq!(
+            metadata["harmony-oci/rootfs/bin/tool"],
+            (0o4755, Owner::ROOT)
+        );
+        assert_eq!(
+            metadata["harmony-oci/rootfs/bin/tool-link"],
+            (0o4755, Owner::ROOT)
+        );
+        assert_eq!(metadata["harmony-oci/rootfs/shared"].0, 0o2775);
+        assert_eq!(metadata["harmony-oci/rootfs/shared/implicit"].0, 0o755);
+        assert_eq!(metadata["harmony-oci/rootfs/overlaid"].0, 0o2775);
+        assert_eq!(
+            prepared.identity_hex(),
+            "24e2ec5f193edc67f64cb5cfd447cbd3ff60af3a6a3f3f6b17c2f2519ca855cd"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -2252,14 +6159,30 @@ mod acceptance_regressions {
         std::fs::write(root.path().join("entry"), b"old").unwrap();
         std::fs::create_dir(staged.path().join("entry")).unwrap();
         std::fs::write(staged.path().join("entry/child"), b"child").unwrap();
-        merge_layer(staged.path(), root.path()).unwrap();
+        merge_layer(
+            staged.path(),
+            root.path(),
+            Path::new(""),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(root.path().join("entry/child")).unwrap(),
             b"child"
         );
         let staged = tempfile::tempdir().unwrap();
         std::fs::write(staged.path().join("entry"), b"replacement").unwrap();
-        merge_layer(staged.path(), root.path()).unwrap();
+        merge_layer(
+            staged.path(),
+            root.path(),
+            Path::new(""),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &mut BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             std::fs::read(root.path().join("entry")).unwrap(),
             b"replacement"

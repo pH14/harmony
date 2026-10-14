@@ -17,6 +17,12 @@ use sha2::{Digest, Sha256};
 pub const ALLOWLIST_PATH: &str = "etc/harmony/instruction-allowlist";
 pub const ATTESTATION_PATH: &str = "symbols/harmony-instrumented-events";
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExecutionMode {
+    Vm,
+    Uml,
+}
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct InstructionSite {
     pub digest: String,
@@ -48,6 +54,13 @@ pub struct ImageReport {
 }
 
 impl ImageReport {
+    pub fn require_for(&self, mode: ExecutionMode) -> Result<(), Box<dyn Error>> {
+        match mode {
+            ExecutionMode::Vm => self.require_admission(),
+            ExecutionMode::Uml => self.require_uml_admission(),
+        }
+    }
+
     pub fn scan_passed(&self) -> bool {
         self.scan_errors.is_empty()
     }
@@ -77,12 +90,46 @@ impl ImageReport {
         }
         Ok(())
     }
+
+    pub fn require_uml_admission(&self) -> Result<(), Box<dyn Error>> {
+        self.require_admission()?;
+        let native_entropy = self
+            .executables
+            .iter()
+            .flat_map(|executable| {
+                executable
+                    .sites
+                    .iter()
+                    .filter(|site| {
+                        matches!(
+                            site.instruction.as_str(),
+                            "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS"
+                        )
+                    })
+                    .map(|site| {
+                        format!(
+                            "{} 0x{:x} {} ({})",
+                            site.digest, site.address, site.instruction, executable.path
+                        )
+                    })
+            })
+            .collect::<Vec<_>>();
+        if native_entropy.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "User-mode Linux executes hardware entropy instructions natively; these image sites cannot be admitted even when reviewed:\n{}",
+                native_entropy.join("\n")
+            )
+            .into())
+        }
+    }
 }
 
 pub fn inspect_image(image: &str) -> Result<ImageReport, Box<dyn Error>> {
     let staging = tempfile::tempdir()?;
     let staged = oci_support::image::stage(image, staging.path())?;
-    inspect_root(&staged.rootfs)
+    oci_support::image::with_staged_read_access(&staged, || inspect_root(&staged.rootfs))
 }
 
 pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
@@ -301,18 +348,9 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     ) {
         return Err("unsupported ELF architecture".into());
     }
-    let executable_sections = elf
-        .sections()
-        .filter(|section| {
-            matches!(
-                section.flags(),
-                object::SectionFlags::Elf { sh_flags }
-                    if sh_flags & u64::from(object::elf::SHF_EXECINSTR) != 0
-            )
-        })
-        .map(|section| section.address())
-        .collect::<Vec<_>>();
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
+    let mut sites = Vec::new();
+    let mut executable_segments = 0;
     for header in elf.elf_program_headers() {
         let flags = header.p_flags(elf.endian());
         match header.p_type(elf.endian()) {
@@ -322,40 +360,107 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
             object::elf::PT_LOAD if flags & writable_executable == writable_executable => {
                 return Err("writable executable ELF segment".into());
             }
-            object::elf::PT_LOAD
-                if flags & object::elf::PF_X != 0 && header.p_filesz(elf.endian()) != 0 =>
-            {
+            object::elf::PT_LOAD if flags & object::elf::PF_X != 0 => {
+                executable_segments += 1;
                 let start = header.p_vaddr(elf.endian());
-                let end = start.saturating_add(header.p_memsz(elf.endian()));
-                if !executable_sections
-                    .iter()
-                    .any(|address| (start..end).contains(address))
-                {
-                    return Err("executable ELF segment without an executable section".into());
+                let file_size = header.p_filesz(elf.endian());
+                if file_size == 0 || file_size > header.p_memsz(elf.endian()) {
+                    return Err("invalid executable ELF segment size".into());
+                }
+                let end = start
+                    .checked_add(file_size)
+                    .ok_or("executable ELF segment address overflow")?;
+                let code = header
+                    .data(elf.endian(), bytes)
+                    .map_err(|()| "executable ELF segment outside file")?;
+                let mut mapped_sections = 0;
+                let mut mapped_ranges = Vec::new();
+                for section in elf.sections() {
+                    let object::SectionFlags::Elf { sh_flags } = section.flags() else {
+                        continue;
+                    };
+                    if sh_flags & u64::from(object::elf::SHF_ALLOC) == 0 || section.size() == 0 {
+                        continue;
+                    }
+                    let section_end = section
+                        .address()
+                        .checked_add(section.size())
+                        .ok_or("mapped ELF section address overflow")?;
+                    if section.address() >= end || section_end <= start {
+                        continue;
+                    }
+                    let Some(section_code) = header
+                        .data_range(elf.endian(), bytes, section.address(), section.size())
+                        .map_err(|()| "mapped ELF section outside file")?
+                    else {
+                        return Err("partially mapped executable ELF section".into());
+                    };
+                    mapped_sections += 1;
+                    if elf.architecture() == object::Architecture::X86_64 {
+                        let offset = usize::try_from(section.address() - start)?;
+                        let section_end = offset
+                            .checked_add(section_code.len())
+                            .ok_or("mapped ELF section size overflow")?;
+                        mapped_ranges.push((offset, section_end));
+                        for (address, instruction) in
+                            scan_code(elf.architecture(), section.address(), section_code)?
+                        {
+                            sites.push(InstructionSite {
+                                digest: digest.to_owned(),
+                                address,
+                                instruction: instruction.into(),
+                            });
+                        }
+                    }
+                }
+                if mapped_sections == 0 {
+                    return Err("executable ELF segment without a mapped section".into());
+                }
+                if elf.architecture() == object::Architecture::Aarch64 {
+                    for (address, instruction) in scan_code(elf.architecture(), start, code)? {
+                        sites.push(InstructionSite {
+                            digest: digest.to_owned(),
+                            address,
+                            instruction: instruction.into(),
+                        });
+                    }
+                } else {
+                    mapped_ranges.sort_unstable();
+                    let mut cursor = 0;
+                    for (range_start, range_end) in mapped_ranges {
+                        if range_start > cursor {
+                            let address = start + u64::try_from(cursor)?;
+                            for (site, instruction) in
+                                scan_code(elf.architecture(), address, &code[cursor..range_start])?
+                            {
+                                sites.push(InstructionSite {
+                                    digest: digest.to_owned(),
+                                    address: site,
+                                    instruction: instruction.into(),
+                                });
+                            }
+                        }
+                        cursor = cursor.max(range_end);
+                    }
+                    if cursor < code.len() {
+                        let address = start + u64::try_from(cursor)?;
+                        for (site, instruction) in
+                            scan_code(elf.architecture(), address, &code[cursor..])?
+                        {
+                            sites.push(InstructionSite {
+                                digest: digest.to_owned(),
+                                address: site,
+                                instruction: instruction.into(),
+                            });
+                        }
+                    }
                 }
             }
             _ => {}
         }
     }
-    let mut sites = Vec::new();
-    for section in elf.sections() {
-        let object::SectionFlags::Elf { sh_flags } = section.flags() else {
-            continue;
-        };
-        if sh_flags & u64::from(object::elf::SHF_EXECINSTR) == 0
-            || section.kind() == object::SectionKind::UninitializedData
-        {
-            continue;
-        }
-        for (address, instruction) in
-            scan_code(elf.architecture(), section.address(), section.data()?)?
-        {
-            sites.push(InstructionSite {
-                digest: digest.to_owned(),
-                address,
-                instruction: instruction.into(),
-            });
-        }
+    if executable_segments == 0 {
+        return Err("no executable ELF segment".into());
     }
     sites.sort();
     sites.dedup();
@@ -379,8 +484,8 @@ fn scan_code(
             sites.push((instruction.ip(), name));
         }
     } else {
-        if !address.is_multiple_of(4) || !data.len().is_multiple_of(4) {
-            return Err("unaligned AArch64 executable section".into());
+        if !address.is_multiple_of(4) {
+            return Err("unaligned AArch64 executable segment".into());
         }
         for (index, bytes) in data.chunks_exact(4).enumerate() {
             let word = u32::from_le_bytes(bytes.try_into()?);
@@ -474,7 +579,14 @@ mod tests {
         .unwrap();
         let accepted = inspect_root(root.path()).unwrap();
         assert!(accepted.scan_passed());
-        assert!(accepted.require_admission().is_ok());
+        assert!(accepted.require_for(ExecutionMode::Vm).is_ok());
+        assert!(
+            accepted
+                .require_for(ExecutionMode::Uml)
+                .unwrap_err()
+                .to_string()
+                .contains("RDRAND")
+        );
         fs::write(
             root.path().join("node"),
             elf(&[0x0f, 0xc7, 0xf0, 0xc3, 0x90], 5, 6),
@@ -511,6 +623,11 @@ mod tests {
             scan_code(object::Architecture::X86_64, 0x1000, &code).unwrap(),
             [(0x100c, "RDRAND"), (0x1010, "RDSEED")]
         );
+        let sites = scan_elf(&elf(&code, 5, 6), "").unwrap().unwrap();
+        assert_eq!(
+            sites.iter().map(|site| site.address).collect::<Vec<_>>(),
+            [0x100c, 0x1010]
+        );
     }
 
     #[test]
@@ -530,32 +647,139 @@ mod tests {
             [(0x400, "RNDR"), (0x404, "RNDRRS")]
         );
         assert!(scan_code(object::Architecture::Aarch64, 1, &code).is_err());
+        let mut bytes = elf(&code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(
+            sites.iter().map(|site| site.address).collect::<Vec<_>>(),
+            [0x1000, 0x1004]
+        );
     }
 
     #[test]
-    fn executable_segments_without_executable_sections_fail() {
+    fn executable_segments_without_mapped_sections_fail() {
         let mut stripped = elf(&[0x0f, 0xc7, 0xf0], 5, 6);
         stripped[40..48].copy_from_slice(&0_u64.to_le_bytes());
         stripped[60..64].copy_from_slice(&0_u32.to_le_bytes());
-        assert!(
-            scan_elf(&stripped, "")
-                .unwrap_err()
-                .to_string()
-                .contains("without an executable section")
-        );
+        assert!(scan_elf(&stripped, "").is_err());
         let mut data = elf(&[0x0f, 0xc7, 0xf0], 5, 6);
         data[264..272].copy_from_slice(&2_u64.to_le_bytes());
-        assert!(scan_elf(&data, "").is_err());
+        assert_eq!(
+            scan_elf(&data, "").unwrap().unwrap()[0].instruction,
+            "RDRAND"
+        );
     }
 
     #[test]
-    fn relocatable_objects_and_sections_without_file_bytes_are_not_scanned() {
+    fn executable_segment_bytes_hidden_by_section_metadata_fail_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let mut bytes = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        bytes[272..280].copy_from_slice(&0x1003_u64.to_le_bytes());
+        bytes[280..288].copy_from_slice(&387_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+        fs::write(root.path().join("node"), bytes).unwrap();
+
+        let report = inspect_root(root.path()).unwrap();
+        assert_eq!(report.executables[0].sites[0].instruction, "RDRAND");
+        assert_eq!(report.executables[0].sites[0].address, 0x1000);
+        assert!(
+            report.require_for(ExecutionMode::Uml).is_err(),
+            "{report:?}"
+        );
+    }
+
+    #[test]
+    fn mapped_section_starts_preserve_x86_decoding_after_segment_headers() {
+        let mut bytes = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        for (offset, value) in [
+            (24, 0x400180_u64),
+            (72, 383),
+            (80, 0x40017f),
+            (88, 0x40017f),
+            (96, 5),
+            (104, 5),
+            (272, 0x400180),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[383] = 0xe8;
+        assert!(
+            scan_code(object::Architecture::X86_64, 0x40017f, &bytes[383..388])
+                .unwrap()
+                .is_empty()
+        );
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x400180, "RDRAND")]
+        );
+    }
+
+    #[test]
+    fn x86_segment_prelude_cannot_invent_entropy_inside_a_mapped_section() {
+        let mut bytes = elf(&[0xb8, 0x90, 0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        for (offset, value) in [
+            (24, 0x400180_u64),
+            (72, 383),
+            (80, 0x40017f),
+            (88, 0x40017f),
+            (96, 7),
+            (104, 7),
+            (272, 0x400180),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[383] = 0x3c;
+        assert_eq!(
+            scan_code(object::Architecture::X86_64, 0x40017f, &bytes[383..390])
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(scan_elf(&bytes, "").unwrap(), Some(Vec::new()));
+    }
+
+    #[test]
+    fn arm_noncode_allocated_sections_need_not_be_word_aligned() {
+        let code: Vec<u8> = [0xd53b2400_u32, 0xd65f03c0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        let mut bytes = elf(&code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        bytes[264..272].copy_from_slice(&2_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&3_u64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].instruction, "RNDR");
+    }
+
+    #[test]
+    fn arm_executable_load_can_end_with_partial_data_word() {
+        let mut code: Vec<u8> = [0xd53b2400_u32, 0xd65f03c0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect();
+        code.push(0xff);
+        let mut bytes = elf(&code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let sites = scan_elf(&bytes, "").unwrap().unwrap();
+        assert_eq!(sites[0].instruction, "RNDR");
+    }
+
+    #[test]
+    fn relocatable_objects_are_ignored_but_loaded_bytes_are_scanned() {
         let mut relocatable = elf(&[0x0f, 0xc7, 0xf0], 5, 6);
         relocatable[16..18].copy_from_slice(&object::elf::ET_REL.to_le_bytes());
         assert!(scan_elf(&relocatable, "").unwrap().is_none());
         let mut debug = elf(&[0x0f, 0xc7, 0xf0], 5, 6);
         debug[260..264].copy_from_slice(&object::elf::SHT_NOBITS.to_le_bytes());
-        assert_eq!(scan_elf(&debug, "").unwrap(), Some(Vec::new()));
+        assert_eq!(
+            scan_elf(&debug, "").unwrap().unwrap()[0].instruction,
+            "RDRAND"
+        );
     }
 
     #[test]

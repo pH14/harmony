@@ -38,6 +38,10 @@ pub fn compare_gic_architecture(
     scalar!(timer_intid);
     scalar!(gicd_ctlr);
     scalar!(pmr);
+    scalar!(bpr0);
+    scalar!(bpr1);
+    scalar!(ctlr);
+    scalar!(igrpen0);
     scalar!(igrpen1);
     scalar!(cntv_ctl);
     scalar!(cntv_cval);
@@ -62,7 +66,10 @@ pub fn compare_gic_architecture(
     array!(pending);
     array!(active);
     array!(line_level);
+    array!(config);
     array!(priority);
+    array!(ap0r);
+    array!(ap1r);
     Ok(())
 }
 
@@ -112,6 +119,17 @@ impl Arm64ArchitecturalState {
             "sysregs.cntkctl_el1",
             self.vcpu.sysregs.cntkctl_el1,
         )?;
+
+        write_u64(
+            &mut out,
+            "sysregs.contextidr_el1",
+            self.vcpu.sysregs.contextidr_el1,
+        )?;
+        write_u64(&mut out, "sysregs.amair_el1", self.vcpu.sysregs.amair_el1)?;
+        write_u64(&mut out, "sysregs.par_el1", self.vcpu.sysregs.par_el1)?;
+        write_u64(&mut out, "sysregs.csselr_el1", self.vcpu.sysregs.csselr_el1)?;
+        write_u64(&mut out, "sysregs.afsr0_el1", self.vcpu.sysregs.afsr0_el1)?;
+        write_u64(&mut out, "sysregs.afsr1_el1", self.vcpu.sysregs.afsr1_el1)?;
 
         for (index, value) in self.vcpu.simd_fp.q.iter().enumerate() {
             write!(out, "simd_fp.q.{index} ")?;
@@ -190,11 +208,18 @@ impl Arm64ArchitecturalState {
         write_u32_array(&mut out, "gic.pending", &gic.pending)?;
         write_u32_array(&mut out, "gic.active", &gic.active)?;
         write_u32_array(&mut out, "gic.line_level", &gic.line_level)?;
+        write_u32_array(&mut out, "gic.config", &gic.config)?;
         for (index, value) in gic.priority.iter().enumerate() {
             writeln!(out, "gic.priority.{index} {value:02x}")?;
         }
         writeln!(out, "gic.pmr {:02x}", gic.pmr)?;
+        writeln!(out, "gic.bpr0 {:02x}", gic.bpr0)?;
+        writeln!(out, "gic.bpr1 {:02x}", gic.bpr1)?;
+        write_u64(&mut out, "gic.ctlr", gic.ctlr)?;
+        write_bool(&mut out, "gic.igrpen0", gic.igrpen0)?;
         write_bool(&mut out, "gic.igrpen1", gic.igrpen1)?;
+        write_u32_array(&mut out, "gic.ap0r", &gic.ap0r)?;
+        write_u32_array(&mut out, "gic.ap1r", &gic.ap1r)?;
         write_u64(&mut out, "gic.cntv_ctl", gic.cntv_ctl)?;
         write_u64(&mut out, "gic.cntv_cval", gic.cntv_cval)?;
         write_bool(&mut out, "gic.timer_fired", gic.timer_fired)
@@ -301,6 +326,32 @@ pub fn compare_arm64_architecture(
     scalar!("sysregs.esr_el1", a.sysregs.esr_el1, b.sysregs.esr_el1);
     scalar!("sysregs.far_el1", a.sysregs.far_el1, b.sysregs.far_el1);
     scalar!(
+        "sysregs.contextidr_el1",
+        a.sysregs.contextidr_el1,
+        b.sysregs.contextidr_el1
+    );
+    scalar!(
+        "sysregs.amair_el1",
+        a.sysregs.amair_el1,
+        b.sysregs.amair_el1
+    );
+    scalar!("sysregs.par_el1", a.sysregs.par_el1, b.sysregs.par_el1);
+    scalar!(
+        "sysregs.csselr_el1",
+        a.sysregs.csselr_el1,
+        b.sysregs.csselr_el1
+    );
+    scalar!(
+        "sysregs.afsr0_el1",
+        a.sysregs.afsr0_el1,
+        b.sysregs.afsr0_el1
+    );
+    scalar!(
+        "sysregs.afsr1_el1",
+        a.sysregs.afsr1_el1,
+        b.sysregs.afsr1_el1
+    );
+    scalar!(
         "sysregs.tpidr_el0",
         a.sysregs.tpidr_el0,
         b.sysregs.tpidr_el0
@@ -391,7 +442,7 @@ use vmm_backend::{Arm64, Arm64Exit, Arm64VcpuState, Backend, CommonExit, Exit, G
 
 pub use dispatch::Arm64Devices;
 
-use crate::vendor::Vendor;
+use crate::vendor::{SnapshotHashParts, Vendor};
 use crate::vmm::{Step, Vmm, VmmError};
 
 impl Vendor for Arm64 {
@@ -401,6 +452,15 @@ impl Vendor for Arm64 {
 
     fn new_devices() -> Self::Devices {
         Arm64Devices::new()
+    }
+
+    fn validate_vtime_clock_offset(clock_offset: u64) -> Result<(), VmmError> {
+        if clock_offset != 0 {
+            return Err(VmmError::ContractViolation(
+                "arm64 virtual-time clock offset must be zero".to_string(),
+            ));
+        }
+        Ok(())
     }
 
     fn mmio_holes() -> &'static [(u64, u64)] {
@@ -474,7 +534,9 @@ impl Vendor for Arm64 {
         vmm.clockevent_trace_schedule_arm64()
     }
 
-    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<u64> {
+    fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
+        vmm: &mut Vmm<B>,
+    ) -> Result<Option<u64>, VmmError> {
         vmm.deliverable_timer_deadline_vns_arm64()
     }
 
@@ -501,6 +563,9 @@ impl Vendor for Arm64 {
         for r in devices.uart.shadow_regs() {
             v.extend_from_slice(&r.to_le_bytes());
         }
+        let input = devices.uart.pending_input();
+        v.extend_from_slice(&(input.len() as u64).to_le_bytes());
+        v.extend_from_slice(&input);
         v
     }
 
@@ -518,6 +583,52 @@ impl Vendor for Arm64 {
             records::encode_clockevent_state(&mut bytes, devices.clockevent);
             crate::vmm::put_chunk(out, b"PVCE", &bytes);
         }
+    }
+
+    fn contract_identity_hash<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<[u8; 32]> {
+        Some(contract::runtime_contract_hash(
+            vmm.backend.capabilities().arch,
+        ))
+    }
+
+    fn project_snapshot_hash_parts(snapshot: &Arm64VmState) -> Result<SnapshotHashParts, VmmError> {
+        let state = records::decode_device_blob(&snapshot.devices.0)?;
+        let mut device = Vec::new();
+        for register in state.uart_regs {
+            device.extend_from_slice(&register.to_le_bytes());
+        }
+        device.extend_from_slice(&(state.uart_input.len() as u64).to_le_bytes());
+        device.extend_from_slice(&state.uart_input);
+        let mut vendor_chunks = Vec::new();
+        if let Some(gic) = &state.gic {
+            let mut bytes = Vec::new();
+            records::encode_gic_state(&mut bytes, gic);
+            crate::vmm::put_chunk(&mut vendor_chunks, b"GICV", &bytes);
+        }
+        let clockevent = state
+            .pvclock
+            .map_or_else(records::Arm64ClockeventState::default, |pv| pv.clockevent);
+        if clockevent != records::Arm64ClockeventState::default() {
+            let mut bytes = Vec::new();
+            records::encode_clockevent_state(&mut bytes, clockevent);
+            crate::vmm::put_chunk(&mut vendor_chunks, b"PVCE", &bytes);
+        }
+        Ok(SnapshotHashParts {
+            doorbell: (!state.doorbell.is_empty()).then_some(state.doorbell),
+            serial: state.uart_capture,
+            device,
+            vendor_chunks,
+            clock_offset: state.clock_offset,
+            pvclock: state.pvclock.map(|pv| crate::vmm::PvclockSnapshot {
+                gpa: pv.gpa,
+                registrable: pv.registrable,
+                armed: pv.armed,
+            }),
+        })
+    }
+
+    fn project_logical_snapshot(snapshot: &mut Arm64VmState, vcpu: &Arm64VcpuState) {
+        records::fill_vcpu_state(snapshot, vcpu);
     }
 
     fn regs_view(vcpu: &Arm64VcpuState) -> RegsView {
@@ -620,7 +731,93 @@ mod comparator_tests {
                 index: None,
             })
         );
+        let mut planted = expected.clone();
+        planted.bpr1 = 7;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "bpr1",
+                index: None,
+            })
+        );
+        let mut planted = expected.clone();
+        planted.ap1r[2] = 1;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "ap1r",
+                index: Some(2),
+            })
+        );
+        let mut planted = expected.clone();
+        planted.config[2] = 0x20000;
+        assert_eq!(
+            compare_gic_architecture(&expected, &planted),
+            Err(GicArchitectureDifference {
+                field: "config",
+                index: Some(2),
+            })
+        );
         assert_eq!(compare_gic_architecture(&expected, &expected), Ok(()));
+    }
+
+    #[test]
+    fn gic_cpu_interface_and_trigger_config_change_the_unconditional_device_hash_chunk() {
+        let mut vcpu = Arm64VcpuState {
+            gic: Some(records::gic_to_backend(&board::new_gic().snapshot())),
+            ..Arm64VcpuState::default()
+        };
+        let devices = Arm64Devices::new();
+        let mut before = Vec::new();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut before);
+        vcpu.gic.as_mut().unwrap().bpr1 = 7;
+        let mut after = Vec::new();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
+        assert_ne!(before, after);
+        vcpu.gic.as_mut().unwrap().bpr1 = 0;
+        vcpu.gic.as_mut().unwrap().ap1r[0] = 1;
+        after.clear();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
+        assert_ne!(before, after);
+        vcpu.gic.as_mut().unwrap().ap1r[0] = 0;
+        vcpu.gic.as_mut().unwrap().config[2] = 0x20000;
+        after.clear();
+        <Arm64 as Vendor>::hash_device_chunks(&vcpu, &devices, &mut after);
+        assert_ne!(before, after);
+    }
+
+    #[test]
+    fn spi_trigger_configuration_changes_whole_state_hash_without_snapshot_hashing() {
+        use crate::vmm::GuestRam;
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Arm64Policy, Capabilities, MockArm64Backend};
+
+        let machine = |config| {
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-kernel-gic",
+                arch: Arm64Caps {
+                    in_kernel_gic: true,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::KvmPsci10,
+                    gic_ctlr_fixed_bits: 0x8400,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut gic = board::new_gic().snapshot();
+            gic.config[2] = config;
+            backend.set_state(Arm64VcpuState {
+                gic: Some(records::gic_to_backend(&gic)),
+                ..Arm64VcpuState::default()
+            });
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut level = machine(0);
+        let mut edge = machine(0x20000);
+        assert!(!level.snapshot_hashing_wired());
+        assert_ne!(level.state_hash().unwrap(), edge.state_hash().unwrap());
+        level.wire_snapshot_hashing();
+        edge.wire_snapshot_hashing();
+        assert_ne!(level.state_hash().unwrap(), edge.state_hash().unwrap());
     }
 
     #[test]

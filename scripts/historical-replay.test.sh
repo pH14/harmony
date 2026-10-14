@@ -13,18 +13,57 @@ printf '%s\n' \
     '#!/usr/bin/env bash' \
     'set -euo pipefail' \
     'out=' \
+    'finding=' \
+    'run=' \
+    'if [[ ${1:-} == debug && ${2:-} == replay ]]; then run=${3:-}; fi' \
     'while (($#)); do' \
-    '  if [[ "$1" == --out ]]; then out=$2; shift 2; else shift; fi' \
+    '  if [[ "$1" == --out ]]; then out=$2; shift 2' \
+    '  elif [[ "$1" == --finding ]]; then finding=$2; shift 2' \
+    '  else shift; fi' \
     'done' \
+    'if [[ -n ${FAKE_EXPECT_FINDING:-} && "$finding" != "$FAKE_EXPECT_FINDING" ]]; then' \
+    '  printf "wrong finding: %s\n" "$finding"; exit 42' \
+    'fi' \
+    'if [[ -n ${FAKE_EXPECT_RUN_DIRECTORY:-} && "$run" != "$FAKE_EXPECT_RUN_DIRECTORY" ]]; then' \
+    '  printf "wrong run directory: %s\n" "$run"; exit 43' \
+    'fi' \
     'mkdir -p "$out"' \
     'cp "$FAKE_REPORT" "$out/report.json"' \
+    'if [[ -n ${FAKE_OUTPUT:-} ]]; then printf "%s\n" "$FAKE_OUTPUT"; fi' \
     'exit "${FAKE_EXIT_STATUS:-0}"' \
     >"${work}/tools/harmony"
 chmod +x "${work}/tools/harmony"
 printf x >"${work}/guest/bzImage"
 printf x >"${work}/guest/initramfs-oci.cpio.gz"
+mkdir -p "${work}/guest/uml"
+printf x >"${work}/guest/uml/profile.json"
+printf x >"${work}/guest/uml/linux"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'while (($#)); do' \
+    '  if [[ "$1" == -- ]]; then shift; exec "$@"; fi' \
+    '  shift' \
+    'done' >"${work}/guest/uml/harmony-uml-qualify"
+chmod +x "${work}/guest/uml/harmony-uml-qualify"
 printf x >"${work}/oci-images/pgcic-14.3.oci"
 printf '[{"Wait":50}]\n' >"${work}/input.json"
+mkdir -p "${work}/search"
+finding_replay=$(jq -cn '{bug:true,violations:["case-assertion"],
+    sometimes:["case-evidence"],guest_horizons:1,actions_applied:1,
+    settle_actions:0,settle_ticks:0}')
+jq -cn --argjson replay "$finding_replay" '{mode:"search",bugs:[
+    {confirmed:false,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay},
+    {confirmed:true,actions:[1],violations:["other-assertion"],sometimes:["case-evidence"],replay:$replay},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:[],replay:$replay},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .sometimes=[])},
+    {confirmed:true,actions:[1,2],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .bug=false)},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .violations=[])},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .guest_horizons=2)},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .settle_actions=2 | .guest_horizons=3)},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay}]}' \
+    >"${work}/search/report.json"
+reproducer="${work}/search/report.json"
 
 run=$(jq -cn '{run:1,bug:false,stop:"Deadline",state_hash:"abc",violations:[],sometimes:["case-evidence"],actions_applied:1,settle_actions:0,settle_ticks:0,guest_horizons:1,check:null}')
 jq -cn --argjson run "${run}" '{mode:"replay",replays:[$run,$run]}' >"${work}/report.json"
@@ -56,6 +95,64 @@ if (
     exit 1
 fi
 grep -q 'fail: infra-failure (CLI exit 23)' "${work}/reports/pgcic.sample-input/panel-status.json"
+
+uml_run=$(jq -c '.bug = true | .stop = "Assertion"
+    | .violations = ["case-assertion"]
+    | .state_hash = "" | .state_hash_encoding = "unavailable"' <<<"$run")
+jq -cn --argjson run "$uml_run" '{mode:"replay",replays:[$run,$run]}' \
+    >"${work}/uml-report.json"
+(
+    cd "${work}"
+    export BACKEND=uml CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/uml-report.json" FAKE_EXIT_STATUS=2
+    export FAKE_OUTPUT='error: full UML state identity is unavailable'
+    export FAKE_EXPECT_FINDING=10
+    export FAKE_EXPECT_RUN_DIRECTORY="${work}/search"
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" reproduce "${reproducer}"
+)
+jq -e '.cli_exit_status == 2 and .finding == 10 and .actions == 1
+    and .state_hash_count == "unavailable"
+    and (.oracle | startswith("pass: observed replay"))' \
+    "${work}/reports/pgcic.reproduce-report/panel-status.json" >/dev/null
+
+if (
+    cd "${work}"
+    export BACKEND=uml CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/uml-report.json" FAKE_EXIT_STATUS=2
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" reproduce "${reproducer}"
+); then
+    printf 'FAIL UML replay accepted a CLI exit without the identity refusal\n'
+    exit 1
+fi
+grep -q 'fail: infra-failure (CLI exit 2)' \
+    "${work}/reports/pgcic.reproduce-report/panel-status.json"
+
+jq '.replays[0].state_hash_encoding = "engine_digest"' \
+    "${work}/uml-report.json" >"${work}/mixed-identity-report.json"
+if (
+    cd "${work}"
+    export BACKEND=uml CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL RAM_MIB=128
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence
+    export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
+    export FAKE_REPORT="${work}/mixed-identity-report.json" FAKE_EXIT_STATUS=2
+    export FAKE_OUTPUT='error: full UML state identity is unavailable'
+    export GITHUB_STEP_SUMMARY="${summary}"
+    "${here}/historical-replay.sh" reproduce "${reproducer}"
+); then
+    printf 'FAIL UML replay accepted a mixed-identity report\n'
+    exit 1
+fi
+grep -q 'fail: infra-failure (CLI exit 2)' \
+    "${work}/reports/pgcic.reproduce-report/panel-status.json"
 
 if (
     cd "${work}"

@@ -9,13 +9,21 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const PAGE_SIZE: usize = 4096;
 
 static ZERO_PAGE: [u8; PAGE_SIZE] = [0u8; PAGE_SIZE];
+static NEXT_STORE_ID: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Copy, Clone, Eq, PartialEq, Hash, Debug)]
-pub struct SnapshotId(u64);
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
+pub struct SnapshotId(u64, u64);
+
+impl std::fmt::Debug for SnapshotId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_tuple("SnapshotId").field(&self.0).finish()
+    }
+}
 
 #[derive(Copy, Clone, Debug)]
 pub struct StoreConfig {
@@ -38,6 +46,8 @@ pub enum StoreError {
     VmStateIntegrity,
     #[error("builder misuse: {0}")]
     BuilderMisuse(&'static str),
+    #[error("target page {gfn} does not follow page {previous}")]
+    TargetPageOrder { previous: u64, gfn: u64 },
     #[error("i/o error")]
     Io(#[from] std::io::Error),
 }
@@ -106,6 +116,7 @@ struct Layer {
 
 pub struct Store {
     cfg: StoreConfig,
+    store_id: u64,
     next_id: u64,
     layers: BTreeMap<u64, Layer>,
     collectible: Vec<u64>,
@@ -122,6 +133,9 @@ impl Store {
     pub fn new(cfg: StoreConfig) -> Store {
         Store {
             cfg,
+            store_id: NEXT_STORE_ID
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("snapshot store identifiers exhausted"),
             next_id: 0,
             layers: BTreeMap::new(),
             collectible: Vec::new(),
@@ -203,12 +217,9 @@ impl Store {
             dirty_set.insert(gfn);
         }
 
+        let mut verified_pages = BTreeSet::new();
         for (&gfn, &pref) in &inherited {
-            if let PageRef::Data(id) = pref
-                && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
-            {
-                return Err(StoreError::PageIntegrity { gfn });
-            }
+            self.page_entry(pref, gfn, &mut verified_pages)?;
         }
         for &pref in inherited.values() {
             if let PageRef::Data(id) = pref {
@@ -311,16 +322,10 @@ impl Store {
             });
         }
         let a_ref = self.resolve(a.0, a_gfn);
-        if let PageRef::Data(id) = a_ref
-            && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
-        {
-            return Err(StoreError::PageIntegrity { gfn: a_gfn });
-        }
+        self.checked_page_ref(a_ref, a_gfn)?;
         let b_ref = self.resolve(b.0, b_gfn);
-        if let PageRef::Data(id) = b_ref
-            && !self.pages.get(id.get() - 1).is_some_and(Option::is_some)
-        {
-            return Err(StoreError::PageIntegrity { gfn: b_gfn });
+        if a_ref != b_ref {
+            self.checked_page_ref(b_ref, b_gfn)?;
         }
         Ok(a_ref == b_ref)
     }
@@ -352,16 +357,22 @@ impl Store {
             }
         }
 
+        let mut verified_pages = BTreeSet::new();
         let Some(from) = from else {
             return (0..self.cfg.mem_pages)
-                .map(|gfn| Ok((gfn, self.stored_page(to, gfn)?)))
+                .map(|gfn| {
+                    let (_, page) =
+                        self.page_entry(self.resolve(to.0, gfn), gfn, &mut verified_pages)?;
+                    Ok((gfn, page))
+                })
                 .collect();
         };
 
         self.live_layer(from)?;
         let mut pages = Vec::new();
         for gfn in self.changed_gfns(from, to, dirty)? {
-            pages.push((gfn, self.stored_page(to, gfn)?));
+            let (_, page) = self.page_entry(self.resolve(to.0, gfn), gfn, &mut verified_pages)?;
+            pages.push((gfn, page));
         }
         Ok(pages)
     }
@@ -377,6 +388,13 @@ impl Store {
         let from = parent.unwrap_or(base);
         self.live_layer(from)?;
         let mut delta = PageDelta::default();
+        let mut verified_pages = self.verified_snapshot_pages(target)?;
+        if from != target {
+            self.verify_snapshot_pages_into(from, &mut verified_pages)?;
+        }
+        if base != from && base != target {
+            self.verify_snapshot_pages_into(base, &mut verified_pages)?;
+        }
         for gfn in self.changed_gfns(from, target, &[])? {
             let page = self.resolve(target.0, gfn);
             if page == self.resolve(from.0, gfn) {
@@ -386,7 +404,7 @@ impl Store {
                 delta.reverted.push(gfn);
                 continue;
             }
-            let (hash, data) = self.page_entry(page, gfn)?;
+            let (hash, data) = self.page_entry(page, gfn, &mut verified_pages)?;
             delta.changed.push((gfn, hash, data));
         }
         Ok(delta)
@@ -400,9 +418,29 @@ impl Store {
     ) -> Result<Rebase, StoreError> {
         self.live_layer(origin)?;
         self.live_layer(near)?;
+        let mut previous = None;
+        for &(gfn, _) in target {
+            if gfn >= self.cfg.mem_pages {
+                return Err(StoreError::GfnOutOfRange {
+                    gfn,
+                    mem_pages: self.cfg.mem_pages,
+                });
+            }
+            if let Some(prior) = previous
+                && prior >= gfn
+            {
+                return Err(StoreError::TargetPageOrder {
+                    previous: prior,
+                    gfn,
+                });
+            }
+            previous = Some(gfn);
+        }
+        let mut verified_pages = self.verified_snapshot_pages(near)?;
         let mut rebase = Rebase::default();
         for (index, &(gfn, hash)) in target.iter().enumerate() {
-            let (near_hash, _) = self.page_entry(self.resolve(near.0, gfn), gfn)?;
+            let (near_hash, _) =
+                self.page_entry(self.resolve(near.0, gfn), gfn, &mut verified_pages)?;
             if near_hash != hash {
                 rebase.keep.push(index);
             }
@@ -415,7 +453,7 @@ impl Store {
             if page == self.resolve(near.0, gfn) {
                 continue;
             }
-            let (hash, data) = self.page_entry(page, gfn)?;
+            let (hash, data) = self.page_entry(page, gfn, &mut verified_pages)?;
             rebase.origin.push((gfn, *hash, Box::new(*data)));
         }
         Ok(rebase)
@@ -425,6 +463,7 @@ impl Store {
         &self,
         page: PageRef,
         gfn: u64,
+        verified_pages: &mut BTreeSet<NonZeroUsize>,
     ) -> Result<(&PageHash, &[u8; PAGE_SIZE]), StoreError> {
         match page {
             PageRef::Zero => Ok((&self.zero_hash, &ZERO_PAGE)),
@@ -434,14 +473,63 @@ impl Store {
                     .get(id.get() - 1)
                     .and_then(Option::as_ref)
                     .ok_or(StoreError::PageIntegrity { gfn })?;
-                let data = entry
+                let data: &[u8; PAGE_SIZE] = entry
                     .data
                     .as_ref()
                     .try_into()
                     .map_err(|_| StoreError::PageIntegrity { gfn })?;
+                if !verified_pages.contains(&id) && blake3::hash(data).as_bytes() != &entry.hash {
+                    return Err(StoreError::PageIntegrity { gfn });
+                }
+                verified_pages.insert(id);
                 Ok((&entry.hash, data))
             }
         }
+    }
+
+    pub fn verify_snapshot_pages(&self, snap: SnapshotId) -> Result<(), StoreError> {
+        self.verify_snapshots(&[snap])
+    }
+
+    pub fn verify_snapshots(&self, snaps: &[SnapshotId]) -> Result<(), StoreError> {
+        let mut verified_pages = BTreeSet::new();
+        for &snap in snaps {
+            self.live_layer(snap)?;
+            self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
+        }
+        Ok(())
+    }
+
+    fn verified_snapshot_pages(
+        &self,
+        snap: SnapshotId,
+    ) -> Result<BTreeSet<NonZeroUsize>, StoreError> {
+        let mut verified_pages = BTreeSet::new();
+        self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
+        Ok(verified_pages)
+    }
+
+    fn verify_snapshot_pages_into(
+        &self,
+        snap: SnapshotId,
+        verified_pages: &mut BTreeSet<NonZeroUsize>,
+    ) -> Result<(), StoreError> {
+        let mut seen_gfns = BTreeSet::new();
+        let mut current = Some(snap.0);
+        while let Some(id) = current {
+            let layer = self
+                .layers
+                .get(&id)
+                .ok_or(StoreError::UnknownSnapshot(SnapshotId(id, self.store_id)))?;
+            for &(gfn, page) in &layer.pages {
+                if !seen_gfns.insert(gfn) {
+                    continue;
+                }
+                self.page_entry(page, gfn, verified_pages)?;
+            }
+            current = layer.parent;
+        }
+        Ok(())
     }
 
     fn changed_gfns(
@@ -456,10 +544,10 @@ impl Store {
         while left != right {
             let id = left.max(right).expect("distinct ancestry cursors");
             let Some(layer) = self.layers.get(&id) else {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id, self.store_id)));
             };
             if layer.parent.is_some_and(|parent| parent >= id) {
-                return Err(StoreError::UnknownSnapshot(SnapshotId(id)));
+                return Err(StoreError::UnknownSnapshot(SnapshotId(id, self.store_id)));
             }
             changed_gfns.extend(layer.pages.iter().map(|&(gfn, _)| gfn));
             if left == Some(id) {
@@ -665,6 +753,9 @@ impl Store {
     }
 
     fn live_layer(&self, snap: SnapshotId) -> Result<&Layer, StoreError> {
+        if snap.1 != self.store_id {
+            return Err(StoreError::UnknownSnapshot(snap));
+        }
         self.layers
             .get(&snap.0)
             .filter(|l| l.refcount > 0)
@@ -672,6 +763,9 @@ impl Store {
     }
 
     fn live_layer_mut(&mut self, snap: SnapshotId) -> Result<&mut Layer, StoreError> {
+        if snap.1 != self.store_id {
+            return Err(StoreError::UnknownSnapshot(snap));
+        }
         self.layers
             .get_mut(&snap.0)
             .filter(|l| l.refcount > 0)
@@ -705,11 +799,23 @@ impl Store {
         result
     }
 
-    fn intern_page(&mut self, hash: PageHash, data: &[u8]) -> NonZeroUsize {
+    fn intern_page(
+        &mut self,
+        hash: PageHash,
+        data: &[u8],
+        gfn: u64,
+    ) -> Result<NonZeroUsize, StoreError> {
         if let Some(&id) = self.page_index.get(&hash) {
-            let entry = self.pages[id.get() - 1].as_mut().expect("interned page");
+            let entry = self
+                .pages
+                .get_mut(id.get() - 1)
+                .and_then(Option::as_mut)
+                .ok_or(StoreError::PageIntegrity { gfn })?;
+            if entry.data.as_ref() != data {
+                return Err(StoreError::PageIntegrity { gfn });
+            }
             entry.refs = entry.refs.saturating_add(1);
-            return id;
+            return Ok(id);
         }
         let entry = PageEntry {
             hash,
@@ -727,7 +833,7 @@ impl Store {
             }
         };
         self.page_index.insert(hash, id);
-        id
+        Ok(id)
     }
 
     fn release_page_ref(&mut self, id: NonZeroUsize) -> u64 {
@@ -783,7 +889,7 @@ impl BuilderCore<'_> {
                 hash, self.store.zero_hash,
                 "non-zero page hashed to zero_hash"
             );
-            PageRef::Data(self.store.intern_page(hash, data))
+            PageRef::Data(self.store.intern_page(hash, data, gfn)?)
         };
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
@@ -803,8 +909,13 @@ impl BuilderCore<'_> {
         }
         if let Some(parent) = self.parent
             && !self.pages.contains_key(&gfn)
-            && self.store.stored_page(SnapshotId(parent), gfn)?[..] == *data
+            && self
+                .store
+                .stored_page(SnapshotId(parent, self.store.store_id), gfn)?[..]
+                == *data
         {
+            let inherited = self.store.resolve(parent, gfn);
+            self.store.checked_page_ref(inherited, gfn)?;
             return Ok(());
         }
         self.write_page(gfn, data)
@@ -835,7 +946,7 @@ impl BuilderCore<'_> {
             if &hash != expected {
                 return Err(StoreError::PageIntegrity { gfn });
             }
-            PageRef::Data(self.store.intern_page(hash, data))
+            PageRef::Data(self.store.intern_page(hash, data, gfn)?)
         };
         if let Some(PageRef::Data(old)) = self.pages.insert(gfn, pref) {
             self.store.release_page_ref(old);
@@ -918,7 +1029,7 @@ impl BuilderCore<'_> {
                 resolve_cache: RefCell::default(),
             },
         );
-        SnapshotId(id)
+        SnapshotId(id, self.store.store_id)
     }
 }
 
@@ -1122,6 +1233,48 @@ mod tests {
     }
 
     #[test]
+    fn page_delta_rejects_corrupted_reverted_page() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(Vec::new());
+        let parent = snap_with(&mut store, base, &[(0, 0x22)]);
+        let target = snap_with(&mut store, parent, &[(0, 0x11)]);
+        let PageRef::Data(id) = store.resolve(target.0, 0) else {
+            panic!("expected reverted resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+
+        let mut restored = [0; PAGE_SIZE];
+        assert!(matches!(
+            store.read_page(target, 0, &mut restored),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert!(matches!(
+            store.page_delta(base, Some(parent), target),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
+    fn page_delta_rejects_corrupted_unchanged_page() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(Vec::new());
+        let target = snap_with(&mut store, base, &[(1, 0x22)]);
+        let PageRef::Data(id) = store.resolve(target.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+
+        assert!(matches!(
+            store.page_delta(base, None, target),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
     fn a_changed_page_write_records_only_pages_that_differ_from_the_parent() {
         let mut store = Store::new(cfg(8));
         let mut builder = store.begin_base();
@@ -1202,6 +1355,42 @@ mod tests {
             store.read_page(direct, gfn, &mut right).unwrap();
             assert_eq!(left, right, "page {gfn}");
         }
+    }
+
+    #[test]
+    fn rebase_rejects_reordered_and_duplicate_target_pages() {
+        let mut store = Store::new(cfg(3));
+        let mut builder = store.begin_base();
+        builder.write_page(1, &[1; PAGE_SIZE]).unwrap();
+        let origin = builder.seal(Vec::new());
+        let near = snap_with(&mut store, origin, &[(1, 2)]);
+        let changed = *blake3::hash(&[3; PAGE_SIZE]).as_bytes();
+        let extra = *blake3::hash(&[4; PAGE_SIZE]).as_bytes();
+        let rows = [(1, &changed), (0, &extra)];
+
+        assert!(matches!(
+            store.rebase(origin, near, &rows),
+            Err(StoreError::TargetPageOrder {
+                previous: 1,
+                gfn: 0
+            })
+        ));
+        let duplicate = [(1, &changed), (1, &extra)];
+        assert!(matches!(
+            store.rebase(origin, near, &duplicate),
+            Err(StoreError::TargetPageOrder {
+                previous: 1,
+                gfn: 1
+            })
+        ));
+        let out_of_range = [(3, &store.zero_hash)];
+        assert!(matches!(
+            store.rebase(origin, near, &out_of_range),
+            Err(StoreError::GfnOutOfRange {
+                gfn: 3,
+                mem_pages: 3
+            })
+        ));
     }
 
     #[test]
@@ -1442,6 +1631,42 @@ mod tests {
     }
 
     #[test]
+    fn restore_and_diff_reject_corrupt_resident_pages() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let target = snap_with(&mut store, base, &[(1, 0x5a)]);
+        let PageRef::Data(id) = store.resolve(target.0, 1) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+
+        assert!(matches!(
+            store.restore_pages(Some(base), target, &[]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.diff_pages(Some(base), target),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.restore_pages(None, target, &[]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        let PageRef::Data(id) = store.resolve(target.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        assert!(matches!(
+            store.restore_pages(Some(base), target, &[0]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
     fn inherited_reads_cache_only_the_requested_snapshot() {
         let mut store = Store::new(cfg(4));
         let mut builder = store.begin_base();
@@ -1629,7 +1854,7 @@ mod tests {
     fn diff_pages_rejects_unknown_ids() {
         let mut store = Store::new(cfg(1));
         let base = store.begin_base().seal(vec![]);
-        let unknown = SnapshotId(u64::MAX);
+        let unknown = SnapshotId(u64::MAX, store.store_id);
 
         assert!(matches!(
             store.diff_pages(Some(unknown), base),
@@ -1790,6 +2015,195 @@ mod tests {
             store.page_ref_eq(other, 0, base, 0),
             Err(StoreError::PageIntegrity { gfn: 0 })
         ));
+    }
+
+    #[test]
+    fn resident_corruption_is_rejected_by_delta_and_reference_equality() {
+        let mut store = Store::new(cfg(2));
+        let base = store.begin_base().seal(vec![]);
+        let mut builder = store.derive(base).unwrap();
+        builder.write_page(1, &[0x5a; PAGE_SIZE]).unwrap();
+        let child = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(child.0, 1) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+
+        assert!(matches!(
+            store.page_delta(base, None, child),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.page_ref_eq(child, 1, child, 1),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+    }
+
+    #[test]
+    fn snapshot_verification_checks_inherited_resident_pages() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let child = snap_with(&mut store, base, &[(1, 0x22)]);
+        store.verify_snapshot_pages(child).unwrap();
+
+        let PageRef::Data(id) = store.resolve(child.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        assert!(matches!(
+            store.verify_snapshot_pages(child),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
+    fn multiple_snapshot_verification_checks_pages_unique_to_target() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let target = snap_with(&mut store, base, &[(1, 0x22)]);
+        store.verify_snapshots(&[base, target]).unwrap();
+
+        let PageRef::Data(id) = store.resolve(target.0, 1) else {
+            panic!("expected target resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+        assert!(matches!(
+            store.verify_snapshots(&[base, target]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+    }
+
+    #[test]
+    fn rebase_rejects_corrupted_near_pages_before_reusing_them() {
+        let mut store = Store::new(cfg(3));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let origin = builder.seal(vec![]);
+        let near = snap_with(&mut store, origin, &[(1, 0x22)]);
+        let near_hash = *blake3::hash(&[0x22; PAGE_SIZE]).as_bytes();
+        let PageRef::Data(id) = store.resolve(near.0, 1) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+
+        assert!(matches!(
+            store.rebase(origin, near, &[(1, &near_hash)]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            store.rebase(origin, near, &[]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let PageRef::Data(id) = store.resolve(near.0, 0) else {
+            panic!("expected inherited resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        assert!(matches!(
+            store.rebase(origin, near, &[]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
+    fn rebase_rejects_corrupted_origin_page_before_copying_it() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x11; PAGE_SIZE]).unwrap();
+        let origin = builder.seal(vec![]);
+        let near = snap_with(&mut store, origin, &[(0, 0x22)]);
+        let PageRef::Data(id) = store.resolve(origin.0, 0) else {
+            panic!("expected origin resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+
+        assert!(matches!(
+            store.rebase(origin, near, &[]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+    }
+
+    #[test]
+    fn interned_corrupt_page_cannot_replace_valid_write_data() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x5a; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(snap.0, 0) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before_refs = store.pages[id.get() - 1].as_ref().unwrap().refs;
+        let before_stats = store.store_stats();
+        let valid = [0x5a; PAGE_SIZE];
+        let hash = *blake3::hash(&valid).as_bytes();
+
+        let mut builder = store.derive(snap).unwrap();
+        assert!(matches!(
+            builder.write_hashed_page(1, &valid, &hash),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert!(matches!(
+            builder.write_page(1, &valid),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        drop(builder);
+        assert_eq!(
+            store.pages[id.get() - 1].as_ref().unwrap().refs,
+            before_refs
+        );
+        assert_eq!(store.store_stats(), before_stats);
+    }
+
+    #[test]
+    fn changed_write_rejects_corrupt_parent_before_skipping_equal_bytes() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x5a; PAGE_SIZE]).unwrap();
+        let parent = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(parent.0, 0) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let bytes = store.pages[id.get() - 1].as_ref().unwrap().data.to_vec();
+        let before_stats = store.store_stats();
+
+        let mut builder = store.derive(parent).unwrap();
+        assert!(matches!(
+            builder.write_changed_page(0, &bytes),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        drop(builder);
+        assert_eq!(store.store_stats(), before_stats);
+    }
+
+    #[test]
+    fn flatten_rejects_corrupt_inherited_page_before_acquiring_refs() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[0x5a; PAGE_SIZE]).unwrap();
+        let parent = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(parent.0, 0) else {
+            panic!("expected resident page");
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before_refs = store.pages[id.get() - 1].as_ref().unwrap().refs;
+        let before_stats = store.store_stats();
+
+        assert!(matches!(
+            store.flatten_base(parent, &[0; PAGE_SIZE], &[], vec![]),
+            Err(StoreError::PageIntegrity { gfn: 0 })
+        ));
+        assert_eq!(
+            store.pages[id.get() - 1].as_ref().unwrap().refs,
+            before_refs
+        );
+        assert_eq!(store.store_stats(), before_stats);
     }
 
     #[test]
