@@ -694,10 +694,10 @@ function updateCamera(now) {
     }
   }
   for (const room of drivenRooms()) {
-    let point = frontier(room);
-    point ||= reachedFrontier(room);
     const held = camera.targets.get(room);
-    if (held?.goal && cameraProgress(room, point) < cameraProgress(room, held.goal) - 32) {
+    let point = frontier(room);
+    if (!point) point = held?.goal ?? reachedFrontier(room);
+    else if (held?.goal && cameraProgress(room, point) < cameraProgress(room, held.goal) - 32) {
       held.behind ||= now;
       if (now - held.behind < CAMERA_RETREAT_MS) point = held.goal;
     } else if (held) held.behind = 0;
@@ -2214,11 +2214,11 @@ function bindMap(c) {
     const delta = wheelDelta(e, size);
     if (delta && scrollAlong(Number(c.dataset.map), c, (delta * (game.vertical ? c.height : c.width)) / size)) e.preventDefault();
   }, { passive: false });
-  c.addEventListener("pointerenter", (e) => {
-    if (e.pointerType === "mouse") camera.held = Infinity;
+  c.addEventListener("pointermove", (e) => {
+    if (e.pointerType === "mouse" && (e.movementX || e.movementY)) camera.held = performance.now() + 3000;
   });
   c.addEventListener("pointerleave", (e) => {
-    if (e.pointerType === "mouse") camera.held = performance.now() + 600;
+    if (e.pointerType === "mouse") camera.held = Math.min(camera.held, performance.now() + 600);
   });
   c.addEventListener("pointerdown", (e) => {
     if (e.pointerType !== "mouse") camera.held = performance.now() + 2500;

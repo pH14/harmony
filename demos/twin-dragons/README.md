@@ -247,7 +247,8 @@ rollouts from their start states, so the frontier drops back whenever the
 search draws earlier states; the camera moves back only after the frontier has
 stayed behind for 3 seconds, and it closes a large gap faster than a small
 one. Following pauses
-while the mouse is over the map and for 2.5 seconds after a touch. A drag, pinch or edge pan holds the camera where the
+for 3 seconds after the mouse moves over the map and for 2.5 seconds after a
+touch, so a pointer left resting on the map does not stop it. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
 Selecting a cell stops following. Hovering the map shows chevrons at its left
 and right edges; moving the mouse onto one and resting there pans that way, so a
