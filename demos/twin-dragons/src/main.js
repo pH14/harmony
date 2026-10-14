@@ -1891,7 +1891,10 @@ function panEdge(c, dir, axis = "x") {
   edge.addEventListener("pointerdown", (e) => { e.preventDefault(); if (e.pointerType !== "mouse") start(); });
   edge.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") end(); });
   edge.addEventListener("pointercancel", () => { if (panHold?.canvas === c) panHold = null; });
+  const forward = (type, e) => c.dispatchEvent(new PointerEvent(type, { clientX: e.clientX, clientY: e.clientY, pointerType: "mouse", bubbles: true }));
+  edge.addEventListener("pointermove", (e) => { if (e.pointerType === "mouse") forward("pointermove", e); });
   edge.addEventListener("click", (e) => {
+    if (e.pointerType === "mouse") return forward("click", e);
     if (e.pointerType) return;
     start();
     panHold.since -= 300;

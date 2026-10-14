@@ -62,7 +62,13 @@ try {
         if(phone)await edge.tap();else{await canvases.first().hover();await edge.hover();}
         await page.waitForFunction(([room,before,dir])=>dir*(+document.querySelector(`.map-row[data-map="${room}"] .area-map`).dataset.centerX-before)>8,[room,before,dir]);
         assert.equal(await cameraMode(page),'follow','Panning from a room edge keeps Auto view, which resumes after a pause');
-        if(!phone)await page.mouse.move(0,0);
+        if(!phone){
+          await canvases.first().evaluate(c=>{c.dataset.clicks=0;if(!c.countsClicks)c.addEventListener('click',()=>c.dataset.clicks++);c.countsClicks=true;});
+          await edge.click();
+          assert.equal(await canvases.first().getAttribute('data-clicks'),'1','A mouse click on a room edge selects the map cell beneath it');
+          if(!await page.locator('#inspector').isHidden())await page.locator('#close-inspector').click();
+          await page.mouse.move(0,0);
+        }
         await camera(page,phone,'follow');
       }
       await camera(page,phone,'room');

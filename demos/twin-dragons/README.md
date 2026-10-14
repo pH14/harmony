@@ -225,7 +225,8 @@ level and stops following. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
 Selecting a cell stops following. Hovering the map shows chevrons at its left
 and right edges; resting on one pans that way, and a tap on a touch screen
-glides about half a screen. A strip under the view shows the whole level, with
+glides about half a screen. A mouse click on a chevron selects the cell
+beneath it. A strip under the view shows the whole level, with
 each live sprite as a dot (or the heat cells in Heatmap mode) and a box for the
 part on screen. Clicking or dragging the strip moves the view there, and a
 sideways scroll on the map or the strip pans it. A room the visitor has not
