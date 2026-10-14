@@ -115,6 +115,8 @@ def unclaimed_opcode(data, programs, sections, tag):
         if offset + size > len(data):
             raise ValueError(f"PT_LOAD {index} extends beyond the file")
         claimed = bytearray(size)
+        executable = bytearray(size)
+        boundaries = set()
         for name, section_kind, section_flags, section_address, section_offset, section_size in sections:
             if not section_flags & 2 or section_kind == 8 or not section_size:
                 continue
@@ -134,6 +136,9 @@ def unclaimed_opcode(data, programs, sections, tag):
                 seen_data.add(name)
             begin = section_offset - offset
             claimed[begin : begin + section_size] = b"\x01" * section_size
+            if section_flags & 4:
+                executable[begin : begin + section_size] = b"\x01" * section_size
+                boundaries.update((begin, begin + section_size))
 
         segment = data[offset : offset + size]
         for position in range(size - 1):
@@ -149,8 +154,13 @@ def unclaimed_opcode(data, programs, sections, tag):
                 reg = (segment[position + 2] >> 3) & 7
                 if reg in (6, 7):
                     opcode, length = ("RDRAND" if reg == 6 else "RDSEED"), 3
-            if opcode and not all(claimed[position : position + length]):
-                return opcode, offset + position, index
+            if opcode:
+                if not all(claimed[position : position + length]):
+                    return opcode, offset + position, index, "unclaimed"
+                if all(executable[position : position + length]) and any(
+                    position < boundary < position + length for boundary in boundaries
+                ):
+                    return opcode, offset + position, index, "cross-section"
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
     return None
@@ -169,9 +179,9 @@ def main():
         except (OSError, ValueError, struct.error) as error:
             raise SystemExit(f"FAIL: {tag} ({path}) ELF coverage error: {error}") from error
         if hit:
-            opcode, offset, segment = hit
+            opcode, offset, segment, category = hit
             raise SystemExit(
-                f"FAIL: {tag} ({path}) has unclaimed {opcode} bytes at file offset "
+                f"FAIL: {tag} ({path}) has {category} {opcode} bytes at file offset "
                 f"0x{offset:x} in PT_LOAD {segment}"
             )
 
