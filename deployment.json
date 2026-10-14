@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "0ba3228c2",
+    "commit": "39c24e568",
     "build": "locally verified static build",
-    "checks": "npm test 61/61; browser famidash, arrow-pan, smb, levels-browser, interactions, room-cameras, level-finish, browser",
-    "asset_manifest_sha256": "88208529b8dd267ac91173e4589499ae811443c62bcf8a7f8beec9479f877a86"
+    "checks": "npm test 61/61; browser test on the merged build",
+    "asset_manifest_sha256": "2a81bea9396f028c5838d856e1b1b71d4a30f2985b7323419aef76c7bc57eff1"
   }
 }
