@@ -67,7 +67,9 @@
   event count, deadline, snapshot point, violation, exhausted input, a closed
   bridge, or a guest exit. A guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
-  session pauses the guest before each answer, takes a `Checkpoint` there,
+  limit is supplied when the session starts, so a fresh process restoring a
+  checkpoint is bounded while it waits for the restore request and replies.
+  The session pauses the guest before each answer, takes a `Checkpoint` there,
   restores one in place, or starts a fresh process that restores one at boot.
   At restore, the console collector drains output already written by the
   paused guest and clears its diagnostic tail before the new branch runs. This

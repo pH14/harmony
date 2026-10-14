@@ -166,8 +166,13 @@ impl UmlSession {
         }
         let root_identity = root_identity(config, &profile, &host, &initramfs);
         let checkpoints = Checkpoints::new();
-        let mut session = uml::Session::spawn(&launch, &profile, &checkpoints, None)?;
-        session.set_progress_limit(Some(config.progress_limit));
+        let mut session = uml::Session::spawn(
+            &launch,
+            &profile,
+            &checkpoints,
+            None,
+            Some(config.progress_limit),
+        )?;
         session.branch(
             config.seed,
             handler(&factory, &ServiceConfig::default())?,
@@ -262,13 +267,13 @@ impl UmlSession {
             return Ok(());
         }
         self.session = None;
-        let mut session = uml::Session::spawn(
+        let session = uml::Session::spawn(
             &self.launch,
             &self.profile,
             &self.checkpoints,
             Some(checkpoint),
+            Some(self.progress_limit),
         )?;
-        session.set_progress_limit(Some(self.progress_limit));
         self.session = Some(session);
         self.counters.fresh_restores.since(begun);
         Ok(())
