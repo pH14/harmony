@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "ff8b7d5b9",
+    "commit": "c43dcab50",
     "build": "locally verified static build",
-    "checks": "Production build, the Super Mario Bros., Metroid and level-finish browser checks in Chrome, and every browser check on the source branch.",
-    "asset_manifest_sha256": "e81c9b609c1578d5f8cecb39511c9c720cee22f0ce3d6cf9c38d59cef2839a0d"
+    "checks": "Production build, the swarm and level-finish browser checks in Chrome, and the unit tests and swarm, browser and interaction checks on the source branch.",
+    "asset_manifest_sha256": "0115d45f464815143fdab28b74e7f4212ddce85bd0e553e4b3573f62e38d694c"
   }
 }
