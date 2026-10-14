@@ -1324,10 +1324,15 @@ mod policy_diagnostic {
     #[ignore = "live KVM nested VMX boundary; requires /dev/kvm"]
     fn rejected_vmx_capability_read_retires_partly_initialized_vcpu() {
         let mut backend = KvmBackend::new().unwrap();
-        let Ok((format, _)) = backend.nested_capabilities() else {
-            return;
+        let (format, _) = match backend.nested_capabilities() {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                eprintln!("skipped: nested VMX unavailable: {error}");
+                return;
+            }
         };
         if format != NestedFormat::Vmx {
+            eprintln!("skipped: nested VMX test requires a VMX host, found {format:?}");
             return;
         }
         let cpuid = CpuidModel {

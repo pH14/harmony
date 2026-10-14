@@ -37,7 +37,9 @@ Once nested initialization starts changing CPUID, an invalid VMX capability MSR,
 rejected feature-control write, or later validation error retires the vCPU. The
 live `rejected_vmx_capability_read_retires_partly_initialized_vcpu` test forces
 an invalid MSR index after the CPUID write and requires capture and policy
-installation to refuse the partly initialized backend.
+installation to refuse the partly initialized backend. It reports an explicit
+skip when a host has no VMX support; the test also requires KVM to reject reads
+of the invalid MSR.
 
 Nested state is captured in a capability-sized initialized buffer. The complete
 returned payload is retained with the inactive VMCS12 metadata normalization
