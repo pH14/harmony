@@ -25,8 +25,9 @@ the recorded execution budget. One coordinator
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Replay checks its fixed executor and selection-seed derivation
-labels before copying them into a completed report. Replay reconstructs
+for replay. Replay checks the source fields allowed by each origin kind and its
+fixed executor and selection-seed derivation labels before copying them into
+a completed report. Replay reconstructs
 adaptive mixture weights from each admitted
 result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
