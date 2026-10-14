@@ -173,7 +173,9 @@ pub struct LegacyPlatform {
 const PCI_CONFIG_ADDRESS: u16 = 0x0CF8;
 const PCI_CONFIG_DATA_LO: u16 = 0x0CFC;
 const PCI_CONFIG_DATA_HI: u16 = 0x0CFF;
+pub(crate) const PIC_MASTER_COMMAND: u16 = 0x0020;
 pub(crate) const PIC_MASTER_DATA: u16 = 0x0021;
+pub(crate) const PIC_SLAVE_COMMAND: u16 = 0x00A0;
 pub(crate) const PIC_SLAVE_DATA: u16 = 0x00A1;
 const I8042_STATUS_PORT: u16 = 0x0064;
 const I8042_STATUS_FAST_CLEAR: u8 = 0x01;
