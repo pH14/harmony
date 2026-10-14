@@ -537,7 +537,13 @@ mod live {
         let windows = ActionWindows {
             root_seal: archive.root_seal,
         };
-        let written = write_bug_reports(windows, &archive.bugs, &options.output)?;
+        let inherited = config
+            .root
+            .as_ref()
+            .map(|root| crate::consonance::root_standing(root))
+            .transpose()?
+            .unwrap_or_default();
+        let written = write_bug_reports(windows, &inherited, &archive.bugs, &options.output)?;
         if let Some(first) = written.first() {
             std::fs::write(
                 options.output.join("first-bug-input.json"),

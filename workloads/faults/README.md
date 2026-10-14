@@ -330,8 +330,9 @@ count as a rediscovery.
 Search also writes
 `campaign-summary.json`, `stream.jsonl`, `progress.jsonl`,
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
-([`report`](src/report.rs)); each of those carries the action list and the
-encoded window list that reproduces it.
+([`report`](src/report.rs)). Each `bug-N.json` carries the action list and the
+encoded window list used by the guest, including windows inherited from a
+branch root. `first-bug-input.json` carries the selected action list.
 
 `FaultArchiveKey` has a place, a progress, and a holder identity. The place is
 the passed assertion set and every lifecycle count except liveness, plus two
