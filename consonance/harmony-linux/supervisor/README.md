@@ -58,9 +58,11 @@ while no kill, restart or event kill targets it, by a signal its own execution
 raises (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP` or
 `SIGSYS`) or a nonzero exit status, violates it; the record's details name the
 node and the exit. A death while a node start waits for the ready probe is
-exempt only when that recovery generation includes an injected kill, restart,
-or event kill. A natural restart still runs the ready probe and queues hooks,
-but a later independent crash remains a violation.
+exempt only while recovery from an injected kill, restart, or event kill is
+still pending. A later natural restart keeps that exemption until the current
+readiness probe passes. A natural restart without pending fault recovery still
+runs the ready probe and queues hooks, but a later independent crash remains a
+violation.
 The supervisor also checks the final child status after signaling a scheduled
 kill or replacing a child. Its injected kills use `SIGKILL`, so a fatal signal
 or nonzero exit status proves the child ended independently before the kill
