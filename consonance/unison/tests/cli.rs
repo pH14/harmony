@@ -54,6 +54,8 @@ fn toy_compare_matching_checkpoints_with_exit_code_0() {
     ]);
     assert_eq!(code, Some(0));
     assert_eq!(json["verdict"], serde_json::json!("matching_checkpoints"));
+    assert_eq!(json["checkpoint_every"], 64);
+    assert_eq!(json["requested_limit"], 1000);
     assert_eq!(json["limit_reached"], serde_json::json!(true));
 }
 
@@ -96,6 +98,8 @@ fn toy_bisect_without_divergence_reports_null_point() {
         json["compare"]["verdict"],
         serde_json::json!("matching_checkpoints")
     );
+    assert_eq!(json["compare"]["checkpoint_every"], 125);
+    assert_eq!(json["compare"]["requested_limit"], 2000);
 }
 
 #[test]
