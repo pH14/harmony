@@ -49,7 +49,9 @@ and again after the setup command, because setup may mount a fresh `/run`, so a
 process that follows the Antithesis fallback SDK writes each JSON record
 straight to the host. The driver attributes each record to its writer's process
 id in the writer's PID namespace, which the supervisor shares with the children
-it starts.
+it starts. Before launching nodes, the supervisor opens its own assertion sink
+through that link and retains the descriptor. A child that later replaces the
+link or its containing mount cannot divert the built-in node-exit assertion.
 Child stdout is discarded; assertions travel only as SDK records.
 
 The supervisor declares one built-in check, the Always assertion
