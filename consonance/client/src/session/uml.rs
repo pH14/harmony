@@ -265,7 +265,16 @@ impl UmlSession {
         Ok(())
     }
 
-    fn crash(&mut self, moment: u64, reason: Option<ExitReason>) -> StopReason {
+    fn crash(
+        &mut self,
+        moment: u64,
+        reason: Option<ExitReason>,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let limit = self.progress_limit;
+        let settled = self.live()?.settle_terminal_console(reason, limit);
+        if let Err(error) = settled {
+            return Err(self.abandon(error));
+        }
         let detail = self
             .session
             .as_ref()
@@ -276,13 +285,13 @@ impl UmlSession {
         } else {
             CrashKind::Shutdown
         };
-        StopReason::Crash {
+        Ok(StopReason::Crash {
             vtime: Moment(moment),
             info: CrashInfo {
                 kind,
                 detail: format!("{reason:?}\n{detail}").into_bytes(),
             },
-        }
+        })
     }
 
     fn abandon(&mut self, error: uml::SessionError) -> Box<dyn Error> {
@@ -537,9 +546,9 @@ impl SearchSession for UmlSession {
                 vtime: Moment(moment),
             }),
             Ok(Stop::Stopped(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_)))) => {
-                Ok(self.crash(latest, Some(reason)))
+                self.crash(latest, Some(reason))
             }
-            Ok(Stop::Closed) => Ok(self.crash(latest, None)),
+            Ok(Stop::Closed) => self.crash(latest, None),
             Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
                 "the guest stopped at {stop:?}"
             )))),

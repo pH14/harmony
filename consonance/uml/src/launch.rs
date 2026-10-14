@@ -1423,6 +1423,40 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
+    fn terminal_console_waits_for_the_reader_after_child_exit() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.console_tail_bytes = 64;
+        let gate = parent.path().join("release");
+        let script = format!(
+            "while [ ! -e {} ]; do sleep 0.001; done; printf 'Kernel panic: terminal marker\\n'",
+            gate.display()
+        );
+        let mut guest = shell(&launch, &script);
+        let console = Arc::clone(&guest.console);
+        let held = console.lock().unwrap();
+        std::fs::write(gate, []).unwrap();
+        let reason = loop {
+            if let Some(reason) = guest.stopped().unwrap() {
+                break reason;
+            }
+            std::thread::yield_now();
+        };
+        assert!(!held.contains(b"Kernel panic"));
+        drop(held);
+        let exit = guest.finish(reason).unwrap();
+        assert_eq!(exit.reason, ExitReason::Exited(0));
+        assert!(
+            exit.console
+                .windows(12)
+                .any(|window| window == b"Kernel panic")
+        );
+        assert!(exit.leftovers.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn wait_reports_exit_and_bounded_console() {
         let parent = tempfile::tempdir().unwrap();
         let launch = launch(parent.path());
