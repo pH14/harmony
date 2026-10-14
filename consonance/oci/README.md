@@ -19,6 +19,9 @@ directory. Reusing that directory, including after a failed stage, cannot carry
 files from an earlier image into the next guest rootfs or its identity. The
 caller owns the staging directory and removes it when the prepared image is no
 longer needed.
+Outer archives and layers are copied into private staging before admission and
+extraction, so replacing a source archive after its members are checked cannot
+change the bytes extracted into the guest image.
 
 `PreparedExecution` owns the deterministic rootfs and platform control
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
