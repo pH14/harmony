@@ -93,8 +93,10 @@ not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden
 code in shortened, non-executable, separately allocated, and duplicate-name
 sections, and inert opcode-shaped data, in all three artifacts. A new data
 section name requires review before the image can be published. The raw segment
-walk also rejects an opcode split across adjacent executable sections, which
-section-by-section disassembly cannot decode.
+walk also rejects an opcode split from code into adjacent code or reviewed data,
+and opcode-shaped bytes immediately after adjacent code sections. An x86
+instruction can cross a section boundary and change how the CPU decodes the
+next section, while section-by-section disassembly starts decoding it anew.
 
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during

@@ -36,6 +36,7 @@ KNOWN_DATA = {
     "setup": frozenset((".header", ".initdata", ".rodata", ".videocards", ".data", ".signature")),
     "decompressor": frozenset((".rodata..compressed", ".rodata", ".data")),
 }
+MAX_X86_INSTRUCTION_BYTES = 15
 
 
 def unpack(fmt, data, offset):
@@ -140,6 +141,12 @@ def unclaimed_opcode(data, programs, sections, tag):
                 executable[begin : begin + section_size] = b"\x01" * section_size
                 boundaries.update((begin, begin + section_size))
 
+        adjacent_code = {
+            boundary
+            for boundary in boundaries
+            if 0 < boundary < size and executable[boundary - 1] and executable[boundary]
+        }
+
         segment = data[offset : offset + size]
         for position in range(size - 1):
             if segment[position] != 0x0F:
@@ -157,10 +164,15 @@ def unclaimed_opcode(data, programs, sections, tag):
             if opcode:
                 if not all(claimed[position : position + length]):
                     return opcode, offset + position, index, "unclaimed"
-                if all(executable[position : position + length]) and any(
+                if executable[position] and any(
                     position < boundary < position + length for boundary in boundaries
                 ):
                     return opcode, offset + position, index, "cross-section"
+                if all(executable[position : position + length]) and any(
+                    boundary <= position < boundary + MAX_X86_INSTRUCTION_BYTES
+                    for boundary in adjacent_code
+                ):
+                    return opcode, offset + position, index, "boundary-desync"
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
     return None

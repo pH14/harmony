@@ -250,28 +250,76 @@ class CounterScanCoverage(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                     self.assertIn("duplicate allocated data section '.rodata'", result.stderr)
 
-            straddle = root / "straddle.s"
-            straddle.write_text(
-                '.section .text,"ax"\n.global _start\n_start:\n.byte 0x0f,0xc7\n'
-                '.section .safe,"ax"\n.byte 0xf8,0xc3\n'
-            )
             linker = root / "straddle.ld"
-            linker.write_text("SECTIONS { . = 0x400000; .text : { *(.text) } .safe : { *(.safe) } }\n")
-            run("as", "--64", "-o", str(root / "straddle.o"), str(straddle))
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .text : { *(.text) } :all "
+                ".rodata : { *(.rodata) } :all .safe : { *(.safe) } :all }\n"
+            )
+            boundary_cases = (
+                (
+                    "cross-section-rdseed",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0x0f,0xc7\n'
+                    '.section .safe,"ax"\n.byte 0xf8,0xc3\n',
+                    "cross-section RDSEED",
+                ),
+                (
+                    "cross-section-rdtsc",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0x0f\n'
+                    '.section .safe,"ax"\n.byte 0x31,0xc3\n',
+                    "cross-section RDTSC",
+                ),
+                (
+                    "code-data-rdseed",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0x0f,0xc7\n'
+                    '.section .rodata,"a"\n.byte 0xf8,0xc3\n'
+                    '.section .safe,"ax"\n.byte 0xc3\n',
+                    "cross-section RDSEED",
+                ),
+                (
+                    "boundary-desync",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb0\n'
+                    '.section .safe,"ax"\n.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
+                    "boundary-desync RDTSC",
+                ),
+            )
+            for mode, source, expected in boundary_cases:
+                asm = root / f"{mode}.s"
+                asm.write_text(source)
+                obj = root / f"{mode}.o"
+                elf = root / f"{mode}.elf"
+                run("as", "--64", "-o", str(obj), str(asm))
+                run("ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o", str(elf), str(obj))
+                boundary_bytes = elf.read_bytes()
+                targets = ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor"))
+                if mode == "boundary-desync":
+                    targets = targets[:1]
+                for target, tag in targets:
+                    kernel.write_bytes(safe_bytes)
+                    setup.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_bytes)
+                    target.write_bytes(boundary_bytes)
+                    with self.subTest(mode=mode, target=tag):
+                        result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(expected, result.stderr)
+
+            control = root / "boundary-control.s"
+            control.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8,0x00,0x00,0x0f,0x31\n'
+                '.section .safe,"ax"\n.byte 0xc3\n'
+            )
+            run("as", "--64", "-o", str(root / "boundary-control.o"), str(control))
             run(
                 "ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o",
-                str(root / "straddle.elf"), str(root / "straddle.o"),
+                str(root / "boundary-control.elf"), str(root / "boundary-control.o"),
             )
-            straddle_bytes = (root / "straddle.elf").read_bytes()
-            for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
-                kernel.write_bytes(safe_bytes)
-                setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
-                target.write_bytes(straddle_bytes)
-                with self.subTest(mode="cross-section", target=tag):
-                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
-                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn("cross-section RDSEED", result.stderr)
+            kernel.write_bytes((root / "boundary-control.elf").read_bytes())
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="boundary-control", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":
