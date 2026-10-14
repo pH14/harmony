@@ -49,9 +49,11 @@ before it builds the guest image ([`admission`](src/admission.rs)). It rejects:
 For User-mode Linux, preparation rejects all four scanned hardware entropy
 instructions even when reviewed. UML runs guest user instructions natively, so
 the VM's hidden feature bits do not protect a guarded call site. This admission
-check applies to executable sections in the staged image. The existing scan
-boundary still requires cooperative workloads: dynamically generated code and
-instructions hidden in unscanned executable bytes are outside its guarantee.
+check walks the bytes of executable load segments in the staged image. Section
+headers do not determine what the guest loader executes. The scan boundary
+still requires cooperative workloads: dynamically generated code and
+instructions hidden inside another instruction's operand bytes are outside its
+guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -66,10 +68,9 @@ a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
 The scan catches entropy instructions that compilers and assemblers emit. It
-decodes each executable section from its start, and it requires an executable
-section inside every executable segment. A binary built to hide an instruction
-can still pass: for example, inside the operand bytes of another instruction,
-or in segment bytes outside the scanned sections.
+decodes each executable load segment from its start and rejects malformed or
+writable executable segments. A binary built to hide an instruction inside the
+operand bytes of another instruction can still pass.
 
 `harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
