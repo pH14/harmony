@@ -6,7 +6,9 @@ use vtime::VClockConfig;
 
 use crate::snapshot::SnapshotError;
 use crate::vendor::x86::contract::{self, MsrDisposition};
-use crate::vendor::x86::devices::{ISA_DEBUG_EXIT_PORT, LegacyPlatform, REPORT_PORT, Uart8250};
+use crate::vendor::x86::devices::{
+    ISA_DEBUG_EXIT_PORT, LegacyPlatform, PIC_MASTER_DATA, PIC_SLAVE_DATA, REPORT_PORT, Uart8250,
+};
 use crate::vendor::x86::records::{self, DeviceState, LegacyState, UartState};
 use crate::virtual_time::{DeviceClass, NormalizedEventClass};
 use crate::vmm::{Step, TerminalReason, Vmm, VmmError};
@@ -204,6 +206,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 "unmodeled OUT to port {port:#06x} value {value:#x} (size {size})"
             )));
         }
+        if matches!(port, PIC_MASTER_DATA | PIC_SLAVE_DATA) {
+            require_byte_io("OUT", port, size)?;
+        }
         self.advance_virtual_time_for_port(port)?;
         if port == ISA_DEBUG_EXIT_PORT {
             return Ok(self.terminate(TerminalReason::DebugExit { code: value as u8 }));
@@ -243,6 +248,9 @@ impl<B: Backend<A = X86>> Vmm<B> {
             return Err(VmmError::ContractViolation(format!(
                 "unmodeled IN from port {port:#06x} (size {size})"
             )));
+        }
+        if matches!(port, PIC_MASTER_DATA | PIC_SLAVE_DATA) {
+            require_byte_io("IN", port, size)?;
         }
         self.advance_virtual_time_for_port(port)?;
         if Uart8250::owns(port)
@@ -697,9 +705,8 @@ impl<B: Backend<A = X86>> Vmm<B> {
 fn require_byte_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {
     if size != 1 {
         return Err(VmmError::ContractViolation(format!(
-            "{dir} to modeled byte port {port:#06x} with size {size} != 1 — the 8250 UART and \
-             isa-debug-exit are byte-addressed; a wider access is unmodeled (fail closed, not a \
-             truncation)"
+            "{dir} to modeled byte port {port:#06x} with size {size} != 1 — a wider access is \
+             unmodeled (fail closed, not a truncation)"
         )));
     }
     Ok(())

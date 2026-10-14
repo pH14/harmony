@@ -177,6 +177,8 @@ write cannot be silently truncated into a register transaction.
 Misaligned xAPIC offsets and rejected x86 I/O port accesses also fail before
 advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
+The modeled 8259 master and slave interrupt-mask ports accept only byte reads
+and writes; other widths fail before changing the masks or virtual time.
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
