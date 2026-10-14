@@ -82,6 +82,7 @@ fn read_pool(kind: &str) -> Result<Option<BTreeSet<u16>>> {
     }
 }
 
+#[allow(unused_unsafe)]
 fn host_reports_hybrid_architecture() -> bool {
     #[cfg(test)]
     if let Some(hybrid) = tests::fixture_hybrid() {
@@ -89,7 +90,8 @@ fn host_reports_hybrid_architecture() -> bool {
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        std::arch::x86_64::__cpuid_count(7, 0).edx & (1 << 15) != 0
+        // SAFETY: x86_64 guarantees CPUID, and this fixed leaf/subleaf reads no caller memory.
+        unsafe { std::arch::x86_64::__cpuid_count(7, 0) }.edx & (1 << 15) != 0
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
