@@ -19,8 +19,15 @@ awk '/<<.PATCH.$/ { if (!seen++) { on = 1; next } } on && /^PATCH$/ { exit } on'
     "$root/scripts/build-quicknes-core.sh" >"$idle_patch"
 test "$(sha256sum <"$idle_patch" | cut -d ' ' -f 1)" = d1ecfe8b161502ad1d3fa9af3eef74be2006db693f71cb6fa7a210b4624ef702
 patch -d "$build/quicknes" -f -p1 <"$idle_patch" >/dev/null
+# It also carries the native build's four-screen state patch, so the core can
+# restore states of four-screen cartridges such as Famidash.
+four_screen_patch=$build/quicknes-four-screen-state.patch
+awk '/<<.PATCH.$/ { if (++n == 2) { on = 1; next } } on && /^PATCH$/ { exit } on' \
+    "$root/scripts/build-quicknes-core.sh" >"$four_screen_patch"
+test "$(sha256sum <"$four_screen_patch" | cut -d ' ' -f 1)" = af25610c3f6d85de37adb6566b08fbedf5385bc4e820c009dfdbeb2c0b3f3296
+patch -d "$build/quicknes" -f -p1 <"$four_screen_patch" >/dev/null
 make -C "$build/quicknes" -j4 platform=emscripten DEBUG=0 OPTIMIZE="-O3 -flto" \
-    GIT_VERSION="$revision-idle-loop" CC=emcc CXX=em++ AR=emar TARGET=quicknes.a >"$build/quicknes-build.log" 2>&1
+    GIT_VERSION="$revision-idle-loop-four-screen" CC=emcc CXX=em++ AR=emar TARGET=quicknes.a >"$build/quicknes-build.log" 2>&1
 em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
     "$build/quicknes/quicknes.a" -I"$build/quicknes/libretro/libretro-common/include" \
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sENVIRONMENT=web,worker,node \
@@ -29,14 +36,20 @@ em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
     -o "$demo/public/engine/quicknes.js"
 "$root/workloads/nes/scripts/build-twin-dragons-rom.sh" "$build/twin-dragons"
 cp "$build/twin-dragons/twin-dragons.nes" "$demo/public/twin-dragons.nes"
+"$root/workloads/nes/scripts/build-famidash-rom.sh" "$build/famidash"
+mkdir -p "$demo/public/famidash"
+cp "$build/famidash/famidash.nes" "$demo/public/famidash/famidash.nes"
 wasm-pack build "$demo/rust" --target web --release --out-dir pkg --no-opt
 cp "$build/quicknes/LICENSE" "$demo/public/licenses/QuickNES.txt"
 cp "$idle_patch" "$demo/public/licenses/quicknes-idle-loop.patch"
+cp "$four_screen_patch" "$demo/public/licenses/quicknes-four-screen-state.patch"
 cp "$demo/CREDITS.md" "$demo/public/licenses/CREDITS.md"
 # Ship only the upstream zlib license beside the altered ROM. The upstream
 # archive also holds sound files whose rights are reserved, so the build reads
 # level data, tiles and tables from it and never publishes it.
 cp "$build/twin-dragons/UPSTREAM-LICENSE.txt" "$demo/public/licenses/twin-dragons-LICENSE.txt"
+cp "$build/famidash/UPSTREAM-LICENSE.txt" "$demo/public/licenses/famidash-LICENSE.txt"
+cp "$build/famidash/UPSTREAM-CREDITS.md" "$demo/public/licenses/famidash-CREDITS.md"
 . "$root/workloads/nes/twin-dragons-versions.env"
 curl --fail --location --retry 3 --output "$build/twin-dragons.tar.gz" "$TWIN_DRAGONS_URL"
 test "$(sha256sum <"$build/twin-dragons.tar.gz" | cut -d ' ' -f 1)" = "$TWIN_DRAGONS_SHA256"
@@ -71,5 +84,5 @@ cp "$build/sameboy/LICENSE" "$demo/public/licenses/sameboy-LICENSE.txt"
 git -C "$build/sameboy" archive --format=tar.gz --output="$demo/public/licenses/sameboy-source.tar.gz" HEAD
 cp "$demo/tools/sameboy-frontend.c" "$demo/tools/build-sameboy-runtime.sh" "$demo/public/licenses/"
 
-(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs && node tools/build-tobu-maps.mjs)
+(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs && node tools/build-tobu-maps.mjs && node tools/build-famidash-maps.mjs)
 git -C "$root" archive --format=tar.gz --output="$demo/public/licenses/harmony-source.tar.gz" HEAD

@@ -12,6 +12,7 @@ const base = new URL("../public/", import.meta.url);
 const roms = `${homedir()}/workspace/roms`;
 const games = [
   { id: "twin-dragons", rom: process.env.TWIN_DRAGONS_ROM || join(demo, "public/twin-dragons.nes") },
+  { id: "famidash", rom: process.env.FAMIDASH_ROM || join(demo, "public/famidash/famidash.nes") },
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes` },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes` },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes` },

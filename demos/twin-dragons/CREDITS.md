@@ -33,6 +33,26 @@ in `licenses/`. `harmony-source.tar.gz` holds Harmony's complete source.
 license notices, including miniz_oxide (MIT, Zlib or Apache-2.0) and adler2
 (0BSD, MIT or Apache-2.0).
 
+## Famidash
+
+**Famidash** is by **TFDSoft**, copyright 2023-2024 TFDSoft. It is an
+unofficial fan demake of **Geometry Dash** by RobTop Games and is not
+affiliated with or endorsed by RobTop Games. This demonstration is not
+endorsed by the authors.
+
+- Release: https://github.com/tfdsoft/famidash/releases/tag/1.2.8, built from
+  commit `0df680d0e02f0ccb438f1224d162a0ab073b7204`
+- Game code: **MIT license**, shipped as `licenses/famidash-LICENSE.txt`.
+- The site ships the official release ROM `Famidash.v1.2.8.nes` unchanged.
+  `workloads/nes/scripts/build-famidash-rom.sh` downloads it and checks its
+  SHA-256.
+- Music is arranged from tracks by ForeverBound, DJVI, Step, Waterflame,
+  Dj-Nate and OcularNebula. The upstream music credits ship as
+  `licenses/famidash-CREDITS.md`.
+- Modified: the level maps and the player sprite sheet are captured from the
+  game's screens and composed into images. Browser maps add heat overlays and
+  player sprites.
+
 ## Emulators
 
 **QuickNES** by Shay Green and contributors, with the libretro port by its
@@ -43,7 +63,9 @@ distribution ships **GPL-2.0** terms, which this demo applies to the compiled
 QuickNES browser core. Its C++ shim (`tools/frontend.cpp`) is
 **GPL-2.0-or-later**. See the shipped `QuickNES.txt` and source-file notices.
 The browser core applies Harmony's idle-loop patch
-(`quicknes-idle-loop.patch`), which changes only CPU speed.
+(`quicknes-idle-loop.patch`), which changes only CPU speed, and its
+four-screen state patch (`quicknes-four-screen-state.patch`), which lets the
+core restore saved states of four-screen cartridges such as Famidash.
 The compiled core is distributed with its corresponding source and build recipe.
 
 **SameBoy** by Lior Halphon runs Tobu Tobu Girl Deluxe. It is pinned to

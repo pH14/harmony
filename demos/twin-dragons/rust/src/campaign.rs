@@ -31,7 +31,8 @@ use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    mega_man::MegaMan, metroid::Metroid, smb::Smb, snapshot_digest, twin_dragons::TwinDragons,
+    famidash::Famidash, mega_man::MegaMan, metroid::Metroid, smb::Smb, snapshot_digest,
+    twin_dragons::TwinDragons,
 };
 
 const WINDOW: usize = 16;
@@ -517,7 +518,7 @@ struct Batch<V> {
 }
 
 #[derive(Serialize)]
-struct Action {
+pub(crate) struct Action {
     buttons: u8,
     frames: u8,
 }
@@ -560,7 +561,7 @@ fn steps<G: BrowserGame>(
     Ok(steps)
 }
 
-fn actions(chords: &[ButtonChord]) -> Vec<Action> {
+pub(crate) fn actions(chords: &[ButtonChord]) -> Vec<Action> {
     chords
         .iter()
         .map(|chord| Action {
@@ -1057,6 +1058,7 @@ impl CampaignSearch {
             "super-mario-bros" => Box::new(Search::<Smb>::new(options).map_err(js_error)?),
             "mega-man-2" => Box::new(Search::<MegaMan>::new(options).map_err(js_error)?),
             "metroid" => Box::new(Search::<Metroid>::new(options).map_err(js_error)?),
+            "famidash" => Box::new(Search::<Famidash>::new(options).map_err(js_error)?),
             _ => return Err(unknown(game)),
         };
         Ok(Self(search))
@@ -1130,6 +1132,9 @@ impl CampaignWorker {
             "metroid" => Box::new(
                 Worker::<Metroid>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
             ),
+            "famidash" => Box::new(
+                Worker::<Famidash>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+            ),
             _ => return Err(unknown(game)),
         };
         Ok(Self(worker))
@@ -1173,6 +1178,7 @@ pub fn campaign_genesis(game: &str, core: u32, rom: &[u8]) -> Result<String, JsV
         "super-mario-bros" => genesis_of::<Smb>(core, rom),
         "mega-man-2" => genesis_of::<MegaMan>(core, rom),
         "metroid" => genesis_of::<Metroid>(core, rom),
+        "famidash" => genesis_of::<Famidash>(core, rom),
         _ => return Err(unknown(game)),
     }
     .map_err(js_error)

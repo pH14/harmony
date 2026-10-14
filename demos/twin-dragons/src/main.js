@@ -954,7 +954,6 @@ if (game.buildMap) {
   panorama(bootLevel);
   prefetchNextMap(bootLevel);
 }
-else for (const map of catalog.maps) panorama(map.id);
 const canvas = $("map"),
   film = $("film").getContext("2d");
 const numberFormat = new Intl.NumberFormat(),
@@ -1214,6 +1213,7 @@ function renderDetails(observation) {
   const fields = [
     ["Position", `${observation.x}, ${observation.y}`],
     ...(game.maxHealth ? [["Health", `${observation.health} / ${game.maxHealth}`]] : []),
+    ...(observation.percent === undefined ? [] : [["Level progress", `${observation.percent}%`]]),
     ["Levels cleared", observation.cleared - bootLevel],
     [
       "Level",
@@ -1569,6 +1569,7 @@ function startSearch(level = bootLevel) {
         // A clearing rollout can end before the next level finishes loading, so
         // its first archived point there may arrive several batches later.
         for (const index of finishes || []) {
+          if (game.separateLevels) break;
           const from = levelIndex(motion[index]?.[1]), next = catalog.levels[from + 1]?.rooms[0];
           const shown = branchPreview?.room ?? mapLevel;
           if (from < 0 || from !== levelIndex(shown) || next == null || !maps.has(next)) continue;
@@ -1604,10 +1605,10 @@ function startSearch(level = bootLevel) {
       } else if (data.type === "limit") {
         paused = true;
         replayPaused = false;
-        $("status").textContent = data.won ? "Game won" : "Memory limit reached";
+        $("status").textContent = data.won ? (game.separateLevels ? "Level complete" : "Game won") : "Memory limit reached";
         updateSearchControl();
         $("goal-status").textContent = data.won
-          ? "Game complete"
+          ? game.separateLevels ? "Level complete" : "Game complete"
           : "Memory limit reached";
         $("pause").disabled = true;
         $("memory-limit").hidden = data.won;

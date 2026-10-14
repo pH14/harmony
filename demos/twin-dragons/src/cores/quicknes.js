@@ -8,7 +8,7 @@ export function coreURL(name, base, version) {
 }
 
 export async function loadQuickNES(base, rom, inputs = {}) {
-  const version = "idle-loop-2";
+  const version = "four-screen-1";
   const factory = (await import(/* @vite-ignore */ coreURL("quicknes.js", base, version))).default;
   const mod = await factory({
     ...(inputs.wasmBinary ? { wasmBinary: inputs.wasmBinary } : {}),

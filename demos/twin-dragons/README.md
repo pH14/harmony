@@ -1,10 +1,10 @@
 # Harmony browser explorer
 
 A static demonstration of state-space exploration. Emulators compiled to
-WebAssembly run a game, and a Rust worker uses Dissonance to search it. The site plays three games: the NES game Twin
-Dragons on QuickNES, the Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and
-Super Mario Bros., Mega Man 2 and Metroid on QuickNES from ROMs the visitor
-supplies. The `game` URL
+WebAssembly run a game, and a Rust worker uses Dissonance to search it. The
+site plays the NES homebrew games Twin Dragons and Famidash on QuickNES, the
+Game Boy game Tobu Tobu Girl Deluxe on SameBoy, and Super Mario Bros., Mega
+Man 2 and Metroid on QuickNES from ROMs the visitor supplies. The `game` URL
 parameter picks the game, and the level selector switches between them. The
 page opens the level selector and starts searching once a level is chosen, or
 from the first level if the selector is closed. A `level` URL parameter with a
@@ -38,12 +38,17 @@ maps and the sprite sheet. The core carries the idle-loop patch from
 `scripts/build-quicknes-core.sh`, the native Harmony build; the browser build
 extracts it from that script, checks its SHA-256 and ships it in `licenses/`.
 The patch skips whole iterations of the game's wait-for-interrupt loop and
-leaves emulated state and timing unchanged. It gets the ROM from
+leaves emulated state and timing unchanged. The core also carries the native
+build's four-screen state patch, which the browser build extracts and checks
+the same way. Without it the core cannot restore a state of a four-screen
+cartridge such as Famidash. It gets the Twin Dragons ROM from
 `workloads/nes/scripts/build-twin-dragons-rom.sh`, which downloads the pinned
 upstream release and zeroes its sound-effect data. The same script's pinned
 source archive supplies level data, tiles and tables for the maps. The build
 extracts only those files into the gitignored `.build/` directory and never
-publishes the archive.
+publishes the archive. `workloads/nes/scripts/build-famidash-rom.sh` downloads
+the official Famidash 1.2.8 release ROM, its MIT license and its music credits
+and checks their SHA-256. The site ships the ROM unchanged.
 
 ## The game
 
@@ -75,14 +80,15 @@ rollout worker holds its own QuickNES instance. The page starts every worker and
 hands the coordinator a `MessageChannel` port to each rollout worker, because
 some browsers fail to load a worker started from inside another worker.
 
-Twin Dragons, Super Mario Bros., Mega Man 2 and Metroid run the same search
-as their native workloads. `rust/src/campaign.rs` holds `JsMachine`, a `machine::Machine`,
+Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid run the
+same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`, a `machine::Machine`,
 `NesBackend` and `NesMemory` that drives the browser QuickNES core through
 `globalThis.harmonyCores`, and a coordinator and rollout worker that are generic
 over `BrowserGame`. Each game implements `BrowserGame` in its own file
-(`rust/src/twin_dragons.rs`, `rust/src/smb.rs`, `rust/src/mega_man.rs`,
-`rust/src/metroid.rs`): it builds the `nes-games` workload (`TwinDragonsGame`,
-`SmbGame`, `Mm2Game`, `MetroidGame`) over `JsMachine` from a target factory,
+(`rust/src/twin_dragons.rs`, `rust/src/famidash.rs`, `rust/src/smb.rs`,
+`rust/src/mega_man.rs`, `rust/src/metroid.rs`): it builds the `nes-games`
+workload (`TwinDragonsGame`, `FamidashGame`, `SmbGame`, `Mm2Game`,
+`MetroidGame`) over `JsMachine` from a target factory,
 names the run and draw mixture, and maps the workload's decoded state to the
 page's observation and motion samples. `CampaignSearch` and `CampaignWorker`
 take the game id. The coordinator worker owns a Dissonance
@@ -94,8 +100,8 @@ browser always uses an admission window of 16 and records workers as 16,
 independent of the device's worker count, so its decision stream equals the
 native campaign run with 16 workers. The archive key, draw, milestones,
 admission rules and objective are the workload's; the game READMEs under
-`workloads/nes/src` describe them. Twin Dragons draws from the controller
-alphabet like `twin-dragons-campaign`; the other three use the
+`workloads/nes/src` describe them. Twin Dragons and Famidash draw from the
+controller alphabet like their native runs; the other three use the
 `energy_splice:6` mixture of `nes-eval` and the search benchmarks. Each
 rollout worker samples motion inside `JsMachine` and reports whether the
 rollout cleared a level. The coordinator releases a trail with the batch only
@@ -144,7 +150,7 @@ time on all rollout workers. Rollouts already sent for a search still merge
 into it after a switch.
 
 The coordinator sends at most 85 rollouts per second for Twin Dragons, 120 for
-Tobu Tobu Girl and 300 for the Nintendo games, so a viewer can follow the
+Famidash and Tobu Tobu Girl and 300 for the Nintendo games, so a viewer can follow the
 search.
 The `pace` URL parameter sets the starting rate in rollouts per second, and
 `pace=0` removes the limit. The Timelines per second slider at the top of
@@ -195,7 +201,9 @@ the sheet with emulator frames while standing, walking in both directions and
 breathing fire. Sprites appear on screen one frame after the RAM that places
 them, so the check reads RAM one frame early.
 
-Colors use the QuickNES palette after its RGB565 output conversion. Map and
+Colors use the QuickNES palette after its RGB565 output conversion. The page
+loads a shipped map when it first draws that map, so a game with many large
+maps holds only the ones on screen. Map and
 sprite PNGs carry the game and artwork credits in their text metadata.
 
 ## Interaction
@@ -354,6 +362,46 @@ history. The archive place is (level, loading, climb / 32, x / 32), progress
 is (levels cleared, climb / 1,024), and the preference is more time left.
 Seeds 1 to 8 finish the game in 15,806 to 44,693 rollouts, median 18,775, so
 the pace is 120 rollouts per second.
+
+### Famidash
+
+Famidash by TFDSoft is an unofficial fan demake of RobTop's Geometry Dash. The
+picker lists its 22 main levels. The 21 community levels in the ROM are left
+out of the picker. A level is complete when the game state reaches 3, and that
+is the search goal. Levels do not chain, so `separateLevels` keeps the map on
+the level after it is cleared and the status reads Level complete. The page
+decodes RAM through `famidash_observation`; the workload README in
+`workloads/nes/src/famidash` lists the addresses. The observation carries the
+level percent, the scroll divided by the level's length, and the Details pane
+shows it as Level progress. One A button is the whole controller.
+
+Map coordinates are the world x and the world y minus 240, the top of the
+second nametable row. Maps are 720 lines tall, from world y 240 to 960, and as
+wide as the level's scroll plus one screen. The pose is the game mode (cube,
+ship, ball, UFO, robot, spider, wave, swing) times two plus flipped gravity.
+
+`tools/build-famidash-maps.mjs` builds the maps when the runtime is built,
+because the site ships the ROM. For each level it runs a beam search over
+8-frame chunks from the level's root: it keeps up to 12 surviving states with
+distinct vertical position, velocity, mode, gravity, size and second-player
+position, and retries with 48 and then 128 when every state dies. It replays
+the clearing path and composes the frames at the scroll and camera of the
+previous frame, because pixels show the RAM of one frame earlier. Each map
+pixel keeps the frame where its column was nearest screen x 176, ahead of the
+player, so trails and the player stay out of the map. Rows the camera never
+showed copy the nearest shown row in their column. The sprite sheet comes from
+Stereo Madness with the background switched off through the PPU mask copy at
+`$0B`: the build writes each game mode to `$7A` and captures the player. The
+flipped-gravity row is the same sprite turned upside down. Levels build on one
+worker thread per CPU core; the 22 maps take about 1.5 minutes on 10 cores.
+
+`boot(level)` for a later level runs the workload's level-select tape from the
+`famidash_level_select_tape` export, writes the level to `$047B`, presses A and
+waits 90 frames, the same wait as the Stereo Madness setup.
+
+The native Stereo Madness search clears the level in 6,800 to 9,000 executions
+on seeds 1 to 5,
+so at 120 rollouts per second the browser search takes about a minute.
 
 ### Super Mario Bros.
 
@@ -543,7 +591,8 @@ digests to match.
 `node tests/campaign-oracle.mjs` runs each campaign game natively with 16
 workers and in the browser coordinator in Node on the same seed and execution
 budget, and requires every job and skip line of the two decision streams to be
-equal. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Super
+equal. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Famidash
+runs `nes-eval` with `alphabet_only` for 400 executions. Super
 Mario Bros. runs `nes-eval` with `energy_splice:6`, a window of 16 and a
 1,024 MiB memory budget for 400 executions, Mega Man 2 runs it with
 `whole_game` for 400, and Metroid for 160. `ORACLE_GAMES` (comma-separated
@@ -575,6 +624,11 @@ decoders, checks that the stage map is drawn when the first rollouts appear,
 and checks that the stage map and the top and bottom edge chevrons move the
 view.
 `tests/metroid.mjs` does the same for Metroid's five area maps.
+`tests/famidash.mjs` boots all 22 levels onto their maps, replays the deepest
+Stereo Madness and Clubstep states exactly, checks the picker order, starts a
+Stereo Madness search and waits for Level progress, pauses, selects the root's
+cell, then plays from it and branches, and replays the branch history to its
+endpoint checksum.
 `tests/replay-pause.mjs` checks that the path
 counter stays still while a visitor's replay plays and advances during the
 automatic replay pick and after the replay pauses, ends or closes.
@@ -586,11 +640,12 @@ exactly like the native core the workloads use. It builds the native core
 into `.build/native-quicknes` unless `HARMONY_QUICKNES_CORE` names one, runs
 `nes-core-oracle` from `workloads/nes`, and replays the same tape on
 `public/engine/quicknes.wasm` one frame per call. It compares system RAM after
-every frame, and at every action boundary also cartridge RAM (Metroid) and the
+every frame, and at every action boundary also cartridge RAM (Famidash and
+Metroid) and the
 save state with the PPU padding bytes zeroed. It runs once with video and audio
 off on both cores and once with both on. Each game runs its workload setup tape
 and then `ORACLE_FRAMES` (default 8,000) frames of chords drawn with
-`ORACLE_SEED` (default 1). Twin Dragons always runs. Super Mario Bros., Mega
+`ORACLE_SEED` (default 1). Twin Dragons and Famidash always run. Super Mario Bros., Mega
 Man 2 and Metroid run when `SMB_ROM`, `MM2_ROM` and `METROID_ROM` or the
 default paths under `~/workspace/roms` name a ROM. The check needs the Rust
 toolchain and a C++ compiler, so it runs locally and not in the browser lane.
@@ -611,3 +666,7 @@ Shiru are not included. [CREDITS.md](CREDITS.md) and the site's Credits dialog
 hold the full notices. The site ships the ROM, the upstream zlib license, the
 credits, the QuickNES source and build recipe, Harmony's source and the Rust
 dependency sources in `licenses/`.
+
+Famidash is by TFDSoft, copyright 2023-2024, under the MIT license. It is an
+unofficial fan demake of Geometry Dash by RobTop Games. The site ships the
+official release ROM unchanged with its license and music credits.

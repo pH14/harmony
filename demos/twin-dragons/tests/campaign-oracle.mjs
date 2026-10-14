@@ -21,6 +21,7 @@ const CASES = [
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
+  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 400 },
 ];
 const selected = process.env.ORACLE_GAMES?.split(",");
 
@@ -53,7 +54,7 @@ function nativeStream(game, executions, out) {
   const request = join(out, "request.json"), result = join(out, "result");
   writeFileSync(request, JSON.stringify({
     ...game.eval, rom: game.rom, core, rom_sha256: sha256(game.rom), core_sha256: sha256(core), seed, workers: 16, executions,
-    memory_mib: memoryMiB, window: 1, wall_seconds: 3600, mixture: "energy_splice:6", verification: "campaign",
+    memory_mib: memoryMiB, window: 1, wall_seconds: 3600, mixture: game.mixture ?? "energy_splice:6", verification: "campaign",
   }));
   cargo("nes-eval", [request, result]);
   return readFileSync(join(result, "stream.jsonl"), "utf8");
