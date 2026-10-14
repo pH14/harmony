@@ -219,6 +219,9 @@ byte reads and writes; other widths fail before changing masks or virtual time.
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
+Restore checks the live trace's pending event, active clockevent record, and
+schedule capacity before changing backend CPU state. A rejected trace restore
+therefore leaves the running VM intact, including after a failed guest exit.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
 Each architecture supplies a guest machine policy; the backend supplies the

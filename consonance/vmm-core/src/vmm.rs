@@ -999,7 +999,20 @@ where
                     .to_string(),
             ));
         }
-        self.prepare_restore_vm_state(s)
+        let preparation = self.prepare_restore_vm_state(s)?;
+        if let Some(trace) = self.virtual_time_trace.as_ref() {
+            trace
+                .preflight_restore_clockevent_schedule(
+                    <B::A as Vendor>::restored_clockevent_trace_schedule_present(
+                        self,
+                        &preparation.vendor,
+                    ),
+                )
+                .map_err(|message| {
+                    VmmError::Backend(vmm_backend::BackendError::Internal(message))
+                })?;
+        }
+        Ok(preparation)
     }
 
     pub(crate) fn validate_restore_vm_state(

@@ -707,6 +707,17 @@ impl<B: Backend<A = X86>> Vmm<B> {
         self.pvclock_commit_restore(dev.pvclock.as_ref());
         self.report_stream = dev.report_stream;
     }
+
+    pub(crate) fn restored_clockevent_trace_schedule_present_x86(
+        &self,
+        prep: &X86RestorePrep,
+    ) -> bool {
+        prep.lapic
+            .as_ref()
+            .or(self.devices.lapic.as_ref())
+            .and_then(lapic::Lapic::next_timer_deadline)
+            .is_some()
+    }
 }
 
 fn require_byte_io(dir: &str, port: u16, size: u8) -> Result<(), VmmError> {

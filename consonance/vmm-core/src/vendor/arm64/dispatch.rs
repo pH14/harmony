@@ -871,6 +871,19 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             .map(|deadline_vns| (deadline_vns, super::board::PVCLOCK_PPI))
     }
 
+    pub(crate) fn restored_clockevent_trace_schedule_present_arm64(
+        &self,
+        prep: &Arm64RestorePrep,
+    ) -> bool {
+        self.vtime.as_ref().is_some_and(|vt| vt.cfg.guest_hz != 0)
+            && prep
+                .dev
+                .pvclock
+                .as_ref()
+                .and_then(|pv| pv.clockevent.deadline)
+                .is_some()
+    }
+
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&mut self) -> Result<Option<u64>, VmmError> {
         let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
         let generic = self.devices.gic.as_ref().and_then(|gic| {
@@ -1350,6 +1363,35 @@ mod tests {
             .unwrap(),
         );
         vmm
+    }
+
+    #[test]
+    fn failed_exit_trace_refuses_restore_before_backend_mutation() {
+        let mut source = clocked_mock_vmm();
+        let snapshot = source.save_vm_state().unwrap();
+        let mut target = clocked_mock_vmm();
+        let mut state = target.inspect_vcpu().unwrap();
+        state.core.pc = 0x2000;
+        target.backend_mut().set_state(state);
+        target
+            .backend_mut()
+            .push_exit(Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0 + 1),
+                size: 4,
+                write: Some(1),
+            }));
+        assert!(matches!(
+            target.step(),
+            Err(VmmError::ContractViolation(message)) if message.contains("not 4-byte aligned")
+        ));
+        assert!(!target.completion_staged);
+        assert!(matches!(
+            target.restore_vm_state(&snapshot),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(
+                "virtual_time trace restore occurred during an active event"
+            )))
+        ));
+        assert_eq!(target.inspect_vcpu().unwrap().core.pc, 0x2000);
     }
 
     #[test]

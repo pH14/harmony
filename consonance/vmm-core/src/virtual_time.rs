@@ -376,13 +376,36 @@ impl LiveVirtualTimeTrace {
         Ok(())
     }
 
-    pub(crate) fn restore_clockevent_schedule(
-        &mut self,
-        restored: Option<(u64, u32)>,
+    pub(crate) fn preflight_restore_clockevent_schedule(
+        &self,
+        restored_schedule: bool,
     ) -> Result<(), &'static str> {
         if self.pending.is_some() {
             return Err("virtual_time trace restore occurred during an active event");
         }
+        if let Some(schedule_index) = self.active_clockevent_schedule {
+            let scheduled = self
+                .schedule
+                .iter()
+                .find(|scheduled| scheduled.schedule_index == schedule_index)
+                .ok_or("active virtual_time clockevent schedule record is missing")?;
+            if scheduled.canceled_at_event.is_some() {
+                return Err("active virtual_time clockevent schedule was already canceled");
+            }
+        }
+        if restored_schedule {
+            self.next_schedule_index
+                .checked_add(1)
+                .ok_or("virtual_time restored schedule index exhausted")?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn restore_clockevent_schedule(
+        &mut self,
+        restored: Option<(u64, u32)>,
+    ) -> Result<(), &'static str> {
+        self.preflight_restore_clockevent_schedule(restored.is_some())?;
         let event = u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX);
         self.cancel_clockevent_at(event)?;
         let Some((deadline_vns, interrupt_id)) = restored else {
@@ -1065,6 +1088,39 @@ mod live_trace_tests {
         assert_eq!(trace.schedule.len(), 1);
         assert_eq!(trace.schedule[0].armed_for_event, 0);
         assert_eq!(trace.normalized.events[0].interrupts.len(), 1);
+    }
+
+    #[test]
+    fn restore_preflight_preserves_trace_on_invalid_schedule_state() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_clockevent_schedule(Some((4, 20))).unwrap();
+
+        trace.active_clockevent_schedule = Some(99);
+        assert_eq!(
+            trace.restore_clockevent_schedule(None),
+            Err("active virtual_time clockevent schedule record is missing")
+        );
+        assert_eq!(trace.active_clockevent_schedule, Some(99));
+
+        trace.active_clockevent_schedule = Some(0);
+        trace.schedule[0].canceled_at_event = Some(0);
+        assert_eq!(
+            trace.restore_clockevent_schedule(None),
+            Err("active virtual_time clockevent schedule was already canceled")
+        );
+        assert_eq!(trace.active_clockevent_schedule, Some(0));
+
+        trace.schedule[0].canceled_at_event = None;
+        trace.next_schedule_index = u64::MAX;
+        assert_eq!(
+            trace.restore_clockevent_schedule(Some((8, 21))),
+            Err("virtual_time restored schedule index exhausted")
+        );
+        assert_eq!(trace.active_clockevent_schedule, Some(0));
+        assert_eq!(trace.schedule[0].canceled_at_event, None);
+        trace.restore_clockevent_schedule(None).unwrap();
+        assert_eq!(trace.active_clockevent_schedule, None);
+        assert_eq!(trace.schedule[0].canceled_at_event, Some(0));
     }
 
     #[test]
