@@ -165,7 +165,9 @@ finding=
 if ! finding=$(jq -r --arg assertion "$ORACLE_ASSERTION" --arg evidence "$ORACLE_EVIDENCE" \
     -f "$(dirname "$0")/historical-confirmed-finding.jq" "$report"); then
     echo 'historical-search: infra-failure (could not select a confirmed case finding)' >&2
-    outcome='fail: infra-failure (could not select a confirmed case finding)'
+    if (( verdict == 0 )); then
+        outcome='fail: infra-failure (could not select a confirmed case finding)'
+    fi
     execution_status=infra_failure
     verdict=1
     finding=
@@ -175,7 +177,9 @@ if [[ "$finding" =~ ^[1-9][0-9]*$ ]]; then
     reproducer="${out}/bug-${finding}.json"
     if [[ ! -s "$reproducer" ]]; then
         echo "historical-search: infra-failure (missing selected bug report ${reproducer})" >&2
-        outcome="fail: infra-failure (missing selected bug report ${reproducer})"
+        if (( verdict == 0 )); then
+            outcome="fail: infra-failure (missing selected bug report ${reproducer})"
+        fi
         execution_status=infra_failure
         verdict=1
         finding=

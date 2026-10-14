@@ -179,7 +179,7 @@ if (
     exit 1
 fi
 jq -e '.finding == null and .reproducer == null and .execution_status == "infra_failure"
-    and (.oracle | startswith("fail: infra-failure"))' \
+    and .oracle == "fail: replay-mismatch"' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
 
 if (
@@ -197,6 +197,23 @@ if (
 fi
 jq -e '.finding == null and .reproducer == null and .execution_status == "infra_failure"
     and (.oracle | startswith("fail: infra-failure"))' \
+    "${work}/reports/pgcic.search/panel-status.json" >/dev/null
+
+if (
+    cd "${work}"
+    export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
+    export FAKE_REPORT="${work}/report.json" FAKE_SUMMARY="${work}/summary.json"
+    export FAKE_OMIT_BUG=1 FAKE_EXIT_STATUS=23 GITHUB_STEP_SUMMARY="${work}/summary.md"
+    "${here}/historical-search.sh"
+); then
+    printf 'FAIL search masked a CLI failure followed by a missing bug report\n'
+    exit 1
+fi
+jq -e '.finding == null and .reproducer == null and .execution_status == "infra_failure"
+    and .oracle == "fail: infra-failure (CLI exit 23)"' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
 
 printf 'historical search status checks passed\n'
