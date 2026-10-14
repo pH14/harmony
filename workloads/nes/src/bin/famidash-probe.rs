@@ -328,7 +328,9 @@ fn timing(
         }
         let mut counts = Vec::new();
         for vocabulary in [Vocabulary::Search, Vocabulary::Taps, Vocabulary::Frames] {
-            counts.push(survival(target, &snapshot, vocabulary, horizon, samples, &mut rng)?);
+            counts.push(survival(
+                target, &snapshot, vocabulary, horizon, samples, &mut rng,
+            )?);
         }
         let mut shifts = Vec::new();
         for size in [1, 2] {

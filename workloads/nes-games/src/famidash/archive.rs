@@ -17,7 +17,8 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str = "famidash_level_band_256_cell_32x16_mode_motion_earliest_v3";
+pub const KEY_POLICY_IDENTIFIER: &str =
+    "famidash_level_band_256_cell_32x16_mode_motion_earliest_v3";
 pub const REPLACEMENT_IDENTIFIER: &str = "earliest_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_tap_1_4_or_hold_6_40_v1";
 
