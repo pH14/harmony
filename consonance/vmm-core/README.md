@@ -29,13 +29,14 @@ Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
-taints that timeline: the operator's deadline is not part of `RecordedEnv`, so
-issuing a reproducer would falsely claim that the continuation can be replayed
-from genesis. This includes an idle exit whose own virtual-time cost crosses
-the deadline. A timer or staged input that would wake the guest at the same
-time does not cause this taint. Snapshots made after the wake retain the taint
-and can still be replayed from their sealed state. A deadline reached by
-ordinary guest steps also does not taint the timeline.
+refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
+so that tape alone cannot replay the continuation from genesis. This includes
+an idle exit whose own virtual-time cost crosses the deadline. The landed VM
+state is still a usable snapshot; replaying that snapshot retains the
+`RecordedEnv` refusal, while branching from it starts a new reproducible
+origin. A timer or staged input that would wake the guest at the same time
+does not cause this refusal. A deadline reached by ordinary guest steps also
+does not cause it. An `Exec` request still taints the snapshot timeline.
 `Run` with a deadline and `Exec` require a wired virtual clock. An unwired VM
 rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
@@ -144,9 +145,11 @@ guard remains in force. A mapped x86 doorbell cannot seal because the
 x86 VM-state record has no dedicated doorbell pages; the production dedicated
 mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
-duplicate-input rejection. A tainted control timeline also contributes a
-dedicated hash chunk, so an imported artifact cannot clear the taint and make
-`RecordedEnv` available under the same claimed identity. Writers always emit
+duplicate-input rejection. The control state includes the separate
+`RecordedEnv` refusal caused by an unrecorded operator deadline wake. A
+tainted control timeline also contributes a dedicated hash chunk, so an
+imported artifact cannot clear either refusal and make `RecordedEnv` available
+under the same claimed identity. Writers always emit
 the current format, and readers reject older envelopes. Complete reads
 allocate incrementally from received bytes, and sparse section lengths are
 bounded by the supplied input.

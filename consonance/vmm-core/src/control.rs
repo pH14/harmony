@@ -187,6 +187,7 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     schedule_poisoned: Option<ScheduleFailure>,
     sdk_snaps: BTreeMap<u64, SdkSnap>,
     timeline_tainted: bool,
+    reproducer_tainted: bool,
     tainted_snaps: BTreeSet<u64>,
     snapshot_meta: BTreeMap<u64, SnapshotMeta>,
     exec_nonce: u64,
@@ -321,6 +322,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
             timeline_tainted: false,
+            reproducer_tainted: false,
             tainted_snaps: BTreeSet::new(),
             snapshot_meta: BTreeMap::new(),
             exec_nonce: 0,
@@ -1439,6 +1441,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.last_restore_bytes_written = 0;
         self.reset_schedule_to_fresh_vm();
         self.timeline_tainted = false;
+        self.reproducer_tainted = false;
         self.session_trace_start = SessionTraceStart::RecoveryBoot;
         let sdk_env = RecordedEnv::new(
             self.recorded.seed(),
@@ -1705,6 +1708,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             SessionTraceStart::Replay { snapshot: snap.0 }
         };
         self.timeline_tainted = self.tainted_snaps.contains(&snap.0);
+        self.reproducer_tainted = seed.is_none() && source_control.reproducer_tainted;
         self.reset_schedule_to_fresh_vm();
         let sdk_snap = self.sdk_snaps.get(&snap.0);
         let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
@@ -1799,6 +1803,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             pending,
             poisoned: self.schedule_poisoned,
             exec_nonce: self.exec_nonce,
+            reproducer_tainted: self.reproducer_tainted,
         }
     }
 
@@ -1943,7 +1948,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 scheduled_wake.is_none_or(|scheduled| deadline.0 < scheduled)
                     && vmm.last_step_control_idle_landing_vns.is_some()
             }) {
-                self.timeline_tainted = true;
+                self.reproducer_tainted = true;
             }
             match step {
                 Step::Continued => {}
@@ -2081,7 +2086,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn recorded_env_reply(&self) -> Result<Reply, ControlError> {
-        if self.timeline_tainted {
+        if self.timeline_tainted || self.reproducer_tainted {
             return Err(ControlError::Tainted);
         }
         Ok(Reply::Recorded(Reproducer {
@@ -10204,7 +10209,7 @@ mod tests {
 
     #[test]
     #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
-    fn an_idle_deadline_wake_refuses_a_false_reproducer() {
+    fn an_idle_deadline_wake_keeps_snapshot_but_refuses_a_false_reproducer() {
         let mut live = idle_server();
         assert_eq!(
             live.handle(&Request::Hello(server_caps())).unwrap(),
@@ -10235,7 +10240,7 @@ mod tests {
             Reply::Snapshot { id, tainted, .. } => (id, tainted),
             reply => panic!("unexpected snapshot reply: {reply:?}"),
         };
-        assert!(tainted);
+        assert!(!tainted);
         let landed_hash = match live
             .handle(&Request::Hash {
                 scope: control_proto::HashScope::Whole,
@@ -10246,6 +10251,30 @@ mod tests {
             Reply::Hash(hash) => hash,
             reply => panic!("unexpected hash reply: {reply:?}"),
         };
+        let mut artifact = Vec::new();
+        live.export_portable_snapshot(landed, &mut artifact)
+            .unwrap();
+        let mut cold = idle_server();
+        cold.handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let imported = cold.import_portable_snapshot(artifact.as_slice()).unwrap();
+        assert!(!imported.tainted);
+        assert_eq!(
+            cold.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            cold.handle(&Request::Hash {
+                scope: control_proto::HashScope::Whole,
+            })
+            .unwrap(),
+            Ok(Reply::Hash(landed_hash))
+        );
+        assert_eq!(
+            cold.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
         assert_eq!(
             live.handle(&Request::Replay(landed)).unwrap(),
             Ok(Reply::Unit)
@@ -10262,6 +10291,18 @@ mod tests {
             live.handle(&Request::RecordedEnv).unwrap(),
             Err(ControlError::Tainted)
         );
+        assert_eq!(
+            live.handle(&Request::Branch {
+                snap: landed,
+                env: seeded_env(13),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
         assert_eq!(
             live.handle(&Request::Replay(base)).unwrap(),
             Ok(Reply::Unit)
