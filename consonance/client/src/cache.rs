@@ -361,6 +361,10 @@ impl CacheIndex for LocalIndex {
                     state.segments.free_committed(committed);
                     return Err(CacheError::NamespaceMismatch);
                 }
+                if !key.starts_with(&parent.key) || key.len() <= parent.key.len() {
+                    state.segments.free_committed(committed);
+                    return Err(CacheError::Malformed("parent key is not a prefix"));
+                }
                 parent.children += 1;
                 parent.depth + 1
             }
@@ -561,6 +565,23 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_parent_cannot_supply_pages_to_another_action_prefix() {
+        let index = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let parent = put(&index, space, b"ab", None, &[(0, 1)], &[]).unwrap();
+        for key in [&b"ac"[..], &b"a"[..]] {
+            let result = put(&index, space, key, Some(&parent), &[(1, 2)], &[]);
+            assert!(matches!(
+                result,
+                Err(CacheError::Malformed("parent key is not a prefix"))
+            ));
+            assert!(index.lookup(space, key).is_none());
+        }
+        let child = put(&index, space, b"abcd", Some(&parent), &[(1, 2)], &[]).unwrap();
+        assert_eq!(resolved(&index, &child).0, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
     fn a_duplicate_key_keeps_the_first_entry_and_frees_the_second_extent() {
         let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
         let space = ns("a");
@@ -580,7 +601,7 @@ mod tests {
         let index = LocalIndex::with_segment_bytes(3 * per_entry, per_entry);
         let space = ns("a");
         let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
-        let b = put(&index, space, b"b", Some(&a), &[(1, 1)], &[]).unwrap();
+        let b = put(&index, space, b"ab", Some(&a), &[(1, 1)], &[]).unwrap();
         let c = put(&index, space, b"c", None, &[(2, 1)], &[]).unwrap();
         assert!(matches!(
             put(&index, space, b"d", None, &[(3, 1)], &[]),
@@ -595,7 +616,7 @@ mod tests {
         index.release(c);
         let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
         assert!(
-            index.lookup(space, b"b").is_none(),
+            !held(&index, b"ab"),
             "of two equal leaves the earlier one goes first"
         );
         let a = index.lookup(space, b"a").unwrap();
@@ -687,8 +708,24 @@ mod tests {
         );
         assert_eq!(resolved(&index, &lease).0, vec![(0, 39), (1, 1)]);
         let base = &leases[3];
-        let left = put(&index, space, b"L", Some(base), &[(2, 7)], &[1]).unwrap();
-        let right = put(&index, space, b"R", Some(base), &[(2, 8)], &[]).unwrap();
+        let left = put(
+            &index,
+            space,
+            &[0, 1, 2, 3, b'L'],
+            Some(base),
+            &[(2, 7)],
+            &[1],
+        )
+        .unwrap();
+        let right = put(
+            &index,
+            space,
+            &[0, 1, 2, 3, b'R'],
+            Some(base),
+            &[(2, 8)],
+            &[],
+        )
+        .unwrap();
         assert_eq!(resolved(&index, &left).0, vec![(0, 3), (2, 7)]);
         assert_eq!(resolved(&index, &right).0, vec![(0, 3), (1, 1), (2, 8)]);
     }
