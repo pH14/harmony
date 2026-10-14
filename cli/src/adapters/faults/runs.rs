@@ -177,7 +177,23 @@ impl Manifest {
             })
             .transpose()?;
         let uml_profile = self
-            .uml_host
+            .uml_profile_identity(path)?
+            .map(|identity| (path.join("artifacts/uml"), identity));
+        Ok(faults_workload::Options {
+            seed: self.config.seed,
+            executions: self.config.executions,
+            ram_mib: self.config.ram_mib,
+            knobs: self.config.knobs.clone(),
+            wall_seconds: self.config.wall_seconds,
+            output: path.to_path_buf(),
+            root,
+            uml_profile,
+            checkpoint_owner: self.record.checkpoint_owner.clone(),
+        })
+    }
+
+    pub fn uml_profile_identity(&self, path: &Path) -> Result<Option<String>> {
+        self.uml_host
             .as_ref()
             .map(|_| -> Result<_> {
                 let file = path.join("artifacts/uml/profile.json");
@@ -190,21 +206,9 @@ impl Manifest {
                     return Err("recorded UML profile changed during load".into());
                 }
                 let profile: uml::Profile = serde_json::from_slice(&bytes)?;
-                let identity = crate::runtime::digest(&serde_json::to_vec(&profile)?);
-                Ok((path.join("artifacts/uml"), identity))
+                Ok(crate::runtime::digest(&serde_json::to_vec(&profile)?))
             })
-            .transpose()?;
-        Ok(faults_workload::Options {
-            seed: self.config.seed,
-            executions: self.config.executions,
-            ram_mib: self.config.ram_mib,
-            knobs: self.config.knobs.clone(),
-            wall_seconds: self.config.wall_seconds,
-            output: path.to_path_buf(),
-            root,
-            uml_profile,
-            checkpoint_owner: self.record.checkpoint_owner.clone(),
-        })
+            .transpose()
     }
 
     pub fn fault_artifacts(&self, path: &Path) -> Result<faults_workload::Artifacts> {
