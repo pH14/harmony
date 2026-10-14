@@ -140,13 +140,14 @@ fn frontier(
                 if let Some(gameplay) = state.gameplay {
                     best_x = best_x.max(gameplay.x);
                 }
-                if next.len() < FRONTIER_LIMIT || next.contains_key(&key) {
+                if !next.contains_key(&key) {
                     let snapshot = target.snapshot().ok_or("could not snapshot a branch")?;
-                    next.entry(key).or_insert(Branch { snapshot, frames });
+                    next.insert(key, Branch { snapshot, frames });
                 }
             }
         }
-        branches = next.into_values().collect();
+        let stride = next.len().div_ceil(FRONTIER_LIMIT).max(1);
+        branches = next.into_values().step_by(stride).collect();
         let presses: usize = branches
             .iter()
             .filter(|branch| branch.frames.last() == Some(&A_BUTTON))
