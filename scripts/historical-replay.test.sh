@@ -56,6 +56,11 @@ jq -cn --argjson replay "$finding_replay" '{mode:"search",bugs:[
     {confirmed:true,actions:[1,2,3],violations:["other-assertion"],sometimes:["case-evidence"],replay:$replay},
     {confirmed:true,actions:[1,2],violations:["case-assertion"],sometimes:[],replay:$replay},
     {confirmed:true,actions:[1,2],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .sometimes=[])},
+    {confirmed:true,actions:[1,2],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .bug=false)},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .violations=[])},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .guest_horizons=2)},
+    {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:($replay | .settle_actions=2 | .guest_horizons=3)},
     {confirmed:true,actions:[1],violations:["case-assertion"],sometimes:["case-evidence"],replay:$replay}]}' \
     >"${work}/search/report.json"
 reproducer="${work}/search/report.json"
@@ -104,12 +109,12 @@ jq -cn --argjson run "$uml_run" '{mode:"replay",replays:[$run,$run]}' \
     export REPLAY_REPEATS=2 MAX_REPLAY_SESSIONS=2 REPLAY_TIMEOUT_SECONDS=10
     export FAKE_REPORT="${work}/uml-report.json" FAKE_EXIT_STATUS=2
     export FAKE_OUTPUT='error: full UML state identity is unavailable'
-    export FAKE_EXPECT_FINDING=5
+    export FAKE_EXPECT_FINDING=10
     export FAKE_EXPECT_RUN_DIRECTORY="${work}/search"
     export GITHUB_STEP_SUMMARY="${summary}"
     "${here}/historical-replay.sh" reproduce "${reproducer}"
 )
-jq -e '.cli_exit_status == 2 and .finding == 5 and .actions == 1
+jq -e '.cli_exit_status == 2 and .finding == 10 and .actions == 1
     and .state_hash_count == "unavailable"
     and (.oracle | startswith("pass: observed replay"))' \
     "${work}/reports/pgcic.reproduce-report/panel-status.json" >/dev/null

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Exercise search status handling without requiring Linux/KVM.
+# shellcheck disable=SC2030,SC2031
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
@@ -18,6 +19,10 @@ done
 mkdir -p "$out"
 cp "$FAKE_REPORT" "$out/report.json"
 cp "$FAKE_SUMMARY" "$out/campaign-summary.json"
+count=$(jq -r '(.bugs // []) | length' "$FAKE_REPORT")
+for ((index=1; index<=count; index++)); do
+    jq --argjson index "$index" '.bugs[$index - 1]' "$FAKE_REPORT" >"$out/bug-${index}.json"
+done
 exit "${FAKE_EXIT_STATUS:-0}"
 EOF
 chmod +x "${work}/tools/harmony"
@@ -63,6 +68,7 @@ run_search() {
 run_search
 jq -e '.watchdog_cutoffs == 3 and .cli_exit_status == 0 and .workers == 2 and
        .execution_failures == 0 and .oracle == "pass" and
+       .finding == 1 and (.reproducer | endswith("/bug-1.json")) and
        .execution_status == "completed_with_watchdog_cutoffs"' \
     "${work}/reports/pgcic.search/panel-status.json" >/dev/null
 
@@ -70,6 +76,24 @@ RUN_KEY=pgcic-seed7 run_search
 jq -e '.oracle == "pass"' \
     "${work}/reports/pgcic-seed7/pgcic.search/panel-status.json" >/dev/null
 test -f "${work}/reports/pgcic-seed7/pgcic.search.console.txt"
+
+jq -cn --argjson bug "${confirmed_bug}" '{mode:"search", package:"faults", workers:2,
+    executions:2, execution_ticks:2, execution_failures:0, bug_found:true,
+    bugs:[($bug | .violations=["other-assertion"]), $bug]}' \
+    >"${work}/later-case-report.json"
+(
+    cd "${work}"
+    export CASE_DIR=case CASE_ID=pgcic SOFTWARE_NAME=PostgreSQL
+    export WORKLOAD_VERSION=14.3 IMAGE_PREFIX=pgcic RAM_MIB=128
+    export SEED=1 EXECUTIONS=2 WALL_MINUTES=1
+    export ORACLE_ASSERTION=case-assertion ORACLE_EVIDENCE=case-evidence KNOBS=
+    export FAKE_REPORT="${work}/later-case-report.json" FAKE_SUMMARY="${work}/summary.json"
+    export GITHUB_STEP_SUMMARY="${work}/summary.md"
+    "${here}/historical-search.sh"
+)
+jq -e '.oracle == "pass" and .finding == 2
+    and (.reproducer | endswith("/bug-2.json"))' \
+    "${work}/reports/pgcic.search/panel-status.json" >/dev/null
 
 if run_search 23; then
     printf 'FAIL search masked a nonzero CLI exit\n'
