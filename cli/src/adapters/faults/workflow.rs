@@ -7,6 +7,7 @@ use super::{
 use crate::runs::Destination;
 use faults_workload::{
     Artifacts, FaultVocabulary,
+    admission::ExecutionMode,
     package::{self, SearchStart},
 };
 use std::{
@@ -107,6 +108,28 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
         prepared.bundle,
         prepared.vocabulary,
     ))
+}
+
+fn prepare_plain_staged(
+    staged: &oci_support::image::StagedImage,
+    request: &oci_support::bundle::LaunchRequest,
+    mode: ExecutionMode,
+) -> Result<oci_support::bundle::PreparedExecution> {
+    prepare_plain_staged_with(staged, request, mode, || {})
+}
+
+fn prepare_plain_staged_with(
+    staged: &oci_support::image::StagedImage,
+    request: &oci_support::bundle::LaunchRequest,
+    mode: ExecutionMode,
+    after_archive: impl FnOnce(),
+) -> Result<oci_support::bundle::PreparedExecution> {
+    let prepared = oci_support::bundle::prepare(staged, request)?;
+    after_archive();
+    faults_workload::admission::ArchivedImage::new(&prepared.archived_rootfs()?)
+        .inspect()?
+        .require_for(mode)?;
+    Ok(prepared)
 }
 
 pub fn finish(path: &Path, manifest: &mut Manifest, result: Result<u8>) -> Result<u8> {
@@ -300,13 +323,10 @@ pub fn run(
     let stage = tempfile::tempdir()?;
     let staged =
         oci_support::image::stage(c.image.as_deref().ok_or("missing image")?, stage.path())?;
-    oci_support::image::with_staged_read_access(&staged, || {
-        faults_workload::admission::inspect_root(&staged.rootfs)
-    })?
-    .require_for(super::execution_mode(c.backend))?;
-    let prepared = oci_support::bundle::prepare(
+    let prepared = prepare_plain_staged(
         &staged,
         &oci_support::bundle::LaunchRequest::new(c.command.clone()),
+        super::execution_mode(c.backend),
     )?;
     let initramfs =
         prepared.initramfs(&fs::read(c.base_initramfs.as_ref().ok_or("missing base")?)?);
@@ -340,6 +360,72 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn elf(code: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = vec![0; 389];
+        bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+        for (offset, value) in [
+            (16, 2_u16),
+            (18, 62),
+            (52, 64),
+            (54, 56),
+            (56, 2),
+            (58, 64),
+            (60, 3),
+            (62, 2),
+        ] {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        for (offset, value) in [(24, 0x1000_u64), (32, 64), (40, 192)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[64..68].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[68..72].copy_from_slice(&5_u32.to_le_bytes());
+        for (offset, value) in [(72, 384_u64), (80, 0x1000), (96, 4), (104, 4), (112, 1)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[120..124].copy_from_slice(&0x6474e551_u32.to_le_bytes());
+        bytes[124..128].copy_from_slice(&6_u32.to_le_bytes());
+        bytes[260..264].copy_from_slice(&1_u32.to_le_bytes());
+        for (offset, value) in [(264, 6_u64), (272, 0x1000), (280, 384), (288, 4), (304, 1)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[324..328].copy_from_slice(&3_u32.to_le_bytes());
+        for (offset, value) in [(344, 388_u64), (352, 1), (368, 1)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[384..388].copy_from_slice(code);
+        bytes
+    }
+
+    #[test]
+    fn plain_run_admits_the_executable_that_was_packed() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("bin")).unwrap();
+        let path = root.path().join("bin/app");
+        fs::write(&path, elf(&[0x90, 0x90, 0x90, 0xc3])).unwrap();
+        let staged = oci_support::image::StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: oci_support::image::Ownership::default(),
+            config: oci_support::image::RuntimeConfig::default(),
+        };
+        let request = oci_support::bundle::LaunchRequest::default();
+        let expected = oci_support::bundle::prepare(&staged, &request)
+            .unwrap()
+            .rootfs_segment;
+        let prepared = prepare_plain_staged_with(&staged, &request, ExecutionMode::Uml, || {
+            fs::write(&path, elf(&[0x0f, 0xc7, 0xf0, 0xc3])).unwrap()
+        })
+        .unwrap();
+        assert_eq!(prepared.rootfs_segment, expected);
+        assert!(
+            faults_workload::admission::inspect_root(root.path())
+                .unwrap()
+                .require_for(ExecutionMode::Uml)
+                .is_err()
+        );
+    }
 
     #[test]
     fn search_refuses_vocabulary_changed_after_initial_verification() {

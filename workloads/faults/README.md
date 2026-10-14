@@ -20,9 +20,9 @@ in the platform supervisor's bundle format:
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 
-[`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
-alphabet, and passes the image to the canonical OCI preparation API with
-`/etc/harmony/bundle` selected for structured supervision. The platform control
+[`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
+bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
+supervision. The platform control
 member contains the read-only execution specification and mounts the pinned
 supervisor, SDK devices, and bundle path. The supervisor runs setup and
 readiness commands with the resolved image credentials before it publishes the
@@ -36,14 +36,18 @@ a readiness command keep immediate hook launches.
 
 ## Image admission
 
-Preparation scans every executable and shared library in the staged rootfs
-before it builds the guest image ([`admission`](src/admission.rs)).
+Preparation scans every executable and shared library in the exact packed
+rootfs segment that the guest receives ([`admission`](src/admission.rs)). It
+derives the bundle and event attestation from those same archived bytes. A
+staged file changed between scanning and packing cannot make admission name
+different executable or bundle bytes from the guest image.
 
-Staged image inspection temporarily grants host read and directory search
-permission while scanning files and reading the bundle, then restores their
-original modes before guest packaging. Images containing mode-zero files and
-directories therefore receive the same admission result on privileged and
-unprivileged hosts.
+Packaging temporarily grants host read and directory search permission while
+copying staged files, then restores their original modes. The archived scan
+reads those copied bytes regardless of mode, so images containing mode-zero
+files and directories receive the same admission result on privileged and
+unprivileged hosts. The separate image-inspection command still inspects the
+staged rootfs directly.
 
 The scan rejects:
 
@@ -57,7 +61,7 @@ The scan rejects:
 For User-mode Linux, preparation rejects all four scanned hardware entropy
 instructions even when reviewed. UML runs guest user instructions natively, so
 the VM's hidden feature bits do not protect a guarded call site. This admission
-check walks the bytes of executable load segments in the staged image. Section
+check walks the bytes of executable load segments in the packed image. Section
 headers do not determine what the guest loader executes. The scan boundary
 still requires cooperative workloads: dynamically generated code and
 instructions hidden inside another instruction's operand bytes are outside its

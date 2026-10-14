@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fs,
     io::{ErrorKind, Read},
@@ -13,6 +13,8 @@ use object::read::elf::ProgramHeader;
 use object::{Object, ObjectSection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+use oci_support::bundle::ArchivedRootfs;
 
 pub const ALLOWLIST_PATH: &str = "etc/harmony/instruction-allowlist";
 pub const ATTESTATION_PATH: &str = "symbols/harmony-instrumented-events";
@@ -51,6 +53,138 @@ pub struct ImageReport {
     pub attestation_errors: Vec<String>,
     pub runtime: bool,
     pub symbols: bool,
+}
+
+pub struct ArchivedImage<'a> {
+    entries: BTreeMap<&'a str, (u32, &'a [u8])>,
+}
+
+impl<'a> ArchivedImage<'a> {
+    pub fn new(archive: &'a ArchivedRootfs) -> Self {
+        Self {
+            entries: archive
+                .entries()
+                .map(|entry| (entry.path, (entry.mode, entry.data)))
+                .collect(),
+        }
+    }
+
+    pub fn file(&self, relative: &str) -> Option<&'a [u8]> {
+        let path = self.resolve_path(relative)?;
+        let (mode, data) = self.entries.get(path.as_str())?;
+        (mode & 0o170000 == 0o100000).then_some(*data)
+    }
+
+    fn resolve_path(&self, relative: &str) -> Option<String> {
+        let mut pending = relative
+            .split('/')
+            .map(str::to_owned)
+            .collect::<VecDeque<_>>();
+        let mut parts = Vec::new();
+        let mut links = 0;
+        while let Some(component) = pending.pop_front() {
+            match component.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    parts.pop()?;
+                    continue;
+                }
+                _ => parts.push(component),
+            }
+            let path = parts.join("/");
+            if let Some((mode, data)) = self.entries.get(path.as_str())
+                && mode & 0o170000 == 0o120000
+            {
+                links += 1;
+                if links > 40 {
+                    return None;
+                }
+                let target = std::str::from_utf8(data).ok()?;
+                if target.starts_with('/') {
+                    return None;
+                }
+                parts.pop();
+                for part in target.split('/').rev() {
+                    pending.push_front(part.to_owned());
+                }
+            }
+        }
+        Some(parts.join("/"))
+    }
+
+    fn mentions(&self, relative: &str) -> bool {
+        let mut prefix = String::new();
+        for component in relative.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            if self
+                .entries
+                .get(prefix.as_str())
+                .is_some_and(|(mode, _)| mode & 0o170000 == 0o120000)
+            {
+                return true;
+            }
+        }
+        self.entries.contains_key(relative)
+    }
+
+    pub fn inspect(&self) -> Result<ImageReport, Box<dyn Error>> {
+        let mut report = ImageReport::default();
+        let mut found = BTreeSet::new();
+        for (&path, &(mode, data)) in &self.entries {
+            if mode & 0o170000 == 0o100000 && data.starts_with(b"\x7fELF") {
+                scan_file(&mut report, &mut found, &format!("/{path}"), data.to_vec());
+            }
+        }
+        let reviewed = if self.mentions(ALLOWLIST_PATH) {
+            let read = self
+                .file(ALLOWLIST_PATH)
+                .ok_or("instruction allowlist leaves the image")
+                .and_then(|bytes| std::str::from_utf8(bytes).map_err(|_| "invalid allowlist UTF-8"))
+                .map_err(|error| -> Box<dyn Error> { error.into() })
+                .and_then(parse_allowlist);
+            match read {
+                Ok(reviewed) => reviewed,
+                Err(error) => {
+                    report.scan_errors.push(error.to_string());
+                    BTreeMap::new()
+                }
+            }
+        } else {
+            BTreeMap::new()
+        };
+        finish_scan(&mut report, &found, &reviewed);
+        if self.mentions(ATTESTATION_PATH) {
+            match self.file(ATTESTATION_PATH) {
+                Some(bytes) => match std::str::from_utf8(bytes) {
+                    Ok(text) => parse_attestation(text, &mut report, |path| {
+                        self.file(path.trim_start_matches('/')).ok_or_else(|| {
+                            "attested executable is missing or leaves the image".into()
+                        })
+                    }),
+                    Err(error) => report
+                        .attestation_errors
+                        .push(format!("instrumentation attestation: {error}")),
+                },
+                None => report
+                    .attestation_errors
+                    .push("instrumentation attestation leaves the image".into()),
+            }
+        }
+        report.runtime = self.file("usr/lib/libvoidstar.so").is_some();
+        report.symbols = self.file(ATTESTATION_PATH).is_some()
+            && self.resolve_path("symbols").is_some_and(|directory| {
+                let prefix = format!("{directory}/");
+                self.entries.keys().any(|path| {
+                    path.strip_prefix(&prefix)
+                        .is_some_and(|name| !name.contains('/') && name.ends_with(".sym.tsv"))
+                        && self.file(path).is_some_and(|bytes| !bytes.is_empty())
+                })
+            });
+        Ok(report)
+    }
 }
 
 impl ImageReport {
@@ -153,19 +287,7 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
         let mut bytes = magic.to_vec();
         file.read_to_end(&mut bytes)?;
         let image_path = format!("/{}", path.strip_prefix(&root)?.display());
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        match scan_elf(&bytes, &digest) {
-            Ok(None) => {}
-            Ok(Some(sites)) => {
-                found.extend(sites.iter().cloned());
-                report.executables.push(ExecutableScan {
-                    path: image_path,
-                    digest,
-                    sites,
-                });
-            }
-            Err(error) => report.scan_errors.push(format!("{image_path}: {error}")),
-        }
+        scan_file(&mut report, &mut found, &image_path, bytes);
     }
     let reviewed = match read_allowlist(&root) {
         Ok(reviewed) => reviewed,
@@ -174,7 +296,58 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
             BTreeMap::new()
         }
     };
-    for site in &found {
+    finish_scan(&mut report, &found, &reviewed);
+    read_attestation(&root, &mut report);
+    report.runtime = rooted_file(&root, "usr/lib/libvoidstar.so").is_some();
+    report.symbols = rooted_file(&root, "symbols/harmony-instrumented-events").is_some()
+        && fs::read_dir(root.join("symbols"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".sym.tsv"))
+                    && entry.path().canonicalize().is_ok_and(|path| {
+                        path.starts_with(&root)
+                            && path.is_file()
+                            && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+                    })
+            });
+    Ok(report)
+}
+
+fn scan_file(
+    report: &mut ImageReport,
+    found: &mut BTreeSet<InstructionSite>,
+    image_path: &str,
+    bytes: Vec<u8>,
+) {
+    if !bytes.starts_with(b"\x7fELF") {
+        return;
+    }
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    match scan_elf(&bytes, &digest) {
+        Ok(None) => {}
+        Ok(Some(sites)) => {
+            found.extend(sites.iter().cloned());
+            report.executables.push(ExecutableScan {
+                path: image_path.to_owned(),
+                digest,
+                sites,
+            });
+        }
+        Err(error) => report.scan_errors.push(format!("{image_path}: {error}")),
+    }
+}
+
+fn finish_scan(
+    report: &mut ImageReport,
+    found: &BTreeSet<InstructionSite>,
+    reviewed: &BTreeMap<InstructionSite, String>,
+) {
+    for site in found {
         if !reviewed.contains_key(site) {
             let paths = report
                 .executables
@@ -197,25 +370,6 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
             ));
         }
     }
-    read_attestation(&root, &mut report);
-    report.runtime = rooted_file(&root, "usr/lib/libvoidstar.so").is_some();
-    report.symbols = rooted_file(&root, "symbols/harmony-instrumented-events").is_some()
-        && fs::read_dir(root.join("symbols"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.ends_with(".sym.tsv"))
-                    && entry.path().canonicalize().is_ok_and(|path| {
-                        path.starts_with(&root)
-                            && path.is_file()
-                            && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
-                    })
-            });
-    Ok(report)
 }
 
 fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
@@ -237,13 +391,17 @@ fn rooted_file(root: &Path, relative: &str) -> Option<PathBuf> {
 }
 
 fn read_allowlist(root: &Path) -> Result<BTreeMap<InstructionSite, String>, Box<dyn Error>> {
-    let mut sites = BTreeMap::new();
     let path = root.join(ALLOWLIST_PATH);
     if !path.try_exists()? {
-        return Ok(sites);
+        return Ok(BTreeMap::new());
     }
     let path = rooted_file(root, ALLOWLIST_PATH).ok_or("instruction allowlist leaves the image")?;
-    for (index, line) in fs::read_to_string(path)?.lines().enumerate() {
+    parse_allowlist(&fs::read_to_string(path)?)
+}
+
+fn parse_allowlist(text: &str) -> Result<BTreeMap<InstructionSite, String>, Box<dyn Error>> {
+    let mut sites = BTreeMap::new();
+    for (index, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
             continue;
@@ -293,6 +451,18 @@ fn read_attestation(root: &Path, report: &mut ImageReport) {
             return;
         }
     };
+    parse_attestation(&text, report, |path| {
+        let executable = rooted_file(root, path.trim_start_matches('/'))
+            .ok_or("attested executable is missing or leaves the image")?;
+        Ok(fs::read(executable)?)
+    });
+}
+
+fn parse_attestation<F, R>(text: &str, report: &mut ImageReport, mut file: F)
+where
+    F: FnMut(&str) -> Result<R, Box<dyn Error>>,
+    R: AsRef<[u8]>,
+{
     let mut paths = BTreeSet::new();
     for (index, line) in text.lines().enumerate() {
         let result = (|| -> Result<InstrumentedExecutable, Box<dyn Error>> {
@@ -303,9 +473,7 @@ fn read_attestation(root: &Path, report: &mut ImageReport) {
             if !valid_digest(expected) || !path.starts_with('/') || !paths.insert(path) {
                 return Err("invalid digest, non-absolute path, or duplicate executable".into());
             }
-            let executable = rooted_file(root, path.trim_start_matches('/'))
-                .ok_or("attested executable is missing or leaves the image")?;
-            let digest = format!("{:x}", Sha256::digest(fs::read(executable)?));
+            let digest = format!("{:x}", Sha256::digest(file(path)?.as_ref()));
             if digest != expected.to_ascii_lowercase() {
                 return Err(format!("instrumentation digest mismatch: {path}").into());
             }
@@ -508,6 +676,7 @@ fn scan_code(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oci_support::image::{Ownership, RuntimeConfig, StagedImage};
 
     fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
         let mut bytes = vec![0; 385 + code.len()];
@@ -595,6 +764,50 @@ mod tests {
         let changed = inspect_root(root.path()).unwrap();
         assert_eq!(changed.scan_errors.len(), 2);
         assert!(changed.require_admission().is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn archived_admission_matches_the_exact_packed_files_and_symlink_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["bin", "etc/harmony", "symbols", "usr/lib"] {
+            fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        let executable = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        let digest = format!("{:x}", Sha256::digest(&executable));
+        fs::write(root.path().join("bin/node"), &executable).unwrap();
+        fs::write(
+            root.path().join("etc/harmony/reviewed"),
+            format!("{digest} 0x1000 RDRAND guarded\n"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("reviewed", root.path().join(ALLOWLIST_PATH)).unwrap();
+        fs::write(
+            root.path().join("symbols/events"),
+            format!("{digest}  /bin/node\n"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("events", root.path().join(ATTESTATION_PATH)).unwrap();
+        fs::write(root.path().join("symbols/node.sym.tsv"), b"1\tnode.rs:1\n").unwrap();
+        fs::write(root.path().join("usr/lib/libvoidstar.so"), b"runtime").unwrap();
+        let staged = StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let prepared =
+            oci_support::bundle::prepare(&staged, &oci_support::bundle::LaunchRequest::default())
+                .unwrap();
+        let archive = prepared.archived_rootfs().unwrap();
+        let packed = ArchivedImage::new(&archive).inspect().unwrap();
+        let staged = inspect_root(root.path()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&packed).unwrap(),
+            serde_json::to_value(&staged).unwrap()
+        );
+        assert!(packed.instrumented_events());
+        assert!(packed.require_for(ExecutionMode::Vm).is_ok());
+        assert!(packed.require_for(ExecutionMode::Uml).is_err());
     }
 
     #[test]

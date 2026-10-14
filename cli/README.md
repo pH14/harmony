@@ -310,7 +310,9 @@ rejected. Faults recordings capture the kernel and initramfs actually prepared f
 execution, and completed reports must name those saved digests. Saved faults
 execution checks the kernel, initramfs and search vocabulary at their final
 read against the manifest; rooted search passes the verified root bytes to its
-workers. UML search and command execution also check the loaded profile's
+workers. Fault search and plain command execution admit executable bytes from
+the same packed OCI rootfs segment that becomes the guest initramfs. UML search
+and command execution also check the loaded profile's
 identity against the verified recording before guest launch. The saved UML
 kernel digest must match that profile's executable before a run can complete.
 UML also pins the exact physical processor identity selected by the fastest
