@@ -1868,12 +1868,6 @@ where
             .unwrap_or(&[])
     }
 
-    pub(crate) fn sdk_remaining_payloads(&self) -> Option<Vec<Vec<u8>>> {
-        self.sdk
-            .as_ref()
-            .and_then(|sdk| sdk.env.remaining_payloads())
-    }
-
     pub fn take_sdk_stop(&mut self) -> Option<SdkStop> {
         self.sdk.as_mut().and_then(|s| {
             if matches!(s.pending_stop, Some(SdkStop::Decision { .. })) {
