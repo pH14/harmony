@@ -2,7 +2,76 @@
 
 use proptest::prelude::*;
 use unison::toy::{ToyFactory, generate_program};
-use unison::{RunOutcome, Subject, SubjectFactory, Verdict, compare_runs};
+use unison::{
+    RunOutcome, Subject, SubjectError, SubjectFactory, Verdict, bisect_divergence, compare_runs,
+};
+
+struct RoundedFactory {
+    quantum: u64,
+}
+
+struct RoundedSubject {
+    quantum: u64,
+    work: u64,
+}
+
+impl SubjectFactory for RoundedFactory {
+    type M = RoundedSubject;
+
+    fn spawn(&self, _: u64) -> Self::M {
+        RoundedSubject {
+            quantum: self.quantum,
+            work: 0,
+        }
+    }
+}
+
+impl Subject for RoundedSubject {
+    fn run_to(&mut self, target: u64) -> Result<RunOutcome, SubjectError> {
+        if target < self.work {
+            return Err(SubjectError::TargetBehind {
+                target,
+                current: self.work,
+            });
+        }
+        self.work = target.div_ceil(self.quantum) * self.quantum;
+        Ok(RunOutcome::ReachedTarget)
+    }
+
+    fn work(&self) -> u64 {
+        self.work
+    }
+
+    fn state_hash(&self) -> Result<[u8; 32], SubjectError> {
+        Ok([0; 32])
+    }
+
+    fn observable_digest(&self) -> [u8; 32] {
+        [0; 32]
+    }
+}
+
+#[test]
+fn comparison_refuses_a_subject_that_overshoots_its_reported_target() {
+    let exact = RoundedFactory { quantum: 1 };
+    let rounded = RoundedFactory { quantum: 3 };
+    assert!(matches!(
+        compare_runs(&exact, &rounded, 0, 1, 1),
+        Err(SubjectError::InconsistentWork {
+            target: 1,
+            actual: 3,
+            outcome: RunOutcome::ReachedTarget,
+        })
+    ));
+    assert!(matches!(
+        bisect_divergence(&exact, &rounded, 0, 0, 1),
+        Err(SubjectError::InconsistentWork {
+            target: 1,
+            actual: 3,
+            outcome: RunOutcome::ReachedTarget,
+        })
+    ));
+}
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]

@@ -11,6 +11,12 @@ pub enum SubjectError {
     StateCapture(String),
     #[error("run_to target {target} is behind the current work count {current}")]
     TargetBehind { target: u64, current: u64 },
+    #[error("run_to reported {outcome:?} at work {actual} for target {target}")]
+    InconsistentWork {
+        target: u64,
+        actual: u64,
+        outcome: RunOutcome,
+    },
     #[error("checkpoint_every must be at least 1")]
     ZeroCheckpointInterval,
     #[error("bisection interval is empty: lo {lo} >= hi {hi}")]
@@ -39,6 +45,19 @@ pub trait Subject {
 pub trait SubjectFactory {
     type M: Subject;
     fn spawn(&self, seed: u64) -> Self::M;
+}
+
+fn run_checked<M: Subject>(machine: &mut M, target: u64) -> Result<RunOutcome, SubjectError> {
+    let outcome = machine.run_to(target)?;
+    let actual = machine.work();
+    if outcome == RunOutcome::ReachedTarget && actual != target {
+        return Err(SubjectError::InconsistentWork {
+            target,
+            actual,
+            outcome,
+        });
+    }
+    Ok(outcome)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,7 +97,7 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     let mut last_match: Option<u64> = None;
     let mut checkpoints_compared = 0u64;
     let mut t = 0u64;
-    let (initial_a, initial_b) = (ma.run_to(0)?, mb.run_to(0)?);
+    let (initial_a, initial_b) = (run_checked(&mut ma, 0)?, run_checked(&mut mb, 0)?);
     if initial_a != initial_b {
         return Ok(CompareReport {
             verdict: Verdict::HaltMismatch {
@@ -122,8 +141,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
     }
     while t < limit {
         t = t.saturating_add(checkpoint_every).min(limit);
-        let oa = ma.run_to(t)?;
-        let ob = mb.run_to(t)?;
+        let oa = run_checked(&mut ma, t)?;
+        let ob = run_checked(&mut mb, t)?;
         let (wa, wb) = (ma.work(), mb.work());
         match (oa, ob) {
             (RunOutcome::ReachedTarget, RunOutcome::ReachedTarget) => {
@@ -224,10 +243,10 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
     let mut runs_executed = 0u64;
     let mut probe = |t: u64| -> Result<([u8; 32], [u8; 32]), SubjectError> {
         let mut ma = a.spawn(seed);
-        ma.run_to(t)?;
+        run_checked(&mut ma, t)?;
         runs_executed += 1;
         let mut mb = b.spawn(seed);
-        mb.run_to(t)?;
+        run_checked(&mut mb, t)?;
         runs_executed += 1;
         Ok((ma.state_hash()?, mb.state_hash()?))
     };
