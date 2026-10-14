@@ -379,25 +379,35 @@ decodes RAM through `famidash_observation`; the workload README in
 level percent, the scroll divided by the level's length, and the Details pane
 shows it as Level progress. One A button is the whole controller.
 
-Map coordinates are the world x and the world y minus 240, the top of the
-second nametable row. Maps are 720 lines tall, from world y 240 to 960, and as
-wide as the level's scroll plus one screen. The pose is the game mode (cube,
-ship, ball, UFO, robot, spider, wave, swing) times two plus flipped gravity.
+Map coordinates are the world x and the world y minus the level's map top.
+`MAP_TOPS` in `rust/src/famidash.rs` holds the top of each level, and
+`famidash_map_top(level)` exports it. Each map covers the rows the camera
+showed on the recorded route plus 16 lines above and below, from 257 lines
+for Jumper to 717 for Theory of Everything, and is as wide as the level's
+scroll plus one screen. The pose is the game mode (cube, ship, ball, UFO,
+robot, spider, wave, swing) times two plus flipped gravity.
 
 `tools/build-famidash-maps.mjs` builds the maps when the runtime is built,
-because the site ships the ROM. For each level it runs a beam search over
-8-frame chunks from the level's root: it keeps up to 12 surviving states with
-distinct vertical position, velocity, mode, gravity, size and second-player
-position, and retries with 48 and then 128 when every state dies. It replays
-the clearing path and composes the frames at the scroll and camera of the
-previous frame, because pixels show the RAM of one frame earlier. Each map
-pixel keeps the frame where its column was nearest screen x 176, ahead of the
-player, so trails and the player stay out of the map. Rows the camera never
-showed copy the nearest shown row in their column. The sprite sheet comes from
-Stereo Madness with the background switched off through the PPU mask copy at
-`$0B`: the build writes each game mode to `$7A` and captures the player. The
-flipped-gravity row is the same sprite turned upside down. Levels build on one
-worker thread per CPU core; the 22 maps take about 1.5 minutes on 10 cores.
+because the site ships the ROM. `tools/famidash-routes.json` holds one
+clearing route per level as a string of 8-frame input patterns. The build
+replays each route once on one thread and renders every 16th frame. Before
+each frame it sets the parallax phase at `$04A0` to 0 and copies the backdrop
+color at `$01A0` to the parallax colors at `$01A1` and `$01A9`, so the
+parallax art draws as the flat backdrop and the background stays still. It
+composes each frame at the scroll and camera of the previous frame, because
+pixels show the RAM of one frame earlier. Each map pixel keeps the frame where
+its column was nearest screen x 176, ahead of the player, so trails and the
+player stay out of the map. Pixels the camera never showed take their column's
+most common color. The build fails if a route no longer clears its level or
+a map top differs from `MAP_TOPS`, and prints the new tops.
+`node tools/build-famidash-maps.mjs --search [levels]` searches new routes:
+it plays the plain pattern until a death, then retries one or two other
+patterns a few chunks back, then a 12-wide beam search, and checks two chunks
+past the repair. The sprite sheet comes from Stereo Madness with the
+background switched off through the PPU mask copy at `$0B`: the build writes
+each game mode to `$7A` and captures the player. The flipped-gravity row is
+the same sprite turned upside down. The 22 maps take about 12 seconds of CPU
+time.
 
 `boot(level)` for a later level runs the workload's level-select tape from the
 `famidash_level_select_tape` export, writes the level to `$047B`, presses A and
