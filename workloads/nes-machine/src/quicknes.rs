@@ -2222,9 +2222,20 @@ mod tests {
         );
     }
 
-    #[cfg(all(unix, not(miri)))]
+    #[cfg(all(target_os = "macos", not(miri)))]
     #[test]
-    fn private_core_loader_uses_hashed_image_after_path_replacement() {
+    fn private_core_loader_uses_hashed_image_after_private_path_replacement() {
+        private_core_loader_uses_hashed_image_after_replacement();
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[test]
+    fn private_core_copy_keeps_bytes_after_source_path_replacement() {
+        private_core_loader_uses_hashed_image_after_replacement();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    fn private_core_loader_uses_hashed_image_after_replacement() {
         use std::{ffi::c_void, fs, process::Command};
 
         let directory = std::env::temp_dir().join(format!(
@@ -2418,6 +2429,7 @@ mod tests {
                     .contains("unsupported non-system QuickNES dependency"),
                 "{error}"
             );
+            assert!(error.to_string().contains("libprobe"), "{error}");
             assert_eq!(
                 format!("{:x}", Sha256::digest(fs::read(&core).unwrap())),
                 core_sha256

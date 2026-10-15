@@ -12,6 +12,9 @@ use sha2::{Digest, Sha256};
 
 use crate::MachineError;
 
+#[cfg(all(target_os = "linux", not(target_pointer_width = "64")))]
+compile_error!("QuickNES loaded-image census requires the 64-bit Linux ELF program-header ABI");
+
 static CORE_BASES: OnceLock<Mutex<BTreeSet<usize>>> = OnceLock::new();
 
 pub(super) fn core_bases() -> &'static Mutex<BTreeSet<usize>> {
@@ -114,6 +117,12 @@ mod linux {
     use super::{BTreeSet, CStr, Digest, MachineError, Sha256, c_void, refused};
     use std::{ffi::c_char, path::Path};
 
+    fn is_system_library_path(path: &Path) -> bool {
+        ["/usr/lib", "/lib", "/usr/lib64", "/lib64"]
+            .iter()
+            .any(|root| path.starts_with(root))
+    }
+
     pub(super) fn loaded_name(pointer: *const c_char) -> Result<String, MachineError> {
         let mut bytes = Vec::new();
         while bytes.len() < 4096 {
@@ -215,7 +224,7 @@ mod linux {
                     return 1;
                 }
             };
-            if !path.starts_with(Path::new("/usr/lib")) && !path.starts_with(Path::new("/lib")) {
+            if !is_system_library_path(&path) {
                 census.error = Some(refused(format!(
                     "unsupported non-system QuickNES dependency: {}",
                     path.display()
@@ -296,6 +305,33 @@ mod linux {
         }
         Ok(())
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::is_system_library_path;
+        use std::path::Path;
+
+        #[test]
+        fn system_library_paths_include_lib64_without_accepting_prefix_spoofs() {
+            for path in [
+                "/usr/lib/libc.so",
+                "/lib/libc.so",
+                "/usr/lib64/libc.so",
+                "/lib64/libc.so",
+                "/usr/lib/x86_64-linux-gnu/libc.so",
+            ] {
+                assert!(is_system_library_path(Path::new(path)), "{path}");
+            }
+            for path in [
+                "/usr/lib64-extra/libc.so",
+                "/lib64-extra/libc.so",
+                "/usr/local/lib/libc.so",
+                "/opt/lib64/libc.so",
+            ] {
+                assert!(!is_system_library_path(Path::new(path)), "{path}");
+            }
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -336,6 +372,15 @@ mod macos {
             }
         });
         IMAGE_EPOCH.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn census_is_stable(
+        start_epoch: u64,
+        start_count: u32,
+        finish_epoch: u64,
+        finish_count: u32,
+    ) -> bool {
+        start_epoch == finish_epoch && start_count == finish_count
     }
 
     fn copy_mapped(address: usize, bytes: &mut [u8]) -> Result<(), MachineError> {
@@ -505,7 +550,7 @@ mod macos {
         // SAFETY: dyld returns the current image count after the census.
         #[allow(deprecated)]
         let finish_count = unsafe { libc::_dyld_image_count() };
-        if image_epoch() != start_epoch || finish_count != count {
+        if !census_is_stable(start_epoch, count, image_epoch(), finish_count) {
             return Err(refused("macOS loaded images changed during census"));
         }
         Ok(())
@@ -527,7 +572,41 @@ mod macos_tests {
     };
 
     #[test]
-    fn image_census_detects_concurrent_dyld_changes() {
+    fn census_guard_rejects_add_remove_with_same_final_count() {
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-dyld-epoch-{}-{:?}",
+            std::process::id(),
+            thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.c");
+        let dylib = directory.join("module.dylib");
+        fs::write(&source, "int quicknes_epoch_marker(void) { return 1; }\n").unwrap();
+        assert!(
+            Command::new("cc")
+                .args(["-dynamiclib", "-o"])
+                .arg(&dylib)
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let path = CString::new(dylib.to_string_lossy().as_bytes()).unwrap();
+        let start_epoch = macos::image_epoch();
+        // SAFETY: `path` names a compiled dylib and remains valid through the
+        // load; the successful handle is closed exactly once below.
+        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        assert!(!handle.is_null());
+        // SAFETY: this handle came from the successful dlopen above.
+        assert_eq!(unsafe { libc::dlclose(handle) }, 0);
+        let finish_epoch = macos::image_epoch();
+        assert!(finish_epoch >= start_epoch + 2);
+        assert!(!macos::census_is_stable(start_epoch, 11, finish_epoch, 11));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn image_census_safety_stress_with_concurrent_dyld_churn() {
         let directory = std::env::temp_dir().join(format!(
             "quicknes-dyld-census-{}-{:?}",
             std::process::id(),
