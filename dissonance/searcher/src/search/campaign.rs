@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
-    io::Write,
+    io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
@@ -38,7 +38,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::with_worker_pool;
+use crate::search::parallel::{WorkerPoolError, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, HostTimes, Moment, TargetCounters, now, unix_seconds,
@@ -593,14 +593,61 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
     },
     Archive {
         path: String,
-        file_sha256: String,
-        report: Box<G::ArchiveReport>,
+        source: ArchiveSource<G::ArchiveReport>,
         checkpoint: Option<CampaignCheckpoint<G::Snapshot>>,
     },
     SearchCheckpoint {
         path: PathBuf,
         expected_sha256: Option<String>,
     },
+}
+
+#[derive(Clone)]
+pub struct ArchiveSource<R> {
+    file_sha256: String,
+    report: R,
+}
+
+struct ArchiveHashReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R: Read> Read for ArchiveHashReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(bytes)?;
+        self.digest.update(&bytes[..read]);
+        Ok(read)
+    }
+}
+
+impl<R: DeserializeOwned> ArchiveSource<R> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Self::from_reader(bytes)
+    }
+
+    pub fn from_reader(source: impl Read) -> Result<Self, Box<dyn Error>> {
+        let mut reader = BufReader::new(ArchiveHashReader {
+            inner: source,
+            digest: Sha256::new(),
+        });
+        let report = serde_json::from_reader(&mut reader)?;
+        std::io::copy(&mut reader, &mut std::io::sink())?;
+        Ok(Self {
+            file_sha256: format!("{:x}", reader.into_inner().digest.finalize()),
+            report,
+        })
+    }
+}
+
+impl<R> ArchiveSource<R> {
+    pub fn file_sha256(&self) -> &str {
+        &self.file_sha256
+    }
+
+    pub fn report(&self) -> &R {
+        &self.report
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2048,8 +2095,7 @@ fn resolve_origin<G: Workload>(
         ),
         CampaignOrigin::Archive {
             path,
-            file_sha256,
-            report,
+            source,
             checkpoint,
         } => {
             if let Some(checkpoint) = checkpoint {
@@ -2058,9 +2104,9 @@ fn resolve_origin<G: Workload>(
             (
                 ORIGIN_ARCHIVE.to_owned(),
                 Some(path.clone()),
-                Some(file_sha256.clone()),
+                Some(source.file_sha256().to_owned()),
                 checkpoint.as_ref(),
-                workload.resume_input(report)?,
+                workload.resume_input(source.report())?,
             )
         }
     };
@@ -2702,9 +2748,7 @@ struct PendingJob<G: Workload + ?Sized> {
 struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<Moment>,
     pending: PendingJob<G>,
-    result: CampaignJobResult<G>,
-    execution_work: u64,
-    result_sha256: String,
+    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
@@ -2952,12 +2996,12 @@ fn bootstrap_core<G: Workload>(
 ) -> Result<Option<TreeImportCounts>, Box<dyn Error>> {
     match origin {
         CampaignOrigin::Archive {
-            report, checkpoint, ..
+            source, checkpoint, ..
         } => Ok(Some(core.import_tree(
             workload,
             run,
             target,
-            report,
+            source.report(),
             checkpoint.as_ref().map(|checkpoint| &checkpoint.snapshots),
         )?)),
         CampaignOrigin::Genesis => {
@@ -3098,10 +3142,13 @@ where
             ThreadPlacement::place(placement, PlacedThread::Worker(worker))?;
             workload.new_target()
         },
+        |_| workload.new_target(),
         |target, job: JobSpec<G>| {
-            watch
+            let reservation = job.reservation;
+            let outcome = watch
                 .run(&job, || run_job(workload, config, target, &job))
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string());
+            Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
@@ -3117,6 +3164,12 @@ where
             watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
+            pool.wait_ready(config.workers)?;
+            while campaign.reserve_next()? {
+                for job in campaign.plan(usize::MAX) {
+                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                }
+            }
             loop {
                 for job in campaign.plan(usize::MAX) {
                     pool.dispatch((job.planned_finish, job.reservation), job)?;
@@ -3125,22 +3178,52 @@ where
                     break;
                 }
                 let receive_started = profile_now();
-                let reply = pool.receive()?;
+                let reply = match pool.receive() {
+                    Ok(reply) => reply,
+                    Err(WorkerPoolError::RepliesClosed) => {
+                        let reservation = campaign
+                            .next_admission()
+                            .ok_or("campaign lost its planned admission while waiting")?;
+                        return Err(format!(
+                            "campaign reservation {reservation} failed: every worker exited before reporting its result"
+                        )
+                        .into());
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 campaign.note_receive_wait(profile_elapsed(receive_started));
                 let mut ready_reply = Some(reply);
                 while let Some(reply) = ready_reply {
-                    let physical_worker = reply.worker;
-                    let (outcome, note) = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                        format!("campaign worker {physical_worker} failed: {error}").into()
-                    })?;
-                    if physical_worker >= config.workers {
+                    if reply.worker >= config.workers {
                         return Err(
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    campaign.admit(outcome)?;
-                    watch.admitted(note, campaign);
-                    ready_reply = pool.try_receive()?;
+                    let reservation = reply.key.1;
+                    let outcome = match reply.outcome {
+                        Ok((claimed, outcome)) if claimed == reservation => outcome,
+                        Ok(_) => {
+                            return Err("campaign worker replied for another reservation".into());
+                        }
+                        Err(error) => Err(error),
+                    };
+                    match outcome {
+                        Ok((outcome, note)) => {
+                            if outcome.reservation != reservation {
+                                return Err(
+                                    "campaign worker replied for another reservation".into()
+                                );
+                            }
+                            campaign.admit(outcome)?;
+                            watch.admitted(note, campaign);
+                        }
+                        Err(error) => campaign.fail(reservation, error)?,
+                    }
+                    ready_reply = match pool.try_receive() {
+                        Ok(reply) => reply,
+                        Err(WorkerPoolError::RepliesClosed) => None,
+                        Err(error) => return Err(error.into()),
+                    };
                 }
             }
             pool.close();
@@ -3614,7 +3697,7 @@ impl ReplaySkipSchedule {
 pub fn replay_campaign_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
@@ -3623,7 +3706,7 @@ where
     replay_campaign_checkpointed_inner(
         workload,
         stream_bytes,
-        origin_report,
+        origin_source,
         origin_checkpoint,
         true,
     )
@@ -3632,7 +3715,7 @@ where
 pub fn replay_campaign_prefix_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
@@ -3641,7 +3724,7 @@ where
     replay_campaign_checkpointed_inner(
         workload,
         stream_bytes,
-        origin_report,
+        origin_source,
         origin_checkpoint,
         false,
     )
@@ -3651,7 +3734,7 @@ where
 fn replay_campaign_checkpointed_inner<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
     require_terminal: bool,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
@@ -3819,7 +3902,7 @@ where
         .collect::<Vec<_>>();
     let resume_input = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
-            if origin_report.is_some() {
+            if origin_source.is_some() {
                 return Err("genesis campaign replay does not take a source archive".into());
             }
             if origin_checkpoint.is_some() {
@@ -3828,7 +3911,7 @@ where
             Input::default()
         }
         ORIGIN_SNAPSHOT_ROOT => {
-            if origin_report.is_some() {
+            if origin_source.is_some() {
                 return Err("snapshot-root replay does not take a source archive".into());
             }
             if origin_checkpoint.is_none() {
@@ -3838,13 +3921,18 @@ where
         }
         ORIGIN_ARCHIVE => {
             let source =
-                origin_report.ok_or("archive campaign replay requires the source archive")?;
+                origin_source.ok_or("archive campaign replay requires the source archive")?;
+            if header.origin_archive_sha256.as_deref() != Some(source.file_sha256()) {
+                return Err(
+                    "campaign replay source archive bytes do not match the recorded digest".into(),
+                );
+            }
             if header.origin_checkpoint_sha256.is_some() != origin_checkpoint.is_some() {
                 return Err(
                     "archive campaign replay checkpoint does not match the recorded stream".into(),
                 );
             }
-            workload.resume_input(source)?
+            workload.resume_input(source.report())?
         }
         ORIGIN_SEARCH_CHECKPOINT => {
             return Err("a stream that resumes from a search checkpoint cannot be replayed".into());
@@ -3887,8 +3975,12 @@ where
     }
     let draw_origin = match header.origin_kind.as_str() {
         ORIGIN_ARCHIVE => Some((
-            header.origin_archive_sha256.as_deref().unwrap_or_default(),
-            origin_report.ok_or("archive campaign replay requires the source archive")?,
+            origin_source
+                .ok_or("archive campaign replay requires the source archive")?
+                .file_sha256(),
+            origin_source
+                .ok_or("archive campaign replay requires the source archive")?
+                .report(),
         )),
         ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
@@ -3945,13 +4037,17 @@ where
             )?;
             None
         }
-        ORIGIN_ARCHIVE => Some(core.import_tree(
-            workload,
-            &replay_run,
-            &mut target,
-            origin_report.ok_or("archive campaign replay requires the source archive")?,
-            origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
-        )?),
+        ORIGIN_ARCHIVE => Some(
+            core.import_tree(
+                workload,
+                &replay_run,
+                &mut target,
+                origin_source
+                    .ok_or("archive campaign replay requires the source archive")?
+                    .report(),
+                origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
+            )?,
+        ),
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_execution_work = execution_work_delta(
@@ -4755,16 +4851,19 @@ mod continuation_tests;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex, mpsc},
+    };
 
     use super::{
-        ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignCheckpoint, CampaignConfig, CampaignCoordinator, CampaignCounters,
-        CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
-        CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader,
-        CampaignStreamRecord, CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables,
-        DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy,
-        JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
+        ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignAdmissionDecision,
+        CampaignCandidate, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
+        CampaignCounters, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
+        CampaignOrigin, CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, ContinuationAccounting,
+        CoordinatorCore, DrawTables, DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy,
+        Evaluation, InputPolicy, JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
         MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
         RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
         ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
@@ -4840,12 +4939,19 @@ mod tests {
 
     const INHERITS_PARENT_PLACE: u8 = u8::MAX;
 
+    type TestActionHook = dyn Fn(TestAction) -> Result<(), String> + Send + Sync;
+
     #[derive(Default)]
     struct LiveTargets {
         refuse: bool,
+        fail_next_target: std::sync::atomic::AtomicBool,
+        first_action_started: std::sync::atomic::AtomicBool,
+        second_selection_waits_for_first_action: std::sync::atomic::AtomicBool,
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
+        action_hook: Mutex<Option<Arc<TestActionHook>>>,
+        selections: std::sync::atomic::AtomicUsize,
     }
 
     #[derive(Default)]
@@ -4882,6 +4988,8 @@ mod tests {
     struct TestArchiveReport {
         #[serde(with = "entries_by_suffix")]
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
+        #[serde(default)]
+        marker: u8,
     }
 
     struct TestWorkload {
@@ -4896,12 +5004,18 @@ mod tests {
         type Progress = ();
         type Snapshot = u8;
         type Observations = ();
-        type Evidence = ();
+        type Evidence = u8;
         type ArchiveReport = TestArchiveReport;
         type Run = ();
     }
 
     impl Reporting for TestWorkload {
+        fn evidence_checkpoint(evidence: &u8) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(vec![*evidence])
+        }
+        fn evidence_from_checkpoint(bytes: &[u8]) -> Result<u8, Box<dyn Error>> {
+            Ok(bytes.first().copied().unwrap_or_default())
+        }
         fn stream_format(&self) -> &'static str {
             "test-campaign-v1"
         }
@@ -4926,11 +5040,12 @@ mod tests {
 
         fn archive_report(
             &self,
-            _evidence: &Self::Evidence,
+            evidence: &Self::Evidence,
             state: ArchiveReportState<Self>,
         ) -> Self::ArchiveReport {
             TestArchiveReport {
                 entries: state.entries,
+                marker: *evidence,
             }
         }
     }
@@ -4953,6 +5068,7 @@ mod tests {
         ) -> Result<Self::Action, Box<dyn Error>> {
             Ok(TestAction::new(rand.next_u64() as u8, 1))
         }
+        #[allow(clippy::disallowed_methods)]
         fn expand_suffix(
             &self,
             _run: &Self::Run,
@@ -4961,6 +5077,30 @@ mod tests {
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            if let Some(targets) = &self.targets {
+                let selection = targets
+                    .selections
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if selection == 2
+                    && targets
+                        .second_selection_waits_for_first_action
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !targets
+                        .first_action_started
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        if Instant::now() >= deadline {
+                            return Err(
+                                "the first job never started before the second selection".into()
+                            );
+                        }
+                        std::thread::yield_now();
+                    }
+                }
+            }
             let long = mutation_seed >> 32 & 1 == 1;
             let length = 1 + usize::from(long);
             Ok(vec![
@@ -4988,6 +5128,12 @@ mod tests {
             };
             if targets.refuse {
                 return Err("the test target refused to start".to_owned());
+            }
+            if targets
+                .fail_next_target
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("the replacement target refused to start".to_owned());
             }
             let live = targets
                 .live
@@ -5027,6 +5173,17 @@ mod tests {
             action: &Self::Action,
             _milestones: &mut Self::Milestones,
         ) -> Result<(), Box<dyn Error>> {
+            let hook = target._counted.as_ref().and_then(|count| {
+                count
+                    .0
+                    .action_hook
+                    .lock()
+                    .expect("test action hook lock")
+                    .clone()
+            });
+            if let Some(hook) = hook {
+                hook(*action)?;
+            }
             target.apply(action);
             Ok(())
         }
@@ -5079,9 +5236,10 @@ mod tests {
         fn aggregate_progress(_evidence: &Self::Evidence) -> Self::Progress {}
         fn merge_origin_evidence(
             &self,
-            _evidence: &mut Self::Evidence,
-            _source: &Self::ArchiveReport,
+            evidence: &mut Self::Evidence,
+            source: &Self::ArchiveReport,
         ) {
+            *evidence = source.marker;
         }
         fn merge_snapshot_root_evidence(
             &self,
@@ -5829,10 +5987,8 @@ mod tests {
         )
         .expect("source campaign");
         let source_archive = source.archive;
-        let source_archive_sha256 = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
-        );
+        let source_archive =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&source_archive).unwrap()).unwrap();
         let source_checkpoint = CampaignCheckpoint {
             path: "source.snapshots".to_owned(),
             file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
@@ -5843,8 +5999,7 @@ mod tests {
             let mut archive_stream = Vec::new();
             let archive_origin = CampaignOrigin::Archive {
                 path: "source.archive".to_owned(),
-                file_sha256: source_archive_sha256.clone(),
-                report: Box::new(source_archive.clone()),
+                source: source_archive.clone(),
                 checkpoint: checkpoint.clone(),
             };
             run_campaign_checkpointed(
@@ -5881,8 +6036,7 @@ mod tests {
                 let mut changed_stream = Vec::new();
                 let changed_origin = CampaignOrigin::Archive {
                     path: "source.archive".to_owned(),
-                    file_sha256: source_archive_sha256.clone(),
-                    report: Box::new(source_archive.clone()),
+                    source: source_archive.clone(),
                     checkpoint: Some(changed),
                 };
                 assert!(
@@ -6526,6 +6680,7 @@ mod tests {
                 entry(3, Some(1), vec![action(0x01), action(0x80)]),
                 entry(9, Some(7), vec![action(0x01), action(0x02), action(0x40)]),
             ],
+            marker: 0,
         };
         let mut core = CoordinatorCore::new(&workload, &run, 32_768, None);
         let suffix_json = serde_json::to_string(&source).expect("serialize source archive");
@@ -7148,6 +7303,7 @@ mod tests {
             CampaignExecutionOptions::default(),
         )
         .expect("coordinator");
+        while coordinator.reserve_next().expect("reserve window") {}
         let mut target = workload.new_target().expect("target");
         while !coordinator.finished() {
             let jobs = coordinator.plan(2);
@@ -7167,6 +7323,572 @@ mod tests {
         let stepped = coordinator.finish(Vec::new()).expect("finish");
         assert_eq!(stream, pooled_stream);
         assert_eq!(stepped, pooled);
+    }
+
+    #[test]
+    fn execution_failure_waits_for_earlier_planned_admission() {
+        struct JobLineStream {
+            bytes: Vec<u8>,
+            first_job: mpsc::Sender<()>,
+        }
+
+        impl Write for JobLineStream {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                if self.bytes.iter().filter(|&&byte| byte == b'\n').count() >= 2 {
+                    let _ = self.first_job.send(());
+                }
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 2;
+        let (baseline, earlier, later) = (0..32)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut baseline = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut baseline,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&baseline);
+                (jobs.len() == 2
+                    && jobs[0].0 == 1
+                    && jobs[1].0 == 2
+                    && jobs[0].1.mutation_seed as u8 != jobs[1].1.mutation_seed as u8)
+                    .then(|| {
+                        (
+                            baseline,
+                            (jobs[0].1.reservation, jobs[0].1.mutation_seed as u8),
+                            (jobs[1].1.reservation, jobs[1].1.mutation_seed as u8),
+                        )
+                    })
+            })
+            .expect("two distinct jobs in planned-finish order");
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let run_order = |held_input: u8, label: &str, panicking: bool| {
+            let directory = std::env::temp_dir().join(format!(
+                "dissonance-failure-prefix-{}-{label}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            let (entered_sender, entered_receiver) = mpsc::channel();
+            let (release_sender, release_receiver) = mpsc::channel();
+            let (job_sender, job_receiver) = mpsc::channel();
+            let release_receiver = Arc::new(Mutex::new(Some(release_receiver)));
+            let targets = Arc::new(LiveTargets::default());
+            *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+                if action.input == earlier.1 || action.input == later.1 {
+                    entered_sender.send(action.input).unwrap();
+                }
+                if action.input == held_input
+                    && let Some(release) = release_receiver.lock().unwrap().take()
+                {
+                    release.recv().map_err(|error| error.to_string())?;
+                }
+                if action.input == later.1 {
+                    if panicking {
+                        panic!("injected execution panic");
+                    }
+                    return Err("planned execution failure".to_owned());
+                }
+                Ok(())
+            }));
+            let (error, stream, observed, job_before_release) = std::thread::scope(|scope| {
+                let directory_for_run = directory.clone();
+                let run = scope.spawn(|| {
+                    let mut stream = JobLineStream {
+                        bytes: Vec::new(),
+                        first_job: job_sender,
+                    };
+                    let error = run_campaign_checkpointed_with_options(
+                        &TestWorkload {
+                            bootstrap_objective: false,
+                            targets: Some(targets),
+                        },
+                        &config,
+                        &CampaignOrigin::Genesis,
+                        &mut stream,
+                        None,
+                        CampaignExecutionOptions {
+                            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                                directory: directory_for_run,
+                                every: std::num::NonZeroU64::new(1),
+                                on_marks: false,
+                                on_top_progress: false,
+                                checkpoint_owner: None,
+                            }),
+                            ..CampaignExecutionOptions::default()
+                        },
+                    )
+                    .expect_err("later job fails")
+                    .to_string();
+                    (error, stream.bytes)
+                });
+                let mut observed = BTreeSet::new();
+                while observed.len() < 2 {
+                    let Ok(input) = entered_receiver.recv_timeout(Duration::from_secs(5)) else {
+                        break;
+                    };
+                    observed.insert(input);
+                }
+                let job_before_release = held_input == later.1
+                    && job_receiver.recv_timeout(Duration::from_secs(5)).is_ok();
+                release_sender.send(()).unwrap();
+                let (error, stream) = run.join().unwrap();
+                (error, stream, observed, job_before_release)
+            });
+            assert_eq!(observed, BTreeSet::from([earlier.1, later.1]));
+            if held_input == later.1 {
+                assert!(
+                    job_before_release,
+                    "earlier job did not admit while failure waited"
+                );
+            }
+            (error, stream, directory)
+        };
+        let (failure_first, first_stream, first_directory) =
+            run_order(earlier.1, "failure-first", false);
+        let (success_first, second_stream, second_directory) =
+            run_order(later.1, "success-first", false);
+        let expected_error = format!(
+            "campaign reservation {} failed: planned execution failure",
+            later.0
+        );
+        assert_eq!(failure_first, expected_error);
+        assert_eq!(success_first, expected_error);
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(std::str::from_utf8(&first_stream).unwrap(), expected_prefix);
+        let checkpoint_path =
+            |directory: &std::path::Path| directory.join("000000000001-interval.ckpt");
+        let stable_checkpoint = |directory: &std::path::Path| {
+            let mut reader =
+                crate::search::checkpoint::CheckpointReader::open(&checkpoint_path(directory))
+                    .expect("the earlier planned admission wrote a checkpoint");
+            let header = reader.header.clone();
+            assert_eq!(header.executions, 1);
+            assert_eq!(header.admitted, 1);
+            assert_eq!(header.reserved, 2);
+            let core: super::CoreCheckpoint<TestWorkload> = reader.next().unwrap();
+            let archive: crate::search::archive::Archive<TestAction, TestKey, (), u8> =
+                reader.next().unwrap();
+            let evidence: Vec<u8> = reader.next().unwrap();
+            let draw: Vec<u8> = reader.next().unwrap();
+            let durations: crate::search::duration::DurationPoliciesCheckpoint<TestKey> =
+                reader.next().unwrap();
+            let rand: RomuDuoJrRand = reader.next().unwrap();
+            let counters: CampaignCounters = reader.next().unwrap();
+            let _profile: LiveCoordinatorProfile = reader.next().unwrap();
+            let in_flight: Vec<super::InFlightJob<TestWorkload>> = reader.next().unwrap();
+            let snapshots = reader.snapshots::<u8>().unwrap();
+            reader.finish().unwrap();
+            let in_flight = in_flight
+                .iter()
+                .map(|job| super::InFlightJobRef {
+                    reservation: job.reservation,
+                    spec: &job.spec,
+                    pending: &job.pending,
+                })
+                .collect::<Vec<_>>();
+            [
+                postcard::to_allocvec(&header).unwrap(),
+                postcard::to_allocvec(&core).unwrap(),
+                postcard::to_allocvec(&archive).unwrap(),
+                postcard::to_allocvec(&evidence).unwrap(),
+                postcard::to_allocvec(&draw).unwrap(),
+                postcard::to_allocvec(&durations).unwrap(),
+                postcard::to_allocvec(&rand).unwrap(),
+                postcard::to_allocvec(&counters).unwrap(),
+                postcard::to_allocvec(&in_flight).unwrap(),
+                postcard::to_allocvec(&snapshots).unwrap(),
+            ]
+        };
+        assert_eq!(
+            stable_checkpoint(&first_directory),
+            stable_checkpoint(&second_directory)
+        );
+        let resume = |directory: &std::path::Path| {
+            let mut stream = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: checkpoint_path(directory),
+                    expected_sha256: None,
+                },
+                &mut stream,
+                None,
+            )
+            .expect("checkpoint resumes without the injected failure");
+            (outcome, stream)
+        };
+        let (first_resume, first_resume_stream) = resume(&first_directory);
+        let (second_resume, second_resume_stream) = resume(&second_directory);
+        assert_eq!(first_resume.0.archive, second_resume.0.archive);
+        assert_eq!(first_resume.1, second_resume.1);
+        assert_eq!(
+            job_lines(&first_resume_stream),
+            job_lines(&second_resume_stream)
+        );
+        let (panic_first, panic_stream, panic_directory) =
+            run_order(earlier.1, "panic-first", true);
+        let (success_before_panic, later_panic_stream, later_panic_directory) =
+            run_order(later.1, "success-before-panic", true);
+        let expected_panic = format!(
+            "campaign reservation {} failed: worker panicked during execution",
+            later.0
+        );
+        assert_eq!(panic_first, expected_panic);
+        assert_eq!(success_before_panic, expected_panic);
+        assert_eq!(panic_stream, first_stream);
+        assert_eq!(later_panic_stream, first_stream);
+        assert_eq!(
+            stable_checkpoint(&panic_directory),
+            stable_checkpoint(&first_directory)
+        );
+        assert_eq!(
+            stable_checkpoint(&later_panic_directory),
+            stable_checkpoint(&first_directory)
+        );
+        std::fs::remove_dir_all(first_directory).unwrap();
+        std::fs::remove_dir_all(second_directory).unwrap();
+        std::fs::remove_dir_all(panic_directory).unwrap();
+        std::fs::remove_dir_all(later_panic_directory).unwrap();
+    }
+
+    #[test]
+    fn sole_worker_panic_reports_its_reservation_after_reply_disconnect() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let (baseline, first_job) = (0..32)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                (jobs.len() == 1).then(|| (stream, jobs[0].clone()))
+            })
+            .expect("single-worker campaign executes a job");
+        let panic_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let targets = Arc::new(LiveTargets::default());
+        let panic_count_for_hook = Arc::clone(&panic_count);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            panic_count_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("injected sole-worker panic");
+        }));
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("sole worker panic fails the campaign")
+        .to_string();
+        assert_eq!(panic_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            error,
+            format!(
+                "campaign reservation {} failed: worker panicked during execution",
+                first_job.1.reservation
+            )
+        );
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(first_job.0)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn sole_worker_recovers_for_an_earlier_planned_job_after_panic() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 3;
+        let (baseline, failed_reservation, failed_input, failed_index) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                let failed = jobs.iter().find(|(_, job)| job.reservation == 0)?;
+                (jobs.len() == 3
+                    && jobs[0].0 == 1
+                    && jobs[0].1.reservation == 1
+                    && failed.0 > jobs[0].0
+                    && jobs.iter().all(|(_, job)| {
+                        job.reservation == 0
+                            || job.mutation_seed as u8 != failed.1.mutation_seed as u8
+                    }))
+                .then_some((
+                    stream,
+                    failed.1.reservation,
+                    failed.1.mutation_seed as u8,
+                    failed.0,
+                ))
+            })
+            .expect("the first dispatched job can have a later planned finish");
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .second_selection_waits_for_first_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .first_action_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        return Err("the second reservation was never selected".to_owned());
+                    }
+                    std::thread::yield_now();
+                }
+                panic!("later-planned reservation panicked");
+            }
+            Ok(())
+        }));
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-single-worker-panic-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed_with_options(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .expect_err("later-planned panic fails at its scheduled turn")
+        .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "campaign reservation {failed_reservation} failed: worker panicked during execution"
+            )
+        );
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(failed_index)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
+        assert!(directory.join("000000000001-interval.ckpt").is_file());
+        std::fs::remove_dir_all(directory).unwrap();
+
+        let targets = Arc::new(LiveTargets::default());
+        targets
+            .second_selection_waits_for_first_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .first_action_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        return Err("the second reservation was never selected".to_owned());
+                    }
+                    std::thread::yield_now();
+                }
+                targets
+                    .fail_next_target
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("later-planned reservation panicked before failed recovery");
+            }
+            Ok(())
+        }));
+        let mut failed_stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut failed_stream,
+            None,
+        )
+        .expect_err("missing earlier job fails with its own reservation")
+        .to_string();
+        assert_eq!(
+            error,
+            "campaign reservation 1 failed: every worker exited before reporting its result"
+        );
+        assert_eq!(
+            std::str::from_utf8(&failed_stream).unwrap(),
+            format!(
+                "{}\n",
+                std::str::from_utf8(&baseline)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn failed_recovery_preserves_an_admitted_success_before_the_next_failure() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 3;
+        let (baseline, failed_input) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                let failed = jobs.iter().find(|(_, job)| job.reservation == 1)?;
+                (jobs.len() == 3
+                    && jobs[0].0 == 1
+                    && jobs[0].1.reservation == 0
+                    && jobs[1].1.reservation == 1
+                    && jobs.iter().all(|(_, job)| {
+                        job.reservation == 1
+                            || job.mutation_seed as u8 != failed.1.mutation_seed as u8
+                    }))
+                .then_some((stream, failed.1.mutation_seed as u8))
+            })
+            .expect("the first dispatched job can finish first");
+        let targets = Arc::new(LiveTargets::default());
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .fail_next_target
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("second reservation panicked before failed recovery");
+            }
+            Ok(())
+        }));
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::clone(&targets)),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("campaign must fail after reporting its successful prefix")
+        .to_string();
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        assert_eq!(
+            error,
+            "campaign reservation 1 failed: worker panicked during execution"
+        );
+        assert_eq!(
+            std::str::from_utf8(&stream).unwrap(),
+            format!(
+                "{}\n",
+                std::str::from_utf8(&baseline)
+                    .unwrap()
+                    .lines()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        );
     }
 
     #[test]
@@ -7619,6 +8341,74 @@ mod tests {
         }
     }
 
+    #[test]
+    fn startup_failures_are_ordered_before_campaign_selection() {
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 2;
+        let targets = Arc::new(LiveTargets::default());
+        let (one_failed_sender, one_failed_receiver) = mpsc::channel();
+        let (release_zero_sender, release_zero_receiver) = mpsc::channel();
+        let release_zero_receiver = Mutex::new(release_zero_receiver);
+        let placement = ThreadPlacement::new(move |thread| match thread {
+            PlacedThread::Worker(0) => {
+                release_zero_receiver
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .map_err(|error| error.to_string())?;
+                Err("worker zero refused startup".to_owned())
+            }
+            PlacedThread::Worker(1) => {
+                one_failed_sender.send(()).unwrap();
+                Err("worker one refused startup".to_owned())
+            }
+            PlacedThread::Coordinator => Ok(()),
+            _ => unreachable!(),
+        });
+        let (error, stream) = std::thread::scope(|scope| {
+            let targets_for_run = Arc::clone(&targets);
+            let run = scope.spawn(|| {
+                let mut stream = Vec::new();
+                let error = run_campaign_checkpointed_with_options(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: Some(targets_for_run),
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        placement: Some(placement),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .expect_err("both workers refuse startup")
+                .to_string();
+                (error, stream)
+            });
+            let one_started = one_failed_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .is_ok();
+            release_zero_sender.send(()).unwrap();
+            let outcome = run.join().unwrap();
+            assert!(one_started, "worker one never attempted startup");
+            outcome
+        });
+        assert_eq!(
+            error,
+            "campaign worker 0 failed to start: worker zero refused startup"
+        );
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "selection ran before startup failures were resolved"
+        );
+        assert_eq!(job_lines(&stream).len(), 0);
+    }
+
     fn three_worker_config() -> CampaignConfig<TestWorkload> {
         CampaignConfig {
             campaign_seed: 5,
@@ -7728,14 +8518,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let source_archive = source.archive;
+        let source_archive =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&source.archive).unwrap()).unwrap();
         let origin = CampaignOrigin::Archive {
             path: "source.archive".to_owned(),
-            file_sha256: format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
-            ),
-            report: Box::new(source_archive.clone()),
+            source: source_archive.clone(),
             checkpoint: None,
         };
         let config = CampaignConfig {
@@ -7779,5 +8566,88 @@ mod tests {
                 .expect_err("replay certified a skip limit live selection did not record")
                 .to_string();
         assert!(error.contains("skip suffix limit"), "{error}");
+    }
+
+    #[test]
+    fn archive_replay_rejects_changed_source_evidence_under_the_original_digest() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 5;
+        config.window = 2;
+        let mut source_stream = Vec::new();
+        let (source, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .unwrap();
+        let source_report = source.archive;
+        let source_bytes = serde_json::to_vec(&source_report).unwrap();
+        config.execution_budget = 0;
+        let source = ArchiveSource::from_bytes(&source_bytes).unwrap();
+        let origin = CampaignOrigin::Archive {
+            path: "source.archive".to_owned(),
+            source: source.clone(),
+            checkpoint: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None)
+            .expect("record archive-origin campaign");
+        assert_eq!(live.archive.marker, 0);
+        assert_eq!(
+            live.origin.archive_sha256.as_deref(),
+            Some(source.file_sha256())
+        );
+        replay_campaign_checkpointed(&workload, &stream, Some(&source), None)
+            .expect("unchanged source replays");
+        let mut prefix_lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        let end: serde_json::Value = serde_json::from_str(prefix_lines.pop().unwrap()).unwrap();
+        assert_eq!(end["event"], "end");
+        let prefix = prefix_lines.join("\n");
+        let (prefix_replay, _) =
+            replay_campaign_prefix_checkpointed(&workload, prefix.as_bytes(), Some(&source), None)
+                .expect("unchanged source prefix replays");
+        assert_eq!(prefix_replay.archive.marker, 0);
+        let mut changed = source_report;
+        changed.marker = 37;
+        assert_eq!(changed.entries, source.report().entries);
+        assert_eq!(
+            workload.resume_input(&changed).unwrap(),
+            workload.resume_input(source.report()).unwrap()
+        );
+        let changed_source =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert_ne!(source.file_sha256(), changed_source.file_sha256());
+        let error = replay_campaign_checkpointed(&workload, &stream, Some(&changed_source), None)
+            .expect_err("replay accepted changed source evidence under the recorded digest")
+            .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+        let error = replay_campaign_prefix_checkpointed(
+            &workload,
+            prefix.as_bytes(),
+            Some(&changed_source),
+            None,
+        )
+        .expect_err("prefix replay accepted changed source evidence")
+        .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+        let mut whitespace_changed = source_bytes;
+        whitespace_changed.extend_from_slice(b" \n\t");
+        let same_report_source = ArchiveSource::from_bytes(&whitespace_changed).unwrap();
+        assert_eq!(same_report_source.report(), source.report());
+        assert_ne!(same_report_source.file_sha256(), source.file_sha256());
+        let error =
+            replay_campaign_checkpointed(&workload, &stream, Some(&same_report_source), None)
+                .expect_err("replay accepted semantically equal but byte-distinct source archive")
+                .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
     }
 }

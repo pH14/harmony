@@ -15,8 +15,10 @@ delegates process startup to the platform supervisor.
 The `smb-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
 points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
 native execution. SMB supports native QuickNES and whole-VM Consonance execution.
-The SMB campaign binary hashes and parses a source archive through one open file,
-so a replacement of its path cannot attach one archive's digest to another's entries.
+The SMB campaign binary creates an `ArchiveSource` by parsing and hashing one
+open file, so replacing its path cannot attach one archive's digest to another's
+entries. The generic campaign recorder and replay verifier require that sealed
+source, including through the public NES workload wrappers.
 Run and replay require a UTF-8 origin argument so its recorded path names the
 same file the command opens; an ambiguous byte path is rejected before use.
 Checkpoint paths also require UTF-8, so the recorded source path names the file

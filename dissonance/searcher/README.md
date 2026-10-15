@@ -28,7 +28,12 @@ configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
-into a completed report. Live archive import verifies the same bytes before execution.
+into a completed report. Archive-origin recording and full or prefix replay require
+an `ArchiveSource` built by parsing and hashing one byte stream. Its private report
+and digest cannot be replaced separately, and replay checks that raw-byte digest
+against the recorded origin before deriving resume input or importing evidence.
+Changing only JSON whitespace still changes the source identity. Live archive
+import uses that same sealed source.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
@@ -93,7 +98,10 @@ their input policies and reject unknown or retired identifiers during replay.
 The worker pool starts before the bootstrap. The coordinator bootstraps while
 every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
-targets than workers. The first worker's boot time includes that wait.
+targets than workers. The first worker's boot time includes that wait. Every
+worker reports its startup result before the coordinator selects or dispatches
+a job. If several workers fail to start, the lowest worker number determines
+the reported error regardless of host timing.
 
 Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
@@ -104,6 +112,19 @@ queued, running or finished but not yet admitted. Memory held by finished
 results is outside the archive's logical budget and must be measured in host
 RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
+Worker execution errors also wait for their reservation's planned admission;
+the coordinator can record every earlier successful job and its checkpoint
+before returning a failure identified by reservation. Checkpointed coordinator
+profile timings are observational telemetry, so checkpoint hashes may differ
+across host schedules even when their search state and resumptions agree.
+An execution panic produces a stable error reply carrying the dequeued job's
+schedule key. The worker discards its target and builds a fresh one before
+taking another job, so a queued earlier reservation can still complete. If
+recreation fails, the worker retires. Other workers may continue queued jobs;
+if all workers exit with outstanding reservations, the coordinator drains
+received results and reports the first missing planned reservation. Target
+recreation failure is an external failure, so its timing can change which
+outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
@@ -788,13 +809,15 @@ work. At a completed checkpoint those counts are equal.
 
 `CampaignCoordinator` holds a live campaign: the `CoordinatorCore`, the seeded
 selection state, the draw tables, the duration policies and the admission
-window. A single-threaded caller drives it with five calls:
+window. A single-threaded caller drives it with these calls:
 
 | Call | Effect |
 | --- | --- |
-| `CampaignCoordinator::start` | Validates the config, writes the stream header, bootstraps or restores the archive and reserves the first window. |
+| `CampaignCoordinator::start` | Validates the config, writes the stream header and bootstraps or restores the archive. |
+| `reserve_next()` | Reserves one job of the first window and returns false once the window is full or selection stops. The worker pool calls it after every worker reports its startup result and dispatches each job as it is reserved. |
 | `plan(limit)` | Hands out up to `limit` reserved jobs, lowest planned finish first. |
 | `admit(outcome)` | Takes one finished job, admits every job that admission order now allows and reserves one job after each admission. |
+| `fail(reservation, error)` | Records a job that failed to execute. The campaign returns that error when admission order reaches the reservation. |
 | `finished()` | Reports that every reservation is admitted. |
 | `finish(workers)` | Writes the final search checkpoint and builds the report. |
 

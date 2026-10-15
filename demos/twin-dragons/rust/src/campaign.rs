@@ -473,6 +473,7 @@ impl<G: BrowserGame> Search<G> {
             None,
             CampaignExecutionOptions::default(),
         )?;
+        while coordinator.reserve_next()? {}
         coordinator.watch_admissions();
         let feed = Feed::new(
             G::memory_view(&restore_ram(options.core, &raw)?)?,

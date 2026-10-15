@@ -14,11 +14,11 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
-            SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_value_sha256,
-            replay_campaign_checkpointed, run_campaign_checkpointed,
+            ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignCandidate,
+            CampaignCheckpoint, CampaignConfig, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
+            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::DrawMixture,
         draw_tables::DrawTableHeader,
@@ -665,10 +665,10 @@ pub fn run_stb_campaign_checkpointed(
 pub fn replay_stb_campaign_checkpointed(
     game: &StbGame,
     stream_bytes: &[u8],
-    origin_report: Option<&StbArchiveReport>,
+    origin_source: Option<&ArchiveSource<StbArchiveReport>>,
     origin_checkpoint: Option<&StbCampaignCheckpoint>,
 ) -> Result<(StbCampaignModeReport, StbSnapshotCheckpoint), Box<dyn Error>> {
-    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_source, origin_checkpoint)
 }
 
 impl crate::film::Filmable for StbGame {

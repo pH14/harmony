@@ -197,11 +197,7 @@ where
             CampaignOrigin::Genesis
             | CampaignOrigin::SnapshotRoot { .. }
             | CampaignOrigin::SearchCheckpoint { .. } => None,
-            CampaignOrigin::Archive {
-                file_sha256,
-                report,
-                ..
-            } => Some((file_sha256.as_str(), report.as_ref())),
+            CampaignOrigin::Archive { source, .. } => Some((source.file_sha256(), source.report())),
         };
         let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
         let mut duration_policies = DurationPolicies::<G::Key>::new();
@@ -351,12 +347,14 @@ where
             }
             coordinator.pending.insert(job.reservation, job.pending);
         }
-        for _ in coordinator.pending.len()..config.window {
-            if !coordinator.reserve()? {
-                break;
-            }
-        }
         Ok(coordinator)
+    }
+
+    pub fn reserve_next(&mut self) -> Result<bool, Box<dyn Error>> {
+        if self.pending.len() >= self.config.window {
+            return Ok(false);
+        }
+        self.reserve()
     }
 
     pub fn plan(&mut self, limit: usize) -> Vec<JobSpec<G>> {
@@ -379,17 +377,34 @@ where
     }
 
     pub fn admit(&mut self, outcome: JobOutcome<G>) -> Result<(), Box<dyn Error>> {
-        self.profile.receives = self.profile.receives.saturating_add(1);
-        self.running = self
-            .running
-            .checked_sub(1)
-            .ok_or("campaign worker replied without queued work")?;
         let JobOutcome {
             reservation,
             result,
             execution_work,
             result_sha256,
         } = outcome;
+        self.receive(reservation, Ok((result, execution_work, result_sha256)))
+    }
+
+    pub fn fail(&mut self, reservation: usize, error: String) -> Result<(), Box<dyn Error>> {
+        self.receive(reservation, Err(error))
+    }
+
+    #[must_use]
+    pub fn next_admission(&self) -> Option<usize> {
+        self.schedule.first().map(|(_, reservation)| *reservation)
+    }
+
+    fn receive(
+        &mut self,
+        reservation: usize,
+        outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+    ) -> Result<(), Box<dyn Error>> {
+        self.profile.receives = self.profile.receives.saturating_add(1);
+        self.running = self
+            .running
+            .checked_sub(1)
+            .ok_or("campaign worker replied without queued work")?;
         let held = self.schedule.first().map(|(_, next)| *next) != Some(reservation);
         self.idle_clock.update(
             self.running,
@@ -416,9 +431,7 @@ where
                 CompletedJob {
                     held_since: held.then(now),
                     pending,
-                    result,
-                    execution_work,
-                    result_sha256,
+                    outcome,
                 },
             )
             .is_some()
@@ -713,9 +726,10 @@ where
         *planned_clock = finish;
         spec_records.remove(&reservation);
         let pending_job = completed_job.pending;
-        let result = completed_job.result;
-        let execution_work = completed_job.execution_work;
-        let result_sha256 = completed_job.result_sha256;
+        let (result, execution_work, result_sha256) =
+            completed_job.outcome.map_err(|error| -> Box<dyn Error> {
+                format!("campaign reservation {reservation} failed: {error}").into()
+            })?;
         if let Some(since) = completed_job.held_since {
             let held = nanos_since(since);
             admission.results_held = admission.results_held.saturating_add(1);

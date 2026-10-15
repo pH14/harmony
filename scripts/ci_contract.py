@@ -227,6 +227,7 @@ LIB_PARTITIONS = {
         "Search Coordination": ("search::continuation", "search::rand"),
         "Campaign Recording and Replay": (
             "search::campaign", "search::checkpoint", "search::telemetry",
+            "search::executable_identity",
         ),
     },
 }

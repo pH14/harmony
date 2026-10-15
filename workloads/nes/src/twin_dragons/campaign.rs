@@ -14,8 +14,8 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            CampaignConfig, CampaignOrigin, TargetExecution, replay_campaign_checkpointed,
-            run_campaign_checkpointed,
+            ArchiveSource, CampaignConfig, CampaignOrigin, TargetExecution,
+            replay_campaign_checkpointed, run_campaign_checkpointed,
         },
         draw::DrawMixture,
     },
@@ -76,10 +76,10 @@ pub fn run_twin_dragons_campaign_checkpointed(
 pub fn replay_twin_dragons_campaign_checkpointed(
     game: &TwinDragonsGame,
     stream_bytes: &[u8],
-    origin_report: Option<&TwinDragonsArchiveReport>,
+    origin_source: Option<&ArchiveSource<TwinDragonsArchiveReport>>,
     origin_checkpoint: Option<&TwinDragonsCampaignCheckpoint>,
 ) -> Result<(TwinDragonsCampaignModeReport, TwinDragonsSnapshotCheckpoint), Box<dyn Error>> {
-    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_source, origin_checkpoint)
 }
 
 impl crate::film::Filmable for TwinDragonsGame {
