@@ -139,7 +139,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_cascade_pace_yield_cell_recent_count_decay_v1";
+pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v1";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -2492,24 +2492,21 @@ where
             parent_id.is_some_and(|parent| cell_of(self.entries[parent].key) != cell_of(key));
         let carried_win = carried_in && (replacement_preferences != 0 || improved_preference);
         if new_cell || carried_win {
-            let next = self
-                .tiers
-                .range(..key.progress())
-                .next_back()
-                .map(|(progress, _)| (format!("{progress:?}"), self.tier_runs(*progress)));
+            let fresh = self.tier_runs(key.progress()).yields == 0;
             let runs = self.tier_runs_mut(key.progress());
             runs.yields = runs.yields.saturating_add(1);
-            if new_cell {
-                runs.longest = runs.longest.max(runs.current);
-                runs.current = 0;
-                runs.wins = 0;
-                let (tier, next_runs) = next.unwrap_or_default();
-                runs.next_tier = tier;
-                runs.next_draws = next_runs.draws;
-                runs.next_yields = next_runs.yields;
-            } else {
+            if !new_cell {
                 runs.wins = runs.wins.saturating_add(1);
             }
+            if fresh {
+                self.restart_tier_run(key.progress());
+            }
+        }
+        if let Some(from) = parent_id
+            .map(|parent| self.entries[parent].key.progress())
+            .filter(|from| new_cell && *from < key.progress())
+        {
+            self.restart_tier_run(from);
         }
         if replacement_preferences != 0 && carried_in {
             self.reset_cell_draws(cell_of(key));
@@ -2690,6 +2687,22 @@ where
             .tier_runs
             .entry(format!("{progress:?}"))
             .or_default()
+    }
+
+    fn restart_tier_run(&mut self, progress: K::Progress) {
+        let next = self
+            .tiers
+            .range(..progress)
+            .next_back()
+            .map(|(below, _)| (format!("{below:?}"), self.tier_runs(*below)));
+        let runs = self.tier_runs_mut(progress);
+        runs.longest = runs.longest.max(runs.current);
+        runs.current = 0;
+        runs.wins = 0;
+        let (tier, next_runs) = next.unwrap_or_default();
+        runs.next_tier = tier;
+        runs.next_draws = next_runs.draws;
+        runs.next_yields = next_runs.yields;
     }
 
     fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>, shift: u32) -> u32 {
@@ -8307,7 +8320,7 @@ mod tests {
     }
 
     #[test]
-    fn stalled_tiers_below_a_stalled_top_fall_together_to_the_first_tier_still_opening_cells() {
+    fn stalled_tiers_below_a_stalled_top_fall_together_to_the_first_tier_still_making_progress() {
         let mut archive = tier_archive(&[(1, 9, 0), (2, 1, 0), (3, 1, 0)]);
         for (id, rank, draws) in [(2, 0, 128), (1, 1, 64)] {
             let draw = SelectorDraw {
@@ -8331,7 +8344,7 @@ mod tests {
         key.state_fingerprint = 7;
         archive
             .insert(
-                None,
+                Some(1),
                 0,
                 ArchiveCandidate {
                     suffix: vec![7],
@@ -8340,10 +8353,30 @@ mod tests {
                 },
                 (),
             )
-            .expect("insert middle tier entry")
+            .expect("insert a middle tier cell beside its parent")
             .expect("retain middle tier entry");
-        archive.record_selection(1, &draw);
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000d, 6144);
+        assert!(
+            roughly_equal(counts[0], counts[1] + counts[3]),
+            "{counts:?}"
+        );
+        let mut key = probe_key(3, 1, 5, 0);
+        key.state_fingerprint = 8;
+        archive
+            .insert(
+                Some(1),
+                0,
+                ArchiveCandidate {
+                    suffix: vec![8],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert a top tier cell from the middle tier")
+            .expect("retain top tier entry");
+        archive.record_selection(1, &draw);
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000e, 6144);
         assert!(counts[1] + counts[3] > counts[0] * 5, "{counts:?}");
     }
 
@@ -8434,21 +8467,21 @@ mod tests {
     }
 
     #[test]
-    fn a_top_tier_keeps_its_weight_until_its_draws_pass_twice_its_longest_run() {
+    fn a_cell_beside_its_parent_in_the_top_tier_keeps_the_tier_falling() {
         let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
         let draw = SelectorDraw {
             path: SelectorPath::Tiers,
             tier_rank: Some(0),
             best_preference: None,
         };
-        for _ in 0..40 {
+        for _ in 0..64 {
             archive.record_selection(0, &draw);
         }
         let mut key = probe_key(2, 1, 5, 0);
         key.state_fingerprint = 2;
         archive
             .insert(
-                None,
+                Some(0),
                 0,
                 ArchiveCandidate {
                     suffix: vec![2],
@@ -8459,17 +8492,26 @@ mod tests {
             )
             .expect("insert tier entry")
             .expect("retain tier entry");
-        for _ in 0..80 {
-            archive.record_selection(0, &draw);
-        }
-        let full = top_tier_draws(&mut archive, 0x7ea1_0006, 4096);
-        assert!(full[0] > full[1] * 5, "{full:?}");
         archive.record_selection(0, &draw);
-        let halved = top_tier_draws(&mut archive, 0x7ea1_0007, 4096);
-        assert!(
-            halved[0] > halved[1] * 2 && halved[0] < halved[1] * 6,
-            "{halved:?}"
-        );
+        let fallen = top_tier_draws(&mut archive, 0x7ea1_0006, 4096);
+        assert!(roughly_equal(fallen[0], fallen[1]), "{fallen:?}");
+        let mut key = probe_key(3, 1, 5, 0);
+        key.state_fingerprint = 3;
+        archive
+            .insert(
+                Some(0),
+                0,
+                ArchiveCandidate {
+                    suffix: vec![3],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert deeper entry")
+            .expect("retain deeper entry");
+        assert_eq!(archive.tier_runs((2, 1)).current, 0);
+        assert_eq!(archive.tier_runs((2, 1)).longest, 65);
     }
 
     fn top_tier_draws(archive: &mut TestArchive, seed: u64, draws: usize) -> [u64; 2] {
