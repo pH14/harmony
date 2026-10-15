@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use environment::channel::{HandlerSnapshot, NominalHandler, RecordedEnv, ServiceHandler};
@@ -37,6 +39,12 @@ pub(crate) const RUNNING: u8 = 0;
 pub(crate) const CUT: u8 = 1;
 pub(crate) const FAILED: u8 = 2;
 pub(crate) const CLOSED: u8 = 3;
+#[cfg(test)]
+pub(crate) const TEST_DELAY_CUT_SEED: u64 = 0x6855_4d4c_4355_5431;
+#[cfg(test)]
+pub(crate) static TEST_HOLD_CUT: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_CUT_READY: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bridge {
@@ -509,6 +517,13 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
             Err(failure) => break Some(failure),
         };
         if services.events.len() > recorded && bridge.cut == Some(services.events.len()) {
+            #[cfg(test)]
+            if bridge.seed == TEST_DELAY_CUT_SEED {
+                TEST_CUT_READY.store(true, Ordering::Release);
+                while TEST_HOLD_CUT.load(Ordering::Acquire) {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+            }
             state.store(CUT, Ordering::Release);
             break None;
         }
