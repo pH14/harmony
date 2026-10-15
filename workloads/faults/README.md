@@ -72,9 +72,10 @@ file offset and virtual address disagree within a page. Section headers do
 not determine what the guest loader executes.
 The x86 scan follows instruction streams from each mapped section and gap
 across section and adjacent executable-load boundaries. It starts at each
-load's declared address, restarts at direct near-branch targets within the
-executable mapping, and rejects overlapping executable mappings, which could
-combine instruction bytes from different loads. The scan still requires
+load's declared address, restarts at direct near-branch targets in any
+executable load of the same ELF, including across unmapped gaps, and rejects
+overlapping executable mappings, which could combine instruction bytes from
+different loads. The scan still requires
 cooperative workloads: dynamically generated code and indirect transfers into
 another instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
