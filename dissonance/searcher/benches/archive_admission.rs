@@ -135,7 +135,7 @@ fn reporting(c: &mut Criterion) {
                     },
                     key: Key([id; 4]),
                     milestones: vec![1; 16],
-                    snapshot_sha256: None,
+                    snapshot_identity_sha256: None,
                     selector: None,
                 })
                 .collect(),

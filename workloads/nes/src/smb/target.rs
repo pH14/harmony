@@ -59,11 +59,15 @@ impl<P: SnapshotState> SmbSnapshot<P> {
             ..self.clone()
         })
     }
+
+    pub(crate) fn snapshot_identity_sha256(&self) -> Result<String, Box<dyn Error>> {
+        searcher::search::campaign::postcard_value_sha256(&self.logical_identity()?)
+    }
 }
 
 impl<P: SnapshotState> crate::witness::EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
-        crate::witness::postcard_sha256(&self.logical_identity()?)
+        self.snapshot_identity_sha256()
     }
 }
 
@@ -1023,6 +1027,18 @@ mod tests {
             with_state(vec![4, 2]),
         );
         assert_ne!(raw, other_raw);
+        assert_ne!(
+            searcher::search::campaign::postcard_value_sha256(&raw).unwrap(),
+            searcher::search::campaign::postcard_value_sha256(&other_raw).unwrap()
+        );
+        assert_eq!(
+            raw.snapshot_identity_sha256().unwrap(),
+            other_raw.snapshot_identity_sha256().unwrap()
+        );
+        assert_ne!(
+            raw.snapshot_identity_sha256().unwrap(),
+            other_logical.snapshot_identity_sha256().unwrap()
+        );
         assert_eq!(
             raw.logical_identity().unwrap(),
             other_raw.logical_identity().unwrap()

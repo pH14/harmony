@@ -330,6 +330,12 @@ impl Reporting for HeldWorkload {
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_value_sha256(result)
     }
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
+    }
     fn archive_report(&self, evidence: &Evidence, state: ArchiveReportState<Self>) -> Report {
         Report {
             entries: state.entries,

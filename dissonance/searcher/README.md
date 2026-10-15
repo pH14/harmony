@@ -34,11 +34,13 @@ and digest cannot be replaced separately, and replay checks that raw-byte digest
 against the recorded origin before deriving resume input or importing evidence.
 Changing only JSON whitespace still changes the source identity. Live archive
 import uses that same sealed source. Each exported archive snapshot also has a
-SHA-256 digest of its postcard serialization in the matching source entry.
+source-entry SHA-256 digest of the workload's logical snapshot identity. The
+workload chooses the projection; Consonance-backed workloads exclude only
+restoration metadata that their existing job-result identity also excludes.
 Before an archive checkpoint restores any state, live import and replay check
 each checkpoint entry's ID and snapshot against that source-bound digest.
 Duplicate or unknown checkpoint IDs, and source entries without a bound digest,
-are rejected. Older archive reports without snapshot digests remain usable for
+are rejected. Older archive reports without snapshot identities remain usable for
 whole-tree import without a checkpoint, but cannot authorize checkpoint restore.
 Snapshot-root origins use their separate checkpoint contract.
 It also checks the fixed executor and selection-seed derivation labels. The stream and

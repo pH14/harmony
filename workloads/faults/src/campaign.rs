@@ -19,7 +19,8 @@ use searcher::{
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
             Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
-            default_window, postcard_result_sha256, run_campaign_checkpointed_with_options,
+            default_window, postcard_result_sha256, postcard_value_sha256,
+            run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -358,6 +359,13 @@ impl Reporting for FaultWorkload {
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
         postcard_result_sha256(result)
+    }
+
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
     }
 
     fn archive_report(
