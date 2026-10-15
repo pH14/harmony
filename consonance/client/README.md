@@ -39,6 +39,11 @@ some loader variables give empty values a meaning. This check does
 not bind ordinary dependent libraries, code loaded later, or an injected
 library that clears its loader variable before admission. A nonempty
 `identity_tag` adds a workload domain; it does not replace those setup inputs.
+
+On Linux, `cargo run` itself defines `LD_LIBRARY_PATH`; build first and run the
+binary directly with the listed loader variables unset when creating sessions
+or workers.
+
 Sparse snapshot pages are relative to setup RAM, so a session checks this
 identity before importing pages from another session. Cache extents carry the
 same identity. Snapshots made with the earlier image identity calculation do
