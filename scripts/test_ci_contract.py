@@ -388,7 +388,11 @@ class HostCompatibilityTests(unittest.TestCase):
             step["with"] for step in self.hosts["linux-arm64-qualification"]["steps"]
             if step.get("uses") == "Swatinem/rust-cache@v2"
         )
-        self.assertEqual(portable_cache, qualification_cache)
+        self.assertNotEqual(portable_cache["shared-key"], qualification_cache["shared-key"])
+        self.assertEqual(
+            {key: value for key, value in portable_cache.items() if key != "shared-key"},
+            {key: value for key, value in qualification_cache.items() if key != "shared-key"},
+        )
 
     def test_a_host_job_claims_no_live_hypervisor(self):
         text = (ROOT / self.workflow.path).read_text()
