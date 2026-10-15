@@ -34,7 +34,10 @@ runtime configuration, including when the selected index entry changes.
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
 placed at `/harmony-oci/rootfs`; the control segment owns
 `/harmony-oci/config.json`, `/harmony-oci/execution.json`, and sorted external
-files. Image contents cannot replace those control paths. The canonical OCI
+files. Preparation fixes these bytes and their identity together; callers can
+inspect them through read-only accessors and compose the initramfs, but cannot
+replace a segment or the execution specification while retaining the original
+identity. Image contents cannot replace those control paths. The canonical OCI
 configuration always starts `/usr/lib/harmony/supervisor` as root. The
 supervisor reads the mounted execution specification and applies its argv,
 environment, working directory, and resolved image credentials to the

@@ -109,7 +109,7 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
     } else {
         BTreeMap::new()
     };
-    let execution = prepared.execution.to_vec()?;
+    let execution = prepared.execution().to_vec()?;
     let composed = prepared.initramfs(&platform);
     let runtime_config = serde_json::to_vec(&staged.config)?;
     let input_manifest = serde_json::to_vec(&inputs)?;
@@ -117,8 +117,8 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
         ("kernel.bin", &kernel),
         ("session-config.json", session_json),
         ("platform.cpio.gz", &platform),
-        ("rootfs.cpio.gz", &prepared.rootfs_segment),
-        ("control.cpio.gz", &prepared.control_segment),
+        ("rootfs.cpio.gz", prepared.rootfs_segment()),
+        ("control.cpio.gz", prepared.control_segment()),
         ("execution.json", &execution),
         ("image-runtime-config.json", &runtime_config),
         ("image-inputs.json", &input_manifest),
@@ -140,8 +140,8 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
         "files": files,
         "composition": [
             {"file": "platform.cpio.gz", "offset": 0, "size": platform.len()},
-            {"file": "rootfs.cpio.gz", "offset": platform.len(), "size": prepared.rootfs_segment.len()},
-            {"file": "control.cpio.gz", "offset": platform.len() + prepared.rootfs_segment.len(), "size": prepared.control_segment.len()}
+            {"file": "rootfs.cpio.gz", "offset": platform.len(), "size": prepared.rootfs_segment().len()},
+            {"file": "control.cpio.gz", "offset": platform.len() + prepared.rootfs_segment().len(), "size": prepared.control_segment().len()}
         ],
         "external_inputs": rom.as_ref().map(|bytes| json!({"/game.nes": {"sha256": sha(bytes), "size": bytes.len()}})).unwrap_or_else(|| json!({})),
         "code_inputs": code_inputs,

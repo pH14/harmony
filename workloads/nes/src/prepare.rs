@@ -59,14 +59,14 @@ mod tests {
     fn prepared_execution_uses_the_generic_supervisor_and_external_rom() {
         let prepared = prepare_oci(&image(), b"rom-bytes").expect("prepare");
         assert_eq!(
-            prepared.execution.argv,
+            prepared.execution().argv,
             [AGENT_PATH, "--nes-payload", "--rom", ROM_PATH]
         );
-        assert_eq!(prepared.execution.uid, 0);
-        assert_eq!(prepared.execution.gid, 0);
-        assert_eq!(prepared.execution.cwd, "/");
+        assert_eq!(prepared.execution().uid, 0);
+        assert_eq!(prepared.execution().gid, 0);
+        assert_eq!(prepared.execution().cwd, "/");
         let mut compressed = tempfile::NamedTempFile::new().expect("compressed segment");
-        std::io::Write::write_all(&mut compressed, &prepared.control_segment)
+        std::io::Write::write_all(&mut compressed, prepared.control_segment())
             .expect("write segment");
         let archive = std::process::Command::new("gzip")
             .args(["-dc"])
@@ -92,8 +92,8 @@ mod tests {
     fn rom_bytes_are_part_of_the_prepared_identity() {
         let first = prepare_oci(&image(), b"rom-one").expect("prepare");
         let second = prepare_oci(&image(), b"rom-two").expect("prepare");
-        assert_ne!(first.identity, second.identity);
-        assert_ne!(first.control_segment, second.control_segment);
+        assert_ne!(first.identity(), second.identity());
+        assert_ne!(first.control_segment(), second.control_segment());
     }
 
     #[test]
