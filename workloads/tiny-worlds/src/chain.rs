@@ -55,7 +55,8 @@ impl LocalState {
             | WorldState::Graph(_)
             | WorldState::Crossing(_)
             | WorldState::PassiveClock(_)
-            | WorldState::Targets(_) => {
+            | WorldState::Targets(_)
+            | WorldState::Fork(_) => {
                 unreachable!("validated non-nested, non-graph stage")
             }
         }
@@ -99,10 +100,15 @@ impl Config {
             }
             if matches!(
                 stage.world,
-                World::Graph(_) | World::Crossing(_) | World::PassiveClock(_) | World::Targets(_)
+                World::Graph(_)
+                    | World::Crossing(_)
+                    | World::PassiveClock(_)
+                    | World::Targets(_)
+                    | World::Fork(_)
             ) {
                 return Err(
-                    "graph, crossing, passive-clock and targets stages are unsupported".into(),
+                    "graph, crossing, passive-clock, targets and fork stages are unsupported"
+                        .into(),
                 );
             }
             if matches!(&stage.world, World::Map(w) if w.boss_stock > 0) {

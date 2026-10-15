@@ -121,6 +121,7 @@ representation or action choice affects the same world transitions.
 | `crossing` | Reach a short exit while a large pool of flat-tier places competes for attempts. | Hide partial exit progress. |
 | `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
 | `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
+| `fork` | Take the fork action that leads to the goal while the other route, easier to walk, runs further and keeps opening side rooms before it dead-ends. | Hide the side rooms from the key. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -390,6 +391,30 @@ spreads draws over many places at every damage level. After the first arrival
 at 4 cannons down, parents with 4 down take a median 3% of the draws with
 `posture_actions` 2, against 8% with `posture_actions` 1.
 
+## Dead-end fork
+
+The fork world reproduces a Famidash stall. Level 13 (Clubstep) and level 19
+each have a route choice at a portal. The easier choice runs further right and
+then dies whatever is pressed, and its ship states keep opening new cells at
+different heights for millions of tries. The route to the end of the level
+branches off several 256-pixel bands earlier.
+
+Positions 0 to `fork` form a shared corridor: the pattern action advances and
+any other action returns to the start. At `fork` the pattern action enters the
+live route and the next action, the advance action, enters the dead route.
+Each live position needs its pattern action twice in a row, and the goal is
+the live position `length`. The first press is hidden from the key. A dead
+position advances on its advance action, returns to the start on its pattern
+action, and offers side rooms on the other two actions. One of them is the
+explore action, chosen by the pattern; room `r + 1` needs `r + 1` explore
+actions in a row from room `r`, so each room takes about four times the tries
+of the one before, up to `rooms` rooms. The dead route ends at position
+`fork + dead_len`, below `length`, and never reaches the goal. The tier is the
+position on either route, so the dead route's deepest tiers rank above the
+live route until the live route passes them. The control keys every side room
+as its position. `evidence.fork_first` gives the first work on the live route,
+past the dead route's last position, and at the goal.
+
 ## Configuration bounds
 
 Every parameter is required except the optional map fields. Bounds keep
@@ -409,13 +434,14 @@ family's and passive clock's reachability hold by construction.
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
+| Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, and `targets` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, and `fork` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
@@ -563,6 +589,7 @@ layouts.
 | Boss beside a late item | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 8, `boss_hits_back`, `late_item`; 600,000 work | The 9-item tier founded by one drained state at Ridley's statue, while stocked 8-item holders lose their draws | As above |
 | Boss past an item at the entry | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 8, `boss_hits_back`, `late_item`, `item_at_entry`, `tail_slots`; 600,000 work | Tourian: drained states raise the statue, and a kill needs stock carried past rooms that drain it | As above |
 | Boss behind a shield with damage as a tier | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 24, `shield` 8, `shield_odds` 4, `hit_tier`, `tail_slots`; 600,000 work | Mother Brain: the first hit raises the tier from a state that spent its missiles on the Zebetites, and the stocked states below that tier stop getting draws | To the item, to the stocked arrival, to the first hit |
+| Dead-end fork | `length` 14, `fork` 2, `dead_len` 6, `rooms` 4 | Famidash Clubstep: a dead-end route that keeps opening cells in the top tier holds its weight over the route to the goal | To the live route, past the dead end |
 
 The passive-clock worlds use `energy_splice:6`. The rare crossing worlds use `energy_splice:6` and scaled low-memory reports; the other worlds retain their default settings. Clocks count `clock_ticks`, whereas crossing work counts actions. The rare crossing entry legs count executions. Compare arms within a world, not absolute work across families. Older binaries without these families or options cannot run them: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
 
