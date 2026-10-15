@@ -457,12 +457,12 @@ mod live {
                 .ok_or("User-mode Linux search needs an admitted coordinator host processor")?;
             guest.verify_processor(cpu)?;
         }
-        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
+        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
-        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
         let campaign = FaultCampaignConfig {
@@ -669,7 +669,7 @@ mod live {
             return Err("--repeat must be positive".into());
         }
         let config = config(options)?;
-        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
+        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
         let mut report = Report::new("replay", artifacts, identity, options, 1);
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();
