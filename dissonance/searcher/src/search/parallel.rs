@@ -129,14 +129,7 @@ impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
     }
 
     pub(crate) fn dispatch(&self, key: Key, job: Job) -> Result<(), Box<dyn Error>> {
-        match self.send(key, job) {
-            Err(WorkerPoolError::WorkersExited) => Err(self
-                .reply_receiver
-                .try_iter()
-                .find_map(|reply| reply.outcome.err())
-                .map_or_else(|| WorkerPoolError::WorkersExited.into(), Into::into)),
-            sent => sent.map_err(Into::into),
-        }
+        self.send(key, job).map_err(Into::into)
     }
 
     pub(crate) fn close(&mut self) {
@@ -200,6 +193,7 @@ impl<Key: Ord, Job, Output> Drop for WorkerPool<Key, Job, Output> {
 pub(crate) fn with_worker_pool<State, Key, Job, Output, ResultValue, CoordinatorError>(
     workers: u32,
     initialize: impl Fn(u32) -> Result<State, String> + Sync,
+    recover: impl Fn(u32) -> Result<State, String> + Sync,
     execute: impl Fn(&mut State, Job) -> Result<Output, String> + Sync,
     finish: impl Fn(&State) -> TargetCounters + Sync,
     coordinate: impl FnOnce(&mut WorkerPool<Key, Job, Output>) -> Result<ResultValue, CoordinatorError>,
@@ -220,6 +214,7 @@ where
             let startup_sender = startup_sender.clone();
             let jobs = Arc::clone(&jobs);
             let initialize = &initialize;
+            let recover = &recover;
             let execute = &execute;
             let finish = &finish;
             handles.push(scope.spawn(move || {
@@ -229,7 +224,7 @@ where
                 let mut telemetry = WorkerTelemetry::default();
                 let initialized =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| initialize(worker)));
-                let mut state = match initialized {
+                let mut state = Some(match initialized {
                     Ok(Ok(state)) => {
                         let _ = startup_sender.send((worker, Ok(())));
                         state
@@ -243,9 +238,10 @@ where
                         let _ = startup_sender.send((worker, Err(error.clone())));
                         return Err(error);
                     }
-                };
+                });
                 drop(startup_sender);
                 telemetry.boot_ns = nanos_since(booted);
+                let mut worker_failure = None;
                 loop {
                     let waiting = now();
                     let Some((key, job)) = jobs.next() else {
@@ -253,13 +249,22 @@ where
                     };
                     telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
                     let started = now();
-                    let (outcome, panicked) =
-                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            execute(&mut state, job)
-                        })) {
-                            Ok(outcome) => (outcome, false),
-                            Err(_) => (Err("worker panicked during execution".to_owned()), true),
-                        };
+                    let (outcome, panicked) = match state.as_mut() {
+                        Some(target) => {
+                            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                execute(target, job)
+                            })) {
+                                Ok(outcome) => (outcome, false),
+                                Err(_) => {
+                                    (Err("worker panicked during execution".to_owned()), true)
+                                }
+                            }
+                        }
+                        None => (
+                            Err("worker target unavailable after execution panic".to_owned()),
+                            false,
+                        ),
+                    };
                     telemetry.busy_ns = telemetry.busy_ns.saturating_add(nanos_since(started));
                     telemetry.jobs = telemetry.jobs.saturating_add(1);
                     let failed = outcome.is_err();
@@ -272,20 +277,47 @@ where
                         outcome,
                     });
                     if panicked {
-                        return Err("worker panicked during execution".to_owned());
+                        worker_failure = Some("worker panicked during execution".to_owned());
+                        if sent.is_err() {
+                            return Err("worker panicked during execution".to_owned());
+                        }
+                        let discarded =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                drop(state.take());
+                            }));
+                        if discarded.is_err() {
+                            return Err(
+                                "worker target could not be discarded after panic".to_owned()
+                            );
+                        }
+                        state = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            recover(worker)
+                        }))
+                        .ok()
+                        .and_then(Result::ok);
+                        if state.is_none() {
+                            return Err(
+                                "worker target could not be recreated after panic".to_owned()
+                            );
+                        }
                     }
-                    if sent.is_err() || failed {
+                    if sent.is_err() || (failed && !panicked) {
                         break;
                     }
                 }
-                telemetry.target = finish(&state);
+                if let Some(target) = state.as_ref() {
+                    telemetry.target = finish(target);
+                }
                 if let (Some((cpu_before, wait_before)), Some((cpu_after, wait_after))) =
                     (schedstat_before, thread_schedstat())
                 {
                     telemetry.cpu_ns = Some(cpu_after.saturating_sub(cpu_before));
                     telemetry.cpu_wait_ns = Some(wait_after.saturating_sub(wait_before));
                 }
-                Ok(telemetry)
+                match worker_failure {
+                    Some(error) => Err(error),
+                    None => Ok(telemetry),
+                }
             }));
         }
         drop(reply_sender);
@@ -298,19 +330,19 @@ where
         let result = coordinate(&mut pool);
         drop(pool);
         let mut telemetry = Vec::with_capacity(handles.len());
-        let mut startup_error = None;
+        let mut worker_error = None;
         for handle in handles {
             match handle.join() {
                 Ok(Ok(worker)) => telemetry.push(worker),
                 Ok(Err(error)) => {
-                    startup_error.get_or_insert(error);
+                    worker_error.get_or_insert(error);
                     telemetry.push(WorkerTelemetry::default());
                 }
                 Err(_) => telemetry.push(WorkerTelemetry::default()),
             }
         }
         let value = result?;
-        match startup_error {
+        match worker_error {
             Some(error) => Err(error.into()),
             None => Ok((value, telemetry)),
         }
@@ -329,6 +361,7 @@ mod tests {
         let (release, blocked) = mpsc::channel();
         let replies = with_worker_pool(
             3,
+            |_| Ok::<_, String>(()),
             |_| Ok::<_, String>(()),
             |_, (release, value): (Option<mpsc::Receiver<()>>, u8)| {
                 if let Some(release) = release {
@@ -362,6 +395,7 @@ mod tests {
         let (release, blocked) = mpsc::channel();
         let replies = with_worker_pool(
             1,
+            |_| Ok::<_, String>(()),
             |_| Ok::<_, String>(()),
             |_, (release, value): (Option<mpsc::Receiver<()>>, u8)| {
                 if let Some(release) = release {
@@ -430,6 +464,7 @@ mod tests {
         let replies = with_worker_pool(
             1,
             |_| Ok::<_, String>(10_u64),
+            |_| Ok::<_, String>(10_u64),
             |state, job: u64| Ok::<_, String>(*state + job),
             |state| TargetCounters::from([("state".to_owned(), *state)]),
             |pool| -> Result<Vec<(u32, u64)>, Box<dyn std::error::Error>> {
@@ -452,6 +487,7 @@ mod tests {
         let value = with_worker_pool(
             1,
             |_| Ok::<_, String>(Rc::new(Cell::new(4_u64))),
+            |_| Ok::<_, String>(Rc::new(Cell::new(4_u64))),
             |state, increment: u64| {
                 state.set(state.get().saturating_add(increment));
                 Ok::<_, String>(state.get())
@@ -472,6 +508,7 @@ mod tests {
         let error = with_worker_pool(
             2,
             |_| Err::<(), _>("boot failed".to_owned()),
+            |_| Ok::<_, String>(()),
             |(), job: u64| Ok::<_, String>(job),
             |()| TargetCounters::new(),
             |pool| -> Result<(), Box<dyn std::error::Error>> {
@@ -507,6 +544,7 @@ mod tests {
                 }
                 Ok(())
             },
+            |_| Ok::<_, String>(()),
             |(), job: u64| Ok::<_, String>(job),
             |()| TargetCounters::new(),
             |pool| -> Result<u64, Box<dyn std::error::Error>> {
@@ -530,6 +568,7 @@ mod tests {
                 }
                 Ok(())
             },
+            |_| Ok::<_, String>(()),
             |(), (): ()| Ok::<_, String>(()),
             |()| TargetCounters::new(),
             |pool: &mut WorkerPool<u8, (), ()>| -> Result<(), Box<dyn std::error::Error>> {
@@ -561,41 +600,246 @@ mod tests {
     }
 
     #[test]
-    fn execution_panic_replies_with_its_key_and_retires_the_worker() {
+    fn execution_panic_replies_with_its_key_and_replaces_the_target() {
         for workers in [1, 2] {
             let error = with_worker_pool(
                 workers,
                 |_| Ok::<_, String>(()),
-                |(), (): ()| -> Result<(), String> { panic!("injected execution panic") },
+                |_| Ok::<_, String>(()),
+                |(), panic: bool| -> Result<(), String> {
+                    if panic {
+                        panic!("injected execution panic");
+                    }
+                    Ok(())
+                },
                 |()| TargetCounters::new(),
                 |pool| -> Result<(), Box<dyn std::error::Error>> {
                     pool.wait_ready(workers)?;
-                    pool.send(0_u8, ())?;
+                    pool.send(0_u8, true)?;
                     let reply = pool.receive()?;
                     assert_eq!(reply.key, 0);
                     assert_eq!(
                         reply.outcome,
                         Err("worker panicked during execution".to_owned())
                     );
-                    if workers == 1 {
-                        let shared = pool.jobs.as_ref().unwrap();
-                        let queue = shared.queue.lock().unwrap();
-                        let queue = shared
-                            .ready
-                            .wait_timeout_while(queue, Duration::from_secs(5), |queue| {
-                                queue.workers != 0
-                            })
-                            .unwrap()
-                            .0;
-                        assert_eq!(queue.workers, 0);
-                        drop(queue);
-                        pool.send(1_u8, ())?;
-                    }
+                    pool.send(1_u8, false)?;
+                    let recovered = pool.receive()?;
+                    assert_eq!(recovered.key, 1);
+                    assert_eq!(recovered.outcome, Ok(()));
+                    pool.close();
                     Ok(())
                 },
             )
             .unwrap_err();
             assert_eq!(error.to_string(), "worker panicked during execution");
         }
+    }
+
+    #[test]
+    fn an_earlier_key_queued_after_a_panic_still_gets_a_reply() {
+        let (started, entered) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let error = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            move |(), (block, value): (Option<mpsc::Receiver<()>>, u8)| {
+                if let Some(block) = block {
+                    started.send(()).unwrap();
+                    block.recv().unwrap();
+                    panic!("later-planned job panicked");
+                }
+                Ok::<_, String>(value)
+            },
+            |()| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                pool.send(20, (Some(blocked), 20))?;
+                entered.recv_timeout(Duration::from_secs(5))?;
+                pool.send(10, (None, 10))?;
+                release.send(())?;
+                let failed = pool.receive()?;
+                assert_eq!(failed.key, 20);
+                assert_eq!(
+                    failed.outcome,
+                    Err("worker panicked during execution".to_owned())
+                );
+                let earlier = pool.receive()?;
+                assert_eq!(earlier.key, 10);
+                assert_eq!(earlier.outcome, Ok(10));
+                pool.close();
+                Ok(())
+            },
+        );
+        assert_eq!(
+            error.unwrap_err().to_string(),
+            "worker panicked during execution"
+        );
+    }
+
+    #[test]
+    fn failed_recovery_disconnects_after_the_keyed_panic_reply() {
+        let (started, entered) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let error = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Err::<(), _>("target recreation failed".to_owned()),
+            move |(), (block, value): (Option<mpsc::Receiver<()>>, u8)| {
+                if let Some(block) = block {
+                    started.send(()).unwrap();
+                    block.recv().unwrap();
+                    panic!("later-planned job panicked");
+                }
+                Ok::<_, String>(value)
+            },
+            |()| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                pool.send(20, (Some(blocked), 20))?;
+                entered.recv_timeout(Duration::from_secs(5))?;
+                pool.send(10, (None, 10))?;
+                release.send(())?;
+                let failed = pool.receive()?;
+                assert_eq!(failed.key, 20);
+                assert_eq!(
+                    failed.outcome,
+                    Err("worker panicked during execution".to_owned())
+                );
+                assert!(matches!(
+                    pool.receive(),
+                    Err(WorkerPoolError::RepliesClosed)
+                ));
+                pool.close();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "worker target could not be recreated after panic"
+        );
+    }
+
+    #[test]
+    fn failed_recovery_retires_without_taking_work_from_a_healthy_worker() {
+        let (started, entered) = mpsc::channel();
+        let (release_panic, blocked_panic) = mpsc::channel();
+        let (release_healthy, blocked_healthy) = mpsc::channel();
+        let error = with_worker_pool(
+            2,
+            |_| Ok::<_, String>(()),
+            |_| Err::<(), _>("target recreation failed".to_owned()),
+            move |(), (release, value): (Option<mpsc::Receiver<()>>, u8)| {
+                if let Some(release) = release {
+                    started.send(value).unwrap();
+                    release.recv().unwrap();
+                    if value == 20 {
+                        panic!("later-planned job panicked");
+                    }
+                }
+                Ok::<_, String>(value)
+            },
+            |()| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(2)?;
+                pool.send(20, (Some(blocked_panic), 20))?;
+                pool.send(30, (Some(blocked_healthy), 30))?;
+                let first_claim = entered.recv_timeout(Duration::from_secs(5));
+                let second_claim = entered.recv_timeout(Duration::from_secs(5));
+                if first_claim.is_err() || second_claim.is_err() {
+                    let _ = release_panic.send(());
+                    let _ = release_healthy.send(());
+                }
+                let mut claimed = [first_claim?, second_claim?];
+                claimed.sort_unstable();
+                if claimed != [20, 30] {
+                    let _ = release_panic.send(());
+                    let _ = release_healthy.send(());
+                }
+                assert_eq!(claimed, [20, 30]);
+                pool.send(10, (None, 10))?;
+                release_panic.send(())?;
+                let shared = pool.jobs.as_ref().unwrap();
+                let queue = shared.queue.lock().unwrap();
+                let queue = shared
+                    .ready
+                    .wait_timeout_while(queue, Duration::from_secs(5), |queue| queue.workers != 1)
+                    .unwrap()
+                    .0;
+                let survivors = queue.workers;
+                drop(queue);
+                release_healthy.send(())?;
+                assert_eq!(survivors, 1);
+                let mut replies = (0..3)
+                    .map(|_| pool.receive().map(|reply| (reply.key, reply.outcome)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                replies.sort_by_key(|(key, _)| *key);
+                assert_eq!(replies[0], (10, Ok(10)));
+                assert_eq!(
+                    replies[1],
+                    (20, Err("worker panicked during execution".to_owned()))
+                );
+                assert_eq!(replies[2], (30, Ok(30)));
+                pool.close();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "worker target could not be recreated after panic"
+        );
+    }
+
+    #[test]
+    fn dispatch_after_all_workers_exit_preserves_buffered_replies() {
+        let error = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Err::<(), _>("target recreation failed".to_owned()),
+            |(), panic: bool| -> Result<u8, String> {
+                if panic {
+                    panic!("injected execution panic");
+                }
+                Ok(10)
+            },
+            |()| TargetCounters::new(),
+            |pool| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                pool.send(10_u8, false)?;
+                pool.send(20_u8, true)?;
+                let shared = pool.jobs.as_ref().unwrap();
+                let queue = shared.queue.lock().unwrap();
+                let queue = shared
+                    .ready
+                    .wait_timeout_while(queue, Duration::from_secs(5), |queue| queue.workers != 0)
+                    .unwrap()
+                    .0;
+                assert_eq!(queue.workers, 0);
+                drop(queue);
+                pool.dispatch(15, false)?;
+                let success = pool.receive()?;
+                assert_eq!(success.key, 10);
+                assert_eq!(success.outcome, Ok(10));
+                let failure = pool.receive()?;
+                assert_eq!(failure.key, 20);
+                assert_eq!(
+                    failure.outcome,
+                    Err("worker panicked during execution".to_owned())
+                );
+                assert!(matches!(
+                    pool.receive(),
+                    Err(WorkerPoolError::RepliesClosed)
+                ));
+                pool.close();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "worker target could not be recreated after panic"
+        );
     }
 }

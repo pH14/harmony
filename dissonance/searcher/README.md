@@ -111,8 +111,10 @@ before returning a failure identified by reservation. Checkpointed coordinator
 profile timings are observational telemetry, so checkpoint hashes may differ
 across host schedules even when their search state and resumptions agree.
 An execution panic produces a stable error reply carrying the dequeued job's
-schedule key. The panicked worker then retires without reusing its target; the
-coordinator handles that reply at the reservation's planned turn.
+schedule key. The worker discards its target and builds a fresh one before
+taking another job, so a queued earlier reservation can still complete. If
+recreation fails, the worker retires; the coordinator reports the first missing
+planned reservation with a stable keyed error after draining received results.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve

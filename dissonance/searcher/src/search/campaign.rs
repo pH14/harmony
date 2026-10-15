@@ -3095,6 +3095,7 @@ where
             ThreadPlacement::place(placement, PlacedThread::Worker(worker))?;
             workload.new_target()
         },
+        |_| workload.new_target(),
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
             let work_before = workload.execution_work(target);
@@ -3546,7 +3547,18 @@ where
                     return Err("campaign reorder window ended with an admission gap".into());
                 } else {
                     let receive_started = profile_now();
-                    let reply = pool.receive()?;
+                    let reply = match pool.receive() {
+                        Ok(reply) => reply,
+                        Err(WorkerPoolError::RepliesClosed) => {
+                            let reservation = next_admission
+                                .ok_or("campaign lost its planned admission while waiting")?;
+                            return Err(format!(
+                                "campaign reservation {reservation} failed: every worker exited before reporting its result"
+                            )
+                            .into());
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
                     let waited = profile_elapsed(receive_started);
                     coordinator_profile.receive_wait_ns =
                         coordinator_profile.receive_wait_ns.saturating_add(waited);
@@ -5724,6 +5736,7 @@ mod tests {
     #[derive(Default)]
     struct LiveTargets {
         refuse: bool,
+        fail_next_target: std::sync::atomic::AtomicBool,
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
@@ -5882,6 +5895,12 @@ mod tests {
             };
             if targets.refuse {
                 return Err("the test target refused to start".to_owned());
+            }
+            if targets
+                .fail_next_target
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+            {
+                return Err("the replacement target refused to start".to_owned());
             }
             let live = targets
                 .live
@@ -8345,6 +8364,244 @@ mod tests {
                 .join("\n")
         );
         assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn sole_worker_recovers_for_an_earlier_planned_job_after_panic() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 3;
+        let (baseline, failed_reservation, failed_input, failed_index) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                let failed = jobs.iter().find(|(_, job)| job.reservation == 0)?;
+                (jobs.len() == 3
+                    && jobs[0].0 == 1
+                    && jobs[0].1.reservation == 1
+                    && failed.0 > jobs[0].0
+                    && jobs.iter().all(|(_, job)| {
+                        job.reservation == 0
+                            || job.mutation_seed as u8 != failed.1.mutation_seed as u8
+                    }))
+                .then_some((
+                    stream,
+                    failed.1.reservation,
+                    failed.1.mutation_seed as u8,
+                    failed.0,
+                ))
+            })
+            .expect("the first dispatched job can have a later planned finish");
+        let targets = Arc::new(LiveTargets::default());
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        return Err("the second reservation was never selected".to_owned());
+                    }
+                    std::thread::yield_now();
+                }
+                panic!("later-planned reservation panicked");
+            }
+            Ok(())
+        }));
+        let directory = std::env::temp_dir().join(format!(
+            "dissonance-single-worker-panic-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&directory);
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed_with_options(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions {
+                checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                    directory: directory.clone(),
+                    every: std::num::NonZeroU64::new(1),
+                    on_marks: false,
+                    on_top_progress: false,
+                    checkpoint_owner: None,
+                }),
+                ..CampaignExecutionOptions::default()
+            },
+        )
+        .expect_err("later-planned panic fails at its scheduled turn")
+        .to_string();
+        assert_eq!(
+            error,
+            format!(
+                "campaign reservation {failed_reservation} failed: worker panicked during execution"
+            )
+        );
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(failed_index)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
+        assert!(directory.join("000000000001-interval.ckpt").is_file());
+        std::fs::remove_dir_all(directory).unwrap();
+
+        let targets = Arc::new(LiveTargets::default());
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+                    if Instant::now() >= deadline {
+                        return Err("the second reservation was never selected".to_owned());
+                    }
+                    std::thread::yield_now();
+                }
+                targets
+                    .fail_next_target
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("later-planned reservation panicked before failed recovery");
+            }
+            Ok(())
+        }));
+        let mut failed_stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut failed_stream,
+            None,
+        )
+        .expect_err("missing earlier job fails with its own reservation")
+        .to_string();
+        assert_eq!(
+            error,
+            "campaign reservation 1 failed: every worker exited before reporting its result"
+        );
+        assert_eq!(
+            std::str::from_utf8(&failed_stream).unwrap(),
+            format!(
+                "{}\n",
+                std::str::from_utf8(&baseline)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn failed_recovery_preserves_an_admitted_success_before_the_next_failure() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 3;
+        let (baseline, failed_input) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                let failed = jobs.iter().find(|(_, job)| job.reservation == 1)?;
+                (jobs.len() == 3
+                    && jobs[0].0 == 1
+                    && jobs[0].1.reservation == 0
+                    && jobs.iter().all(|(_, job)| {
+                        job.reservation == 1
+                            || job.mutation_seed as u8 != failed.1.mutation_seed as u8
+                    }))
+                .then_some((stream, failed.1.mutation_seed as u8))
+            })
+            .expect("the first dispatched job can finish first");
+        let targets = Arc::new(LiveTargets::default());
+        let weak_targets = Arc::downgrade(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+            if action.input == failed_input {
+                let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .fail_next_target
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                panic!("second reservation panicked before failed recovery");
+            }
+            Ok(())
+        }));
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::clone(&targets)),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("campaign must fail after reporting its successful prefix")
+        .to_string();
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            3
+        );
+        let failure_reservation = job_lines(&baseline)[1].1.reservation;
+        let expected_error = if failure_reservation == 1 {
+            "worker panicked during execution"
+        } else {
+            "every worker exited before reporting its result"
+        };
+        assert_eq!(
+            error,
+            format!("campaign reservation {failure_reservation} failed: {expected_error}")
+        );
+        assert_eq!(
+            std::str::from_utf8(&stream).unwrap(),
+            format!(
+                "{}\n",
+                std::str::from_utf8(&baseline)
+                    .unwrap()
+                    .lines()
+                    .take(2)
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            )
+        );
     }
 
     #[test]
