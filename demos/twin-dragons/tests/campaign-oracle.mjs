@@ -21,7 +21,7 @@ const CASES = [
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
-  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 10000, seed: 2, clears: 1 },
+  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 10000, seed: 5, clears: 1 },
 ];
 const selected = process.env.ORACLE_GAMES?.split(",");
 
