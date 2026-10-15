@@ -2495,9 +2495,7 @@ where
             let fresh = self.tier_runs(key.progress()).yields == 0;
             let runs = self.tier_runs_mut(key.progress());
             runs.yields = runs.yields.saturating_add(1);
-            if !new_cell {
-                runs.wins = runs.wins.saturating_add(1);
-            }
+            runs.wins = runs.wins.saturating_add(1);
             if fresh {
                 self.restart_tier_run(key.progress());
             }
@@ -5084,7 +5082,7 @@ mod tests {
         assert_eq!(insert(3, parent, 2, 5, 8), Some(2));
         assert_eq!(archive.slots.get(&(((), 2), ())), Some(&vec![1, 2]));
         let runs = archive.tier_runs(());
-        assert_eq!((runs.yields, runs.wins), (3, 1));
+        assert_eq!((runs.yields, runs.wins), (3, 2));
     }
 
     #[test]

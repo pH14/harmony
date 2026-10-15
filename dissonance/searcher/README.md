@@ -366,8 +366,7 @@ halves again each time the count doubles, down to the weight of the rank
 below. The halvings apply only while the rank below yields more per draw than
 the leading tier since the run began. A tier's yields are
 its new cells and its carried-in wins, admissions that take a slot's
-preference from a parent in another cell. The leading tier counts only its
-carried-in wins there. With `Td` and `Ty` the
+preference from a parent in another cell. With `Td` and `Ty` the
 leading tier's draws and wins in the run, and `Nd` and `Ny` the draws and
 yields of the rank below over the same span, the halvings apply while
 `(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`. When the rank below is a
