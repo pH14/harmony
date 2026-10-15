@@ -8,7 +8,7 @@ use crate::bridge::{Bridge, Event, event_hash};
 use crate::launch::{Launch, LaunchError};
 use crate::profile::{HostIdentity, VerifiedProfile};
 
-const SCHEMA: u32 = 4;
+const SCHEMA: u32 = 5;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -16,6 +16,7 @@ pub struct Recording {
     pub schema: u32,
     pub profile_identity_sha256: String,
     pub host: HostIdentity,
+    pub host_executable_identity: String,
     pub seed: u64,
     pub memory_mib: u32,
     pub kernel_arguments: Vec<String>,
@@ -33,6 +34,8 @@ pub enum ReplayRefused {
     NoBridge,
     #[error("cannot read the current host identity: {0}")]
     HostIdentity(#[from] std::io::Error),
+    #[error("cannot identify the loaded Harmony executable: {0}")]
+    HostExecutable(String),
     #[error("cannot admit the recording's host CPU: {0}")]
     Launch(#[from] LaunchError),
     #[error("recording was made with profile {recorded}; this profile is {current}")]
@@ -42,6 +45,34 @@ pub enum ReplayRefused {
         recorded: Box<HostIdentity>,
         current: Box<HostIdentity>,
     },
+    #[error("recording was made with Harmony executable {recorded}; this executable is {current}")]
+    Executable { recorded: String, current: String },
+}
+
+fn loaded_executable_identity_self() -> std::io::Result<String> {
+    #[cfg(target_os = "linux")]
+    {
+        use sha2::{Digest, Sha256};
+        use std::io::Read as _;
+
+        let mut executable = std::fs::File::open("/proc/self/exe")?;
+        let mut digest = Sha256::new();
+        let mut block = [0_u8; 65536];
+        loop {
+            let length = executable.read(&mut block)?;
+            if length == 0 {
+                break;
+            }
+            digest.update(&block[..length]);
+        }
+        Ok(format!("linux-exe-sha256-v1:{:x}", digest.finalize()))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(std::io::Error::other(
+            "cannot identify the loaded UML executable on this host",
+        ))
+    }
 }
 
 impl Recording {
@@ -51,12 +82,15 @@ impl Recording {
         events: &[Event],
     ) -> Result<Self, ReplayRefused> {
         let host = launch.host_identity()?;
-        Self::new_with_host(profile, &host, launch, events)
+        let executable = loaded_executable_identity_self()
+            .map_err(|error| ReplayRefused::HostExecutable(error.to_string()))?;
+        Self::new_with_host(profile, &host, &executable, launch, events)
     }
 
     fn new_with_host(
         profile: &VerifiedProfile,
         host: &HostIdentity,
+        executable: &str,
         launch: &Launch,
         events: &[Event],
     ) -> Result<Self, ReplayRefused> {
@@ -68,6 +102,7 @@ impl Recording {
             schema: SCHEMA,
             profile_identity_sha256: profile.identity_sha256().to_owned(),
             host: host.clone(),
+            host_executable_identity: executable.to_owned(),
             seed,
             memory_mib: launch.memory_mib,
             kernel_arguments: launch.kernel_arguments.clone(),
@@ -81,13 +116,16 @@ impl Recording {
         let host = HostIdentity::for_processor(self.host.processor)?;
         #[cfg(not(target_os = "linux"))]
         let host = HostIdentity::current()?;
-        self.check_with_host(profile, &host)
+        let executable = loaded_executable_identity_self()
+            .map_err(|error| ReplayRefused::HostExecutable(error.to_string()))?;
+        self.check_with_host(profile, &host, &executable)
     }
 
     fn check_with_host(
         &self,
         profile: &VerifiedProfile,
         host: &HostIdentity,
+        executable: &str,
     ) -> Result<(), ReplayRefused> {
         if self.schema != SCHEMA {
             return Err(ReplayRefused::Schema(self.schema));
@@ -104,10 +142,32 @@ impl Recording {
                 current: Box::new(host.clone()),
             });
         }
+        if self.host_executable_identity != executable {
+            return Err(ReplayRefused::Executable {
+                recorded: self.host_executable_identity.clone(),
+                current: executable.to_owned(),
+            });
+        }
         Ok(())
     }
 
-    pub fn launch(&self, work_parent: PathBuf) -> Launch {
+    pub fn launch(&self, work_parent: PathBuf) -> Result<Launch, ReplayRefused> {
+        let executable = loaded_executable_identity_self()
+            .map_err(|error| ReplayRefused::HostExecutable(error.to_string()))?;
+        self.launch_with_executable(work_parent, &executable)
+    }
+
+    fn launch_with_executable(
+        &self,
+        work_parent: PathBuf,
+        executable: &str,
+    ) -> Result<Launch, ReplayRefused> {
+        if self.host_executable_identity != executable {
+            return Err(ReplayRefused::Executable {
+                recorded: self.host_executable_identity.clone(),
+                current: executable.to_owned(),
+            });
+        }
         let mut launch = Launch::new(work_parent);
         launch.memory_mib = self.memory_mib;
         launch.kernel_arguments = self.kernel_arguments.clone();
@@ -117,7 +177,7 @@ impl Recording {
         });
         #[cfg(target_os = "linux")]
         let launch = launch.with_recorded_host(self.host.clone());
-        launch
+        Ok(launch)
     }
 
     pub fn matches(&self, events: &[Event]) -> bool {
@@ -129,6 +189,8 @@ impl Recording {
 mod tests {
     use super::*;
     use crate::profile::{Artifact, Profile, VirtualTimeCosts};
+
+    const EXECUTABLE: &str = "linux-exe-sha256-v1:base";
 
     fn profile(identity: &str) -> VerifiedProfile {
         let artifact = Artifact {
@@ -177,48 +239,68 @@ mod tests {
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.kernel_arguments = vec!["harmony_fixture=values".to_owned()];
         launch.bridge = Some(Bridge::new(9));
-        let recording =
-            Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events).unwrap();
-        assert_eq!(recording.schema, 4);
+        let recording = Recording::new_with_host(
+            &profile("a"),
+            &host("model=1"),
+            EXECUTABLE,
+            &launch,
+            &events,
+        )
+        .unwrap();
+        assert_eq!(recording.schema, 5);
         assert!(
             recording
-                .check_with_host(&profile("a"), &host("model=1"))
+                .check_with_host(&profile("a"), &host("model=1"), EXECUTABLE)
                 .is_ok()
         );
         let mut old_schema = recording.clone();
-        old_schema.schema = 2;
+        old_schema.schema = 4;
         assert!(matches!(
-            old_schema.check_with_host(&profile("a"), &host("model=1")),
-            Err(ReplayRefused::Schema(2))
+            old_schema.check_with_host(&profile("a"), &host("model=1"), EXECUTABLE),
+            Err(ReplayRefused::Schema(4))
         ));
         assert!(matches!(
-            recording.check_with_host(&profile("b"), &host("model=1")),
+            recording.check_with_host(&profile("b"), &host("model=1"), EXECUTABLE),
             Err(ReplayRefused::Profile { .. })
         ));
         assert!(matches!(
-            recording.check_with_host(&profile("a"), &host("model=2")),
+            recording.check_with_host(&profile("a"), &host("model=2"), EXECUTABLE),
             Err(ReplayRefused::Host { .. })
         ));
         let mut features = host("model=1");
         features.cpu_features.push_str(" avx512f");
         assert!(matches!(
-            recording.check_with_host(&profile("a"), &features),
+            recording.check_with_host(&profile("a"), &features, EXECUTABLE),
             Err(ReplayRefused::Host { .. })
         ));
         let mut boot_cpuinfo = host("model=1");
         boot_cpuinfo.boot_cpuinfo.push_str("cache_alignment: 128\n");
         assert!(matches!(
-            recording.check_with_host(&profile("a"), &boot_cpuinfo),
+            recording.check_with_host(&profile("a"), &boot_cpuinfo, EXECUTABLE),
             Err(ReplayRefused::Host { .. })
         ));
         let mut processor = host("model=1");
         processor.processor = 2;
         assert!(matches!(
-            recording.check_with_host(&profile("a"), &processor),
+            recording.check_with_host(&profile("a"), &processor, EXECUTABLE),
             Err(ReplayRefused::Host { .. })
         ));
+        assert!(matches!(
+            recording.check_with_host(
+                &profile("a"),
+                &host("model=1"),
+                "linux-exe-sha256-v1:changed"
+            ),
+            Err(ReplayRefused::Executable { .. })
+        ));
 
-        let replay = recording.launch(PathBuf::from("/replay"));
+        let replay = recording
+            .launch_with_executable(PathBuf::from("/replay"), EXECUTABLE)
+            .unwrap();
+        assert!(matches!(
+            recording.launch_with_executable(PathBuf::from("/replay"), "changed"),
+            Err(ReplayRefused::Executable { .. })
+        ));
         assert_eq!(replay.kernel_arguments, launch.kernel_arguments);
         assert_eq!(
             replay.bridge,
@@ -239,7 +321,13 @@ mod tests {
             std::fs::write(&initramfs, b"image").unwrap();
             launch.set_initramfs(&initramfs).unwrap();
             assert!(matches!(
-                Recording::new_with_host(&profile("a"), &host("model=1"), &launch, &events),
+                Recording::new_with_host(
+                    &profile("a"),
+                    &host("model=1"),
+                    EXECUTABLE,
+                    &launch,
+                    &events
+                ),
                 Err(ReplayRefused::Initramfs)
             ));
         }
@@ -251,8 +339,11 @@ mod tests {
         let host = host("model=1");
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.bridge = Some(Bridge::new(41));
-        let recording = Recording::new_with_host(&profile, &host, &launch, &[]).unwrap();
-        let replay = recording.launch(PathBuf::from("/replay"));
+        let recording =
+            Recording::new_with_host(&profile, &host, EXECUTABLE, &launch, &[]).unwrap();
+        let replay = recording
+            .launch_with_executable(PathBuf::from("/replay"), EXECUTABLE)
+            .unwrap();
         assert_eq!(replay.bridge.unwrap().cut, Some(0));
         let seed_arg = |launch: &Launch| {
             launch
@@ -268,11 +359,15 @@ mod tests {
         let replay_seed = seed_arg(&replay);
         assert_eq!(live_seed, replay_seed);
         assert_eq!(recording.seed, 41);
-        assert!(recording.check_with_host(&profile, &host).is_ok());
+        assert!(
+            recording
+                .check_with_host(&profile, &host, EXECUTABLE)
+                .is_ok()
+        );
         assert!(recording.matches(&[]));
         launch.bridge = None;
         assert!(matches!(
-            Recording::new_with_host(&profile, &host, &launch, &[]),
+            Recording::new_with_host(&profile, &host, EXECUTABLE, &launch, &[]),
             Err(ReplayRefused::NoBridge)
         ));
     }
@@ -295,7 +390,7 @@ mod tests {
             Err(ReplayRefused::Host { .. })
         ));
 
-        let replay = forged.launch(std::env::temp_dir());
+        let replay = forged.launch(std::env::temp_dir()).unwrap();
         let work = replay.work_directory().unwrap();
         assert!(matches!(
             crate::Guest::start(std::process::Command::new("true"), work, &replay),

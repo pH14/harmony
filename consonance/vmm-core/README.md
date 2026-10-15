@@ -28,6 +28,15 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+When a `Run` deadline is the earlier idle wake and resumes the guest, control
+refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
+so that tape alone cannot replay the continuation from genesis. This includes
+an idle exit whose own virtual-time cost crosses the deadline. The landed VM
+state is still a usable snapshot; replaying that snapshot retains the
+`RecordedEnv` refusal, while branching from it starts a new reproducible
+origin. A timer or staged input that would wake the guest at the same time
+does not cause this refusal. A deadline reached by ordinary guest steps also
+does not cause it. An `Exec` request still taints the snapshot timeline.
 `Run` with a deadline and `Exec` require a wired virtual clock. An unwired VM
 rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
@@ -38,6 +47,16 @@ after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
+If a backend step or scheduled-input application fails after `Run` begins,
+control retires the live VM. A failed step can already have advanced virtual
+time or changed guest state, so the session cannot mint a reproducer or accept
+another run from an unverified continuation.
+The failed run's console and SDK events remain readable from a diagnostic
+copy without keeping the failed VM executable. Replay starts with fresh
+observations.
+An `Exec` substrate failure also retires the VM before a snapshot or hash can
+certify a partially completed guest step. Its console and SDK events remain
+available for diagnosis.
 Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
 write that offset, and both full-VM snapshot restore and V-time-only restore
 reject a nonzero value before changing live state. This keeps an armed
@@ -93,6 +112,20 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Branch and import preparation also compare a handler-only fingerprint of the
+live SDK handler's identity, configuration, and state before and after calling
+a service factory or restoring a prepared handler. If a factory or shallow
+clone changes that live state, the operation fails and poisons the live SDK
+channel, so later hashes and snapshots cannot certify the changed session.
+This check relies on
+the handler snapshot covering all state that can affect future responses;
+service factories must not mutate external state outside that captured contract.
+Using the handler alone keeps replay and import available when an otherwise
+healthy live recording exceeds the SDK snapshot size limits. An already-poisoned
+live channel has no valid state to protect and does not block recovery through
+replay or import.
+The guard checks the channel's poison flag, since a handler can independently
+return a `Poisoned` error while the channel is still live.
 Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
 handle. The SDK hash chunk also binds its captured event history, including
@@ -122,11 +155,16 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 7, and the sparse sidecar is version 8;
-older sparse sidecars are rejected. A sparse sidecar does not carry a target RAM
-hash, so independently recomposing both its source-base digest and the outer
-archive identity is outside this snapshot identity check. Use a complete
-portable snapshot when the imported target's whole-state hash must be verified.
+The complete portable format is version 7, and the sparse sidecar is version 9;
+older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
+changed-page numbers and bytes to its sidecar; import verifies them before
+deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
+page numbers and bytes that differ from setup, independently of the parent or
+near snapshot. Import checks this commitment and every supplied page hash
+before minting a handle. Together with the setup RAM digest, the commitment
+checks reconstructed target RAM; it is not a standalone whole-state hash. Use
+a complete portable snapshot when the imported target's whole-state hash must
+be verified directly.
 Control seals and imports require VM-state
 hashing so every restored VM record participates in identity. Standalone VMM
 hashing remains optional. When KVM rejects a nonportable XSAVE MXCSR state,
@@ -136,9 +174,11 @@ guard remains in force. A mapped x86 doorbell cannot seal because the
 x86 VM-state record has no dedicated doorbell pages; the production dedicated
 mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
-duplicate-input rejection. A tainted control timeline also contributes a
-dedicated hash chunk, so an imported artifact cannot clear the taint and make
-`RecordedEnv` available under the same claimed identity. Writers always emit
+duplicate-input rejection. The control state includes the separate
+`RecordedEnv` refusal caused by an unrecorded operator deadline wake. A
+tainted control timeline also contributes a dedicated hash chunk, so an
+imported artifact cannot clear either refusal and make `RecordedEnv` available
+under the same claimed identity. Writers always emit
 the current format, and readers reject older envelopes. Complete reads
 allocate incrementally from received bytes, and sparse section lengths are
 bounded by the supplied input.
@@ -203,7 +243,12 @@ supported. The hardware qualification requires the AMD refusal path and a
 long-mode continuation on both vendors. Its existing XSAVE fixtures use 32-bit
 PAE, so they remain required on Intel while their AMD continuation is excluded.
 The original AMD NPT witness remains in #314.
-The separate same-seed XSAVE divergence remains tracked in
+AMD long-mode reused-vCPU restore changes guest-authored XSAVE bytes despite
+identical saved CPU records. Restore validation now refuses that reuse before
+mutation; the control server retries with a fresh VM. The hardware qualification
+requires the public VMM witness to prove refusal without changing the source,
+and byte-for-byte equality among uninterrupted, save-and-continue, and fresh
+restored continuations. The underlying XSAVE behavior remains tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 
 ## Architecture boundary
@@ -225,6 +270,9 @@ byte reads and writes; other widths fail before changing masks or virtual time.
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
+Restore checks the live trace's pending event, active clockevent record, and
+schedule capacity before changing backend CPU state. A rejected trace restore
+therefore leaves the running VM intact, including after a failed guest exit.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
 Each architecture supplies a guest machine policy; the backend supplies the
@@ -506,14 +554,18 @@ page list over the setup snapshot and derives the imported snapshot from `near`,
 writing only the pages where the two differ. Once `near`'s chain reaches the
 maximum chain length, the import derives from `setup` instead, so repeated
 imports keep the same chain bound as seals. Every supplied page must match its
-hash, including a page reused from `near`; a mismatch is refused before a
-handle is minted.
+hash, including a page reused from `near`. The complete page list must match
+the sidecar's target-page commitment; a mismatch is refused before a handle is
+minted.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
 device records, and clock wiring are rejected before changing the destination
-execution. Import requires a live validation target. This preflight does not
-replace backend validation or make host ioctl failures transactional.
+execution. Import requires a live validation target, but its backend check is
+for the artifact's shape, not the current vCPU's reuse eligibility. That lets
+an AMD session import a valid artifact after guest entry; replay then creates
+a fresh VM or refuses in-place reuse before changing CPU or RAM. This preflight
+does not replace backend validation or make host ioctl failures transactional.
 
 ## Publishing prepared snapshot boundaries
 
@@ -567,10 +619,20 @@ KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
 and execution accounting. Raw XSAVE presence remains restoration metadata; the
 logical projection below decides how it enters identity. The execution
-requirement is one qualified host core type
-for related boots and restores; see the backend README for affinity admission and
-its limits. Cross-type migration is not supported. Cross-host placement and broader
-XSAVE state lie outside the qualified set.
+requirement is one qualified host core type for related boots and restores;
+see the backend README for affinity admission and its limits. On Linux KVM
+hosts reporting P-core/E-core topology, the captured
+class is bound into the x86 snapshot contract and the raw CPU state. Portable
+import and raw backend restore refuse a different class before changing the
+guest. A changed thread-affinity mask also refuses capture and restore. Hosts
+without reported class masks and without a hybrid CPUID indication require
+placement qualification; a host reporting hybrid CPUID without the masks is
+refused. Cross-host placement and broader XSAVE state lie outside the
+qualified set.
+A mock-backed test runs in ordinary CI to enforce the VMM contract binding.
+The live cross-class qualification runs during pre-push on a Linux KVM host
+only when both P and E cores are accessible; it fails if that requirement
+disappears before the test starts.
 
 The supported x86 workload is the shipped 64-bit Linux kernel and initramfs on
 a 64-bit host. Application bitness is separate: 32-bit compatibility-mode

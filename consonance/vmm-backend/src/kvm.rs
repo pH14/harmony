@@ -10,7 +10,7 @@ use kvm_bindings::{
     kvm_sregs2, kvm_vcpu_events, kvm_xcrs, kvm_xsave,
 };
 
-use crate::arch::x86::{CpuidModel, MsrFilter, X86, X86Caps, X86Exit};
+use crate::arch::x86::{CpuidModel, MsrFilter, StateMutationGuard, X86, X86Caps, X86Exit};
 use crate::arch::x86::{
     DebugRegs, DescriptorTable, Segment, VcpuEvents, VcpuRegs, VcpuSregs, VcpuState,
 };
@@ -387,6 +387,20 @@ where
     }
 }
 
+pub(crate) fn prepare_snapshot_run_guarded<F>(
+    page: RunPage,
+    cr8: u64,
+    pending: &mut Pending,
+    stage: &mut Stage,
+    guard: &StateMutationGuard,
+    enter: F,
+) -> Result<Option<Exit<X86>>>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    guard.mutate(|| prepare_snapshot_run(page, cr8, pending, stage, enter))
+}
+
 pub(crate) fn finish_staged_completion<F>(
     page: RunPage,
     pending: &mut Pending,
@@ -432,6 +446,19 @@ where
             Ok(Some(exit))
         }
     }
+}
+
+pub(crate) fn finish_staged_completion_guarded<F>(
+    page: RunPage,
+    pending: &mut Pending,
+    stage: &mut Stage,
+    guard: &StateMutationGuard,
+    enter: F,
+) -> Result<Option<Exit<X86>>>
+where
+    F: FnMut() -> std::result::Result<(), std::io::Error>,
+{
+    guard.mutate(|| finish_staged_completion(page, pending, stage, enter))
 }
 
 #[cfg(test)]

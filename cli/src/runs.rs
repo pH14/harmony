@@ -22,7 +22,7 @@ pub struct Destination {
 #[serde(deny_unknown_fields)]
 pub struct Manifest {
     pub format: String,
-    pub binary_sha256: String,
+    pub binary_identity: String,
     pub architecture: String,
     pub mode: String,
     pub status: String,
@@ -90,8 +90,8 @@ impl Manifest {
         let runner_identity = crate::runners::identity(&config.runner)?;
         let checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         Ok(Self {
-            format: "harmony-run-v2".into(),
-            binary_sha256: file_digest(&std::env::current_exe()?)?,
+            format: "harmony-run-v3".into(),
+            binary_identity: consonance_client::image_identity::loaded_executable_identity_self()?,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
             status: "running".into(),
@@ -108,7 +108,7 @@ impl Manifest {
 
     pub fn read(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_slice(&fs::read(path.join("manifest.json"))?)?;
-        if manifest.format != "harmony-run-v2" {
+        if manifest.format != "harmony-run-v3" {
             return Err("unsupported run format".into());
         }
         Ok(manifest)
@@ -150,7 +150,9 @@ impl Manifest {
         if self.architecture != std::env::consts::ARCH {
             return Err("run architecture differs from this host".into());
         }
-        if self.binary_sha256 != file_digest(&std::env::current_exe()?)? {
+        if self.binary_identity
+            != consonance_client::image_identity::loaded_executable_identity_self()?
+        {
             return Err("this run requires the exact Harmony executable that recorded it".into());
         }
         crate::runners::verify(&self.config.runner, &self.runner_identity)?;
@@ -255,6 +257,130 @@ pub fn store_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(not(miri))]
+    #[allow(clippy::disallowed_methods)]
+    #[test]
+    fn manifest_identity_follows_loaded_executable_after_path_replacement() {
+        let child_directory = std::env::var_os("HARMONY_IDENTITY_CHILD_DIRECTORY");
+        if let Some(directory) = child_directory {
+            let directory = PathBuf::from(directory);
+            fs::write(directory.join("ready"), b"ready").unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while !directory.join("continue").exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "parent did not resume child"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            let mut config = Config::default();
+            config.runner.kind = "test".into();
+            let manifest = Manifest::new(config, "search").unwrap();
+            assert_eq!(
+                manifest.binary_identity,
+                std::env::var("HARMONY_EXPECTED_IMAGE_IDENTITY").unwrap()
+            );
+            manifest.verify(&directory).unwrap();
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let running = directory.path().join("running-test");
+        let replacement = directory.path().join("replacement-test");
+        let original = std::env::current_exe().unwrap();
+        fs::copy(&original, &running).unwrap();
+        fs::copy(&original, &replacement).unwrap();
+        #[cfg(not(target_os = "macos"))]
+        {
+            use std::io::Write;
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(&replacement)
+                .unwrap()
+                .write_all(b"changed-executable-file")
+                .unwrap();
+        }
+        let before = file_digest(&running).unwrap();
+        let expected_identity =
+            consonance_client::image_identity::loaded_executable_identity_self().unwrap();
+        #[cfg(target_os = "macos")]
+        {
+            let signed = std::process::Command::new("codesign")
+                .args([
+                    "--force",
+                    "--sign",
+                    "-",
+                    "--identifier",
+                    "harmony.loaded-image.replacement",
+                ])
+                .arg(&replacement)
+                .output()
+                .unwrap();
+            assert!(
+                signed.status.success(),
+                "{}",
+                String::from_utf8_lossy(&signed.stderr)
+            );
+            let shown = std::process::Command::new("codesign")
+                .arg("-dvvv")
+                .arg(&replacement)
+                .output()
+                .unwrap();
+            assert!(shown.status.success());
+            let details = String::from_utf8_lossy(&shown.stderr);
+            let replacement_hash = details
+                .lines()
+                .find_map(|line| line.strip_prefix("CDHash="))
+                .unwrap();
+            assert_ne!(
+                expected_identity,
+                format!("macos-cdhash-v1:{replacement_hash}")
+            );
+        }
+        let mut child = std::process::Command::new(&running)
+            .args([
+                "--exact",
+                "runs::tests::manifest_identity_follows_loaded_executable_after_path_replacement",
+                "--nocapture",
+            ])
+            .env("HARMONY_IDENTITY_CHILD_DIRECTORY", directory.path())
+            .env("HARMONY_EXPECTED_IMAGE_IDENTITY", expected_identity)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while !directory.path().join("ready").exists() {
+            if let Some(status) = child.try_wait().unwrap() {
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "child exited {status} before ready\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                let output = child.wait_with_output().unwrap();
+                panic!(
+                    "child did not start\nstdout: {}\nstderr: {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fs::rename(replacement, &running).unwrap();
+        assert_ne!(before, file_digest(&running).unwrap());
+        fs::write(directory.path().join("continue"), b"continue").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     #[test]
     fn named_runs_are_fresh_and_never_overwrite() {
         let dir = tempfile::tempdir().unwrap();

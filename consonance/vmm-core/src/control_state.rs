@@ -26,13 +26,14 @@ pub(crate) struct ControlState<R = InputSpec> {
     pub pending: InputSpec,
     pub poisoned: Option<ScheduleFailure>,
     pub exec_nonce: u64,
+    pub reproducer_tainted: bool,
 }
 
 impl<R: Borrow<InputSpec>> ControlState<R> {
     pub fn encode(&self) -> Vec<u8> {
         let recorded = self.recorded.borrow().encode();
         let pending = self.pending.encode();
-        let mut out = b"HCSTATE1".to_vec();
+        let mut out = b"HCSTATE2".to_vec();
         out.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
         out.extend_from_slice(&(pending.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.exec_nonce.to_le_bytes());
@@ -41,6 +42,7 @@ impl<R: Borrow<InputSpec>> ControlState<R> {
             out.extend_from_slice(&failure.moment.to_le_bytes());
             out.extend_from_slice(&failure.vtime.to_le_bytes());
         }
+        out.push(u8::from(self.reproducer_tainted));
         out.extend_from_slice(&recorded);
         out.extend_from_slice(&pending);
         out
@@ -58,7 +60,7 @@ impl<R: Borrow<InputSpec>> ControlState<R> {
 impl ControlState {
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut input = bytes;
-        if take(&mut input, 8)? != b"HCSTATE1" {
+        if take(&mut input, 8)? != b"HCSTATE2" {
             return Err("control state magic");
         }
         let recorded_len = usize::try_from(number(&mut input)?).map_err(|_| "control length")?;
@@ -71,6 +73,11 @@ impl ControlState {
                 vtime: number(&mut input)?,
             }),
             _ => return Err("control failure tag"),
+        };
+        let reproducer_tainted = match take(&mut input, 1)?[0] {
+            0 => false,
+            1 => true,
+            _ => return Err("control reproducer taint tag"),
         };
         let recorded = InputSpec::decode_snapshot(take(&mut input, recorded_len)?)
             .map_err(|_| "recorded control inputs")?;
@@ -108,6 +115,7 @@ impl ControlState {
             pending,
             poisoned,
             exec_nonce,
+            reproducer_tainted,
         })
     }
 
@@ -166,6 +174,7 @@ mod tests {
                 vtime: 25,
             }),
             exec_nonce: 17,
+            reproducer_tainted: true,
         }
     }
 
@@ -205,6 +214,7 @@ mod tests {
                 pending,
                 poisoned: None,
                 exec_nonce: 17,
+                reproducer_tainted: false,
             };
             assert_eq!(
                 (state.recorded.encode().len() > MAX_CHANNEL_BYTES),
@@ -229,6 +239,12 @@ mod tests {
             bad[offset] = value;
             assert!(ControlState::decode(&bad).is_err());
         }
+        let mut bad_taint = bytes.clone();
+        bad_taint[49] = 2;
+        assert_eq!(
+            ControlState::decode(&bad_taint),
+            Err("control reproducer taint tag")
+        );
         let mut trailing = bytes;
         trailing.push(0);
         assert!(ControlState::decode(&trailing).is_err());
@@ -295,6 +311,10 @@ mod tests {
                 ..baseline.clone()
             },
             ControlState {
+                reproducer_tainted: false,
+                ..baseline.clone()
+            },
+            ControlState {
                 poisoned: None,
                 ..baseline.clone()
             },
@@ -318,6 +338,7 @@ mod tests {
             pending: InputSpec::seeded(0),
             poisoned: None,
             exec_nonce: 0,
+            reproducer_tainted: false,
         };
         let mut unchanged = b"existing-state".to_vec();
         empty.encode_and_append_hash(&mut unchanged);

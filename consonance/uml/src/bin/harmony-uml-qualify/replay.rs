@@ -237,7 +237,9 @@ fn cut_replays(
         std::fs::write(&path, serde_json::to_vec_pretty(&recording)?)?;
         let loaded: Recording = serde_json::from_slice(&std::fs::read(&path)?)?;
         let refused = loaded.check(profile).err().map(|error| error.to_string());
-        let mut launch = loaded.launch(options.work.clone());
+        let mut launch = loaded
+            .launch(options.work.clone())
+            .map_err(io::Error::other)?;
         launch.console_tail_bytes = base.console_tail_bytes;
         launch.wall_limit = base.wall_limit;
         let exit = Guest::spawn(&launch, profile)

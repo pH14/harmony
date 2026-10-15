@@ -12,6 +12,7 @@ new workflow is registered once.
 from __future__ import annotations
 
 import json
+import os
 import platform
 import re
 from pathlib import Path
@@ -236,12 +237,21 @@ ARM64_BASELINE_TEST = (
 )
 
 # Ignored tests that need a hypervisor no hosted runner offers, keyed by the
-# `<os>-<arch>` of a machine that has one. The pre-push hook runs the entry for
-# the machine it is on.
+# `<os>-<arch>` of a machine that has one. A `-hybrid` suffix selects a Linux
+# x86-64 KVM host with both core-type pools accessible to the caller. The
+# pre-push hook runs the entry for the machine it is on.
 HOST_TESTS = {
     "macos-aarch64": (
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
+        "vmm-backend hvf::tests::failed_translation_flush_retires_mutated_vcpu",
+        "vmm-backend hvf::tests::restore_rejects_hvc_from_guest_exception_vector",
+        "vmm-backend hvf::tests::failed_guest_run_retires_uncounted_progress",
+        "vmm-backend hvf::tests::rejected_policy_preserves_live_identity",
+        "vmm-backend hvf::tests::failed_policy_write_retires_mutated_vcpu",
+        "vmm-backend hvf::tests::failed_fault_completion_retires_partly_changed_vcpu",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_actlr_state_refuses_capture_and_clean_restore_resets_it",
+        "vmm-backend::arm64_sysreg_snapshot guest_pauth_keys_refuse_capture_and_clean_restore_resets_them",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
@@ -252,14 +262,21 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot guest_gic_cpu_interface_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_spi_trigger_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_nonzero_spi_route_rejects_capture_and_zero_route_restores",
+        "vmm-backend::arm64_sysreg_snapshot guest_physical_timer_state_refuses_capture_and_legacy_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_disr_state_refuses_capture_and_legacy_restore",
         "vmm-backend arm64_kvm::tests::routed_away_pending_spi_refuses_capture_and_restore",
         "vmm-backend::arm64_sysreg_snapshot kvm_irq_mask_read_matches_full_capture",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
+    "linux-x86_64-hybrid": (
+        "vmm-core vendor::x86::logical_identity_live_tests::public_snapshot_restore_rejects_a_different_host_core_class",
+    ),
 }
 
-KVM_SERVICED_EXIT_TESTS = (
+KVM_EXIT_BOUNDARY_TESTS = (
+    "vmm-backend::kvm_smoke rejected_rep_input_retires_uncounted_guest_progress",
     "vmm-backend::kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution",
     "vmm-backend::kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution",
     "vmm-backend::kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it",
@@ -302,8 +319,10 @@ CONSONANCE_CHECKS = Workflow(
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
                           "vmm-backend:kvm_smoke"),
-            ignored_tests=KVM_SERVICED_EXIT_TESTS + (
+            ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
+                "vmm-backend kvm_sys::policy_diagnostic::rejected_msr_filter_retires_partly_reconfigured_vcpu",
+                "vmm-backend kvm_sys::policy_diagnostic::rejected_vmx_capability_read_retires_partly_initialized_vcpu",
                 "vmm-backend::contract_kvm *",
             ),
             scope="consonance_kvm",
@@ -410,7 +429,7 @@ CONSONANCE_HARDWARE = Workflow(
                            "x2_component_diff_first_checkpoint",)),
         Job("Snapshot Identity — Replica <N>", "full", 15,
             test_targets=("vmm-core:x86_cpu_snapshots",),
-            ignored_tests=KVM_SERVICED_EXIT_TESTS + (
+            ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend::kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation",
                 PUBLIC_SNAPSHOT_IDENTITY_TEST,
             ) + tuple(
@@ -424,6 +443,8 @@ CONSONANCE_HARDWARE = Workflow(
                     "long_mode_capture_preserves_continuation",
                     "xsave_guest_bytes_survive_cold_continuation",
                     "xsave_live_registers_survive_cold_continuation",
+                    "xrstor_init_guest_bytes_survive_reused_continuation",
+                    "xrstor_init_long_mode_guest_bytes_survive_reused_continuation",
                 )
             ) + tuple(
                 f"vmm-backend kvm_sys::xsave_diagnostic::{test}" for test in (
@@ -982,11 +1003,38 @@ def runners_of(binary_id: str, test: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _cpu_list(text: str) -> set[int]:
+    cpus: set[int] = set()
+    for part in text.strip().split(","):
+        first, separator, last = part.partition("-")
+        lo = int(first)
+        hi = int(last) if separator else lo
+        if lo > hi:
+            raise ValueError("invalid CPU range")
+        cpus.update(range(lo, hi + 1))
+    return cpus
+
+
+def _hybrid_kvm_pair_available() -> bool:
+    if not os.access("/dev/kvm", os.R_OK | os.W_OK):
+        return False
+    try:
+        allowed = os.sched_getaffinity(0)
+        core = _cpu_list(Path("/sys/bus/event_source/devices/cpu_core/cpus").read_text())
+        atom = _cpu_list(Path("/sys/bus/event_source/devices/cpu_atom/cpus").read_text())
+    except (AttributeError, OSError, ValueError):
+        return False
+    return bool(allowed & core) and bool(allowed & atom)
+
+
 def this_host() -> str:
     """This machine as a `HOST_TESTS` key."""
     system = {"Darwin": "macos"}.get(platform.system(), platform.system().lower())
     machine = {"arm64": "aarch64", "AMD64": "x86_64"}.get(platform.machine(), platform.machine())
-    return f"{system}-{machine}"
+    host = f"{system}-{machine}"
+    if host == "linux-x86_64" and _hybrid_kvm_pair_available():
+        return f"{host}-hybrid"
+    return host
 
 
 def host_filter(host: str) -> str:

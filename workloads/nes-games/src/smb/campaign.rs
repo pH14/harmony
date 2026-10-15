@@ -181,15 +181,18 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
     not(miri)
 ))]
 impl SmbGame<ConsonanceMachine, ConsonancePortable> {
-    #[must_use]
-    pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
+    pub fn new_consonance(
+        rom: &[u8],
+        kernel: &[u8],
+        initramfs: &[u8],
+    ) -> Result<Self, machine::MachineError> {
         let target_kernel = kernel.to_vec();
         let target_initramfs = initramfs.to_vec();
-        Self::with_targets(
+        Ok(Self::with_targets(
             rom,
             format!(
                 "{};result_digest=semantic-postcard-1.1.3-sha256-hex-v1",
-                consonance_identity(kernel, initramfs),
+                consonance_identity(kernel, initramfs)?,
             ),
             CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
             Box::new(move || {
@@ -197,7 +200,7 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
                     .map_err(|error| error.to_string())?;
                 SmbTarget::from_machine(machine).map_err(|error| error.to_string())
             }),
-        )
+        ))
     }
 }
 

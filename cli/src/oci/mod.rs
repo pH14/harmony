@@ -8,6 +8,7 @@ use std::{fs, path::Path, time::Duration};
 pub fn execute(
     c: &crate::runtime::Consonance,
     runner_identity: &serde_json::Value,
+    expected_uml_profile_identity_sha256: Option<&str>,
     seed: u64,
     knobs: &[String],
     wall_seconds: Option<u64>,
@@ -33,6 +34,9 @@ pub fn execute(
     let mut uml_events = None;
     let outcome = if c.backend == Backend::Uml {
         let profile = uml::Profile::load(c.uml_profile.as_ref().ok_or("missing UML profile")?)?;
+        if Some(profile.identity_sha256()) != expected_uml_profile_identity_sha256 {
+            return Err("recorded UML profile changed during load".into());
+        }
         let mut launch = manifest_launch(out, runner_identity)?;
         fs::create_dir_all(&launch.work_parent)?;
         launch.memory_mib = c.ram_mib;

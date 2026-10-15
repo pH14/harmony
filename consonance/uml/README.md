@@ -81,8 +81,11 @@
   questions answered by a `ServiceHandler`, payload pulls and coverage.
   `branch` installs a seed, handler and payloads after checking that reseeding
   with both the branch seed and the decode seed zero keeps the handler identity
-  and configuration unchanged. A rejected branch leaves the live services
-  untouched. `run_until` runs to a
+  and configuration unchanged. It also rejects a decode-seed probe that changes
+  the original handler. A rejected branch leaves independent live services
+  untouched; if a shallow handler clone changes the live service state, the
+  service channel is poisoned so it cannot export a misleading checkpoint.
+  `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
   unanswered when the deadline is checked again. Each returns a `Stop`: an
@@ -140,16 +143,19 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` schema 4 names the profile, full host identity, seed, memory,
-  boot arguments, event count and event hash of a run. Earlier schemas are
-  refused.
+- `Recording` schema 5 names the loaded Harmony executable, profile, full
+  host identity, seed, memory, boot arguments, event count and event hash of a
+  run. Earlier schemas are refused. The executable identity is the SHA-256 of
+  the running Linux `/proc/self/exe` inode, so a replacement at the original
+  path cannot make a different host build claim the recording.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation derives identity from the admitted `Launch`;
   replay checks read the recorded processor's current identity. A caller cannot
   supply a stale identity in either path. `Recording::check` refuses a
-  different profile or host, and `Recording::launch` binds the recorded
-  processor and identity through the cut even if the caller skips `check`.
+  different executable, profile or host. `Recording::launch` refuses a
+  different executable and binds the recorded processor and identity through
+  the cut even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit.

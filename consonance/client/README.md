@@ -21,15 +21,17 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
-The image identity always includes kernel, initramfs, RAM size, seed, setup run
-budget, command line, and guest contract. Sessions booted with setup payloads
-also bind their ordered, length-delimited payload bytes; the empty list keeps
-the ordinary session identity. `identity_with_config_and_payloads` computes
-the same identity before boot. A nonempty `identity_tag` adds a
-workload domain; it does not replace those setup inputs. Sparse snapshot pages
-are relative to setup RAM, so a session checks this identity before importing
-pages from another session. Tagged snapshots made with the earlier identity
-calculation do not match the new domain.
+The image identity always includes the loaded Harmony executable, kernel,
+initramfs, RAM size, seed, setup run budget, command line, and guest contract.
+Sessions booted with setup payloads also bind their ordered, length-delimited
+payload bytes; the empty list keeps the ordinary session identity.
+`identity_with_config_and_payloads` computes the same identity before boot and
+returns an error if the loaded executable cannot be identified. A nonempty
+`identity_tag` adds a workload domain; it does not replace those setup inputs.
+Sparse snapshot pages are relative to setup RAM, so a session checks this
+identity before importing pages from another session. Cache extents carry the
+same identity. Snapshots made with the earlier image identity calculation do
+not match the new domain.
 
 `SessionConfig::with_nested_host()` selects the named nested-host contract on
 Linux x86, using VMX or SVM according to host KVM support. The choice travels through worker configuration and changes image
@@ -96,7 +98,7 @@ VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
 Embedded complete portable snapshots use format version 7; sparse sidecars use
-version 8. Older embedded versions are rejected. The outer sparse archive layout
+version 9. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -162,7 +164,8 @@ eviction asks the worker with the largest store to shrink.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
-setup and imports it; the store checks each page against its hash. Hardware
+setup and imports it; the store checks each page against its hash and the
+sparse sidecar's complete target-page commitment. Hardware
 session cache extents carry the publishing session's image identity beside the
 sparse sidecar. Import checks every extent's identity before changing the
 snapshot store, including when a caller passes a lease from another namespace.
@@ -179,7 +182,13 @@ after the guests, to the budget. It fails when one worker does not fit.
 allows one VM per process. `WorkerLauncher` starts the child with one end of a
 Unix socket pair, named by `HARMONY_SESSION_WORKER_FD`, and the child serves it
 with `serve_inherited`. The child re-executes the same binary, so it carries the
-same HVF entitlement and inherits the calling thread's CPU affinity. Each call is
+same HVF entitlement and inherits the calling thread's CPU affinity.
+`WorkerLauncher::current_exe` records the parent's loaded image identity and
+checks the spawned child's loaded image before sending the initialization request.
+Linux hashes the parent through `/proc/self/exe` and checks procfs's PID
+namespace before reading `/proc/<child-pid>/exe`; macOS reads each process's
+code-directory hash. A replacement of the executable pathname cannot cause a
+different worker image to run under the parent's recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
@@ -202,9 +211,12 @@ boot; its sealed bytes define the root identity and serve every later fresh
 process. Boot checks their SHA-256 against the caller's admitted initramfs
 digest. The caller supplies the admitted profile and exact host processor
 identity; boot checks both against the pinned profile and
-processor before starting a guest. The root identity includes a length-delimited
-digest of the complete admitted host identity, including the CPU-info lines
-UML imports at boot, and the exact boot argument list and initramfs bytes.
+processor before starting a guest. The root identity also includes the loaded
+Harmony executable identity, so a checkpoint produced by another host build
+cannot be imported even when the profile and guest bytes match. It includes a
+length-delimited digest of the complete admitted host identity, including the
+CPU-info lines UML imports at boot, and the exact boot argument list and
+initramfs bytes.
 An import from a different physical processor or launch
 input is refused before the checkpoint store changes. Fresh restore spawns
 recheck the same admitted processor and host identity. A publish exports the

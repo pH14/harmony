@@ -34,6 +34,15 @@ pub enum BackendError {
     #[error("AMD KVM cannot safely capture or continue a running 32-bit PAE guest")]
     AmdPaeSnapshotUnsafe,
 
+    #[error("AMD KVM cannot safely restore a previously run vCPU; use a fresh VM")]
+    AmdReusedVcpuRestoreUnsafe,
+
+    #[error("snapshot host core class {saved:?} differs from this backend's {current:?}")]
+    HostCoreClassMismatch {
+        saved: Option<crate::HostCoreClass>,
+        current: Option<crate::HostCoreClass>,
+    },
+
     #[error(
         "ID register {encoding:#06x} requests {requested:#018x}, above the host's {host:#018x}"
     )]

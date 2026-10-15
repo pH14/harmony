@@ -53,9 +53,12 @@ fn root_identity(
     profile: &VerifiedProfile,
     host: &uml::HostIdentity,
     initramfs: &[u8],
+    loaded_executable: &str,
 ) -> [u8; 32] {
     let mut identity = Sha256::new();
-    identity.update(b"harmony-uml-root-v4\0");
+    identity.update(b"harmony-uml-root-v5\0");
+    identity.update((loaded_executable.len() as u64).to_le_bytes());
+    identity.update(loaded_executable.as_bytes());
     identity.update(profile.identity_sha256().as_bytes());
     identity.update(host.identity_sha256().as_bytes());
     identity.update(config.seed.to_le_bytes());
@@ -160,7 +163,8 @@ impl UmlSession {
             )
             .into());
         }
-        let root_identity = root_identity(config, &profile, &host, &initramfs);
+        let loaded_executable = crate::image_identity::loaded_executable_identity_self()?;
+        let root_identity = root_identity(config, &profile, &host, &initramfs, &loaded_executable);
         let checkpoints = Checkpoints::new();
         let mut session = uml::Session::spawn(
             &launch,
@@ -942,17 +946,19 @@ mod tests {
             setup_budget: 100,
             progress_limit: Duration::from_secs(1),
         };
-        let local = root_identity(&config, &profile, &host, b"initramfs");
+        let local = root_identity(&config, &profile, &host, b"initramfs", "loaded-a");
         let mut foreign_host = host.clone();
         foreign_host.processor ^= 1;
-        let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs");
+        let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs", "loaded-a");
         assert_ne!(local, foreign);
         let mut foreign_boot = host.clone();
         foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
         assert_ne!(
             local,
-            root_identity(&config, &profile, &foreign_boot, b"initramfs")
+            root_identity(&config, &profile, &foreign_boot, b"initramfs", "loaded-a")
         );
+        let foreign_executable = root_identity(&config, &profile, &host, b"initramfs", "loaded-b");
+        assert_ne!(local, foreign_executable);
 
         let index = LocalIndex::new(1 << 20);
         let mut session = unbooted_session();
@@ -967,6 +973,16 @@ mod tests {
         assert_eq!(session.snapshots.len(), 0);
         assert_eq!(session.next, 1);
         index.release(root);
+
+        let foreign = extent(&index, b"foreign-executable-root", foreign_executable);
+        let error = session.import_root(&index, &foreign).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_eq!(session.snapshots.len(), 0);
+        index.release(foreign);
     }
 
     #[test]
@@ -986,11 +1002,11 @@ mod tests {
             setup_budget: 100,
             progress_limit: Duration::from_secs(1),
         };
-        let with_empty_argument = root_identity(&config, &profile, &host, b"070701");
+        let with_empty_argument = root_identity(&config, &profile, &host, b"070701", "loaded-a");
         config.kernel_arguments.clear();
         let mut padded_initramfs = [0_u8; 8].to_vec();
         padded_initramfs.extend_from_slice(b"070701");
-        let with_padding = root_identity(&config, &profile, &host, &padded_initramfs);
+        let with_padding = root_identity(&config, &profile, &host, &padded_initramfs, "loaded-a");
         assert_ne!(with_empty_argument, with_padding);
     }
 }
