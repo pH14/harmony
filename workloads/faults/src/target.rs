@@ -907,6 +907,9 @@ mod tests {
 
     #[test]
     fn event_park_snapshots_round_trip_in_binary_checkpoints() {
+        use searcher::search::campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry};
+        use sha2::{Digest, Sha256};
+
         for target in [None, ParkTarget::new(8, 16)] {
             let snapshot = FaultSnapshot {
                 actions: vec![FaultAction::new(
@@ -925,6 +928,21 @@ mod tests {
             assert_eq!(
                 postcard::from_bytes::<FaultSnapshot>(&bytes).unwrap(),
                 snapshot
+            );
+            let checkpoint = SnapshotCheckpoint {
+                format: "fault-test".to_owned(),
+                entries: vec![SnapshotCheckpointEntry {
+                    id: 1,
+                    snapshot: snapshot.clone(),
+                }],
+            };
+            let checkpoint_bytes = checkpoint.to_bytes().unwrap();
+            let restored =
+                SnapshotCheckpoint::<FaultSnapshot>::from_bytes(&checkpoint_bytes, "fault-test")
+                    .unwrap();
+            assert_eq!(
+                Sha256::digest(&bytes),
+                Sha256::digest(postcard::to_allocvec(&restored.entries[0].snapshot).unwrap())
             );
         }
     }

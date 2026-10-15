@@ -309,6 +309,8 @@ pub struct ArchiveEntryReport<A: Ord, K, M> {
     pub key: K,
     pub milestones: M,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<EntrySelectorCounters>,
 }
 
@@ -332,6 +334,8 @@ pub mod entries_by_suffix {
         input_suffix: Option<T>,
         key: K,
         milestones: M,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_sha256: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         selector: Option<EntrySelectorCounters>,
     }
@@ -369,6 +373,7 @@ pub mod entries_by_suffix {
                 input_suffix,
                 key: entry.key,
                 milestones: &entry.milestones,
+                snapshot_sha256: entry.snapshot_sha256.clone(),
                 selector: entry.selector,
             }
         });
@@ -418,6 +423,7 @@ pub mod entries_by_suffix {
                 input,
                 key: wire.key,
                 milestones: wire.milestones,
+                snapshot_sha256: wire.snapshot_sha256,
                 selector: wire.selector,
             });
         }
@@ -3327,6 +3333,7 @@ where
                 input,
                 key: entry.key,
                 milestones: entry.milestones,
+                snapshot_sha256: None,
                 selector: Some(EntrySelectorCounters {
                     selected: self.selected[id],
                     productive: self.productive[id],
@@ -4162,9 +4169,10 @@ mod tests {
             },
             key: FlatKey([0; 4]),
             milestones: vec![Counted(3)],
+            snapshot_sha256: None,
             selector: None,
         };
-        let reports = Reports {
+        let mut reports = Reports {
             entries: vec![
                 entry(10, None, &[1, 2]),
                 entry(11, Some(10), &[1, 2, 4]),
@@ -4173,10 +4181,11 @@ mod tests {
                 entry(14, Some(10), &[1, 2]),
             ],
         };
+        reports.entries[1].snapshot_sha256 = Some("abc".to_owned());
         let expected = concat!(
             r#"{"entries":["#,
             r#"{"id":10,"parent_id":null,"created_execution":7,"input":{"actions":[1,2]},"key":[0,0,0,0],"milestones":[3]},"#,
-            r#"{"id":11,"parent_id":10,"created_execution":7,"input_suffix":[4],"key":[0,0,0,0],"milestones":[3]},"#,
+            r#"{"id":11,"parent_id":10,"created_execution":7,"input_suffix":[4],"key":[0,0,0,0],"milestones":[3],"snapshot_sha256":"abc"},"#,
             r#"{"id":12,"parent_id":99,"created_execution":7,"input":{"actions":[5]},"key":[0,0,0,0],"milestones":[3]},"#,
             r#"{"id":13,"parent_id":10,"created_execution":7,"input":{"actions":[1,9]},"key":[0,0,0,0],"milestones":[3]},"#,
             r#"{"id":14,"parent_id":10,"created_execution":7,"input_suffix":[],"key":[0,0,0,0],"milestones":[3]}]}"#,
