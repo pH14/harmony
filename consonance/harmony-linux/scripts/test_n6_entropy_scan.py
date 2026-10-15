@@ -113,21 +113,30 @@ class EntropyScanTests(unittest.TestCase):
 
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_x86_direct_transfer_cannot_enter_an_instruction_immediate(self):
-        for code in (
-            b"\xeb\x01\xb8\x0f\xc7\xf0\x90\xc3",
-            b"\x75\x01\xb8\x0f\xc7\xf0\x90\xc3",
-            b"\xe8\x01\x00\x00\x00\xb8\x0f\xc7\xf0\x90\xc3",
+        for code, offset in (
+            (b"\xeb\x01\xb8\x0f\xc7\xf0\x90\xc3", 3),
+            (b"\x75\x01\xb8\x0f\xc7\xf0\x90\xc3", 3),
+            (b"\xe8\x01\x00\x00\x00\xb8\x0f\xc7\xf0\x90\xc3", 6),
         ):
             with self.subTest(code=code.hex()):
-                with self.assertRaisesRegex(ValueError, "noncanonical direct branch target"):
-                    self.check(elf(scan.EM_X86_64, code, b"", 6))
+                self.assertEqual(
+                    self.check(elf(scan.EM_X86_64, code, b"", 6)),
+                    [(".text", offset, "RDRAND")],
+                )
 
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_x86_direct_transfer_checks_neighboring_section(self):
         text = b"\xeb\x03\x90\xc3"
         safe = b"\xb8\x0f\xc7\xf0\x90\xc3"
-        with self.assertRaisesRegex(ValueError, "noncanonical direct branch target"):
-            self.check(elf(scan.EM_X86_64, text, safe, 6))
+        self.assertEqual(
+            self.check(elf(scan.EM_X86_64, text, safe, 6)),
+            [(".safe", 1, "RDRAND")],
+        )
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_alternate_entry_past_lock_prefix_is_valid(self):
+        code = b"\x74\x01\xf0\x48\x0f\xb1\x0d\xa5\xf3\x09\x00\xc3"
+        self.assertEqual(self.check(elf(scan.EM_X86_64, code, b"", 6)), [])
 
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_x86_branch_into_split_instruction_cannot_hide_entropy(self):
