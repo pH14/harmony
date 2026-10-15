@@ -1354,14 +1354,21 @@ mod tests {
         }
 
         for which in ["launch", "entry"] {
-            let status = Command::new(std::env::current_exe().unwrap())
+            let output = Command::new(std::env::current_exe().unwrap())
                 .arg("--exact")
                 .arg("session::worker::tests::worker_entry_and_launch_refuse_loader_overrides")
                 .env(CHILD_ENV, which)
                 .env(override_name, std::env::temp_dir())
-                .status()
+                .output()
                 .unwrap();
-            assert!(status.success(), "{which}: {status}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{which}: {}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
         }
     }
 
@@ -1395,7 +1402,13 @@ mod tests {
 
     #[allow(clippy::disallowed_methods)]
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn worker_launcher_rejects_replaced_running_image() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::worker_launcher_rejects_replaced_running_image",
+        ) {
+            return;
+        }
         let child_directory = std::env::var_os("HARMONY_WORKER_IDENTITY_CHILD_DIRECTORY");
         if let Some(directory) = child_directory {
             let directory = PathBuf::from(directory);
@@ -1628,7 +1641,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn killed_worker_processes_release_their_leases_and_keep_the_cache_consistent() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
+        ) {
+            return;
+        }
         let index = Arc::new(LocalIndex::new(1 << 20));
         let mut owner = spawned(3);
         let mut reader = spawned(50);

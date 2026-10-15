@@ -155,7 +155,7 @@
   path cannot make a different host build claim the recording. Creation, replay
   checks and replay launch refuse defined `LD_PRELOAD`, `LD_AUDIT`,
   `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, or
-  `LD_DYNAMIC_WEAK`, including empty definitions. This checks explicit loader
+  `LD_DYNAMIC_WEAK`, or `GLIBC_TUNABLES`, including empty definitions. This checks explicit loader
   overrides at admission; it
   does not bind ordinary dependent libraries, code loaded later, or an injected
   library that clears its override before admission.

@@ -10,6 +10,18 @@ use crate::profile::{HostIdentity, VerifiedProfile};
 
 const SCHEMA: u32 = 5;
 
+#[cfg(target_os = "linux")]
+const LOADER_OVERRIDE_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_HWCAP_MASK",
+    "LD_ASSUME_KERNEL",
+    "LD_DYNAMIC_WEAK",
+    "GLIBC_TUNABLES",
+];
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Recording {
@@ -55,15 +67,7 @@ fn loaded_executable_identity_self() -> std::io::Result<String> {
         use sha2::{Digest, Sha256};
         use std::io::Read as _;
 
-        for name in [
-            "LD_PRELOAD",
-            "LD_AUDIT",
-            "LD_LIBRARY_PATH",
-            "LD_ORIGIN_PATH",
-            "LD_HWCAP_MASK",
-            "LD_ASSUME_KERNEL",
-            "LD_DYNAMIC_WEAK",
-        ] {
+        for &name in LOADER_OVERRIDE_VARS {
             if std::env::var_os(name).is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::PermissionDenied,
@@ -393,6 +397,28 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn public_recording_uses_the_current_host_instead_of_a_supplied_identity() {
+        if LOADER_OVERRIDE_VARS
+            .iter()
+            .any(|name| std::env::var_os(name).is_some())
+        {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .arg("--exact")
+                .arg("recording::tests::public_recording_uses_the_current_host_instead_of_a_supplied_identity");
+            for name in LOADER_OVERRIDE_VARS {
+                command.env_remove(name);
+            }
+            let output = command.output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let profile = profile("a");
         let mut launch = Launch::new(PathBuf::from("/work"));
         launch.bridge = Some(Bridge::new(41));
@@ -420,35 +446,52 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn recording_refuses_ambient_loader_override() {
         const CHILD_ENV: &str = "HARMONY_UML_LOADER_TEST_CHILD";
-        if std::env::var_os(CHILD_ENV).is_some() {
+        if let Some(override_name) = std::env::var_os(CHILD_ENV) {
+            let override_name = override_name.to_str().unwrap();
             let profile = profile("a");
             let mut launch = Launch::new(PathBuf::from("/work"));
             launch.bridge = Some(Bridge::new(41));
             assert!(matches!(
                 Recording::new(&profile, &launch, &[]),
-                Err(ReplayRefused::HostExecutable(error)) if error.contains("LD_LIBRARY_PATH")
+                Err(ReplayRefused::HostExecutable(error)) if error.contains(override_name)
             ));
             let recording =
                 Recording::new_with_host(&profile, &host("test"), EXECUTABLE, &launch, &[])
                     .unwrap();
             assert!(matches!(
                 recording.check(&profile),
-                Err(ReplayRefused::HostExecutable(error)) if error.contains("LD_LIBRARY_PATH")
+                Err(ReplayRefused::HostExecutable(error)) if error.contains(override_name)
             ));
             assert!(matches!(
                 recording.launch(std::env::temp_dir()),
-                Err(ReplayRefused::HostExecutable(error)) if error.contains("LD_LIBRARY_PATH")
+                Err(ReplayRefused::HostExecutable(error)) if error.contains(override_name)
             ));
             return;
         }
 
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg("recording::tests::recording_refuses_ambient_loader_override")
-            .env(CHILD_ENV, "1")
-            .env("LD_LIBRARY_PATH", std::env::temp_dir())
-            .status()
-            .unwrap();
-        assert!(status.success(), "{status}");
+        for override_name in ["LD_LIBRARY_PATH", "GLIBC_TUNABLES"] {
+            for value in [std::env::temp_dir().into_os_string(), "".into()] {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .arg("--exact")
+                    .arg("recording::tests::recording_refuses_ambient_loader_override");
+                for name in LOADER_OVERRIDE_VARS {
+                    command.env_remove(name);
+                }
+                let output = command
+                    .env(CHILD_ENV, override_name)
+                    .env(override_name, &value)
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success()
+                        && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                    "{override_name}={value:?}: {}\nstdout: {stdout}\nstderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+        }
     }
 }

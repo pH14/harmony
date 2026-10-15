@@ -29,7 +29,8 @@ payload bytes; the empty list keeps the ordinary session identity.
 returns an error if the loaded executable cannot be identified. Identity
 admission refuses defined ambient loader overrides that can select host code:
 `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`,
-`LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, and `LD_DYNAMIC_WEAK` on Linux;
+`LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, `LD_DYNAMIC_WEAK`, and
+`GLIBC_TUNABLES` on Linux;
 `DYLD_FRAMEWORK_PATH`, `DYLD_FALLBACK_FRAMEWORK_PATH`,
 `DYLD_VERSIONED_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`,
 `DYLD_FALLBACK_LIBRARY_PATH`, `DYLD_VERSIONED_LIBRARY_PATH`,
