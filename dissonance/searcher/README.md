@@ -91,7 +91,10 @@ their input policies and reject unknown or retired identifiers during replay.
 The worker pool starts before the bootstrap. The coordinator bootstraps while
 every worker but the first builds its target, and the first worker builds its
 target after the bootstrap target is dropped, so a campaign never holds more
-targets than workers. The first worker's boot time includes that wait.
+targets than workers. The first worker's boot time includes that wait. Every
+worker reports its startup result before the coordinator selects or dispatches
+a job. If several workers fail to start, the lowest worker number determines
+the reported error regardless of host timing.
 
 Workers pull jobs from one shared queue ordered by planned finish, so an idle
 worker takes the queued job that admission reaches first while another worker
