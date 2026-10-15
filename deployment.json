@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "f9ba8bc866bb078c41e8f47d601e1f5821030b6c",
+    "commit": "bf63b86fefa8c589246aaef5680c622629d44dc8",
     "build": "locally verified static build",
     "checks": "npm test 61/61; browser famidash, room-cameras, interactions, arrow-pan, level-finish, smb, levels-browser, swarm, tour, tour-mobile, replay-pause, browser",
-    "asset_manifest_sha256": "11e9255133e56a0cf0d2ba53a8c3f383464ec18eda2d61cb8185061c20012428"
+    "asset_manifest_sha256": "e6c4d6fe59af1ef1562c035a2481ac7e5cde0f2f68316181c76eb0b32cf930d9"
   }
 }
