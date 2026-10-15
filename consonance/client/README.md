@@ -26,7 +26,18 @@ initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
 payload bytes; the empty list keeps the ordinary session identity.
 `identity_with_config_and_payloads` computes the same identity before boot and
-returns an error if the loaded executable cannot be identified. A nonempty
+returns an error if the loaded executable cannot be identified. Identity
+admission refuses defined ambient loader overrides that can select host code:
+`LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`,
+`LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, and `LD_DYNAMIC_WEAK` on Linux;
+`DYLD_FRAMEWORK_PATH`, `DYLD_FALLBACK_FRAMEWORK_PATH`,
+`DYLD_VERSIONED_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`,
+`DYLD_FALLBACK_LIBRARY_PATH`, `DYLD_VERSIONED_LIBRARY_PATH`,
+`DYLD_IMAGE_SUFFIX`, `DYLD_INSERT_LIBRARIES`, `DYLD_SHARED_REGION`, and
+`DYLD_SHARED_CACHE_DIR` on macOS. Even empty definitions are refused because
+some loader variables give empty values a meaning. This check does
+not bind ordinary dependent libraries, code loaded later, or an injected
+library that clears its loader variable before admission. A nonempty
 `identity_tag` adds a workload domain; it does not replace those setup inputs.
 Sparse snapshot pages are relative to setup RAM, so a session checks this
 identity before importing pages from another session. Cache extents carry the
@@ -185,6 +196,8 @@ with `serve_inherited`. The child re-executes the same binary, so it carries the
 same HVF entitlement and inherits the calling thread's CPU affinity.
 `WorkerLauncher::current_exe` records the parent's loaded image identity and
 checks the spawned child's loaded image before sending the initialization request.
+The launcher checks loader overrides again immediately before spawn, and the
+worker rejects them on entry before accepting initialization.
 Linux hashes the parent through `/proc/self/exe` and checks procfs's PID
 namespace before reading `/proc/<child-pid>/exe`; macOS reads each process's
 code-directory hash. A replacement of the executable pathname cannot cause a

@@ -558,6 +558,7 @@ impl WorkerLauncher {
     }
 
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
+        crate::image_identity::reject_loader_overrides()?;
         let (parent, child) = UnixStream::pair()?;
         let raw = child.as_raw_fd();
         let mut command = Command::new(&self.program);
@@ -1136,6 +1137,7 @@ fn inherited_stream() -> Result<UnixStream, Box<dyn Error>> {
 pub fn serve_inherited(
     services: impl Fn(&str) -> Option<ServiceFactory>,
 ) -> Result<(), Box<dyn Error>> {
+    crate::image_identity::reject_loader_overrides()?;
     serve(&inherited_stream()?, &mut |init: Init| {
         let factory = services(&init.service)
             .ok_or_else(|| format!("unknown session service {}", init.service))?;
@@ -1321,6 +1323,45 @@ mod tests {
             wall_limit: Some(Duration::from_secs(9)),
             identity_tag: "worker-test".to_owned(),
             ..SessionConfig::default()
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn worker_entry_and_launch_refuse_loader_overrides() {
+        const CHILD_ENV: &str = "HARMONY_LOADER_WORKER_TEST_CHILD";
+        #[cfg(target_os = "linux")]
+        let override_name = "LD_LIBRARY_PATH";
+        #[cfg(target_os = "macos")]
+        let override_name = "DYLD_LIBRARY_PATH";
+
+        if let Some(which) = std::env::var_os(CHILD_ENV) {
+            let error = if which == "launch" {
+                WorkerLauncher {
+                    program: std::env::current_exe().unwrap(),
+                    args: vec!["--version".into()],
+                    expected_image: String::new(),
+                }
+                .spawn()
+                .unwrap_err()
+                .to_string()
+            } else {
+                serve_inherited(|_| None).unwrap_err().to_string()
+            };
+            assert!(error.contains(override_name), "{error}");
+            return;
+        }
+
+        for which in ["launch", "entry"] {
+            let status = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("session::worker::tests::worker_entry_and_launch_refuse_loader_overrides")
+                .env(CHILD_ENV, which)
+                .env(override_name, std::env::temp_dir())
+                .status()
+                .unwrap();
+            assert!(status.success(), "{which}: {status}");
         }
     }
 
