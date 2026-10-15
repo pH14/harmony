@@ -541,12 +541,12 @@ impl SmbTarget<QuickNesMachine, Vec<u8>> {
     }
 
     #[cfg(test)]
-    pub(crate) fn poke_wram(&mut self, addr: usize, byte: u8) {
-        self.machine.poke_wram(addr, byte);
-        if let Ok(wram) = wram_array(&self.machine) {
-            self.observation.wram = wram.to_vec();
-            self.observation.decoded = smb_mechanical_state_from_wram(&wram);
-        }
+    pub(crate) fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
+        self.machine.poke_wram(addr, byte)?;
+        let wram = wram_array(&self.machine)?;
+        self.observation.wram = wram.to_vec();
+        self.observation.decoded = smb_mechanical_state_from_wram(&wram);
+        Ok(())
     }
 
     #[cfg(test)]
@@ -779,8 +779,8 @@ mod tests {
         let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         target.reset();
         assert!(!target.is_victory());
-        target.poke_wram(0x0770, 2);
-        target.poke_wram(0x075f, 7);
+        target.poke_wram(0x0770, 2).unwrap();
+        target.poke_wram(0x075f, 7).unwrap();
         let won = target.snapshot().expect("snapshot victory state");
         let mut restored = SmbTarget::loopback_for_tests(&rom).expect("load target");
         restored.restore(&won).expect("restore victory snapshot");
@@ -797,7 +797,7 @@ mod tests {
         let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         target.reset();
         for (offset, value) in super::ROOM_IDENTITY_BYTES.into_iter().zip([7, 9]) {
-            target.poke_wram(offset, value);
+            target.poke_wram(offset, value).unwrap();
         }
         let identified = target.snapshot().expect("snapshot identified room");
         assert_eq!(identified.room_area(), [7, 9]);

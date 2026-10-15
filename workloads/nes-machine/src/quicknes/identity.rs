@@ -14,6 +14,15 @@ use crate::MachineError;
 
 #[cfg(all(target_os = "linux", not(target_pointer_width = "64")))]
 compile_error!("QuickNES loaded-image census requires the 64-bit Linux ELF program-header ABI");
+#[cfg(all(target_os = "linux", not(target_env = "gnu")))]
+compile_error!("QuickNES loaded-image generation requires the 64-bit glibc loader ABI");
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LoaderGeneration {
+    pub(super) adds: u64,
+    pub(super) removes: u64,
+    pub(super) images: usize,
+}
 
 static CORE_BASES: OnceLock<Mutex<BTreeSet<usize>>> = OnceLock::new();
 
@@ -112,9 +121,31 @@ pub(super) fn fingerprint(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+pub(super) fn loader_generation() -> Result<LoaderGeneration, MachineError> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::loader_generation()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::loader_generation()
+    }
+}
+
+pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::loader_epoch()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::loader_epoch()
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{BTreeSet, CStr, Digest, MachineError, Sha256, c_void, refused};
+    use super::{BTreeSet, CStr, Digest, LoaderGeneration, MachineError, Sha256, c_void, refused};
     use std::{ffi::c_char, path::Path};
 
     fn is_system_library_path(path: &Path) -> bool {
@@ -175,7 +206,13 @@ mod linux {
         dlpi_name: *const c_char,
         dlpi_phdr: *const ElfPhdr,
         dlpi_phnum: u16,
+        dlpi_adds: u64,
+        dlpi_subs: u64,
     }
+
+    const _: [(); 48] = [(); std::mem::size_of::<DlPhdrInfo>()];
+    const _: [(); 32] = [(); std::mem::offset_of!(DlPhdrInfo, dlpi_adds)];
+    const _: [(); 40] = [(); std::mem::offset_of!(DlPhdrInfo, dlpi_subs)];
 
     unsafe extern "C" {
         fn dl_iterate_phdr(
@@ -196,10 +233,17 @@ mod linux {
         size: usize,
         data: *mut c_void,
     ) -> libc::c_int {
-        // SAFETY: dl_iterate_phdr calls with a valid callback state and an
-        // info record live until this callback returns.
-        let (info, census) = unsafe { (&*info, &mut *(data.cast::<Census<'_>>())) };
-        if size < std::mem::size_of::<DlPhdrInfo>() || info.dlpi_name.is_null() {
+        // SAFETY: `data` points to the callback state until the synchronous
+        // dl_iterate_phdr walk returns.
+        let census = unsafe { &mut *(data.cast::<Census<'_>>()) };
+        if info.is_null() || size < std::mem::size_of::<DlPhdrInfo>() {
+            census.error = Some(refused("malformed Linux loaded-image record"));
+            return 1;
+        }
+        // SAFETY: glibc keeps this record live for the callback and `size`
+        // covers every field of the 64-bit layout.
+        let info = unsafe { &*info };
+        if info.dlpi_name.is_null() {
             census.error = Some(refused("malformed Linux loaded-image record"));
             return 1;
         }
@@ -306,6 +350,123 @@ mod linux {
         Ok(())
     }
 
+    struct GenerationCensus {
+        first: Option<(u64, u64)>,
+        images: usize,
+        error: Option<MachineError>,
+    }
+
+    unsafe extern "C" fn visit_generation(
+        info: *mut DlPhdrInfo,
+        size: usize,
+        data: *mut c_void,
+    ) -> libc::c_int {
+        // SAFETY: `data` points to the callback state until this synchronous
+        // dl_iterate_phdr walk returns.
+        let census = unsafe { &mut *(data.cast::<GenerationCensus>()) };
+        if info.is_null() || size < 48 {
+            census.error = Some(refused(
+                "glibc loaded-image generation fields are unavailable",
+            ));
+            return 1;
+        }
+        // SAFETY: the validated 48-byte glibc record remains live for this
+        // callback and includes the fields at offsets 32 and 40.
+        let info = unsafe { &*info };
+        if census.first.is_none() {
+            census.first = Some((info.dlpi_adds, info.dlpi_subs));
+        }
+        let Some(images) = census.images.checked_add(1) else {
+            census.error = Some(refused("glibc loaded-image count overflow"));
+            return 1;
+        };
+        census.images = images;
+        0
+    }
+
+    pub(super) fn loader_generation() -> Result<LoaderGeneration, MachineError> {
+        let mut census = GenerationCensus {
+            first: None,
+            images: 0,
+            error: None,
+        };
+        // SAFETY: `census` is live until the synchronous loader walk ends;
+        // `visit_generation` validates each record before reading it.
+        let result = unsafe { dl_iterate_phdr(visit_generation, (&raw mut census).cast()) };
+        if let Some(error) = census.error {
+            return Err(error);
+        }
+        if result != 0 {
+            return Err(refused(
+                "glibc loaded-image generation walk was interrupted",
+            ));
+        }
+        let (adds, removes) = census
+            .first
+            .ok_or_else(|| refused("glibc loaded-image generation is empty"))?;
+        let images = u64::try_from(census.images)
+            .map_err(|_| refused("glibc loaded-image count overflow"))?;
+        if adds.checked_sub(removes) != Some(images) {
+            return Err(refused(
+                "glibc loaded-image generation disagrees with visible images",
+            ));
+        }
+        Ok(LoaderGeneration {
+            adds,
+            removes,
+            images: census.images,
+        })
+    }
+
+    struct EpochProbe {
+        epoch: Option<(u64, u64)>,
+        error: Option<MachineError>,
+    }
+
+    unsafe extern "C" fn visit_epoch(
+        info: *mut DlPhdrInfo,
+        size: usize,
+        data: *mut c_void,
+    ) -> libc::c_int {
+        // SAFETY: `data` points to the probe until the synchronous loader
+        // walk returns.
+        let probe = unsafe { &mut *(data.cast::<EpochProbe>()) };
+        if info.is_null() || size < 48 {
+            probe.error = Some(refused(
+                "glibc loaded-image generation fields are unavailable",
+            ));
+            return 1;
+        }
+        // SAFETY: the validated 48-byte glibc record includes the epoch
+        // fields and remains live for this callback.
+        let info = unsafe { &*info };
+        probe.epoch = Some((info.dlpi_adds, info.dlpi_subs));
+        1
+    }
+
+    pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
+        let mut probe = EpochProbe {
+            epoch: None,
+            error: None,
+        };
+        // SAFETY: `probe` remains live for this synchronous loader walk;
+        // `visit_epoch` checks the first record before reading its fields.
+        let result = unsafe { dl_iterate_phdr(visit_epoch, (&raw mut probe).cast()) };
+        if let Some(error) = probe.error {
+            return Err(error);
+        }
+        if result != 1 {
+            return Err(refused("glibc loaded-image epoch probe was interrupted"));
+        }
+        let (adds, removes) = probe
+            .epoch
+            .ok_or_else(|| refused("glibc loaded-image epoch is empty"))?;
+        if adds < removes {
+            return Err(refused("glibc loaded-image epoch is inconsistent"));
+        }
+        Ok((adds, removes))
+    }
+
     #[cfg(test)]
     mod tests {
         use super::is_system_library_path;
@@ -336,7 +497,7 @@ mod linux {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{BTreeSet, Digest, MachineError, Sha256, refused};
+    use super::{BTreeSet, Digest, LoaderGeneration, MachineError, Sha256, refused};
     use std::ffi::c_void;
     use std::sync::{
         OnceLock,
@@ -344,10 +505,23 @@ mod macos {
     };
 
     static IMAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
+    static IMAGE_ADDS: AtomicU64 = AtomicU64::new(0);
+    static IMAGE_REMOVES: AtomicU64 = AtomicU64::new(0);
+    static IMAGE_CALLBACKS_ACTIVE: AtomicU64 = AtomicU64::new(0);
     static IMAGE_CALLBACKS: OnceLock<()> = OnceLock::new();
 
-    extern "C" fn image_changed(_: *const c_void, _: isize) {
+    extern "C" fn image_added(_: *const c_void, _: isize) {
+        IMAGE_CALLBACKS_ACTIVE.fetch_add(1, Ordering::SeqCst);
         IMAGE_EPOCH.fetch_add(1, Ordering::SeqCst);
+        IMAGE_ADDS.fetch_add(1, Ordering::SeqCst);
+        IMAGE_CALLBACKS_ACTIVE.fetch_sub(1, Ordering::SeqCst);
+    }
+
+    extern "C" fn image_removed(_: *const c_void, _: isize) {
+        IMAGE_CALLBACKS_ACTIVE.fetch_add(1, Ordering::SeqCst);
+        IMAGE_EPOCH.fetch_add(1, Ordering::SeqCst);
+        IMAGE_REMOVES.fetch_add(1, Ordering::SeqCst);
+        IMAGE_CALLBACKS_ACTIVE.fetch_sub(1, Ordering::SeqCst);
     }
 
     unsafe extern "C" {
@@ -364,14 +538,67 @@ mod macos {
 
     pub(super) fn image_epoch() -> u64 {
         IMAGE_CALLBACKS.get_or_init(|| {
-            // SAFETY: the callbacks have static lifetime, only update an
-            // atomic counter, and dyld synchronously enumerates prior images.
+            // SAFETY: the callbacks have static lifetime, only update atomic
+            // counters, and dyld synchronously enumerates prior images.
             unsafe {
-                _dyld_register_func_for_add_image(image_changed);
-                _dyld_register_func_for_remove_image(image_changed);
+                _dyld_register_func_for_add_image(image_added);
+                _dyld_register_func_for_remove_image(image_removed);
             }
         });
         IMAGE_EPOCH.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn loader_epoch() -> Result<(u64, u64), MachineError> {
+        let start_epoch = image_epoch();
+        let start_active = IMAGE_CALLBACKS_ACTIVE.load(Ordering::SeqCst);
+        let adds = IMAGE_ADDS.load(Ordering::SeqCst);
+        let removes = IMAGE_REMOVES.load(Ordering::SeqCst);
+        let finish_active = IMAGE_CALLBACKS_ACTIVE.load(Ordering::SeqCst);
+        let finish_epoch = image_epoch();
+        if start_active != 0 || finish_active != 0 || start_epoch != finish_epoch || adds < removes
+        {
+            return Err(refused("macOS loaded images changed during epoch sample"));
+        }
+        Ok((adds, removes))
+    }
+
+    pub(super) fn loader_generation() -> Result<LoaderGeneration, MachineError> {
+        let start_epoch = image_epoch();
+        let start_active = IMAGE_CALLBACKS_ACTIVE.load(Ordering::SeqCst);
+        let adds = IMAGE_ADDS.load(Ordering::SeqCst);
+        let removes = IMAGE_REMOVES.load(Ordering::SeqCst);
+        // SAFETY: dyld returns the image count for this process.
+        #[allow(deprecated)]
+        let images = unsafe { libc::_dyld_image_count() } as usize;
+        let finish_adds = IMAGE_ADDS.load(Ordering::SeqCst);
+        let finish_removes = IMAGE_REMOVES.load(Ordering::SeqCst);
+        let finish_active = IMAGE_CALLBACKS_ACTIVE.load(Ordering::SeqCst);
+        let finish_epoch = image_epoch();
+        if start_active != 0
+            || finish_active != 0
+            || start_epoch != finish_epoch
+            || adds != finish_adds
+            || removes != finish_removes
+        {
+            return Err(refused(
+                "macOS loaded images changed during generation sample",
+            ));
+        }
+        if images < 2 {
+            return Err(refused("QuickNES loaded-image census is incomplete"));
+        }
+        let image_count =
+            u64::try_from(images).map_err(|_| refused("macOS loaded-image count overflow"))?;
+        if adds.checked_sub(removes) != Some(image_count) {
+            return Err(refused(
+                "macOS loaded-image generation disagrees with visible images",
+            ));
+        }
+        Ok(LoaderGeneration {
+            adds,
+            removes,
+            images,
+        })
     }
 
     pub(super) fn census_is_stable(
@@ -563,6 +790,7 @@ mod macos_tests {
     use std::{
         ffi::CString,
         fs,
+        io::{self, Write},
         process::Command,
         sync::{
             Arc, Barrier,
@@ -571,8 +799,35 @@ mod macos_tests {
         thread,
     };
 
+    fn run_in_isolated_process(name: &str) -> bool {
+        let module = module_path!().split_once("::").unwrap().1;
+        let exact = format!("{module}::{name}");
+        let key = "HARMONY_QUICKNES_DYLD_TEST_CHILD";
+        if std::env::var(key).ok().as_deref() == Some(exact.as_str()) {
+            return true;
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(&exact)
+            .arg("--nocapture")
+            .env(key, &exact)
+            .output()
+            .unwrap();
+        io::stdout().write_all(&output.stdout).unwrap();
+        io::stderr().write_all(&output.stderr).unwrap();
+        assert!(output.status.success(), "isolated {exact} failed");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "isolated {exact} did not execute"
+        );
+        false
+    }
+
     #[test]
     fn census_guard_rejects_add_remove_with_same_final_count() {
+        if !run_in_isolated_process("census_guard_rejects_add_remove_with_same_final_count") {
+            return;
+        }
         let directory = std::env::temp_dir().join(format!(
             "quicknes-dyld-epoch-{}-{:?}",
             std::process::id(),
@@ -607,6 +862,9 @@ mod macos_tests {
 
     #[test]
     fn image_census_safety_stress_with_concurrent_dyld_churn() {
+        if !run_in_isolated_process("image_census_safety_stress_with_concurrent_dyld_churn") {
+            return;
+        }
         let directory = std::env::temp_dir().join(format!(
             "quicknes-dyld-census-{}-{:?}",
             std::process::id(),

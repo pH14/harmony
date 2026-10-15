@@ -250,12 +250,12 @@ mod tests {
     #[test]
     fn a_captured_state_restores_the_machine_it_came_from() {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
-        machine.poke_wram(0x10, 7);
+        machine.poke_wram(0x10, 7).unwrap();
         let captured = machine.capture_nes(None).expect("capture");
         let held = machine.snapshot().expect("snapshot");
         let raw = machine.take_snapshot(held).expect("raw state");
         assert_eq!(captured, lz4_flex::block::compress_prepend_size(&raw));
-        machine.poke_wram(0x10, 9);
+        machine.poke_wram(0x10, 9).unwrap();
         machine.restore_nes(&captured).expect("restore");
         assert_eq!(machine.read_wram().expect("wram")[0x10], 7);
         assert_eq!(machine.capture_nes(None).expect("capture"), captured);
