@@ -85,6 +85,8 @@ jobs:
             workloads/nes-protocol -> target
             workloads/nes-guest -> target
       - name: Host-side NES adapter and machine
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: |
           set -euo pipefail
           cargo clippy --locked --manifest-path workloads/nes/Cargo.toml --release \
