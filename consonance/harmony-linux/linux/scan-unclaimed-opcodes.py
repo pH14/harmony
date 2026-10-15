@@ -561,6 +561,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
     saw_load = False
     missing_fences = []
     reviewed_data_hit = None
+    load_edges = []
     for index, kind, _flags, offset, address, size, _memory_size in programs:
         if kind != 1:
             continue
@@ -616,6 +617,14 @@ def unclaimed_opcode(data, programs, sections, tag, path):
         }
 
         segment = data[offset : offset + size]
+        load_edges.append({
+            "start": address,
+            "end": address + size,
+            "offset": offset,
+            "index": index,
+            "head": (segment[:2], claimed[:2], executable[:2], reviewed_data[:2]),
+            "tail": (segment[-2:], claimed[-2:], executable[-2:], reviewed_data[-2:]),
+        })
         for position in range(size - 1):
             hit = counter_encoding(segment, position)
             if hit is None:
@@ -663,6 +672,27 @@ def unclaimed_opcode(data, programs, sections, tag, path):
         raise ValueError(
             f"executable section {name} in PT_LOAD {index} can fall through into loaded bytes"
         )
+    ordered_edges = sorted(load_edges, key=lambda edge: edge["start"])
+    for left, right in zip(ordered_edges, ordered_edges[1:]):
+        if left["end"] != right["start"]:
+            continue
+        combined = tuple(a + b for a, b in zip(left["tail"], right["head"]))
+        code, claimed, executable, reviewed_data = combined
+        boundary = len(left["tail"][0])
+        for position in range(max(0, boundary - 2), boundary):
+            hit = counter_encoding(code, position)
+            if hit is None:
+                continue
+            opcode, length = hit
+            if position + length <= boundary:
+                continue
+            file_offset = left["offset"] + left["end"] - left["start"] - boundary + position
+            if not all(claimed[position : position + length]):
+                return opcode, file_offset, left["index"], "unclaimed"
+            if reviewed_data_hit is None and any(reviewed_data[position : position + length]):
+                reviewed_data_hit = opcode, file_offset, left["index"], "reviewed-data"
+            if any(executable[position : position + length]):
+                return opcode, file_offset, left["index"], "cross-load"
     scan_symbol_restarts(data, programs, sections, tag, path)
     if reviewed_data_hit is not None:
         return reviewed_data_hit

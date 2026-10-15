@@ -1297,6 +1297,41 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_decompressor_reviewed_data_opcode_across_loads_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "split-load-data.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.fill 4095,1,0\n.byte 0x0f\n'
+                '.section .data,"aw"\n.byte 0x31,0xc3\n'
+            )
+            linker = root / "split-load-data.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); rw PT_LOAD FLAGS(6); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all . = ALIGN(0x1000); "
+                ".rodata : { *(.rodata) } :all .data : { *(.data) } :rw }\n"
+            )
+            obj = root / "split-load-data.o"
+            elf = root / "split-load-data.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o", str(elf), str(obj))
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"decompressor={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("reviewed-data RDTSC", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_decompressor_head_must_end_before_64_bit_entry(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
