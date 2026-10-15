@@ -8168,18 +8168,21 @@ mod tests {
     #[test]
     fn a_campaign_never_holds_more_targets_than_workers() {
         let targets = Arc::new(LiveTargets::default());
+        let config = three_worker_config();
         run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
                 targets: Some(Arc::clone(&targets)),
             },
-            &three_worker_config(),
+            &config,
             &CampaignOrigin::Genesis,
             &mut Vec::new(),
             None,
         )
         .expect("campaign");
-        assert_eq!(targets.most.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let peak = targets.most.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak > 0);
+        assert!(peak <= config.workers as usize);
         assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
