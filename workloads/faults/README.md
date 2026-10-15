@@ -54,7 +54,7 @@ The scan rejects:
 - a writable executable segment or an executable stack;
 - an ELF file that is not 64-bit little-endian x86-64 or arm64;
 - a hardware entropy or CPU-identity instruction (RDRAND, RDSEED, RNDR,
-  RNDRRS, RDPID) without a review in `/etc/harmony/instruction-allowlist`
+  RNDRRS, RDPID, LSL) without a review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
 - an arm64 monitor-based LL/SC instruction, even if listed for review;
 - an arm64 executable load that contains an allocated non-executable section;
@@ -63,7 +63,8 @@ The scan rejects:
 For User-mode Linux, preparation rejects the scanned hardware entropy and
 CPU-identity instructions even when reviewed. UML runs guest user instructions
 natively, so the VM's hidden feature bits do not protect a guarded call site.
-The stub's TSC trap does not trap RDPID; it returns the host CPU's identity.
+The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
+identity, and LSL can read the CPU number from the host GDT segment limit.
 This admission check walks executable loads in the packed image, including
 file bytes mapped before a segment's virtual start and beyond its declared
 file size in the first and last executable pages. It also rejects loads whose
