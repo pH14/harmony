@@ -44,8 +44,9 @@ def fixture(root):
 
     decompressor_source = root / "decompressor.s"
     decompressor_source.write_text(
-        '.section .head.text,"ax"\n.global startup_32\nstartup_32:\nret\n'
-        '.fill 15,1,0xcc\n.global startup_64\nstartup_64:\nret\n'
+        '.section .head.text,"ax"\n.code32\n'
+        '.global startup_32\nstartup_32:\nlret\n'
+        '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\nret\n'
         '.fill 15,1,0xcc\n.section .rodata..compressed,"a"\n'
         f'.incbin "{root / "kernel.gz"}"\n'
         '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
@@ -84,7 +85,8 @@ def add_orphan_section(root, path, name, data):
     content.write_bytes(data)
     updated = root / "with-orphan.elf"
     run("objcopy", "--add-section", f"{name}={content}", "--set-section-flags",
-        f"{name}=alloc,load,readonly,data,contents", str(path), str(updated))
+        f"{name}=alloc,load,readonly,data,contents", "--change-section-address",
+        f"{name}=0x800000", str(path), str(updated))
     updated.replace(path)
 
 
