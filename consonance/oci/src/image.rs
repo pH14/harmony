@@ -160,6 +160,23 @@ pub struct StagedImage {
     pub config: RuntimeConfig,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+pub struct OciInputDigest {
+    pub sha256: String,
+    pub size: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OciInputProvenance {
+    files: BTreeMap<String, OciInputDigest>,
+}
+
+impl OciInputProvenance {
+    pub fn files(&self) -> &BTreeMap<String, OciInputDigest> {
+        &self.files
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Ownership {
     owners: BTreeMap<PathBuf, Owner>,
@@ -242,6 +259,13 @@ pub fn local_image_id(tool: &str, image: &str) -> Option<String> {
 }
 
 pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
+    stage_with_provenance(image, stage_dir).map(|(staged, _)| staged)
+}
+
+pub fn stage_with_provenance(
+    image: &str,
+    stage_dir: &Path,
+) -> Result<(StagedImage, Option<OciInputProvenance>), ImageError> {
     let tarball_path = Path::new(image);
     let explicit_path =
         tarball_path.is_absolute() || image.starts_with("./") || image.starts_with("../");
@@ -254,10 +278,10 @@ pub fn stage(image: &str, stage_dir: &Path) -> Result<StagedImage, ImageError> {
         .prefix("image-stage-")
         .tempdir_in(stage_dir)?;
     let staged = if local_candidate {
-        stage_from_path(tarball_path, isolated.path())
+        stage_from_path_with_provenance(tarball_path, isolated.path())
     } else {
         let tarball = export_from_tool(image, isolated.path())?;
-        stage_from_path(&tarball, isolated.path())
+        stage_from_path_with_provenance(&tarball, isolated.path())
     }?;
     let _ = isolated.keep();
     Ok(staged)
@@ -289,7 +313,15 @@ fn export_from_tool(image: &str, stage_dir: &Path) -> Result<PathBuf, ImageError
     Err(ImageError::NoTool)
 }
 
+#[cfg(test)]
 fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageError> {
+    stage_from_path_with_provenance(input, stage_dir).map(|(staged, _)| staged)
+}
+
+fn stage_from_path_with_provenance(
+    input: &Path,
+    stage_dir: &Path,
+) -> Result<(StagedImage, Option<OciInputProvenance>), ImageError> {
     if !exact::path(input)? {
         return Err(ImageError::UnsafePath(input.display().to_string()));
     }
@@ -308,10 +340,12 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
     let index = contained_join(&layout, "index.json")
         .ok()
         .is_some_and(|path| path.is_file());
-    let (layers, config_blob) = if manifest {
-        docker_save_layers(&layout)?
+    let (layers, config_blob, provenance) = if manifest {
+        let (layers, config) = docker_save_layers(&layout)?;
+        (layers, config, None)
     } else if index {
-        oci_layout_layers(&layout)?
+        let (layers, config, provenance) = oci_layout_layers_with_provenance(&layout)?;
+        (layers, config, Some(provenance))
     } else {
         return Err(ImageError::Unrecognized(input.to_path_buf()));
     };
@@ -330,11 +364,14 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
             layer.descriptor.as_ref(),
         )?;
     }
-    Ok(StagedImage {
-        rootfs,
-        owners,
-        config,
-    })
+    Ok((
+        StagedImage {
+            rootfs,
+            owners,
+            config,
+        },
+        provenance,
+    ))
 }
 
 #[derive(Deserialize)]
@@ -453,15 +490,35 @@ fn verify_pinned_archive(
     verify_descriptor(descriptor, size, hasher.finalize())
 }
 
+#[cfg(test)]
 fn oci_layout_layers(layout: &Path) -> Result<(Vec<Layer>, Vec<u8>), ImageError> {
-    let index: OciIndex =
-        serde_json::from_slice(&std::fs::read(contained_join(layout, "index.json")?)?)?;
+    oci_layout_layers_with_provenance(layout).map(|(layers, config, _)| (layers, config))
+}
+
+fn oci_layout_layers_with_provenance(
+    layout: &Path,
+) -> Result<(Vec<Layer>, Vec<u8>, OciInputProvenance), ImageError> {
+    let index_bytes = std::fs::read(contained_join(layout, "index.json")?)?;
+    let index: OciIndex = serde_json::from_slice(&index_bytes)?;
     let first = index.manifests.first().ok_or(ImageError::NoConfig)?;
     let manifest: OciManifest = serde_json::from_slice(&read_verified_blob(layout, first)?)?;
+    let mut files = BTreeMap::from([
+        (
+            "index.json".to_owned(),
+            OciInputDigest {
+                sha256: format!("{:x}", Sha256::digest(&index_bytes)),
+                size: index_bytes.len() as u64,
+            },
+        ),
+        provenance_entry(first)?,
+        provenance_entry(&manifest.config)?,
+    ]);
     let layers = manifest
         .layers
         .into_iter()
         .map(|descriptor| {
+            let (path, digest) = provenance_entry(&descriptor)?;
+            files.insert(path, digest);
             Ok(Layer {
                 path: blob_path(layout, &descriptor.digest)?,
                 descriptor: Some(descriptor),
@@ -469,7 +526,18 @@ fn oci_layout_layers(layout: &Path) -> Result<(Vec<Layer>, Vec<u8>), ImageError>
         })
         .collect::<Result<Vec<_>, ImageError>>()?;
     let config = read_verified_blob(layout, &manifest.config)?;
-    Ok((layers, config))
+    Ok((layers, config, OciInputProvenance { files }))
+}
+
+fn provenance_entry(descriptor: &OciDescriptor) -> Result<(String, OciInputDigest), ImageError> {
+    let encoded = sha256_suffix(&descriptor.digest)?;
+    Ok((
+        format!("blobs/sha256/{encoded}"),
+        OciInputDigest {
+            sha256: encoded.to_owned(),
+            size: descriptor.size,
+        },
+    ))
 }
 
 #[derive(Deserialize)]
@@ -2309,6 +2377,67 @@ mod tests {
         let (layers, config) = oci_layout_layers(dir.path()).unwrap();
         assert_eq!(layers[0].path, fixture.layers[0].canonicalize().unwrap());
         assert_eq!(config, b"cfg");
+    }
+
+    #[test]
+    fn provenance_follows_the_index_selection_staging_consumes() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let first_layer =
+            std::fs::read(tar_layer(dir.path(), "first", &[("marker", b"FIRST")])).unwrap();
+        let first = write_oci_layout(&layout, br#"{"config":{"Cmd":["FIRST"]}}"#, &[&first_layer]);
+        let first_index = std::fs::read(layout.join("index.json")).unwrap();
+        let stale_index = OciInputDigest {
+            sha256: format!("{:x}", Sha256::digest(&first_index)),
+            size: first_index.len() as u64,
+        };
+
+        let second_layer =
+            std::fs::read(tar_layer(dir.path(), "second", &[("marker", b"SECOND")])).unwrap();
+        let (config_descriptor, config_path) =
+            write_oci_blob(&layout, br#"{"config":{"Cmd":["SECOND"]}}"#);
+        let (layer_descriptor, layer_path) = write_oci_blob(&layout, &second_layer);
+        let second_manifest = serde_json::to_vec(&serde_json::json!({
+            "config": config_descriptor,
+            "layers": [layer_descriptor]
+        }))
+        .unwrap();
+        let (manifest_descriptor, manifest_path) = write_oci_blob(&layout, &second_manifest);
+        let second_index =
+            serde_json::to_vec(&serde_json::json!({"manifests": [manifest_descriptor]})).unwrap();
+        std::fs::write(layout.join("index.json"), &second_index).unwrap();
+
+        let (staged, Some(provenance)) =
+            stage_with_provenance(layout.to_str().unwrap(), &dir.path().join("stage")).unwrap()
+        else {
+            panic!("OCI layout must return provenance");
+        };
+        assert_eq!(staged.config.cmd, ["SECOND"]);
+        assert_eq!(
+            std::fs::read(staged.rootfs.join("marker")).unwrap(),
+            b"SECOND"
+        );
+        let files = provenance.files();
+        assert_ne!(files["index.json"], stale_index);
+        assert_eq!(
+            files["index.json"].sha256,
+            format!("{:x}", Sha256::digest(&second_index))
+        );
+        assert_eq!(files["index.json"].size, second_index.len() as u64);
+        for path in [&config_path, &layer_path, &manifest_path] {
+            let relative = path.strip_prefix(&layout).unwrap().to_str().unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            assert_eq!(
+                files[relative].sha256,
+                format!("{:x}", Sha256::digest(&bytes))
+            );
+            assert_eq!(files[relative].size, bytes.len() as u64);
+        }
+        assert_eq!(files.len(), 4);
+        for path in [first.config, first.layers[0].clone(), first.manifest] {
+            let relative = path.strip_prefix(&layout).unwrap().to_str().unwrap();
+            assert!(!files.contains_key(relative));
+        }
     }
 
     #[test]

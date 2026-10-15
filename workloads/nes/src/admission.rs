@@ -10,33 +10,6 @@ fn sha(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
-fn image_files(
-    root: &Path,
-    directory: &Path,
-    files: &mut BTreeMap<String, Value>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for entry in std::fs::read_dir(directory)? {
-        let path = entry?.path();
-        let metadata = std::fs::symlink_metadata(&path)?;
-        if metadata.is_dir() {
-            image_files(root, &path, files)?;
-        } else if metadata.is_file() {
-            let relative = path.strip_prefix(root)?;
-            let name = relative
-                .to_str()
-                .ok_or("OCI input path is not valid UTF-8")?;
-            let bytes = std::fs::read(&path)?;
-            files.insert(
-                name.to_owned(),
-                json!({"sha256": sha(&bytes), "size": bytes.len()}),
-            );
-        } else {
-            return Err(format!("unsupported OCI input entry: {}", path.display()).into());
-        }
-    }
-    Ok(())
-}
-
 fn postgres_code_inputs(
     staged: &image::StagedImage,
 ) -> Result<BTreeMap<String, Value>, Box<dyn std::error::Error>> {
@@ -87,13 +60,12 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
     if output_parent.starts_with(&image_path) {
         return Err("output must stay outside the OCI input".into());
     }
-    let mut inputs = BTreeMap::new();
-    image_files(&image_path, &image_path, &mut inputs)?;
     let stage = tempfile::tempdir()?;
-    let staged = image::stage(
+    let (staged, inputs) = image::stage_with_provenance(
         image_path.to_str().ok_or("non-UTF8 OCI path")?,
         stage.path(),
     )?;
+    let inputs = inputs.ok_or("admission dump requires an OCI layout without a Docker manifest")?;
     let rom = if mode == "nes" {
         Some(std::fs::read(&args[5])?)
     } else {
@@ -112,7 +84,7 @@ pub fn dump(args: &[String], session_json: &[u8]) -> Result<(), Box<dyn std::err
     let execution = prepared.execution().to_vec()?;
     let composed = prepared.initramfs(&platform);
     let runtime_config = serde_json::to_vec(&staged.config)?;
-    let input_manifest = serde_json::to_vec(&inputs)?;
+    let input_manifest = serde_json::to_vec(inputs.files())?;
     let blobs: [(&str, &[u8]); 8] = [
         ("kernel.bin", &kernel),
         ("session-config.json", session_json),
@@ -160,25 +132,6 @@ mod tests {
     use super::*;
     use oci_support::image::{Ownership, RuntimeConfig};
     use std::os::unix::fs::PermissionsExt;
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn image_file_manifest_rejects_lossy_name_collision() {
-        use std::ffi::OsString;
-        use std::os::unix::ffi::OsStringExt;
-
-        let root = tempfile::tempdir().unwrap();
-        std::fs::write(root.path().join("\u{fffd}"), b"referenced file").unwrap();
-        std::fs::write(
-            root.path().join(OsString::from_vec(vec![0xff])),
-            b"distinct file",
-        )
-        .unwrap();
-        let mut files = BTreeMap::new();
-        let error = image_files(root.path(), root.path(), &mut files)
-            .expect_err("distinct source files collapsed into one manifest path");
-        assert!(error.to_string().contains("not valid UTF-8"));
-    }
 
     #[test]
     fn postgres_code_inputs_read_unreadable_staged_files_and_restore_modes() {

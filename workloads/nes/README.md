@@ -212,8 +212,12 @@ boot flags. Custom session configurations, including campaign and fault adapters
 are outside this scope. Inputs must be local OCI layouts. The dump includes exact platform, rootfs and
 control archives, serialized execution and image configuration, input hashes,
 prepared identity, kernel bytes, and ordered concatenated initramfs bytes. Source
-filenames must be valid UTF-8 so each source file has a distinct input
-manifest path; ambiguous names are rejected before the dump is written. NES
+hashes in `image-inputs.json` cover the exact `index.json` bytes staging parsed
+and the selected manifest, config, and layer blobs it verified. Unselected OCI
+layout files are omitted, and changing the source layout during preparation
+cannot make these hashes describe a different selection from the staged image.
+The checker validates the dump's file hashes but does not reopen the source
+layout; this provenance comes from staging's verified reads. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by

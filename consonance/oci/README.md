@@ -34,6 +34,11 @@ extracted. Unsupported or malformed digest names fail closed. The index selects
 the manifest; callers that cache or pin a layout must bind the index as well as
 the referenced blobs. Prepared execution identity binds the final rootfs and
 runtime configuration, including when the selected index entry changes.
+`image::stage_with_provenance` returns the staged image plus OCI input hashes
+captured during that same stage: the parsed index bytes and the verified
+descriptors for its selected manifest, config, and layers. Unselected layout
+files are omitted. Docker-save inputs return no OCI provenance. The ordinary
+`image::stage` API returns only the staged image.
 
 `PreparedExecution` owns the deterministic rootfs and platform control
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
