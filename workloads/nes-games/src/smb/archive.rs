@@ -30,9 +30,8 @@ pub fn chord_time(action: &ButtonChord) -> u64 {
 }
 
 const PROGRESS_BAND: u16 = 64;
-const BAND_RANK_SHIFT: u32 = 1;
 
-pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_level_band_64_tiers_rank_2x_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area";
+pub const KEY_POLICY_IDENTIFIER: &str = "frozen_area_span_screen_x_16_clock_100_lineage_max_unless_warped_level_band_64_tiers_room_loop_path_place_screen_x_identity_clock_preference_level_follows_loaded_area";
 
 pub type SmbRoomIdentity = [u8; 3];
 
@@ -58,6 +57,8 @@ pub struct SmbArchiveKey {
     pub clock: u16,
     #[serde(default)]
     pub room: SmbRoomIdentity,
+    #[serde(default)]
+    pub lineage_band: u16,
 }
 
 impl ArchiveKey for SmbArchiveKey {
@@ -79,16 +80,13 @@ impl ArchiveKey for SmbArchiveKey {
         (
             self.world,
             self.level,
-            self.progress.saturating_add(u16::from(self.room_x_bucket)) / PROGRESS_BAND,
+            (self.progress.saturating_add(u16::from(self.room_x_bucket)) / PROGRESS_BAND)
+                .max(self.lineage_band),
         )
     }
 
     fn identity(self) -> Self::Identity {
         self.room_x_bucket
-    }
-
-    fn tier_rank_shift() -> u32 {
-        BAND_RANK_SHIFT
     }
 
     fn preferences() -> usize {
@@ -111,7 +109,7 @@ impl ArchiveKey for SmbArchiveKey {
             _ => self,
         };
         let arrived_here = this.room;
-        let room = match parent {
+        let (room, lineage_band) = match parent {
             Some((parent_key, rooms))
                 if (parent_key.world, parent_key.level) == (this.world, this.level) =>
             {
@@ -119,21 +117,26 @@ impl ArchiveKey for SmbArchiveKey {
                 let same_area = parent_room[..2] == arrived_here[..2];
                 let warped = parent_key.progress >= this.progress.saturating_add(ROOM_ARRIVAL_SNAP);
                 if !same_area {
-                    arrived_here
+                    (arrived_here, parent_key.progress().2)
                 } else if warped {
-                    rooms
+                    let room = rooms
                         .iter()
                         .copied()
                         .filter(|room| room[..2] == arrived_here[..2] && room[2] <= arrived_here[2])
                         .max_by_key(|room| room[2])
-                        .unwrap_or(arrived_here)
+                        .unwrap_or(arrived_here);
+                    (room, 0)
                 } else {
-                    parent_room
+                    (parent_room, parent_key.progress().2)
                 }
             }
-            _ => arrived_here,
+            _ => (arrived_here, 0),
         };
-        Self { room, ..this }
+        Self {
+            room,
+            lineage_band,
+            ..this
+        }
     }
 
     fn record(lineage: &mut Self::Lineage, key: Self) {
@@ -218,6 +221,7 @@ pub fn archive_key(wram: &[u8; 2_048]) -> SmbArchiveKey {
         time_bucket: wram[GAME_TIMER_HUNDREDS_OFFSET],
         clock: game_clock(wram),
         room: [0; 3],
+        lineage_band: 0,
     }
 }
 
@@ -376,6 +380,7 @@ mod tests {
                 area[1],
                 u8::try_from(progress / 16).expect("arrival page"),
             ],
+            lineage_band: 0,
         }
     }
 
@@ -536,7 +541,6 @@ mod tests {
         assert_eq!(on_screen.progress(), key.progress());
         assert_eq!(on_screen.identity(), 6);
         assert_eq!(SmbArchiveKey::capacity(), 2);
-        assert_eq!(SmbArchiveKey::tier_rank_shift(), 1);
         assert_eq!(SmbArchiveKey::preferences(), 1);
         let faster = SmbArchiveKey { clock: 250, ..key };
         assert_eq!(faster.place(), key.place());
@@ -625,9 +629,29 @@ mod tests {
     }
 
     #[test]
+    fn a_new_area_keeps_the_band_its_lineage_reached_and_a_warp_back_drops_it() {
+        let castle = key(250, [3, 5]);
+        assert_eq!(castle.progress(), (7, 3, 3));
+        let underwater = key(10, [0, 2]).complete(Some((castle, &Vec::new())));
+        assert_eq!(underwater.progress(), (7, 3, 3));
+        let back_in_the_castle = key(260, [3, 5]).complete(Some((underwater, &Vec::new())));
+        assert_eq!(back_in_the_castle.progress(), (7, 3, 4));
+        let wrong_pipe = key(20, [3, 5]).complete(Some((back_in_the_castle, &Vec::new())));
+        assert_eq!(wrong_pipe.progress(), (7, 3, 0));
+        let next_level = SmbArchiveKey {
+            world: 7,
+            level: 0,
+            ..key(10, [1, 0])
+        }
+        .complete(Some((SmbArchiveKey { world: 6, ..castle }, &Vec::new())));
+        assert_eq!(next_level.progress(), (7, 0, 0));
+    }
+
+    #[test]
     fn the_key_round_trips_through_json() {
         let bare = key(300, [4, 9]);
         let full = SmbArchiveKey {
+            lineage_band: 3,
             loop_on_path: false,
             room_x_bucket: 5,
             time_bucket: 2,
@@ -638,6 +662,27 @@ mod tests {
             let encoded = serde_json::to_string(&original).unwrap();
             let decoded: SmbArchiveKey = serde_json::from_str(&encoded).unwrap();
             assert_eq!(decoded, original);
+        }
+    }
+
+    #[test]
+    fn the_key_round_trips_through_postcard() {
+        let bare = SmbArchiveKey {
+            room: SmbRoomIdentity::default(),
+            ..key(300, [4, 9])
+        };
+        let banded = SmbArchiveKey {
+            lineage_band: 3,
+            ..bare
+        };
+        let full = SmbArchiveKey {
+            room_x_bucket: 5,
+            ..key(300, [4, 9])
+        };
+        for original in [bare, banded, full] {
+            let encoded = postcard::to_allocvec(&(original, 7_u8)).unwrap();
+            let decoded: (SmbArchiveKey, u8) = postcard::from_bytes(&encoded).unwrap();
+            assert_eq!(decoded, (original, 7));
         }
     }
 

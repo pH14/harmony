@@ -109,9 +109,6 @@ impl ArchiveKey for Observation {
     fn preferences() -> usize {
         1
     }
-    fn tier_rank_shift() -> u32 {
-        1
-    }
     fn preference_cmp(self, _: usize, other: Self) -> Ordering {
         (self.cleared, self.time, self.climb).cmp(&(other.cleared, other.time, other.climb))
     }
@@ -649,9 +646,6 @@ mod tests {
             self.0
         }
         fn identity(self) {}
-        fn tier_rank_shift() -> u32 {
-            7
-        }
         fn complete(self, _: Option<(Self, &Self::Lineage)>) -> Self {
             self
         }
@@ -660,7 +654,7 @@ mod tests {
 
     #[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
     #[cfg_attr(not(target_arch = "wasm32"), test)]
-    fn wide_selector_matches_recorded_native_choices() {
+    fn selector_matches_recorded_native_choices() {
         let mut archive = Archive::<u8, ProbeKey, (), ()>::new(|_| 1);
         for id in 0..3 {
             archive
@@ -687,8 +681,8 @@ mod tests {
         assert_eq!(
             choices,
             [
-                2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 2, 1, 2, 2, 2, 2,
-                2, 2, 2, 2
+                2, 1, 2, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 2, 2, 1, 2, 1, 0, 2, 2, 0, 2, 0, 2, 2, 0, 2,
+                2, 1, 1, 0
             ]
         );
     }

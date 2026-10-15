@@ -369,12 +369,14 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v1`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
-rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
-`tier_rank_shift` is three unless the workload says otherwise, so the leading
-tier takes most of the draws, and no tier holding an entry takes zero. The
+rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
+the leading tier takes most of the draws, and no tier holding an entry takes
+zero. Every workload uses this ratio, so a workload's progress value must not
+fall along the route to its goal: states on that route would rank below a tier
+that leads nowhere and receive almost no draws. The
 replay verifier bounds a recorded rank by completed progress levels in
 previously admitted archive entries when that selection was reserved. The
 bound includes historical levels that may no longer be selectable, so it
@@ -425,11 +427,7 @@ to the weight of the rank below, the same rule is applied to that rank against
 the rank below it, and so on down. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
 fall back past several stalled tiers at once, which matters when the states
-that decide a later death lie several tiers back. A
-workload whose progress order has many close steps, such as fine progress
-bands, supplies a shift of one so each rank takes half of the one ahead. The
-largest accepted shift is seven, because a larger one overflows the leading
-tier's 64-bit weight; a draw under a larger shift fails with an error. Within the tier each cell
+that decide a later death lie several tiers back. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
