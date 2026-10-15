@@ -13,8 +13,9 @@ use crate::search::telemetry::{
 };
 
 #[derive(Debug)]
-pub(crate) struct WorkerReply<Output> {
+pub(crate) struct WorkerReply<Key, Output> {
     pub(crate) worker: u32,
+    pub(crate) key: Key,
     pub(crate) outcome: Result<Output, String>,
 }
 
@@ -43,6 +44,7 @@ struct JobQueue<Key, Job> {
     jobs: BTreeMap<Key, Job>,
     open: bool,
     workers: usize,
+    failed_job: bool,
 }
 
 struct SharedJobs<Key, Job> {
@@ -57,15 +59,16 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
                 jobs: BTreeMap::new(),
                 open: true,
                 workers,
+                failed_job: false,
             }),
             ready: Condvar::new(),
         }
     }
 
-    fn next(&self) -> Option<Job> {
+    fn next(&self) -> Option<(Key, Job)> {
         let mut queue = self.queue.lock().ok()?;
         loop {
-            if let Some((_, job)) = queue.jobs.pop_first() {
+            if let Some(job) = queue.jobs.pop_first() {
                 return Some(job);
             }
             if !queue.open {
@@ -81,6 +84,12 @@ impl<Key: Ord, Job> SharedJobs<Key, Job> {
         }
         self.ready.notify_all();
     }
+
+    fn note_failed_job(&self) {
+        if let Ok(mut queue) = self.queue.lock() {
+            queue.failed_job = true;
+        }
+    }
 }
 
 struct WorkerExit<'a, Key, Job>(&'a SharedJobs<Key, Job>);
@@ -90,12 +99,13 @@ impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
         if let Ok(mut queue) = self.0.queue.lock() {
             queue.workers = queue.workers.saturating_sub(1);
         }
+        self.0.ready.notify_all();
     }
 }
 
 pub(crate) struct WorkerPool<Key: Ord, Job, Output> {
     jobs: Option<Arc<SharedJobs<Key, Job>>>,
-    reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
+    reply_receiver: mpsc::Receiver<WorkerReply<Key, Output>>,
     startup_receiver: mpsc::Receiver<(u32, Result<(), String>)>,
 }
 
@@ -106,7 +116,7 @@ impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
             .queue
             .lock()
             .map_err(|_| WorkerPoolError::WorkersExited)?;
-        if queue.workers == 0 {
+        if queue.workers == 0 && !queue.failed_job {
             return Err(WorkerPoolError::WorkersExited);
         }
         if queue.jobs.contains_key(&key) {
@@ -166,13 +176,13 @@ impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
         Ok(())
     }
 
-    pub(crate) fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
+    pub(crate) fn receive(&self) -> Result<WorkerReply<Key, Output>, WorkerPoolError> {
         self.reply_receiver
             .recv()
             .map_err(|_| WorkerPoolError::RepliesClosed)
     }
 
-    pub(crate) fn try_receive(&self) -> Result<Option<WorkerReply<Output>>, WorkerPoolError> {
+    pub(crate) fn try_receive(&self) -> Result<Option<WorkerReply<Key, Output>>, WorkerPoolError> {
         match self.reply_receiver.try_recv() {
             Ok(reply) => Ok(Some(reply)),
             Err(mpsc::TryRecvError::Empty) => Ok(None),
@@ -201,7 +211,7 @@ where
     CoordinatorError: From<String>,
 {
     thread::scope(|scope| {
-        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Output>>();
+        let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Key, Output>>();
         let (startup_sender, startup_receiver) = mpsc::channel();
         let jobs = Arc::new(SharedJobs::<Key, Job>::new(workers as usize));
         let mut handles = Vec::with_capacity(workers as usize);
@@ -238,16 +248,33 @@ where
                 telemetry.boot_ns = nanos_since(booted);
                 loop {
                     let waiting = now();
-                    let Some(job) = jobs.next() else {
+                    let Some((key, job)) = jobs.next() else {
                         break;
                     };
                     telemetry.idle_ns = telemetry.idle_ns.saturating_add(nanos_since(waiting));
                     let started = now();
-                    let outcome = execute(&mut state, job);
+                    let (outcome, panicked) =
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            execute(&mut state, job)
+                        })) {
+                            Ok(outcome) => (outcome, false),
+                            Err(_) => (Err("worker panicked during execution".to_owned()), true),
+                        };
                     telemetry.busy_ns = telemetry.busy_ns.saturating_add(nanos_since(started));
                     telemetry.jobs = telemetry.jobs.saturating_add(1);
                     let failed = outcome.is_err();
-                    if reply_sender.send(WorkerReply { worker, outcome }).is_err() || failed {
+                    if failed {
+                        jobs.note_failed_job();
+                    }
+                    let sent = reply_sender.send(WorkerReply {
+                        worker,
+                        key,
+                        outcome,
+                    });
+                    if panicked {
+                        return Err("worker panicked during execution".to_owned());
+                    }
+                    if sent.is_err() || failed {
                         break;
                     }
                 }
@@ -292,7 +319,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, rc::Rc, sync::mpsc};
+    use std::{cell::Cell, rc::Rc, sync::mpsc, time::Duration};
 
     use super::{WorkerPool, WorkerPoolError, WorkerReply, with_worker_pool};
     use crate::search::telemetry::TargetCounters;
@@ -381,6 +408,7 @@ mod tests {
         sender
             .send(WorkerReply {
                 worker: 7,
+                key: 0,
                 outcome: Ok(11),
             })
             .expect("queue reply");
@@ -530,5 +558,44 @@ mod tests {
             pool.wait_ready(1).unwrap_err(),
             "campaign worker 0 exited before reporting startup"
         );
+    }
+
+    #[test]
+    fn execution_panic_replies_with_its_key_and_retires_the_worker() {
+        for workers in [1, 2] {
+            let error = with_worker_pool(
+                workers,
+                |_| Ok::<_, String>(()),
+                |(), (): ()| -> Result<(), String> { panic!("injected execution panic") },
+                |()| TargetCounters::new(),
+                |pool| -> Result<(), Box<dyn std::error::Error>> {
+                    pool.wait_ready(workers)?;
+                    pool.send(0_u8, ())?;
+                    let reply = pool.receive()?;
+                    assert_eq!(reply.key, 0);
+                    assert_eq!(
+                        reply.outcome,
+                        Err("worker panicked during execution".to_owned())
+                    );
+                    if workers == 1 {
+                        let shared = pool.jobs.as_ref().unwrap();
+                        let queue = shared.queue.lock().unwrap();
+                        let queue = shared
+                            .ready
+                            .wait_timeout_while(queue, Duration::from_secs(5), |queue| {
+                                queue.workers != 0
+                            })
+                            .unwrap()
+                            .0;
+                        assert_eq!(queue.workers, 0);
+                        drop(queue);
+                        pool.send(1_u8, ())?;
+                    }
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+            assert_eq!(error.to_string(), "worker panicked during execution");
+        }
     }
 }

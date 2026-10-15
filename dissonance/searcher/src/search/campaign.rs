@@ -39,7 +39,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::with_worker_pool;
+use crate::search::parallel::{WorkerPoolError, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, HostTimes, IdleClock, IdleReason, TargetCounters, nanos_since, now,
@@ -3537,7 +3537,11 @@ where
                 let mut ready_reply = if next_admission
                     .is_some_and(|reservation| completed.contains_key(&reservation))
                 {
-                    pool.try_receive()?
+                    match pool.try_receive() {
+                        Ok(reply) => reply,
+                        Err(WorkerPoolError::RepliesClosed) => None,
+                        Err(error) => return Err(error.into()),
+                    }
                 } else if pending.is_empty() {
                     return Err("campaign reorder window ended with an admission gap".into());
                 } else {
@@ -3564,13 +3568,21 @@ where
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                        format!("campaign worker {physical_worker} failed: {error}").into()
-                    })?;
+                    let key = reply.key;
+                    if !schedule.contains(&key) {
+                        return Err("campaign worker replied for an unscheduled job".into());
+                    }
                     running = running
                         .checked_sub(1)
                         .ok_or("campaign worker replied without queued work")?;
-                    let (reservation, result) = outcome;
+                    let reservation = key.1;
+                    let result = match reply.outcome {
+                        Ok((claimed, result)) if claimed == reservation => result,
+                        Ok(_) => {
+                            return Err("campaign worker replied for another reservation".into());
+                        }
+                        Err(error) => Err(error),
+                    };
                     let held = Some(reservation) != next_admission;
                     idle_clock.update(
                         running,
@@ -3596,7 +3608,11 @@ where
                     {
                         return Err("campaign worker completed one reservation twice".into());
                     }
-                    ready_reply = pool.try_receive()?;
+                    ready_reply = match pool.try_receive() {
+                        Ok(reply) => reply,
+                        Err(WorkerPoolError::RepliesClosed) => None,
+                        Err(error) => return Err(error.into()),
+                    };
                 }
 
                 while let Some(&(finish, reservation)) = schedule.first() {
@@ -8073,7 +8089,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-        let run_order = |held_input: u8, label: &str| {
+        let run_order = |held_input: u8, label: &str, panicking: bool| {
             let directory = std::env::temp_dir().join(format!(
                 "dissonance-failure-prefix-{}-{label}",
                 std::process::id()
@@ -8094,6 +8110,9 @@ mod tests {
                     release.recv().map_err(|error| error.to_string())?;
                 }
                 if action.input == later.1 {
+                    if panicking {
+                        panic!("injected execution panic");
+                    }
                     return Err("planned execution failure".to_owned());
                 }
                 Ok(())
@@ -8151,8 +8170,10 @@ mod tests {
             }
             (error, stream, directory)
         };
-        let (failure_first, first_stream, first_directory) = run_order(earlier.1, "failure-first");
-        let (success_first, second_stream, second_directory) = run_order(later.1, "success-first");
+        let (failure_first, first_stream, first_directory) =
+            run_order(earlier.1, "failure-first", false);
+        let (success_first, second_stream, second_directory) =
+            run_order(later.1, "success-first", false);
         let expected_error = format!(
             "campaign reservation {} failed: planned execution failure",
             later.0
@@ -8235,8 +8256,95 @@ mod tests {
             job_lines(&first_resume_stream),
             job_lines(&second_resume_stream)
         );
+        let (panic_first, panic_stream, panic_directory) =
+            run_order(earlier.1, "panic-first", true);
+        let (success_before_panic, later_panic_stream, later_panic_directory) =
+            run_order(later.1, "success-before-panic", true);
+        let expected_panic = format!(
+            "campaign reservation {} failed: worker panicked during execution",
+            later.0
+        );
+        assert_eq!(panic_first, expected_panic);
+        assert_eq!(success_before_panic, expected_panic);
+        assert_eq!(panic_stream, first_stream);
+        assert_eq!(later_panic_stream, first_stream);
+        assert_eq!(
+            stable_checkpoint(&panic_directory),
+            stable_checkpoint(&first_directory)
+        );
+        assert_eq!(
+            stable_checkpoint(&later_panic_directory),
+            stable_checkpoint(&first_directory)
+        );
         std::fs::remove_dir_all(first_directory).unwrap();
         std::fs::remove_dir_all(second_directory).unwrap();
+        std::fs::remove_dir_all(panic_directory).unwrap();
+        std::fs::remove_dir_all(later_panic_directory).unwrap();
+    }
+
+    #[test]
+    fn sole_worker_panic_reports_its_reservation_after_reply_disconnect() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let (baseline, first_job) = (0..32)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&stream);
+                (jobs.len() == 1).then(|| (stream, jobs[0].clone()))
+            })
+            .expect("single-worker campaign executes a job");
+        let panic_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let targets = Arc::new(LiveTargets::default());
+        let panic_count_for_hook = Arc::clone(&panic_count);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            panic_count_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("injected sole-worker panic");
+        }));
+        let mut stream = Vec::new();
+        let error = run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets),
+            },
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect_err("sole worker panic fails the campaign")
+        .to_string();
+        assert_eq!(panic_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            error,
+            format!(
+                "campaign reservation {} failed: worker panicked during execution",
+                first_job.1.reservation
+            )
+        );
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(first_job.0)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(std::str::from_utf8(&stream).unwrap(), expected_prefix);
     }
 
     #[test]
