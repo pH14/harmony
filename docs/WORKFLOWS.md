@@ -53,6 +53,12 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
+`Checks / Harmony Host Compatibility` selects both Linux Arm64 jobs through
+`rust_checks`. `Linux Arm64` compiles the backend and enforces the portable-test
+floor; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks. Each
+retains the 15-minute pull-request limit, giving qualification its own job
+budget. The macOS Arm64 job continues to run both groups of checks in one job.
+
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 
