@@ -715,18 +715,19 @@ interrupted run's latest checkpoint. A completed saved run also binds the
 selected checkpoint's SHA-256. `CampaignOrigin::SearchCheckpoint` resumes one.
 When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
-The admission
-window, limits, workload identity, loaded executable identity, and the workload
-policies that give stored inputs and keys their meaning must match. The search
-checkpoint format is version 7; a checkpoint from another executable is refused
-before the new stream is written. The mixture and retention
-policies, the selector, the continuation policy and the objective stop may
-change, so a search can continue under a revised algorithm. The draw table
-policy, the preference portfolio and a workload's `preference_policy` may also
-change, because their state is rebuilt from the archive entries: new draw
-tables fold every entry's suffix, and each slot re-ranks its holders under the
-new preference order and capacity. The origin record and stream header list
-each change as `checkpoint_policy_changes`. The same seed
+The admission window, limits, workload identity, loaded executable identity,
+and the workload policies that give stored inputs and keys their meaning must
+match. The search checkpoint format is version 7; a checkpoint from another
+executable is refused before the new stream is written. Within that same
+executable, the generic campaign configuration may change mixture, retention
+and either objective-stop setting at runtime. The selector and continuation
+identifiers are compiled constants; draw-table and preference identifiers come
+from workload behavior. The resume policy map structurally permits differences
+in these identifiers, but any change requiring a rebuilt executable fails the
+executable-identity check. A searcher code change likewise requires
+comparison from rooted inputs or a fresh power-on run. Accepted runtime
+policy changes appear in the origin record and stream header as
+`checkpoint_policy_changes`. The same seed
 repeats the original progress lines; another seed derives a new selection random
 state and keeps everything else. The draw tables continue their table hash
 from the recorded one, so stream draw-table hashes after a resume differ from an
