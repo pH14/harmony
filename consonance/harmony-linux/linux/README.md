@@ -114,11 +114,15 @@ walk also rejects an opcode split from code into adjacent code or reviewed data,
 and opcode-shaped bytes immediately after adjacent code sections. An x86
 instruction can cross a section boundary and change how the CPU decodes the
 next section, while section-by-section disassembly starts decoding it anew.
-The scan rejects an incomplete instruction starting in the final 14 bytes of a
-code section adjacent to another code section. This catches a truncated opcode
-followed by otherwise complete instructions, as well as a prefix chain that
-would shift decoding farther than one maximum instruction length into the next
-section.
+The scan rejects an incomplete instruction starting in the final 14 bytes of
+a code section adjacent to another code section. This catches a truncated
+opcode followed by otherwise complete instructions and a prefix chain that
+shifts decoding farther than one maximum instruction length into the next
+section. Where reviewed data follows code in one loaded segment, a counter
+opcode at the start of that data or after data prefixes also triggers the tail
+check when code ends in a prefix. This rejects a split prefix and counter
+instruction without treating a complete instruction ending in a prefix-shaped
+operand as code.
 For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
 both AMD64 and Intel64 modes; operand-size prefixes can change instruction
 boundaries on Intel hardware. ELF symbols can restart objdump inside an

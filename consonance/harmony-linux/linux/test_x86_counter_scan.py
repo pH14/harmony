@@ -277,6 +277,20 @@ class CounterScanCoverage(unittest.TestCase):
                     "cross-section RDSEED",
                 ),
                 (
+                    "code-data-prefix-rdtsc",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0x66\n'
+                    '.section .rodata,"a"\n.byte 0x0f,0x31,0xc3\n'
+                    '.section .safe,"ax"\n.byte 0xc3\n',
+                    "incomplete instruction at executable section boundary",
+                ),
+                (
+                    "code-data-prefix-rdseed",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0x48\n'
+                    '.section .rodata,"a"\n.byte 0x0f,0xc7,0xf8,0xc3\n'
+                    '.section .safe,"ax"\n.byte 0xc3\n',
+                    "incomplete instruction at executable section boundary",
+                ),
+                (
                     "boundary-desync",
                     '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb0\n'
                     '.section .safe,"ax"\n.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
@@ -290,7 +304,7 @@ class CounterScanCoverage(unittest.TestCase):
                     '.byte 0xb8,0x90,0x90,0x90,0xb0\n'
                     '.byte 0xb8,0x90,0x90,0x90,0xb0\n'
                     '.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
-                    "incomplete instruction at adjacent code boundary",
+                    "incomplete instruction at executable section boundary",
                 ),
                 (
                     "boundary-desync-shifted-tail",
@@ -299,7 +313,7 @@ class CounterScanCoverage(unittest.TestCase):
                     '.section .safe,"ax"\n.byte 0x90\n'
                     + '.byte 0xb8,0x90,0x90,0x90,0xb0\n' * 3
                     + '.byte 0xb8,0x0f,0x31,0x90,0x90\n',
-                    "incomplete instruction at adjacent code boundary",
+                    "incomplete instruction at executable section boundary",
                 ),
             )
             for mode, source, expected in boundary_cases:
@@ -471,7 +485,7 @@ class CounterScanCoverage(unittest.TestCase):
             with self.subTest(mode="symbol-tail-restart", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("incomplete instruction at adjacent code boundary", result.stderr)
+                self.assertIn("incomplete instruction at executable section boundary", result.stderr)
 
             duplicate_code = root / "duplicate-code.s"
             duplicate_code.write_text(
