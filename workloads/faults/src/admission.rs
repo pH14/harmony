@@ -500,6 +500,17 @@ where
     }
 }
 
+fn x86_crossing_host_input(candidate: &[u8]) -> Option<&'static str> {
+    if candidate.len() != 3 || candidate[0] != 0x0f {
+        return None;
+    }
+    match candidate[1] {
+        0xc7 if ((candidate[2] >> 3) & 7) >= 6 => Some("hardware entropy"),
+        0x03 => Some("CPU-identity"),
+        _ => None,
+    }
+}
+
 fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, Box<dyn Error>> {
     let object::File::Elf64(elf) = object::File::parse(bytes)? else {
         return Err("requires ELF64 little-endian".into());
@@ -682,13 +693,10 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                                 else {
                                     continue;
                                 };
-                                if candidate[0] == 0x0f
-                                    && candidate[1] == 0xc7
-                                    && ((candidate[2] >> 3) & 7) >= 6
-                                {
+                                if let Some(kind) = x86_crossing_host_input(candidate) {
                                     let address = mapped_start + u64::try_from(candidate_start)?;
                                     return Err(format!(
-                                        "hardware entropy opcode crosses executable section boundary at 0x{address:x}"
+                                        "{kind} opcode crosses executable section boundary at 0x{address:x}"
                                     )
                                     .into());
                                 }
@@ -730,13 +738,11 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         for (offset, candidate) in boundary.windows(3).enumerate() {
             if offset < suffix_len
                 && offset + 3 > suffix_len
-                && candidate[0] == 0x0f
-                && candidate[1] == 0xc7
-                && ((candidate[2] >> 3) & 7) >= 6
+                && let Some(kind) = x86_crossing_host_input(candidate)
             {
                 let address = right_start - u64::try_from(suffix_len - offset)?;
                 return Err(format!(
-                    "hardware entropy opcode crosses executable segment boundary at 0x{address:x}"
+                    "{kind} opcode crosses executable segment boundary at 0x{address:x}"
                 )
                 .into());
             }
@@ -1208,6 +1214,10 @@ mod tests {
     #[test]
     fn uml_rejects_reviewed_lsl_because_the_host_cpu_id_varies() {
         assert_eq!(
+            scan_code(object::Architecture::X86_64, 0x2000, &[0x0f, 0x03, 0xc1]).unwrap(),
+            [(0x2000, "LSL")]
+        );
+        assert_eq!(
             scan_code(
                 object::Architecture::X86_64,
                 0x2000,
@@ -1399,10 +1409,14 @@ mod tests {
     }
 
     #[test]
-    fn x86_entropy_split_across_mapped_section_boundary_is_rejected() {
-        for (mnemonic, modrm) in [("RDRAND", 0xf0), ("RDSEED", 0xf8)] {
+    fn x86_host_input_split_across_mapped_section_boundary_is_rejected() {
+        for (mnemonic, opcode, modrm) in [
+            ("RDRAND", 0xc7, 0xf0),
+            ("RDSEED", 0xc7, 0xf8),
+            ("LSL", 0x03, 0xc1),
+        ] {
             for section_size in [1_u64, 2] {
-                let mut bytes = elf(&[0x0f, 0xc7, modrm, 0xc3], 5, 6);
+                let mut bytes = elf(&[0x0f, opcode, modrm, 0xc3], 5, 6);
                 bytes[288..296].copy_from_slice(&section_size.to_le_bytes());
                 let error = scan_elf(&bytes, "").unwrap_err().to_string();
                 assert!(
@@ -1410,7 +1424,7 @@ mod tests {
                     "{mnemonic} crossing section end {section_size}: {error}"
                 );
             }
-            let mut bytes = elf(&[0x0f, 0xc7, modrm, 0xc3], 5, 6);
+            let mut bytes = elf(&[0x0f, opcode, modrm, 0xc3], 5, 6);
             bytes[272..280].copy_from_slice(&0x1002_u64.to_le_bytes());
             bytes[280..288].copy_from_slice(&4098_u64.to_le_bytes());
             bytes[288..296].copy_from_slice(&2_u64.to_le_bytes());
@@ -1420,6 +1434,36 @@ mod tests {
                 "{mnemonic} crossing section start: {error}"
             );
         }
+    }
+
+    #[test]
+    fn x86_lsl_split_across_misaligned_section_boundary_is_rejected() {
+        let code = [
+            0xb9, 0x7b, 0, 0, 0, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0xc1, 0x89, 0xc7, 0xb8, 0x3c, 0, 0,
+            0, 0x0f, 0x05,
+        ];
+        let mut bytes = elf(&code, 5, 6);
+        bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+        bytes[288..296].copy_from_slice(&9_u64.to_le_bytes());
+        bytes[388..392].copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+        bytes[392..400].copy_from_slice(
+            &(u64::from(object::elf::SHF_ALLOC) | u64::from(object::elf::SHF_EXECINSTR))
+                .to_le_bytes(),
+        );
+        bytes[400..408].copy_from_slice(&0x1009_u64.to_le_bytes());
+        bytes[408..416].copy_from_slice(&4105_u64.to_le_bytes());
+        bytes[416..424].copy_from_slice(&(code.len() as u64 - 9).to_le_bytes());
+        bytes[432..440].copy_from_slice(&1_u64.to_le_bytes());
+        let error = scan_elf(&bytes, "probe").unwrap_err().to_string();
+        assert!(
+            error.contains("CPU-identity opcode crosses executable section boundary"),
+            "{error}"
+        );
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), bytes).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+        assert!(report.require_for(ExecutionMode::Uml).is_err());
     }
 
     #[test]
@@ -1437,8 +1481,12 @@ mod tests {
     }
 
     #[test]
-    fn x86_entropy_split_across_adjacent_executable_loads_is_rejected() {
-        for (mnemonic, modrm) in [("RDRAND", 0xf0), ("RDSEED", 0xf8)] {
+    fn x86_host_input_split_across_adjacent_executable_loads_is_rejected() {
+        for (mnemonic, opcode, modrm) in [
+            ("RDRAND", 0xc7, 0xf0),
+            ("RDSEED", 0xc7, 0xf8),
+            ("LSL", 0x03, 0xc1),
+        ] {
             for left_file_size in [4096_u64, 4094] {
                 let mut bytes = vec![0; 8203];
                 bytes[..16]
@@ -1495,7 +1543,7 @@ mod tests {
                 bytes[480..488].copy_from_slice(&1_u64.to_le_bytes());
                 bytes[496..504].copy_from_slice(&1_u64.to_le_bytes());
                 bytes[4096..8192].fill(0x90);
-                bytes[8190..8192].copy_from_slice(&[0x0f, 0xc7]);
+                bytes[8190..8192].copy_from_slice(&[0x0f, opcode]);
                 bytes[8192..8202]
                     .copy_from_slice(&[modrm, 0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
                 let error = scan_elf(&bytes, "").unwrap_err().to_string();
@@ -1506,7 +1554,7 @@ mod tests {
                 if left_file_size == 4096 {
                     bytes[8190..8192].copy_from_slice(&[0x90, 0xb0]);
                     bytes[8192..8202].copy_from_slice(&[
-                        0x05, 0x0f, 0xc7, modrm, 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90,
+                        0x05, 0x0f, opcode, modrm, 0xc3, 0x90, 0x90, 0x90, 0x90, 0x90,
                     ]);
                     let sites = scan_elf(&bytes, "").unwrap().unwrap();
                     assert_eq!(
