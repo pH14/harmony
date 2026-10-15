@@ -1088,6 +1088,7 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
 fn read_members_file<R: Read + Send + 'static>(reader: R) -> Result<Vec<Member>, ImageError> {
     let mut stream = open_archive(reader)?;
     let members = read_members_stream(&mut stream)?;
+    require_trailing_zeros(&mut stream)?;
     stream.finish()?;
     Ok(members)
 }
@@ -1101,7 +1102,6 @@ fn read_members_stream(mut stream: &mut impl Read) -> Result<Vec<Member>, ImageE
     let mut block = [0u8; TAR_BLOCK];
     while read_block(&mut stream, &mut block)? {
         if block.iter().all(|byte| *byte == 0) {
-            require_trailing_zeros(&mut stream)?;
             if long_name.is_some() || long_link.is_some() || pax_header_seen {
                 return Err(ImageError::Tar(
                     "archive ends with an orphaned extension header".into(),
@@ -1606,8 +1606,7 @@ fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
     check_portable_staging_root(dest)?;
     let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
-    let decoded = decode_archive(&pinned, dest.parent().unwrap_or(dest))?;
-    let members = read_members_stream(&mut decoded.reader()?)?;
+    let (decoded, members) = decode_archive(&pinned, dest.parent().unwrap_or(dest))?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
@@ -1701,11 +1700,40 @@ fn pin_archive(archive: &Path, staging: &Path) -> Result<PinnedArchive, ImageErr
     pin_reader(&mut source, staging)
 }
 
-fn decode_archive(archive: &PinnedArchive, staging: &Path) -> Result<PinnedArchive, ImageError> {
+struct CapturedArchiveReader<'a, R> {
+    source: &'a mut R,
+    captured: &'a mut std::fs::File,
+}
+
+impl<R: Read> Read for CapturedArchiveReader<'_, R> {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.source.read(output)?;
+        self.captured.write_all(&output[..read])?;
+        Ok(read)
+    }
+}
+
+fn decode_archive(
+    archive: &PinnedArchive,
+    staging: &Path,
+) -> Result<(PinnedArchive, Vec<Member>), ImageError> {
     let mut stream = open_archive(archive.reader()?)?;
-    let decoded = pin_reader(&mut stream, staging)?;
+    let mut file = tempfile::tempfile_in(staging)?;
+    {
+        let mut captured = CapturedArchiveReader {
+            source: &mut stream,
+            captured: &mut file,
+        };
+        read_members_stream(&mut captured)?;
+    }
+    require_trailing_zeros(&mut stream)?;
     stream.finish()?;
-    Ok(decoded)
+    file.write_all(&[0; TAR_BLOCK])?;
+    let decoded = pin_written_file(file)?;
+    let mut reader = decoded.reader()?;
+    let members = read_members_stream(&mut reader)?;
+    require_trailing_zeros(&mut reader)?;
+    Ok((decoded, members))
 }
 
 fn pin_reader(source: &mut impl Read, staging: &Path) -> Result<PinnedArchive, ImageError> {
@@ -1730,6 +1758,25 @@ fn pin_reader(source: &mut impl Read, staging: &Path) -> Result<PinnedArchive, I
         size = size
             .checked_add(length as u64)
             .ok_or_else(|| ImageError::Io(std::io::Error::other("pinned archive size overflow")))?;
+    }
+    Ok(PinnedArchive {
+        file,
+        size,
+        chunks: Arc::new(chunks),
+    })
+}
+
+fn pin_written_file(mut file: std::fs::File) -> Result<PinnedArchive, ImageError> {
+    let size = file.metadata()?.len();
+    file.seek(SeekFrom::Start(0))?;
+    let mut buffer = [0u8; ARCHIVE_CHUNK];
+    let mut chunks = Vec::new();
+    let mut remaining = size;
+    while remaining > 0 {
+        let length = remaining.min(ARCHIVE_CHUNK as u64) as usize;
+        file.read_exact(&mut buffer[..length])?;
+        chunks.push(Sha256::digest(&buffer[..length]).into());
+        remaining -= length as u64;
     }
     Ok(PinnedArchive {
         file,
@@ -1955,8 +2002,7 @@ fn apply_layer_tracked(
     if let Some(descriptor) = descriptor {
         verify_pinned_archive(&pinned, descriptor)?;
     }
-    let decoded = decode_archive(&pinned, staging)?;
-    let members = read_members_stream(&mut decoded.reader()?)?;
+    let (decoded, members) = decode_archive(&pinned, staging)?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
@@ -2623,6 +2669,27 @@ mod tests {
             assert!(bin.join("seen").exists());
             assert!(!bin.join("again").exists());
         }
+    }
+
+    #[test]
+    fn decoded_snapshot_does_not_store_compressed_tar_padding() {
+        let dir = tempfile::tempdir().unwrap();
+        let tarball = tar_layer(dir.path(), "layer", &[("marker", b"ORIGINAL")]);
+        let tar = std::fs::read(tarball).unwrap();
+        let mut padded = tar.clone();
+        padded.extend(vec![0; 2 * 1024 * 1024]);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&padded).unwrap();
+        let compressed = dir.path().join("layer.tar.gz");
+        std::fs::write(&compressed, encoder.finish().unwrap()).unwrap();
+        let pinned = pin_archive(&compressed, dir.path()).unwrap();
+        let (decoded, members) = decode_archive(&pinned, dir.path()).unwrap();
+        assert_eq!(members.len(), 1);
+        assert!(decoded.size <= tar.len() as u64);
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        untar(&decoded, &dest).unwrap();
+        assert_eq!(std::fs::read(dest.join("marker")).unwrap(), b"ORIGINAL");
     }
 
     #[test]
