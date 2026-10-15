@@ -391,7 +391,9 @@ keeps the longest such run; its pace is that longest run or its cell count,
 whichever is larger. When the current count passes twice the pace, the leading
 tier's weight halves, and it halves again each time the count doubles, down to
 the weight of the rank below. The halvings apply only while the rank below
-yields more per draw than the leading tier since the run began. A tier's
+yields more per draw than the leading tier since the run began, or while the
+leading tier has gone longer without a yield than the rank below has been
+drawn in the run. A tier's
 yields are its new cells and its carried-in wins, admissions that take a
 slot's preference from a parent in another cell. A cell is new when the
 archive has never held it and no higher tier holds a cell at its place, so a
@@ -400,8 +402,12 @@ a place a higher tier already holds, yields nothing. The rank below counts
 only its new cells in the comparison, so a lower tier that keeps refilling
 stock at the same places does not take weight from a leading tier that keeps
 opening ground. With `Td` and `Ty` the leading tier's draws and yields in the
-run, and `Nd` and `Ny` the draws and new cells of the rank below over the same
-span, the halvings apply while `(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`.
+run, `Tq` its draws since its last yield, and `Nd` and `Ny` the draws and new
+cells of the rank below over the same span, the halvings apply while
+`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)` or `Tq > Nd`. The second condition
+makes a leading tier that stops yielding lose its weight even when the rank
+below yields nothing: `Tq` grows with every leading-tier draw and `Nd` grows
+only with the rank below's smaller share, and a tier's yields are finite.
 When the rank below is a different tier from the one recorded when the run
 began, or no tier was recorded, `Nd` and `Ny` are that tier's totals. A
 leading tier that yields at least as much per draw as the rank below opens
@@ -450,7 +456,7 @@ new ground instead of settling to an equal share with every cell behind them.
 `cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
 `tier_runs` keyed by each tier's progress value with its current and longest
 run, its total draws and yields, its yields in the current run as `wins`,
-its new cells as `cells`, and the rank below's name, draws and new cells when
+its draws since its last yield as `dry`, its new cells as `cells`, and the rank below's name, draws and new cells when
 the run began, and the draws each
 cell received, and
 every live progress line carries it under `selector`. The draws each cell
