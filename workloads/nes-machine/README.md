@@ -43,8 +43,9 @@ and relative address of every libretro entrypoint, and the mapped read-only
 image bytes of the host executable and system libraries. Workers compute the
 same identity from their own loaded core before initializing a ROM and reject a
 mismatch. This native mode accepts the pinned core's macOS system libraries or
-Linux system libraries, including libc, libstdc++, and libgcc_s. It rejects any loaded non-system shared
-library, including a helper supplied beside the core, as well as loader preload
+64-bit Linux system libraries under `/usr/lib`, `/usr/lib64`, `/lib`, or
+`/lib64`, including libc, libstdc++, and libgcc_s. It rejects any loaded
+non-system shared library, including a helper supplied beside the core, as well as loader preload
 and audit injection. An ordinary library search path is allowed only when the
 resulting mapped images satisfy that policy. The image census is intentionally
 conservative: an unrelated third-party module in the process also prevents
