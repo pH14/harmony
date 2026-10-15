@@ -188,6 +188,8 @@ def direct_branch_target(instruction):
     if len(words) < 2:
         return None
     mnemonic = words[0]
+    if mnemonic.startswith(("ljmp", "lcall")) and not words[1].startswith("*"):
+        raise ValueError("unresolved direct far branch")
     if not (mnemonic.startswith(("j", "call", "loop"))
             or mnemonic in ("lcall", "xbegin")):
         return None
@@ -197,9 +199,9 @@ def direct_branch_target(instruction):
     return int(operand, 16)
 
 
-def scan_mixed_mode_raw_code(data, sections, tag):
-    for name, kind, flags, _address, offset, size in sections:
-        if kind != 1 or not flags & 4 or not size:
+def scan_mixed_mode_raw_code(data, programs, tag):
+    for index, kind, _flags, offset, _address, size, _memory_size in programs:
+        if kind != 1 or not size:
             continue
         code = data[offset : offset + size]
         for position in range(len(code) - 1):
@@ -216,21 +218,81 @@ def scan_mixed_mode_raw_code(data, sections, tag):
             if opcode:
                 raise ValueError(
                     f"mixed-mode raw counter instruction {opcode} in "
-                    f"{tag}:{name} at file offset 0x{offset + position:x}"
+                    f"{tag}:PT_LOAD {index} at file offset 0x{offset + position:x}"
                 )
 
 
-def scan_symbol_restarts(data, sections, tag, path):
+def require_complete_head(instructions, first, last, mode):
+    cursor = first
+    for site, length, _instruction in instructions:
+        if site != cursor:
+            raise ValueError(f"incomplete {mode} decompressor head")
+        cursor += length
+    if cursor != last:
+        raise ValueError(f"incomplete {mode} decompressor head")
+
+
+def decompressor_head_32(sections, path):
+    head = [
+        (address, size)
+        for name, kind, flags, address, _offset, size in sections
+        if name == ".head.text" and kind == 1 and flags & 2 and flags & 4 and size
+    ]
+    if len(head) != 1:
+        raise ValueError("missing/duplicate executable decompressor head")
+    address, size = head[0]
+    result = subprocess.run(
+        ["objdump", "-d", "-z", "-w", "-M", "i386", "-j", ".head.text", path],
+        capture_output=True, text=True, check=False,
+    )
+    if result.returncode:
+        raise ValueError("cannot disassemble 32-bit decompressor head")
+    anchors = {}
+    for line in result.stdout.splitlines():
+        match = re.fullmatch(r"([0-9a-fA-F]+) <(startup_32|startup_64)>:", line)
+        if match:
+            if match[2] in anchors:
+                raise ValueError("duplicate decompressor head mode anchor")
+            anchors[match[2]] = int(match[1], 16)
+    boundary = anchors.get("startup_64")
+    if anchors.get("startup_32") != address or boundary is None \
+            or not address < boundary < address + size:
+        raise ValueError("decompressor head mode boundary is unavailable")
+    decoded = [
+        item for item in disassembled_instructions(result.stdout)
+        if address <= item[0] < boundary
+    ]
+    require_complete_head(decoded, address, boundary, "32-bit")
+    return boundary, decoded
+
+
+def scan_symbol_restarts(data, programs, sections, tag, path):
     if tag == "setup":
-        scan_mixed_mode_raw_code(data, sections, tag)
+        scan_mixed_mode_raw_code(data, programs, tag)
         return
+    loads = [
+        (index, address, address + memory_size)
+        for index, kind, _flags, _offset, address, _size, memory_size in programs
+        if kind == 1 and memory_size
+    ]
+    code_ranges = [
+        (address, address + size)
+        for _name, kind, flags, address, _offset, size in sections
+        if kind == 1 and flags & 2 and flags & 4 and size
+    ]
     names = {
         name: (address, offset, size)
         for name, kind, flags, address, offset, size in sections
-        if flags & 4 and kind == 1 and size and (tag == "vmlinux" or name == ".text")
+        if flags & 4 and kind == 1 and size
+        and (tag == "vmlinux" or name in (".text", ".head.text"))
     }
     if not names:
         return
+    head_boundary, head_32 = (
+        decompressor_head_32(sections, path)
+        if tag == "decompressor" and any(name == ".head.text" for name, *_rest in sections)
+        else (None, [])
+    )
     with tempfile.TemporaryDirectory() as directory:
         for mode in ("amd64", "intel64"):
             result = subprocess.run(
@@ -240,9 +302,13 @@ def scan_symbol_restarts(data, sections, tag, path):
             if result.returncode:
                 raise ValueError(f"cannot disassemble {tag} symbol boundaries in {mode}")
             section = None
-            decoded = {name: [] for name in names}
+            decoded = {name: list(head_32) if name == ".head.text" else [] for name in names}
             symbols = {name: set() for name in names}
             starts = {name: bytearray(size) for name, (_address, _offset, size) in names.items()}
+            if head_boundary is not None:
+                address, _offset, _size = names[".head.text"]
+                for site, _length, _instruction in head_32:
+                    starts[".head.text"][site - address] = 1
             for line in result.stdout.splitlines():
                 match = re.fullmatch(r"Disassembly of section (.+):", line)
                 if match:
@@ -256,9 +322,19 @@ def scan_symbol_restarts(data, sections, tag, path):
                     continue
                 for site, length, instruction in disassembled_instructions(line):
                     address, _offset, size = names[section]
+                    if head_boundary is not None and section == ".head.text" \
+                            and site < head_boundary:
+                        continue
                     if address <= site < address + size:
                         starts[section][site - address] = 1
                     decoded[section].append((site, length, instruction))
+
+            if head_boundary is not None:
+                address, _offset, size = names[".head.text"]
+                require_complete_head(
+                    [item for item in decoded[".head.text"] if item[0] >= head_boundary],
+                    head_boundary, address + size, mode,
+                )
 
             for source, instructions in decoded.items():
                 for site, _length, instruction in instructions:
@@ -273,8 +349,17 @@ def scan_symbol_restarts(data, sections, tag, path):
                                     f"from 0x{site:x} to {name}:0x{target:x}"
                                 )
                             break
+                    else:
+                        if any(first <= target < last for _index, first, last in loads) \
+                                and not any(first <= target < last for first, last in code_ranges):
+                            raise ValueError(
+                                f"direct branch into loaded non-code in {tag}:{source}:{mode} "
+                                f"from 0x{site:x} to 0x{target:x}"
+                            )
 
             for name, (address, offset, size) in names.items():
+                if tag == "decompressor" and name == ".head.text":
+                    continue
                 canonical = {site: (length, instruction) for site, length, instruction in decoded[name]}
                 markers = sorted(
                     site for site, _length, instruction in decoded[name]
@@ -464,7 +549,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
         raise ValueError(
             f"executable section {name} in PT_LOAD {index} can fall through into loaded bytes"
         )
-    scan_symbol_restarts(data, sections, tag, path)
+    scan_symbol_restarts(data, programs, sections, tag, path)
     return None
 
 

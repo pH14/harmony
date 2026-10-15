@@ -204,7 +204,11 @@ class CounterScanCoverage(unittest.TestCase):
                 target.write_bytes(inert_bytes)
                 with self.subTest(mode="inert-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    if tag == "setup":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("mixed-mode raw counter instruction", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
             read_only = root / "read_only.s"
             read_only.write_text(
@@ -224,7 +228,11 @@ class CounterScanCoverage(unittest.TestCase):
                 target.write_bytes(data_bytes)
                 with self.subTest(mode="read-only-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    if tag == "setup":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("mixed-mode raw counter instruction", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
             duplicate = root / "duplicate.s"
             duplicate.write_text(
@@ -545,7 +553,11 @@ class CounterScanCoverage(unittest.TestCase):
                 target.write_bytes((root / "boundary-fenced.elf").read_bytes())
                 with self.subTest(mode="boundary-fenced-reviewed-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    if tag == "setup":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("mixed-mode raw counter instruction", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
             short_fence = root / "boundary-short-fence.s"
             short_fence.write_text(fenced.read_text().replace(".fill 15,1,0xcc", ".fill 14,1,0xcc"))
@@ -745,6 +757,103 @@ class CounterScanCoverage(unittest.TestCase):
             result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("noncanonical direct branch target", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_direct_branch_into_reviewed_data_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hazard = root / "hazard.s"
+            hazard.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\njmp entropy_site\n'
+                '.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
+                'rdtsc\nmov %eax,%edi\nmov $60,%eax\nsyscall\n'
+            )
+            linker = root / "layout.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .text : { *(.text) } :all "
+                ".rodata : { *(.rodata) } :all }\n"
+            )
+            run("as", "--64", "-o", str(root / "hazard.o"), str(hazard))
+            run(
+                "ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o",
+                str(root / "hazard.elf"), str(root / "hazard.o"),
+            )
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"), str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            safe_bytes = (root / "safe.elf").read_bytes()
+            hazard_bytes = (root / "hazard.elf").read_bytes()
+            for target, tag in ((kernel, "vmlinux"), (decompressor, "decompressor")):
+                kernel.write_bytes(safe_bytes)
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                target.write_bytes(hazard_bytes)
+                with self.subTest(target=tag):
+                    result = subprocess.run(
+                        ["bash", str(SCAN), str(kernel)], capture_output=True, text=True
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("direct branch into loaded non-code", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_head_direct_branch_into_reviewed_data_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"), str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            safe_bytes = (root / "safe.elf").read_bytes()
+            kernel.write_bytes(safe_bytes)
+            setup.write_bytes(safe_bytes)
+            linker = root / "layout.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all .rodata : { *(.rodata) } :all }\n"
+            )
+            for mode in ("head32", "head64"):
+                hazard = root / "hazard.s"
+                hazard.write_text(
+                    '.section .head.text,"ax"\n.global startup_32\nstartup_32:\n'
+                    + ('jmp entropy_site\n' if mode == "head32" else 'nop\n')
+                    + '.fill 27,1,0xcc\n.global startup_64\nstartup_64:\n'
+                    + ('jmp entropy_site\n' if mode == "head64" else 'ret\n')
+                    + '.fill 15,1,0xcc\n'
+                    + '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                    + '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
+                    + 'rdtsc\nmov %eax,%edi\nmov $60,%eax\nsyscall\n'
+                )
+                run("as", "--64", "-o", str(root / "hazard.o"), str(hazard))
+                run(
+                    "ld", "-nostdlib", "-T", str(linker), "-e", "startup_32", "-o",
+                    str(decompressor), str(root / "hazard.o"),
+                )
+                with self.subTest(mode=mode):
+                    result = subprocess.run(
+                        ["bash", str(SCAN), str(kernel)], capture_output=True, text=True
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("direct branch into loaded non-code", result.stderr)
 
 
 if __name__ == "__main__":

@@ -101,15 +101,17 @@ kernel proper, setup, and decompressor. Its scan checks that the known
 linker-defined code sections present in each image are marked executable before
 relying on section-based disassembly. It rejects unknown or duplicate allocated
 data sections and scans opcode bytes in loaded file ranges outside reviewed
-sections. Reviewed data sections are exempt from raw-byte scanning because
-ordinary kernel tables contain the same byte sequences by chance;
+sections. Kernel and decompressor reviewed data are exempt from raw-byte scanning
+because ordinary tables contain the same byte sequences by chance. Setup instead
+raw-scans every file-backed PT_LOAD byte across its mixed 16-/32-bit execution;
 an unreadable or empty disassembly also fails the build. This guards against an
 executable image whose section flags or sizes hide code from `objdump -d`.
 Read-only data shares some executable ELF segments, so segment flags alone do
 not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden
 code in shortened, non-executable, separately allocated, and duplicate-name
-sections, and inert opcode-shaped data, in all three artifacts. A new data
-section name requires review before the image can be published. The raw segment
+sections, and opcode-shaped data that is inert in 64-bit artifacts but rejected
+in setup. A new data section name requires review before the image can be
+published. The raw segment
 walk also rejects an opcode split from code into nearby code or reviewed data,
 and opcode-shaped code bytes within one maximum instruction length after a code
 section ends. An x86 instruction can cross a section or short data gap and
@@ -128,8 +130,13 @@ or continue into the following data or load. This includes zero-filled gaps,
 page slack, and loads without the executable ELF flag; setup and the
 decompressor do not use that flag as an execution boundary. Overlapping
 PT_LOAD memory ranges are rejected so one load cannot overwrite another's
-fence. Direct jumps into reviewed data and code copied out of a reviewed data
-section require separate admission review.
+fence. Decoded direct branches from kernel or decompressor code into loaded
+non-code bytes, including reviewed data and load slack, fail admission. The
+decompressor head is decoded as 32-bit code before `startup_64` and in both
+64-bit modes afterward; a present head with missing mode anchors fails.
+Indirect or computed
+transfers into reviewed data and code copied out of data require separate
+admission review.
 For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
 both AMD64 and Intel64 modes; operand-size prefixes can change instruction
 boundaries on Intel hardware. ELF symbols can restart objdump inside an
