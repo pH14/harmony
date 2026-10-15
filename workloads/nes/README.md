@@ -282,7 +282,7 @@ over SSH, for example `ssh -L 8790:127.0.0.1:8790 HOST`. `live_site` names a
 directory with the built arcade page and its `roms` directory, which the server
 serves at `/`. `GET /live/events` is a Server-Sent Events stream: a `ready`
 message with the root state, then one `batch` every 100 ms in the shape the
-browser search worker posts, with at most 32 trails and 2,000 unretained points
+browser search worker posts, with at most 256 trails and 2,000 unretained points
 per batch, and a final `limit` message when the campaign ends. A viewer that
 connects late first receives up to 40,000 earlier points.
 `GET /live/states?ids=&request=` returns the controller input and core snapshot

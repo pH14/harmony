@@ -641,14 +641,18 @@ function followStalledPath(now) {
     }
   }
   if (paused) return;
-  let here = false, deepest = null;
+  const counts = new Map();
   for (const [room, points] of swarmRooms) {
-    if (!points.length) continue;
     const level = roomLevel(room);
-    if (level === path.level) here = true;
-    else if (level != null && level > path.level && (deepest == null || level > deepest)) deepest = level;
+    if (points.length && level != null && level >= path.level) counts.set(level, (counts.get(level) || 0) + points.length);
   }
-  if (here || deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
+  const here = counts.get(path.level) || 0;
+  let deepest = null;
+  for (const [level, count] of counts) {
+    const entry = catalog.levels.find((candidate) => candidate.id === level)?.rooms[0];
+    if (level > path.level && count > here && maps.has(entry) && (deepest == null || level > deepest)) deepest = level;
+  }
+  if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
     path.idle = 0;
     return;
   }
