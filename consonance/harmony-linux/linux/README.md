@@ -119,9 +119,13 @@ PT_LOAD memory ranges are rejected so one load cannot overwrite another's
 fence. The kernel's loads are also checked by physical address, because its
 decompressor copies each segment there. Physical overlaps are rejected and all
 kernel loads must use one virtual-to-physical offset, so physical adjacency
-matches the virtual adjacency used by the opcode scan. Decoded direct branches
-from kernel or decompressor code into loaded
-non-code bytes, including reviewed data and load slack, fail admission. The
+matches the virtual adjacency used by the opcode scan. The scan also rejects
+an earlier kernel load whose physical destination, conservatively including
+its memory tail, intersects the file source of a later load. Linux copies the
+file-backed loads in program-header order within one buffer; such an
+intersection could change executable bytes after scanning. Decoded direct
+branches from kernel or decompressor code into loaded non-code bytes, including
+reviewed data and load slack, fail admission. The
 kernel ELF's physical entry must map uniquely to a complete loaded executable
 section. If that entry is inside a canonical instruction, the scanner decodes
 again from the entry byte; an executable-section flag alone does not make the
@@ -147,10 +151,15 @@ executable decompressor sections. It restarts decoding at every reachable
 branch target, including a target inside an earlier instruction, and checks
 branches back into the head against its reviewed instruction starts. A path
 into loaded non-code or an unresolved control transfer fails admission.
-After Kbuild finishes, the publisher seals snapshots of all three ELFs and
-`bzImage` before running the scan. It verifies that the compressed kernel
-embedded in the decompressor expands to the stripped scanned `vmlinux`, and
-that the packed image exactly matches Kbuild's setup binary padded to a 4 KiB
+After Kbuild finishes, the publisher seals snapshots of all three ELFs,
+`bzImage`, and the build configuration before running the scan. It derives the
+kernel's physical load base from `CONFIG_PHYSICAL_START` and
+`CONFIG_PHYSICAL_ALIGN` and requires it to match the scanned loads. The
+publisher also requires the stripped embedded `vmlinux` to retain the scanned
+ELF entry, ordered program headers, and every loaded file-source byte. It
+verifies that the compressed kernel embedded in the decompressor expands to
+that stripped `vmlinux`, and that the packed image exactly matches Kbuild's
+setup binary padded to a 4 KiB
 boundary followed by the decompressor binary. Allocated setup and decompressor
 sections must map uniquely to loaded bytes without overlap; the publisher also
 raw-scans the complete setup binary and checks that the embedded compressed

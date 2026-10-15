@@ -316,6 +316,81 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_kernel_earlier_load_cannot_overwrite_later_file_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "source-alias.s"
+            assembly.write_text(
+                '.section .data,"aw"\n.fill 1048576,1,0\n.byte 0x0f,0x31,0xc3\n'
+                '.section .text,"ax"\n.global _start\n_start:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .keep,"",@progbits\n.fill 3145728,1,0\n'
+            )
+            linker = root / "source-alias.ld"
+            linker.write_text(
+                "PHDRS { data PT_LOAD FLAGS(6); text PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0xffffffff81000000; .data : { *(.data) } :data "
+                ". = 0xffffffff81500000; .text : { *(.text) } :text "
+                ".keep : { *(.keep) } }\n"
+            )
+            obj = root / "source-alias.o"
+            elf = root / "source-alias.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-z", "max-page-size=0x200000",
+                "-T", str(linker), "-e", "_start", "-o",
+                str(elf), str(obj))
+            data = bytearray(elf.read_bytes())
+            program_offset = struct.unpack_from("<Q", data, 32)[0]
+            program_size = struct.unpack_from("<H", data, 54)[0]
+            struct.pack_into("<Q", data, program_offset + 24, 0x01000000)
+            struct.pack_into("<Q", data, program_offset + program_size + 8, 0)
+            struct.pack_into("<Q", data, program_offset + program_size + 16,
+                             0xffffffff81400000)
+            struct.pack_into("<Q", data, program_offset + program_size + 24, 0x01400000)
+            struct.pack_into("<Q", data, program_offset + program_size + 32, 0x100010)
+            struct.pack_into("<Q", data, program_offset + program_size + 40, 0x100010)
+            struct.pack_into("<Q", data, 24, 0x01500000)
+            section_offset = struct.unpack_from("<Q", data, 40)[0]
+            section_size, section_count, names_index = struct.unpack_from("<HHH", data, 58)
+            names_header = section_offset + names_index * section_size
+            names_offset, names_size = struct.unpack_from("<QQ", data, names_header + 24)
+            names = data[names_offset : names_offset + names_size]
+            text_found = False
+            for index in range(section_count):
+                header = section_offset + index * section_size
+                name_offset = struct.unpack_from("<I", data, header)[0]
+                if names[name_offset:].split(b"\0", 1)[0] == b".text":
+                    self.assertEqual(struct.unpack_from("<Q", data, header + 24)[0], 0x500000)
+                    struct.pack_into("<Q", data, header + 24, 0x100000)
+                    text_found = True
+                    break
+            self.assertTrue(text_found)
+            data[0x100000 : 0x100010] = b"\xc3" + b"\xcc" * 15
+            elf.write_bytes(data)
+            image = bytearray(data)
+            loads = []
+            for index in range(2):
+                program = program_offset + index * program_size
+                offset = struct.unpack_from("<Q", data, program + 8)[0]
+                physical = struct.unpack_from("<Q", data, program + 24)[0]
+                size = struct.unpack_from("<Q", data, program + 32)[0]
+                loads.append((physical - 0x01000000, offset, size))
+            self.assertEqual(loads, [(0, 0x200000, 0x100003),
+                                     (0x400000, 0, 0x100010)])
+            for destination, source, size in loads:
+                image[destination : destination + size] = bytes(image[source : source + size])
+            self.assertEqual(image[0x500000 : 0x500003], b"\x0f\x31\xc3")
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("earlier PT_LOAD overwrites later file source", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_executable_segment_with_hidden_code_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

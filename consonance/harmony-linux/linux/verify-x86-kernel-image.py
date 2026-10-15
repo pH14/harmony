@@ -139,7 +139,65 @@ def verify_embedded_kernel(compressed, stripped):
         raise ValueError("decompressor kernel payload differs from scanned vmlinux")
 
 
-def verify_image(setup, decompressor, image, paths, scanner_path, fds):
+def program_header_entries(data):
+    if data[4] == 2:
+        offset = struct.unpack_from("<Q", data, 32)[0]
+        size, count = struct.unpack_from("<HH", data, 54)
+    else:
+        offset = struct.unpack_from("<I", data, 28)[0]
+        size, count = struct.unpack_from("<HH", data, 42)
+    return tuple(data[offset + index * size : offset + (index + 1) * size]
+                 for index in range(count))
+
+
+def physical_load_base(config):
+    try:
+        lines = config.decode("ascii").splitlines()
+    except UnicodeDecodeError as error:
+        raise ValueError("kernel config is not ASCII") from error
+    values = {}
+    for key in ("CONFIG_PHYSICAL_START", "CONFIG_PHYSICAL_ALIGN"):
+        matches = [line.partition("=")[2] for line in lines if line.startswith(key + "=")]
+        if len(matches) != 1:
+            raise ValueError(f"kernel config lacks unique {key}")
+        try:
+            values[key] = int(matches[0], 0)
+        except ValueError as error:
+            raise ValueError(f"kernel config has invalid {key}") from error
+    start = values["CONFIG_PHYSICAL_START"]
+    align = values["CONFIG_PHYSICAL_ALIGN"]
+    if start < 0 or align <= 0 or align & (align - 1) or start + align - 1 >= 1 << 64:
+        raise ValueError("kernel config has invalid physical load base")
+    return (start + align - 1) & ~(align - 1)
+
+
+def verify_runtime_kernel_identity(original, stripped, config, scanner):
+    programs, _sections = scanner.headers(original)
+    stripped_programs, _stripped_sections = scanner.headers(stripped)
+    header_size = 32 if original[4] == 2 else 28
+    if original[:header_size] != stripped[:header_size] \
+            or program_header_entries(original) != program_header_entries(stripped) \
+            or programs != stripped_programs:
+        raise ValueError(
+            "stripped vmlinux ELF entry or program headers differ from scanned vmlinux"
+        )
+    for index, kind, _flags, offset, _address, size, _memory_size in programs:
+        if kind != 1:
+            continue
+        source = original[offset : offset + size]
+        copied = stripped[offset : offset + size]
+        if len(source) != size or source != copied:
+            raise ValueError(
+                f"stripped vmlinux PT_LOAD {index} source bytes differ from scanned vmlinux"
+            )
+    physical = scanner.kernel_load_layout(original, programs)
+    active = [physical[index] for index, kind, _flags, _offset, _address, _size, memory_size
+              in programs if kind == 1 and memory_size]
+    if not active or min(active) != physical_load_base(config):
+        raise ValueError("kernel physical load base differs from build config")
+
+
+def verify_image(vmlinux, setup, decompressor, image, config, paths, scanner_path, fds):
     result = subprocess.run(["bash", str(scanner_path), paths["vmlinux"], paths["setup"],
                              paths["decompressor"]], check=False)
     if result.returncode:
@@ -159,6 +217,7 @@ def verify_image(setup, decompressor, image, paths, scanner_path, fds):
         paths["decompressor"], ["-O", "binary", "-R", ".note", "-R", ".comment", "-S"], fds
     )
     stripped_kernel = objcopy_bytes(paths["vmlinux"], ["-R", ".comment", "-S"], fds)
+    verify_runtime_kernel_identity(vmlinux, stripped_kernel, config, helper)
     compressed_address, compressed = compressed_kernel(decompressor, decompressor_sections)
     first_address = decompressor_sections[0][0]
     packed_offset = compressed_address - first_address
@@ -204,6 +263,7 @@ def main():
         "setup": build / "arch/x86/boot/setup.elf",
         "decompressor": build / "arch/x86/boot/compressed/vmlinux",
         "image": build / "arch/x86/boot/bzImage",
+        "config": build / ".config",
     }
     fds = []
     try:
@@ -212,8 +272,8 @@ def main():
         for name, path in input_paths.items():
             contents[name], paths[name] = snapshot(path, f"harmony-{name}", fds)
         verify_image(
-            contents["setup"], contents["decompressor"], contents["image"],
-            paths, scanner, fds,
+            contents["vmlinux"], contents["setup"], contents["decompressor"],
+            contents["image"], contents["config"], paths, scanner, fds,
         )
         publish(Path(image_out), contents["image"])
         publish(Path(qualified_out), contents["image"])
