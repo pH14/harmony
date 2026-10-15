@@ -131,12 +131,15 @@ most fifteen bytes long, straight-line execution in any 16-, 32-, or 64-bit
 decoder mode cannot consume the entire fence as part of an earlier instruction
 or continue into the following data or load. This includes zero-filled gaps,
 page slack, and loads without the executable ELF flag; setup and the
-decompressor do not use that flag as an execution boundary. Overlapping
-PT_LOAD memory ranges are rejected so one load cannot overwrite another's
-fence. The kernel's loads are also checked by physical address, because its
-decompressor copies each segment there. Physical overlaps are rejected and all
-kernel loads must use one virtual-to-physical offset, so physical adjacency
-matches the virtual adjacency used by the opcode scan. The scan also rejects
+decompressor do not use that flag as an execution boundary. For the kernel,
+an in-place PT_LOAD copy leaves buffer bytes beyond its file-backed range
+untouched, even when the load declares no larger memory range. Kernel code
+ending at that boundary always needs the fence. The scanner rejects overlapping
+PT_LOAD memory ranges so one load cannot overwrite another's fence. Kernel
+loads are also checked by physical address because the decompressor copies
+each segment there. Physical overlaps are rejected. All kernel loads must use
+one virtual-to-physical offset, so physical adjacency matches the virtual
+adjacency used by the opcode scan. The scan also rejects
 an earlier kernel load whose physical destination, conservatively including
 its memory tail, intersects the file source of a later load. Linux copies the
 file-backed loads in program-header order within one buffer; such an

@@ -391,6 +391,102 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_kernel_code_cannot_fall_into_own_uncopied_memory_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "tail.s"
+            assembly.write_text(
+                '.section .tail,"",@progbits\n.byte 0x0f,0x31,0xc3\n'
+                '.section .text,"ax",@progbits\n.global _start\n_start:\n'
+                '.fill 48,1,0x90\n'
+                '.section .bss,"aw",@nobits\n.space 4096\n'
+            )
+            linker = root / "tail.ld"
+            linker.write_text(
+                "PHDRS { text PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0; .tail : { *(.tail) } "
+                ". = 0xffffffff81000000; "
+                ".text : AT(0x01000000) { *(.text) } :text "
+                ".bss (NOLOAD) : AT(0x01001000) { *(.bss) } :text }\n"
+            )
+            obj = root / "tail.o"
+            elf = root / "tail.elf"
+            stripped = root / "tail-stripped.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-z", "max-page-size=0x200000",
+                "-T", str(linker), "-e", "_start", "-o", str(elf), str(obj))
+            data = bytearray(elf.read_bytes())
+            program = struct.unpack_from("<Q", data, 32)[0]
+            source = struct.unpack_from("<Q", data, program + 8)[0]
+            physical, size, memory_size = struct.unpack_from("<QQQ", data, program + 24)
+            self.assertEqual((source, physical, size), (0x200000, 0x01000000, 48))
+            self.assertGreater(memory_size, size)
+            struct.pack_into("<Q", data, 24, physical)
+            data[48:52] = b"\x0f\x31\xc3\0"
+            elf.write_bytes(data)
+            run("objcopy", "-R", ".comment", "-S", str(elf), str(stripped))
+            loaded = bytearray(stripped.read_bytes())
+            self.assertEqual(loaded[48:51], b"\x0f\x31\xc3")
+            loaded[:size] = loaded[source : source + size]
+            self.assertEqual(loaded[size : size + 3], b"\x0f\x31\xc3")
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("can fall through into loaded bytes", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_kernel_code_cannot_fall_past_equal_file_and_memory_size(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "terminal.s"
+            assembly.write_text(
+                '.section .tail,"",@progbits\n.byte 0x0f,0x31,0xc3\n'
+                '.section .text,"ax",@progbits\n.global _start\n_start:\n'
+                '.fill 48,1,0x90\n'
+            )
+            linker = root / "terminal.ld"
+            linker.write_text(
+                "PHDRS { text PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0; .tail : { *(.tail) } "
+                ". = 0xffffffff81000000; "
+                ".text : AT(0x01000000) { *(.text) } :text }\n"
+            )
+            obj = root / "terminal.o"
+            elf = root / "terminal.elf"
+            stripped = root / "terminal-stripped.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-z", "max-page-size=0x200000",
+                "-T", str(linker), "-e", "_start", "-o", str(elf), str(obj))
+            data = bytearray(elf.read_bytes())
+            program = struct.unpack_from("<Q", data, 32)[0]
+            source = struct.unpack_from("<Q", data, program + 8)[0]
+            physical, size, memory_size = struct.unpack_from("<QQQ", data, program + 24)
+            self.assertEqual((source, physical, size, memory_size),
+                             (0x200000, 0x01000000, 48, 48))
+            struct.pack_into("<Q", data, 24, physical)
+            data[48:52] = b"\x0f\x31\xc3\0"
+            elf.write_bytes(data)
+            run("objcopy", "-R", ".comment", "-S", str(elf), str(stripped))
+            loaded = bytearray(stripped.read_bytes())
+            self.assertEqual(loaded[48:51], b"\x0f\x31\xc3")
+            loaded[:size] = loaded[source : source + size]
+            self.assertEqual(loaded[size : size + 3], b"\x0f\x31\xc3")
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("can fall through into loaded bytes", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_executable_segment_with_hidden_code_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -405,7 +501,7 @@ class CounterScanCoverage(unittest.TestCase):
             hazard_bytes = kernel.read_bytes()
 
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run(
                 "ld", "-nostdlib", "-e", "_start", "-o",
@@ -801,7 +897,7 @@ class CounterScanCoverage(unittest.TestCase):
             control = root / "boundary-control.s"
             control.write_text(
                 '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8,0x00,0x00,0x0f,0x31\n'
-                '.section .safe,"ax"\n.byte 0xc3\n'
+                '.section .safe,"ax"\n.byte 0xc3\n.fill 15,1,0xcc\n'
             )
             run("as", "--64", "-o", str(root / "boundary-control.o"), str(control))
             run(
@@ -819,7 +915,7 @@ class CounterScanCoverage(unittest.TestCase):
             fenced.write_text(
                 '.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n'
                 '.section .rodata,"a"\n.byte 0x0f,0x31,0x0f,0xc7,0xf8\n'
-                '.section .safe,"ax"\nret\n'
+                '.section .safe,"ax"\nret\n.fill 15,1,0xcc\n'
             )
             run("as", "--64", "-o", str(root / "boundary-fenced.o"), str(fenced))
             run(
@@ -860,7 +956,7 @@ class CounterScanCoverage(unittest.TestCase):
             prefixed = root / "boundary-prefixed.s"
             prefixed.write_text(
                 '.section .text,"ax"\n.global _start\n_start:\nrep stosb\n'
-                '.section .safe,"ax"\n.byte 0xc3\n'
+                '.section .safe,"ax"\n.byte 0xc3\n.fill 15,1,0xcc\n'
             )
             run("as", "--64", "-o", str(root / "boundary-prefixed.o"), str(prefixed))
             run(
@@ -879,14 +975,16 @@ class CounterScanCoverage(unittest.TestCase):
                     '.global reset_decode\nreset_decode:\n'
                     '.byte 0x90,0x90,0x90,0xb8\n'
                     + '.byte 0x90,0x90,0x90,0xb0,0xb8\n' * 3
-                    + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                    + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n'
+                    + '.fill 15,1,0xcc\n',
                 ),
                 (
                     "symbol-restart-not-last",
                     '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8,0x90\n'
                     '.global reset_decode\nreset_decode:\n'
                     '.byte 0xb8,0xb8,0xb8,0x0f,0x31\n'
-                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n'
+                    '.fill 15,1,0xcc\n',
                 ),
                 (
                     "symbol-restart-gt-name",
@@ -894,7 +992,8 @@ class CounterScanCoverage(unittest.TestCase):
                     '.global reset_decode\nreset_decode:\n'
                     '.byte 0x90,0x90,0x90,0xb8\n'
                     + '.byte 0x90,0x90,0x90,0xb0,0xb8\n' * 3
-                    + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                    + '.byte 0x0f,0x31\nmov %eax,%edi\nmov $60,%eax\nsyscall\n'
+                    + '.fill 15,1,0xcc\n',
                 ),
                 (
                     "intel64-displacement",
@@ -905,7 +1004,8 @@ class CounterScanCoverage(unittest.TestCase):
                     '.section .text,"ax"\n.global _start\n_start:\n.fill 16,1,0x90\n'
                     'or $1,%eax\n'
                     '.byte 0x66,0x0f,0x84,0x00,0x00,0xef,0x00,0x0f,0x31\n'
-                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n',
+                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n'
+                    '.fill 15,1,0xcc\n',
                 ),
             )
             for mode, source in decoder_cases:
@@ -961,6 +1061,7 @@ class CounterScanCoverage(unittest.TestCase):
                     '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
                     '.global reset_decode\nreset_decode:\n'
                     f'.byte 0x90,0x90,0x90,0xb0,0x66,0xff,0x{modrm},0x24,0xc3\n'
+                    '.fill 15,1,0xcc\n'
                 )
                 obj = root / f"symbol-restart-{far_mnemonic}.o"
                 far_branch_elf = root / f"symbol-restart-{far_mnemonic}.elf"
@@ -1036,7 +1137,7 @@ class CounterScanCoverage(unittest.TestCase):
             run("ld", "-nostdlib", "-e", "_start", "-o", str(kernel), str(root / "hazard.o"))
 
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"), str(root / "safe.o"))
             for target in (
@@ -1081,7 +1182,7 @@ class CounterScanCoverage(unittest.TestCase):
                 str(root / "hazard.elf"), str(root / "hazard.o"),
             )
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"), str(root / "safe.o"))
             kernel = root / "vmlinux"
@@ -1111,7 +1212,7 @@ class CounterScanCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"), str(root / "safe.o"))
             kernel = root / "vmlinux"
@@ -1230,7 +1331,7 @@ class CounterScanCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
                 str(root / "safe.o"))
@@ -1305,7 +1406,7 @@ class CounterScanCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
                 str(root / "safe.o"))
@@ -1395,7 +1496,7 @@ class CounterScanCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
                 str(root / "safe.o"))
@@ -1447,7 +1548,7 @@ class CounterScanCoverage(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             safe = root / "safe.s"
-            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
             run("as", "--64", "-o", str(root / "safe.o"), str(safe))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
                 str(root / "safe.o"))

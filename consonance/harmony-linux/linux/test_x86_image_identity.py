@@ -29,7 +29,9 @@ def fixture(root, setup_sects=7):
     compressed.mkdir(parents=True)
 
     kernel_source = root / "kernel.s"
-    kernel_source.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+    kernel_source.write_text(
+        '.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n'
+    )
     kernel_linker = root / "kernel.ld"
     kernel_linker.write_text(
         "PHDRS { text PT_LOAD FLAGS(5); }\n"
@@ -207,7 +209,10 @@ class X86ImageIdentity(unittest.TestCase):
             root = Path(directory)
             build, _image = fixture(root)
             source = root / "replacement.s"
-            source.write_text('.section .text,"ax"\n.global _start\n_start:\nnop\nret\n')
+            source.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nnop\nret\n'
+                '.fill 15,1,0xcc\n'
+            )
             run("as", "--64", "-o", str(root / "replacement.o"), str(source))
             run("ld", "-nostdlib", "-T", str(root / "kernel.ld"), "-e", "_start",
                 "-o", str(build / "vmlinux"),
@@ -223,7 +228,10 @@ class X86ImageIdentity(unittest.TestCase):
             root = Path(directory)
             build, _image = fixture(root)
             source = root / "counter.s"
-            source.write_text('.section .text,"ax"\n.global _start\n_start:\nrdtsc\nret\n')
+            source.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nrdtsc\nret\n'
+                '.fill 15,1,0xcc\n'
+            )
             run("as", "--64", "-o", str(root / "counter.o"), str(source))
             run("ld", "-nostdlib", "-T", str(root / "kernel.ld"), "-e", "_start",
                 "-o", str(build / "vmlinux"),

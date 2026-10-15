@@ -741,7 +741,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             boundary = section_offset + section_size - offset
             if boundary < size and executable[boundary]:
                 continue
-            if boundary == size and not any(
+            if tag != "vmlinux" and boundary == size and not any(
                 other_index != index and other_kind == 1 and other_memory_size
                 and other_address + other_memory_size > section_address + section_size
                 for other_index, other_kind, _other_flags, _other_offset, other_address, _other_size, other_memory_size in programs
