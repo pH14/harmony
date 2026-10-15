@@ -750,9 +750,9 @@ impl MetroidTarget {
         ];
         let applied = (|| -> Result<(), Box<dyn Error>> {
             self.machine
-                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW]);
+                .poke_wram(HEALTH_LOW, expected_wram[HEALTH_LOW])?;
             self.machine
-                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH]);
+                .poke_wram(HEALTH_HIGH, expected_wram[HEALTH_HIGH])?;
             self.machine.write_save_ram(MISSILES, &[missiles])?;
             if self.machine.read_wram()? != expected_wram
                 || self.cartridge()? != expected_cartridge
@@ -778,11 +778,16 @@ impl MetroidTarget {
             Ok(())
         })();
         if let Err(error) = applied {
-            self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
-            self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
-            self.machine
-                .write_save_ram(MISSILES, &[cartridge[MISSILES]])?;
-            self.restore(&before)?;
+            let low = self.machine.poke_wram(HEALTH_LOW, wram[HEALTH_LOW]);
+            let high = self.machine.poke_wram(HEALTH_HIGH, wram[HEALTH_HIGH]);
+            let missiles = self
+                .machine
+                .write_save_ram(MISSILES, &[cartridge[MISSILES]]);
+            let restored = self.restore(&before);
+            low?;
+            high?;
+            missiles?;
+            restored?;
             return Err(error);
         }
         Ok(())
@@ -1195,8 +1200,8 @@ mod observation_tests {
     fn resource_fixture() -> MetroidTarget {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
         machine.write_save_ram(0, &[0; CARTRIDGE_RAM_SIZE]).unwrap();
-        machine.poke_wram(GAME_MODE, GAME_MODE_PLAYING);
-        machine.poke_wram(HEALTH_HIGH, 3);
+        machine.poke_wram(GAME_MODE, GAME_MODE_PLAYING).unwrap();
+        machine.poke_wram(HEALTH_HIGH, 3).unwrap();
         machine.write_save_ram(ENERGY_TANKS, &[1]).unwrap();
         machine.write_save_ram(MISSILE_CAPACITY, &[20]).unwrap();
         let mut target = MetroidTarget::from_machine(machine, &[], GenesisDepth::NewGame).unwrap();
@@ -1234,8 +1239,8 @@ mod observation_tests {
             assert!(target.diagnostic_set_resources(health, missiles).is_err());
             assert_eq!(target.snapshot().unwrap(), before);
         }
-        target.machine.poke_wram(HEALTH_LOW, 0);
-        target.machine.poke_wram(HEALTH_HIGH, 0x20);
+        target.machine.poke_wram(HEALTH_LOW, 0).unwrap();
+        target.machine.poke_wram(HEALTH_HIGH, 0x20).unwrap();
         target.current_wram = target.machine.read_wram().unwrap();
         target.observation.decoded.health = 2000;
         let invalid = target.snapshot().unwrap();

@@ -145,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             frame = frame.saturating_add(1);
             if prefix.poke_after_frame == Some(frame) {
                 for poke in &prefix.pokes {
-                    machine.poke_wram(poke.address, poke.value);
+                    machine.poke_wram(poke.address, poke.value)?;
                 }
                 machine.drop_snapshot(current)?;
                 current = machine.snapshot()?;

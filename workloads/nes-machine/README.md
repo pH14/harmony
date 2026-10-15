@@ -51,6 +51,16 @@ resulting mapped images satisfy that policy. The image census is intentionally
 conservative: an unrelated third-party module in the process also prevents
 native QuickNES admission.
 
+Native calls also check the loader's cumulative image additions and removals
+before and after each libretro operation. Private core loads and closes advance
+one shared approved generation only for persistent images; any other loader
+event, including a helper loaded and unloaded within one frame, rejects the
+operation and later native calls. A first core may load system dependencies
+before any worker is active, and its prepared execution identity binds those
+mapped images. This guard covers loader-managed images. Anonymous executable
+mappings and writes to executable mappings are tracked separately in
+[issue #679](https://github.com/pH14/harmony/issues/679).
+
 `scripts/build-quicknes-core.sh` patches the pinned core to skip idle loops.
 NES games spend much of each frame in a loop that waits for the next
 interrupt. At a backward branch or jump, the patched CPU compares the target
