@@ -50,6 +50,18 @@ def scan_decompressor_32_graph(path):
     scanner.scan_decompressor_32_reachable(data, programs, sections, str(path), head)
 
 
+def verify_loaded_sections(path):
+    scanner_spec = importlib.util.spec_from_file_location("scan_unclaimed_opcodes", SCAN_UNCLAIMED)
+    scanner = importlib.util.module_from_spec(scanner_spec)
+    scanner_spec.loader.exec_module(scanner)
+    verifier_path = Path(__file__).with_name("verify-x86-kernel-image.py")
+    verifier_spec = importlib.util.spec_from_file_location("verify_x86_kernel_image", verifier_path)
+    verifier = importlib.util.module_from_spec(verifier_spec)
+    verifier_spec.loader.exec_module(verifier)
+    data = path.read_bytes()
+    verifier.loaded_sections(data, "decompressor", scanner)
+
+
 def hide_text_bytes(path, mode):
     data = bytearray(path.read_bytes())
     section_offset = struct.unpack_from("<Q", data, 40)[0]
@@ -1327,6 +1339,46 @@ class CounterScanCoverage(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("reviewed-data RDTSC", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_reviewed_data_opcode_across_three_loads_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "three-loads.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.fill 4095,1,0\n.byte 0x0f\n'
+                '.section .data,"aw"\n.byte 0x01\n'
+                '.section .rodata..compressed,"a"\n.byte 0xf9\n'
+            )
+            linker = root / "three-loads.ld"
+            linker.write_text(
+                "PHDRS { first PT_LOAD FLAGS(5); middle PT_LOAD FLAGS(6); "
+                "last PT_LOAD FLAGS(4); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :first "
+                ".text : { *(.text) } :first . = ALIGN(0x1000); "
+                ".rodata : { *(.rodata) } :first "
+                ".data : { *(.data) } :middle "
+                ".rodata..compressed : { *(.rodata..compressed) } :last }\n"
+            )
+            obj = root / "three-loads.o"
+            elf = root / "three-loads.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o", str(elf), str(obj))
+            verify_loaded_sections(elf)
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"decompressor={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("reviewed-data RDTSCP", result.stderr)
 
     @unittest.skipUnless(
         platform.system() == "Linux" and platform.machine() == "x86_64",

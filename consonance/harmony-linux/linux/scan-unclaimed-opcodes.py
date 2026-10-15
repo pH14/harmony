@@ -620,10 +620,13 @@ def unclaimed_opcode(data, programs, sections, tag, path):
         load_edges.append({
             "start": address,
             "end": address + size,
-            "offset": offset,
             "index": index,
             "head": (segment[:2], claimed[:2], executable[:2], reviewed_data[:2]),
             "tail": (segment[-2:], claimed[-2:], executable[-2:], reviewed_data[-2:]),
+            "tail_origins": [
+                (offset + size - min(size, 2) + position, index)
+                for position in range(min(size, 2))
+            ],
         })
         for position in range(size - 1):
             hit = counter_encoding(segment, position)
@@ -673,12 +676,18 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             f"executable section {name} in PT_LOAD {index} can fall through into loaded bytes"
         )
     ordered_edges = sorted(load_edges, key=lambda edge: edge["start"])
-    for left, right in zip(ordered_edges, ordered_edges[1:]):
-        if left["end"] != right["start"]:
+    run_end = None
+    run_tail = None
+    run_origins = []
+    for edge in ordered_edges:
+        if run_end != edge["start"]:
+            run_tail = edge["tail"]
+            run_origins = edge["tail_origins"]
+            run_end = edge["end"]
             continue
-        combined = tuple(a + b for a, b in zip(left["tail"], right["head"]))
+        combined = tuple(a + b for a, b in zip(run_tail, edge["head"]))
         code, claimed, executable, reviewed_data = combined
-        boundary = len(left["tail"][0])
+        boundary = len(run_tail[0])
         for position in range(max(0, boundary - 2), boundary):
             hit = counter_encoding(code, position)
             if hit is None:
@@ -686,13 +695,16 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             opcode, length = hit
             if position + length <= boundary:
                 continue
-            file_offset = left["offset"] + left["end"] - left["start"] - boundary + position
+            file_offset, index = run_origins[position]
             if not all(claimed[position : position + length]):
-                return opcode, file_offset, left["index"], "unclaimed"
+                return opcode, file_offset, index, "unclaimed"
             if reviewed_data_hit is None and any(reviewed_data[position : position + length]):
-                reviewed_data_hit = opcode, file_offset, left["index"], "reviewed-data"
+                reviewed_data_hit = opcode, file_offset, index, "reviewed-data"
             if any(executable[position : position + length]):
-                return opcode, file_offset, left["index"], "cross-load"
+                return opcode, file_offset, index, "cross-load"
+        run_tail = tuple((a + b)[-2:] for a, b in zip(run_tail, edge["tail"]))
+        run_origins = (run_origins + edge["tail_origins"])[-2:]
+        run_end = edge["end"]
     scan_symbol_restarts(data, programs, sections, tag, path)
     if reviewed_data_hit is not None:
         return reviewed_data_hit
