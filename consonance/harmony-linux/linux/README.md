@@ -140,8 +140,15 @@ decompressor head is decoded as 32-bit code before `startup_64` and in both
 boundary fail. Its 32-bit startup can end in a far return followed by zero
 alignment up to `startup_64`; the scan requires a complete far return before
 excluding that padding and rejects direct branches into it. Indirect or computed
-transfers into reviewed data and code copied out of data require separate
-admission review.
+transfers into the executable compressed payload and code copied out of data
+require separate admission review. The decompressor's other reviewed data
+sections are raw-scanned for counter and hardware-RNG instruction bytes, so a
+near or far return into those sections cannot reach such an instruction.
+Direct branches from the 32-bit head seed an i386 reachability scan through
+executable decompressor sections. It restarts decoding at every reachable
+branch target, including a target inside an earlier instruction, and checks
+branches back into the head against its reviewed instruction starts. A path
+into loaded non-code or an unresolved control transfer fails admission.
 After Kbuild finishes, the publisher seals snapshots of all three ELFs and
 `bzImage` before running the scan. It verifies that the compressed kernel
 embedded in the decompressor expands to the stripped scanned `vmlinux`, and

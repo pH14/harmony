@@ -48,6 +48,7 @@ TRAILING_PREFIXES = frozenset(
 )
 COUNTER_INSTRUCTIONS = frozenset(("rdtsc", "rdtscp", "rdrand", "rdseed"))
 SYMBOL_RESTART_LIMIT = 4096
+MIXED_MODE_REACHABLE_LIMIT = 10000
 
 
 def unpack(fmt, data, offset):
@@ -276,6 +277,102 @@ def decompressor_head_32(data, sections, path):
     return boundary, decoded
 
 
+def scan_decompressor_32_reachable(data, programs, sections, path, head_32):
+    code = [
+        (name, address, offset, size)
+        for name, kind, flags, address, offset, size in sections
+        if kind == 1 and flags & 2 and flags & 4 and size
+    ]
+    loads = [
+        (address, address + memory_size)
+        for _index, kind, _flags, _offset, address, _size, memory_size in programs
+        if kind == 1 and memory_size
+    ]
+    head_start = head_32[0][0]
+    head_end = head_32[-1][0] + head_32[-1][1]
+    head_starts = {site for site, _length, _instruction in head_32}
+    pending = []
+    for site, _length, instruction in head_32:
+        target = direct_branch_target(instruction)
+        if target is not None and not head_start <= target < head_end:
+            pending.append((target, site, "direct branch"))
+    seen = set()
+    with tempfile.TemporaryDirectory() as directory:
+        raw_files = {}
+        for index, (_name, _address, offset, size) in enumerate(code):
+            raw = Path(directory) / f"code-{index}.bin"
+            raw.write_bytes(data[offset : offset + size])
+            raw_files[index] = raw
+        while pending:
+            site, source, edge = pending.pop()
+            if head_start <= site < head_end:
+                if site not in head_starts:
+                    raise ValueError(
+                        f"noncanonical 32-bit decompressor head target from 0x{source:x} to 0x{site:x}"
+                    )
+                continue
+            if site in seen:
+                continue
+            match = next(
+                (
+                    (index, row)
+                    for index, row in enumerate(code)
+                    if row[1] <= site < row[1] + row[3]
+                ),
+                None,
+            )
+            if match is None:
+                if any(first <= site < last for first, last in loads):
+                    raise ValueError(
+                        f"32-bit {edge} into loaded non-code from 0x{source:x} to 0x{site:x}"
+                    )
+                raise ValueError(
+                    f"32-bit {edge} outside loaded code from 0x{source:x} to 0x{site:x}"
+                )
+            if len(seen) >= MIXED_MODE_REACHABLE_LIMIT:
+                raise ValueError("32-bit decompressor reachability limit exceeded")
+            index, (_name, address, _offset, size) = match
+            result = subprocess.run(
+                [
+                    "objdump", "-D", "-z", "-w", "-b", "binary", "-m", "i386",
+                    "-M", "i386", f"--adjust-vma={address}",
+                    f"--start-address={site}",
+                    f"--stop-address={min(address + size, site + MAX_X86_INSTRUCTION_BYTES)}",
+                    str(raw_files[index]),
+                ],
+                capture_output=True, text=True, check=False,
+            )
+            decoded = list(disassembled_instructions(result.stdout))
+            if result.returncode or not decoded or decoded[0][0] != site:
+                raise ValueError(f"cannot decode reachable 32-bit decompressor code at 0x{site:x}")
+            _site, length, instruction = decoded[0]
+            if length > MAX_X86_INSTRUCTION_BYTES or site + length > address + size \
+                    or truncated_instruction(instruction):
+                raise ValueError(f"incomplete reachable 32-bit decompressor code at 0x{site:x}")
+            seen.add(site)
+            mnemonic = instruction_mnemonic(instruction)
+            try:
+                target = direct_branch_target(instruction)
+            except ValueError as error:
+                raise ValueError(
+                    f"unresolved reachable 32-bit decompressor branch at 0x{site:x}: {error}"
+                ) from error
+            if target is not None:
+                pending.append((target, site, "direct branch"))
+            elif mnemonic.startswith(("j", "call", "loop")) \
+                    or mnemonic in ("lcall", "ljmp", "xbegin"):
+                raise ValueError(
+                    f"unresolved reachable 32-bit decompressor branch at 0x{site:x}"
+                )
+            if mnemonic.startswith(("ret", "lret", "iret", "jmp", "ljmp")):
+                continue
+            if mnemonic in ("int", "int3", "ud2", "syscall", "sysenter", "sysret"):
+                raise ValueError(
+                    f"unresolved reachable 32-bit decompressor transfer at 0x{site:x}"
+                )
+            pending.append((site + length, site, "fallthrough"))
+
+
 def scan_symbol_restarts(data, programs, sections, tag, path):
     if tag == "setup":
         scan_mixed_mode_raw_code(data, programs, tag)
@@ -423,6 +520,8 @@ def scan_symbol_restarts(data, programs, sections, tag, path):
                         raise ValueError(
                             f"unresolved {tag}:{name}:{mode} symbol restart at 0x{start:x}"
                         )
+    if tag == "decompressor" and head_32:
+        scan_decompressor_32_reachable(data, programs, sections, path, head_32)
 
 
 def counter_encoding(segment, position):
@@ -462,6 +561,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
     seen_data = set()
     saw_load = False
     missing_fences = []
+    reviewed_data_hit = None
     for index, kind, _flags, offset, address, size, _memory_size in programs:
         if kind != 1:
             continue
@@ -472,6 +572,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             raise ValueError(f"PT_LOAD {index} extends beyond the file")
         claimed = bytearray(size)
         executable = bytearray(size)
+        reviewed_data = bytearray(size)
         boundaries = set()
         executable_sections = []
         for name, section_kind, section_flags, section_address, section_offset, section_size in sections:
@@ -497,6 +598,8 @@ def unclaimed_opcode(data, programs, sections, tag, path):
                 executable[begin : begin + section_size] = b"\x01" * section_size
                 boundaries.update((begin, begin + section_size))
                 executable_sections.append((name, section_address, section_offset, section_size))
+            elif tag == "decompressor" and name != ".rodata..compressed":
+                reviewed_data[begin : begin + section_size] = b"\x01" * section_size
 
         adjacent_code = {
             boundary
@@ -521,6 +624,8 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             opcode, length = hit
             if not all(claimed[position : position + length]):
                 return opcode, offset + position, index, "unclaimed"
+            if reviewed_data_hit is None and any(reviewed_data[position : position + length]):
+                reviewed_data_hit = opcode, offset + position, index, "reviewed-data"
             if executable[position] and any(
                 position < boundary < position + length for boundary in boundaries
             ):
@@ -560,7 +665,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             f"executable section {name} in PT_LOAD {index} can fall through into loaded bytes"
         )
     scan_symbol_restarts(data, programs, sections, tag, path)
-    return None
+    return reviewed_data_hit
 
 
 def main():

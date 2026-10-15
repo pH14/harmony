@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
+import importlib.util
 import platform
 import struct
 import subprocess
@@ -9,10 +10,21 @@ from pathlib import Path
 
 
 SCAN = Path(__file__).with_name("scan-counter-opcodes.sh")
+SCAN_UNCLAIMED = Path(__file__).with_name("scan-unclaimed-opcodes.py")
 
 
 def run(*args):
     subprocess.run(args, check=True, capture_output=True, text=True)
+
+
+def scan_decompressor_32_graph(path):
+    spec = importlib.util.spec_from_file_location("scan_unclaimed_opcodes", SCAN_UNCLAIMED)
+    scanner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scanner)
+    data = path.read_bytes()
+    programs, sections = scanner.headers(data)
+    _boundary, head = scanner.decompressor_head_32(data, sections, str(path))
+    scanner.scan_decompressor_32_reachable(data, programs, sections, str(path), head)
 
 
 def hide_text_bytes(path, mode):
@@ -207,6 +219,9 @@ class CounterScanCoverage(unittest.TestCase):
                     if tag == "setup":
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn("mixed-mode raw counter instruction", result.stderr)
+                    elif tag == "decompressor":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("reviewed-data RDTSC", result.stderr)
                     else:
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -231,6 +246,9 @@ class CounterScanCoverage(unittest.TestCase):
                     if tag == "setup":
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn("mixed-mode raw counter instruction", result.stderr)
+                    elif tag == "decompressor":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("reviewed-data RDSEED", result.stderr)
                     else:
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -556,6 +574,9 @@ class CounterScanCoverage(unittest.TestCase):
                     if tag == "setup":
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn("mixed-mode raw counter instruction", result.stderr)
+                    elif tag == "decompressor":
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("reviewed-data RDTSC", result.stderr)
                     else:
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -978,11 +999,260 @@ class CounterScanCoverage(unittest.TestCase):
             self.assertNotIn("rdtsc", decoded_64.stdout)
             self.assertIn("rdtsc", decoded_32.stdout)
 
+            raw_decompressor = subprocess.run(
+                ["bash", "-c",
+                 "source <(sed '/^self_test$/,$d' \"$1\"); "
+                 "if raw_byte_scan_one \"$2\" decompressor; then exit 0; else exit 1; fi",
+                 "probe", str(SCAN), str(decompressor)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(
+                raw_decompressor.returncode, 0,
+                raw_decompressor.stdout + raw_decompressor.stderr,
+            )
+            self.assertIn(
+                "raw counter-opcode bytes in decompressor section .text",
+                raw_decompressor.stderr,
+            )
             result = subprocess.run(
                 ["bash", str(SCAN), str(kernel)], capture_output=True, text=True,
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("raw counter-opcode bytes in decompressor section .text", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_32_bit_helper_branch_into_reviewed_data_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
+                str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            safe_bytes = (root / "safe.elf").read_bytes()
+            kernel.write_bytes(safe_bytes)
+            setup.write_bytes(safe_bytes)
+
+            assembly = root / "mixed-mode-data.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\njmp mode_entry\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'lea startup_32(%rip), %rax\npushq $0x23\npushq %rax\nlretq\n'
+                '.fill 15,1,0xcc\n'
+                '.section .text,"ax"\n.fill 16,1,0x90\n'
+                '.global mode_entry\nmode_entry:\n'
+                '.byte 0x48,0xb8,0x90,0x90,0x90,0x90,0xeb,0x11,0x90,0x90\n'
+                '.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
+                '.byte 0x0f,0x31,0x89,0xc3,0xb8,0x01,0x00,0x00,0x00,0xcd,0x80\n'
+            )
+            linker = root / "mixed-mode-data.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all .rodata : { *(.rodata) } :all }\n"
+            )
+            run("as", "--64", "-o", str(root / "mixed-mode-data.o"), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o",
+                str(decompressor), str(root / "mixed-mode-data.o"))
+            decoded_64 = subprocess.run(
+                ["objdump", "-d", "-z", "-w", "-M", "amd64", "-j", ".text",
+                 str(decompressor)],
+                capture_output=True, text=True, check=True,
+            )
+            decoded_32 = subprocess.run(
+                ["objdump", "-d", "-z", "-w", "-M", "i386", "-j", ".text",
+                 str(decompressor)],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertNotIn("jmp", decoded_64.stdout)
+            self.assertIn("jmp", decoded_32.stdout)
+
+            with self.assertRaisesRegex(ValueError, "32-bit direct branch into loaded non-code"):
+                scan_decompressor_32_graph(decompressor)
+            result = subprocess.run(
+                ["bash", str(SCAN), str(kernel)], capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\njmp mode_entry\n'
+                '.byte 0xb8\n.Lhidden_head:\n.byte 0xe9\n'
+                '.long entropy_site-(.Lhidden_head+5)\n.byte 0x00\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'lea startup_32(%rip), %rax\npushq $0x23\npushq %rax\nlretq\n'
+                '.fill 15,1,0xcc\n'
+                '.section .text,"ax"\n.fill 16,1,0x90\n'
+                '.global mode_entry\nmode_entry:\n'
+                '.byte 0x48,0xb8,0x90,0x90,0x90,0x90,0xe9\n'
+                '.long .Lhidden_head-(mode_entry+11)\n.byte 0xe0\n'
+                '.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
+                '.byte 0x0f,0x31,0x89,0xc3,0xb8,0x01,0x00,0x00,0x00,0xcd,0x80\n'
+            )
+            run("as", "--64", "-o", str(root / "mixed-mode-noncanonical.o"), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o",
+                str(decompressor), str(root / "mixed-mode-noncanonical.o"))
+            with self.assertRaisesRegex(ValueError, "noncanonical 32-bit decompressor head target"):
+                scan_decompressor_32_graph(decompressor)
+            result = subprocess.run(
+                ["bash", str(SCAN), str(kernel)], capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_32_bit_noncanonical_branch_into_reviewed_data_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
+                str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            safe_bytes = (root / "safe.elf").read_bytes()
+            kernel.write_bytes(safe_bytes)
+            setup.write_bytes(safe_bytes)
+
+            assembly = root / "mixed-mode-noncanonical.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\njmp mode_entry\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'lea startup_32(%rip), %rax\npushq $0x23\npushq %rax\nlretq\n'
+                '.fill 15,1,0xcc\n'
+                '.section .text,"ax"\n.fill 16,1,0x90\n'
+                '.global mode_entry\nmode_entry:\n'
+                '.byte 0x48,0xb8,0x90,0x90,0x90,0x90,0xeb,0x06,0x90,0x90\n'
+                '.byte 0x48,0xb8,0x90,0x90,0xeb,0x13,0x90,0x90,0x90,0x90\n'
+                '.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
+                '.byte 0x0f,0x31,0x89,0xc3,0xb8,0x01,0x00,0x00,0x00,0xcd,0x80\n'
+            )
+            linker = root / "mixed-mode-noncanonical.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all .rodata : { *(.rodata) } :all }\n"
+            )
+            run("as", "--64", "-o", str(root / "mixed-mode-noncanonical.o"), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o",
+                str(decompressor), str(root / "mixed-mode-noncanonical.o"))
+            with self.assertRaisesRegex(ValueError, "32-bit direct branch into loaded non-code"):
+                scan_decompressor_32_graph(decompressor)
+            result = subprocess.run(
+                ["bash", str(SCAN), str(kernel)], capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_32_bit_returns_into_reviewed_data_are_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
+                str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            safe_bytes = (root / "safe.elf").read_bytes()
+            kernel.write_bytes(safe_bytes)
+            setup.write_bytes(safe_bytes)
+            linker = root / "mixed-mode-return.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); rw PT_LOAD FLAGS(6); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all .rodata : { *(.rodata) } :all "
+                ". = 0x500000; .data : { *(.data) } :rw }\n"
+            )
+            for mode, transfer in (
+                ("near", "pushl $entropy_site\nret\n"),
+                ("far", "pushl $0x23\npushl $entropy_site\nlret\n"),
+            ):
+                with self.subTest(mode=mode):
+                    assembly = root / f"mixed-mode-{mode}.s"
+                    assembly.write_text(
+                        '.section .head.text,"ax"\n.code32\n'
+                        '.global startup_32\nstartup_32:\n'
+                        'mov $stack_top,%esp\njmp mode_entry\nlret\n'
+                        '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                        'lea startup_32(%rip), %rax\npushq $0x23\npushq %rax\nlretq\n'
+                        '.fill 15,1,0xcc\n'
+                        '.section .text,"ax"\n.fill 16,1,0x90\n.code32\n'
+                        '.global mode_entry\nmode_entry:\n' + transfer +
+                        '.fill 15,1,0xcc\n'
+                        '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
+                        '.byte 0x0f,0x31,0x89,0xc3,0xb8,0x01,0x00,0x00,0x00,0xcd,0x80\n'
+                        '.section .data,"aw"\n.fill 4096,1,0\nstack_top:\n'
+                    )
+                    obj = root / f"mixed-mode-{mode}.o"
+                    run("as", "--64", "-o", str(obj), str(assembly))
+                    run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o",
+                        str(decompressor), str(obj))
+                    result = subprocess.run(
+                        ["bash", str(SCAN), str(kernel)], capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("reviewed-data RDTSC", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_reviewed_data_opcode_across_sections_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "split-data.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.byte 0x0f\n'
+                '.section .data,"aw"\n.byte 0x31,0xc3\n'
+            )
+            linker = root / "split-data.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all .rodata : { *(.rodata) } :all "
+                ".data : { *(.data) } :all }\n"
+            )
+            obj = root / "split-data.o"
+            elf = root / "split-data.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o",
+                str(elf), str(obj))
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"decompressor={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("reviewed-data RDTSC", result.stderr)
 
 
 if __name__ == "__main__":
