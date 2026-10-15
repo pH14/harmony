@@ -37,7 +37,7 @@ fn console_limit_is_settled_after_a_provisional_terminal_stop() {
     assert_eq!(session.run_until(1).unwrap(), Stop::Closed);
     assert!(session.events().is_empty());
     assert!(matches!(
-        session.settle_terminal_console(None, Duration::from_secs(1)),
+        session.settle_terminal_console(Duration::from_secs(1)),
         Err(SessionError::Stopped(ExitReason::ConsoleLimit))
     ));
     let exit = session.run().unwrap();

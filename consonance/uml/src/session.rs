@@ -439,27 +439,14 @@ impl Session {
         self.finish(ExitReason::Killed)
     }
 
-    pub fn settle_terminal_console(
-        &mut self,
-        reason: Option<ExitReason>,
-        limit: Duration,
-    ) -> Result<ExitReason, SessionError> {
-        let reason = match reason {
-            Some(reason) => reason,
-            None => {
-                let waited = now();
-                loop {
-                    match self.guest.stopped()? {
-                        Some(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_))) => {
-                            break reason;
-                        }
-                        Some(reason) => return Err(SessionError::Stopped(reason)),
-                        None if waited.elapsed() >= limit => {
-                            return Err(SessionError::Hung(limit));
-                        }
-                        None => std::thread::sleep(POLL),
-                    }
-                }
+    pub fn settle_terminal_console(&mut self, limit: Duration) -> Result<ExitReason, SessionError> {
+        let waited = now();
+        let reason = loop {
+            match self.guest.stopped()? {
+                Some(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_))) => break reason,
+                Some(reason) => return Err(SessionError::Stopped(reason)),
+                None if waited.elapsed() >= limit => return Err(SessionError::Hung(limit)),
+                None => std::thread::sleep(POLL),
             }
         };
         let exit = self.guest.finish(reason)?;
