@@ -6,7 +6,7 @@ use machine::{Machine, StopConditions, nes, quicknes::QuickNesMachine};
 use nes_workload::nes_backend::NesBackend;
 use nes_workload::smb::{
     campaign::{
-        SNAPSHOT_CHECKPOINT_FORMAT, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
+        SNAPSHOT_CHECKPOINT_FORMAT, SmbGame, SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry,
         SmbTerminalPredicate,
     },
     target::{
@@ -103,12 +103,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         PathBuf::from(env::var_os("HARMONY_QUICKNES_CORE").ok_or("missing QuickNES core")?);
     let rom = fs::read(&rom_path)?;
     let core_sha256 = file_sha256(&core_path)?;
+    let execution_sha256 = machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
     let rom_sha256 = sha256(&rom);
-    let emulator_backend = format!(
-        "quicknes:{}:{}",
-        machine::quicknes::QUICKNES_REVISION,
-        core_sha256
-    );
+    let emulator_backend = SmbGame::new(&rom, &core_path, &core_sha256, &execution_sha256)
+        .emulator_identity()
+        .to_owned();
     let prefix_bytes = fs::read(&prefix_path)?;
     let prefix: PowerOnPrefix = serde_json::from_slice(&prefix_bytes)?;
     if prefix
@@ -122,7 +121,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("power-on prefix must specify pokes and poke_after_frame together".into());
     }
     let prefix_sha256 = sha256(&prefix_bytes);
-    let mut machine = QuickNesMachine::from_rom_bytes(&rom, &core_path, &core_sha256)?;
+    let mut machine = QuickNesMachine::from_rom_bytes_with_identity(
+        &rom,
+        &core_path,
+        &core_sha256,
+        &execution_sha256,
+    )?;
     let mut current = machine.snapshot()?;
     let mut frame = 0_u64;
     let mut trace = Sha256::new();
@@ -141,7 +145,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             frame = frame.saturating_add(1);
             if prefix.poke_after_frame == Some(frame) {
                 for poke in &prefix.pokes {
-                    machine.poke_wram(poke.address, poke.value);
+                    machine.poke_wram(poke.address, poke.value)?;
                 }
                 machine.drop_snapshot(current)?;
                 current = machine.snapshot()?;

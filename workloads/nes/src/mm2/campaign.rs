@@ -128,6 +128,7 @@ mod tests {
             &[1, 2, 3],
             Path::new("core.so"),
             &"a".repeat(64),
+            &"b".repeat(64),
             Mm2Stage::default(),
         );
         let policies = game.policies(&Mm2CampaignRun);
@@ -140,11 +141,45 @@ mod tests {
     #[test]
     fn selected_stage_is_part_of_recorded_machine_identity() {
         let stage = Mm2Stage::from_number(3).expect("stage");
-        let game = Mm2Game::new_at_stage(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64), stage);
+        let game = Mm2Game::new_at_stage(
+            &[1, 2, 3],
+            Path::new("core.so"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+            stage,
+        );
         assert_eq!(game.route(), Mm2Route::Stage(stage));
         assert!(
             game.emulator_identity()
                 .contains("genesis=mm2-stage-select-v2:3:prefix-sha256=")
+        );
+    }
+
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("core.so"),
+            "core",
+            "first",
+            Mm2Stage::default(),
+        );
+        let second = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("core.so"),
+            "core",
+            "second",
+            Mm2Stage::default(),
+        );
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(
+            second
+                .resolve_recorded(&first.policies(&Mm2CampaignRun))
+                .is_err()
         );
     }
 }

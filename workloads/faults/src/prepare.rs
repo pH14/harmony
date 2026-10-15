@@ -136,7 +136,7 @@ ready /usr/bin/servicectl endpoint health
         let request = LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE);
         let execution = oci_support::bundle::prepare(&image(root.path()), &request).unwrap();
         assert_eq!(
-            execution.execution.bundle.as_deref(),
+            execution.execution().bundle.as_deref(),
             Some(SUPERVISOR_BUNDLE)
         );
         assert_eq!(

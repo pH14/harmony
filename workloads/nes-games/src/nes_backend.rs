@@ -7,6 +7,11 @@ use machine::quicknes::QuickNesMachine;
 use machine::{Machine, MachineError, SnapId, nes::WRAM_SIZE};
 use serde::{Serialize, de::DeserializeOwned};
 
+#[must_use]
+pub fn native_identity_sha256(core_sha256: &str, execution_sha256: &str) -> String {
+    format!("{core_sha256};prepared-execution-sha256={execution_sha256}")
+}
+
 pub trait SnapshotState:
     Clone + fmt::Debug + Eq + Send + Sync + Serialize + DeserializeOwned
 {
@@ -98,7 +103,7 @@ where
 pub trait NesMemory {
     fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError>;
 
-    fn poke_wram(&mut self, addr: usize, byte: u8);
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError>;
 
     fn capture_save_ram_per_frame(&mut self, range: Range<usize>);
 
@@ -115,8 +120,8 @@ impl NesMemory for QuickNesMachine {
         QuickNesMachine::read_wram(self)
     }
 
-    fn poke_wram(&mut self, addr: usize, byte: u8) {
-        QuickNesMachine::poke_wram(self, addr, byte);
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
+        QuickNesMachine::poke_wram(self, addr, byte)
     }
 
     fn capture_save_ram_per_frame(&mut self, range: Range<usize>) {
@@ -307,12 +312,12 @@ mod tests {
     #[test]
     fn a_captured_state_restores_the_machine_it_came_from() {
         let mut machine = QuickNesMachine::loopback_for_tests(&[0]).expect("loopback core");
-        machine.poke_wram(0x10, 7);
+        machine.poke_wram(0x10, 7).unwrap();
         let captured = machine.capture_nes(None).expect("capture");
         let held = machine.snapshot().expect("snapshot");
         let raw = machine.take_snapshot(held).expect("raw state");
         assert_eq!(captured, lz4_flex::block::compress_prepend_size(&raw));
-        machine.poke_wram(0x10, 9);
+        machine.poke_wram(0x10, 9).unwrap();
         machine.restore_nes(&captured).expect("restore");
         assert_eq!(machine.read_wram().expect("wram")[0x10], 7);
         assert_eq!(machine.capture_nes(None).expect("capture"), captured);

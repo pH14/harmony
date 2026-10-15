@@ -21,14 +21,45 @@ NES targets interpret this format; Dissonance sees typed workload actions.
 
 On Unix, `quicknes::QuickNesMachine` loads a private copy of the pinned
 libretro QuickNES shared object, validates its revision and supplied SHA-256,
-and exposes the core's 2 KiB system RAM. The private copy's SHA-256 is checked
-before handing it to the dynamic loader. The copy is created with owner-only
-permissions, so another host user cannot replace it after the check. Each run
-records system RAM after every frame, and a caller can also name a cartridge
+and exposes the core's 2 KiB system RAM. The dynamic loader receives a path to
+the descriptor of the exact copy that was hashed. Linux seals an anonymous
+in-memory copy before loading it. macOS keeps an owner-only, read-only private
+file named through the load, then unlinks it. The descriptor stays open while
+its library handle is live, so another core cannot reuse the same descriptor
+pathname during that load. Linux checks the loader cache before opening a
+private core and checks for a retained image after every close. If a core
+stays loaded after `dlclose`, including NODELETE or GNU_UNIQUE cases,
+preparation reports an error and the process refuses further private QuickNES
+loads. A replacement of the private file name cannot redirect the descriptor.
+Each run records system RAM after every frame, and a caller can also name a cartridge
 RAM range to record after every frame. Search runs with audio and video disabled.
 Replay-only callers can capture video and stereo PCM. A caller that stops
 reading partway through a run can keep the video and audio of the run's first
 frames and drop the rest.
+
+`prepared_execution_sha256` identifies the code that the native loader actually
+mapped before a campaign starts. It includes the hashed private core, the owner
+and relative address of every libretro entrypoint, and the mapped read-only
+image bytes of the host executable and system libraries. Workers compute the
+same identity from their own loaded core before initializing a ROM and reject a
+mismatch. This native mode accepts the pinned core's macOS system libraries or
+64-bit Linux system libraries under `/usr/lib`, `/usr/lib64`, `/lib`, or
+`/lib64`, including libc, libstdc++, and libgcc_s. It rejects any loaded
+non-system shared library, including a helper supplied beside the core, as well as loader preload
+and audit injection. An ordinary library search path is allowed only when the
+resulting mapped images satisfy that policy. The image census is intentionally
+conservative: an unrelated third-party module in the process also prevents
+native QuickNES admission.
+
+Native calls also check the loader's cumulative image additions and removals
+before and after each libretro operation. Private core loads and closes advance
+one shared approved generation only for persistent images; any other loader
+event, including a helper loaded and unloaded within one frame, rejects the
+operation and later native calls. A first core may load system dependencies
+before any worker is active, and its prepared execution identity binds those
+mapped images. This guard covers loader-managed images. Anonymous executable
+mappings and writes to executable mappings are tracked separately in
+[issue #679](https://github.com/pH14/harmony/issues/679).
 
 `scripts/build-quicknes-core.sh` patches the pinned core to skip idle loops.
 NES games spend much of each frame in a loop that waits for the next
@@ -49,9 +80,10 @@ pinned reader fails on the second half of that block, so such states could not
 be restored. The patched reader reads the block in one call. States of other
 cartridges read the same bytes as before.
 
-Snapshots contain a format marker, the QuickNES revision, core hash, fixed
-serialized-state length, and canonicalized core state. Restore rejects a
-different core build, state size, or non-canonical state. The adapter keeps
+Snapshots contain a format marker, the QuickNES revision, core hash, prepared
+execution hash, fixed serialized-state length, and canonicalized core state.
+The current marker is `HQNESST3`; older snapshots are rejected. Restore rejects
+a different loaded execution, state size, or non-canonical state. The adapter keeps
 snapshots in an ordered handle table and resets staged input when restoring.
 
 Portable export builds shared chunks directly from the retained snapshot bytes,

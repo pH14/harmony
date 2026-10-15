@@ -36,6 +36,13 @@ target for that reason. Job results are digested with
 state, so a browser campaign and a native one produce the same decision
 stream.
 
+Each game's recorded emulator policy ends with a hash field. The native
+constructors take the core hash and the prepared execution hash from
+`machine::quicknes::prepared_execution_sha256`, record both, and load every
+machine with `QuickNesMachine::from_rom_bytes_with_identity`, which rejects a
+load whose executable code differs from the prepared one. The browser demo
+passes the hash of its core WASM module instead.
+
 `arcade` holds what the arcade page draws, for both the browser campaign and a
 native live campaign. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count

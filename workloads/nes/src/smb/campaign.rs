@@ -205,6 +205,22 @@ mod tests {
         SmbGame::loopback_for_tests(rom)
     }
 
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = SmbGame::new(&[0], std::path::Path::new("core.so"), "core", "first");
+        let second = SmbGame::new(&[0], std::path::Path::new("core.so"), "core", "second");
+        let run = SmbCampaignRun {
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: None,
+        };
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(second.resolve_recorded(&first.policies(&run)).is_err());
+    }
+
     #[cfg(all(
         feature = "consonance",
         target_os = "linux",
@@ -442,8 +458,8 @@ mod tests {
         let game = test_game(&rom);
         let mut target = game.new_target().expect("load target");
         target.reset();
-        target.poke_wram(0x074e, 7);
-        target.poke_wram(0x074f, 9);
+        target.poke_wram(0x074e, 7).unwrap();
+        target.poke_wram(0x074f, 9).unwrap();
         let origin = target.snapshot().expect("snapshot room");
         let result = game
             .execute_job(
@@ -541,8 +557,8 @@ mod tests {
         let game = test_game(&rom);
         let mut target = game.new_target().expect("load target");
         target.reset();
-        target.poke_wram(0x0770, 2);
-        target.poke_wram(0x075f, 7);
+        target.poke_wram(0x0770, 2).unwrap();
+        target.poke_wram(0x075f, 7).unwrap();
         let run = SmbCampaignRun {
             vocabulary: SmbButtonVocabulary::default(),
             terminal: Some(SmbTerminalPredicate::GameVictory),
@@ -580,7 +596,7 @@ mod tests {
         target.reset();
         let transition = SmbTerminalPredicate::LevelTransition { world: 0, level: 0 };
         assert!(!transition.reached(&target).expect("initial terminal state"));
-        target.poke_wram(0x075c, 1);
+        target.poke_wram(0x075c, 1).unwrap();
         assert!(transition.reached(&target).expect("changed terminal state"));
         assert_eq!(
             SmbTerminalPredicate::from_identifier(&transition.identifier())
@@ -652,7 +668,7 @@ mod tests {
         let rom = synthetic_nrom();
         let mut target = SmbTarget::loopback_for_tests(&rom).expect("load target");
         target.reset();
-        target.poke_wram(0x075c, 1);
+        target.poke_wram(0x075c, 1).unwrap();
         let snapshot = target.snapshot().expect("snapshot terminal root");
         let snapshots = SmbSnapshotCheckpoint {
             format: SNAPSHOT_CHECKPOINT_FORMAT.to_owned(),

@@ -21,11 +21,14 @@ use machine::{
     nes::{ButtonChord, core_state},
     quicknes::QuickNesMachine,
 };
-use nes_games::arcade::{
-    ArcadeGame,
-    feed::{self, Batch, Feed, Note, Point, State, Stats, raw_state, run_noted},
-    snapshot_digest,
-    trail::Traced,
+use nes_games::{
+    arcade::{
+        ArcadeGame,
+        feed::{self, Batch, Feed, Note, Point, State, Stats, raw_state, run_noted},
+        snapshot_digest,
+        trail::Traced,
+    },
+    nes_backend::native_identity_sha256,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -55,19 +58,26 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     rom: &[u8],
     core_path: &Path,
     core_sha256: &str,
+    execution_sha256: &str,
 ) -> G {
-    let (machine_rom, path, sha256) = (
+    let (machine_rom, path, sha256, execution) = (
         rom.to_vec(),
         core_path.to_path_buf(),
         core_sha256.to_owned(),
+        execution_sha256.to_owned(),
     );
     G::arcade(
         rom,
         &machine::quicknes::core_identity(),
-        core_sha256,
+        &native_identity_sha256(core_sha256, execution_sha256),
         Arc::new(move || {
             Ok(Traced::new(
-                QuickNesMachine::from_rom_bytes(&machine_rom, &path, &sha256)?,
+                QuickNesMachine::from_rom_bytes_with_identity(
+                    &machine_rom,
+                    &path,
+                    &sha256,
+                    &execution,
+                )?,
                 G::probe(),
             ))
         }),
@@ -117,14 +127,22 @@ pub struct LiveWatch<G: ArcadeGame> {
     game: String,
 }
 
-fn native_memory(rom: &[u8], core_path: &Path, core_sha256: &str, bytes: usize) -> Memory {
-    let (rom, path, sha256) = (
+fn native_memory(
+    rom: &[u8],
+    core_path: &Path,
+    core_sha256: &str,
+    execution_sha256: &str,
+    bytes: usize,
+) -> Memory {
+    let (rom, path, sha256, execution) = (
         rom.to_vec(),
         core_path.to_path_buf(),
         core_sha256.to_owned(),
+        execution_sha256.to_owned(),
     );
     Box::new(move |raw| {
-        let mut machine = QuickNesMachine::from_rom_bytes(&rom, &path, &sha256)?;
+        let mut machine =
+            QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution)?;
         machine.restore_bytes(raw)?;
         let mut memory = machine.read_wram()?.to_vec();
         if bytes > memory.len() {
@@ -704,6 +722,8 @@ where
         .into());
     }
     eprintln!("live view listening on {local}");
+    let execution_sha256 =
+        machine::quicknes::prepared_execution_sha256(&request.core, &request.core_sha256)?;
     let shared: SharedFeed<G::View> = Arc::new(Mutex::new(Shared {
         feed: None,
         stats: Stats::default(),
@@ -714,15 +734,22 @@ where
         shared: Arc::clone(&shared),
         events: events.clone(),
         lookups: Mutex::new(pending),
-        memory: native_memory(rom, &request.core, &request.core_sha256, G::MEMORY_BYTES),
+        memory: native_memory(
+            rom,
+            &request.core,
+            &request.core_sha256,
+            &execution_sha256,
+            G::MEMORY_BYTES,
+        ),
         game: id.to_owned(),
     };
-    let (game_rom, core, core_sha256) = (
+    let (game_rom, core, core_sha256, execution) = (
         rom.to_vec(),
         request.core.clone(),
         request.core_sha256.clone(),
+        execution_sha256.clone(),
     );
-    let games: Games<G> = Arc::new(move || native_game(&game_rom, &core, &core_sha256));
+    let games: Games<G> = Arc::new(move || native_game(&game_rom, &core, &core_sha256, &execution));
     let workers = request.workers;
     let feed = thread::spawn(move || feed_loop(&received, &shared, workers));
     let server = Arc::new(Server {
@@ -732,7 +759,15 @@ where
         games: Arc::clone(&games),
     });
     thread::spawn(move || listen(&listener, &server));
-    let result = evaluate_watched(games(), G::run(), request, out, started, &watch);
+    let result = evaluate_watched(
+        games(),
+        G::run(),
+        request,
+        &execution_sha256,
+        out,
+        started,
+        &watch,
+    );
     let _ = watch.events.send(Event::Finished);
     let _ = feed.join();
     result

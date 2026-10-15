@@ -72,10 +72,12 @@ file offset and virtual address disagree within a page. Section headers do
 not determine what the guest loader executes.
 The x86 scan follows instruction streams from each mapped section and gap
 across section and adjacent executable-load boundaries. It starts at each
-load's declared address and rejects overlapping executable mappings, which
-could combine instruction bytes from different loads. The scan still requires
-cooperative workloads: dynamically generated code and instructions hidden
-inside another instruction's operand bytes are outside its guarantee.
+load's declared address, restarts at direct near-branch targets in any
+executable load of the same ELF, including across unmapped gaps, and rejects
+overlapping executable mappings, which could combine instruction bytes from
+different loads. The scan still requires
+cooperative workloads: dynamically generated code and indirect transfers into
+another instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -95,8 +97,11 @@ load from its start, regardless of the section's executable flag, and scans
 the gaps separately. Each decode continues through later ranges when their
 virtual addresses are contiguous. This preserves instruction alignment when a
 segment begins with headers or other data while finding an instruction reached
-by falling through a boundary. At each mapped-section or adjacent executable-load
-boundary, it also decodes the first complete instruction from every candidate
+by falling through a boundary. Direct near jumps, calls, and conditional
+branches also start fresh decodes at their targets, including targets within
+an operand that the section-start stream treats as data. At each mapped-section
+or adjacent executable-load boundary, it also decodes the first complete
+instruction from every candidate
 start within the preceding 14 bytes. Entropy and CPU-identity instructions
 whose prefixes, operands, SIB bytes, or displacements cross a boundary become
 exact-address review sites. A VM image can review such a site against its

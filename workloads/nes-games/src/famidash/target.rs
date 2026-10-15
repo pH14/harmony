@@ -181,7 +181,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> FamidashTarget<M> {
         machine.branch(power_on, &nes::reproducer(&level_select_tape()))?;
         run_setup(&mut machine)?;
         machine.drop_snapshot(power_on)?;
-        machine.poke_wram(LEVEL, level);
+        machine.poke_wram(LEVEL, level)?;
         let level_select = machine.snapshot()?;
         machine.branch(level_select, &nes::reproducer(&start_level_tape()))?;
         run_setup(&mut machine)?;
@@ -466,6 +466,24 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
 
 #[cfg(unix)]
 impl FamidashTarget<QuickNesMachine> {
+    pub fn from_rom_bytes_headless_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        level: u8,
+    ) -> Result<Self, MachineError> {
+        Self::from_power_on_at_level(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                rom,
+                core_path,
+                core_sha256,
+                execution_sha256,
+            )?,
+            level,
+        )
+    }
+
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,

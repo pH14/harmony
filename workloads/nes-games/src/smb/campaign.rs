@@ -137,18 +137,27 @@ where
 #[cfg(unix)]
 impl SmbGame<QuickNesMachine, Vec<u8>> {
     #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str, execution_sha256: &str) -> Self {
         let core = machine::quicknes::core_identity();
         let target_rom = rom.to_vec();
         let target_core = core_path.to_path_buf();
         let target_sha256 = core_sha256.to_owned();
+        let target_execution = execution_sha256.to_owned();
         Self::with_targets(
             rom,
-            quicknes_identity(&core, core_sha256),
+            quicknes_identity(
+                &core,
+                &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
+            ),
             SNAPSHOT_CHECKPOINT_FORMAT,
             Box::new(move || {
-                SmbTarget::from_smb_rom_bytes_headless(&target_rom, &target_core, &target_sha256)
-                    .map_err(|error| error.to_string())
+                SmbTarget::from_smb_rom_bytes_headless_with_identity(
+                    &target_rom,
+                    &target_core,
+                    &target_sha256,
+                    &target_execution,
+                )
+                .map_err(|error| error.to_string())
             }),
         )
     }
@@ -159,13 +168,15 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
                 .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
         );
         let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
-        Ok(Self::new(rom, &core_path, &core_sha256))
+        let execution_sha256 =
+            machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
+        Ok(Self::new(rom, &core_path, &core_sha256, &execution_sha256))
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[must_use]
     pub fn loopback_for_tests(rom: &[u8]) -> Self {
-        let mut game = Self::new(rom, Path::new(""), &"a".repeat(64));
+        let mut game = Self::new(rom, Path::new(""), &"a".repeat(64), &"b".repeat(64));
         let target_rom = rom.to_vec();
         game.targets = Box::new(move || {
             SmbTarget::loopback_for_tests(&target_rom).map_err(|error| error.to_string())

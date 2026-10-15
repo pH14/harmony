@@ -10,7 +10,7 @@ use std::{
 use machine::{
     Machine, Moment, StopConditions,
     nes::{self, ButtonChord},
-    quicknes::QuickNesMachine,
+    quicknes::{QuickNesMachine, STATE_HEADER_LEN},
 };
 use nes_workload::{
     chord::ChordVocabulary, famidash, metroid, mm2, search::rand::RomuDuoJrRand, smb, twin_dragons,
@@ -18,7 +18,6 @@ use nes_workload::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-const STATE_HEADER_LEN: usize = 120;
 const CARTRIDGE_RAM_LEN: usize = 0x2000;
 const START: u8 = 0x08;
 const SELECT: u8 = 0x04;

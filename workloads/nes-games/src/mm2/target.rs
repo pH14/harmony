@@ -727,6 +727,45 @@ fn run_chords<M: Machine>(machine: &mut M, chords: &[ButtonChord]) -> Result<(),
 
 #[cfg(unix)]
 impl Mm2Target<QuickNesMachine> {
+    pub fn from_rom_bytes_after_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        prefix: &[ButtonChord],
+        stage: Mm2Stage,
+    ) -> Result<Self, MachineError> {
+        Self::from_machine(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                rom,
+                core_path,
+                core_sha256,
+                execution_sha256,
+            )?,
+            prefix,
+            stage,
+            Mm2Route::Stage(stage),
+        )
+    }
+
+    pub fn whole_game_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        root: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
+        Self::whole_game_from_machine(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                rom,
+                core_path,
+                core_sha256,
+                execution_sha256,
+            )?,
+            root,
+        )
+    }
+
     pub fn from_rom_bytes_headless_at_stage(
         rom: &[u8],
         core_path: &Path,

@@ -285,10 +285,13 @@ impl NesMemory for JsMachine {
         self.wram()
     }
 
-    fn poke_wram(&mut self, addr: usize, byte: u8) {
-        if addr < WRAM_SIZE && core_poke(self.core, addr, byte).is_ok() {
-            self.memory[addr] = byte;
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
+        if addr >= WRAM_SIZE {
+            return Err(MachineError::ReadOutOfBounds);
         }
+        core_poke(self.core, addr, byte).map_err(backend)?;
+        self.memory[addr] = byte;
+        Ok(())
     }
 
     fn capture_save_ram_per_frame(&mut self, range: Range<usize>) {

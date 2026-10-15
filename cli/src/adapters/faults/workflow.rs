@@ -411,14 +411,13 @@ mod tests {
             config: oci_support::image::RuntimeConfig::default(),
         };
         let request = oci_support::bundle::LaunchRequest::default();
-        let expected = oci_support::bundle::prepare(&staged, &request)
-            .unwrap()
-            .rootfs_segment;
+        let reference = oci_support::bundle::prepare(&staged, &request).unwrap();
+        let expected = reference.rootfs_segment();
         let prepared = prepare_plain_staged_with(&staged, &request, ExecutionMode::Uml, || {
             fs::write(&path, elf(&[0x0f, 0xc7, 0xf0, 0xc3])).unwrap()
         })
         .unwrap();
-        assert_eq!(prepared.rootfs_segment, expected);
+        assert_eq!(prepared.rootfs_segment(), expected);
         assert!(
             faults_workload::admission::inspect_root(root.path())
                 .unwrap()

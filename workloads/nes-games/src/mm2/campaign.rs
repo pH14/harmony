@@ -89,21 +89,41 @@ fn emulator_identity(core: &str, genesis: &str, core_sha256: &str) -> String {
 
 #[cfg(unix)]
 impl Mm2Game<QuickNesMachine> {
-    fn quicknes(rom: &[u8], core_path: &Path, core_sha256: &str) -> Mm2Machines<QuickNesMachine> {
-        let (rom, core_path, core_sha256) = (
+    fn quicknes(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+    ) -> Mm2Machines<QuickNesMachine> {
+        let (rom, core_path, core_sha256, execution_sha256) = (
             rom.to_vec(),
             core_path.to_path_buf(),
             core_sha256.to_owned(),
+            execution_sha256.to_owned(),
         );
-        Box::new(move || QuickNesMachine::from_rom_bytes(&rom, &core_path, &core_sha256))
+        Box::new(move || {
+            QuickNesMachine::from_rom_bytes_with_identity(
+                &rom,
+                &core_path,
+                &core_sha256,
+                &execution_sha256,
+            )
+        })
     }
 
     #[must_use]
-    pub fn new_at_stage(rom: &[u8], core_path: &Path, core_sha256: &str, stage: Mm2Stage) -> Self {
+    pub fn new_at_stage(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        stage: Mm2Stage,
+    ) -> Self {
         Self::new_at_stage_after(
             rom,
             core_path,
             core_sha256,
+            execution_sha256,
             crate::mm2::target::power_on_walk(),
             stage,
         )
@@ -114,16 +134,17 @@ impl Mm2Game<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        execution_sha256: &str,
         prefix: Vec<ButtonChord>,
         stage: Mm2Stage,
     ) -> Self {
         Self::at_stage_after(
             rom,
             &machine::quicknes::core_identity(),
-            core_sha256,
+            &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
             prefix,
             stage,
-            Self::quicknes(rom, core_path, core_sha256),
+            Self::quicknes(rom, core_path, core_sha256, execution_sha256),
         )
     }
 
@@ -132,14 +153,15 @@ impl Mm2Game<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        execution_sha256: &str,
         root: Vec<ButtonChord>,
     ) -> Self {
         Self::whole_game(
             rom,
             &machine::quicknes::core_identity(),
-            core_sha256,
+            &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
             root,
-            Self::quicknes(rom, core_path, core_sha256),
+            Self::quicknes(rom, core_path, core_sha256, execution_sha256),
         )
     }
 }

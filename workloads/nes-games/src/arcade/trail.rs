@@ -364,8 +364,8 @@ impl<M: NesMemory> NesMemory for Traced<M> {
         self.inner.read_wram()
     }
 
-    fn poke_wram(&mut self, addr: usize, byte: u8) {
-        self.inner.poke_wram(addr, byte);
+    fn poke_wram(&mut self, addr: usize, byte: u8) -> Result<(), MachineError> {
+        self.inner.poke_wram(addr, byte)
     }
 
     fn capture_save_ram_per_frame(&mut self, range: Range<usize>) {
@@ -492,7 +492,9 @@ mod tests {
             Ok(self.wram())
         }
 
-        fn poke_wram(&mut self, _addr: usize, _byte: u8) {}
+        fn poke_wram(&mut self, _addr: usize, _byte: u8) -> Result<(), MachineError> {
+            Ok(())
+        }
 
         fn capture_save_ram_per_frame(&mut self, _range: Range<usize>) {}
 

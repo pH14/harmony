@@ -75,11 +75,12 @@ pub struct MetroidGame<M: NesBackend<Vec<u8>> + NesMemory> {
 #[cfg(unix)]
 impl MetroidGame<QuickNesMachine> {
     #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str, execution_sha256: &str) -> Self {
         Self::new_after(
             rom,
             core_path,
             core_sha256,
+            execution_sha256,
             crate::metroid::target::power_on_walk(),
         )
     }
@@ -89,9 +90,17 @@ impl MetroidGame<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        execution_sha256: &str,
         prefix: Vec<ButtonChord>,
     ) -> Self {
-        Self::new_rooted(rom, core_path, core_sha256, prefix, GenesisDepth::NewGame)
+        Self::new_rooted(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+            prefix,
+            GenesisDepth::NewGame,
+        )
     }
 
     #[must_use]
@@ -99,26 +108,29 @@ impl MetroidGame<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        execution_sha256: &str,
         prefix: Vec<ButtonChord>,
         depth: GenesisDepth,
     ) -> Self {
         let core = machine::quicknes::core_identity();
-        let (image, core_path, sha256) = (
+        let (image, core_path, sha256, execution) = (
             machine::nes::with_cartridge_ram(rom),
             core_path.to_path_buf(),
             core_sha256.to_owned(),
+            execution_sha256.to_owned(),
         );
         Self::with_machines(
             rom,
             &core,
-            core_sha256,
+            &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
             prefix,
             depth,
             Box::new(move || {
-                QuickNesMachine::from_rom_bytes(
+                QuickNesMachine::from_rom_bytes_with_identity(
                     image.as_ref().map_err(Clone::clone)?,
                     &core_path,
                     &sha256,
+                    &execution,
                 )
             }),
         )
@@ -1078,7 +1090,7 @@ mod tests {
             candidate: None,
         };
         for publish in [false, true] {
-            let mut game = MetroidGame::new(&[], Path::new("unused"), "unused");
+            let mut game = MetroidGame::new(&[], Path::new("unused"), "unused", "test-execution");
             if publish {
                 game = game.with_milestone_input_dir(directory.clone());
             }
@@ -1146,7 +1158,7 @@ mod tests {
                 },
             )
         };
-        let game = MetroidGame::new(&[], Path::new("unused"), "unused")
+        let game = MetroidGame::new(&[], Path::new("unused"), "unused", "test-execution")
             .with_milestone_input_dir(directory.clone());
         let mut evidence = MetroidCampaignEvidence::default();
         let (first, first_input) = action_with(observe(&wram, &cartridge), 1);
@@ -1263,9 +1275,9 @@ mod tests {
 
     #[test]
     fn terminal_semantics_require_a_matching_replay_context() {
-        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test")
+        let legacy = MetroidGame::new(&[0], Path::new("unused"), "test", "test-execution")
             .with_terminal_policy(MetroidTerminalPolicy::Legacy);
-        let corrected = MetroidGame::new(&[0], Path::new("unused"), "test")
+        let corrected = MetroidGame::new(&[0], Path::new("unused"), "test", "test-execution")
             .with_terminal_policy(MetroidTerminalPolicy::BcdUnderflow);
         let old = legacy.policies(&MetroidCampaignRun);
         let new = corrected.policies(&MetroidCampaignRun);
@@ -1277,11 +1289,27 @@ mod tests {
             old.iter().filter(|(k, v)| new.get(*k) != Some(*v)).count(),
             1
         );
-        let unset = MetroidGame::new(&[0], Path::new("unused"), "test");
+        let unset = MetroidGame::new(&[0], Path::new("unused"), "test", "test-execution");
         assert!(
             corrected
                 .resolve_recorded(&unset.policies(&MetroidCampaignRun))
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = MetroidGame::new(&[0], Path::new("core.so"), "core", "first");
+        let second = MetroidGame::new(&[0], Path::new("core.so"), "core", "second");
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(
+            second
+                .resolve_recorded(&first.policies(&MetroidCampaignRun))
+                .is_err()
         );
     }
 

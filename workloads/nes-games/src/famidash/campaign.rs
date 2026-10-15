@@ -92,26 +92,34 @@ impl<M: NesBackend<Vec<u8>>> FamidashGame<M> {
 #[cfg(unix)]
 impl FamidashGame<QuickNesMachine> {
     #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
-        Self::new_at_level(rom, core_path, core_sha256, 0)
+    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str, execution_sha256: &str) -> Self {
+        Self::new_at_level(rom, core_path, core_sha256, execution_sha256, 0)
     }
 
     #[must_use]
-    pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: u8) -> Self {
+    pub fn new_at_level(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        level: u8,
+    ) -> Self {
         let core = machine::quicknes::core_identity();
         let target_rom = rom.to_vec();
         let target_core = core_path.to_path_buf();
         let target_sha256 = core_sha256.to_owned();
+        let target_execution = execution_sha256.to_owned();
         Self::with_targets(
             rom,
             &core,
-            core_sha256,
+            &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
             level,
             Box::new(move || {
-                FamidashTarget::from_rom_bytes_headless(
+                FamidashTarget::from_rom_bytes_headless_with_identity(
                     &target_rom,
                     &target_core,
                     &target_sha256,
+                    &target_execution,
                     level,
                 )
                 .map_err(|error| error.to_string())
@@ -125,7 +133,9 @@ impl FamidashGame<QuickNesMachine> {
                 .ok_or("HARMONY_QUICKNES_CORE must name the pinned QuickNES core")?,
         );
         let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
-        Ok(Self::new(rom, &core_path, &core_sha256))
+        let execution_sha256 =
+            machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
+        Ok(Self::new(rom, &core_path, &core_sha256, &execution_sha256))
     }
 }
 
@@ -626,5 +636,28 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for FamidashGame<M> {
             })
             .map(|entry| entry.input.clone())
             .ok_or_else(|| "Famidash source archive has no retained entries".into())
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::path::Path;
+
+    use super::*;
+
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = FamidashGame::new(&[0], Path::new("core.so"), "core", "first");
+        let second = FamidashGame::new(&[0], Path::new("core.so"), "core", "second");
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(
+            second
+                .resolve_recorded(&first.policies(&FamidashCampaignRun))
+                .is_err()
+        );
     }
 }

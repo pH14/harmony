@@ -134,7 +134,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = sha256(&fs::read(&args.core)?);
-    let game = TwinDragonsGame::new(&rom, &args.core, &core_sha256);
+    let execution_sha256 = machine::quicknes::prepared_execution_sha256(&args.core, &core_sha256)?;
+    let game = TwinDragonsGame::new(&rom, &args.core, &core_sha256, &execution_sha256);
     run_qualified_campaign(&game, &campaign_config(&args), &args.output)
 }
 

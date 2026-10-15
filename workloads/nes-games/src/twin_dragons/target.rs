@@ -350,6 +350,20 @@ impl<M: NesBackend<Vec<u8>>> TwinDragonsTarget<M> {
 
 #[cfg(unix)]
 impl TwinDragonsTarget<QuickNesMachine> {
+    pub fn from_rom_bytes_headless_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        Self::from_power_on(QuickNesMachine::from_rom_bytes_with_identity(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        )?)
+    }
+
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,

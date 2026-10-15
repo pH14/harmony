@@ -19,15 +19,41 @@ directory. Reusing that directory, including after a failed stage, cannot carry
 files from an earlier image into the next guest rootfs or its identity. The
 caller owns the staging directory and removes it when the prepared image is no
 longer needed.
-Outer archives and layers are copied into private staging before admission and
-extraction, so replacing a source archive after its members are checked cannot
-change the bytes extracted into the guest image.
+Outer archives and layers are copied into anonymous staging files before
+admission and extraction. The compressed copy is decoded once into a second
+anonymous staging file; member validation and tar extraction use that same
+decoded copy. Both held files have 64 KiB chunks with recorded SHA-256 digests,
+and each reader verifies a chunk into a private buffer before using it.
+The compressed copy is released after decoding, before tar extraction and
+layer merging.
+The parser checks headers while recording the decoded tar and drains trailing
+zero padding without storing it; extraction receives a normalized terminator.
+Replacing a source pathname, changing a held file, or making an external
+decompressor return different output on another invocation cannot substitute
+unreviewed extracted bytes. Archives remain disk-streamed; memory use is one
+chunk buffer per reader plus 32 bytes of digests per chunk rather than the
+whole layer.
+For OCI layouts, the selected manifest and config are parsed from the same
+bytes whose descriptor size and SHA-256 are checked. Each layer's descriptor is
+checked against its anonymous archive copy before that copy is validated and
+extracted. Unsupported or malformed digest names fail closed. The index selects
+the manifest; callers that cache or pin a layout must bind the index as well as
+the referenced blobs. Prepared execution identity binds the final rootfs and
+runtime configuration, including when the selected index entry changes.
+`image::stage_with_provenance` returns the staged image plus OCI input hashes
+captured during that same stage: the parsed index bytes and the verified
+descriptors for its selected manifest, config, and layers. Unselected layout
+files are omitted. Docker-save inputs return no OCI provenance. The ordinary
+`image::stage` API returns only the staged image.
 
 `PreparedExecution` owns the deterministic rootfs and platform control
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is
 placed at `/harmony-oci/rootfs`; the control segment owns
 `/harmony-oci/config.json`, `/harmony-oci/execution.json`, and sorted external
-files. Image contents cannot replace those control paths. The canonical OCI
+files. Preparation fixes these bytes and their identity together; callers can
+inspect them through read-only accessors and compose the initramfs, but cannot
+replace a segment or the execution specification while retaining the original
+identity. Image contents cannot replace those control paths. The canonical OCI
 configuration always starts `/usr/lib/harmony/supervisor` as root. The
 supervisor reads the mounted execution specification and applies its argv,
 environment, working directory, and resolved image credentials to the

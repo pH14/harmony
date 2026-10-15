@@ -234,8 +234,12 @@ boot flags. Custom session configurations, including campaign and fault adapters
 are outside this scope. Inputs must be local OCI layouts. The dump includes exact platform, rootfs and
 control archives, serialized execution and image configuration, input hashes,
 prepared identity, kernel bytes, and ordered concatenated initramfs bytes. Source
-filenames must be valid UTF-8 so each source file has a distinct input
-manifest path; ambiguous names are rejected before the dump is written. NES
+hashes in `image-inputs.json` cover the exact `index.json` bytes staging parsed
+and the selected manifest, config, and layer blobs it verified. Unselected OCI
+layout files are omitted, and changing the source layout during preparation
+cannot make these hashes describe a different selection from the staged image.
+The checker validates the dump's file hashes but does not reopen the source
+layout; this provenance comes from staging's verified reads. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by
@@ -319,6 +323,19 @@ image in `workload.options.guest_image`.
 Native search and replay require the saved core digest from the run manifest;
 the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
+Before a native campaign creates its identity, it prepares a digest of the
+executable QuickNES load, including its loaded dependency closure. SMB, Mega Man
+2, Metroid, Super Tilt Bro, Famidash and Twin Dragons bind this prepared
+execution digest in the recorded emulator policy, and the native live view loads
+its machines against the same digest. Each campaign worker checks that digest while loading
+its private core and before running the ROM. Native prepared.json, evaluation
+identity.json, power-on fixture descriptors, progress replay records and STB
+film evidence record the same digest, so replacing a dependency while keeping
+the core file unchanged cannot reuse a saved campaign identity.
+The standalone film and probe commands are diagnostic runs: they open the
+selected private core and report observations, but their transient outputs do
+not carry a campaign replay identity. The identity-bearing `nes-film` command
+records the prepared execution digest in film.json.
 For a saved search origin, the CLI checks the ROM and, for Consonance, the
 kernel and initramfs against the inherited manifest at their final read before
 passing those bytes to the package.

@@ -7,8 +7,8 @@ use crate::{Machine, MachineError, Reproducer, StopConditions};
 pub const WRAM_SIZE: usize = 2 * 1024;
 pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
 pub const MAX_HOLD_FRAMES: u8 = 120;
-pub(crate) const STATE_MAGIC: &[u8; 8] = b"HQNESST2";
-pub(crate) const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 8;
+pub(crate) const STATE_MAGIC: &[u8; 8] = b"HQNESST3";
+pub const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 64 + 8;
 
 #[must_use]
 pub fn core_state(state: &[u8]) -> &[u8] {

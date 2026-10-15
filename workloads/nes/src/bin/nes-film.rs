@@ -232,9 +232,12 @@ fn main() -> Result<()> {
     if sha256(&rom) != args.rom_sha256 || sha256(&core) != args.core_sha256 {
         return Err("ROM/core checksum mismatch".into());
     }
+    let execution_sha256 =
+        machine::quicknes::prepared_execution_sha256(&args.core, &args.core_sha256)?;
     let identity = json!({
         "game": args.game,
         "ai": args.ai,
+        "prepared_execution_sha256": execution_sha256,
     });
     match args.game.as_str() {
         "stb" => {
@@ -245,7 +248,7 @@ fn main() -> Result<()> {
                 _ => return Err("unknown STB difficulty".into()),
             };
             produce(
-                StbGame::with_ai(&rom, &args.core, &args.core_sha256, ai),
+                StbGame::with_ai(&rom, &args.core, &args.core_sha256, &execution_sha256, ai),
                 StbCampaignRun,
                 &args,
                 identity,
@@ -256,7 +259,7 @@ fn main() -> Result<()> {
                 return Err("Twin Dragons takes no ai option".into());
             }
             produce(
-                TwinDragonsGame::new(&rom, &args.core, &args.core_sha256),
+                TwinDragonsGame::new(&rom, &args.core, &args.core_sha256, &execution_sha256),
                 TwinDragonsCampaignRun,
                 &args,
                 identity,
@@ -267,7 +270,13 @@ fn main() -> Result<()> {
                 return Err("Famidash takes no ai option".into());
             }
             produce(
-                FamidashGame::new_at_level(&rom, &args.core, &args.core_sha256, args.level),
+                FamidashGame::new_at_level(
+                    &rom,
+                    &args.core,
+                    &args.core_sha256,
+                    &execution_sha256,
+                    args.level,
+                ),
                 FamidashCampaignRun,
                 &args,
                 identity,
