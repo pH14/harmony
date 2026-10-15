@@ -243,7 +243,12 @@ supported. The hardware qualification requires the AMD refusal path and a
 long-mode continuation on both vendors. Its existing XSAVE fixtures use 32-bit
 PAE, so they remain required on Intel while their AMD continuation is excluded.
 The original AMD NPT witness remains in #314.
-The separate same-seed XSAVE divergence remains tracked in
+AMD long-mode reused-vCPU restore changes guest-authored XSAVE bytes despite
+identical saved CPU records. Restore validation now refuses that reuse before
+mutation; the control server retries with a fresh VM. The hardware qualification
+requires the public VMM witness to prove refusal without changing the source,
+and byte-for-byte equality among uninterrupted, save-and-continue, and fresh
+restored continuations. The underlying XSAVE behavior remains tracked in
 [#307](https://github.com/pH14/harmony/issues/307).
 
 ## Architecture boundary
@@ -265,6 +270,9 @@ byte reads and writes; other widths fail before changing masks or virtual time.
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
+Restore checks the live trace's pending event, active clockevent record, and
+schedule capacity before changing backend CPU state. A rejected trace restore
+therefore leaves the running VM intact, including after a failed guest exit.
 
 Boot does not require a particular host CPU model, stepping, or microcode.
 Each architecture supplies a guest machine policy; the backend supplies the
@@ -553,8 +561,11 @@ minted.
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,
 device records, and clock wiring are rejected before changing the destination
-execution. Import requires a live validation target. This preflight does not
-replace backend validation or make host ioctl failures transactional.
+execution. Import requires a live validation target, but its backend check is
+for the artifact's shape, not the current vCPU's reuse eligibility. That lets
+an AMD session import a valid artifact after guest entry; replay then creates
+a fresh VM or refuses in-place reuse before changing CPU or RAM. This preflight
+does not replace backend validation or make host ioctl failures transactional.
 
 ## Publishing prepared snapshot boundaries
 
@@ -608,10 +619,20 @@ KVM preparation round-trips FPU state without executing a guest instruction,
 while preserving modeled RAM, CPU fields other than hardware XSAVE presence,
 and execution accounting. Raw XSAVE presence remains restoration metadata; the
 logical projection below decides how it enters identity. The execution
-requirement is one qualified host core type
-for related boots and restores; see the backend README for affinity admission and
-its limits. Cross-type migration is not supported. Cross-host placement and broader
-XSAVE state lie outside the qualified set.
+requirement is one qualified host core type for related boots and restores;
+see the backend README for affinity admission and its limits. On Linux KVM
+hosts reporting P-core/E-core topology, the captured
+class is bound into the x86 snapshot contract and the raw CPU state. Portable
+import and raw backend restore refuse a different class before changing the
+guest. A changed thread-affinity mask also refuses capture and restore. Hosts
+without reported class masks and without a hybrid CPUID indication require
+placement qualification; a host reporting hybrid CPUID without the masks is
+refused. Cross-host placement and broader XSAVE state lie outside the
+qualified set.
+A mock-backed test runs in ordinary CI to enforce the VMM contract binding.
+The live cross-class qualification runs during pre-push on a Linux KVM host
+only when both P and E cores are accessible; it fails if that requirement
+disappears before the test starts.
 
 The supported x86 workload is the shipped 64-bit Linux kernel and initramfs on
 a 64-bit host. Application bitness is separate: 32-bit compatibility-mode

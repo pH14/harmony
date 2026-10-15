@@ -28,11 +28,20 @@ impl StateMutationGuard {
         }
     }
 
-    pub(crate) fn mutate<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+    pub(crate) fn begin(&self) -> Result<()> {
         self.ensure_healthy()?;
         self.poisoned.set(true);
-        let value = operation()?;
+        Ok(())
+    }
+
+    pub(crate) fn finish(&self) {
         self.poisoned.set(false);
+    }
+
+    pub(crate) fn mutate<T>(&self, operation: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.begin()?;
+        let value = operation()?;
+        self.finish();
         Ok(value)
     }
 }

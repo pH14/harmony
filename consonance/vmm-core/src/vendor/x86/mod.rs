@@ -127,6 +127,13 @@ impl Vendor for X86 {
         ))
     }
 
+    fn restored_clockevent_trace_schedule_present<B: Backend<A = Self>>(
+        vmm: &Vmm<B>,
+        prep: &Self::RestorePrep,
+    ) -> bool {
+        vmm.restored_clockevent_trace_schedule_present_x86(prep)
+    }
+
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<Option<u64>, VmmError> {

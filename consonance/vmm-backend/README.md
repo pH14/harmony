@@ -19,6 +19,12 @@ an ISA-specific exit enum.
 An x86 KVM entry failure retains the hardware failure reason and CPU reported by
 `KVM_EXIT_FAIL_ENTRY`. The structured error reaches the caller and workload
 failure trace, distinguishing invalid guest state from other entry failures.
+KVM policy installation changes the live CPUID before installing the VM-wide
+MSR filter. If either write fails, the vCPU is retired: a failed filter can
+leave new CPUID with the previous filter, which must not be captured or run as
+one coherent policy. The live `rejected_msr_filter_retires_partly_reconfigured_vcpu`
+test changes a CPUID leaf, makes KVM reject a zero-length filter range, and
+requires subsequent capture and policy installation to refuse the vCPU.
 
 Before the first policy is installed, `KvmBackend::nested_capabilities` selects
 KVM-supported VMX or SVM. `initialize_nested` checks `KVM_CAP_NESTED_STATE` and
@@ -27,6 +33,13 @@ MSRs and sets IA32_FEATURE_CONTROL; SVM uses its supported CPUID capability leaf
 and retains VM_CR and VM_HSAVE_PA through the native MSR filter and snapshot
 MSR block. Partial MSR operations fail. The VMM's named nested-host policy binds
 vendor and every exposed capability into contract identity.
+Once nested initialization starts changing CPUID, an invalid VMX capability MSR,
+rejected feature-control write, or later validation error retires the vCPU. The
+live `rejected_vmx_capability_read_retires_partly_initialized_vcpu` test forces
+an invalid MSR index after the CPUID write and requires capture and policy
+installation to refuse the partly initialized backend. It reports an explicit
+skip when a host has no VMX support; the test also requires KVM to reject reads
+of the invalid MSR.
 
 Nested state is captured in a capability-sized initialized buffer. The complete
 returned payload is retained with the inactive VMCS12 metadata normalization
@@ -176,6 +189,19 @@ Intel and non-PAE captures retain
 their normal behavior. The underlying AMD continuation discrepancy remains
 tracked in [#314](https://github.com/pH14/harmony/issues/314).
 
+AMD-compatible KVM also cannot safely restore CPU state into a vCPU that has
+already attempted ordinary guest entry. A 64-bit XRSTOR-to-init continuation
+produced guest XSAVE bytes with `XSTATE_BV=0` after reused restore, where the
+uninterrupted and fresh-restored guest wrote `XSTATE_BV=2`, although the captured
+KVM CPU records matched. Restore validation rejects that reused vCPU before any
+backend or guest-memory mutation. An unentered vCPU remains restorable; the
+control server falls back to a fresh VM when an in-place restore is refused.
+Portable import checks the snapshot's structural compatibility separately from
+this current-vCPU reuse rule. Importing a valid artifact after AMD guest entry
+does not restore the entered vCPU; replay still requires a fresh backend.
+Intel reuse remains supported. The underlying AMD behavior is tracked in
+[#307](https://github.com/pH14/harmony/issues/307).
+
 Backends install a guest-visible CPU policy before the first run. Read-style
 exits require the matching completion response. The x86 KVM backend completes
 PIO reads and MSR callbacks eagerly with an immediate-exit entry. A PIO write
@@ -194,7 +220,15 @@ like any other MMIO exit. An MMIO exit stays unacknowledged until
 required by the same instruction. Callers service these continuations until `finish_exit` returns
 `None` before exposing a stopped execution. No completion entry executes the
 successor instruction or injects an interrupt. An MSR fault queues its
-exception without executing the handler.
+exception without executing the handler. An unexpected completion-only entry
+or ioctl error retires the backend before it can retry the uncertain completion
+or publish a snapshot; expected immediate-exit interruption and a decoded
+device continuation leave the backend usable. An unsupported exit after guest
+entry also retires the backend. The live
+`rejected_rep_input_retires_uncounted_guest_progress` test executes a guest
+write before KVM returns a multi-byte REP input exit that this backend cannot
+decode; the exit count stays zero, and capture, restore, and re-entry all
+refuse that uncounted progress.
 The live serviced-exit regressions require exact CPU state at the stopped
 completion boundary. After guest continuation, they compare logical XSAVE
 presence alongside every CPU field; the MMIO and MSR cases also compare guest
@@ -216,11 +250,14 @@ reads the vCPU. Completed MMIO reads and MMIO writes remain capturable;
 placeholder ARM64 sysreg exits remain uncapturable while their completion is
 pending. The ARM64 KVM backend leaves an MMIO write, or a read once its data is
 supplied, for the next `KVM_RUN` to complete, so each access costs one entry.
-`save` and `restore` first complete it with one immediate-exit entry, so the
-captured registers are past the access and a restore never leaves a completion
-to land on the restored registers. The backend counts and times those entries
+`save` completes it with one immediate-exit entry; `restore` first validates
+the requested state, then completes it before writing the restored state. A
+rejected restore therefore leaves an owed access untouched, while captured
+registers are past the access and a valid restore never leaves a completion to
+land on the restored registers. The backend counts and times those entries
 and reports the totals through `Backend::store_completions`, since they are
-host cost the exit table cannot see.
+host cost the exit table cannot see. An unexpected completion failure retires
+the vCPU because the kernel entry may already have advanced guest state.
 HVF rejects a restore with PSTATE bits above bit 31 before changing registers:
 its CPSR setter accepts those bits but discards them on the next capture.
 Its FPCR and FPSR setters likewise discard bits above bit 31, so restore
@@ -298,10 +335,21 @@ the snapshot. Host writes to guest RAM go through
 `Backend::invalidate_instruction_cache`, which HVF clips to the host ranges it
 mapped. Stage 2 never changes across a restore and needs no maintenance: the
 host allocation behind guest RAM keeps its address.
+The flush accepts its HVC exit only when the vCPU PC equals the instruction
+after the private stub. An HVC in a guest exception vector can otherwise make
+an aborted stub look complete; restore must refuse and retire the backend.
 
 A watchdog cancellation requested before the stub's guest entry is consumed by
 that entry and retires no instruction, so the stub entry is retried once. The
 cancellation latch outlives the exit and `run` still refuses the guest.
+
+An error after HVF guest entry retires the backend. The vCPU may have executed
+instructions before `hv_vcpu_run` or exit decoding failed, while no exit was
+reported or counted. A pre-entry watchdog cancellation leaves the backend
+capturable, but a post-entry error refuses later guest entry, preparation,
+capture, and restore. The live failure-injection test executes a guest register
+write before returning an injected post-run error and checks that the uncounted
+state cannot be published.
 
 The guest's virtual counter runs off the host counter and neither backend can
 trap a guest read of it, so a restore that left the counter alone handed the
@@ -317,18 +365,82 @@ The owned ARM guest cannot program its architected virtual timer controls.
 Both backends set `CNTV_CTL_EL0` to zero before guest entry and reject an
 enabled timer during capture or restore. This keeps a restored checkpoint from
 arming a host-time interrupt outside the Harmony clockevent path.
+ARM KVM also exposes the guest physical timer. A guest can change
+`CNTP_CVAL_EL0` while `CNTP_CTL_EL0` is disabled, or arm the timer and receive
+PPI 30. Neither register belongs to the portable vCPU record. ARM KVM therefore
+admits capture only when both physical-timer registers equal the fresh-vCPU
+zero baseline, and clears both before guest entry and restore. KVM owns the
+virtual-timer PPI 20 and physical-timer PPI 30: it accepts a userspace line
+write for either one but clears that line before the guest can accept it, so
+the backend refuses external injection of both timer-owned PPIs. The
+live `guest_physical_timer_state_refuses_capture_and_legacy_restore` check
+observes a programmed timer's guest control value of `0x5` against a fresh
+guest's `0x0`, then verifies capture and old-record restore refusal. It also
+checks a disabled timer with a nonzero compare value. KVM can leave PPI 20 or
+30 asserted after the timer controls return to zero at a shutdown exit.
+Capture also refuses a pending or active bit on either timer-owned PPI, and
+restore rejects a record containing any of those three delivery states. The live
+`guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore` check
+exercises the asserted PPI 30 shutdown cut and confirms an external PPI 29
+remains admitted.
+
+ARM KVM also exposes a guest-writable `DISR_EL1` value. It is absent from the
+portable vCPU record: a guest-written `0x1234` survived uninterrupted execution
+but read back as zero after a cold restore. Capture now refuses a nonzero
+`DISR_EL1`, and policy installation and restore clear it to the fresh-vCPU zero
+baseline. Arm GIC state version 7 rejects older snapshots that lacked proof of
+both the physical-timer and `DISR_EL1` boundaries. The live
+`guest_disr_state_refuses_capture_and_legacy_restore` check covers capture
+refusal, version-6 restore refusal, and a clean restore into a reused vCPU.
+
+Apple HVF also exposes guest-writable `ACTLR_EL1`, including the EnTSO memory
+ordering control. It is absent from the portable vCPU record: a guest-written
+value of `0x2` survived uninterrupted execution but read back as zero after a
+fresh restore. HVF refuses capture while `ACTLR_EL1` is nonzero, and policy
+installation and restore clear it to the fresh-vCPU zero baseline. Backend
+creation probes ACTLR read/write and refuses a host without that capability;
+Apple documents the register API from macOS 15. The live
+`guest_actlr_state_refuses_capture_and_clean_restore_resets_it` test checks
+capture refusal and clean reused and fresh restores.
+
+HVF also allows EL1 guests to write and read all ten pointer-authentication key
+halves even when the advertised feature ID disables pointer authentication.
+Those keys are absent from the portable vCPU record. On the measured host, each
+guest-written key read back as `0x1234` without restore and zero after cold
+restore. HVF now refuses capture if any key half is nonzero, and policy
+installation and restore clear all ten keys to the fresh-vCPU zero baseline.
+Backend creation probes read/write access to each key and refuses a host that
+cannot establish this boundary. Arm portable records use wire version 10 to
+reject older snapshots that lacked proof of the ACTLR and key capture checks.
+The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
+covers all ten keys, capture refusal, and clean reused, fresh, and policy
+restores.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
 guest RAM or backend state is changed.
-ARM KVM also rejects later guest entry, capture, restore and state observation
-if a register or GIC write fails during restore: a partially changed vCPU must
-not be reused as a coherent replay state. Shape rejection before the write
-sequence leaves the backend usable.
+ARM KVM and HVF reject later guest entry, preparation, capture, restore and
+state observation if a restore operation fails after preflight: a partially
+changed vCPU must not be reused as a coherent replay state. HVF includes its
+private translation-flush guest entry in that failure boundary. Shape rejection
+before the write sequence leaves the backend usable. The ignored live HVF
+`failed_translation_flush_retires_mutated_vcpu` test injects a failure after the
+flush has staged registers and checks the refusal; it also checks that an
+invalid restore shape leaves the backend usable.
 
 `HvfBackend::set_policy` reads HVF's own value of each `ID_AA64*` feature
-register before the first policy writes it, and fails with
-`BackendError::IdRegisterAboveHost` when any 4-bit field of a policy asks for
+register and validates the complete policy before writing any register. A
+rejected policy leaves the prior guest identity intact; a failed HVF write
+retires the vCPU because the prior identity may be partly replaced. The live
+`rejected_policy_preserves_live_identity` and
+`failed_policy_write_retires_mutated_vcpu` tests exercise both boundaries.
+HVF also retires the vCPU if servicing a trapped system-register fault fails
+after it begins writing the exception registers. Retrying from a partly changed
+PSTATE would take a different exception path and replace the original SPSR.
+The live `failed_fault_completion_retires_partly_changed_vcpu` test forces that
+late failure and checks that the backend refuses a retry and capture.
+
+Policy validation returns `BackendError::IdRegisterAboveHost` when any 4-bit field asks for
 more than that host value. The guest sizes its use of the hardware from these
 fields, and Hypervisor.framework accepts any value written to them. ARM KVM
 makes the same check inside `KVM_SET_ONE_REG`. Fields compare as unsigned
@@ -338,6 +450,13 @@ not compared because the VMM implements the GIC system registers by trapping
 them. The stage-2 and EL2 fields `MMFR0.TGran*_2`, `MMFR1.VMIDBits`,
 `MMFR1.VH`, `MMFR2.FWB` and `MMFR2.EVT` are not compared because the guest runs
 at EL1 and never uses them.
+
+Arm KVM also retires the vCPU when policy installation fails after it starts
+writing PSCI, firmware, ID-register or GIC state. A later rejection can leave
+the previous live policy only partly replaced. The fake-KVM
+`failed_policy_write_retires_partly_reconfigured_vcpu` test injects failure
+after the first ID-register write and requires later capture and guest entry to
+refuse that vCPU.
 
 `Arm64Caps::asid_bits` reports the ASID width each backend's host fixes for the
 guest. Hypervisor.framework implements 8-bit ASIDs, so HVF reports 8 bits. ARM
@@ -409,6 +528,30 @@ restore rejects such a KVM GIC record before changing the target. The userspace
 GIC retains its own pending-SPI state. The ignored
 `routed_away_pending_spi_refuses_capture_and_restore` ARM KVM test compares the
 two live routing histories and verifies both refusal paths.
+ARM KVM restore reconstructs the one asserted external PPI input from the saved
+VGIC line level. The next clockevent ACK or DISARM can then lower that line
+through `KVM_IRQ_LINE`, while restored interrupt-acceptance observations remain
+transient. Capture refuses multiple asserted PPIs or any asserted SGI input,
+and restore rejects those records before changing the target because the
+backend controls one external interrupt line at a time. The public VMM
+clockevent regression saves an asserted PPI, restores it into a cold VM, and
+acknowledges it through the ARM MMIO dispatch path.
+Changing an asserted KVM interrupt line deasserts the old input before it
+asserts the new one. A failure on the second write retires the backend because
+the VGIC line level has already changed; capturing at that point would publish
+a half-applied interrupt switch. The fake-KVM
+`failed_irq_line_switch_refuses_capture_after_partial_transition` test forces
+that sequence and checks that capture refuses it.
+IRQ requests outside the configured 96-interrupt VGIC are rejected before any
+line changes, leaving the backend usable.
+
+ARM KVM retires when `KVM_RUN` fails or the subsequent interrupt-acceptance
+observation or exit decode fails: guest execution may have advanced, but the
+exit was not reported or accounted. The fake-KVM
+`failed_guest_entry_refuses_capture_after_unreported_guest_progress` test models
+a run error after guest progress; `failed_post_run_irq_observation_refuses_lost_exit_capture`
+forces a VGIC read failure after a consumed MMIO exit. Both require capture to
+refuse the lost-exit state.
 
 Both ARM backends capture and restore `CONTEXTIDR_EL1`, `AMAIR_EL1`,
 `PAR_EL1`, `CSSELR_EL1`, `AFSR0_EL1`, and `AFSR1_EL1` alongside the
@@ -504,10 +647,26 @@ those operations before they mutate KVM state. It does not choose a pool or
 change caller affinity. Preserve affinity for the backend lifetime and prevent
 concurrent external changes. CPU topology is read at admission; CPU hotplug or
 topology remapping requires stopping and requalifying the worker.
-Hosts that hide hybrid topology, including nested VMs, require operator
-qualification of the underlying scheduling placement; absent masks do not prove
-homogeneity. Snapshot data does not yet encode a host core-type admission token,
-so cross-process and cross-host compatibility remain deployment requirements.
+If both topology masks are unavailable but Intel's hybrid CPUID bit is set,
+backend creation refuses the host. A namespace that hides these files on the
+measured Core Ultra 9 285HX otherwise admitted the same divergent P-to-E
+restore. Hosts that hide both topology and the hybrid CPUID indication,
+including nested VMs, require operator qualification of the underlying
+scheduling placement; absent signals do not prove homogeneity. Raw KVM CPU
+snapshots carry the admitted P-core or E-core class, and restore refuses a
+different or missing class before changing the vCPU.
+Snapshot validation also rechecks the current thread affinity, including when
+the VMM reuses a previously captured CPU record. The portable x86 VMM contract
+binds the same class, so import into the other class is refused before restore.
+On hosts without these topology masks or a hybrid CPUID indication the class
+is unreported and no hardware homogeneity can be inferred. Compatibility
+across different physical hosts, steppings, and feature sets still requires
+separate qualification.
+
+On the measured Core Ultra 9 285HX, six P-core captures restored on an E-core
+were previously accepted but produced different guest-written XSAVE and RAM
+after identical continuation. Same-class P-core controls matched. The class
+guard refuses those cross-class restores rather than certifying their output.
 
 On the measured Core Ultra 9 285HX, preparation on a P-core retained presence `2`,
 while moving the same vCPU to an E-core changed it to `3` with no guest instruction.

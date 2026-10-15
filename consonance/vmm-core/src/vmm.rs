@@ -342,6 +342,11 @@ where
     pub(crate) pvclock: Option<PvclockChannel>,
 }
 
+enum RestoreValidation {
+    CurrentBackend,
+    ImportedArtifact,
+}
+
 struct RestorePreparation<B: Backend>
 where
     B::A: Vendor,
@@ -924,6 +929,7 @@ where
     fn prepare_restore_vm_state(
         &self,
         s: &<B::A as Vendor>::Snapshot,
+        validation: RestoreValidation,
     ) -> Result<RestorePreparation<B>, VmmError> {
         let engine_state = EngineState::decode(s.engine_state())?;
         if *s.timers() != vm_state::TimerQueueState::default() {
@@ -936,13 +942,15 @@ where
         }
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
         self.check_guest_mode(&vcpu)?;
-        self.backend
-            .validate_restore_state(&vcpu)
-            .map_err(|error| {
-                VmmError::ContractViolation(format!(
-                    "restore_vm_state: backend rejected snapshot shape: {error}"
-                ))
-            })?;
+        let backend_validation = match validation {
+            RestoreValidation::CurrentBackend => self.backend.validate_restore_state(&vcpu),
+            RestoreValidation::ImportedArtifact => self.backend.validate_import_state(&vcpu),
+        };
+        backend_validation.map_err(|error| {
+            VmmError::ContractViolation(format!(
+                "restore_vm_state: backend rejected snapshot shape: {error}"
+            ))
+        })?;
         let svt = s.vtime();
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
@@ -988,7 +996,10 @@ where
         })
     }
 
-    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
+    fn checked_restore_preparation(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<RestorePreparation<B>, VmmError> {
         if self.completion_staged {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state into a backend with a staged completion: the VM just serviced a \
@@ -998,13 +1009,37 @@ where
                     .to_string(),
             ));
         }
+        let preparation = self.prepare_restore_vm_state(s, RestoreValidation::CurrentBackend)?;
+        if let Some(trace) = self.virtual_time_trace.as_ref() {
+            trace
+                .preflight_restore_clockevent_schedule(
+                    <B::A as Vendor>::restored_clockevent_trace_schedule_present(
+                        self,
+                        &preparation.vendor,
+                    ),
+                )
+                .map_err(|message| {
+                    VmmError::Backend(vmm_backend::BackendError::Internal(message))
+                })?;
+        }
+        Ok(preparation)
+    }
+
+    pub(crate) fn validate_restore_vm_state(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<(), VmmError> {
+        self.checked_restore_preparation(s).map(|_| ())
+    }
+
+    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         let RestorePreparation {
             engine_state,
             vcpu,
             clock_offset,
             vendor,
             vtime,
-        } = self.prepare_restore_vm_state(s)?;
+        } = self.checked_restore_preparation(s)?;
         self.snapshot_ready = false;
         self.backend.restore(&vcpu)?;
         if let Some((cfg, clock, entropy)) = vtime {
@@ -1304,7 +1339,8 @@ where
         snapshot: &<B::A as Vendor>::Snapshot,
         sdk: &SdkSnapshot,
     ) -> Result<Vec<u8>, VmmError> {
-        let prepared = self.prepare_restore_vm_state(snapshot)?;
+        let prepared =
+            self.prepare_restore_vm_state(snapshot, RestoreValidation::ImportedArtifact)?;
         let parts = <B::A as Vendor>::project_snapshot_hash_parts(snapshot)?;
         if self.doorbell_pages.is_some() != parts.doorbell.is_some() {
             return Err(VmmError::ContractViolation(

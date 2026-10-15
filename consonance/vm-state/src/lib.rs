@@ -21,6 +21,8 @@ pub const VM_STATE_MAGIC: u32 = 0x3153_4D56;
 
 pub const VM_STATE_VERSION: u16 = 8;
 
+pub const ARM64_VM_STATE_VERSION: u16 = 10;
+
 pub const ARCH_X86_64: u16 = 1;
 
 pub const ARCH_AARCH64: u16 = 2;
