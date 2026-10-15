@@ -6,7 +6,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
@@ -41,7 +40,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "stb-quicknes-campaign-stream-v4";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "stb-quicknes-snapshot-checkpoint-v4";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -71,7 +70,7 @@ impl StbGame {
     pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
         let ai_level = ai.level();
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-semantic-postcard-1.1.3-sha256-hex-v5;sha256={core_sha256}",
+            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -120,45 +119,8 @@ pub type StbCampaignModeReport = CampaignModeReport<ButtonChord, StbArchiveRepor
 type StbCampaignActionResult = CampaignActionResult<StbGame>;
 type StbCampaignJobResult = CampaignJobResult<StbGame>;
 
-#[derive(Serialize)]
-struct StbResultCandidate<'a> {
-    key: &'a StbArchiveKey,
-    viable: bool,
-}
-
-#[derive(Serialize)]
-struct StbResultAction<'a> {
-    action: ButtonChord,
-    observations: &'a [StbObservations],
-    milestones: StbMilestones,
-    outcome: Outcome,
-    candidate: Option<StbResultCandidate<'a>>,
-}
-
-#[derive(Serialize)]
-struct StbResult<'a> {
-    actions: Vec<StbResultAction<'a>>,
-}
-
 fn stb_result_sha256(result: &StbCampaignJobResult) -> Result<String, Box<dyn Error>> {
-    let actions = result
-        .actions
-        .iter()
-        .map(|action| StbResultAction {
-            action: action.action,
-            observations: &action.observations,
-            milestones: action.milestones,
-            outcome: action.outcome,
-            candidate: action
-                .candidate
-                .as_ref()
-                .map(|candidate| StbResultCandidate {
-                    key: &candidate.key,
-                    viable: candidate.viable,
-                }),
-        })
-        .collect();
-    postcard_value_sha256(&StbResult { actions })
+    postcard_value_sha256(result)
 }
 
 pub struct StbCampaignConfig {
@@ -900,10 +862,10 @@ mod tests {
     }
 
     #[test]
-    fn result_digest_uses_game_visible_candidate_state_not_portable_bytes() {
+    fn result_digest_binds_candidate_portable_state() {
         let first = result_with_portable(vec![1, 2, 3]);
         let mut second = result_with_portable(vec![9, 8, 7, 6]);
-        assert_eq!(
+        assert_ne!(
             stb_result_sha256(&first).expect("first digest"),
             stb_result_sha256(&second).expect("second digest"),
         );

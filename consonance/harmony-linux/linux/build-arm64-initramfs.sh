@@ -21,6 +21,7 @@ arm64_init_cc() {
     cc -Os -Wall -Wextra -Werror -nostdlib -static -ffreestanding -fno-builtin \
         -fno-stack-protector -fno-pie -march=armv8.1-a+lse -mno-outline-atomics \
         -no-pie -Wl,-e,_start -Wl,--build-id=none -Wl,-z,noexecstack \
+        -Wl,-z,separate-code \
         "$@" "$LINUX_DIR/arm64-init.c"
 }
 arm64_init_cc -o "$arm64_init"

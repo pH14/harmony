@@ -51,7 +51,9 @@ const HARMONY_GIC_IMPL_SPIS: u32 = 64;
 pub(crate) const HARMONY_GIC_NR_IRQS: u32 = 32 + HARMONY_GIC_IMPL_SPIS;
 const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
-const GIC_STATE_VERSION: u32 = 5;
+pub(crate) const KVM_VTIMER_PPI: u32 = 20;
+const KVM_PTIMER_PPI: u32 = 30;
+const GIC_STATE_VERSION: u32 = 7;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -457,6 +459,9 @@ const CORE_FPCR: u64 = 213;
 const CNTV_CTL_EL0: u64 = sysreg_id(3, 3, 14, 3, 1);
 const CNTV_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 0, 2);
 const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
+const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
+const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
+const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
@@ -646,12 +651,27 @@ fn vgic_level_attr(block: u32) -> u64 {
     VGIC_LEVEL_INFO_LINE_LEVEL + u64::from(block)
 }
 
+fn has_timer_owned_ppi_delivery_state(s: &Arm64GicState) -> bool {
+    let mask = (1u32 << KVM_VTIMER_PPI) | (1u32 << KVM_PTIMER_PPI);
+    [s.pending[0], s.active[0], s.line_level[0]]
+        .into_iter()
+        .any(|word| word & mask != 0)
+}
+
 fn has_pending_or_asserted_spi(s: &Arm64GicState) -> bool {
     let words = HARMONY_GIC_NR_IRQS as usize / 32;
     s.pending[1..words]
         .iter()
         .chain(s.line_level[1..words].iter())
         .any(|&word| word != 0)
+}
+
+fn single_asserted_ppi(s: &Arm64GicState) -> Result<Option<GicIntId>> {
+    let lines = s.line_level[0];
+    if lines & 0xffff != 0 || lines.count_ones() > 1 {
+        return Err(BackendError::InvalidState);
+    }
+    Ok((lines != 0).then(|| GicIntId(lines.trailing_zeros())))
 }
 
 fn read_vgic_idle_state<K: Arm64Kvm + ?Sized>(k: &K, intid: u32) -> Result<Arm64GicIdleState> {
@@ -778,9 +798,19 @@ fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
 
 fn save_vgic<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
     let s = read_vgic_state(k)?;
+    if has_timer_owned_ppi_delivery_state(&s) {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with timer-owned PPI delivery state",
+        });
+    }
     if has_pending_or_asserted_spi(&s) {
         return Err(BackendError::Unsupported {
             what: "save vGIC with pending or asserted SPI",
+        });
+    }
+    if single_asserted_ppi(&s).is_err() {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with multiple asserted PPIs or an asserted SGI line",
         });
     }
     Ok(s)
@@ -798,7 +828,9 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.ctlr & 1 != 0
         || s.bpr0 > 7
         || s.bpr1 > 7
+        || has_timer_owned_ppi_delivery_state(s)
         || has_pending_or_asserted_spi(s)
+        || single_asserted_ppi(s).is_err()
     {
         return Err(BackendError::InvalidState);
     }
@@ -982,6 +1014,16 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     if s.vtimer.cntv_ctl_el0 & 1 != 0 {
         return Err(BackendError::InvalidState);
     }
+    if k.get_one_reg(CNTP_CTL_EL0)? != 0 || k.get_one_reg(CNTP_CVAL_EL0)? != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with noncanonical physical timer state",
+        });
+    }
+    if k.get_one_reg(DISR_EL1)? != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with noncanonical DISR_EL1",
+        });
+    }
     s.vtimer.cntv_cval_el0 = k.get_one_reg(CNTV_CVAL_EL0)?;
     s.vtimer.counter = k.get_one_reg(CNTVCT_EL0)?;
     s.vtimer.masked = true;
@@ -1026,6 +1068,9 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
+    k.set_one_reg(DISR_EL1, 0)?;
+    k.set_one_reg(CNTP_CTL_EL0, 0)?;
+    k.set_one_reg(CNTP_CVAL_EL0, 0)?;
     k.set_one_reg(CNTVCT_EL0, s.vtimer.counter)?;
     k.set_one_reg(CNTV_CVAL_EL0, s.vtimer.cntv_cval_el0)?;
     k.set_one_reg(CNTV_CTL_EL0, s.vtimer.cntv_ctl_el0)?;
@@ -1118,7 +1163,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     dirty_log: bool,
     unlogged_slot: bool,
     dirty_log_poisoned: bool,
-    restore_poisoned: bool,
+    state_poisoned: bool,
     pending_irq: Option<GicIntId>,
     applied_irq: Option<GicIntId>,
     accepted_irq: Option<GicIntId>,
@@ -1142,7 +1187,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             dirty_log: true,
             unlogged_slot: false,
             dirty_log_poisoned: false,
-            restore_poisoned: false,
+            state_poisoned: false,
             pending_irq: None,
             applied_irq: None,
             accepted_irq: None,
@@ -1160,7 +1205,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
     }
 
     fn ensure_healthy(&self) -> Result<()> {
-        if self.restore_poisoned {
+        if self.state_poisoned {
             return Err(BackendError::Internal("backend state mutation failed"));
         }
         Ok(())
@@ -1184,6 +1229,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         if self.applied_irq == self.pending_irq {
             return Ok(());
         }
+        self.state_poisoned = true;
         if let Some(old) = self.applied_irq {
             self.kvm.set_irq_line(old, false)?;
         }
@@ -1191,6 +1237,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             self.kvm.set_irq_line(new, true)?;
         }
         self.applied_irq = self.pending_irq;
+        self.state_poisoned = false;
         Ok(())
     }
 
@@ -1229,8 +1276,10 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
         }
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
+        self.state_poisoned = true;
         self.kvm.complete_mmio_exit()?;
         self.mmio_owed = false;
+        self.state_poisoned = false;
         self.completions.runs = self.completions.runs.saturating_add(1);
         self.completions.nanos = self
             .completions
@@ -1242,6 +1291,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
             self.apply_pending_irq()?;
+            self.state_poisoned = true;
             let view = self.kvm.run()?;
             self.mmio_owed = false;
             self.observe_irq_acceptance()?;
@@ -1249,8 +1299,10 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
                 self.mmio_owed = view.exit_reason == KVM_EXIT_MMIO && view.mmio.is_write;
                 self.counts.bump(exit.reason());
                 self.pending = pending;
+                self.state_poisoned = false;
                 return Ok(exit);
             }
+            self.state_poisoned = false;
         }
     }
 
@@ -1322,6 +1374,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
         self.ensure_healthy()?;
+        self.state_poisoned = true;
         self.kvm
             .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
         for id in OPTIONAL_FIRMWARE_BITMAPS {
@@ -1338,6 +1391,9 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(DISR_EL1, 0)?;
+        self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(CNTP_CVAL_EL0, 0)?;
         if !self.configured {
             for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
                 let (group, attr) = vgic_config_attr(word);
@@ -1351,6 +1407,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         }
         let _ = &policy.sysreg_traps;
         self.configured = true;
+        self.state_poisoned = false;
         Ok(())
     }
 
@@ -1452,7 +1509,11 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
         self.ensure_healthy()?;
-        if id.is_some_and(|id| !(id.is_ppi() || id.is_spi())) {
+        if id.is_some_and(|id| {
+            !(id.is_ppi() || id.is_spi())
+                || id.0 >= HARMONY_GIC_NR_IRQS
+                || matches!(id.0, KVM_VTIMER_PPI | KVM_PTIMER_PPI)
+        }) {
             return Err(BackendError::InvalidState);
         }
         self.pending_irq = id;
@@ -1568,14 +1629,16 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         if self.pending != Pending::None || self.completion_staged {
             return Err(BackendError::PendingCompletion);
         }
-        self.settle_mmio()?;
         self.validate_restore_state(state)?;
+        let restored_irq =
+            single_asserted_ppi(state.gic.as_ref().ok_or(BackendError::InvalidState)?)?;
+        self.settle_mmio()?;
         if let Err(error) = restore_vcpu(&mut self.kvm, state) {
-            self.restore_poisoned = true;
+            self.state_poisoned = true;
             return Err(error);
         }
-        self.pending_irq = None;
-        self.applied_irq = None;
+        self.pending_irq = restored_irq;
+        self.applied_irq = restored_irq;
         self.accepted_irq = None;
         self.reported_active_irq = None;
         Ok(())
@@ -1618,6 +1681,16 @@ pub struct FakeKvm {
     reg_writes: usize,
     #[cfg(test)]
     fail_reg_write_on: Option<usize>,
+    #[cfg(test)]
+    fail_mmio_completion: bool,
+    #[cfg(test)]
+    fail_run_after_entry: bool,
+    #[cfg(test)]
+    irq_line_writes: usize,
+    #[cfg(test)]
+    fail_irq_line_write_on: Option<usize>,
+    #[cfg(test)]
+    fail_vgic_read: Option<(u32, u64, bool)>,
     regs32: std::collections::BTreeMap<u64, u32>,
     regs128: std::collections::BTreeMap<u64, [u8; 16]>,
     mp_state: MpState,
@@ -1875,6 +1948,13 @@ impl Arm64Kvm for FakeKvm {
         } else {
             "set_irq_line_low"
         });
+        #[cfg(test)]
+        {
+            self.irq_line_writes += 1;
+            if self.fail_irq_line_write_on == Some(self.irq_line_writes) {
+                return Err(BackendError::Internal("fake KVM IRQ line write failed"));
+            }
+        }
         let block = id.0 / 32 * 32;
         let key = (
             KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
@@ -1889,6 +1969,10 @@ impl Arm64Kvm for FakeKvm {
     }
 
     fn get_vgic_attr(&self, group: u32, attr: u64, width64: bool) -> Result<u64> {
+        #[cfg(test)]
+        if self.fail_vgic_read == Some((group, attr, width64)) {
+            return Err(BackendError::Internal("fake KVM VGIC read failed"));
+        }
         Ok(self
             .vgic_attrs
             .get(&(group, attr, width64))
@@ -1909,6 +1993,11 @@ impl Arm64Kvm for FakeKvm {
 
     fn complete_mmio_exit(&mut self) -> Result<()> {
         self.calls.push("complete_mmio_exit");
+        #[cfg(test)]
+        if self.fail_mmio_completion {
+            self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
+            return Err(BackendError::Internal("injected MMIO completion failure"));
+        }
         Ok(())
     }
 
@@ -1944,6 +2033,14 @@ impl Arm64Kvm for FakeKvm {
                     levels,
                 );
             }
+        }
+        #[cfg(test)]
+        if self.fail_run_after_entry {
+            self.run_queue.pop_front();
+            self.regs.insert(core_reg(CORE_PC), 0xdead_beef);
+            return Err(BackendError::Internal(
+                "fake KVM run failed after guest entry",
+            ));
         }
         self.run_queue
             .pop_front()
@@ -2918,6 +3015,41 @@ mod tests {
     }
 
     #[test]
+    fn failed_policy_write_retires_partly_reconfigured_vcpu() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut policy = Arm64Policy::default();
+        policy.id_regs.regs.insert(0xc030, 0x20);
+        policy.id_regs.regs.insert(0xc038, 0x40);
+        backend.kvm.fail_reg_write_on =
+            Some(backend.kvm.reg_writes + 1 + OPTIONAL_FIRMWARE_BITMAPS.len() + 2);
+        assert!(matches!(
+            backend.set_policy(&policy),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
+        let first_id = KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG | 0xc030;
+        assert_eq!(backend.kvm.reg(first_id), Some(0x20));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.set_policy(&policy),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
     fn default_policy_denies_host_rng_time_and_vendor_firmware_services() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
@@ -2987,6 +3119,64 @@ mod tests {
 
         b.restore(&s).unwrap();
         assert_eq!(b.save().unwrap(), s);
+    }
+
+    #[test]
+    fn restored_asserted_ppi_can_be_lowered() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut source = Arm64KvmBackend::new(fake);
+        source.set_policy(&Arm64Policy::default()).unwrap();
+        source.set_pending_irq(Some(GicIntId(27))).unwrap();
+        let saved = source.save().unwrap();
+        assert_ne!(saved.gic.as_ref().unwrap().line_level[0] & (1 << 27), 0);
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut target = Arm64KvmBackend::new(fake);
+        target.set_policy(&Arm64Policy::default()).unwrap();
+        target.restore(&saved).unwrap();
+        assert_eq!(target.pending_irq, Some(GicIntId(27)));
+        assert_eq!(target.applied_irq, Some(GicIntId(27)));
+        target.set_pending_irq(None).unwrap();
+        assert_eq!(
+            target.save().unwrap().gic.unwrap().line_level[0] & (1 << 27),
+            0
+        );
+    }
+
+    #[test]
+    fn multiple_asserted_ppis_and_asserted_sgi_lines_refuse_snapshot_and_restore() {
+        for lines in [(1 << 27) | (1 << 28), 1 << 1] {
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            fake.set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO,
+                vgic_level_attr(0),
+                false,
+                u64::from(lines),
+            )
+            .unwrap();
+            let mut source = Arm64KvmBackend::new(fake);
+            source.set_policy(&Arm64Policy::default()).unwrap();
+            assert!(matches!(
+                source.save(),
+                Err(BackendError::Unsupported { .. })
+            ));
+
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            let mut target = Arm64KvmBackend::new(fake);
+            target.set_policy(&Arm64Policy::default()).unwrap();
+            let baseline = target.save().unwrap();
+            let mut malformed = baseline;
+            malformed.gic.as_mut().unwrap().line_level[0] = lines;
+            assert!(matches!(
+                target.restore(&malformed),
+                Err(BackendError::InvalidState)
+            ));
+            assert_eq!(target.save().unwrap(), baseline);
+        }
     }
 
     #[test]
@@ -3197,6 +3387,47 @@ mod tests {
         fake.set_one_reg(CNTV_CTL_EL0, 1).unwrap();
 
         assert!(matches!(save_vcpu(&fake), Err(BackendError::InvalidState)));
+    }
+
+    #[test]
+    fn physical_timer_control_and_compare_value_refuse_capture() {
+        for (control, compare) in [(1, 0), (4, 0), (0, 0x1234)] {
+            let mut fake = FakeKvm::new();
+            fake.vcpu_init().unwrap();
+            fake.set_one_reg(sysreg_id(3, 3, 14, 2, 1), control)
+                .unwrap();
+            fake.set_one_reg(sysreg_id(3, 3, 14, 2, 2), compare)
+                .unwrap();
+            assert!(matches!(
+                save_vcpu(&fake),
+                Err(BackendError::Unsupported { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn legacy_timer_record_and_reused_timer_target_refuse_or_reset_before_guest_entry() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+        let mut legacy = valid;
+        legacy.gic.as_mut().unwrap().version = 5;
+
+        let mut target = FakeKvm::new();
+        target.vcpu_init().unwrap();
+        assert!(matches!(
+            restore_vcpu(&mut target, &legacy),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(save_vcpu(&target).unwrap(), valid);
+
+        target.set_one_reg(sysreg_id(3, 3, 14, 2, 1), 1).unwrap();
+        target
+            .set_one_reg(sysreg_id(3, 3, 14, 2, 2), 0x1234)
+            .unwrap();
+        restore_vcpu(&mut target, &valid).unwrap();
+        assert_eq!(target.get_one_reg(sysreg_id(3, 3, 14, 2, 1)).unwrap(), 0);
+        assert_eq!(target.get_one_reg(sysreg_id(3, 3, 14, 2, 2)).unwrap(), 0);
     }
 
     #[test]
@@ -3541,6 +3772,52 @@ mod tests {
     }
 
     #[test]
+    fn invalid_restore_leaves_owed_mmio_store_uncompleted() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut invalid = backend.save().unwrap();
+        invalid.vtimer.masked = false;
+
+        backend.run().unwrap();
+        assert_eq!(completions(&backend), 0);
+        assert!(backend.mmio_owed);
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(completions(&backend), 0);
+        assert!(backend.mmio_owed);
+    }
+
+    #[test]
+    fn failed_mmio_settlement_retires_vcpu_after_partial_progress() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.run().unwrap();
+        backend.kvm.fail_mmio_completion = true;
+
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("injected MMIO completion failure"))
+        ));
+        assert_eq!(backend.kvm.reg(core_reg(CORE_PC)), Some(0xdead_beef));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
     fn only_mmio_writes_are_completed_during_exit_decode() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
@@ -3689,6 +3966,79 @@ mod tests {
     }
 
     #[test]
+    fn failed_post_run_irq_observation_refuses_lost_exit_capture() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_accept_irqs(true);
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_pending_irq(Some(GicIntId(27))).unwrap();
+        backend.kvm.fail_vgic_read =
+            Some((KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, GICR_ISACTIVER0, false));
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("fake KVM VGIC read failed"))
+        ));
+        assert!(backend.kvm.run_queue.is_empty());
+        assert_eq!(backend.exit_counts(), ExitCounts::default());
+        backend.kvm.fail_vgic_read = None;
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
+    fn failed_guest_entry_refuses_capture_after_unreported_guest_progress() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.push_run(mmio_store(0x0900_0000, u64::from(b'!'), 1));
+        fake.fail_run_after_entry = true;
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal(
+                "fake KVM run failed after guest entry"
+            ))
+        ));
+        assert!(backend.kvm.run_queue.is_empty());
+        assert_eq!(backend.kvm.reg(core_reg(CORE_PC)), Some(0xdead_beef));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
+    fn failed_irq_line_switch_refuses_capture_after_partial_transition() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_pending_irq(Some(GicIntId(27))).unwrap();
+        let (group, attr) = (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(0));
+        assert_ne!(
+            backend.kvm.get_vgic_attr(group, attr, false).unwrap() & (1 << 27),
+            0
+        );
+        backend.kvm.fail_irq_line_write_on = Some(backend.kvm.irq_line_writes + 2);
+        assert!(matches!(
+            backend.set_pending_irq(Some(GicIntId(28))),
+            Err(BackendError::Internal("fake KVM IRQ line write failed"))
+        ));
+        assert_eq!(backend.applied_irq, Some(GicIntId(27)));
+        assert_eq!(backend.pending_irq, Some(GicIntId(28)));
+        let level = backend.kvm.get_vgic_attr(group, attr, false).unwrap();
+        assert_eq!(level & ((1 << 27) | (1 << 28)), 0);
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
     fn stock_vgic_rejects_invalid_interrupts() {
         let mut fake = FakeKvm::new();
         fake.vcpu_init().unwrap();
@@ -3696,11 +4046,11 @@ mod tests {
         b.set_policy(&Arm64Policy::default()).unwrap();
 
         b.inject(crate::arch::arm64::Arm64Injection::Interrupt {
-            intid: GicIntId(30),
+            intid: GicIntId(29),
         })
         .unwrap();
         assert_ne!(
-            b.save().unwrap().gic.unwrap().line_level[0] & (1 << 30),
+            b.save().unwrap().gic.unwrap().line_level[0] & (1 << 29),
             0,
             "inject must route through the same level-setting contract"
         );
@@ -3713,11 +4063,112 @@ mod tests {
             b.set_pending_irq(Some(GicIntId(1))),
             Err(BackendError::InvalidState)
         ));
+        assert!(matches!(
+            b.set_pending_irq(Some(GicIntId(HARMONY_GIC_NR_IRQS))),
+            Err(BackendError::InvalidState)
+        ));
+        assert_eq!(b.pending_irq, Some(GicIntId(27)));
+        assert_eq!(b.applied_irq, Some(GicIntId(27)));
+        b.save().unwrap();
         assert_eq!(b.take_accepted_interrupt(), None);
 
         let caps = b.capabilities();
         assert_eq!(caps.name, "kvm-arm64-vgicv3");
         assert!(caps.arch.in_kernel_gic);
+    }
+
+    #[test]
+    fn timer_owned_ppis_refuse_external_injection_before_mutation() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let baseline = backend.save().unwrap();
+
+        for intid in [20, 30] {
+            assert!(matches!(
+                backend.set_pending_irq(Some(GicIntId(intid))),
+                Err(BackendError::InvalidState)
+            ));
+            assert!(matches!(
+                backend.inject(crate::arch::arm64::Arm64Injection::Interrupt {
+                    intid: GicIntId(intid)
+                }),
+                Err(BackendError::InvalidState)
+            ));
+            assert_eq!(backend.save().unwrap(), baseline);
+        }
+
+        backend.set_pending_irq(Some(GicIntId(29))).unwrap();
+        assert_eq!(backend.save().unwrap().gic.unwrap().line_level[0], 1 << 29);
+    }
+
+    #[test]
+    fn timer_owned_ppi_delivery_state_refuses_capture_and_restore() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let valid = save_vcpu(&fake).unwrap();
+        for intid in [20, 30] {
+            let bit = 1u32 << intid;
+            for field in [0, 1, 2] {
+                let mut malformed = valid;
+                let gic = malformed.gic.as_mut().unwrap();
+                let (group, attr) = match field {
+                    0 => {
+                        gic.pending[0] = bit;
+                        vgic_bitmap_attr(0, GIC_ISPENDR)
+                    }
+                    1 => {
+                        gic.active[0] = bit;
+                        vgic_bitmap_attr(0, GIC_ISACTIVER)
+                    }
+                    _ => {
+                        gic.line_level[0] = bit;
+                        (KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO, vgic_level_attr(0))
+                    }
+                };
+                assert!(matches!(
+                    validate_restore_vcpu_state(&malformed),
+                    Err(BackendError::InvalidState)
+                ));
+                fake.set_vgic_attr(group, attr, false, u64::from(bit))
+                    .unwrap();
+                assert!(matches!(
+                    save_vcpu(&fake),
+                    Err(BackendError::Unsupported { .. })
+                ));
+                fake.set_vgic_attr(group, attr, false, 0).unwrap();
+            }
+        }
+        assert_eq!(save_vcpu(&fake).unwrap(), valid);
+    }
+
+    #[test]
+    fn noncanonical_disr_refuses_capture_and_clean_restore_clears_it() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let valid = save_vcpu(&fake).unwrap();
+        fake.set_one_reg(DISR_EL1, 0x1234).unwrap();
+        assert!(matches!(
+            save_vcpu(&fake),
+            Err(BackendError::Unsupported { what })
+                if what == "save ARM KVM with noncanonical DISR_EL1"
+        ));
+        restore_vcpu(&mut fake, &valid).unwrap();
+        assert_eq!(fake.get_one_reg(DISR_EL1).unwrap(), 0);
+        let mut legacy = valid;
+        legacy.gic.as_mut().unwrap().version = 6;
+        assert!(matches!(
+            validate_restore_vcpu_state(&legacy),
+            Err(BackendError::InvalidState)
+        ));
+
+        let mut policy_fake = FakeKvm::new();
+        policy_fake.vcpu_init().unwrap();
+        policy_fake.set_one_reg(DISR_EL1, 0x1234).unwrap();
+        let mut backend = Arm64KvmBackend::new(policy_fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(backend.kvm.get_one_reg(DISR_EL1).unwrap(), 0);
     }
 
     #[test]

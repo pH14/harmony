@@ -66,6 +66,16 @@ fn require_kvm() {
     );
 }
 
+fn amd_compatible_host() -> bool {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .expect("read host CPU vendor")
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .any(|(key, value)| {
+            key.trim() == "vendor_id" && matches!(value.trim(), "AuthenticAMD" | "HygonGenuine")
+        })
+}
+
 fn compare_public_identity_portable_execution_state(
     left: &[u8],
     right: &[u8],
@@ -100,8 +110,7 @@ fn compare_public_identity_portable_execution_state(
         right_snapshot.vm_state,
         "right VM state must use the current complete encoding"
     );
-    assert_eq!(left_state.contract_hash, contract::contract_hash());
-    assert_eq!(right_state.contract_hash, contract::contract_hash());
+    assert_eq!(left_state.contract_hash, right_state.contract_hash);
     left_state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&left_state.xsave.0, left_state.xsave_restore_bv)
             .expect("validate left XSAVE restore provenance");
@@ -183,7 +192,10 @@ fn public_identity_vmm(active: bool, seed: u64, xcr0: u64) -> Vmm<KvmBackend> {
     vmm.prepare_snapshot().unwrap();
     assert_eq!(
         vmm.save_vm_state().unwrap().contract_hash,
-        contract::contract_hash()
+        super::dispatch::bind_host_core_class(
+            contract::contract_hash(),
+            vmm.backend().host_core_class()
+        )
     );
     vmm
 }
@@ -321,6 +333,73 @@ fn assert_public_identity_negative_controls() {
 }
 
 #[test]
+#[ignore = "requires Linux x86-64 KVM with accessible P-core and E-core pools"]
+fn public_snapshot_restore_rejects_a_different_host_core_class() {
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_setaffinity};
+
+    require_kvm();
+    let original = sched_getaffinity(None).unwrap();
+    let pool_cpu = |kind: &str| {
+        let text =
+            std::fs::read_to_string(format!("/sys/bus/event_source/devices/{kind}/cpus")).ok()?;
+        text.trim().split(',').find_map(|part| {
+            let (first, last) = part.split_once('-').unwrap_or((part, part));
+            let first = first.parse::<usize>().ok()?;
+            let last = last.parse::<usize>().ok()?;
+            (first..=last).find(|&cpu| cpu < CpuSet::MAX_CPU && original.is_set(cpu))
+        })
+    };
+    let (Some(p_cpu), Some(e_cpu)) = (pool_cpu("cpu_core"), pool_cpu("cpu_atom")) else {
+        panic!("hybrid qualification requires an accessible P-core/E-core pair");
+    };
+    struct ResetAffinity(CpuSet);
+    impl Drop for ResetAffinity {
+        fn drop(&mut self) {
+            sched_setaffinity(None, &self.0).unwrap();
+        }
+    }
+    let _reset = ResetAffinity(original);
+    let pin = |cpu: usize| {
+        let mut set = CpuSet::new();
+        set.set(cpu);
+        sched_setaffinity(None, &set).unwrap();
+    };
+
+    pin(p_cpu);
+    let mut source = public_identity_vmm(false, 0, 3);
+    let captured = source.save_vm_state().unwrap();
+    let encoded = captured.encode().unwrap();
+    let decoded = vm_state::VmState::decode(&encoded).unwrap();
+    let memory = source.guest_memory().to_vec();
+    assert_eq!(
+        source.backend().host_core_class(),
+        Some(vmm_backend::HostCoreClass::Performance)
+    );
+    drop(source);
+
+    let mut same_class = public_identity_vmm(false, 0, 3);
+    same_class.restore_snapshot(&memory, &decoded).unwrap();
+    drop(same_class);
+
+    pin(e_cpu);
+    let mut other_class = public_identity_vmm(false, 0, 3);
+    assert_eq!(
+        other_class.backend().host_core_class(),
+        Some(vmm_backend::HostCoreClass::Efficiency)
+    );
+    let before_hash = other_class.state_hash().unwrap();
+    let before_memory = other_class.guest_memory().to_vec();
+    assert!(matches!(
+        other_class.restore_snapshot(&memory, &decoded),
+        Err(crate::vmm::VmmError::Snapshot(
+            crate::snapshot::SnapshotError::ContractMismatch
+        ))
+    ));
+    assert_eq!(other_class.state_hash().unwrap(), before_hash);
+    assert_eq!(other_class.guest_memory(), before_memory);
+}
+
+#[test]
 #[ignore = "requires Linux x86-64 KVM"]
 fn public_snapshot_replay_recapture_preserves_xsave_identity() {
     use crate::control::{ControlServer, RestoreMode};
@@ -329,6 +408,7 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
         atomic::{AtomicUsize, Ordering},
     };
     require_kvm();
+    let amd_host = amd_compatible_host();
     assert_public_identity_negative_controls();
     let mut failures = Vec::new();
     for seed in [0, 2, 3] {
@@ -388,14 +468,16 @@ fn public_snapshot_replay_recapture_preserves_xsave_identity() {
                                 .unwrap(),
                             control_proto::Reply::Unit
                         );
+                        let fresh_restore = mode == RestoreMode::Memcpy
+                            || (mode == RestoreMode::InPlace && amd_host);
                         assert_eq!(
                             server.in_place_fallbacks(),
-                            0,
-                            "reuse must not silently fall back"
+                            u64::from(mode == RestoreMode::InPlace && amd_host),
+                            "AMD reuse must fall back to a fresh VM"
                         );
                         assert_eq!(
                             creations.load(Ordering::SeqCst) - restores_before,
-                            usize::from(mode == RestoreMode::Memcpy)
+                            usize::from(fresh_restore)
                         );
                         let (b, b_bytes, b_hash) = public_capture(&mut server);
                         let b_state = server.vmm_mut().unwrap().save_vm_state().unwrap();

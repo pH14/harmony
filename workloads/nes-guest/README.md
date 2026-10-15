@@ -49,6 +49,13 @@ input and launches:
 /opt/harmony/play-agent --nes-payload --rom /game.nes
 ```
 
+On arm64 the builder links BusyBox and the owned agent with separate code and
+data pages. Before packing, it scans the exact copied executables for LL/SC
+exclusive operations and host counter instructions. An externally supplied
+`PLAY_AGENT_BIN` passes the same scans; a rejected agent is never published in
+the OCI image. These are image admission checks, not runtime traps for later
+generated code or executable mappings.
+
 The platform runtime supplies `/init`, `/usr/lib/harmony/init`, and
 `/usr/lib/harmony/supervisor` in its own initramfs. Set `workload.options.guest_image` to the `nes.oci` directory in `harmony.toml`,
 with `runner.kind = "consonance"`.

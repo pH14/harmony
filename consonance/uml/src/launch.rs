@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
+#[cfg(test)]
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -34,6 +36,21 @@ const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
+
+#[cfg(test)]
+static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+static TEST_EVENT_CUT_FINISH_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_EXIT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+pub(crate) static TEST_EXIT_FINISH_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_HOLD_TERMINAL_CONSOLE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_TERMINAL_CONSOLE_PID: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+pub(crate) static TEST_TERMINAL_CONSOLE_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 fn fixed_host_layout(command: &mut Command) {
@@ -95,6 +112,8 @@ pub struct Launch {
     pub bridge: Option<Bridge>,
     #[cfg(target_os = "linux")]
     admitted_processor: Arc<OnceLock<usize>>,
+    #[cfg(target_os = "linux")]
+    admitted_host: Arc<OnceLock<HostIdentity>>,
     #[cfg(target_os = "linux")]
     expected_host: Option<HostIdentity>,
     #[cfg(target_os = "linux")]
@@ -243,6 +262,8 @@ impl Launch {
             #[cfg(target_os = "linux")]
             admitted_processor: Arc::new(OnceLock::new()),
             #[cfg(target_os = "linux")]
+            admitted_host: Arc::new(OnceLock::new()),
+            #[cfg(target_os = "linux")]
             expected_host: None,
             #[cfg(target_os = "linux")]
             shared_host: false,
@@ -269,6 +290,13 @@ impl Launch {
         #[cfg(target_os = "linux")]
         {
             let current = HostIdentity::for_processor(self.admitted_processor()?)?;
+            let admitted = self.admitted_host.get_or_init(|| current.clone());
+            if admitted != &current {
+                return Err(LaunchError::HostIdentity {
+                    expected: Box::new(admitted.clone()),
+                    current: Box::new(current),
+                });
+            }
             if let Some(expected) = &self.expected_host
                 && expected != &current
             {
@@ -310,6 +338,13 @@ impl Launch {
                 requested: host.processor,
             });
         }
+        let admitted_host = self.admitted_host.get_or_init(|| host.clone());
+        if admitted_host != &host {
+            return Err(LaunchError::HostIdentity {
+                expected: Box::new(admitted_host.clone()),
+                current: Box::new(host),
+            });
+        }
         self.expected_host = Some(host);
         self.shared_host = true;
         Ok(())
@@ -318,6 +353,7 @@ impl Launch {
     #[cfg(target_os = "linux")]
     pub(crate) fn with_recorded_host(mut self, host: HostIdentity) -> Self {
         let _ = self.admitted_processor.set(host.processor);
+        let _ = self.admitted_host.set(host.clone());
         self.expected_host = Some(host);
         self.shared_host = true;
         self
@@ -491,6 +527,11 @@ impl Guest {
         #[cfg(target_os = "linux")]
         {
             let host = launch.host_identity()?;
+            command.env("HARMONY_UML_CPUINFO", &host.boot_cpuinfo);
+            command.env("HARMONY_UML_HWCAP", host.auxv.hwcap.to_string());
+            command.env("HARMONY_UML_HWCAP2", host.auxv.hwcap2.to_string());
+            command.env("HARMONY_UML_MINSIGSTKSZ", host.auxv.minsigstksz.to_string());
+            command.env("HARMONY_UML_PLATFORM", &host.auxv.platform);
             enforce_host_cpu(&mut command, host.processor, launch.shared_host)?;
         }
         let child = command.spawn()?;
@@ -563,6 +604,13 @@ impl Guest {
                             }
                         }
                         if console_ready {
+                            #[cfg(test)]
+                            if TEST_TERMINAL_CONSOLE_PID.load(Ordering::Acquire) == pid {
+                                TEST_TERMINAL_CONSOLE_READY.store(true, Ordering::Release);
+                                while TEST_HOLD_TERMINAL_CONSOLE.load(Ordering::Acquire) {
+                                    std::thread::yield_now();
+                                }
+                            }
                             match read_console(
                                 &mut reader,
                                 &mut block,
@@ -684,6 +732,18 @@ impl Guest {
         kill_group(self.pid);
         self.child.wait()?;
         let leftovers = sweep(self.pid);
+        #[cfg(test)]
+        if reason == ExitReason::EventCut
+            && TEST_EVENT_CUT_FINISH_PID.load(Ordering::Acquire) == self.pid
+        {
+            TEST_EVENT_CUT_FINISH_READY.store(true, Ordering::Release);
+        }
+        #[cfg(test)]
+        if reason == ExitReason::Exited(0)
+            && TEST_EXIT_FINISH_PID.load(Ordering::Acquire) == self.pid
+        {
+            TEST_EXIT_FINISH_READY.store(true, Ordering::Release);
+        }
         if leftovers.is_empty()
             && let Some(reader) = self.reader.take()
         {
@@ -703,6 +763,17 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
+        let reason = if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
+            ExitReason::ConsoleLimit
+        } else if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
+            match self.bridge_state.load(Ordering::Acquire) {
+                bridge::CUT => ExitReason::EventCut,
+                bridge::FAILED => ExitReason::BridgeFailure,
+                _ => reason,
+            }
+        } else {
+            reason
+        };
         let work_removed = match self.work.take() {
             Some(work) => {
                 let path = work.path().to_path_buf();
@@ -939,6 +1010,36 @@ mod tests {
             assert!(libc::CPU_ISSET(2, &mask));
         }
         assert!(singleton_cpu_mask(libc::CPU_SETSIZE as usize).is_none());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn guest_start_passes_the_admitted_host_imports() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        let host = launch.host_identity().unwrap();
+        let expected = format!(
+            "{}|{}|{}|{}|{}",
+            host.boot_cpuinfo,
+            host.auxv.hwcap,
+            host.auxv.hwcap2,
+            host.auxv.minsigstksz,
+            host.auxv.platform
+        );
+        launch.console_tail_bytes = expected.len() + 1;
+        launch.console_limit_bytes = (expected.len() + 1) as u64;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("sh");
+        command.arg("-c").arg(
+            "printf '%s|%s|%s|%s|%s' \"$HARMONY_UML_CPUINFO\" \"$HARMONY_UML_HWCAP\" \"$HARMONY_UML_HWCAP2\" \"$HARMONY_UML_MINSIGSTKSZ\" \"$HARMONY_UML_PLATFORM\"",
+        );
+        let exit = Guest::start(command, work, &launch)
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert_eq!(exit.reason, ExitReason::Exited(0));
+        assert_eq!(exit.console, expected.as_bytes());
     }
 
     #[test]
@@ -1293,7 +1394,7 @@ mod tests {
         let profile = VerifiedProfile::for_test(
             directory.path().to_path_buf(),
             Profile {
-                schema: 2,
+                schema: 4,
                 architecture: std::env::consts::ARCH.to_owned(),
                 kernel_version: String::new(),
                 userspace: "seccomp".to_owned(),
@@ -1452,6 +1553,153 @@ mod tests {
                 .any(|window| window == b"Kernel panic")
         );
         assert!(exit.leftovers.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn completed_guest_over_console_limit_reports_limit_after_reader_joins() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.console_limit_bytes = 8;
+        launch.console_tail_bytes = 64;
+        let release_path = parent.path().join("release");
+        let script = format!(
+            "while [ ! -e {} ]; do sleep 0.001; done; printf abcdefghijklmnop; exit 0",
+            release_path.display()
+        );
+        let mut guest = shell(&launch, &script);
+        let console = Arc::clone(&guest.console);
+        let held = console.lock().unwrap();
+        std::fs::write(release_path, []).unwrap();
+        let deadline = now() + Duration::from_secs(5);
+        let reason = loop {
+            if let Some(reason) = guest.stopped().unwrap() {
+                break reason;
+            }
+            assert!(now() < deadline, "guest did not exit");
+            std::thread::yield_now();
+        };
+        assert_eq!(reason, ExitReason::Exited(0));
+        drop(held);
+        let exit = guest.finish(reason).unwrap();
+        assert_eq!(exit.console_bytes, 16);
+        assert_eq!(exit.reason, ExitReason::ConsoleLimit);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn completed_console_overflow_precedes_event_cut() {
+        struct ResetProbe;
+        impl Drop for ResetProbe {
+            fn drop(&mut self) {
+                TEST_EVENT_CUT_FINISH_PID.store(0, Ordering::Release);
+            }
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.console_limit_bytes = 8;
+        launch.console_tail_bytes = 64;
+        launch.bridge = Some(Bridge {
+            seed: 7,
+            cut: Some(1),
+        });
+        let mut request = [0_u8; hypercall_proto::MAX_FRAME];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            7,
+            b"\0\0\0\0{}",
+            &mut request,
+        )
+        .unwrap();
+        let mut frame = 1_u64.to_le_bytes().to_vec();
+        frame.extend_from_slice(&request[..length]);
+        let packet = parent.path().join("event-packet");
+        std::fs::write(&packet, frame).unwrap();
+        let release = parent.path().join("release");
+        let script = format!(
+            "while [ ! -e {} ]; do sleep 0.001; done; printf abcdefghijklmnop; cat {} >&3; sleep 30",
+            release.display(),
+            packet.display()
+        );
+        let guest = shell(&launch, &script);
+        let console = Arc::clone(&guest.console);
+        let held = console.lock().unwrap();
+        TEST_EVENT_CUT_FINISH_READY.store(false, Ordering::Release);
+        TEST_EVENT_CUT_FINISH_PID.store(guest.pid, Ordering::Release);
+        let _reset = ResetProbe;
+        std::fs::write(release, []).unwrap();
+        let waiter = std::thread::spawn(move || guest.wait().unwrap());
+        let deadline = now() + Duration::from_secs(5);
+        while !TEST_EVENT_CUT_FINISH_READY.load(Ordering::Acquire) {
+            assert!(now() < deadline, "event cut did not reach cleanup");
+            std::thread::yield_now();
+        }
+        drop(held);
+        let exit = waiter.join().unwrap();
+        assert_eq!(exit.console_bytes, 16);
+        assert_eq!(exit.console, b"abcdefghijklmnop");
+        assert_eq!(exit.events.len(), 1);
+        assert!(exit.leftovers.is_empty());
+        assert!(exit.bridge_failure.is_none());
+        assert_eq!(exit.reason, ExitReason::ConsoleLimit);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn completed_event_cut_overrides_process_exit_after_bridge_joins() {
+        struct ReleaseCut;
+        impl Drop for ReleaseCut {
+            fn drop(&mut self) {
+                bridge::TEST_HOLD_CUT.store(false, Ordering::Release);
+            }
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.bridge = Some(Bridge {
+            seed: bridge::TEST_DELAY_CUT_SEED,
+            cut: Some(1),
+        });
+        let mut request = [0_u8; hypercall_proto::MAX_FRAME];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            7,
+            b"\0\0\0\0{}",
+            &mut request,
+        )
+        .unwrap();
+        let mut frame = 1_u64.to_le_bytes().to_vec();
+        frame.extend_from_slice(&request[..length]);
+        let packet = parent.path().join("event-packet");
+        std::fs::write(&packet, frame).unwrap();
+        bridge::TEST_CUT_READY.store(false, Ordering::Release);
+        bridge::TEST_HOLD_CUT.store(true, Ordering::Release);
+        let _release = ReleaseCut;
+        let mut guest = shell(&launch, &format!("cat {} >&3", packet.display()));
+        let deadline = now() + Duration::from_secs(5);
+        let reason = loop {
+            if bridge::TEST_CUT_READY.load(Ordering::Acquire)
+                && let Some(reason) = guest.stopped().unwrap()
+            {
+                break reason;
+            }
+            assert!(now() < deadline, "guest did not exit after cut event");
+            std::thread::yield_now();
+        };
+        assert_eq!(reason, ExitReason::Exited(0));
+        bridge::TEST_HOLD_CUT.store(false, Ordering::Release);
+        let exit = guest.finish(reason).unwrap();
+        assert_eq!(exit.events.len(), 1);
+        assert_eq!(exit.events[0].moment, 1);
+        assert_eq!(exit.events[0].id, 0);
+        assert_eq!(&*exit.events[0].data, b"{}");
+        assert_eq!(exit.reason, ExitReason::EventCut);
     }
 
     #[test]

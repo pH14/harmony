@@ -44,6 +44,9 @@ virtual clock event, fixed counter and cache topology, interrupt handling,
 canonical state, counter trap switch, and idle register. Its IRQ-unmask fence
 exits only while the clock page's `irq_pending` word says a due deadline waits
 for the unmask.
+The series moves alternative and unwind metadata after `__initdata_begin`, so
+the pinned kernel maps those tables NX rather than leaving data within its
+executable init-text range. The artifact scan uses the same linker boundaries.
 With the Harmony clock, the kernel's virtual timer shutdown uses only the MMIO
 clockevent, and the physical timer paths stop if reached. This removes all
 architected timer control instructions from the shipped arm64 image so the
@@ -55,7 +58,9 @@ time per system call and clock read, carries `/dev/harmony` to the host over
 an inherited socket, seeds the random pool from the boot command line,
 emulates the x86 time-stamp counter, keeps host child-process signals out of
 the guest, fixes the guest's physical memory layout, and lets the host capture
-and restore the kernel while it waits for a bridge answer.
+and restore the kernel while it waits for a bridge answer. Its final patch
+refuses a child whose initial auxiliary vector differs from the admitted host
+identity.
 
 The um-arm64 series applies after the common series to the pinned arm64 UML
 RFC tree. It carries the um series with counter emulation for the arm64
@@ -63,7 +68,8 @@ counter and its frequency register (the stub then waits without the RFC's
 counter-bounded spin), two RFC build fixes (host headers that compile against current
 glibc and a stub without a frame pointer), zeroed floating-point state for
 every new guest program, a copy of the host platform name that outlives the
-host stack, and synchronous reaping of killed stubs.
+host stack, synchronous reaping of killed stubs, and the same early
+auxiliary-vector check on arm64.
 
 After a clock or trap patch changes, run the matching instruction reachability
 scan. After any series change, run `test-patch-series.sh` and the platform

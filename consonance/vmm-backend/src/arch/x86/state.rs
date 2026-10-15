@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::HostCoreClass;
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
 
@@ -17,6 +18,7 @@ pub struct VcpuState {
     pub xsave: Vec<u8>,
     pub xsave_restore_bv: Option<u64>,
     pub nested_state: Option<Vec<u8>>,
+    pub host_core_class: Option<HostCoreClass>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]

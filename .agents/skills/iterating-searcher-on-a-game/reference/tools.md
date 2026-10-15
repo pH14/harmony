@@ -29,19 +29,26 @@ ladder exist for Metroid only today; another game adds them in step 1.
   `campaign/checkpoints/` with one shared `snapshots.store`, so keep the whole
   directory. The checkpoint that opens a hard part is the first
   `-milestone.ckpt` at or after the first try of its opening milestone.
-- A case with `resume` continues a checkpoint. Budgets count from power-on, so
-  set `executions` to the checkpoint's execution count plus the slice length.
-  Legs are tries after the resume: a milestone's first try, which counts from
-  power-on, minus the checkpoint's execution count in its file name.
+- A case with `resume` continues a checkpoint only under the exact loaded
+  executable that wrote it. Budgets count from power-on, so set `executions`
+  to the checkpoint's execution count plus the slice length. Legs are tries
+  after the resume: a milestone's first try, which counts from power-on, minus
+  the checkpoint's execution count in its file name.
 - A resume with the original seed repeats the original run, apart from
   timing-dependent fields. Another seed keeps the archive and draws new
   choices.
-- A resume may change the searcher's policies: mixture, retention, selector,
-  continuation, objective stop, draw tables and preference. Give a
-  changed policy a new identifier, or the resume records no change.
-- A resume refuses a changed workload identity, any other workload policy
-  (such as the key), worker count, admission window, limits or checkpoint
-  format. Test such a change with rooted segments and a new power-on run.
+- The `nes-eval` request can change mixture within the same executable. Its
+  retention and objective-stop settings are fixed, while selector,
+  continuation, draw-table and preference policies come from compiled code.
+  A changed compiled policy needs another executable and cannot resume the old
+  checkpoint. The generic campaign API may change mixture, retention and
+  objective-stop settings at runtime; accepted changes are recorded.
+- A resume may use a different worker count while retaining the same admission
+  window. The runner multiplies per-worker `window` by `workers`, so holding
+  its `window` request constant while changing workers changes the admission
+  window and is refused. Resume also refuses a changed workload identity, any
+  other workload policy (such as the key), limits or checkpoint format.
+  Compare changed builds with paired rooted segments and fresh power-on runs.
 - Resumed runs use witness verification.
 
 ## Rooted segments

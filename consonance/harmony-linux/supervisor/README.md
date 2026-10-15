@@ -49,7 +49,9 @@ and again after the setup command, because setup may mount a fresh `/run`, so a
 process that follows the Antithesis fallback SDK writes each JSON record
 straight to the host. The driver attributes each record to its writer's process
 id in the writer's PID namespace, which the supervisor shares with the children
-it starts.
+it starts. Before launching nodes, the supervisor opens its own assertion sink
+through that link and retains the descriptor. A child that later replaces the
+link or its containing mount cannot divert the built-in node-exit assertion.
 Child stdout is discarded; assertions travel only as SDK records.
 
 The supervisor declares one built-in check, the Always assertion
@@ -57,9 +59,16 @@ The supervisor declares one built-in check, the Always assertion
 while no kill, restart or event kill targets it, by a signal its own execution
 raises (`SIGSEGV`, `SIGBUS`, `SIGABRT`, `SIGILL`, `SIGFPE`, `SIGTRAP` or
 `SIGSYS`) or a nonzero exit status, violates it; the record's details name the
-node and the exit. A death while any node start still waits for the ready probe
-does not violate it, because a node that fails to come back after a kill or
-restart is part of that fault.
+node and the exit. A death while a node start waits for the ready probe is
+exempt only while recovery from an injected kill, restart, or event kill is
+still pending. A later natural restart keeps that exemption until the current
+readiness probe passes. A natural restart without pending fault recovery still
+runs the ready probe and queues hooks, but a later independent crash remains a
+violation.
+The supervisor also checks the final child status after signaling a scheduled
+kill or replacing a child. Its injected kills use `SIGKILL`, so a fatal signal
+or nonzero exit status proves the child ended independently before the kill
+took effect, even when that exit is reaped after the kill decision.
 
 After initial readiness, an optional `workload` command starts once and remains
 independent of node recovery. An optional `check` command runs serially and
@@ -77,7 +86,9 @@ invalidate cached results without importing process-fault semantics.
 Instrumented nodes receive a pair of inherited event descriptors. The generic
 control and report frames live in `process-proto`; the supervisor acknowledges
 runtime readiness, orders arms and disarms, and only credits an event kill when
-its report matches the acknowledged rarity and window-start identity. While a
+its report matches the acknowledged rarity and window-start identity. A report
+that arrives before its arm acknowledgement has been fully read stays buffered
+until that acknowledgement is available. While a
 park is in effect, each tick's status reply gives its fire count and whether a
 thread is held. The runtime acknowledges a disarm at once, and the park stays
 in effect until a status reply shows it neither armed nor holding a thread.

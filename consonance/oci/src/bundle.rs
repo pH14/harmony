@@ -2,11 +2,12 @@
 
 use super::cpio::{CpioError, Writer};
 use super::exact;
-use super::image::{ImageError, Ownership, StagedImage};
+use super::image::{ImageError, Ownership, StagedImage, with_host_read_access};
 use execution_proto::{ExecutionSpec, SpecError, VERSION};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::path::{Component, Path, PathBuf};
 
 pub const CONTROL_ROOT: &str = "/harmony-oci";
@@ -43,6 +44,8 @@ pub enum BundleError {
     ExternalInputUtf8,
     #[error("mount destination {path:?} crosses an image symlink")]
     MountSymlink { path: String },
+    #[error("prepared rootfs archive is malformed: {0}")]
+    RootfsArchive(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
@@ -102,7 +105,50 @@ pub struct PreparedExecution {
     pub identity: [u8; 32],
 }
 
+pub struct ArchivedRootfs {
+    bytes: Vec<u8>,
+    entries: Vec<ArchivedRootfsIndex>,
+}
+
+struct ArchivedRootfsIndex {
+    path: String,
+    mode: u32,
+    data: Range<usize>,
+}
+
+pub struct ArchivedRootfsEntry<'a> {
+    pub path: &'a str,
+    pub mode: u32,
+    pub data: &'a [u8],
+}
+
+impl ArchivedRootfs {
+    pub fn entries(&self) -> impl Iterator<Item = ArchivedRootfsEntry<'_>> {
+        self.entries.iter().map(|entry| ArchivedRootfsEntry {
+            path: &entry.path,
+            mode: entry.mode,
+            data: &self.bytes[entry.data.clone()],
+        })
+    }
+}
+
 impl PreparedExecution {
+    pub fn archived_rootfs(&self) -> Result<ArchivedRootfs, BundleError> {
+        let segment = &self.rootfs_segment;
+        if segment.len() < 18 || segment[..10] != [0x1f, 0x8b, 8, 0, 0, 0, 0, 0, 4, 255] {
+            return Err(BundleError::RootfsArchive("gzip header".into()));
+        }
+        let bytes = miniz_oxide::inflate::decompress_to_vec(&segment[10..segment.len() - 8])
+            .map_err(|error| BundleError::RootfsArchive(format!("deflate: {error:?}")))?;
+        let trailer = &segment[segment.len() - 8..];
+        if trailer[..4] != crc32fast::hash(&bytes).to_le_bytes()
+            || trailer[4..] != (bytes.len() as u32).to_le_bytes()
+        {
+            return Err(BundleError::RootfsArchive("gzip checksum".into()));
+        }
+        parse_rootfs_archive(bytes)
+    }
+
     #[must_use]
     pub fn initramfs(&self, base: &[u8]) -> Vec<u8> {
         let mut image = Vec::with_capacity(
@@ -125,6 +171,109 @@ impl PreparedExecution {
     }
 }
 
+fn parse_rootfs_archive(bytes: Vec<u8>) -> Result<ArchivedRootfs, BundleError> {
+    let malformed = |reason: &str| BundleError::RootfsArchive(reason.into());
+    let mut cursor = 0usize;
+    let mut entries = Vec::new();
+    let mut names = BTreeSet::new();
+    let mut root_entries = 0;
+    loop {
+        let header = bytes
+            .get(cursor..cursor.saturating_add(110))
+            .ok_or_else(|| malformed("truncated cpio header"))?;
+        if &header[..6] != b"070701" {
+            return Err(malformed("cpio header magic"));
+        }
+        let field = |index: usize| -> Result<u32, BundleError> {
+            let start = 6 + index * 8;
+            let text = std::str::from_utf8(&header[start..start + 8])
+                .map_err(|_| malformed("cpio header field"))?;
+            u32::from_str_radix(text, 16).map_err(|_| malformed("cpio header field"))
+        };
+        let mode = field(1)?;
+        let filesize = usize::try_from(field(6)?).map_err(|_| malformed("cpio file size"))?;
+        let namesize = usize::try_from(field(11)?).map_err(|_| malformed("cpio name size"))?;
+        if namesize == 0 {
+            return Err(malformed("empty cpio name"));
+        }
+        let name_start = cursor
+            .checked_add(110)
+            .ok_or_else(|| malformed("cpio offset overflow"))?;
+        let name_end = name_start
+            .checked_add(namesize)
+            .ok_or_else(|| malformed("cpio offset overflow"))?;
+        let name = bytes
+            .get(name_start..name_end)
+            .ok_or_else(|| malformed("truncated cpio name"))?;
+        if name.last() != Some(&0) {
+            return Err(malformed("unterminated cpio name"));
+        }
+        let name = std::str::from_utf8(&name[..name.len() - 1])
+            .map_err(|_| malformed("non-UTF-8 cpio name"))?;
+        let data_start = name_end
+            .checked_add(3)
+            .ok_or_else(|| malformed("cpio offset overflow"))?
+            & !3;
+        let data_end = data_start
+            .checked_add(filesize)
+            .ok_or_else(|| malformed("cpio offset overflow"))?;
+        bytes
+            .get(data_start..data_end)
+            .ok_or_else(|| malformed("truncated cpio data"))?;
+        cursor = data_end
+            .checked_add(3)
+            .ok_or_else(|| malformed("cpio offset overflow"))?
+            & !3;
+        if cursor > bytes.len() {
+            return Err(malformed("truncated cpio padding"));
+        }
+        if name == "TRAILER!!!" {
+            if filesize != 0 || cursor != bytes.len() || root_entries != 2 {
+                return Err(malformed("cpio trailer"));
+            }
+            break;
+        }
+        if name == "harmony-oci" || name == "harmony-oci/rootfs" {
+            if mode & 0o170000 != 0o040000
+                || filesize != 0
+                || (root_entries == 0 && name != "harmony-oci")
+                || (root_entries == 1 && name != "harmony-oci/rootfs")
+                || root_entries >= 2
+            {
+                return Err(malformed("rootfs directory headers"));
+            }
+            root_entries += 1;
+            continue;
+        }
+        if root_entries != 2 {
+            return Err(malformed("missing rootfs directory headers"));
+        }
+        let path = name
+            .strip_prefix("harmony-oci/rootfs/")
+            .ok_or_else(|| malformed("entry outside rootfs"))?;
+        if path.is_empty()
+            || path
+                .split('/')
+                .any(|component| component.is_empty() || component == "." || component == "..")
+            || path.contains('\0')
+            || Path::new(path)
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+            || !matches!(mode & 0o170000, 0o040000 | 0o100000 | 0o120000)
+            || (mode & 0o170000 == 0o040000 && filesize != 0)
+            || !names.insert(path.to_owned())
+        {
+            return Err(malformed("invalid or duplicate rootfs path"));
+        }
+        entries.push(ArchivedRootfsIndex {
+            path: path.to_owned(),
+            mode,
+            data: data_start..data_end,
+        });
+    }
+    Ok(ArchivedRootfs { bytes, entries })
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ValidatedExternalInput {
     destination: String,
@@ -138,6 +287,17 @@ pub fn prepare(
 ) -> Result<PreparedExecution, BundleError> {
     image.config.validate()?;
     let external_inputs = validate_external_inputs(&request.external_inputs)?;
+    with_host_read_access(&image.rootfs, |original_modes| {
+        prepare_readable(image, request, &external_inputs, original_modes)
+    })
+}
+
+fn prepare_readable(
+    image: &StagedImage,
+    request: &LaunchRequest,
+    external_inputs: &[ValidatedExternalInput],
+    original_modes: &BTreeMap<PathBuf, u32>,
+) -> Result<PreparedExecution, BundleError> {
     for destination in [
         "/proc",
         "/dev",
@@ -154,13 +314,14 @@ pub fn prepare(
     ] {
         validate_mount_path(&image.rootfs, destination)?;
     }
-    for input in &external_inputs {
+    for input in external_inputs {
         validate_mount_path(&image.rootfs, &input.destination)?;
     }
     if request.kvm {
         validate_mount_path(&image.rootfs, KVM_DEVICE)?;
     }
-    let credentials = image.config.resolve_process_credentials(&image.rootfs)?;
+    let credentials = super::credentials::resolve(image.config.user.as_deref(), &image.rootfs)
+        .map_err(ImageError::from)?;
     let execution = ExecutionSpec {
         version: VERSION,
         argv: argv(&image.config, &request.command),
@@ -172,9 +333,10 @@ pub fn prepare(
         bundle: request.bundle.clone(),
     };
     execution.validate()?;
-    let rootfs_segment = build_rootfs_segment(&image.rootfs, &image.owners)?;
+    let rootfs_segment =
+        build_rootfs_segment_readable(&image.rootfs, &image.owners, original_modes)?;
     let control_segment =
-        build_control_segment_validated(&execution, &external_inputs, request.kvm)?;
+        build_control_segment_validated(&execution, external_inputs, request.kvm)?;
     let identity = execution_identity(&rootfs_segment, &control_segment, &execution)?;
     Ok(PreparedExecution {
         rootfs_segment,
@@ -210,9 +372,20 @@ fn validate_mount_path(rootfs: &Path, destination: &str) -> Result<(), BundleErr
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn build_rootfs_segment(
     rootfs: &Path,
     owners: &Ownership,
+) -> Result<Vec<u8>, BundleError> {
+    with_host_read_access(rootfs, |original_modes| {
+        build_rootfs_segment_readable(rootfs, owners, original_modes)
+    })
+}
+
+fn build_rootfs_segment_readable(
+    rootfs: &Path,
+    owners: &Ownership,
+    original_modes: &BTreeMap<PathBuf, u32>,
 ) -> Result<Vec<u8>, BundleError> {
     let mut writer = Writer::new();
     writer.dir("harmony-oci", 0o755);
@@ -221,7 +394,13 @@ pub(crate) fn build_rootfs_segment(
         rootfs,
         "harmony-oci/rootfs",
         &|path| owners.owner_of(path),
-        &|path, staged_mode| owners.mode_of(path, staged_mode),
+        &|path, staged_mode| {
+            let original = original_modes
+                .get(&rootfs.join(path))
+                .copied()
+                .unwrap_or(staged_mode);
+            owners.mode_of(path, original)
+        },
     )?;
     Ok(gzip(&writer.finish()))
 }
@@ -656,6 +835,28 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         output.stdout
+    }
+
+    #[test]
+    fn archived_rootfs_visits_the_packed_bytes_and_rejects_malformed_segments() {
+        let staged = image();
+        std::fs::write(staged.rootfs.join("proof"), b"packed only").unwrap();
+        let prepared = prepare(&staged, &LaunchRequest::default()).unwrap();
+        let archive = prepared.archived_rootfs().unwrap();
+        assert!(archive.entries().any(|entry| {
+            entry.path == "proof"
+                && entry.mode & 0o170000 == 0o100000
+                && entry.data == b"packed only"
+        }));
+
+        let mut changed = prepared.clone();
+        changed.rootfs_segment.pop();
+        assert!(changed.archived_rootfs().is_err());
+
+        let mut bytes = archive.bytes;
+        bytes[0] = b'x';
+        changed.rootfs_segment = gzip(&bytes);
+        assert!(changed.archived_rootfs().is_err());
     }
 
     fn cpio_entries(segment: &[u8]) -> Vec<(String, u32)> {

@@ -7,17 +7,41 @@ supply service handlers and interpret their request and response bytes.
 
 `channel::RecordedEnv` records overrides by virtual moment, service namespace,
 and request identity. A handler can answer immediately or return `External` to
-stop the guest for a host-selected answer. Handler changes commit only after a
-valid answer; an external request preserves the handler state. Capturing and
-restoring handler state is fallible, so failed capture cannot produce a usable
-snapshot or state hash. A handler's identity and configuration are immutable
-contract selectors. An answered request that changes either selector is
-rejected before its candidate state commits, leaving the live handler usable.
+stop the guest for a host-selected answer. The channel commits a candidate
+handler only after a valid answer. Before and after each handler response, it
+captures the live handler's identity, configuration, and state. If a shallow
+clone changes that live state during an answer, external request, or error,
+the channel and its transaction clones become poisoned. They reject later
+requests and cannot produce a snapshot or state hash. Handler implementations
+must expose all mutable replay state through `snapshot_state` and keep it from
+changing outside the channel. Capturing and restoring handler state is fallible, so failed
+capture cannot produce a usable snapshot or state hash. A handler's identity
+and configuration are immutable contract selectors. An answered request that
+changes either selector only in the candidate is rejected before that
+candidate commits, leaving the live handler usable.
+Reseeding follows the same candidate-commit rule: a shallow clone that changes
+the original handler poisons every channel clone. Rejecting a separate candidate
+leaves the entropy stream and live handler unchanged.
+Integrations that probe a handler outside the channel can call
+`verify_handler_unchanged` with a prior handler snapshot to poison the channel
+if that probe changed its live handler.
+`handler_fingerprint` and `verify_handler_fingerprint_unchanged` make the same
+check against the handler alone without the recorded environment's snapshot
+size limits. This lets a caller retire or replay an oversized live
+recording while still detecting a shared handler changed during preparation.
 Restoring a captured handler checks both selectors on the factory result and
 again after loading its state. It also checks that a new capture exactly
 reproduces the recorded state bytes. Restoring a recorded environment makes the
-same checks on a cloned handler before replacing the live one, so a rejected
-restore leaves the environment untouched.
+same checks on a cloned handler before replacing the live one. If that clone
+changes the live handler while restoring, the environment is poisoned instead
+of accepting the candidate.
+
+The first use of a recorded answer binds its request identity to the request
+payload digest. Reusing that identity at the same virtual moment with different
+payload bytes fails the SDK request instead of silently reusing an answer meant
+for another question. The binding is part of the versioned channel snapshot
+and input reproducer, so restore, branch, and portable replay enforce the same
+check.
 
 `RecordedState::encode_into` appends the same canonical snapshot encoding as
 `encode` to an existing byte vector, preserving any prefix. Framing owners can
@@ -47,6 +71,14 @@ per-effect buffers while preserving field order, tags, and length framing.
 `MAX_CHANNEL_BYTES`. `InputSpec::decode_snapshot` runs the same strict parser
 for a caller-bounded captured section, so a long input history may contain more
 than one transport message while every nested value remains bounded and ordered.
+`InputSpec::decode_reproducer` and `try_encode_reproducer` admit a complete
+reproducer up to seven MiB for the control plane. The one MiB headroom under
+the SDK snapshot's eight MiB limit covers the maximum service handler state
+when a reproducer restores the full payload tape at its branch origin.
+Branch admission, scheduled effects, and host answers reserve the digest bytes
+for every answer that has not yet been used, so first use cannot strand an
+accepted branch beyond the export or snapshot limits.
+Individual channel values remain capped at `MAX_CHANNEL_BYTES`.
 
 `sdk` holds the SDK request rules every backend shares: the event classes,
 service questions and answers, payload pulls, and coverage requests and

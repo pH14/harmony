@@ -43,7 +43,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "mm2-quicknes-campaign-stream-v3";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "mm2-quicknes-snapshot-checkpoint-v3";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -83,7 +83,7 @@ fn chords_sha256(chords: &[ButtonChord]) -> String {
 
 fn emulator_identity(genesis: &str, core_sha256: &str) -> String {
     format!(
-        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=mm2-semantic-postcard-1.1.3-sha256-hex-v2;sha256={core_sha256}",
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=mm2-full-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
         machine::quicknes::QUICKNES_REVISION,
         machine::quicknes::QUICKNES_BUILD,
         machine::quicknes::QUICKNES_OPTIONS,
@@ -281,45 +281,8 @@ pub type Mm2CampaignProgressRecord = CampaignProgressRecord<Mm2ArchiveKey>;
 type Mm2CampaignActionResult = CampaignActionResult<Mm2Game>;
 type Mm2CampaignJobResult = CampaignJobResult<Mm2Game>;
 
-#[derive(Serialize)]
-struct Mm2ResultCandidate<'a> {
-    key: &'a Mm2ArchiveKey,
-    viable: bool,
-}
-
-#[derive(Serialize)]
-struct Mm2ResultAction<'a> {
-    action: ButtonChord,
-    observations: &'a [Mm2Observations],
-    milestones: Mm2Milestones,
-    outcome: Outcome,
-    candidate: Option<Mm2ResultCandidate<'a>>,
-}
-
-#[derive(Serialize)]
-struct Mm2Result<'a> {
-    actions: Vec<Mm2ResultAction<'a>>,
-}
-
 fn mm2_result_sha256(result: &Mm2CampaignJobResult) -> Result<String, Box<dyn Error>> {
-    let actions = result
-        .actions
-        .iter()
-        .map(|action| Mm2ResultAction {
-            action: action.action,
-            observations: &action.observations,
-            milestones: action.milestones,
-            outcome: action.outcome,
-            candidate: action
-                .candidate
-                .as_ref()
-                .map(|candidate| Mm2ResultCandidate {
-                    key: &candidate.key,
-                    viable: candidate.viable,
-                }),
-        })
-        .collect();
-    postcard_value_sha256(&Mm2Result { actions })
+    postcard_value_sha256(result)
 }
 
 pub struct Mm2CampaignConfig {
@@ -990,6 +953,51 @@ pub fn replay_mm2_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_digest_binds_retained_state() {
+        let snapshot = Mm2Snapshot::for_census_tests(Default::default());
+        let mut changed = serde_json::to_value(&snapshot).unwrap();
+        changed["emulator_state"] = serde_json::json!([1]);
+        let changed: Mm2Snapshot = serde_json::from_value(changed).unwrap();
+        let job = |snapshot| Mm2CampaignJobResult {
+            preparation_failure: None,
+            actions: vec![CampaignActionResult {
+                action: ButtonChord {
+                    buttons: 0,
+                    hold_frames: 1,
+                },
+                observations: vec![Mm2Observations::default()],
+                milestones: Mm2Milestones::default(),
+                outcome: Outcome::default(),
+                candidate: Some(CampaignCandidate {
+                    key: Mm2ArchiveKey::default(),
+                    viable: true,
+                    snapshot,
+                }),
+            }],
+        };
+        assert_ne!(
+            mm2_result_sha256(&job(snapshot)).unwrap(),
+            mm2_result_sha256(&job(changed)).unwrap()
+        );
+    }
+
+    #[test]
+    fn job_digest_binds_preparation_failure() {
+        let empty = Mm2CampaignJobResult {
+            preparation_failure: None,
+            actions: Vec::new(),
+        };
+        let failed = Mm2CampaignJobResult {
+            preparation_failure: Some(vec![Mm2Observations::default()]),
+            actions: Vec::new(),
+        };
+        assert_ne!(
+            mm2_result_sha256(&empty).unwrap(),
+            mm2_result_sha256(&failed).unwrap()
+        );
+    }
 
     #[test]
     fn the_census_reports_where_the_live_archive_sits_and_what_the_selector_drew() {

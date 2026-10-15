@@ -7,6 +7,13 @@ use crate::error::Result;
 use crate::exit::{Capabilities, Exit, ExitCounts, StoreCompletions};
 use crate::types::Gpa;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum HostCoreClass {
+    Performance = 1,
+    Efficiency = 2,
+}
+
 pub trait Backend {
     type A: Arch;
 
@@ -101,6 +108,10 @@ pub trait Backend {
         Ok(())
     }
 
+    fn validate_import_state(&self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        self.validate_restore_state(state)
+    }
+
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()>;
 
     fn exit_counts(&self) -> ExitCounts;
@@ -112,6 +123,10 @@ pub trait Backend {
     }
 
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps>;
+
+    fn host_core_class(&self) -> Option<HostCoreClass> {
+        None
+    }
 
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {
         None
@@ -220,6 +235,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
         (**self).validate_restore_state(state)
     }
 
+    fn validate_import_state(&self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
+        (**self).validate_import_state(state)
+    }
+
     fn restore(&mut self, state: &<Self::A as Arch>::VcpuState) -> Result<()> {
         (**self).restore(state)
     }
@@ -238,6 +257,10 @@ impl<B: Backend + ?Sized> Backend for Box<B> {
 
     fn capabilities(&self) -> Capabilities<<Self::A as Arch>::Caps> {
         (**self).capabilities()
+    }
+
+    fn host_core_class(&self) -> Option<HostCoreClass> {
+        (**self).host_core_class()
     }
 
     fn cancellation_flag(&self) -> Option<Arc<AtomicBool>> {

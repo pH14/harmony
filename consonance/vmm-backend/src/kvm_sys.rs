@@ -11,6 +11,7 @@ use kvm_bindings::{
 };
 use kvm_ioctls::{Cap, Kvm, VcpuFd, VmFd};
 
+use crate::HostCoreClass;
 use crate::arch::x86::Injection;
 use crate::arch::x86::VcpuState;
 #[cfg(test)]
@@ -50,6 +51,7 @@ const KVM_SET_XSAVE: u64 = ioc(1, 0xAE, 0xA5, size_of::<kvm_xsave>() as u64);
 pub struct KvmBackend {
     vcpu: VcpuFd,
     vm: VmFd,
+    host_affinity: crate::kvm_affinity::HostAffinity,
     run: *mut kvm_run,
     mmap_size: usize,
     xsave2_size: Option<usize>,
@@ -59,6 +61,7 @@ pub struct KvmBackend {
     supported_xsave_bv: u64,
     event_valid_flags: u32,
     host_amd_compatible: bool,
+    guest_run_attempted: bool,
     sysenter_32bit: bool,
     state_mutation_guard: crate::arch::x86::StateMutationGuard,
     regions: MemRegions,
@@ -86,7 +89,7 @@ pub struct KvmBackend {
 
 impl KvmBackend {
     pub fn new() -> Result<KvmBackend> {
-        crate::kvm_affinity::check_host_affinity()?;
+        let host_affinity = crate::kvm_affinity::check_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         if !kvm.check_extension(Cap::ImmediateExit) {
             return Err(BackendError::Capability {
@@ -131,6 +134,7 @@ impl KvmBackend {
         Ok(KvmBackend {
             vcpu,
             vm,
+            host_affinity,
             run,
             mmap_size,
             xsave2_size,
@@ -140,6 +144,7 @@ impl KvmBackend {
             supported_xsave_bv,
             event_valid_flags,
             host_amd_compatible,
+            guest_run_attempted: false,
             sysenter_32bit: host_amd_compatible,
             state_mutation_guard: Default::default(),
             regions: MemRegions::new(),
@@ -171,6 +176,7 @@ impl KvmBackend {
     }
 
     pub fn nested_capabilities(&self) -> Result<(NestedFormat, Option<CpuidEntry>)> {
+        self.ensure_host_affinity()?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         let supported = kvm
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
@@ -219,6 +225,7 @@ impl KvmBackend {
         indices: &[u32],
         feature_control: u64,
     ) -> Result<BTreeMap<u32, u64>> {
+        self.ensure_host_affinity()?;
         if self.cpuid_installed || self.msr_filter_installed {
             return Err(BackendError::Internal(
                 "nested initialization requires a fresh vCPU",
@@ -239,6 +246,7 @@ impl KvmBackend {
         if format == NestedFormat::Svm && !indices.is_empty() {
             return Err(BackendError::Internal("SVM cannot use VMX capability MSRs"));
         }
+        self.state_mutation_guard.begin()?;
         self.install_cpuid(cpuid)?;
         let mut capabilities = BTreeMap::new();
         if format == NestedFormat::Vmx {
@@ -266,6 +274,7 @@ impl KvmBackend {
         crate::arch::x86::nested_probe(nested_size as usize)?;
         self.nested_physical_bits = crate::arch::x86::guest_physical_bits(cpuid);
         self.nested_state_config = Some((format, nested_size as usize));
+        self.state_mutation_guard.finish();
         Ok(capabilities)
     }
 
@@ -279,6 +288,21 @@ impl KvmBackend {
 
     fn configured(&self) -> bool {
         self.cpuid_installed && self.msr_filter_installed
+    }
+
+    fn ensure_host_affinity(&self) -> Result<()> {
+        crate::kvm_affinity::ensure_host_affinity(&self.host_affinity)
+    }
+
+    fn validate_host_core_class(&self, state: &VcpuState) -> Result<()> {
+        let current = self.host_affinity.class();
+        if state.host_core_class != current {
+            return Err(BackendError::HostCoreClassMismatch {
+                saved: state.host_core_class,
+                current,
+            });
+        }
+        Ok(())
     }
 
     fn reload_nested_memory_slots(&self) -> Result<()> {
@@ -302,19 +326,26 @@ impl KvmBackend {
     }
 
     fn finish_staged_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
-        let next = finish_staged_completion(page, &mut self.pending, &mut self.completion, || {
-            // SAFETY: the owned vCPU fd references the mapped run page and
-            // this entry is restricted to consuming its staged completion.
-            let rc = unsafe { raw_kvm_run(fd) };
-            if rc < 0 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        })?;
+        let next = finish_staged_completion_guarded(
+            page,
+            &mut self.pending,
+            &mut self.completion,
+            &self.state_mutation_guard,
+            || {
+                // SAFETY: the owned vCPU fd references the mapped run page and
+                // this entry is restricted to consuming its staged completion.
+                let rc = unsafe { raw_kvm_run(fd) };
+                if rc < 0 {
+                    Err(std::io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            },
+        )?;
         if let Some(exit) = &next {
             self.counts.bump(exit.reason());
         }
@@ -346,6 +377,7 @@ impl KvmBackend {
             if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
                 return Err(BackendError::Internal("KVM run canceled by host"));
             }
+            self.ensure_host_affinity()?;
             match plan_irq_entry(
                 self.run_page(),
                 self.pending_irq,
@@ -359,12 +391,14 @@ impl KvmBackend {
                 }
                 IrqEntry::Run => {}
             }
+            self.guest_run_attempted = true;
             let rc = unsafe { raw_kvm_run(self.vcpu.as_raw_fd()) };
             if rc < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
+                self.state_mutation_guard.poison();
                 return Err(BackendError::Io(err));
             }
             self.completion = Stage::CLEAR;
@@ -373,22 +407,30 @@ impl KvmBackend {
             {
                 let reason = self.run_page().exit_reason();
                 if reason == kvm_bindings::KVM_EXIT_DEBUG {
-                    let expected = self
-                        .diagnostic_rip
-                        .take()
-                        .ok_or(BackendError::Internal("unexpected diagnostic debug exit"))?;
-                    let regs = self.vcpu.get_regs().map_err(kvm_err)?;
-                    if regs.rip != expected {
-                        return Err(BackendError::Internal("diagnostic breakpoint RIP mismatch"));
-                    }
-                    self.vcpu
-                        .set_guest_debug(&Default::default())
-                        .map_err(kvm_err)?;
-                    self.diagnostic_hits.push(regs.rip);
+                    let diagnostic = (|| {
+                        let expected = self
+                            .diagnostic_rip
+                            .take()
+                            .ok_or(BackendError::Internal("unexpected diagnostic debug exit"))?;
+                        let regs = self.vcpu.get_regs().map_err(kvm_err)?;
+                        if regs.rip != expected {
+                            return Err(BackendError::Internal(
+                                "diagnostic breakpoint RIP mismatch",
+                            ));
+                        }
+                        self.vcpu
+                            .set_guest_debug(&Default::default())
+                            .map_err(kvm_err)?;
+                        self.diagnostic_hits.push(regs.rip);
+                        Ok(())
+                    })();
+                    diagnostic.inspect_err(|_| self.state_mutation_guard.poison())?;
                     continue;
                 }
             }
-            match decode_exit(self.run_page())? {
+            let decoded =
+                decode_exit(self.run_page()).inspect_err(|_| self.state_mutation_guard.poison())?;
+            match decoded {
                 Some((exit, pending)) => {
                     self.counts.bump(exit.reason());
                     self.pending = pending;
@@ -755,17 +797,38 @@ impl KvmBackend {
         )
     }
 
+    fn read_sregs2_guarded(&mut self) -> Result<kvm_sregs2> {
+        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
+        let sregs = match unsafe { raw_get_sregs2(self.vcpu.as_raw_fd()) } {
+            Ok(sregs) => sregs,
+            Err(error) => {
+                if self.host_amd_compatible && self.guest_run_attempted {
+                    self.state_mutation_guard.poison();
+                }
+                return Err(error);
+            }
+        };
+        let legacy_pae =
+            sregs.cr0 & (1 << 31) != 0 && sregs.cr4 & (1 << 5) != 0 && sregs.efer & (1 << 10) == 0;
+        if self.host_amd_compatible && self.guest_run_attempted && legacy_pae {
+            self.state_mutation_guard.poison();
+            return Err(BackendError::AmdPaeSnapshotUnsafe);
+        }
+        Ok(sregs)
+    }
+
     fn run_guarded_entry(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         self.check_completion_clear()?;
-        // SAFETY: the owned vCPU is stopped and the ioctl writes one complete SREGS2 value.
-        let sregs = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let sregs = self.read_sregs2_guarded()?;
         let fd = self.vcpu.as_raw_fd();
-        let continuation = prepare_snapshot_run(
+        let continuation = prepare_snapshot_run_guarded(
             self.run_page(),
             sregs.cr8,
             &mut self.pending,
             &mut self.completion,
+            &self.state_mutation_guard,
             || {
                 // SAFETY: the owned vCPU has a run page requesting immediate exit and,
                 // when a completion was staged, no pending value left to supply.
@@ -797,8 +860,12 @@ impl Backend for KvmBackend {
     type A = X86;
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
+        self.ensure_host_affinity()?;
+        self.state_mutation_guard.begin()?;
         self.install_cpuid(&policy.cpuid)?;
-        self.install_msr_filter(&policy.msr_filter)
+        self.install_msr_filter(&policy.msr_filter)?;
+        self.state_mutation_guard.finish();
+        Ok(())
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
@@ -856,6 +923,7 @@ impl Backend for KvmBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         if !self.dirty_log {
             return Err(BackendError::Unsupported {
@@ -901,6 +969,7 @@ impl Backend for KvmBackend {
 
     #[cfg(feature = "xsave-diagnostics")]
     fn diagnostic_breakpoint(&mut self, rip: u64) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.diagnostic_rip.is_some() || !self.diagnostic_hits.is_empty() {
             return Err(BackendError::Internal("diagnostic breakpoint already used"));
         }
@@ -929,6 +998,7 @@ impl Backend for KvmBackend {
     }
 
     fn inject(&mut self, event: Injection) -> Result<()> {
+        self.ensure_host_affinity()?;
         match event {
             Injection::Interrupt { vector } => {
                 self.pending_irq = Some(vector);
@@ -939,6 +1009,7 @@ impl Backend for KvmBackend {
     }
 
     fn set_pending_irq(&mut self, vector: Option<u8>) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.pending_irq = vector;
         Ok(())
     }
@@ -948,6 +1019,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -962,6 +1034,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -972,6 +1045,7 @@ impl Backend for KvmBackend {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        self.ensure_host_affinity()?;
         if self.completion_exit.is_some() {
             return Err(BackendError::PendingCompletion);
         }
@@ -994,6 +1068,7 @@ impl Backend for KvmBackend {
     }
 
     fn finish_exit(&mut self) -> Result<Option<Exit<X86>>> {
+        self.ensure_host_affinity()?;
         if let Some(exit) = self.completion_exit.take() {
             return Ok(Some(exit));
         }
@@ -1014,12 +1089,11 @@ impl Backend for KvmBackend {
     }
 
     fn save(&mut self) -> Result<VcpuState> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
         self.drain_staged_completion()?;
         let regs = self.vcpu.get_regs().map_err(kvm_err)?;
-        // SAFETY: `vcpu` is a valid vCPU fd; `raw_get_sregs2` writes a full
-        // `kvm_sregs2` (incl. flags/PDPTRs). Excluded under Miri.
-        let sregs2 = unsafe { raw_get_sregs2(self.vcpu.as_raw_fd())? };
+        let sregs2 = self.read_sregs2_guarded()?;
         let dregs = self.vcpu.get_debug_regs().map_err(kvm_err)?;
         let kevents = self.vcpu.get_vcpu_events().map_err(kvm_err)?;
         let mp = self.vcpu.get_mp_state().map_err(kvm_err)?;
@@ -1041,6 +1115,7 @@ impl Backend for KvmBackend {
             msrs,
             xsave,
             xsave_restore_bv,
+            host_core_class: self.host_affinity.class(),
             nested_state: match self.nested_state_config {
                 Some((format, size)) => {
                     // SAFETY: this owned stopped vCPU receives a capability-sized initialized buffer; the adapter bounds the returned size before retaining its bytes.
@@ -1059,11 +1134,23 @@ impl Backend for KvmBackend {
     }
 
     fn validate_snapshot_state(&self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
+        self.validate_host_core_class(state)?;
         validate_kvm_xsave_mxcsr_presence(&state.xsave, state.xsave_restore_bv)
     }
 
     fn validate_restore_state(&self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.state_mutation_guard.ensure_healthy()?;
+        if self.host_amd_compatible && self.guest_run_attempted {
+            return Err(BackendError::AmdReusedVcpuRestoreUnsafe);
+        }
+        self.validate_import_state(state)
+    }
+
+    fn validate_import_state(&self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
+        self.validate_host_core_class(state)?;
         let xsave_len = self.xsave2_size.unwrap_or(size_of::<kvm_xsave>());
         validate_restore_shape(
             state,
@@ -1126,6 +1213,7 @@ impl Backend for KvmBackend {
     }
 
     fn restore(&mut self, state: &VcpuState) -> Result<()> {
+        self.ensure_host_affinity()?;
         self.check_completion_clear()?;
         self.validate_restore_state(state)?;
         self.drain_staged_completion()?;
@@ -1181,6 +1269,7 @@ impl Backend for KvmBackend {
         self.accepted_irq.clear();
         self.readiness_current = false;
         plan_irq_entry(self.run_page(), None, false, || Ok(false))?;
+        self.guest_run_attempted = false;
         Ok(())
     }
 
@@ -1196,8 +1285,125 @@ impl Backend for KvmBackend {
         kvm_capabilities()
     }
 
+    fn host_core_class(&self) -> Option<HostCoreClass> {
+        self.host_affinity.class()
+    }
+
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         Some(std::sync::Arc::clone(&self.cancel_run))
+    }
+}
+
+#[cfg(test)]
+mod policy_diagnostic {
+    use super::*;
+    use crate::arch::x86::MsrRange;
+
+    #[test]
+    #[ignore = "live KVM policy boundary; requires /dev/kvm"]
+    fn rejected_msr_filter_retires_partly_reconfigured_vcpu() {
+        let mut backend = KvmBackend::new().unwrap();
+        let first = X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 1,
+                    eax: 0,
+                    ..Default::default()
+                }],
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        };
+        backend.set_policy(&first).unwrap();
+        let before = backend.vcpu.get_cpuid2(16).unwrap();
+        let before_leaf = before
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 1)
+            .unwrap()
+            .eax;
+        assert_eq!(before_leaf, 0);
+        backend.save().unwrap();
+
+        let mut rejected = first.clone();
+        rejected.cpuid.entries[0].eax = 1;
+        rejected.msr_filter.allow_inkernel = vec![MsrRange {
+            base: 0x174,
+            count: 0,
+        }];
+        assert!(matches!(
+            backend.set_policy(&rejected),
+            Err(BackendError::Io(_))
+        ));
+        let after = backend.vcpu.get_cpuid2(16).unwrap();
+        let after_leaf = after
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 1)
+            .unwrap()
+            .eax;
+        assert_eq!(after_leaf, 1);
+        assert!(backend.configured());
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.set_policy(&first),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
+    #[ignore = "live KVM nested VMX boundary; requires /dev/kvm"]
+    fn rejected_vmx_capability_read_retires_partly_initialized_vcpu() {
+        let mut backend = KvmBackend::new().unwrap();
+        let (format, _) = match backend.nested_capabilities() {
+            Ok(capabilities) => capabilities,
+            Err(error) => {
+                eprintln!("skipped: nested VMX unavailable: {error}");
+                return;
+            }
+        };
+        if format != NestedFormat::Vmx {
+            eprintln!("skipped: nested VMX test requires a VMX host, found {format:?}");
+            return;
+        }
+        let cpuid = CpuidModel {
+            entries: vec![CpuidEntry {
+                leaf: 1,
+                eax: 1,
+                ..Default::default()
+            }],
+        };
+        assert!(
+            backend
+                .initialize_nested(format, &cpuid, &[0xdead_beef], 0)
+                .is_err()
+        );
+        let installed = backend.vcpu.get_cpuid2(16).unwrap();
+        let eax = installed
+            .as_slice()
+            .iter()
+            .find(|entry| entry.function == 1)
+            .unwrap()
+            .eax;
+        assert_eq!(eax, 1);
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.set_policy(&X86Policy {
+                cpuid,
+                msr_filter: MsrFilter::default(),
+            }),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
     }
 }
 
@@ -1215,6 +1421,96 @@ mod xsave_diagnostic {
         staged: true,
         acknowledged: true,
     };
+
+    #[test]
+    #[ignore = "live KVM affinity boundary; requires /dev/kvm"]
+    fn changed_affinity_refuses_cpu_operations_without_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        backend
+            .set_policy(&X86Policy {
+                cpuid: CpuidModel::default(),
+                msr_filter: MsrFilter {
+                    allow_inkernel: vec![MsrRange {
+                        base: 0x174,
+                        count: 3,
+                    }],
+                },
+            })
+            .unwrap();
+        let before = backend.save().unwrap();
+        assert_eq!(backend.host_core_class(), before.host_core_class);
+        let mut wrong_class = before.clone();
+        wrong_class.host_core_class = Some(match before.host_core_class {
+            Some(HostCoreClass::Performance) => HostCoreClass::Efficiency,
+            Some(HostCoreClass::Efficiency) | None => HostCoreClass::Performance,
+        });
+        assert!(matches!(
+            backend.validate_snapshot_state(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert!(matches!(
+            backend.validate_restore_state(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert!(matches!(
+            backend.validate_import_state(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert!(matches!(
+            backend.restore(&wrong_class),
+            Err(BackendError::HostCoreClassMismatch { .. })
+        ));
+        assert_eq!(backend.save().unwrap(), before);
+        let original = std::mem::replace(
+            &mut backend.host_affinity,
+            crate::kvm_affinity::HostAffinity::Reported {
+                allowed: Default::default(),
+                class: HostCoreClass::Performance,
+            },
+        );
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.validate_snapshot_state(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.validate_restore_state(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.validate_import_state(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.restore(&before),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.drain_dirty_pages(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.complete_read(0),
+            Err(BackendError::Unsupported { .. })
+        ));
+        assert!(matches!(
+            backend.finish_exit(),
+            Err(BackendError::Unsupported { .. })
+        ));
+        backend.host_affinity = original;
+        assert_eq!(backend.save().unwrap(), before);
+    }
 
     #[test]
     #[ignore = "live x86 KVM snapshot preparation; requires /dev/kvm"]
@@ -1384,6 +1680,12 @@ mod xsave_diagnostic {
     #[test]
     #[ignore = "native KVM restore boundary guards; requires /dev/kvm"]
     fn snapshot_restore_drains_an_acknowledged_write_completion() {
+        let logical = |mut state: VcpuState| {
+            state.xsave_restore_bv =
+                crate::arch::x86::logical_xsave_restore_bv(&state.xsave, state.xsave_restore_bv)
+                    .unwrap();
+            state
+        };
         let mut backend = KvmBackend::new().unwrap();
         let mut policy = diagnostic_policy();
         policy.msr_filter.allow_inkernel.push(MsrRange {
@@ -1398,7 +1700,7 @@ mod xsave_diagnostic {
         backend.pending = Pending::None;
         backend.completion = ACKNOWLEDGED_WRITE;
         let counts = backend.exit_counts();
-        assert_eq!(backend.save().unwrap(), before);
+        assert_eq!(logical(backend.save().unwrap()), logical(before.clone()));
         assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.exit_counts(), counts);
 
@@ -1407,7 +1709,7 @@ mod xsave_diagnostic {
         assert_eq!(backend.completion, Stage::CLEAR);
         assert_eq!(backend.pending, Pending::None);
         assert_eq!(backend.exit_counts(), counts);
-        assert_eq!(backend.save().unwrap(), replacement);
+        assert_eq!(logical(backend.save().unwrap()), logical(replacement));
 
         let before_rejection = backend.save().unwrap();
         let mut inconsistent = before_rejection.clone();
@@ -1888,16 +2190,41 @@ mod xsave_diagnostic {
                     let canonical_bv = header(&poison.xsave).0 | 2;
                     poison.xsave[XSTATE_BV].copy_from_slice(&canonical_bv.to_le_bytes());
                     poison.xsave_restore_bv = Some(poison.xsave_restore_bv.unwrap() | 2);
-                    source.backend.restore(&poison).unwrap();
+                    let amd_reuse = source.backend.host_amd_compatible;
+                    let mut negative_fixture = if amd_reuse {
+                        assert!(matches!(
+                            source.backend.restore(&poison),
+                            Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                        ));
+                        let mut fixture = entry_fixture(&program, seed, xcr0);
+                        fixture.ram.as_mut_bytes().copy_from_slice(&saved.ram);
+                        fixture.backend.restore(&poison).unwrap();
+                        Some(fixture)
+                    } else {
+                        source.backend.restore(&poison).unwrap();
+                        None
+                    };
+                    let negative_target = negative_fixture.as_mut().unwrap_or(&mut source);
                     if canonical && mode == "xrstor" {
-                        source.ram.as_mut_bytes()[GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
+                        negative_target.ram.as_mut_bytes()
+                            [GUEST_XRSTOR_GPA + 24..GUEST_XRSTOR_GPA + 28]
                             .copy_from_slice(&0x3f80u32.to_le_bytes());
                     }
-                    let negative = entry_endpoint(&mut source, &directory, "negative");
-                    restore_entry(&mut source, &saved);
-                    let reused_initial = retain_entry(&mut source, &directory, "reused-initial");
-                    let reused = entry_endpoint(&mut source, &directory, "reused");
-                    let checks = [
+                    let negative = entry_endpoint(negative_target, &directory, "negative");
+                    let reused = if amd_reuse {
+                        assert!(matches!(
+                            source.backend.restore(&saved.state),
+                            Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                        ));
+                        None
+                    } else {
+                        restore_entry(&mut source, &saved);
+                        let reused_initial =
+                            retain_entry(&mut source, &directory, "reused-initial");
+                        let reused = entry_endpoint(&mut source, &directory, "reused");
+                        Some((reused_initial, reused))
+                    };
+                    let mut checks = vec![
                         ("independent-initial", initial == saved),
                         ("repeated-capture", saved == repeated),
                         ("captured-continuation", expected == continued),
@@ -1911,9 +2238,11 @@ mod xsave_diagnostic {
                                     != negative.ram
                                         [GUEST_XSAVE_GPA..GUEST_XSAVE_GPA + GUEST_XSAVE_LEN],
                         ),
-                        ("reused-initial", saved == reused_initial),
-                        ("reused-continuation", expected == reused),
                     ];
+                    if let Some((reused_initial, reused_endpoint)) = reused.as_ref() {
+                        checks.push(("reused-initial", saved == *reused_initial));
+                        checks.push(("reused-continuation", expected == *reused_endpoint));
+                    }
                     let mut report = format!(
                         "label={label}\ncanonical={canonical}\ninitial_bv={:?}\nendpoint_bv={:?}\n",
                         initial.state.xsave_restore_bv, expected.state.xsave_restore_bv
@@ -1930,7 +2259,7 @@ mod xsave_diagnostic {
                         .unwrap();
                     }
                     if canonical {
-                        for (name, left, right, left_phase, right_phase) in [
+                        let mut setups = vec![
                             ("independent-setup", &initial, &saved, "initial", "captured"),
                             (
                                 "cold-setup",
@@ -1939,14 +2268,17 @@ mod xsave_diagnostic {
                                 "captured",
                                 "cold-initial",
                             ),
-                            (
+                        ];
+                        if let Some((reused_initial, _)) = reused.as_ref() {
+                            setups.push((
                                 "reused-setup",
                                 &saved,
-                                &reused_initial,
+                                reused_initial,
                                 "captured",
                                 "reused-initial",
-                            ),
-                        ] {
+                            ));
+                        }
+                        for (name, left, right, left_phase, right_phase) in setups {
                             let left_raw =
                                 fs::read(directory.join(left_phase).join("raw-xsave.bin")).unwrap();
                             let right_raw =
@@ -1969,6 +2301,9 @@ mod xsave_diagnostic {
                                 failures.push(format!("{label}: negative-xrstor-mxcsr-output"));
                             }
                         }
+                    }
+                    if amd_reuse {
+                        writeln!(report, "required:amd-reused-restore-refused=true").unwrap();
                     }
                     for (check, passed) in checks {
                         let diagnostic = canonical
@@ -2229,17 +2564,41 @@ mod xsave_diagnostic {
                         let cold_endpoint = entry_endpoint(&mut cold, &directory, "cold");
                         let mut poison = saved.state.clone();
                         poison.regs.r12 = if mode == 2 { 0 } else { 2 };
-                        source.backend.restore(&poison).unwrap();
-                        let poisoned = entry_endpoint(&mut source, &directory, "poisoned");
+                        let amd_reuse = source.backend.host_amd_compatible;
+                        let poisoned = if amd_reuse {
+                            assert!(matches!(
+                                source.backend.restore(&poison),
+                                Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                            ));
+                            let mut negative = canonical_fixture(mode, compacted, canonical);
+                            negative.ram.as_mut_bytes().copy_from_slice(&saved.ram);
+                            negative.backend.restore(&poison).unwrap();
+                            entry_endpoint(&mut negative, &directory, "poisoned")
+                        } else {
+                            source.backend.restore(&poison).unwrap();
+                            entry_endpoint(&mut source, &directory, "poisoned")
+                        };
                         assert_ne!(expected.ram, poisoned.ram);
-                        restore_entry(&mut source, &saved);
-                        let reused = entry_endpoint(&mut source, &directory, "reused");
+                        let reused = if amd_reuse {
+                            assert!(matches!(
+                                source.backend.restore(&saved.state),
+                                Err(BackendError::AmdReusedVcpuRestoreUnsafe)
+                            ));
+                            None
+                        } else {
+                            restore_entry(&mut source, &saved);
+                            Some(entry_endpoint(&mut source, &directory, "reused"))
+                        };
                         let mut report = String::new();
                         let mut endpoints = vec![
                             ("continued".to_string(), continued),
                             ("cold".to_string(), cold_endpoint),
-                            ("reused".to_string(), reused),
                         ];
+                        if let Some(reused) = reused {
+                            endpoints.push(("reused".to_string(), reused));
+                        } else {
+                            writeln!(report, "amd-reused-restore-refused=true").unwrap();
+                        }
                         for (name, rip) in [
                             ("before-save", stops[usize::from(compacted)]),
                             ("after-save", stops[2]),

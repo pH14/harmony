@@ -30,6 +30,11 @@ pub struct Options {
     pub output: PathBuf,
 }
 
+pub struct PreparedRun {
+    pub finding: bool,
+    pub report: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Failure {
     pub layer: String,
@@ -300,7 +305,12 @@ pub struct NestedWorkload {
 }
 
 impl NestedWorkload {
-    fn new(kernel: &[u8], initramfs: &[u8], options: &Options, contract: [u8; 32]) -> Self {
+    fn new(
+        kernel: &[u8],
+        initramfs: &[u8],
+        options: &Options,
+        contract: [u8; 32],
+    ) -> Result<Self, Box<dyn Error>> {
         let mut config = SessionConfig {
             ram_bytes: options.ram_mib as usize * (1 << 20),
             seed: options.seed,
@@ -310,19 +320,19 @@ impl NestedWorkload {
         .with_deferred_virtual_time_checkpoint_hashes()
         .with_wall_limit(Duration::from_secs(20));
         config.cmdline.push_str(" kvm_intel.dump_invalid_vmcs=1");
-        Self {
+        Ok(Self {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             identity: format!(
                 "{};nested-contract-sha256={}",
-                Session::identity_with_config(kernel, initramfs, &config),
+                Session::identity_with_config(kernel, initramfs, &config)?,
                 contract
                     .iter()
                     .map(|byte| format!("{byte:02x}"))
                     .collect::<String>()
             ),
             config,
-        }
+        })
     }
 }
 
@@ -540,7 +550,7 @@ pub fn run_prepared(
     options: &Options,
     replay: Option<&[u8]>,
     repeat: u32,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<PreparedRun, Box<dyn Error>> {
     if options.executions == 0 || options.ram_mib == 0 || repeat == 0 {
         return Err("search budgets, RAM and repeat must be positive".into());
     }
@@ -548,7 +558,7 @@ pub fn run_prepared(
         return Err("search output directory must be empty".into());
     }
     let contract = vmm_core::vendor::x86::bringup::nested_host_contract_hash()?;
-    let workload = NestedWorkload::new(kernel, initramfs, options, contract);
+    let workload = NestedWorkload::new(kernel, initramfs, options, contract)?;
     fs::create_dir_all(&options.output)?;
     let (report, _) = match replay {
         Some(bytes) => {
@@ -593,10 +603,8 @@ pub fn run_prepared(
             )?
         }
     };
-    fs::write(
-        options.output.join("report.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
+    let report_bytes = serde_json::to_vec_pretty(&report)?;
+    fs::write(options.output.join("report.json"), &report_bytes)?;
     for (index, failure) in report.archive.evidence.failures.iter().enumerate() {
         fs::write(
             options.output.join(format!("failure-{index}.json")),
@@ -611,7 +619,10 @@ pub fn run_prepared(
         report.archive.evidence.pairs,
         report.archive.evidence.failures.len()
     );
-    Ok(!report.archive.evidence.failures.is_empty())
+    Ok(PreparedRun {
+        finding: !report.archive.evidence.failures.is_empty(),
+        report: report_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -695,7 +706,8 @@ mod tests {
                 output: PathBuf::new(),
             },
             [0; 32],
-        );
+        )
+        .unwrap();
         let mut evidence = Evidence::default();
         workload
             .merge_preparation_failure(&mut evidence, result.preparation_failure.as_ref().unwrap());

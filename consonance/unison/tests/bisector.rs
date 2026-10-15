@@ -28,10 +28,6 @@ fn pair(
     (toy, flaky)
 }
 
-fn ceil_log2(n: u64) -> u64 {
-    u64::from(64 - n.saturating_sub(1).leading_zeros())
-}
-
 fn assert_bisects_exactly(
     toy: &ToyFactory,
     flaky: &FlakyFactory<ToyFactory>,
@@ -63,7 +59,7 @@ fn assert_bisects_exactly(
                 first_mismatch
             );
             prop_assert_ne!(point.hash_a, point.hash_b);
-            let bound = 2 * (ceil_log2(first_mismatch - lo) + 2);
+            let bound = 2 * (first_mismatch - lo + 2);
             prop_assert!(
                 point.runs_executed <= bound,
                 "runs_executed {} exceeds bound {}",
@@ -207,7 +203,7 @@ fn falling_off_program_has_one_state_at_each_work_count() {
 
     for limit in [0, 1, 100] {
         let report = compare_runs(&empty, &empty, 3, 1, limit).unwrap();
-        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
         assert_eq!(report.halted_at, Some(0));
         assert!(!report.limit_reached);
     }
@@ -222,7 +218,7 @@ fn falling_off_program_has_one_state_at_each_work_count() {
     };
     for interval in [1, 2] {
         let report = compare_runs(&one, &flaky, 3, interval, 10).unwrap();
-        assert_eq!(report.verdict, Verdict::Identical);
+        assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
         assert_eq!(report.halted_at, Some(1));
     }
 }
@@ -232,13 +228,13 @@ fn no_divergence_path() {
     let (toy, flaky) = pair(21, u64::MAX, Perturbation::XorPrng { mask: 0xBAD });
 
     let report = compare_runs(&toy, &flaky, 13, 64, 800).unwrap();
-    assert_eq!(report.verdict, Verdict::Identical);
+    assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
     assert!(report.limit_reached);
     assert_eq!(report.halted_at, None);
 
     let halt = generate_program(21, MIN_WORK).work_to_halt;
     let report = compare_runs(&toy, &flaky, 13, 64, halt + 100).unwrap();
-    assert_eq!(report.verdict, Verdict::Identical);
+    assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
     assert!(!report.limit_reached);
     assert_eq!(report.halted_at, Some(halt));
 

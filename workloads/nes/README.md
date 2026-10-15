@@ -11,6 +11,18 @@ delegates process startup to the platform supervisor.
 The `smb-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
 points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
 native execution. SMB supports native QuickNES and whole-VM Consonance execution.
+The SMB campaign binary hashes and parses a source archive through one open file,
+so a replacement of its path cannot attach one archive's digest to another's entries.
+Run and replay require a UTF-8 origin argument so its recorded path names the
+same file the command opens; an ambiguous byte path is rejected before use.
+Checkpoint paths also require UTF-8, so the recorded source path names the file
+opened.
+Saved campaign replay rejects a source archive whose exact bytes differ from the
+archive digest recorded in the stream, even if its parsed report is unchanged.
+It also decodes and hashes snapshot checkpoints from the same read bytes, so a
+source replacement cannot label one snapshot set with another file's digest.
+SMB fixture extraction likewise pins its source archive digest to the entries it
+parses into a challenge.
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.
@@ -47,7 +59,11 @@ recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
 A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
-snapshots after `SnapshotState::logical_identity`. On Intel KVM hosts a whole-VM endpoint's raw
+snapshots after `SnapshotState::logical_identity`. The native Mega Man 2,
+Metroid, and Super Tilt Bro campaign result digests cover the complete job
+result, including preparation failures and retained QuickNES snapshots. Replay
+therefore detects a latent endpoint-state change even when its decoded game
+observations and archive key agree. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
 
@@ -221,11 +237,17 @@ other hosts. It serializes the real `SessionConfig::default()` as
 boot flags. Custom session configurations, including campaign and fault adapters,
 are outside this scope. Inputs must be local OCI layouts. The dump includes exact platform, rootfs and
 control archives, serialized execution and image configuration, input hashes,
-prepared identity, kernel bytes, and ordered concatenated initramfs bytes. NES
+prepared identity, kernel bytes, and ordered concatenated initramfs bytes. Source
+filenames must be valid UTF-8 so each source file has a distinct input
+manifest path; ambiguous names are rejected before the dump is written. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by
-the rootfs segment.
+the rootfs segment. PostgreSQL's post-preparation source reads temporarily
+grant the staging user read/search access and restore the image modes afterward,
+so their hashes do not depend on host privilege. These reads require resolved
+source paths to remain inside the staged rootfs, preventing image symlinks from
+hashing host files.
 
 Run `workloads/guest-images/verify-prepared-admission.py inventory DUMP
 --output NEW_REPORT_DIR` from the repository root for a candidate inventory. GNU
@@ -275,7 +297,26 @@ this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
 image in `workload.options.guest_image`.
 
 `package` exposes typed search and replay for native and prepared guest execution.
+Native search and replay require the saved core digest from the run manifest;
+the package checks the on-disk core before constructing a target, and the
+QuickNES loader checks its private copy against the same digest on every load.
+For a saved search origin, the CLI checks the ROM and, for Consonance, the
+kernel and initramfs against the inherited manifest at their final read before
+passing those bytes to the package.
+The Consonance SMB campaign's emulator policy and prepared execution identity
+also bind the loaded Harmony executable through the exact client session
+identity, so a saved stream or checkpoint from another build is refused before
+the guest is replayed.
+Search returns the exact serialized witness input and result that it wrote, so
+the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search
 checkpoint. The package uses existing searcher snapshot-root and checkpoint APIs,
 retains final checkpoints and preserves native/controller action types internally.
+A CLI-selected checkpoint carries its journal digest into the searcher so a
+file changed after selection cannot resume under the earlier identity. The
+checkpoint's origin input comes from a saved, verified run artifact and is
+passed to the package as pinned data; the package does not reopen the mutable
+parent path to reconstruct that input. A rooted search stores the same typed
+controller input that the package writes, even when the user's JSON contains
+accepted fields outside that type.
 See the [CLI README](../../cli/README.md) for named runs and investigation.

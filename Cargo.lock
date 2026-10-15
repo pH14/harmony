@@ -294,6 +294,7 @@ name = "environment"
 version = "0.1.0"
 dependencies = [
  "hypercall-proto",
+ "sha2",
  "thiserror",
 ]
 
@@ -448,6 +449,7 @@ dependencies = [
  "environment",
  "faults-workload",
  "flate2",
+ "getrandom 0.3.4",
  "nes-workload",
  "nested-driver",
  "oci-support",
@@ -695,6 +697,7 @@ dependencies = [
  "crc32fast",
  "environment",
  "execution-proto",
+ "flate2",
  "guest-image",
  "miniz_oxide",
  "process-proto",
@@ -1172,6 +1175,7 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "proptest",
+ "rustix",
  "thiserror",
 ]
 
@@ -1188,6 +1192,7 @@ dependencies = [
  "libc",
  "memmap2",
  "proptest",
+ "rustix",
  "sha2",
  "snapshot-store",
  "tempfile",

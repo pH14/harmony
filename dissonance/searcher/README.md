@@ -20,13 +20,36 @@ selection plus `action_cost` summed over its replay and suffix actions. Jobs
 are dispatched and admitted in planned-finish order, with ties broken by
 reservation, so a short job reserved after a long one does not wait for it.
 Job records carry their reservation, and replay checks that admissions follow
-planned-finish order and that reservations form a contiguous sequence. One coordinator
+planned-finish order and that reservations form a contiguous sequence within
+the recorded execution budget. One coordinator
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Schema version 11 appends a terminal record only after the campaign
-has drained its jobs and finished successfully. Replay requires that record and
-checks its job, skip, and admission totals, so a stream cut after a complete
+for replay. Replay checks the source fields allowed by each origin kind, requires
+an archive checkpoint exactly when the stream names one, and matches the supplied
+checkpoint path, format, serialized bytes, and digest before copying its provenance
+into a completed report. Live archive import verifies the same bytes before execution.
+It also checks the fixed executor and selection-seed derivation labels. The stream and
+completed report record the loaded Harmony executable identity separately from the
+workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
+its running code-directory hash. Replay fails closed when that identity cannot be
+read or differs, even if the guest image and workload policies match. The campaign
+reads the identity once before writing the stream and uses the same value for its
+checkpoints. Replay reconstructs adaptive mixture weights from each admitted
+result at the original reservation boundary and rejects job or skip weights
+that the recorded policy could not have produced. When the recorded policy
+stops the campaign on an objective, replay rejects work selected after it while allowing jobs
+already reserved in the admission window to finish. The same admission-window
+rule applies when cumulative work reaches the recorded work budget. Schema version 13
+requires the loaded executable identity and records the reservation that owns each
+duplicate skip. Replay checks that skips follow
+selection order, stay within the admission window, and do not exceed the live
+limit of 1,024 attempts for one reservation. A terminal record follows only
+after the campaign has drained its jobs and finished
+successfully. Replay requires that record and checks its job, skip, and
+admission totals. Without a wall-time limit, it also requires every reservation
+the deterministic stop policy would have made; intermediate prefix replay is
+still allowed. Thus a stream cut after a complete
 JSON line cannot be certified as a finished campaign. Callers that deliberately
 rebuild an intermediate state use `replay_campaign_prefix_checkpointed`, whose
 report mode is `campaign-prefix` and is not a completed-campaign certificate.
@@ -42,7 +65,10 @@ fixed reserves, so a budget smaller than that working set leaves the archive
 above its limit. The archive picks the anchor, and reactivates it when no entry
 is expandable, during the maintenance after bootstrap and after each admission
 and skip. Parent selection does not change the archive, so replay reaches the
-same archive state without repeating selection. The final report selects no
+same archive state without repeating selection. The recorded parent choice is
+an input to replay, while its tier rank must be below the archive population
+limit because no selector draw can name a tier beyond that many active entries.
+The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
 schedule policy version 5
@@ -347,7 +373,15 @@ progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
 `tier_rank_shift` is three unless the workload says otherwise, so the leading
 tier takes most of the draws, and no tier holding an entry takes zero. The
-leading tier gives up weight while it finds nothing new. Each tier counts its
+replay verifier bounds a recorded rank by completed progress levels in
+previously admitted archive entries when that selection was reserved. The
+bound includes historical levels that may no longer be selectable, so it
+rejects impossible ranks without claiming to
+reconstruct every selector draw.
+Replay also rejects a best-holder preference index outside the workload key's
+compiled portfolio; otherwise selector accounting would silently ignore it.
+
+The leading tier gives up weight while it finds nothing new. Each tier counts its
 draws since a new cell last appeared in it and keeps the longest such run; its
 pace is that longest run or its cell count, whichever is larger. When the
 current count passes twice the pace, the leading tier's weight halves, and it
@@ -446,6 +480,8 @@ highest, read from the slot's active holders when the splice is prepared. Each
 admission records itself as the deepest descendant of its ancestors until an
 ancestor already holds a deeper one, and that walk follows parent positions
 stored beside the entries.
+Campaign replay rebuilds ordinary splice selection before each recorded job or
+skip and rejects a donor, leaf, or action tail that differs from that selection.
 
 The archive builds each entry's input node by extending its parent's node with
 the entry's suffix, so a donor that owns its input node has an intact prefix of
@@ -487,9 +523,12 @@ length or longer from the same parent is still in flight, the next job runs one
 action instead. The job in flight already tests that length, and admission in
 planned-finish order returns long jobs late, so more jobs of that length would
 repeat the same test.
-Replay cuts the redrawn suffix to the recorded limit. It rejects a drawn job
-whose limit is missing or outside 1 to 64, and a spliced or continued job that
-records a limit.
+Replay rebuilds the parent's length and the limits held by earlier in-flight
+reservations before accepting each recorded job limit. It cuts the redrawn
+suffix to the recorded limit. It rejects a drawn job whose limit is missing or
+outside 1 to 64, and a spliced or continued job that records a limit. Replay also checks each drawn skip limit against the in-flight reservations at
+its selection point, including skips before the first admission. Reservations
+prefilled later in the window are excluded from that earlier selection state.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
@@ -659,7 +698,7 @@ the format name first, then checks the checksum before decoding the rest of the
 header or body, so byte changes that remain valid postcard data fail closed
 instead of changing the continuation. These
 checks detect corruption, not deliberate rewriting of a checkpoint and its
-checksum. `checkpoints.jsonl` records write time and sizes:
+checksum. `checkpoints.jsonl` records each checkpoint's SHA-256, write time and sizes:
 `store_bytes` is the store's length, `live_snapshot_bytes` is the bytes that
 kept checkpoints list, and `freed_snapshots` and `freed_snapshot_bytes` count
 what the write's pruning released. The
@@ -669,16 +708,26 @@ checkpoint of any other layout before it decodes the body. The
 archive stores its `SelectorAccounting` as JSON inside that body, so a counter
 added there, such as `tier_runs`, reads as empty from a checkpoint written
 before the counter existed.
-`CampaignOrigin::SearchCheckpoint` resumes one. The admission
-window, limits, workload identity and the workload policies that give stored
-inputs and keys their meaning must match. The mixture and retention
-policies, the selector, the continuation policy and the objective stop may
-change, so a search can continue under a revised algorithm. The draw table
-policy, the preference portfolio and a workload's `preference_policy` may also
-change, because their state is rebuilt from the archive entries: new draw
-tables fold every entry's suffix, and each slot re-ranks its holders under the
-new preference order and capacity. The origin record and stream header list
-each change as `checkpoint_policy_changes`. The same seed
+The header also carries the optional search owner supplied by `CheckpointPlan`.
+Harmony's saved-run manifest records that owner before search begins and checks
+it before resume, so a checkpoint from another run cannot impersonate the
+interrupted run's latest checkpoint. A completed saved run also binds the
+selected checkpoint's SHA-256. `CampaignOrigin::SearchCheckpoint` resumes one.
+When that origin carries a selected SHA-256, replay compares it with the exact
+checkpoint bytes opened for resume before restoring state.
+The admission window, limits, workload identity, loaded executable identity,
+and the workload policies that give stored inputs and keys their meaning must
+match. The search checkpoint format is version 7; a checkpoint from another
+executable is refused before the new stream is written. Within that same
+executable, the generic campaign configuration may change mixture, retention
+and either objective-stop setting at runtime. The selector and continuation
+identifiers are compiled constants; draw-table and preference identifiers come
+from workload behavior. The resume policy map structurally permits differences
+in these identifiers, but any change requiring a rebuilt executable fails the
+executable-identity check. A searcher code change likewise requires
+comparison from rooted inputs or a fresh power-on run. Accepted runtime
+policy changes appear in the origin record and stream header as
+`checkpoint_policy_changes`. The same seed
 repeats the original progress lines; another seed derives a new selection random
 state and keeps everything else. The draw tables continue their table hash
 from the recorded one, so stream draw-table hashes after a resume differ from an

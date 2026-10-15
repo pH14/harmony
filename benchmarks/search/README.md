@@ -127,11 +127,16 @@ output directory. `checkpoint_every` writes one every that many executions, and
 `checkpoint_on_progress` writes one whenever the game first reaches a
 milestone, as `workloads/nes/README.md` defines it, or the archive opens a
 higher tier. `resume` names a checkpoint file
-and continues that search. The executions and frame budgets count from the
-original power-on, so a resumed run stops where the original would have. A
-resume with the same seed repeats the original progress lines after the
-checkpoint; a different seed keeps the archive and draws new choices. Resumed
-runs use witness verification, because their stream starts at the checkpoint.
+and continues that search under the exact loaded executable that wrote the
+checkpoint. Compare changed builds from rooted inputs or fresh power-on runs.
+The native `nes-eval` request exposes only mixture as a runtime policy setting;
+retention, objective-stop, selector, continuation, draw-table and preference
+settings are fixed for that evaluator. The executions and frame budgets count
+from the original power-on, so a resumed
+run stops where the original would have. A resume with the same seed
+repeats the original progress lines after the checkpoint; a different seed keeps
+the archive and draws new choices. Resumed runs use witness verification,
+because their stream starts at the checkpoint.
 
 ## Registered panels
 

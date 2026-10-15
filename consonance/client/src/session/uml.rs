@@ -12,7 +12,7 @@ use environment::{
     input_spec::{ServiceConfig, ServiceFactory},
 };
 use sha2::{Digest, Sha256};
-use uml::{Bridge, Capture, Checkpoint, Checkpoints, ExitReason, Launch, Stop, VerifiedProfile};
+use uml::{Bridge, Capture, Checkpoint, Checkpoints, Launch, Stop, VerifiedProfile};
 
 use super::{SdkEvent, SearchSession, SessionError, UmlLaunch};
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
@@ -53,22 +53,23 @@ fn root_identity(
     profile: &VerifiedProfile,
     host: &uml::HostIdentity,
     initramfs: &[u8],
+    loaded_executable: &str,
 ) -> [u8; 32] {
     let mut identity = Sha256::new();
-    identity.update(b"harmony-uml-root-v2\0");
+    identity.update(b"harmony-uml-root-v5\0");
+    identity.update((loaded_executable.len() as u64).to_le_bytes());
+    identity.update(loaded_executable.as_bytes());
     identity.update(profile.identity_sha256().as_bytes());
-    for field in [&host.architecture, &host.cpu_model, &host.cpu_features] {
-        identity.update((field.len() as u64).to_le_bytes());
-        identity.update(field.as_bytes());
-    }
-    identity.update((host.processor as u64).to_le_bytes());
+    identity.update(host.identity_sha256().as_bytes());
     identity.update(config.seed.to_le_bytes());
     identity.update(config.memory_mib.to_le_bytes());
     identity.update(config.setup_budget.to_le_bytes());
+    identity.update((config.kernel_arguments.len() as u64).to_le_bytes());
     for argument in &config.kernel_arguments {
         identity.update((argument.len() as u64).to_le_bytes());
         identity.update(argument.as_bytes());
     }
+    identity.update((initramfs.len() as u64).to_le_bytes());
     identity.update(initramfs);
     identity.finalize().into()
 }
@@ -155,10 +156,23 @@ impl UmlSession {
         let initramfs = launch
             .initramfs_bytes()?
             .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?;
-        let root_identity = root_identity(config, &profile, &host, &initramfs);
+        let actual_initramfs_sha256: [u8; 32] = Sha256::digest(&initramfs).into();
+        if actual_initramfs_sha256 != config.expected_initramfs_sha256 {
+            return Err(SessionError::Control(
+                "the pinned UML initramfs changed after workload admission".into(),
+            )
+            .into());
+        }
+        let loaded_executable = crate::image_identity::loaded_executable_identity_self()?;
+        let root_identity = root_identity(config, &profile, &host, &initramfs, &loaded_executable);
         let checkpoints = Checkpoints::new();
-        let mut session = uml::Session::spawn(&launch, &profile, &checkpoints, None)?;
-        session.set_progress_limit(Some(config.progress_limit));
+        let mut session = uml::Session::spawn(
+            &launch,
+            &profile,
+            &checkpoints,
+            None,
+            Some(config.progress_limit),
+        )?;
         session.branch(
             config.seed,
             handler(&factory, &ServiceConfig::default())?,
@@ -223,7 +237,10 @@ impl UmlSession {
 
     fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
         let begun = started();
-        let checkpoint = self.live()?.capture(Capture::default())?;
+        let checkpoint = self
+            .live()?
+            .capture(Capture::default())
+            .map_err(|error| self.abandon(error))?;
         self.counters.captures.since(begun);
         let id = SnapId(self.next);
         self.next += 1;
@@ -248,30 +265,29 @@ impl UmlSession {
         }
         let begun = started();
         if let Some(session) = self.session.as_mut().filter(|session| session.paused()) {
-            session.restore(checkpoint)?;
+            session
+                .restore(checkpoint)
+                .map_err(|error| self.abandon(error))?;
             self.counters.restores.since(begun);
             return Ok(());
         }
         self.session = None;
-        let mut session = uml::Session::spawn(
+        let session = uml::Session::spawn(
             &self.launch,
             &self.profile,
             &self.checkpoints,
             Some(checkpoint),
-        )?;
-        session.set_progress_limit(Some(self.progress_limit));
+            Some(self.progress_limit),
+        )
+        .map_err(|error| self.abandon(error))?;
         self.session = Some(session);
         self.counters.fresh_restores.since(begun);
         Ok(())
     }
 
-    fn crash(
-        &mut self,
-        moment: u64,
-        reason: Option<ExitReason>,
-    ) -> Result<StopReason, Box<dyn Error>> {
+    fn crash(&mut self, moment: u64) -> Result<StopReason, Box<dyn Error>> {
         let limit = self.progress_limit;
-        let terminal_reason = match self.live()?.settle_terminal_console(reason, limit) {
+        let terminal_reason = match self.live()?.settle_terminal_console(limit) {
             Ok(reason) => reason,
             Err(error) => return Err(self.abandon(error)),
         };
@@ -301,9 +317,26 @@ impl UmlSession {
             .take()
             .map(|session| session.console_tail())
             .unwrap_or_default();
-        match error {
-            uml::SessionError::Hung(limit) => SessionError::Hung(limit).into(),
-            error => SessionError::Control(format!("{error}\n{tail}")).into(),
+        if let uml::SessionError::Boot {
+            error: boot_error,
+            console,
+        } = &error
+            && matches!(boot_error.as_ref(), uml::SessionError::Hung(_))
+            && !console.is_empty()
+        {
+            eprintln!("UML restore boot watchdog console:\n{console}");
+        }
+        let hung = match &error {
+            uml::SessionError::Hung(limit) => Some(*limit),
+            uml::SessionError::Boot { error, .. } => match error.as_ref() {
+                uml::SessionError::Hung(limit) => Some(*limit),
+                _ => None,
+            },
+            _ => None,
+        };
+        match hung {
+            Some(limit) => SessionError::Hung(limit).into(),
+            None => SessionError::Control(format!("{error}\n{tail}")).into(),
         }
     }
 }
@@ -545,10 +578,7 @@ impl SearchSession for UmlSession {
             Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
                 vtime: Moment(moment),
             }),
-            Ok(Stop::Stopped(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_)))) => {
-                self.crash(latest, Some(reason))
-            }
-            Ok(Stop::Closed) => self.crash(latest, None),
+            Ok(Stop::Closed) => self.crash(latest),
             Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
                 "the guest stopped at {stop:?}"
             )))),
@@ -608,7 +638,7 @@ mod tests {
             ),
         };
         let profile = Profile {
-            schema: 2,
+            schema: 4,
             architecture: std::env::consts::ARCH.into(),
             kernel_version: String::new(),
             userspace: "seccomp".into(),
@@ -641,6 +671,8 @@ mod tests {
             processor: 0,
             cpu_model: "model".into(),
             cpu_features: "features".into(),
+            boot_cpuinfo: "flags: features\n".into(),
+            auxv: uml::HostAuxv::default(),
         }
     }
 
@@ -662,6 +694,138 @@ mod tests {
             abandoned: false,
             counters: Counters::default(),
         }
+    }
+
+    #[test]
+    fn fresh_restore_timeout_abandons_with_a_typed_watchdog_error() {
+        let limit = Duration::from_millis(25);
+        let mut session = unbooted_session();
+        let error = session.abandon(uml::SessionError::Boot {
+            error: Box::new(uml::SessionError::Hung(limit)),
+            console: "restore wait".into(),
+        });
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Hung(got)) if *got == limit
+        ));
+        assert!(session.abandoned);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn capture_timeout_abandons_with_a_typed_watchdog_error() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        if std::env::var_os("HARMONY_UML_CAPTURE_CHILD").is_some() {
+            // SAFETY: the UML launcher passes the owned bridge socket at fd 3.
+            let mut socket = unsafe { std::fs::File::from_raw_fd(3) };
+            socket.write_all(&100_u64.to_le_bytes()).unwrap();
+            let mut control = [0_u8; 16];
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::MAX;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::uml::tests::capture_timeout_abandons_with_a_typed_watchdog_error --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_CAPTURE_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let limit = Duration::from_secs(2);
+        let mut guest =
+            uml::Session::start(command, work, &launch, &checkpoints, None, Some(limit)).unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let mut session = unbooted_session();
+        session.session = Some(guest);
+        session.checkpoints = checkpoints;
+        let error = session.snapshot().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Hung(got)) if *got == limit
+        ));
+        assert!(session.abandoned());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn paused_restore_timeout_abandons_with_a_typed_watchdog_error() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        if std::env::var_os("HARMONY_UML_RESTORE_CHILD").is_some() {
+            // SAFETY: the UML launcher passes distinct owned bridge and memory descriptors.
+            let (mut socket, memory) =
+                unsafe { (std::fs::File::from_raw_fd(3), std::fs::File::from_raw_fd(4)) };
+            memory.set_len(4 * 4096).unwrap();
+            socket.write_all(&100_u64.to_le_bytes()).unwrap();
+            let mut control = [0_u8; 16];
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
+            let ack = |command: u32, result: i64| {
+                let mut frame = [0_u8; 16];
+                frame[..4].copy_from_slice(&0x3143_5548_u32.to_le_bytes());
+                frame[4..8].copy_from_slice(&command.to_le_bytes());
+                frame[8..].copy_from_slice(&result.to_le_bytes());
+                frame
+            };
+            socket.write_all(&ack(4, 1)).unwrap();
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+            socket.write_all(&ack(1, 0)).unwrap();
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 2);
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::MAX;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_RESTORE_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let limit = Duration::from_secs(2);
+        let mut guest =
+            uml::Session::start(command, work, &launch, &checkpoints, None, Some(limit)).unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let checkpoint = guest.capture(Capture::default()).unwrap();
+        assert!(guest.paused());
+
+        let mut session = unbooted_session();
+        session.host = launch.host_identity().unwrap();
+        session.launch = launch;
+        session.checkpoints = checkpoints;
+        session.session = Some(guest);
+        session.snapshots.insert(SnapId(1), checkpoint);
+        let error = session.restore(SnapId(1)).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Hung(got)) if *got == limit
+        ));
+        assert!(session.abandoned());
     }
 
     fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
@@ -686,6 +850,7 @@ mod tests {
             expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
             expected_host: host(),
             initramfs: directory.path().join("rootfs"),
+            expected_initramfs_sha256: Sha256::digest(b"rootfs").into(),
             memory_mib: 128,
             kernel_arguments: Vec::new(),
             work_parent: directory.path().to_path_buf(),
@@ -695,6 +860,32 @@ mod tests {
         };
         let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
         assert!(error.to_string().contains("profile identity changed"));
+    }
+
+    #[test]
+    fn initramfs_changed_after_admission_rejects_before_guest_boot() {
+        let (directory, admitted) = profile_fixture();
+        let path = directory.path().join("override.cpio");
+        std::fs::write(&path, b"changed initramfs").unwrap();
+        let config = UmlLaunch {
+            profile: directory.path().to_path_buf(),
+            expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
+            expected_host: uml::HostIdentity::current().unwrap(),
+            initramfs: path,
+            expected_initramfs_sha256: Sha256::digest(b"admitted initramfs").into(),
+            memory_mib: 128,
+            kernel_arguments: Vec::new(),
+            work_parent: directory.path().to_path_buf(),
+            seed: 1,
+            setup_budget: 1,
+            progress_limit: Duration::from_secs(1),
+        };
+        let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("initramfs changed after workload admission")
+        );
     }
 
     #[test]
@@ -740,6 +931,7 @@ mod tests {
             expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
             expected_host: host.clone(),
             initramfs: PathBuf::new(),
+            expected_initramfs_sha256: Sha256::digest(b"initramfs").into(),
             memory_mib: 128,
             kernel_arguments: vec!["rdinit=/init".into()],
             work_parent: PathBuf::new(),
@@ -747,11 +939,19 @@ mod tests {
             setup_budget: 100,
             progress_limit: Duration::from_secs(1),
         };
-        let local = root_identity(&config, &profile, &host, b"initramfs");
+        let local = root_identity(&config, &profile, &host, b"initramfs", "loaded-a");
         let mut foreign_host = host.clone();
         foreign_host.processor ^= 1;
-        let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs");
+        let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs", "loaded-a");
         assert_ne!(local, foreign);
+        let mut foreign_boot = host.clone();
+        foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
+        assert_ne!(
+            local,
+            root_identity(&config, &profile, &foreign_boot, b"initramfs", "loaded-a")
+        );
+        let foreign_executable = root_identity(&config, &profile, &host, b"initramfs", "loaded-b");
+        assert_ne!(local, foreign_executable);
 
         let index = LocalIndex::new(1 << 20);
         let mut session = unbooted_session();
@@ -766,5 +966,40 @@ mod tests {
         assert_eq!(session.snapshots.len(), 0);
         assert_eq!(session.next, 1);
         index.release(root);
+
+        let foreign = extent(&index, b"foreign-executable-root", foreign_executable);
+        let error = session.import_root(&index, &foreign).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached snapshot identity differs")
+        );
+        assert_eq!(session.snapshots.len(), 0);
+        index.release(foreign);
+    }
+
+    #[test]
+    fn root_identity_separates_boot_arguments_from_initramfs_bytes() {
+        let profile = profile();
+        let host = host();
+        let mut config = UmlLaunch {
+            profile: PathBuf::new(),
+            expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
+            expected_host: host.clone(),
+            initramfs: PathBuf::new(),
+            expected_initramfs_sha256: Sha256::digest(b"070701").into(),
+            memory_mib: 128,
+            kernel_arguments: vec![String::new()],
+            work_parent: PathBuf::new(),
+            seed: 7,
+            setup_budget: 100,
+            progress_limit: Duration::from_secs(1),
+        };
+        let with_empty_argument = root_identity(&config, &profile, &host, b"070701", "loaded-a");
+        config.kernel_arguments.clear();
+        let mut padded_initramfs = [0_u8; 8].to_vec();
+        padded_initramfs.extend_from_slice(b"070701");
+        let with_padding = root_identity(&config, &profile, &host, &padded_initramfs, "loaded-a");
+        assert_ne!(with_empty_argument, with_padding);
     }
 }

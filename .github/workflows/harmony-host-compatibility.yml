@@ -150,6 +150,26 @@ jobs:
           cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
             --no-fail-fast 2>&1 | tee -a host-tests.log
           scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+
+  linux-arm64-qualification:
+    name: Linux Arm64 Qualification
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-host-compatibility-linux-arm64-qualification
+          workspaces: |
+            . -> target
+            dissonance -> target
       - name: Compare ARM and software SHA-256 in one executable
         run: |
           cargo fetch --locked

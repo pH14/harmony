@@ -1,0 +1,56 @@
+Keep host tempdir names out of UML console evidence
+
+The launcher gives each boot a private, randomly named work directory. UML
+previously printed that path during normal startup, so identical launches
+recorded different console bytes. Keep the isolation but print stable labels.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/mem.c
++++ b/arch/um/os-Linux/mem.c
+@@ -62,7 +62,7 @@
+ {
+ 	struct statfs st;
+ 
+-	os_info("Checking if %s is on tmpfs...", dir);
++	os_info("Checking if the tempdir is on tmpfs...");
+ 	if (statfs(dir, &st) < 0) {
+ 		os_info("%s\n", strerror(errno));
+ 	} else if (st.f_type != TMPFS_MAGIC) {
+@@ -102,7 +102,7 @@
+ 	for (i = 0; vars[i]; i++) {
+ 		dir = getenv(vars[i]);
+ 		if ((dir != NULL) && (*dir != '\0')) {
+-			os_info("%s\n", dir);
++			os_info("found\n");
+ 			if (check_tmpfs(dir) >= 0)
+ 				goto done;
+ 			else
+@@ -119,7 +119,7 @@
+ 
+ 	dir = fallback_dir;
+ warn:
+-	os_warn("Warning: tempdir %s is not on tmpfs\n", dir);
++	os_warn("Warning: tempdir is not on tmpfs\n");
+ done:
+ 	/* Make a copy since getenv results may not remain valid forever. */
+ 	return strdup(dir);
+@@ -263,13 +263,13 @@
+ 
+ 	addr = mmap(NULL, UM_KERN_PAGE_SIZE,
+ 		    PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE, fd, 0);
+-	os_info("Checking PROT_EXEC mmap in %s...", tempdir);
++	os_info("Checking PROT_EXEC mmap in the tempdir...");
+ 	if (addr == MAP_FAILED) {
+ 		err = errno;
+ 		os_warn("%s\n", strerror(err));
+ 		close(fd);
+ 		if (err == EPERM)
+-			os_warn("%s must be not mounted noexec\n", tempdir);
++			os_warn("the tempdir must not be mounted noexec\n");
+ 		exit(1);
+ 	}
+ 	os_info("OK\n");

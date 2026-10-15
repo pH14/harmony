@@ -454,6 +454,15 @@ impl Vendor for Arm64 {
         Arm64Devices::new()
     }
 
+    fn validate_vtime_clock_offset(clock_offset: u64) -> Result<(), VmmError> {
+        if clock_offset != 0 {
+            return Err(VmmError::ContractViolation(
+                "arm64 virtual-time clock offset must be zero".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn mmio_holes() -> &'static [(u64, u64)] {
         &[]
     }
@@ -523,6 +532,13 @@ impl Vendor for Arm64 {
 
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)> {
         vmm.clockevent_trace_schedule_arm64()
+    }
+
+    fn restored_clockevent_trace_schedule_present<B: Backend<A = Self>>(
+        vmm: &Vmm<B>,
+        prep: &Self::RestorePrep,
+    ) -> bool {
+        vmm.restored_clockevent_trace_schedule_present_arm64(prep)
     }
 
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(

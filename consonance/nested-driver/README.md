@@ -46,8 +46,10 @@ and importing into a new process. Its ignored `cold_snapshot_child` helper is
 started by the matrix, with separate capture and import modes; it is not a
 standalone qualification. Each output must agree with the independent oracle,
 with one inner creation and zero imports at every boundary.
-Every restored RAM page must match the cut before continuing L2, with no
-in-place restore fallback.
+Every restored RAM page must match the cut before continuing L2. Intel keeps
+the in-place restore path; AMD SVM requires one fresh-VM fallback per restore
+because a previously run AMD vCPU cannot be safely restored in place. The
+matrix checks that exact fallback count while comparing L2 state and output.
 On an oracle failure, dedicated SDK registers publish the actual bytes, the
 guest's expected bytes and the step before stopping at the assertion. The
 host prints those values alongside its independent expected bytes. The matrix
@@ -96,7 +98,8 @@ ExportImport failure prefix. The operation workload enables KVM's invalid
 VMCS dump in the L1 kernel command line so a rejected VM entry retains the
 guest, host, and control fields in the console evidence. Fork and portable import use production
 control operations.
-Any in-place fallback fails instead of recreating the inner VM.
+The SDK search path requires in-place restore on its Intel VMX host; any
+fallback there fails instead of recreating the outer VM.
 
 Four always assertions cover the L2 oracle, restore readback, operation errors
 and identical replay outputs. Thirty-six sometimes assertions cover ordered
@@ -140,8 +143,9 @@ reset starts a new attempt. Portable adapter tests exercise preparation-failure
 evidence through the generic rollout, report serialization and checkpoint
 roundtrip without requiring KVM.
 
-The hosted qualification runs a bounded search and replays its complete stream,
-checking execution counts, work, coverage, stream digest and failure evidence.
+The hosted qualification runs a bounded search, replays its complete stream,
+then replays the replayed run. It checks execution counts, work, coverage,
+stream digest and failure evidence across all three reports.
 It attempts replay even when the search reports a failing assertion, preserving
 both exit statuses and logs while retaining the failed qualification result.
 The runner must expose KVM-supported VMX or SVM with NPT and
@@ -158,3 +162,11 @@ nested-host kernel and `base_initramfs` to the OCI base. The adapter captures th
 prepared initramfs and kernel; developer verification uses `harmony debug replay
 SEARCH`. Host search accepts wall budgets in seconds. Historical qualification
 continues to invoke the historical binary's own CLI.
+The host producer returns its serialized report bytes to the adapter as well as
+writing `report.json`; the adapter requires the moved file to match those bytes
+before it records a completed search or replay.
+Developer replay also compares the saved report with the freshly rederived
+report. A saved search must have no materialized archive entries; replay ignores
+only the fresh entries materialized while verifying that search. If a different
+source mode reaches report comparison, every field, including its entries, must
+agree. Execution counts, work, evidence and stream identity must always agree.

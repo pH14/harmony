@@ -247,7 +247,7 @@ jobs:
         run: |
           report_dir=reports
           if [[ "$RUN_KEY" != "$CASE_ID" ]]; then report_dir="reports/$RUN_KEY"; fi
-          scripts/historical-replay.sh reproduce "$report_dir/${CASE_ID}.search/first-bug-input.json"
+          scripts/historical-replay.sh reproduce "$report_dir/${CASE_ID}.search/report.json"
       - uses: actions/upload-artifact@v4
         if: always()
         with:

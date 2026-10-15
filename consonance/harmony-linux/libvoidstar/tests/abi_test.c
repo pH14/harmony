@@ -20,6 +20,9 @@ static int coverage_requested;
 static int invalid_coverage_response;
 static int reenter_during_exchange;
 static int reenter_during_entropy;
+static int entropy_failure;
+static int zero_entropy_response;
+static int json_failure;
 
 bool notify_coverage(size_t edge);
 
@@ -27,6 +30,14 @@ static int mock_open(const char *path, int flags)
 {
     assert(strcmp(path, "/dev/harmony") == 0);
     assert((flags & O_CLOEXEC) != 0);
+    if (entropy_failure == 1 && (flags & O_ACCMODE) == O_RDWR) {
+        errno = EIO;
+        return -1;
+    }
+    if (json_failure == 1 && (flags & O_ACCMODE) == O_WRONLY) {
+        errno = EIO;
+        return -1;
+    }
     return 7;
 }
 
@@ -40,6 +51,12 @@ static ssize_t mock_write(int fd, const void *data, size_t size)
 {
     assert(fd == 7);
     if (size == 1 && *(const unsigned char *)data == 0) {
+        if (entropy_failure == 2) {
+            errno = EIO;
+            return -1;
+        }
+        if (entropy_failure == 4)
+            return 0;
         entropy_requested = 1;
         return 1;
     }
@@ -49,6 +66,12 @@ static ssize_t mock_write(int fd, const void *data, size_t size)
         coverage_requested = 1;
         return (ssize_t)size;
     }
+    if (json_failure == 2) {
+        errno = EIO;
+        return -1;
+    }
+    if (json_failure == 3)
+        return 0;
     assert(captured_len + size <= sizeof(captured));
     memcpy(captured + captured_len, data, size);
     captured_len += size;
@@ -93,13 +116,22 @@ static ssize_t mock_read(int fd, void *data, size_t size)
     }
     assert(entropy_requested);
     assert(size == sizeof(entropy));
+    if (entropy_failure == 3) {
+        errno = EIO;
+        return -1;
+    }
+    if (entropy_failure == 5)
+        return 0;
     if (reenter_during_entropy) {
         size_t before = coverage_requests;
         reenter_during_entropy = 0;
         assert(notify_coverage(6));
         assert(coverage_requests == before);
     }
-    memcpy(data, entropy, sizeof(entropy));
+    if (zero_entropy_response)
+        memset(data, 0, sizeof(entropy));
+    else
+        memcpy(data, entropy, sizeof(entropy));
     return (ssize_t)sizeof(entropy);
 }
 
@@ -121,6 +153,58 @@ static void *worker(void *argument)
     return NULL;
 }
 
+static void assert_entropy_failure_aborts(int failure)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        struct rlimit limit = {0, 0};
+        assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+        entropy_failure = failure;
+        (void)fuzz_get_random();
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void assert_json_failure_aborts(int failure)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        static const char event[] = "{\"antithesis_assert\":{}}";
+        struct rlimit limit = {0, 0};
+        assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+        json_failure = failure;
+        fuzz_json_data(event, sizeof(event) - 1);
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
+static void assert_invalid_json_aborts(bool null_data)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        static const char event[] = "{\"antithesis_assert\":{}}";
+        struct rlimit limit = {0, 0};
+        assert(setrlimit(RLIMIT_CORE, &limit) == 0);
+        if (null_data)
+            fuzz_json_data(NULL, 1);
+        else
+            fuzz_json_data(event, SIZE_MAX);
+        _exit(0);
+    }
+    int status;
+    assert(waitpid(child, &status, 0) == child);
+    assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+}
+
 int main(void)
 {
     static const char event[] = "{\"antithesis_assert\":{}}";
@@ -131,6 +215,9 @@ int main(void)
     assert(captured_len == sizeof(event) - 1);
     assert(memcmp(captured, event, captured_len) == 0);
     assert(fuzz_get_random() == UINT64_C(0x0102030405060708));
+    zero_entropy_response = 1;
+    assert(fuzz_get_random() == 0);
+    zero_entropy_response = 0;
     fuzz_flush();
     assert(init_coverage_module(3, "first.sym.tsv") == 0);
     assert(init_coverage_module(4, "second.sym.tsv") == 4);
@@ -201,5 +288,15 @@ int main(void)
     int status;
     assert(waitpid(child, &status, 0) == child);
     assert(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    assert_entropy_failure_aborts(1);
+    assert_entropy_failure_aborts(2);
+    assert_entropy_failure_aborts(3);
+    assert_entropy_failure_aborts(4);
+    assert_entropy_failure_aborts(5);
+    assert_json_failure_aborts(1);
+    assert_json_failure_aborts(2);
+    assert_json_failure_aborts(3);
+    assert_invalid_json_aborts(true);
+    assert_invalid_json_aborts(false);
     return 0;
 }

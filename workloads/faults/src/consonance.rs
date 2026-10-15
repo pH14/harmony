@@ -63,7 +63,7 @@ pub struct FaultConfig {
 pub enum GuestBackend {
     #[default]
     Vm,
-    Uml(UmlGuest),
+    Uml(Box<UmlGuest>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -80,7 +80,9 @@ impl UmlGuest {
         let verified = uml::Profile::load(profile)
             .map_err(|error| format!("User-mode Linux profile: {error}"))?;
         let host = Self::default_host()?;
-        let identity = Self::identity(verified.identity_sha256(), &host);
+        let executable = consonance_client::image_identity::loaded_executable_identity_self()
+            .map_err(|error| format!("loaded Harmony executable: {error}"))?;
+        let identity = Self::identity(verified.identity_sha256(), &host, &executable);
         Ok(Self {
             profile: profile.to_path_buf(),
             profile_identity_sha256: verified.identity_sha256().to_owned(),
@@ -108,13 +110,10 @@ impl UmlGuest {
         }
     }
 
-    fn identity(profile: &str, host: &uml::HostIdentity) -> String {
+    fn identity(profile: &str, host: &uml::HostIdentity, executable: &str) -> String {
         format!(
-            "profile={profile};architecture={};processor={};cpu={};features={:x}",
-            host.architecture,
-            host.processor,
-            host.cpu_model,
-            Sha256::digest(host.cpu_features.as_bytes())
+            "profile={profile};host={};host_executable={executable}",
+            host.identity_sha256()
         )
     }
 
@@ -153,7 +152,7 @@ impl FaultConfig {
     pub fn uml(&self) -> Option<&UmlGuest> {
         match &self.backend {
             GuestBackend::Vm => None,
-            GuestBackend::Uml(guest) => Some(guest),
+            GuestBackend::Uml(guest) => Some(guest.as_ref()),
         }
     }
 
@@ -367,7 +366,13 @@ fn uml_launch(
     let path = guest
         .work_parent
         .join(format!("harmony-initramfs-{digest:x}.cpio"));
-    if !path.exists() {
+    if path.exists() {
+        let staged =
+            std::fs::read(&path).map_err(|error| format!("read staged initramfs: {error}"))?;
+        if staged != initramfs {
+            return Err("staged initramfs differs from the requested image".into());
+        }
+    } else {
         let mut staged = tempfile::NamedTempFile::new_in(&guest.work_parent)
             .map_err(|error| format!("stage initramfs: {error}"))?;
         std::io::Write::write_all(&mut staged, initramfs)
@@ -381,6 +386,7 @@ fn uml_launch(
         expected_profile_identity_sha256: guest.profile_identity_sha256.clone(),
         expected_host: guest.host.clone(),
         initramfs: path,
+        expected_initramfs_sha256: digest.into(),
         memory_mib: config.ram_mib,
         kernel_arguments: UmlGuest::kernel_arguments(&config.knobs),
         work_parent: guest.work_parent.clone(),
@@ -521,7 +527,7 @@ impl FaultTarget {
         worker: Option<WorkerLauncher>,
     ) -> Result<Self, String> {
         let config = Arc::new(Config {
-            key: Sha256::digest(identity(kernel, initramfs, config)).into(),
+            key: Sha256::digest(identity(kernel, initramfs, config)?).into(),
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
@@ -1037,12 +1043,9 @@ impl Live {
 
     fn replay(&mut self, snapshot: SnapId) -> Result<(), String> {
         let restore_started = started();
-        let result = self
-            .session
-            .replay_snapshot(snapshot)
-            .map_err(|error| format!("replay: {error}"));
+        let result = self.session.replay_snapshot(snapshot);
         self.telemetry.restores.since(restore_started);
-        result
+        result.map_err(|error| self.abandon("replay", error.as_ref()))
     }
 
     fn drop_snapshots(&mut self, snapshots: Vec<SnapId>) -> Result<(), String> {
@@ -1235,10 +1238,9 @@ impl Live {
         let branch_started = started();
         let result = self
             .session
-            .branch_with_service(parent.snap, config, Vec::new(), Vec::new())
-            .map_err(|error| format!("branch: {error}"));
+            .branch_with_service(parent.snap, config, Vec::new(), Vec::new());
         self.telemetry.branches.since(branch_started);
-        result
+        result.map_err(|error| self.abandon("branch", error.as_ref()))
     }
 
     fn run_action(
@@ -1358,33 +1360,40 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
         )
 }
 
-#[must_use]
-pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
-    let base = base_identity(kernel, initramfs, config);
-    match &config.root {
+pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
+    let base = base_identity(kernel, initramfs, config)?;
+    Ok(match &config.root {
         Some(root) => format!("{base};root={:x}", Sha256::digest(root.as_slice())),
         None => base,
-    }
+    })
 }
 
-fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
+fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
     if let Some(guest) = config.uml() {
-        return format!(
-            "faults-uml-v1;{};executable={:x};initramfs={:x};memory_mib={};arguments={};\
+        let arguments = UmlGuest::kernel_arguments(&config.knobs);
+        let mut arguments_digest = Sha256::new();
+        arguments_digest.update(b"faults-uml-kernel-arguments-v1\0");
+        arguments_digest.update((arguments.len() as u64).to_le_bytes());
+        for argument in arguments {
+            arguments_digest.update((argument.len() as u64).to_le_bytes());
+            arguments_digest.update(argument.as_bytes());
+        }
+        return Ok(format!(
+            "faults-uml-v2;{};executable={:x};initramfs={:x};memory_mib={};arguments-sha256={:x};\
              seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
              action=standing-fault-delta-v4;snapshot=uml-checkpoint-v2",
             guest.identity,
             Sha256::digest(kernel),
             Sha256::digest(initramfs),
             config.ram_mib,
-            UmlGuest::kernel_arguments(&config.knobs).join(" "),
-        );
+            arguments_digest.finalize(),
+        ));
     }
-    format!(
+    Ok(format!(
         "faults-consonance-whole-vm-v2;session={};\
          action=standing-fault-delta-v4;snapshot=portable-prefix-to-vm-snapshot-v2",
-        identity_with_config(kernel, initramfs, &config.session_config()),
-    )
+        identity_with_config(kernel, initramfs, &config.session_config())?,
+    ))
 }
 
 pub fn from_paths(
@@ -1413,6 +1422,8 @@ mod tests {
                 processor: 0,
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
+                boot_cpuinfo: "flags: features\n".into(),
+                auxv: uml::HostAuxv::default(),
             },
             identity: "admitted-host".into(),
             work_parent: directory.path().to_path_buf(),
@@ -1420,13 +1431,66 @@ mod tests {
         let config = FaultConfig {
             knobs: Vec::new(),
             ram_mib: DEFAULT_RAM_MIB,
-            backend: GuestBackend::Uml(guest.clone()),
+            backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
         assert_eq!(launch.expected_profile_identity_sha256, "admitted-profile");
         assert_eq!(launch.expected_host, guest.host);
-        assert_eq!(std::fs::read(launch.initramfs).unwrap(), b"initramfs");
+        assert_eq!(std::fs::read(&launch.initramfs).unwrap(), b"initramfs");
+        std::fs::write(&launch.initramfs, b"stale initramfs").unwrap();
+        assert!(uml_launch(&guest, b"initramfs", &config).is_err());
+        let mut foreign_boot = guest.host.clone();
+        foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
+        assert_ne!(
+            UmlGuest::identity("admitted-profile", &guest.host, "loaded-a"),
+            UmlGuest::identity("admitted-profile", &foreign_boot, "loaded-a")
+        );
+        assert_ne!(
+            UmlGuest::identity("admitted-profile", &guest.host, "loaded-a"),
+            UmlGuest::identity("admitted-profile", &guest.host, "loaded-b")
+        );
+    }
+
+    #[test]
+    fn uml_identity_distinguishes_kernel_argument_boundaries() {
+        let guest = UmlGuest {
+            profile: PathBuf::from("profile"),
+            profile_identity_sha256: "admitted-profile".into(),
+            host: uml::HostIdentity {
+                architecture: "x86_64".into(),
+                processor: 0,
+                cpu_model: "model".into(),
+                cpu_features: "features".into(),
+                boot_cpuinfo: "flags: features\n".into(),
+                auxv: uml::HostAuxv::default(),
+            },
+            identity: "admitted-host".into(),
+            work_parent: PathBuf::from("work"),
+        };
+        let mut joined = FaultConfig {
+            knobs: vec!["foo=bar root=/dev/ram0".into()],
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Uml(Box::new(guest)),
+            root: None,
+        };
+        let split = FaultConfig {
+            knobs: vec!["foo=bar".into(), "root=/dev/ram0".into()],
+            ..joined.clone()
+        };
+        assert_eq!(
+            UmlGuest::kernel_arguments(&joined.knobs).join(" "),
+            UmlGuest::kernel_arguments(&split.knobs).join(" ")
+        );
+        assert_ne!(
+            identity(b"kernel", b"initramfs", &joined),
+            identity(b"kernel", b"initramfs", &split)
+        );
+        joined.knobs = split.knobs.clone();
+        assert_eq!(
+            identity(b"kernel", b"initramfs", &joined),
+            identity(b"kernel", b"initramfs", &split)
+        );
     }
 
     #[test]
@@ -1468,6 +1532,148 @@ mod tests {
             guest_horizons_run: 0,
             root_seal: 0,
         }
+    }
+
+    #[derive(Debug)]
+    struct TimedOutRestore;
+
+    impl SearchSession for TimedOutRestore {
+        fn setup_handle(&self) -> (SnapId, u64) {
+            (SnapId(1), 0)
+        }
+
+        fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+
+        fn telemetry_counters(&self) -> Vec<(String, u64)> {
+            Vec::new()
+        }
+
+        fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
+            None
+        }
+
+        fn store_bytes(&self) -> Option<u64> {
+            None
+        }
+
+        fn publish_snapshot(
+            &self,
+            _: &dyn CacheIndex,
+            _: Namespace,
+            _: &[u8],
+            _: Option<(SnapId, &Lease)>,
+            _: SnapId,
+            _: u64,
+        ) -> Result<Lease, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn import_cached(
+            &mut self,
+            _: &dyn CacheIndex,
+            _: &Lease,
+            _: SnapId,
+        ) -> Result<(SnapId, u64), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn replay_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+            Err(SessionError::Hung(WALL_LIMIT).into())
+        }
+
+        fn drop_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn branch_with_service(
+            &mut self,
+            _: SnapId,
+            _: ServiceConfig,
+            _: Vec<Vec<u8>>,
+            _: Vec<(u64, environment::channel::Effect)>,
+        ) -> Result<(), Box<dyn Error>> {
+            Err(SessionError::Hung(WALL_LIMIT).into())
+        }
+
+        fn run_until(&mut self, _: u64) -> Result<StopReason, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn sdk_events(
+            &mut self,
+        ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn abandoned(&self) -> bool {
+            false
+        }
+    }
+
+    fn timed_out_live() -> Live {
+        Live {
+            key: [0; 32],
+            holder: 0,
+            session: Box::new(TimedOutRestore),
+            base_identity: [0; 32],
+            setup: SnapId(1),
+            windows: ActionWindows { root_seal: 0 },
+            inherited: Vec::new(),
+            chain: Chain::new(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                None,
+            ),
+            horizons_run: 0,
+            abandoned: false,
+            telemetry: LiveTelemetry::default(),
+        }
+    }
+
+    #[test]
+    fn replay_timeout_is_a_recoverable_watchdog_cutoff() {
+        let mut live = timed_out_live();
+        let error = live.replay(SnapId(1)).unwrap_err();
+        assert!(error.starts_with(WATCHDOG_CUTOFF));
+        assert!(live.abandoned);
+    }
+
+    #[test]
+    fn branch_restore_timeout_is_a_recoverable_watchdog_cutoff() {
+        let mut live = timed_out_live();
+        let error = live
+            .branch(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                &[],
+            )
+            .unwrap_err();
+        assert!(error.starts_with(WATCHDOG_CUTOFF));
+        assert!(live.abandoned);
+
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+        };
+        target.finish_restore(&snapshot, Err(error)).unwrap();
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(target.last_action_observations()[0].watchdog_cutoff);
     }
 
     #[test]

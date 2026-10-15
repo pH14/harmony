@@ -545,16 +545,16 @@ impl Drop for Mapping {
 pub struct WorkerLauncher {
     program: PathBuf,
     args: Vec<OsString>,
+    expected_image: String,
 }
 
 impl WorkerLauncher {
-    #[must_use]
-    pub fn new(program: PathBuf, args: Vec<OsString>) -> Self {
-        Self { program, args }
-    }
-
     pub fn current_exe(args: Vec<OsString>) -> io::Result<Self> {
-        Ok(Self::new(std::env::current_exe()?, args))
+        Ok(Self {
+            program: std::env::current_exe()?,
+            args,
+            expected_image: crate::image_identity::loaded_executable_identity_self()?,
+        })
     }
 
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
@@ -571,7 +571,23 @@ impl WorkerLauncher {
         unsafe {
             command.pre_exec(move || set_cloexec(raw, false));
         }
-        let process = command.spawn()?;
+        let mut process = command.spawn()?;
+        let actual = crate::image_identity::loaded_executable_identity_for_child(process.id());
+        let check = match actual {
+            Ok(actual) if actual == self.expected_image => Ok(()),
+            Ok(_) => Err(io::Error::other(
+                "session worker executable differs from launcher",
+            )),
+            Err(error) => Err(io::Error::new(
+                error.kind(),
+                format!("cannot identify session worker executable: {error}"),
+            )),
+        };
+        if let Err(error) = check {
+            let _ = process.kill();
+            let _ = process.wait();
+            return Err(error);
+        }
         drop(child);
         Ok((process, parent))
     }
@@ -1042,7 +1058,7 @@ impl Served {
             }
             BRANCH => {
                 let snap = SnapId(input.u64()?);
-                let spec = InputSpec::decode(input.bytes()?)
+                let spec = InputSpec::decode_reproducer(input.bytes()?)
                     .map_err(|error| format!("branch input: {error}"))?;
                 input.finish()?;
                 session.branch_input(snap, &spec)?;
@@ -1334,6 +1350,88 @@ mod tests {
         ])
         .unwrap();
         WorkerSession::spawn(&launcher, &[start], b"i", &config(), &[], "fake").unwrap()
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    #[test]
+    fn worker_launcher_rejects_replaced_running_image() {
+        let child_directory = std::env::var_os("HARMONY_WORKER_IDENTITY_CHILD_DIRECTORY");
+        if let Some(directory) = child_directory {
+            let directory = PathBuf::from(directory);
+            let launcher = WorkerLauncher::current_exe(vec![
+                "--exact".into(),
+                "session::worker::tests::serve_fake_worker".into(),
+                "--nocapture".into(),
+            ])
+            .unwrap();
+            std::fs::write(directory.join("ready"), b"ready").unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !directory.join("continue").exists() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "parent did not resume child"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let error =
+                WorkerSession::spawn(&launcher, &[3], b"i", &config(), &[], "fake").unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("session worker executable differs from launcher"),
+                "{error}"
+            );
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let running = directory.path().join("running-worker-test");
+        let replacement = directory.path().join("replacement-worker-test");
+        let original = std::env::current_exe().unwrap();
+        std::fs::copy(&original, &running).unwrap();
+        std::fs::copy(&original, &replacement).unwrap();
+        let marker = std::hint::black_box(b"harmony-worker-image-A-0001");
+        let mut bytes = std::fs::read(&replacement).unwrap();
+        let offset = bytes
+            .windows(marker.len())
+            .position(|window| window == marker)
+            .unwrap();
+        bytes[offset..offset + marker.len()].copy_from_slice(b"harmony-worker-image-B-0001");
+        std::fs::write(&replacement, bytes).unwrap();
+        #[cfg(target_os = "macos")]
+        assert!(
+            Command::new("codesign")
+                .args(["--force", "--sign", "-"])
+                .arg(&replacement)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let child = Command::new(&running)
+            .args([
+                "--exact",
+                "session::worker::tests::worker_launcher_rejects_replaced_running_image",
+                "--nocapture",
+            ])
+            .env("HARMONY_WORKER_IDENTITY_CHILD_DIRECTORY", directory.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !directory.path().join("ready").exists() {
+            assert!(std::time::Instant::now() < deadline, "child did not start");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        std::fs::rename(replacement, running).unwrap();
+        std::fs::write(directory.path().join("continue"), b"continue").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn kill(session: &WorkerSession) {

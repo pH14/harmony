@@ -25,11 +25,12 @@ tiny worlds.
 - **Hard part**: the stretch between two milestones where runs spend most of
   their tries or stall.
 - **Power-on run**: a search from a new game. It is the only completion test.
-- **Checkpoint**: a saved whole-search state that a later run resumes.
+- **Checkpoint**: a saved whole-search state that a later run of the same
+  loaded executable resumes.
 - **Rooted segment**: a search that starts from a recorded input with an empty
   archive.
-- **Checkpoint slice**: a resume of a power-on run's checkpoint just before a
-  hard part.
+- **Checkpoint slice**: a same-build resume of a power-on run's checkpoint
+  just before a hard part.
 - **Handoff**: the state a search carries into a hard part. The
   **best-stocked state** holds the most of the resources the hard part
   consumes, of any state the search has found at the hard part's start. The
@@ -102,7 +103,8 @@ Game iteration progress:
 - [ ] 5. Diagnose the gap from film; write one general change
 - [ ] 6. Tiny world for the hard part: the unchanged searcher loses as in the game
 - [ ] 7. Panel: reject clearly bad changes; write scorecard predictions
-- [ ] 8. Checkpoint slices, changed and unchanged, 3+ seeds each
+- [ ] 8. Same-build policy slices or paired cross-build rooted segments,
+      3+ seeds per arm
 - [ ] 9. Power-on run with the change
 - [ ] 10. Score the predictions; improve the tiny world that missed
 - [ ] 11. SMB three cells, panel, pull request
@@ -148,7 +150,8 @@ repeating ways:
 
 Run the current searcher from power-on on at least three seeds, keeping a
 checkpoint at each new milestone and each new top tier. The checkpoint at the
-milestone that opens each hard part is the start point for every later slice.
+milestone that opens each hard part is the start point for later same-build
+slices.
 Film the witness and the milestone tapes, and note where each seed spent its
 tries.
 
@@ -167,8 +170,8 @@ seeds and read which resources the passing seeds held.
   segment tries only with other segment tries.
 - A person picks each root, so a passing segment shows what the hard part
   needs, never that a single run will deliver it.
-- A change to the game reading cannot resume from an old checkpoint. Test it
-  with segments and a new power-on run.
+- A changed loaded executable or game reading cannot resume from an old
+  checkpoint. Test it with segments and a new power-on run.
 
 ### Step 4: Handoff comparison
 
@@ -195,9 +198,10 @@ stocked state to a hard part has to search the route.
 3. Find the existing searcher component that does the job badly: selection,
    retention and preference, continuation replay, the suffix draw, or the
    workload's key. Change that component in general terms.
-4. Make one change per test. Check that a searcher change can resume from a
-   checkpoint. A key change cannot resume one, so step 8 tests it with rooted
-   segments.
+4. Make one change per test. A checkpoint resumes only under the exact
+   loaded executable that wrote it. Step 8 tests a runtime policy change with
+   same-build checkpoint slices; a changed searcher binary or workload key
+   uses rooted segments and a new power-on run.
 
 Some searcher behaviours recur across games. Check for them, and treat them as
 starting questions, never as answers:
@@ -242,20 +246,27 @@ in [reference/tiny-worlds.md](reference/tiny-worlds.md).
 - Before any game run, write a scorecard entry for each game leg the change
   should move and for each watch leg the panel names.
 
-### Step 8: Checkpoint slices
+### Step 8: Same-executable slices or rooted comparisons
 
-Slice each hard part the change targets and each hard part a watch leg names.
-Resume the checkpoint that opens that hard part with the changed searcher and
-with the unchanged searcher, under three or more new seeds each. Set the budget
-above the slowest pass of that part in any earlier run (rule 4). The archive
-and the delivered states come along, so every slice includes the handoff.
+Test each hard part the change targets and each hard part a watch leg names.
+A runtime policy change within the checkpoint's exact loaded executable can
+use paired slices. For `nes-eval`, only mixture is configurable without a
+rebuild. Resume the opening checkpoint under the changed and unchanged
+settings, with three or more new seeds per arm. Set the budget above the
+slowest earlier pass of that part (rule 4). The archive and delivered
+states come along, so each slice includes the handoff.
 
-- A key change cannot resume an old checkpoint. Run rooted segments from the
-  same best-stocked tape with the changed and the unchanged key instead, three
-  or more seeds each, and read them the same way.
-- Confirm from counters or film that the change fired during the slice.
-- Read each leg as tries after the resume. Compare the arms' median tries with
-  the leg's scorecard range. A few seeds resolve only large differences.
+- A changed searcher binary or workload key cannot resume the old checkpoint.
+  Run paired rooted segments from the same best-stocked tape instead, with
+  three or more seeds per arm. Compare those segment tries with other rooted
+  tries; use fresh power-on runs at step 9 to test delivery. The unchanged
+  build's checkpoint slice remains a diagnostic of its delivered state; use
+  the paired rooted segment for a same-start comparison with the changed build.
+- Confirm from counters or film that the policy or code change fired during
+  the slice or segment.
+- Read slice legs as tries after resume and rooted legs as segment tries.
+  Compare each arm's median and range with the leg's scorecard range. A few
+  seeds resolve only large differences.
 - If the change fails, film the failed attempts and return to step 5.
 
 ### Step 9: Power-on run
@@ -282,9 +293,10 @@ are in
   first win.
 - The panel compare against main on the final commit.
 - CPU and memory cost, which the Dissonance lens in `REVIEWING.md` asks for.
-- Open the searcher change as its own pull request, with the slice and
-  power-on numbers and the scorecard entries in its description. Fix every
-  custom and semantic lint finding; never add a baseline.
+- Open the searcher change as its own pull request, with the applicable slice
+  or rooted-segment numbers, power-on numbers and scorecard entries in its
+  description. Fix every custom and semantic lint finding; never add a
+  baseline.
 
 ## Reference files
 

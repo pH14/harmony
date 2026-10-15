@@ -157,6 +157,7 @@ name = "environment"
 version = "0.1.0"
 dependencies = [
  "hypercall-proto",
+ "sha2",
  "thiserror",
 ]
 
@@ -509,6 +510,7 @@ dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
  "libc",
+ "rustix",
  "thiserror",
 ]
 

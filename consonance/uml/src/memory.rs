@@ -280,11 +280,8 @@ impl Snapshot {
         self.checkpoints.adopt(self.id)
     }
 
-    pub(crate) fn image_bytes(&self) -> u64 {
-        self.checkpoints
-            .held()
-            .and_then(|pages| pages.image_bytes(self.id))
-            .unwrap_or(0)
+    pub(crate) fn image_bytes(&self) -> Result<u64, MemoryError> {
+        self.checkpoints.held()?.image_bytes(self.id)
     }
 
     pub(crate) fn physmem_bytes(&self) -> Result<u64, MemoryError> {
@@ -681,7 +678,7 @@ mod tests {
     fn snapshots_report_their_image_and_pages_until_the_last_share_drops() {
         let checkpoints = Checkpoints::new();
         let first = snapshot(&checkpoints, None, &[(0, 1), (IMAGE_PAGES + 1, 2)], 40);
-        assert_eq!(first.image_bytes(), 40);
+        assert_eq!(first.image_bytes().unwrap(), 40);
         assert_eq!(first.owned_pages(), 2);
         assert_eq!(format!("{first:?}"), format!("Snapshot({:?})", first.id()));
 
@@ -690,14 +687,14 @@ mod tests {
         let snapshots = checkpoints.stats().unwrap().snapshots;
         drop(first);
         assert_eq!(checkpoints.stats().unwrap().snapshots, snapshots);
-        assert_eq!(shared.image_bytes(), 40);
+        assert_eq!(shared.image_bytes().unwrap(), 40);
         assert_eq!(shared.owned_pages(), 2);
         drop(shared);
         assert_eq!(checkpoints.stats().unwrap().snapshots, snapshots - 1);
 
         let foreign = snapshot(&Checkpoints::new(), None, &[(0, 1)], 0);
         let orphan = Checkpoints::new().adopt(foreign.id());
-        assert_eq!(orphan.image_bytes(), 0);
+        assert!(matches!(orphan.image_bytes(), Err(MemoryError::Empty)));
         assert_eq!(orphan.owned_pages(), 0);
         assert!(matches!(
             orphan.digest(&mut Sha256::new()),
@@ -788,7 +785,7 @@ mod tests {
         let imported = subscriber
             .import_pages(&subscriber_base, &subscriber_base, &borrowed, 50)
             .unwrap();
-        assert_eq!(imported.image_bytes(), 50);
+        assert_eq!(imported.image_bytes().unwrap(), 50);
         assert_eq!(digest(&imported), digest(&target));
 
         let near = snapshot(&subscriber, Some(&subscriber_base), &[(6, 3)], 30);
@@ -856,7 +853,7 @@ mod tests {
                 .chain_len,
             1
         );
-        assert_eq!(flat.image_bytes(), 20);
+        assert_eq!(flat.image_bytes().unwrap(), 20);
         assert_eq!(digest(&flat), before);
 
         let short = checkpoints

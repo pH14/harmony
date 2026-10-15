@@ -80,17 +80,16 @@ pub struct FaultWorkload {
 }
 
 impl FaultWorkload {
-    #[must_use]
-    pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Self {
-        Self {
+    pub fn new(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<Self, String> {
+        Ok(Self {
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             config: config.clone(),
-            identity: identity(kernel, initramfs, config),
+            identity: identity(kernel, initramfs, config)?,
             root_seal: OnceLock::new(),
             snapshot_cache: None,
             session_worker: None,
-        }
+        })
     }
 
     #[must_use]
@@ -880,7 +879,7 @@ pub fn run_fault_campaign_with_plan(
     checkpoints: Option<searcher::search::checkpoint::CheckpointPlan>,
 ) -> Result<(FaultCampaignReport, FaultSnapshotCheckpoint), Box<dyn Error>> {
     let mut generic = config.generic();
-    if let CampaignOrigin::SearchCheckpoint { path } = origin {
+    if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         generic.window = searcher::search::checkpoint::read_header(path)?.window;
         generic.stop_campaign_on_objective = false;
     }
@@ -915,7 +914,7 @@ mod tests {
     }
 
     fn game() -> FaultWorkload {
-        FaultWorkload::new(b"kernel", b"initramfs", &config(&[]))
+        FaultWorkload::new(b"kernel", b"initramfs", &config(&[])).unwrap()
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
@@ -1166,7 +1165,7 @@ mod tests {
     #[test]
     fn the_image_identity_covers_the_workload_image_bytes() {
         let etcd = game();
-        let postgres = FaultWorkload::new(b"kernel", b"postgres-initramfs", &config(&[]));
+        let postgres = FaultWorkload::new(b"kernel", b"postgres-initramfs", &config(&[])).unwrap();
         assert_ne!(etcd.image_identity(), postgres.image_identity());
         assert_ne!(
             etcd.workload_identity_sha256(),
@@ -1178,7 +1177,7 @@ mod tests {
     fn a_uml_profile_separates_identity_and_formats_from_the_vm() {
         let uml = |identity: &str| {
             let mut config = config(&[]);
-            config.backend = GuestBackend::Uml(crate::consonance::UmlGuest {
+            config.backend = GuestBackend::Uml(Box::new(crate::consonance::UmlGuest {
                 profile: "profile".into(),
                 profile_identity_sha256: identity.to_owned(),
                 host: uml::HostIdentity {
@@ -1186,11 +1185,13 @@ mod tests {
                     processor: 0,
                     cpu_model: identity.to_owned(),
                     cpu_features: String::new(),
+                    boot_cpuinfo: String::new(),
+                    auxv: uml::HostAuxv::default(),
                 },
                 identity: identity.to_owned(),
                 work_parent: "work".into(),
-            });
-            FaultWorkload::new(b"kernel", b"initramfs", &config)
+            }));
+            FaultWorkload::new(b"kernel", b"initramfs", &config).unwrap()
         };
         let vm = game();
         let first = uml("profile=a;cpu=x");
@@ -1210,7 +1211,8 @@ mod tests {
     fn the_recorded_policies_pin_the_knobs_and_the_action_format() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));
-        let tuned = FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
+        let tuned =
+            FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"])).unwrap();
         assert!(tuned.resolve_recorded(&policies).is_err());
         let mut older = policies.clone();
         older.insert(ACTION_FORMAT_FIELD.to_owned(), "500000000".to_owned());

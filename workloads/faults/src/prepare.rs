@@ -39,25 +39,20 @@ fn prepare_staged(
     supplied: Option<&str>,
     mode: ExecutionMode,
 ) -> Result<Prepared, Box<dyn Error>> {
+    prepare_staged_with(staged, base, supplied, mode, || {})
+}
+
+fn prepare_staged_with(
+    staged: &StagedImage,
+    base: &[u8],
+    supplied: Option<&str>,
+    mode: ExecutionMode,
+    after_archive: impl FnOnce(),
+) -> Result<Prepared, Box<dyn Error>> {
     if base.is_empty() {
         return Err("fault search requires a guest base image".into());
     }
-    let root = staged.rootfs.canonicalize()?;
-    let admission = crate::admission::inspect_root(&root)?;
-    admission.require_for(mode)?;
-    let bundle = match supplied {
-        Some(text) => text.to_owned(),
-        None => {
-            let document = root.join(BUNDLE_PATH).canonicalize()?;
-            if !document.starts_with(&root) {
-                return Err("the bundle must reside inside the staged image".into());
-            }
-            String::from_utf8(std::fs::read(document)?)?
-        }
-    };
-    let vocabulary =
-        FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
-    let request = if supplied.is_some() {
+    let request = if let Some(bundle) = supplied {
         let path = "/etc/harmony/cli.bundle";
         LaunchRequest::new(Vec::new())
             .with_bundle(path)
@@ -69,6 +64,22 @@ fn prepare_staged(
         LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE)
     };
     let execution = oci_support::bundle::prepare(staged, &request)?;
+    after_archive();
+    let archive = execution.archived_rootfs()?;
+    let image = crate::admission::ArchivedImage::new(&archive);
+    let admission = image.inspect()?;
+    admission.require_for(mode)?;
+    let bundle = match supplied {
+        Some(text) => text.to_owned(),
+        None => String::from_utf8(
+            image
+                .file(BUNDLE_PATH)
+                .ok_or("the bundle must reside inside the staged image")?
+                .to_vec(),
+        )?,
+    };
+    let vocabulary =
+        FaultVocabulary::parse(&bundle)?.with_instrumented_events(admission.instrumented_events());
     Ok(Prepared {
         vocabulary,
         bundle,
@@ -194,6 +205,41 @@ ready /usr/bin/servicectl endpoint health
 
     #[cfg(unix)]
     #[test]
+    fn preparation_reads_unreadable_staged_files_and_restores_their_modes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        std::fs::write(root.path().join("secret"), b"hidden").unwrap();
+        for path in ["secret", BUNDLE_PATH, "etc/harmony"] {
+            std::fs::set_permissions(root.path().join(path), std::fs::Permissions::from_mode(0o0))
+                .unwrap();
+        }
+        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
+        assert_eq!(prepared.bundle, BUNDLE);
+        for path in ["secret", "etc/harmony"] {
+            let mode = std::fs::symlink_metadata(root.path().join(path))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777;
+            assert_eq!(mode, 0, "{path}");
+        }
+        std::fs::set_permissions(
+            root.path().join("etc/harmony"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .unwrap();
+        let mode = std::fs::symlink_metadata(root.path().join(BUNDLE_PATH))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(mode, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_bundle_symlink_outside_the_image_is_rejected() {
         let root = tempfile::tempdir().unwrap();
         let external = tempfile::NamedTempFile::new().unwrap();
@@ -208,5 +254,37 @@ ready /usr/bin/servicectl endpoint health
         .err()
         .unwrap();
         assert!(error.to_string().contains("inside the staged image"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_in_root_bundle_symlink_uses_the_packed_target() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        std::fs::rename(
+            root.path().join(BUNDLE_PATH),
+            root.path().join("etc/harmony/document"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("document", root.path().join(BUNDLE_PATH)).unwrap();
+        let prepared = prepare_staged(&staged, b"base", None, ExecutionMode::Vm).unwrap();
+        assert_eq!(prepared.bundle, BUNDLE);
+    }
+
+    #[test]
+    fn admission_and_bundle_describe_the_exact_archived_rootfs() {
+        let root = tempfile::tempdir().unwrap();
+        let staged = image(root.path());
+        let request = LaunchRequest::new(Vec::new()).with_bundle(SUPERVISOR_BUNDLE);
+        let expected = oci_support::bundle::prepare(&staged, &request)
+            .unwrap()
+            .initramfs(b"base");
+        let changed = BUNDLE.replace("node service", "node changed");
+        let prepared = prepare_staged_with(&staged, b"base", None, ExecutionMode::Vm, || {
+            std::fs::write(root.path().join(BUNDLE_PATH), changed).unwrap();
+        })
+        .unwrap();
+        assert_eq!(prepared.bundle, BUNDLE);
+        assert_eq!(prepared.initramfs, expected);
     }
 }

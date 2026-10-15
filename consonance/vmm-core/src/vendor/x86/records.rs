@@ -216,6 +216,7 @@ pub(crate) fn vcpu_state_from(s: &VmState) -> vmm_backend::VcpuState {
         xsave: s.xsave.0.clone(),
         xsave_restore_bv: s.xsave_restore_bv,
         nested_state: s.nested_state.clone(),
+        host_core_class: None,
     }
 }
 
@@ -896,6 +897,7 @@ mod tests {
             xsave: (0u16..600).map(|i| i as u8).collect(),
             xsave_restore_bv: None,
             nested_state: None,
+            host_core_class: None,
         }
     }
 

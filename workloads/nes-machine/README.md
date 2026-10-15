@@ -21,11 +21,14 @@ NES targets interpret this format; Dissonance sees typed workload actions.
 
 On Unix, `quicknes::QuickNesMachine` loads a private copy of the pinned
 libretro QuickNES shared object, validates its revision and supplied SHA-256,
-and exposes the core's 2 KiB system RAM. Each run records system RAM after every
-frame, and a caller can also name a cartridge RAM range to record after every
-frame. Search runs with audio and video disabled. Replay-only callers can
-capture video and stereo PCM. A caller that stops reading partway through a run
-can keep the video and audio of the run's first frames and drop the rest.
+and exposes the core's 2 KiB system RAM. The private copy's SHA-256 is checked
+before handing it to the dynamic loader. The copy is created with owner-only
+permissions, so another host user cannot replace it after the check. Each run
+records system RAM after every frame, and a caller can also name a cartridge
+RAM range to record after every frame. Search runs with audio and video disabled.
+Replay-only callers can capture video and stereo PCM. A caller that stops
+reading partway through a run can keep the video and audio of the run's first
+frames and drop the rest.
 
 `scripts/build-quicknes-core.sh` patches the pinned core to skip idle loops.
 NES games spend much of each frame in a loop that waits for the next
@@ -88,7 +91,10 @@ belong to the adapters in `nes-workload`.
 
 Setup and each action allow 2 seconds of virtual time on x86-64 and 20 seconds
 on arm64. These architecture-specific budgets are passed through the client
-session configuration and included in the execution identity.
+session configuration and included in the execution identity. The NES adapter's
+outer execution identity derives from that exact session configuration and its
+ordered setup payloads. It therefore includes the loaded Harmony executable
+used by the session and fails closed when that executable cannot be identified.
 
 Native snapshots preserve their existing serialized emulator format. Consonance
 snapshots use the explicit `consonance-whole-vm-v2` shape owned by

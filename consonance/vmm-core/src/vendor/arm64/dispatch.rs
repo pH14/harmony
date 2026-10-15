@@ -5,6 +5,7 @@ use vm_state::Arm64VmState;
 use vmm_backend::{Arm64, Arm64GicIdleState, Arm64VcpuState, Backend, CommonExit, Exit, Gpa};
 
 use crate::snapshot::SnapshotError;
+use crate::vendor::Vendor;
 use crate::vendor::arm64::contract;
 use crate::vendor::arm64::devices::Pl011;
 use crate::vendor::arm64::records::{
@@ -446,6 +447,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
 
         if in_frame(addr, PVCLOCK) {
+            if !self.pvclock_offered() {
+                return Err(VmmError::ContractViolation(
+                    "arm64 pvclock MMIO while the pvclock service is not offered".to_string(),
+                ));
+            }
             let offset = addr - PVCLOCK.0;
             let exact = matches!(
                 (offset, size, write),
@@ -870,6 +876,19 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             .map(|deadline_vns| (deadline_vns, super::board::PVCLOCK_PPI))
     }
 
+    pub(crate) fn restored_clockevent_trace_schedule_present_arm64(
+        &self,
+        prep: &Arm64RestorePrep,
+    ) -> bool {
+        self.vtime.as_ref().is_some_and(|vt| vt.cfg.guest_hz != 0)
+            && prep
+                .dev
+                .pvclock
+                .as_ref()
+                .and_then(|pv| pv.clockevent.deadline)
+                .is_some()
+    }
+
     pub(crate) fn deliverable_timer_deadline_vns_arm64(&mut self) -> Result<Option<u64>, VmmError> {
         let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
         let generic = self.devices.gic.as_ref().and_then(|gic| {
@@ -967,6 +986,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
             return Err(VmmError::Snapshot(SnapshotError::ContractMismatch));
         }
         let dev = records::decode_device_blob(&s.devices.0)?;
+        <Arm64 as Vendor>::validate_vtime_clock_offset(dev.clock_offset)?;
         let in_kernel_gic = self.backend.capabilities().arch.in_kernel_gic;
         let new_gic = match (&dev.gic, in_kernel_gic, self.devices.gic.as_ref()) {
             (Some(gs), false, Some(target)) => {
@@ -1333,9 +1353,13 @@ mod tests {
     }
 
     fn clocked_mock_vmm() -> Vmm<MockArm64Backend> {
+        clocked_mock_vmm_with_exits(Vec::new())
+    }
+
+    fn clocked_mock_vmm_with_exits(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
         use crate::vmm::VtimeWiring;
 
-        let mut vmm = mock_vmm(Vec::new());
+        let mut vmm = mock_vmm(exits);
         vmm.wire_vtime(
             VtimeWiring::new_virtual_time(
                 vtime::VClockConfig {
@@ -1348,6 +1372,35 @@ mod tests {
             .unwrap(),
         );
         vmm
+    }
+
+    #[test]
+    fn failed_exit_trace_refuses_restore_before_backend_mutation() {
+        let mut source = clocked_mock_vmm();
+        let snapshot = source.save_vm_state().unwrap();
+        let mut target = clocked_mock_vmm();
+        let mut state = target.inspect_vcpu().unwrap();
+        state.core.pc = 0x2000;
+        target.backend_mut().set_state(state);
+        target
+            .backend_mut()
+            .push_exit(Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0 + 1),
+                size: 4,
+                write: Some(1),
+            }));
+        assert!(matches!(
+            target.step(),
+            Err(VmmError::ContractViolation(message)) if message.contains("not 4-byte aligned")
+        ));
+        assert!(!target.completion_staged);
+        assert!(matches!(
+            target.restore_vm_state(&snapshot),
+            Err(VmmError::Backend(vmm_backend::BackendError::Internal(
+                "virtual_time trace restore occurred during an active event"
+            )))
+        ));
+        assert_eq!(target.inspect_vcpu().unwrap().core.pc, 0x2000);
     }
 
     #[test]
@@ -1418,6 +1471,83 @@ mod tests {
     }
 
     #[test]
+    fn restore_rejects_nonzero_arm_clock_offset_with_or_without_a_deadline() {
+        use crate::vmm::VtimeWiring;
+
+        let configured = || {
+            let mut vmm = mock_vmm(Vec::new());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.enable_pvclock();
+            assert_eq!(vmm.pvclock_register(0x1000).0, Status::Ok);
+            vmm.wire_gic(new_gic());
+            vmm
+        };
+
+        for deadline in [Some(CNTFRQ_HZ), None] {
+            let mut source = configured();
+            source.devices.clockevent.deadline = deadline;
+            let valid = source.save_vm_state().unwrap();
+            let mut target = configured();
+            target.restore_vm_state(&valid).unwrap();
+            assert_eq!(
+                target.next_timer_deadline_vns_arm64(),
+                deadline.map(|_| 1_000_000_000)
+            );
+
+            let mut bad = valid;
+            let mut dev = records::decode_device_blob(&bad.devices.0).unwrap();
+            dev.clock_offset = 1;
+            bad.devices = records::encode_device_blob(&dev);
+            let before = target.save_vm_state().unwrap();
+            assert!(matches!(
+                target.restore_vm_state(&bad),
+                Err(VmmError::ContractViolation(message))
+                    if message == "arm64 virtual-time clock offset must be zero"
+            ));
+            assert_eq!(target.save_vm_state().unwrap(), before);
+        }
+    }
+
+    #[test]
+    fn vtime_restore_rejects_an_unconvertible_arm_clock_offset() {
+        use crate::vmm::VtimeWiring;
+
+        let mut vmm = mock_vmm(Vec::new());
+        vmm.wire_vtime(
+            VtimeWiring::new_virtual_time(
+                vtime::VClockConfig {
+                    guest_hz: CNTFRQ_HZ,
+                    guest_base: 0,
+                    vns_base: 0,
+                },
+                7,
+            )
+            .unwrap(),
+        );
+        vmm.devices.clockevent.deadline = Some(CNTFRQ_HZ);
+        let before = vmm.save_vtime().unwrap().unwrap();
+        let mut bad = before.clone();
+        bad.guest_clock_offset = 1;
+        assert!(matches!(
+            vmm.restore_vtime(&bad),
+            Err(VmmError::ContractViolation(message))
+                if message == "arm64 virtual-time clock offset must be zero"
+        ));
+        assert_eq!(vmm.save_vtime().unwrap().unwrap(), before);
+        assert_eq!(vmm.next_timer_deadline_vns_arm64(), Some(1_000_000_000));
+    }
+
+    #[test]
     fn rejected_pvclock_control_keeps_virtual_time_unchanged() {
         use crate::vendor::arm64::board::PVCLOCK;
 
@@ -1463,6 +1593,44 @@ mod tests {
         assert!(matches!(result, Err(VmmError::ContractViolation(_))));
         assert_eq!(vmm.effective_vns(), before);
         assert_eq!(vmm.devices.clockevent.deadline, None);
+    }
+
+    #[test]
+    fn unoffered_clockevent_is_rejected_before_state_changes() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut vmm = clocked_mock_vmm_with_exits(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(CNTFRQ_HZ),
+        })]);
+        let before_vns = vmm.effective_vns();
+        let before_hash = vmm.state_hash().unwrap();
+        assert!(matches!(vmm.step(), Err(VmmError::ContractViolation(_))));
+        assert_eq!(vmm.effective_vns(), before_vns);
+        assert_eq!(vmm.devices.clockevent.deadline, None);
+        assert_eq!(vmm.state_hash().unwrap(), before_hash);
+    }
+
+    #[test]
+    fn offered_clockevent_snapshot_preserves_the_deadline() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut live = clocked_mock_vmm_with_exits(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(CNTFRQ_HZ),
+        })]);
+        live.enable_pvclock();
+        assert_eq!(live.step().unwrap(), Step::Continued);
+        let live_hash = live.state_hash().unwrap();
+        let snapshot = live.save_vm_state().unwrap();
+        let mut restored = clocked_mock_vmm();
+        restored.enable_pvclock();
+        restored.restore_vm_state(&snapshot).unwrap();
+        assert_eq!(live.devices.clockevent.deadline, Some(CNTFRQ_HZ));
+        assert_eq!(restored.devices.clockevent.deadline, Some(CNTFRQ_HZ));
+        assert_eq!(restored.state_hash().unwrap(), live_hash);
     }
 
     #[test]
@@ -1772,6 +1940,86 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn public_restore_of_asserted_in_kernel_clockevent_allows_ack() {
+        use crate::vmm::VtimeWiring;
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm, GicIntId};
+
+        let machine = || {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(0x4000).unwrap());
+            vmm.wire_vtime(
+                VtimeWiring::new_virtual_time(
+                    vtime::VClockConfig {
+                        guest_hz: CNTFRQ_HZ,
+                        guest_base: 0,
+                        vns_base: 0,
+                    },
+                    7,
+                )
+                .unwrap(),
+            );
+            vmm.enable_pvclock();
+            assert_eq!(vmm.pvclock_register(0x1000).0, Status::Ok);
+            vmm
+        };
+        let mut source = machine();
+        source
+            .backend_mut()
+            .set_pending_irq(Some(GicIntId(PVCLOCK_PPI)))
+            .unwrap();
+        source.devices.clockevent.line_asserted = true;
+        source.devices.clockevent.assertions = 1;
+        let snapshot = source.save_vm_state().unwrap();
+        let mut target = machine();
+        target.restore_vm_state(&snapshot).unwrap();
+        assert_ne!(
+            target.backend_mut().save().unwrap().gic.unwrap().line_level[0] & (1 << PVCLOCK_PPI),
+            0
+        );
+        target
+            .dispatch_mmio_arm64(Gpa(super::super::board::PVCLOCK.0 + 0x18), 4, Some(2))
+            .unwrap();
+        assert_eq!(
+            target.backend_mut().save().unwrap().gic.unwrap().line_level[0] & (1 << PVCLOCK_PPI),
+            0
+        );
+    }
+
+    #[test]
+    fn public_kvm_restore_rejects_unproven_physical_timer_records_before_mutation() {
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
+
+        let machine = || {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine();
+        let valid = source.save_vm_state().unwrap();
+        let mut target = machine();
+        let before = target.save_vm_state().unwrap();
+        for version in [5, 6] {
+            let mut legacy = valid.clone();
+            let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
+            dev.gic.as_mut().unwrap().version = version;
+            legacy.devices = records::encode_device_blob(&dev);
+            assert!(matches!(
+                target.restore_vm_state(&legacy),
+                Err(VmmError::Snapshot(SnapshotError::DeviceRestore(_)))
+            ));
+            assert_eq!(target.save_vm_state().unwrap(), before);
+        }
+        target.restore_vm_state(&valid).unwrap();
     }
 
     #[test]

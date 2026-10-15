@@ -53,6 +53,14 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
+`Checks / Harmony Host Compatibility` selects both Linux Arm64 jobs through
+`rust_checks`. `Linux Arm64` compiles the backend and enforces the portable-test
+floor; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks. Each
+retains the 15-minute pull-request limit, giving qualification its own job
+budget. The two Linux Arm64 jobs use separate Rust build caches so each can
+save its own build artifacts on main. The macOS Arm64 job continues to run
+both groups of checks in one job.
+
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 
@@ -272,18 +280,23 @@ restored guest to the fixture's last exit.
 If a compiled kernel fails qualification, the evidence artifact retains its
 unpublished `vmlinux`, matching boot components, configuration, alternatives and
 KVM disassembly for review.
-The job also runs `inner_operation_api_smoke` and
+On Intel VMX, the job also runs `inner_operation_api_smoke` and
 `sdk_operations::outer_operation_sdk_smoke`, then runs the standard
 `harmony search --package nested` with 100 executions and a five-minute wall
-budget, followed by a replay of its recorded campaign. Evidence includes the
-36 ordered operation-pair coverage mask, assertion failures and their layers,
-the campaign stream, and the replay report. The final evidence check requires
+budget, followed by a replay of its recorded campaign and a replay of that
+replayed run. Intel evidence includes the 36 ordered
+operation-pair coverage mask, assertion failures and their layers, the
+campaign stream, and both replay reports. The final evidence check requires
 nonzero executed work, a valid 36-bit pair mask, no failures, and matching
-execution counts, work, stream digest and coverage/failure evidence on replay.
+execution counts, work, stream digest and coverage/failure evidence across
+search and both replays.
 It writes `qualification.json` with the tested commit and measured budget use;
 archive-entry lists may differ because replay materializes final artifacts.
 The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
-KVM-supported CPUID. The matching kernel includes both backends. The state
+KVM-supported CPUID. On AMD SVM it runs the L1/L2 boot, nested-state restore
+matrix, and omission negative control, then records that SDK operation search
+requires Intel VMX. AMD restore of an entered vCPU fails closed and uses a fresh
+VM where a factory is available. The matching kernel includes both backends. The state
 format and exposed vendor capabilities bind snapshot identity; snapshots cannot
 cross vendors. SVM restores also compare GIF immediately at the lifecycle cut.
 `nested_history_run` optionally reuses a prior run's retained kernel, base and
@@ -314,9 +327,10 @@ hypervisor or a built guest image. Each one has a runner in
   `ci-ignored-tests` checks that the job's steps pass `--ignored` and name each
   binary and test it lists.
 - `HOST_TESTS` lists tests that need a hypervisor no hosted runner offers, keyed
-  by the `<os>-<arch>` of a machine that has one. The pre-push hook runs the
-  entry for the machine it is on, selected by
-  `python3 scripts/ci_contract.py host-filter`.
+  by the `<os>-<arch>` of a machine that has one. The `linux-x86_64-hybrid` key
+  additionally requires accessible P-core and E-core pools in the caller's
+  affinity. The pre-push hook runs the entry for the machine it is on, selected
+  by `python3 scripts/ci_contract.py host-filter`.
 
 `Checks / Repository` runs `python3 scripts/check-test-partition.py ignored` on
 x86-64 Linux, arm64 Linux and arm64 macOS. It lists every ignored test that
@@ -381,6 +395,9 @@ arm, a control version or a replay mode over a second build.
 `ci-historical-arms` rejects them, along with any matrix dimension that would
 restore the arm. A separate Historical Bugs Checks workflow does not exist; the
 full search lives in Benchmarks and pull requests do not run it.
+Once a historical search writes `report.json`, selector errors and missing
+selected evidence still write an infrastructure-failure panel record without a
+finding or reproducer.
 
 `Benchmarks / Harmony Workloads / UML` runs one historical case, etcd by
 default, on the User-mode Linux profile when an operator dispatches it.
@@ -388,8 +405,11 @@ default, on the User-mode Linux profile when an operator dispatches it.
 `BACKEND=uml`, which runs the CLI through `harmony-uml-qualify exec`: the
 runner's ordinary UID with ptrace and KVM ioctls denied, with the credentials
 and denial recorded beside the report. The search fails when the campaign
-captured no snapshot or restored none. The same job then replays the search's
-`first-bug-input.json` from genesis in fresh processes, before uploading the run.
+captured no snapshot or restored none. The same job then selects the first
+confirmed finding whose saved replay also carried the case's assertion and
+evidence and applied every action, then replays it from genesis in fresh
+processes before uploading the run. Both panel records name the selected
+finding; the search panel points to its `bug-N.json` evidence.
 This preserves the recorded UML host identity and executable artifact modes.
 The UML search wall is capped at 280 minutes within a 360-minute job, reserving
 20 minutes for search shutdown, 50 for finding replay and 10 for setup and uploads.

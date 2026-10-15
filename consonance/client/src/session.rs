@@ -764,6 +764,7 @@ pub struct UmlLaunch {
     pub expected_profile_identity_sha256: String,
     pub expected_host: ::uml::HostIdentity,
     pub initramfs: std::path::PathBuf,
+    pub expected_initramfs_sha256: [u8; 32],
     pub memory_mib: u32,
     pub kernel_arguments: Vec<String>,
     pub work_parent: std::path::PathBuf,
@@ -813,44 +814,49 @@ type SparsePage = (u64, Arc<[u8; PAGE_SIZE]>);
 )]
 type SparsePages = Vec<SparsePage>;
 
-#[must_use]
-pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
+pub fn identity(kernel: &[u8], initramfs: &[u8]) -> Result<String, String> {
     identity_with_config(kernel, initramfs, &SessionConfig::default())
 }
 
-#[must_use]
-pub fn identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> String {
+pub fn identity_with_config(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &SessionConfig,
+) -> Result<String, String> {
     identity_with_config_and_payloads(kernel, initramfs, config, &[])
 }
 
-#[must_use]
 pub fn identity_with_config_and_payloads(
     kernel: &[u8],
     initramfs: &[u8],
     config: &SessionConfig,
     setup_payloads: &[Vec<u8>],
-) -> String {
-    format!(
-        "consonance-session-v2;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
+) -> Result<String, String> {
+    Ok(format!(
+        "consonance-session-v3;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
         bytes_hex(&image_identity_with_config_and_payloads(
             kernel,
             initramfs,
             config,
             setup_payloads,
-        )),
+        )?),
         config.ram_bytes,
         config.seed,
         config.run_budget,
         Sha256::digest(config.cmdline.as_bytes()),
         config.identity_tag,
-    )
+    ))
 }
 
-fn image_identity(kernel: &[u8], initramfs: &[u8]) -> [u8; 32] {
+fn image_identity(kernel: &[u8], initramfs: &[u8]) -> Result<[u8; 32], String> {
     image_identity_with_config(kernel, initramfs, &SessionConfig::default())
 }
 
-fn image_identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> [u8; 32] {
+fn image_identity_with_config(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &SessionConfig,
+) -> Result<[u8; 32], String> {
     image_identity_with_config_and_payloads(kernel, initramfs, config, &[])
 }
 
@@ -859,9 +865,28 @@ fn image_identity_with_config_and_payloads(
     initramfs: &[u8],
     config: &SessionConfig,
     setup_payloads: &[Vec<u8>],
+) -> Result<[u8; 32], String> {
+    let loaded_identity = crate::image_identity::loaded_executable_identity_self()
+        .map_err(|error| format!("cannot identify loaded Harmony executable: {error}"))?;
+    Ok(image_identity_with_loaded_executable(
+        kernel,
+        initramfs,
+        config,
+        setup_payloads,
+        &loaded_identity,
+    ))
+}
+
+fn image_identity_with_loaded_executable(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &SessionConfig,
+    setup_payloads: &[Vec<u8>],
+    loaded_identity: &str,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"consonance-session-image-v2\0");
+    digest.update(b"consonance-session-image-v3\0");
+    update_digest_field(&mut digest, loaded_identity.as_bytes());
     update_digest_field(&mut digest, kernel);
     update_digest_field(&mut digest, initramfs);
     digest.update(config.ram_bytes.to_le_bytes());
@@ -890,9 +915,8 @@ fn update_digest_field(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
-#[must_use]
-pub fn image_identity_hex(kernel: &[u8], initramfs: &[u8]) -> String {
-    bytes_hex(&image_identity(kernel, initramfs))
+pub fn image_identity_hex(kernel: &[u8], initramfs: &[u8]) -> Result<String, String> {
+    Ok(bytes_hex(&image_identity(kernel, initramfs)?))
 }
 
 fn bytes_hex(bytes: &[u8]) -> String {
@@ -1253,14 +1277,50 @@ mod tests {
 
     #[test]
     fn image_identity_is_ordered_and_hex_stable() {
-        assert_eq!(image_identity_hex(b"a", b"b").len(), 64);
+        assert_eq!(image_identity_hex(b"a", b"b").unwrap().len(), 64);
         assert_ne!(image_identity(b"a", b"b"), image_identity(b"b", b"a"));
         assert_eq!(image_identity(b"a", b"b"), image_identity(b"a", b"b"));
         assert_eq!(
             identity(b"a", b"b"),
             identity_with_config(b"a", b"b", &SessionConfig::default())
         );
-        assert!(identity(b"a", b"b").contains("consonance-session-v2"));
+        assert!(
+            identity(b"a", b"b")
+                .unwrap()
+                .contains("consonance-session-v3")
+        );
+    }
+
+    #[test]
+    fn loaded_executable_identity_separates_equal_setup_and_preboot_identity() {
+        let config = SessionConfig::default().with_identity_tag("same-workload");
+        let payloads = vec![b"setup".to_vec()];
+        let loaded = crate::image_identity::loaded_executable_identity_self().unwrap();
+        let current = image_identity_with_loaded_executable(
+            b"kernel",
+            b"initramfs",
+            &config,
+            &payloads,
+            &loaded,
+        );
+        let foreign = image_identity_with_loaded_executable(
+            b"kernel",
+            b"initramfs",
+            &config,
+            &payloads,
+            "another-loaded-executable",
+        );
+        assert_ne!(current, foreign);
+        assert_eq!(
+            image_identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &payloads)
+                .unwrap(),
+            current
+        );
+        assert!(
+            identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &payloads)
+                .unwrap()
+                .contains(&bytes_hex(&current))
+        );
     }
 
     #[test]
@@ -1388,7 +1448,8 @@ mod tests {
         );
         assert!(
             identity_with_config_and_payloads(b"kernel", b"initramfs", &config, &payloads)
-                .contains(&bytes_hex(&identity))
+                .unwrap()
+                .contains(&bytes_hex(&identity.unwrap()))
         );
     }
 

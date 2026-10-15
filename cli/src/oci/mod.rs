@@ -8,6 +8,7 @@ use std::{fs, path::Path, time::Duration};
 pub fn execute(
     c: &crate::runtime::Consonance,
     runner_identity: &serde_json::Value,
+    expected_uml_profile_identity_sha256: Option<&str>,
     seed: u64,
     knobs: &[String],
     wall_seconds: Option<u64>,
@@ -15,7 +16,7 @@ pub fn execute(
     initramfs: &[u8],
     out: &Path,
     console: bool,
-) -> Result<bool> {
+) -> Result<(bool, serde_json::Value)> {
     let cmdline = format!("{} {}", runner::cmdline(), knobs.join(" "));
     let spec = runner::RunSpec {
         kernel,
@@ -33,6 +34,9 @@ pub fn execute(
     let mut uml_events = None;
     let outcome = if c.backend == Backend::Uml {
         let profile = uml::Profile::load(c.uml_profile.as_ref().ok_or("missing UML profile")?)?;
+        if Some(profile.identity_sha256()) != expected_uml_profile_identity_sha256 {
+            return Err("recorded UML profile changed during load".into());
+        }
         let mut launch = manifest_launch(out, runner_identity)?;
         fs::create_dir_all(&launch.work_parent)?;
         launch.memory_mib = c.ram_mib;
@@ -86,7 +90,7 @@ pub fn execute(
     if rc.is_none() || parse_supervisor_failure_rc(&outcome.serial).is_some() {
         return Err(format!("guest application did not start or its supervisor failed; inspect {}/serial.log (startup {:?}, supervisor {:?})", out.display(), parse_startup_rc(&outcome.serial), parse_supervisor_failure_rc(&outcome.serial)).into());
     }
-    Ok(rc == Some(0))
+    Ok((rc == Some(0), record))
 }
 
 fn manifest_launch(out: &Path, identity: &serde_json::Value) -> Result<uml::Launch> {

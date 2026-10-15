@@ -184,9 +184,7 @@ fn extract(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Bo
 
     let rom = read_rom()?;
     let game = selected_game(&rom)?;
-    let source_archive_sha256 = file_sha256(&source_path)?;
-    let report: SmbArchiveReport =
-        serde_json::from_reader(BufReader::new(fs::File::open(&source_path)?))?;
+    let (source_archive_sha256, report) = load_source_archive(&source_path)?;
     let entry = report
         .entries
         .iter()
@@ -421,18 +419,37 @@ fn selected_game(rom: &[u8]) -> Result<SmbGame, Box<dyn Error>> {
     SmbGame::from_environment(rom)
 }
 
-fn file_sha256(path: &Path) -> Result<String, Box<dyn Error>> {
-    let mut file = fs::File::open(path)?;
-    let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let read = file.read(&mut buffer)?;
-        if read == 0 {
-            break;
-        }
-        digest.update(&buffer[..read]);
+struct HashingReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(bytes)?;
+        self.digest.update(&bytes[..read]);
+        Ok(read)
     }
-    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn load_source_archive(path: &Path) -> Result<(String, SmbArchiveReport), Box<dyn Error>> {
+    load_source_archive_with_hook(path, || {})
+}
+
+fn load_source_archive_with_hook(
+    path: &Path,
+    after_first_access: impl FnOnce(),
+) -> Result<(String, SmbArchiveReport), Box<dyn Error>> {
+    let mut reader = BufReader::new(HashingReader {
+        inner: fs::File::open(path)?,
+        digest: Sha256::new(),
+    });
+    after_first_access();
+    let report = serde_json::from_reader(&mut reader)?;
+    Ok((
+        format!("{:x}", reader.into_inner().digest.finalize()),
+        report,
+    ))
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -445,4 +462,81 @@ fn parse_u64(value: &std::ffi::OsStr) -> Result<u64, Box<dyn Error>> {
 
 fn parse_u8(value: &std::ffi::OsStr) -> Result<u8, Box<dyn Error>> {
     Ok(value.to_string_lossy().parse()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_source_archive_with_hook;
+    use sha2::{Digest, Sha256};
+
+    fn archive_bytes(seed: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "seed": seed,
+            "executions": 0,
+            "milestones": {
+                "max_1_1_scroll_bucket": 0,
+                "reached_1_1_flag": false,
+                "reached_1_2": false,
+                "reached_onward": false
+            },
+            "first_reached": {
+                "progress_into_1_1": null,
+                "flag_1_1": null,
+                "level_1_2": null,
+                "onward": null
+            },
+            "first_inputs": {
+                "progress_into_1_1": null,
+                "flag_1_1": null,
+                "level_1_2": null,
+                "onward": null
+            },
+            "champion_input": {"actions": []},
+            "entries": [{
+                "id": 0,
+                "parent_id": null,
+                "created_execution": 0,
+                "input": {"actions": []},
+                "key": {
+                    "world": 0,
+                    "level": 0,
+                    "progress": 0,
+                    "player_y_bucket": 0,
+                    "loop_on_path": false,
+                    "clock": 0
+                },
+                "milestones": {
+                    "max_1_1_scroll_bucket": 0,
+                    "reached_1_1_flag": false,
+                    "reached_1_2": false,
+                    "reached_onward": false
+                }
+            }],
+            "progress_curve": [],
+            "retained": 1,
+            "rejected": 0,
+            "deaths": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn extracted_source_digest_names_the_parsed_archive_after_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-archive.json");
+        let replacement_path = directory.path().join("replacement-archive.json");
+        let original = archive_bytes(7);
+        let replacement = archive_bytes(8);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        let (source_archive_sha256, report) = load_source_archive_with_hook(&path, || {
+            std::fs::rename(&replacement_path, &path).unwrap();
+        })
+        .unwrap();
+        assert_eq!(report.seed, 7, "extract parsed replaced source bytes");
+        assert_eq!(
+            source_archive_sha256,
+            format!("{:x}", Sha256::digest(&original))
+        );
+    }
 }

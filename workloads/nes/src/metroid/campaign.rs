@@ -46,7 +46,7 @@ use crate::{
     target::{ExitKind, Target},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v5";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v12";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
@@ -108,7 +108,7 @@ impl MetroidGame {
             "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;\
              genesis={genesis}:prefix-sha256={:x};\
              image=cartridge-ram-declared-v1;\
-             result_digest=metroid-semantic-postcard-1.1.3-sha256-hex-v8;sha256={core_sha256}",
+             result_digest=metroid-full-postcard-1.1.3-sha256-hex-v9;sha256={core_sha256}",
             machine::quicknes::QUICKNES_REVISION,
             machine::quicknes::QUICKNES_BUILD,
             machine::quicknes::QUICKNES_OPTIONS,
@@ -324,45 +324,8 @@ pub type MetroidCampaignProgressRecord = CampaignProgressRecord<MetroidArchiveKe
 type MetroidCampaignActionResult = CampaignActionResult<MetroidGame>;
 type MetroidCampaignJobResult = CampaignJobResult<MetroidGame>;
 
-#[derive(Serialize)]
-struct MetroidResultCandidate<'a> {
-    key: &'a MetroidArchiveKey,
-    viable: bool,
-}
-
-#[derive(Serialize)]
-struct MetroidResultAction<'a> {
-    action: ButtonChord,
-    observations: &'a [MetroidObservations],
-    milestones: MetroidMilestones,
-    outcome: Outcome,
-    candidate: Option<MetroidResultCandidate<'a>>,
-}
-
-#[derive(Serialize)]
-struct MetroidResult<'a> {
-    actions: Vec<MetroidResultAction<'a>>,
-}
-
 fn metroid_result_sha256(result: &MetroidCampaignJobResult) -> Result<String, Box<dyn Error>> {
-    let actions = result
-        .actions
-        .iter()
-        .map(|action| MetroidResultAction {
-            action: action.action,
-            observations: &action.observations,
-            milestones: action.milestones,
-            outcome: action.outcome,
-            candidate: action
-                .candidate
-                .as_ref()
-                .map(|candidate| MetroidResultCandidate {
-                    key: &candidate.key,
-                    viable: candidate.viable,
-                }),
-        })
-        .collect();
-    postcard_value_sha256(&MetroidResult { actions })
+    postcard_value_sha256(result)
 }
 
 pub struct MetroidCampaignConfig {
@@ -1068,6 +1031,37 @@ pub fn replay_metroid_campaign_checkpointed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_digest_binds_retained_emulator_state() {
+        let snapshot = MetroidSnapshot::for_census_tests(Default::default());
+        let mut changed = serde_json::to_value(&snapshot).unwrap();
+        let observation: MetroidObservations =
+            serde_json::from_value(changed["observation"].clone()).unwrap();
+        changed["emulator_state"] = serde_json::json!([1]);
+        let changed: MetroidSnapshot = serde_json::from_value(changed).unwrap();
+        let job = |snapshot| MetroidCampaignJobResult {
+            preparation_failure: None,
+            actions: vec![CampaignActionResult {
+                action: ButtonChord {
+                    buttons: 0,
+                    hold_frames: 1,
+                },
+                observations: vec![observation.clone()],
+                milestones: MetroidMilestones::default(),
+                outcome: Outcome::default(),
+                candidate: Some(CampaignCandidate {
+                    key: MetroidArchiveKey::default(),
+                    viable: true,
+                    snapshot,
+                }),
+            }],
+        };
+        assert_ne!(
+            metroid_result_sha256(&job(snapshot)).unwrap(),
+            metroid_result_sha256(&job(changed)).unwrap()
+        );
+    }
 
     #[test]
     fn named_discovery_reconstructs_input_independently_of_output_configuration() {

@@ -33,12 +33,24 @@ impl Namespace {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub struct Lease {
+    owner: Arc<()>,
     entry: u64,
     key_len: usize,
     depth: u32,
 }
+
+impl PartialEq for Lease {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.owner, &other.owner)
+            && self.entry == other.entry
+            && self.key_len == other.key_len
+            && self.depth == other.depth
+    }
+}
+
+impl Eq for Lease {}
 
 impl Lease {
     #[must_use]
@@ -60,6 +72,10 @@ pub enum CacheError {
     UnknownLease(u64),
     #[error("a snapshot cache parent belongs to another namespace")]
     NamespaceMismatch,
+    #[error("a snapshot cache lease belongs to another index")]
+    ForeignLease,
+    #[error("a snapshot cache extent belongs to another index")]
+    ForeignExtent,
     #[error("malformed snapshot cache extent: {0}")]
     Malformed(&'static str),
     #[error("snapshot cache segment: {0}")]
@@ -145,6 +161,7 @@ impl Entry {
 
 #[derive(Debug)]
 struct State {
+    owner: Arc<()>,
     budget: usize,
     segments: PageSegments,
     entries: BTreeMap<u64, Entry>,
@@ -187,6 +204,7 @@ impl State {
         entry.priority = floor.saturating_add(entry.worth());
         entry.leases += 1;
         Ok(Lease {
+            owner: Arc::clone(&self.owner),
             entry: id,
             key_len: entry.key.len(),
             depth: entry.depth,
@@ -281,6 +299,7 @@ impl LocalIndex {
     pub fn with_segments(budget: usize, segments: PageSegments) -> Self {
         Self {
             state: Arc::new(Mutex::new(State {
+                owner: Arc::new(()),
                 budget,
                 segments,
                 entries: BTreeMap::new(),
@@ -345,6 +364,9 @@ impl CacheIndex for LocalIndex {
         cost: u64,
     ) -> Result<Lease, CacheError> {
         let mut state = self.state();
+        if !state.segments.owns(&extent) {
+            return Err(CacheError::ForeignExtent);
+        }
         let committed = extent.commit();
         if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
             state.segments.free_committed(committed);
@@ -353,6 +375,10 @@ impl CacheIndex for LocalIndex {
         }
         let depth = match parent {
             Some(lease) => {
+                if !Arc::ptr_eq(&lease.owner, &state.owner) {
+                    state.segments.free_committed(committed);
+                    return Err(CacheError::ForeignLease);
+                }
                 let Some(parent) = state.entries.get_mut(&lease.entry) else {
                     state.segments.free_committed(committed);
                     return Err(CacheError::UnknownLease(lease.entry));
@@ -360,6 +386,10 @@ impl CacheIndex for LocalIndex {
                 if parent.namespace != namespace {
                     state.segments.free_committed(committed);
                     return Err(CacheError::NamespaceMismatch);
+                }
+                if !key.starts_with(&parent.key) || key.len() <= parent.key.len() {
+                    state.segments.free_committed(committed);
+                    return Err(CacheError::Malformed("parent key is not a prefix"));
                 }
                 parent.children += 1;
                 parent.depth + 1
@@ -388,6 +418,7 @@ impl CacheIndex for LocalIndex {
             .insert(key.to_vec(), id);
         state.stats.publishes += 1;
         Ok(Lease {
+            owner: Arc::clone(&state.owner),
             entry: id,
             key_len: key.len(),
             depth,
@@ -396,6 +427,9 @@ impl CacheIndex for LocalIndex {
 
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {
         let state = self.state();
+        if !Arc::ptr_eq(&lease.owner, &state.owner) {
+            return Err(CacheError::ForeignLease);
+        }
         let mut chain = Vec::new();
         let mut cursor = Some(lease.entry);
         while let Some(id) = cursor {
@@ -409,6 +443,9 @@ impl CacheIndex for LocalIndex {
 
     fn release(&self, lease: Lease) {
         let mut state = self.state();
+        if !Arc::ptr_eq(&lease.owner, &state.owner) {
+            return;
+        }
         if let Some(entry) = state.entries.get_mut(&lease.entry) {
             entry.leases -= 1;
             state.settle(lease.entry);
@@ -561,6 +598,61 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_parent_cannot_supply_pages_to_another_action_prefix() {
+        let index = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let parent = put(&index, space, b"ab", None, &[(0, 1)], &[]).unwrap();
+        for key in [&b"ac"[..], &b"a"[..]] {
+            let result = put(&index, space, key, Some(&parent), &[(1, 2)], &[]);
+            assert!(matches!(
+                result,
+                Err(CacheError::Malformed("parent key is not a prefix"))
+            ));
+            assert!(index.lookup(space, key).is_none());
+        }
+        let child = put(&index, space, b"abcd", Some(&parent), &[(1, 2)], &[]).unwrap();
+        assert_eq!(resolved(&index, &child).0, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn foreign_lease_cannot_alias_an_entry_with_the_same_local_id() {
+        let a = LocalIndex::new(1 << 20);
+        let b = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let a_root = put(&a, space, b"ab", None, &[(0, 1)], &[]).unwrap();
+        let b_root = put(&b, space, b"ab", None, &[(0, 2)], &[]).unwrap();
+        assert_ne!(a_root, b_root);
+        assert!(matches!(b.chain(&a_root), Err(CacheError::ForeignLease)));
+        assert!(matches!(
+            put(&b, space, b"abcd", Some(&a_root), &[(1, 3)], &[]),
+            Err(CacheError::ForeignLease)
+        ));
+        let leased = b.stats().leased;
+        b.release(a_root);
+        assert_eq!(b.stats().leased, leased);
+        assert_eq!(resolved(&b, &b_root).0, vec![(0, 2)]);
+    }
+
+    #[test]
+    fn foreign_extent_cannot_be_published_into_another_index() {
+        let a = LocalIndex::new(1 << 20);
+        let b = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let _b_root = put(&b, space, b"b", None, &[(0, 2)], &[]).unwrap();
+        for key in [&b"a"[..], &b"b"[..]] {
+            let mut extent = a.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            assert!(matches!(
+                b.publish(space, key, None, extent, 1),
+                Err(CacheError::ForeignExtent)
+            ));
+            assert_eq!(a.stats().charged, 0);
+        }
+        assert!(b.lookup(space, b"a").is_none());
+        assert_eq!(b.stats().entries, 1);
+    }
+
+    #[test]
     fn a_duplicate_key_keeps_the_first_entry_and_frees_the_second_extent() {
         let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
         let space = ns("a");
@@ -580,7 +672,7 @@ mod tests {
         let index = LocalIndex::with_segment_bytes(3 * per_entry, per_entry);
         let space = ns("a");
         let a = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
-        let b = put(&index, space, b"b", Some(&a), &[(1, 1)], &[]).unwrap();
+        let b = put(&index, space, b"ab", Some(&a), &[(1, 1)], &[]).unwrap();
         let c = put(&index, space, b"c", None, &[(2, 1)], &[]).unwrap();
         assert!(matches!(
             put(&index, space, b"d", None, &[(3, 1)], &[]),
@@ -595,7 +687,7 @@ mod tests {
         index.release(c);
         let d = put(&index, space, b"d", None, &[(3, 1)], &[]).unwrap();
         assert!(
-            index.lookup(space, b"b").is_none(),
+            !held(&index, b"ab"),
             "of two equal leaves the earlier one goes first"
         );
         let a = index.lookup(space, b"a").unwrap();
@@ -687,8 +779,24 @@ mod tests {
         );
         assert_eq!(resolved(&index, &lease).0, vec![(0, 39), (1, 1)]);
         let base = &leases[3];
-        let left = put(&index, space, b"L", Some(base), &[(2, 7)], &[1]).unwrap();
-        let right = put(&index, space, b"R", Some(base), &[(2, 8)], &[]).unwrap();
+        let left = put(
+            &index,
+            space,
+            &[0, 1, 2, 3, b'L'],
+            Some(base),
+            &[(2, 7)],
+            &[1],
+        )
+        .unwrap();
+        let right = put(
+            &index,
+            space,
+            &[0, 1, 2, 3, b'R'],
+            Some(base),
+            &[(2, 8)],
+            &[],
+        )
+        .unwrap();
         assert_eq!(resolved(&index, &left).0, vec![(0, 3), (2, 7)]);
         assert_eq!(resolved(&index, &right).0, vec![(0, 3), (1, 1), (2, 8)]);
     }

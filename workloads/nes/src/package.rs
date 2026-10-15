@@ -41,13 +41,30 @@ pub struct SearchOptions {
     pub executions: u64,
     pub output: PathBuf,
     pub wall_seconds: Option<u64>,
+    pub checkpoint_owner: Option<String>,
 }
 #[derive(Clone, Debug, Default)]
 pub enum SearchStart {
     #[default]
     Genesis,
     Actions(serde_json::Value),
-    Checkpoint(PathBuf),
+    Checkpoint {
+        checkpoint: searcher::search::checkpoint::PinnedCheckpoint,
+        origin_input: serde_json::Value,
+    },
+}
+#[derive(Clone, Debug)]
+pub struct SearchEvidence {
+    pub witness_input: Vec<u8>,
+    pub result: Vec<u8>,
+}
+
+pub fn canonical_origin_input(
+    value: serde_json::Value,
+) -> Result<serde_json::Value, Box<dyn Error>> {
+    let input: searcher::search::archive::Input<machine::nes::ButtonChord> =
+        serde_json::from_value(value)?;
+    Ok(serde_json::to_value(input)?)
 }
 #[derive(Clone, Debug, Serialize, Deserialize, Eq, PartialEq)]
 pub struct SearchIdentity {
@@ -131,7 +148,7 @@ fn search<G: Endpointed>(
     backend: &str,
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>>
+) -> Result<SearchEvidence, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
 {
@@ -144,7 +161,7 @@ where
         host: "harmony-search".into(),
         wall_budget: options.wall_seconds.map(std::time::Duration::from_secs),
         stop_rollout_on_objective: true,
-        stop_campaign_on_objective: !matches!(start, SearchStart::Checkpoint(_)),
+        stop_campaign_on_objective: !matches!(start, SearchStart::Checkpoint { .. }),
         archive_entry_limit: MAX_ARCHIVE_ENTRIES,
         window: default_window(options.workers),
         memory_budget_mib: None,
@@ -160,12 +177,9 @@ where
     let prefix: searcher::search::archive::Input<G::Action> = match start {
         SearchStart::Genesis => Default::default(),
         SearchStart::Actions(value) => serde_json::from_value(value.clone())?,
-        SearchStart::Checkpoint(path) => serde_json::from_slice(&fs::read(
-            path.parent()
-                .and_then(Path::parent)
-                .ok_or("checkpoint has no run directory")?
-                .join("origin-input.json"),
-        )?)?,
+        SearchStart::Checkpoint { origin_input, .. } => {
+            serde_json::from_value(origin_input.clone())?
+        }
     };
     fs::write(
         options.output.join("origin-input.json"),
@@ -173,7 +187,10 @@ where
     )?;
     let origin = match start {
         SearchStart::Genesis => CampaignOrigin::Genesis,
-        SearchStart::Checkpoint(path) => CampaignOrigin::SearchCheckpoint { path: path.clone() },
+        SearchStart::Checkpoint { checkpoint, .. } => CampaignOrigin::SearchCheckpoint {
+            path: checkpoint.path.clone(),
+            expected_sha256: Some(checkpoint.sha256.clone()),
+        },
         SearchStart::Actions(value) => {
             let input: searcher::search::archive::Input<G::Action> =
                 serde_json::from_value(value.clone())?;
@@ -224,6 +241,7 @@ where
                 every: std::num::NonZeroU64::new(100),
                 on_marks: false,
                 on_top_progress: false,
+                checkpoint_owner: options.checkpoint_owner.clone(),
             }),
             ..Default::default()
         },
@@ -254,23 +272,22 @@ where
             serde_json::to_vec_pretty(&best)?,
         )?;
     }
-    serde_json::to_writer_pretty(
-        fs::File::create(options.output.join("witness-input.json"))?,
-        &best,
-    )?;
+    let witness_input = serde_json::to_vec_pretty(&best)?;
+    fs::write(options.output.join("witness-input.json"), &witness_input)?;
     let witness = replay_witness(&game, &config.run, &best)?;
     let endpoint = game.headless_endpoint(&best)?;
-    serde_json::to_writer_pretty(
-        fs::File::create(options.output.join("result.json"))?,
-        &serde_json::json!({
-            "format": "harmony-search-result-v1",
-            "backend": backend,
-            "solved": report.objectives_reached > 0,
-            "witness": witness,
-            "endpoint": endpoint,
-        }),
-    )?;
-    Ok(())
+    let result = serde_json::to_vec_pretty(&serde_json::json!({
+        "format": "harmony-search-result-v1",
+        "backend": backend,
+        "solved": report.objectives_reached > 0,
+        "witness": witness,
+        "endpoint": endpoint,
+    }))?;
+    fs::write(options.output.join("result.json"), &result)?;
+    Ok(SearchEvidence {
+        witness_input,
+        result,
+    })
 }
 fn smb_run() -> SmbCampaignRun {
     SmbCampaignRun {
@@ -281,11 +298,12 @@ fn smb_run() -> SmbCampaignRun {
 pub fn search_native(
     rom: &[u8],
     core: &Path,
+    expected_core_sha256: &str,
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
-    let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    verify_native_core(core, expected_core_sha256)?;
     record_identity(
         rom,
         ExecutionIdentity {
@@ -297,12 +315,12 @@ pub fn search_native(
                 machine::quicknes::QUICKNES_BUILD,
                 machine::quicknes::QUICKNES_OPTIONS
             ),
-            artifacts: [("core".into(), core_hash.clone())].into(),
+            artifacts: [("core".into(), expected_core_sha256.into())].into(),
         },
         options,
     )?;
     search(
-        SmbGame::new(rom, core, &core_hash),
+        SmbGame::new(rom, core, expected_core_sha256),
         smb_run(),
         "native",
         options,
@@ -322,10 +340,11 @@ pub fn search_consonance(
     platform_initramfs: &[u8],
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
     let initramfs = prepared.initramfs(platform_initramfs);
     let prepared_identity = prepared.identity_hex();
+    let game = SmbGame::new_consonance(rom, kernel, &initramfs)?;
     record_identity(
         rom,
         ExecutionIdentity {
@@ -333,7 +352,7 @@ pub fn search_consonance(
             isa: std::env::consts::ARCH.into(),
             core_contract: format!(
                 "{};prepared-execution={prepared_identity}",
-                machine::consonance::identity(kernel, &initramfs),
+                game.emulator_identity(),
             ),
             artifacts: [
                 ("kernel".into(), format!("{:x}", Sha256::digest(kernel))),
@@ -354,28 +373,31 @@ pub fn search_consonance(
         },
         options,
     )?;
-    search(
-        SmbGame::new_consonance(rom, kernel, &initramfs),
-        smb_run(),
-        "consonance",
-        options,
-        start,
-    )
+    search(game, smb_run(), "consonance", options, start)
 }
 
 pub fn replay_native(
     rom: &[u8],
     core: &Path,
+    expected_core_sha256: &str,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    let hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    verify_native_core(core, expected_core_sha256)?;
     RomKind::identify(rom)?;
     replay_witness(
-        &SmbGame::new(rom, core, &hash),
+        &SmbGame::new(rom, core, expected_core_sha256),
         &smb_run(),
         &serde_json::from_value(input)?,
     )
 }
+
+fn verify_native_core(core: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
+    if format!("{:x}", Sha256::digest(fs::read(core)?)) != expected {
+        return Err("saved QuickNES core has changed".into());
+    }
+    Ok(())
+}
+
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
@@ -390,7 +412,7 @@ pub fn replay_consonance(
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     RomKind::identify(rom)?;
     replay_witness(
-        &SmbGame::new_consonance(rom, kernel, initramfs),
+        &SmbGame::new_consonance(rom, kernel, initramfs)?,
         &smb_run(),
         &serde_json::from_value(input)?,
     )
@@ -408,14 +430,30 @@ pub fn search_saved_guest(
     initramfs: &[u8],
     options: &SearchOptions,
     start: &SearchStart,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
     RomKind::identify(rom)?;
     search(
-        SmbGame::new_consonance(rom, kernel, initramfs),
+        SmbGame::new_consonance(rom, kernel, initramfs)?,
         smb_run(),
         "consonance",
         options,
         start,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_native_core_digest_rejects_a_replaced_core() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = temp.path().join("quicknes.so");
+        fs::write(&core, b"original core").unwrap();
+        let expected = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+        fs::write(&core, b"different core").unwrap();
+        let error = replay_native(&[], &core, &expected, serde_json::Value::Null).unwrap_err();
+        assert_eq!(error.to_string(), "saved QuickNES core has changed");
+    }
 }

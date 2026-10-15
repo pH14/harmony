@@ -20,9 +20,9 @@ in the platform supervisor's bundle format:
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 
-[`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
-alphabet, and passes the image to the canonical OCI preparation API with
-`/etc/harmony/bundle` selected for structured supervision. The platform control
+[`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
+bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
+supervision. The platform control
 member contains the read-only execution specification and mounts the pinned
 supervisor, SDK devices, and bundle path. The supervisor runs setup and
 readiness commands with the resolved image credentials before it publishes the
@@ -36,24 +36,46 @@ a readiness command keep immediate hook launches.
 
 ## Image admission
 
-Preparation scans every executable and shared library in the staged rootfs
-before it builds the guest image ([`admission`](src/admission.rs)). It rejects:
+Preparation scans every executable and shared library in the exact packed
+rootfs segment that the guest receives ([`admission`](src/admission.rs)). It
+derives the bundle and event attestation from those same archived bytes. A
+staged file changed between scanning and packing cannot make admission name
+different executable or bundle bytes from the guest image.
+
+Packaging temporarily grants host read and directory search permission while
+copying staged files, then restores their original modes. The archived scan
+reads those copied bytes regardless of mode, so images containing mode-zero
+files and directories receive the same admission result on privileged and
+unprivileged hosts. The separate image-inspection command still inspects the
+staged rootfs directly.
+
+The scan rejects:
 
 - a writable executable segment or an executable stack;
 - an ELF file that is not 64-bit little-endian x86-64 or arm64;
-- a hardware entropy instruction (RDRAND, RDSEED, RNDR, RNDRRS) without a
-  review in `/etc/harmony/instruction-allowlist`
+- a hardware entropy or CPU-identity instruction (RDRAND, RDSEED, RNDR,
+  RNDRRS, RDPID, LSL) without a review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
+- an arm64 monitor-based LL/SC instruction, even if listed for review;
+- an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
-For User-mode Linux, preparation rejects all four scanned hardware entropy
-instructions even when reviewed. UML runs guest user instructions natively, so
-the VM's hidden feature bits do not protect a guarded call site. This admission
-check walks the bytes of executable load segments in the staged image. Section
-headers do not determine what the guest loader executes. The scan boundary
-still requires cooperative workloads: dynamically generated code and
-instructions hidden inside another instruction's operand bytes are outside its
-guarantee.
+For User-mode Linux, preparation rejects the scanned hardware entropy and
+CPU-identity instructions even when reviewed. UML runs guest user instructions
+natively, so the VM's hidden feature bits do not protect a guarded call site.
+The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
+identity, and LSL can read the CPU number from the host GDT segment limit.
+This admission check walks executable loads in the packed image, including
+file bytes mapped before a segment's virtual start and beyond its declared
+file size in the first and last executable pages. It also rejects loads whose
+file offset and virtual address disagree within a page. Section headers do
+not determine what the guest loader executes.
+The x86 scan follows instruction streams from each mapped section and gap
+across section and adjacent executable-load boundaries. It starts at each
+load's declared address and rejects overlapping executable mappings, which
+could combine instruction bytes from different loads. The scan still requires
+cooperative workloads: dynamically generated code and instructions hidden
+inside another instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -67,16 +89,29 @@ this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
 a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
-The scan catches entropy instructions that compilers and assemblers emit. On
-x86 it decodes each allocated section inside an executable load segment from
-its start, regardless of the section's executable flag, and separately decodes
-the gaps between sections. This preserves instruction alignment when a segment
-begins with headers or other data without reporting an instruction assembled
-across a section boundary. On arm64 it checks aligned instruction words across
-the whole executable load segment, ignoring a trailing partial word that cannot
-hold an instruction, so odd-length data sections are harmless. A
-binary built to hide an x86 instruction inside another instruction's operand
-bytes can still pass.
+The scan catches entropy and CPU-identity instructions that compilers and
+assemblers emit. On x86 it decodes each allocated section inside an executable
+load from its start, regardless of the section's executable flag, and scans
+the gaps separately. Each decode continues through later ranges when their
+virtual addresses are contiguous. This preserves instruction alignment when a
+segment begins with headers or other data while finding an instruction reached
+by falling through a boundary. At each mapped-section or adjacent executable-load
+boundary, it also decodes the first complete instruction from every candidate
+start within the preceding 14 bytes. Entropy and CPU-identity instructions
+whose prefixes, operands, SIB bytes, or displacements cross a boundary become
+exact-address review sites. A VM image can review such a site against its
+executable digest; UML rejects native host-input sites even when reviewed.
+Executable pages can contain data that resembles an instruction at a boundary,
+so those bytes may need explicit VM review. Overlapping x86 executable mappings
+are rejected. On arm64 it checks aligned
+instruction words across the complete 4 KiB page-rounded file mapping of each
+executable load, including bytes beyond the declared load size, and rejects
+another load segment that aliases an executable memory page. Images with
+read-only data in executable loads must link with separate code pages. A
+trailing partial word with no mapped bytes to complete it cannot hold an
+instruction. The LL/SC mask excludes LSE CASP and ordinary acquire/release
+loads, which do not use the reservation monitor. A binary built to hide an
+x86 instruction inside another instruction's operand bytes can still pass.
 
 `harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete
@@ -233,12 +268,21 @@ User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
 replaces `runner.options.kernel`, and each session runs in the search thread. The profile
-identity, host architecture, physical processor, CPU model and CPU feature flags join the
+identity, the loaded Harmony executable identity, and a digest of the complete
+host identity, including the physical processor and CPU-info lines UML imports
+at boot, join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest
-boot, so that identity always names the profile the session pins. Search admits
-one processor from the selected coordinator placement for the whole campaign.
+boot. Saved searches and command runs also bind the profile loaded for guest
+execution to the recording's verified profile identity and require its
+executable digest to match the saved kernel. The staged initramfs is checked
+against the requested image, then the sealed bytes are checked
+again before boot, so the identity names the image the session actually runs.
+The UML identity hashes kernel arguments with their
+lengths, preserving the boundaries used at boot when a live session or cache
+entry is reused. Search admits one processor from the selected coordinator
+placement for the whole campaign.
 Host worker threads still run on their assigned cores, while every UML guest
 child is pinned to the admitted processor; this prevents guest-visible CPUID
 or MIDR differences from entering snapshots passed between workers, at the
@@ -289,10 +333,11 @@ Earlier UML `engine_digest` values covered only bridge state and cannot prove
 full-state replay equivalence.
 
 The search report and `campaign-summary.json` also record
-`watchdog_cutoffs`, the number of guest action runs ended by the session's
-host watchdog, including cutoffs while reconstructing an evicted prefix. A
-reconstruction cutoff ends that preparation attempt, counts one execution failure
-and one watchdog cutoff, and leaves the worker available for later jobs. It
+`watchdog_cutoffs`, the number of guest action runs and prefix reconstruction
+attempts ended by the session's host watchdog, including waits for a fresh or
+in-place UML restore. A reconstruction cutoff ends that preparation attempt,
+counts one execution failure and one watchdog cutoff, and leaves the worker
+available for later jobs. It
 produces no suffix action, retained candidate, oracle evidence, or duration
 feedback. Other reconstruction errors still fail the campaign. A completed CLI
 with such cutoffs remains a measured campaign;
@@ -339,7 +384,9 @@ Search also writes
 `first-bug-input.json`, and one `bug-N.json` per recorded bug
 ([`report`](src/report.rs)). Each `bug-N.json` carries the action list and the
 encoded window list used by the guest, including windows inherited from a
-branch root. `first-bug-input.json` carries the selected action list.
+branch root. At completion, `first-bug-input.json` holds the first confirmed
+finding's actions when one exists; otherwise it holds the first recorded
+candidate's actions.
 
 `FaultArchiveKey` has a place, a progress, and a holder identity. The place is
 the passed assertion set and every lifecycle count except liveness, plus two
@@ -382,7 +429,8 @@ search checkpoint. Prefix origins replay before capturing a root. Findings
 retain that prefix, so confirmation still executes the complete history from
 boot. Search checkpoints persist workload evidence as well as the generic
 coordinator state. The package writes periodic checkpoints every 100 admissions
-and a final checkpoint at shutdown.
+and a final checkpoint at shutdown. A CLI-selected checkpoint carries its
+journal digest into the searcher, which rejects a file swapped after selection.
 
 Fresh scenario executions retain `ReplaySummary::timeline`: the observation,
 recorded action including coverage quantum, and console evidence at each action
@@ -402,7 +450,8 @@ resulting state as a durable root. A root binds the prepared boot identity to a
 cache extent containing pages and device/service sidecars, plus the standing
 fault windows still active at its snapshot moment. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
-All workers start from the imported root, and later action prefixes/checkpoints
+The CLI verifies and loads the saved root once before starting a search, then
+passes those bytes to every worker. Later action prefixes/checkpoints
 are relative to it. A continuation retains inherited standing windows, including
 an unfired event kill armed before the root, while it adds its new action windows.
 Commands and interactive input are diagnostic evidence, not

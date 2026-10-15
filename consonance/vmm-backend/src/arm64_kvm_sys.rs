@@ -9,7 +9,7 @@ use kvm_bindings::{
 use kvm_ioctls::{Cap, DeviceFd, Kvm, VcpuFd, VmFd};
 
 use crate::arch::arm64::Arm64AsidBits;
-use crate::arm64_kvm::{Arm64Kvm, KvmRunView, RunOffsets, RunPage};
+use crate::arm64_kvm::{Arm64Kvm, KVM_VTIMER_PPI, KvmRunView, RunOffsets, RunPage};
 use crate::error::{BackendError, Result};
 use crate::types::MpState;
 
@@ -56,7 +56,6 @@ const _UAPI_PIN: () = {
 
 const GICD_BASE: u64 = 0x0800_0000;
 const GICR_BASE: u64 = 0x080a_0000;
-const QUARANTINED_VTIMER_PPI: u32 = 20;
 
 const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
     (dir << 30) | (size << 16) | (typ << 8) | nr
@@ -206,7 +205,7 @@ impl LiveKvm {
     }
 
     fn quarantine_host_vtimer(&self) -> Result<()> {
-        let irq = QUARANTINED_VTIMER_PPI;
+        let irq = KVM_VTIMER_PPI;
         self.vcpu
             .set_device_attr(&kvm_device_attr {
                 flags: 0,

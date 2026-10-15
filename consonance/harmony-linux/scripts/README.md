@@ -11,6 +11,35 @@ words across the whole executable segment, regardless of section lengths.
 Its hidden-section negative control clears the `.text` executable flag while
 leaving `PT_LOAD` executable and must still be rejected.
 
+The arm64 AA-4 and AA-5 scanners compare loaded section addresses and file
+offsets with their executable `PT_LOAD` mapping. They reject overlapping
+executable segments, duplicate or overlapping loaded sections, a non-executable
+`.text`, an entrypoint in data, and unreviewed data-section names. Both AA-4
+and AA-5 check every aligned word in the 4 KiB page-rounded file mapping of a `PF_X` load
+segment, including words labeled as data or lying outside its declared
+`p_filesz`. The ARM kernel builder requires 4 KiB pages to match that scan.
+The scanners reject load segments whose file or virtual pages
+overlap an executable load's pages, so a separate data segment cannot supply
+an executable alias through Linux's page rounding.
+ARM user binaries link their read-only data into page-separated non-executable
+`PT_LOAD` segments so incidental exclusive-shaped metadata remains usable.
+The pinned `vmlinux` has a different mapping: its page tables execute
+`_stext.._etext` and `__inittext_begin..__inittext_end`, while its early
+identity map also executes the `.rodata.text` page. The explicit
+`--kernel-vmlinux <vmlinux> <Image>` AA-4 and AA-5 modes validate those linker boundaries,
+require each range to start in a file-backed executable ELF load, and scan
+the exact boot Image bytes across all three runtime-executable ranges. The
+Image scan covers zero-filled alignment tails omitted by ELF `p_filesz` and
+does not trust section or segment flags to identify executable bytes. The arm64
+linker patch places `.altinstructions` and unwind metadata on NX init-data
+pages, and the early identity map makes the ordinary read-only interval NX
+without blocking its special identity-map code. The vDSO debug ELF uses
+ordinary user-page scanning. The exact stripped `vdso.so` is embedded whole
+and mapped executable through its final page, so `--embedded-vdso` scans every
+aligned word in the complete file, including the section table beyond `PT_LOAD`.
+These are static artifact checks; they do not trap later executable mappings,
+`mprotect`, generated code, or writes to executable files.
+
 The counter scanner also rejects physical and virtual timer-value reads
 (`CNTP_TVAL_EL0` and `CNTV_TVAL_EL0`). These expose a remaining interval derived
 from the live counter even when no timer is programmed. The raw executable-word

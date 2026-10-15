@@ -71,6 +71,11 @@ pub trait Vendor: Arch + Sized {
 
     fn clockevent_trace_schedule<B: Backend<A = Self>>(vmm: &Vmm<B>) -> Option<(u64, u32)>;
 
+    fn restored_clockevent_trace_schedule_present<B: Backend<A = Self>>(
+        vmm: &Vmm<B>,
+        prep: &Self::RestorePrep,
+    ) -> bool;
+
     fn deliverable_timer_deadline_vns<B: Backend<A = Self>>(
         vmm: &mut Vmm<B>,
     ) -> Result<Option<u64>, VmmError>;
@@ -121,6 +126,10 @@ pub trait Vendor: Arch + Sized {
     fn check_sealable_vcpu(vcpu: &Self::VcpuState) -> Result<(), VmmError>;
 
     fn check_long_mode_vcpu(_vcpu: &Self::VcpuState) -> Result<(), VmmError> {
+        Ok(())
+    }
+
+    fn validate_vtime_clock_offset(_clock_offset: u64) -> Result<(), VmmError> {
         Ok(())
     }
 

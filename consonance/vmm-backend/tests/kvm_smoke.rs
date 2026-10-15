@@ -91,6 +91,71 @@ fn setup_real_mode(backend: &mut KvmBackend, mem: &mut GuestMem, code: &[u8]) {
 
 #[test]
 #[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
+fn rejected_rep_input_retires_uncounted_guest_progress() {
+    let mut mem = GuestMem::new(0x10000);
+    for (address, entry) in [(0x4000, 0x5003_u64), (0x5000, 0x6003), (0x6000, 0x83)] {
+        mem.as_mut_slice()[address..address + 8].copy_from_slice(&entry.to_le_bytes());
+    }
+    let mut backend = new_backend_or_explain();
+    // SAFETY: guest RAM is page-aligned, stays allocated until backend drop, and is not borrowed during guest entry.
+    unsafe { backend.map_memory(Gpa(0), mem.as_mut_slice()) }.expect("map guest RAM");
+    configure(&mut backend);
+    let code = [
+        0x48, 0xbf, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xba, 0xf8, 0x03, 0x00, 0x00,
+        0xb9, 0x00, 0x01, 0x00, 0x00, 0xc6, 0x04, 0x25, 0x00, 0x30, 0x00, 0x00, 0xa5, 0xff, 0xc3,
+        0xf3, 0x6c, 0xf4,
+    ];
+    backend.write_guest(Gpa(0x1000), &code).expect("load guest");
+    let mut initial = backend.save().expect("save initial CPU");
+    initial.sregs.cs.base = 0;
+    initial.sregs.cs.selector = 8;
+    initial.sregs.cs.l = 1;
+    initial.sregs.cs.db = 0;
+    initial.sregs.cs.type_ = 11;
+    initial.sregs.cs.s = 1;
+    initial.sregs.cs.present = 1;
+    initial.sregs.cs.limit = u32::MAX;
+    initial.sregs.cs.g = 1;
+    initial.sregs.cr0 |= (1 << 31) | 1;
+    initial.sregs.cr4 |= 1 << 5;
+    initial.sregs.cr3 = 0x4000;
+    initial.sregs.efer |= (1 << 8) | (1 << 10);
+    initial.regs.rip = 0x1000;
+    initial.regs.rflags = 2;
+    backend.restore(&initial).expect("enter long mode");
+
+    assert!(matches!(
+        backend.run(),
+        Err(BackendError::Unsupported {
+            what: "string/REP port I/O (io.count != 1)"
+        })
+    ));
+    assert_eq!(
+        mem.as_mut_slice()[0x3000],
+        0xa5,
+        "guest ran before decode failed"
+    );
+    assert_eq!(backend.exit_counts(), ExitCounts::default());
+    assert!(matches!(
+        backend.save(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+    assert!(matches!(
+        backend.prepare_snapshot(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+    assert!(matches!(
+        backend.restore(&initial),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+    assert!(matches!(
+        backend.run(),
+        Err(BackendError::Internal("backend state mutation failed"))
+    ));
+}
+
+#[test]
+#[ignore = "live KVM; run on the determinism box with --ignored (see file header)"]
 fn serviced_pio_is_exactly_snapshottable_without_guest_execution() {
     for read in [false, true] {
         let code = [
@@ -1353,16 +1418,19 @@ fn event_shape_restore_rejects_noncanonical_fields_before_mutation() {
     assert_eq!(observed.sregs.cr2, valid.sregs.cr2);
     assert!(matches!(backend.run(), Ok(Exit::Common(CommonExit::Idle))));
 
-    let mut pending_nmis = baseline.clone();
+    let mut pending_mem = GuestMem::new(0x10000);
+    let mut pending_backend = new_backend_or_explain();
+    setup_real_mode(&mut pending_backend, &mut pending_mem, &[0xf4]);
+    let mut pending_nmis = pending_backend.save().expect("save unentered backend");
     pending_nmis.events.nmi_pending = 2;
-    backend
+    pending_backend
         .validate_restore_state(&pending_nmis)
         .expect("validate two pending NMIs");
-    backend
+    pending_backend
         .restore(&pending_nmis)
         .expect("restore two pending NMIs");
     assert_eq!(
-        backend
+        pending_backend
             .save()
             .expect("save pending NMIs")
             .events
