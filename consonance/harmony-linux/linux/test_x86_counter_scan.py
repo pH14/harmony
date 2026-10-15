@@ -867,6 +867,62 @@ class CounterScanCoverage(unittest.TestCase):
                         result.stderr,
                     )
 
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_head_terminal_zero_alignment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "head.s"
+            linker = root / "head.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all }\n"
+            )
+            obj = root / "head.o"
+            decompressor = root / "vmlinux"
+            scanner = Path(__file__).with_name("scan-unclaimed-opcodes.py")
+            cases = (
+                ("accepted", "lret\n", None),
+                (
+                    "split32",
+                    ".byte 0xe9\n.global hidden_operand\nhidden_operand:\n"
+                    ".long startup_64-(startup_32+5)\nlret\n",
+                    "incomplete 32-bit decompressor head",
+                ),
+                (
+                    "jump_padding",
+                    "jmp padding\nlret\npadding:\n",
+                    "noncanonical direct branch target",
+                ),
+                ("ret_padding", "ret\n", "incomplete 32-bit decompressor head"),
+                ("fallthrough_padding", "nop\n", "incomplete 32-bit decompressor head"),
+                ("all_zero", ".fill 512,1,0\n", "incomplete 32-bit decompressor head"),
+            )
+            for mode, head32, expected_error in cases:
+                with self.subTest(mode=mode):
+                    assembly.write_text(
+                        '.section .head.text,"ax"\n.global startup_32\nstartup_32:\n'
+                        + head32
+                        + '.balign 512,0\n.global startup_64\nstartup_64:\n'
+                        + 'ret\n.fill 15,1,0xcc\n'
+                        + '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                    )
+                    run("as", "--64", "-o", str(obj), str(assembly))
+                    run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_32", "-o",
+                        str(decompressor), str(obj))
+                    result = subprocess.run(
+                        ["python3", str(scanner), f"decompressor={decompressor}"],
+                        capture_output=True, text=True,
+                    )
+                    if expected_error is None:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn(expected_error, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
