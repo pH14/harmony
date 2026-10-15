@@ -262,6 +262,60 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_kernel_physical_load_overlap_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "overlap.s"
+            assembly.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n'
+                '.byte 0xeb,0x00\n.fill 15,1,0xcc\n'
+                '.section .data,"aw"\n.byte 0x0f,0x31,0xc3\n'
+            )
+            linker = root / "overlap.ld"
+            linker.write_text(
+                "PHDRS { text PT_LOAD FLAGS(5); data PT_LOAD FLAGS(6); }\n"
+                "SECTIONS { . = 0xffffffff81000000; "
+                ".text : AT(0x01000000) { *(.text) } :text "
+                ". = 0xffffffff82600000; "
+                ".data : AT(0x02600000) { *(.data) } :data }\n"
+            )
+            obj = root / "overlap.o"
+            elf = root / "overlap.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "0x01000000", "-o",
+                str(elf), str(obj))
+            original = elf.read_bytes()
+            program_offset = struct.unpack_from("<Q", original, 32)[0]
+            program_size = struct.unpack_from("<H", original, 54)[0]
+            for physical, message in (
+                (0x01000002, "overlapping PT_LOAD physical memory ranges"),
+                (0x02800000, "inconsistent PT_LOAD physical/virtual address offsets"),
+            ):
+                with self.subTest(physical=physical):
+                    data = bytearray(original)
+                    struct.pack_into("<Q", data, program_offset + program_size + 24, physical)
+                    elf.write_bytes(data)
+                    if physical == 0x01000002:
+                        runtime = bytearray(17)
+                        for index in range(2):
+                            program = program_offset + index * program_size
+                            offset = struct.unpack_from("<Q", data, program + 8)[0]
+                            load_address = struct.unpack_from("<Q", data, program + 24)[0]
+                            size = struct.unpack_from("<Q", data, program + 32)[0]
+                            start = load_address - 0x01000000
+                            runtime[start : start + size] = data[offset : offset + size]
+                        self.assertEqual(runtime[:5], b"\xeb\x00\x0f\x31\xc3")
+                    result = subprocess.run(
+                        ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(message, result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_executable_segment_with_hidden_code_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
