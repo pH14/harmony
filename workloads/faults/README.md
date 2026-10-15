@@ -245,8 +245,9 @@ User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
 replaces `runner.options.kernel`, and each session runs in the search thread. The profile
-identity and a digest of the complete host identity, including the physical
-processor and CPU-info lines UML imports at boot, join the
+identity, the loaded Harmony executable identity, and a digest of the complete
+host identity, including the physical processor and CPU-info lines UML imports
+at boot, join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest

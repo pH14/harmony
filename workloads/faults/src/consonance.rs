@@ -80,7 +80,9 @@ impl UmlGuest {
         let verified = uml::Profile::load(profile)
             .map_err(|error| format!("User-mode Linux profile: {error}"))?;
         let host = Self::default_host()?;
-        let identity = Self::identity(verified.identity_sha256(), &host);
+        let executable = consonance_client::image_identity::loaded_executable_identity_self()
+            .map_err(|error| format!("loaded Harmony executable: {error}"))?;
+        let identity = Self::identity(verified.identity_sha256(), &host, &executable);
         Ok(Self {
             profile: profile.to_path_buf(),
             profile_identity_sha256: verified.identity_sha256().to_owned(),
@@ -108,8 +110,11 @@ impl UmlGuest {
         }
     }
 
-    fn identity(profile: &str, host: &uml::HostIdentity) -> String {
-        format!("profile={profile};host={}", host.identity_sha256())
+    fn identity(profile: &str, host: &uml::HostIdentity, executable: &str) -> String {
+        format!(
+            "profile={profile};host={};host_executable={executable}",
+            host.identity_sha256()
+        )
     }
 
     #[cfg(target_os = "linux")]
@@ -1438,8 +1443,12 @@ mod tests {
         let mut foreign_boot = guest.host.clone();
         foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
         assert_ne!(
-            UmlGuest::identity("admitted-profile", &guest.host),
-            UmlGuest::identity("admitted-profile", &foreign_boot)
+            UmlGuest::identity("admitted-profile", &guest.host, "loaded-a"),
+            UmlGuest::identity("admitted-profile", &foreign_boot, "loaded-a")
+        );
+        assert_ne!(
+            UmlGuest::identity("admitted-profile", &guest.host, "loaded-a"),
+            UmlGuest::identity("admitted-profile", &guest.host, "loaded-b")
         );
     }
 
