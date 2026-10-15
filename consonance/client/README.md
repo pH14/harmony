@@ -211,9 +211,12 @@ boot; its sealed bytes define the root identity and serve every later fresh
 process. Boot checks their SHA-256 against the caller's admitted initramfs
 digest. The caller supplies the admitted profile and exact host processor
 identity; boot checks both against the pinned profile and
-processor before starting a guest. The root identity includes a length-delimited
-digest of the complete admitted host identity, including the CPU-info lines
-UML imports at boot, and the exact boot argument list and initramfs bytes.
+processor before starting a guest. The root identity also includes the loaded
+Harmony executable identity, so a checkpoint produced by another host build
+cannot be imported even when the profile and guest bytes match. It includes a
+length-delimited digest of the complete admitted host identity, including the
+CPU-info lines UML imports at boot, and the exact boot argument list and
+initramfs bytes.
 An import from a different physical processor or launch
 input is refused before the checkpoint store changes. Fresh restore spawns
 recheck the same admitted processor and host identity. A publish exports the
