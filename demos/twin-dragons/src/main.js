@@ -353,7 +353,7 @@ const phoneLayout = matchMedia("(max-width: 800px)");
 const INTRO_SCALE = 1.3,
   PATH_STALL_MS = 8000,
   ROOM_DWELL_MS = 10000,
-  CAMERA_RETREAT_MS = 3000;
+  CAMERA_RETREAT_MS = 1500;
 const camera = { mode: "follow", follow: false, overview: false, manual: 0, pinned: null, introStart: 0, introDone: false, focus: null, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map() };
 const ease = (t) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 function closeUpZoom(c) {
@@ -384,7 +384,7 @@ function frontier(level) {
   const map = maps.get(level), raw = swarmRooms.get(level) || [];
   const left = (p) => (p.samples ? p.samples.at(-MOTION_STRIDE) - p.frame : 0);
   const order = (p) => game.route(level, p.x + 8, p.y + 8);
-  const finisher = raw.filter((p) => p.finish).sort((a, b) => left(a) - left(b) || (game.grid ? order(b) - order(a) : game.vertical ? a.y - b.y : b.x - a.x))[0];
+  const finisher = raw.filter((p) => p.finish && p.samples && levelRooms(level).includes(trailRoom(p.samples))).sort((a, b) => left(a) - left(b) || (game.grid ? order(b) - order(a) : game.vertical ? a.y - b.y : b.x - a.x))[0];
   if (finisher) return { x: finisher.x + 8, y: finisher.y };
   if (game.grid) {
     const ranked = raw.map((p) => [order(p), p]).filter(([rank]) => rank >= 0).sort((a, b) => a[0] - b[0]);
@@ -629,7 +629,16 @@ function showPathLevel(level) {
   else setRoom(room);
 }
 function followStalledPath(now) {
-  if (paused || !ready || path.level == null) return;
+  if (!ready || path.level == null) return;
+  if (path.show) {
+    const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
+    if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
+    else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.length || 0), 0) >= 3) {
+      showPathLevel(path.show.level);
+      path.show = null;
+    }
+  }
+  if (paused) return;
   let here = false, deepest = null;
   for (const [room, points] of swarmRooms) {
     if (!points.length) continue;
@@ -696,11 +705,14 @@ function updateCamera(now) {
   for (const room of drivenRooms()) {
     const held = camera.targets.get(room);
     let point = frontier(room);
-    if (!point) point = held?.goal ?? reachedFrontier(room);
-    else if (held?.goal && cameraProgress(room, point) < cameraProgress(room, held.goal) - 32) {
-      held.behind ||= now;
-      if (now - held.behind < CAMERA_RETREAT_MS) point = held.goal;
+    if (held?.goal && (!point || cameraProgress(room, point) < cameraProgress(room, held.goal) - 32)) {
+      const goal = held.goal, ahead = cameraProgress(room, goal);
+      const near = (swarmRooms.get(room) || []).filter((p) => Math.hypot(p.x + 8 - goal.x, p.y - goal.y) < 192 || cameraProgress(room, { x: p.x + 8, y: p.y }) > ahead).length;
+      if (near >= 2) held.behind = 0;
+      else held.behind ||= now;
+      if (!point || !held.behind || now - held.behind < CAMERA_RETREAT_MS) point = goal;
     } else if (held) held.behind = 0;
+    if (!point) continue;
     const c = mapCanvas(room, point);
     if (!c) continue;
     const view = roomView(room, c);
@@ -708,10 +720,10 @@ function updateCamera(now) {
     if (target?.canvas !== c) camera.targets.set(room, (target = { canvas: c, x: view.x, y: view.y, behind: held?.behind ?? 0 }));
     target.goal = point;
     const gap = Math.hypot(point.x - target.x, point.y - target.y);
-    const settle = reducedMotion.matches ? 1 : 1 - Math.exp((-dt * (1 + gap / 160)) / 1.1);
+    const settle = reducedMotion.matches ? 1 : 1 - Math.exp((-dt * (1 + gap / 120)) / 0.5);
     target.x += (point.x - target.x) * settle;
     target.y += (point.y - target.y) * settle;
-    steerCamera(room, c, target, closeUpZoom(c) * (room === camera.introRoom ? scale : 1), smooth(0.6), smooth(0.35));
+    steerCamera(room, c, target, closeUpZoom(c) * (room === camera.introRoom ? scale : 1), smooth(0.6), 1);
   }
 }
 let searchChoices = [{ id: 0, parent: null }],
@@ -1643,7 +1655,7 @@ function startSearch(level = bootLevel) {
           if (!followExit(path, from, exits?.[i], catalog.levels)) return;
           path.since = now;
           path.idle = 0;
-          if (onPath) showPathLevel(path.level);
+          if (onPath) path.show = { level: path.level, from: roomLevel(branchPreview?.room ?? mapLevel) };
         });
         if (
           latestBest !== null &&

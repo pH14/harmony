@@ -241,12 +241,12 @@ floor sits inside one cell.
 
 Each level shows through one camera viewport: a 4:1 strip on desktop and a 2:1
 view on phones. The camera holds the full level height on screen and follows
-the search frontier (the 80th-percentile x of live sprites, smoothed), or the
-furthest cell the search has reached, or the level start. Sprites replay
+the search frontier (the 80th-percentile x of live sprites, smoothed), and
+stays where it is while fewer than four sprites are in the level. Sprites replay
 rollouts from their start states, so the frontier drops back whenever the
-search draws earlier states; the camera moves back only after the frontier has
-stayed behind for 3 seconds, and it closes a large gap faster than a small
-one. Following pauses
+search draws earlier states; the camera moves back only after fewer than two
+sprites have been near its target for 1.5 seconds, and it closes a large gap
+faster than a small one. Following pauses
 for 3 seconds after the mouse moves over the map and for 2.5 seconds after a
 touch, so a pointer left resting on the map does not stop it. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
@@ -302,7 +302,9 @@ A rollout that raises the cleared-level count is a clearing rollout, and the
 level it enters first is its exit. For Super Mario Bros. the exit of a warp
 pipe is the warp's destination. The view follows one path through the game: it
 moves to a level only when a clearing rollout that starts in the level the path
-is on arrives, and it moves to that rollout's exit at once. Levels that other
+is on arrives, and it moves to that rollout's exit once the exit has at least
+three live sprites, so the view never shows a level the search has not started
+exploring. Levels that other
 lineages reach, such as the worlds past a warp zone the path did not take, do
 not move the view. When the path's level has had no live rollouts for 8 seconds
 while a deeper level has some, the path moves to the deepest such level. The map

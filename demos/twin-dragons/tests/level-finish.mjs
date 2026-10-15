@@ -34,11 +34,12 @@ for (const query of ["?level=0&pace=300", "?game=tobu-tobu-girl&level=0&pace=0"]
   const batches = await page.evaluate(() => window.clearingBatches);
   assert.ok(batches.length, `${query}: the worker marks the rollouts that clear Level 1`);
   const first = Math.min(...batches);
-  assert.ok(switched - first < 500, `${query}: the map moves to Level 2 within half a second of the first batch that clears Level 1 (${Math.round(switched - first)} ms)`);
+  assert.ok(switched - first < 15000, `${query}: the map moves to Level 2 soon after the first batch that clears Level 1 (${Math.round(switched - first)} ms)`);
+  await page.waitForFunction(() => Number(document.querySelector('.map-row[data-current="true"] .area-map')?.dataset.swarmCount) > 0, null, { timeout: 2000 });
   assert.deepEqual(errors, []);
   await page.close();
 }
-console.log("The map moves to the next level as soon as the search clears the shown one.");
+console.log("The map moves to the next level once the search has sprites there after clearing the shown one.");
 
 const { page, errors } = await open("?game=tobu-tobu-girl&level=0&pace=0");
 const strip = page.locator('.level-overview[data-map="0"]');
