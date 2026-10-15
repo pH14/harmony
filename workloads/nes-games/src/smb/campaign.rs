@@ -418,6 +418,13 @@ where
         postcard_semantic_result_sha256(result)
     }
 
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        snapshot.snapshot_identity_sha256()
+    }
+
     fn archive_report(
         &self,
         evidence: &SmbCampaignEvidence,

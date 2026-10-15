@@ -135,6 +135,9 @@ x87/SSE presence bits can change during nested KVM execution; their raw values
 remain in the original snapshots used for restore. RAM, active CPU state,
 nested virtualization state, SDK events, policy, control state, observations, outcomes and
 operation inputs remain checked by replay.
+Archive entries bind saved snapshots through that same logical projection of
+the nested VM state, while retaining each snapshot's position, observation, and
+actions in the digest. The checkpoint file digest still covers its exact bytes.
 
 A failure during campaign preparation uses the searcher's failed disposition.
 It retains its observation, layer and input seeds when no suffix action runs.

@@ -34,7 +34,9 @@ passes one over the browser core. LZ4 snapshot packing is available on every
 target for that reason. Job results are digested with
 `postcard_semantic_result_sha256` from the searcher, which leaves out emulator
 state, so a browser campaign and a native one produce the same decision
-stream.
+stream. Archive entries record a snapshot digest from `snapshot_identity_sha256`,
+and an archive checkpoint must match those digests. SMB hashes the logical
+snapshot identity; the other games hash the serialized snapshot.
 
 Each game's recorded emulator policy ends with a hash field. The native
 constructors take the core hash and the prepared execution hash from

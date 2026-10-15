@@ -1317,6 +1317,21 @@ mod tests {
         )
         .expect("seed campaign");
         let source = seed_campaign.archive.clone();
+        for saved in &seed_checkpoint.entries {
+            let identity = saved
+                .snapshot
+                .snapshot_identity_sha256()
+                .expect("snapshot identity");
+            let entry = source
+                .entries
+                .iter()
+                .find(|entry| entry.id == saved.id)
+                .expect("checkpoint snapshot has a source entry");
+            assert_eq!(
+                entry.snapshot_identity_sha256.as_deref(),
+                Some(identity.as_str())
+            );
+        }
         let archive_source = ArchiveSource::from_bytes(&serde_json::to_vec(&source).unwrap())
             .expect("source archive bytes parse");
         let tree_config = genesis_config(0x5eed_ca06, 1, 16);

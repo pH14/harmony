@@ -34,6 +34,7 @@ use crate::{
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
             CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, Reporting,
             SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_semantic_result_sha256,
+            postcard_value_sha256,
         },
         draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
@@ -662,6 +663,13 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for Mm2Game<M> {
 
     fn result_sha256(&self, result: &Mm2CampaignJobResult<M>) -> Result<String, Box<dyn Error>> {
         postcard_semantic_result_sha256(result)
+    }
+
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
     }
 
     fn archive_report(

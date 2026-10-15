@@ -407,6 +407,17 @@ impl<const CAPACITY_TWO: bool> Reporting for Workload<CAPACITY_TWO> {
         }
         postcard_value_sha256(&result)
     }
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        if self.scale.is_none_or(|scale| scale.snapshot_bytes == 0) {
+            return postcard_value_sha256(snapshot);
+        }
+        let mut logical = snapshot.clone();
+        logical.payload.clear();
+        postcard_value_sha256(&logical)
+    }
     fn archive_report(
         &self,
         evidence: &Evidence,

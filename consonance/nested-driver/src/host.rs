@@ -517,6 +517,14 @@ impl Reporting for NestedWorkload {
         }
         campaign::postcard_result_sha256(&canonical)
     }
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        let mut logical = snapshot.clone();
+        logical.state = logical.state.logical_identity()?;
+        campaign::postcard_value_sha256(&logical)
+    }
     fn evidence_checkpoint(evidence: &Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
         Ok(serde_json::to_vec(evidence)?)
     }

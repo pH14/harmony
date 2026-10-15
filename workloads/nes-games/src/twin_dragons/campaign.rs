@@ -17,7 +17,7 @@ use crate::{
             ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
             CampaignJobResult, CampaignModeReport, CampaignStreamHeader, CampaignTypes, Evaluation,
             InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_semantic_result_sha256,
+            postcard_semantic_result_sha256, postcard_value_sha256,
         },
         draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
@@ -333,6 +333,13 @@ impl<M: NesBackend<Vec<u8>>> Reporting for TwinDragonsGame<M> {
         result: &TwinDragonsCampaignJobResult<M>,
     ) -> Result<String, Box<dyn Error>> {
         postcard_semantic_result_sha256(result)
+    }
+
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
     }
 
     fn archive_report(

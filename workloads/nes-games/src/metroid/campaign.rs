@@ -36,7 +36,7 @@ use crate::{
             CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
             CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy, PREFERENCE_POLICY_FIELD,
             Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_semantic_result_sha256,
+            postcard_semantic_result_sha256, postcard_value_sha256,
         },
         draw_tables::DrawTableHeader,
         rand::RomuDuoJrRand,
@@ -691,6 +691,13 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Reporting for MetroidGame<M> {
         result: &MetroidCampaignJobResult<M>,
     ) -> Result<String, Box<dyn Error>> {
         postcard_semantic_result_sha256(result)
+    }
+
+    fn snapshot_identity_sha256(
+        &self,
+        snapshot: &Self::Snapshot,
+    ) -> Result<String, Box<dyn Error>> {
+        postcard_value_sha256(snapshot)
     }
 
     fn archive_report(

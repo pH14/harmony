@@ -620,7 +620,7 @@ where
             &counters,
             stream_sha256,
             config.materialize_final_artifacts,
-        );
+        )?;
         telemetry.persistence_ns = nanos_since(persistence_started);
         report.telemetry = telemetry;
         Ok((report, checkpoint))

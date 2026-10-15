@@ -69,7 +69,11 @@ campaign result digest covers the complete job result, including preparation
 failures and retained QuickNES snapshots. Replay therefore detects a latent
 endpoint-state change even when its decoded game observations and archive key
 agree. The games in `nes-games` digest only the decoded result so a browser
-campaign and a native one produce the same stream. On Intel KVM hosts a whole-VM endpoint's raw
+campaign and a native one produce the same stream. Replay binds each archive
+checkpoint snapshot to the digest its source archive entry records. SMB entries
+record the logical snapshot identity; the other games record the serialized
+snapshot. The checkpoint file hash continues to cover its exact serialized
+bytes. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
 

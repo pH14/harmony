@@ -39,7 +39,7 @@ impl EndpointIdentity for TwinDragonsSnapshot {}
 
 impl<P: SnapshotState> EndpointIdentity for SmbSnapshot<P> {
     fn endpoint_sha256(&self) -> Result<String, Box<dyn Error>> {
-        postcard_sha256(&self.logical_identity()?)
+        self.snapshot_identity_sha256()
     }
 }
 

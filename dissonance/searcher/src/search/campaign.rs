@@ -91,7 +91,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 13;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 14;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -261,6 +261,8 @@ pub trait Reporting: CampaignTypes {
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
+    fn snapshot_identity_sha256(&self, snapshot: &Self::Snapshot)
+    -> Result<String, Box<dyn Error>>;
     fn archive_report(
         &self,
         evidence: &Self::Evidence,
@@ -670,6 +672,11 @@ pub struct SnapshotCheckpointEntry<S> {
     pub id: u64,
     pub snapshot: S,
 }
+
+type ArchiveMaterialization<G> = (
+    <G as CampaignTypes>::ArchiveReport,
+    Vec<(u64, <G as CampaignTypes>::Snapshot)>,
+);
 
 impl<S: Serialize + DeserializeOwned> SnapshotCheckpoint<S> {
     pub fn to_bytes(&self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1655,6 +1662,9 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         source: &G::ArchiveReport,
         checkpoint: Option<&SnapshotCheckpoint<G::Snapshot>>,
     ) -> Result<TreeImportCounts, Box<dyn Error>> {
+        if let Some(checkpoint) = checkpoint {
+            validate_archive_checkpoint_entries(workload, source, checkpoint)?;
+        }
         let checkpointed: BTreeMap<u64, &G::Snapshot> = checkpoint
             .map(|checkpoint| {
                 checkpoint
@@ -1999,13 +2009,31 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         workload: &G,
         campaign_seed: u64,
         materialize_final_artifacts: bool,
-    ) -> (G::ArchiveReport, Vec<(u64, G::Snapshot)>) {
+    ) -> Result<ArchiveMaterialization<G>, Box<dyn Error>> {
         let selector = self.archive.selector_report();
-        let (entries, snapshots) = if materialize_final_artifacts {
+        let (mut entries, snapshots) = if materialize_final_artifacts {
             self.archive.take_entry_reports_and_snapshots()
         } else {
             (Vec::new(), Vec::new())
         };
+        let entry_indexes = entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| (entry.id, index))
+            .collect::<BTreeMap<_, _>>();
+        if entry_indexes.len() != entries.len() {
+            return Err("archive report contains duplicate entry IDs".into());
+        }
+        for (id, snapshot) in &snapshots {
+            let index = entry_indexes
+                .get(id)
+                .ok_or("archive snapshot has no matching entry")?;
+            let entry = &mut entries[*index];
+            if entry.snapshot_identity_sha256.is_some() {
+                return Err("archive report contains duplicate snapshot IDs".into());
+            }
+            entry.snapshot_identity_sha256 = Some(workload.snapshot_identity_sha256(snapshot)?);
+        }
         let report = workload.archive_report(
             &self.evidence,
             ArchiveReportState {
@@ -2021,7 +2049,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 selector,
             },
         );
-        (report, snapshots)
+        Ok((report, snapshots))
     }
 }
 
@@ -2468,7 +2496,7 @@ fn build_report<G: Workload>(
     counters: &CampaignCounters,
     stream_sha256: String,
     materialize_final_artifacts: bool,
-) -> CampaignOutcome<G> {
+) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let terminal_endpoints = core.terminal_endpoints;
@@ -2497,7 +2525,7 @@ fn build_report<G: Workload>(
         workload,
         header.campaign_seed,
         materialize_final_artifacts,
-    );
+    )?;
     let checkpoint = SnapshotCheckpoint {
         format: workload.checkpoint_format().to_owned(),
         entries: snapshots
@@ -2563,7 +2591,7 @@ fn build_report<G: Workload>(
         archive,
         telemetry: CampaignTelemetry::default(),
     };
-    (report, checkpoint)
+    Ok((report, checkpoint))
 }
 
 struct PostcardSha256(Sha256);
@@ -3029,6 +3057,36 @@ impl Write for CheckpointHashWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+fn validate_archive_checkpoint_entries<G: Workload + ?Sized>(
+    workload: &G,
+    source: &G::ArchiveReport,
+    checkpoint: &SnapshotCheckpoint<G::Snapshot>,
+) -> Result<(), Box<dyn Error>> {
+    let mut expected = BTreeMap::new();
+    for entry in workload.source_entries(source) {
+        if expected
+            .insert(entry.id, entry.snapshot_identity_sha256.as_deref())
+            .is_some()
+        {
+            return Err("source archive has duplicate entry IDs".into());
+        }
+    }
+    let mut seen = BTreeSet::new();
+    for entry in &checkpoint.entries {
+        if !seen.insert(entry.id) {
+            return Err("archive snapshot checkpoint has duplicate entry IDs".into());
+        }
+        let bound = expected
+            .get(&entry.id)
+            .ok_or("archive snapshot checkpoint has an unknown entry ID")?
+            .ok_or("source archive entry lacks a snapshot digest")?;
+        if workload.snapshot_identity_sha256(&entry.snapshot)? != *bound {
+            return Err("archive snapshot checkpoint differs from its source entry digest".into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_archive_checkpoint<G: Workload + ?Sized>(
@@ -4838,7 +4896,7 @@ where
         &counters,
         stream_sha256,
         true,
-    );
+    )?;
     if !require_terminal {
         outcome.0.mode = "campaign-prefix".to_owned();
     }
@@ -5036,6 +5094,12 @@ mod tests {
             result: &CampaignJobResult<Self>,
         ) -> Result<String, Box<dyn Error>> {
             postcard_value_sha256(result)
+        }
+        fn snapshot_identity_sha256(
+            &self,
+            snapshot: &Self::Snapshot,
+        ) -> Result<String, Box<dyn Error>> {
+            postcard_value_sha256(snapshot)
         }
 
         fn archive_report(
@@ -6077,6 +6141,215 @@ mod tests {
     }
 
     #[test]
+    fn archive_checkpoint_cannot_assign_another_sources_state_to_an_input() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let mut sources = Vec::<(u8, TestArchiveReport, SnapshotCheckpoint<u8>)>::new();
+        for seed in 1..=32 {
+            config.campaign_seed = seed;
+            let (campaign, snapshots) = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut Vec::new(),
+                None,
+            )
+            .expect("independent source campaign");
+            let Some(saved) = snapshots.entries.iter().find(|entry| entry.id == 1) else {
+                continue;
+            };
+            let value = saved.snapshot;
+            if value == 0
+                || value == INHERITS_PARENT_PLACE
+                || sources.iter().any(|(existing, _, _)| *existing == value)
+            {
+                continue;
+            }
+            let entry = campaign
+                .archive
+                .entries
+                .iter()
+                .find(|entry| entry.id == 1)
+                .expect("snapshot belongs to an archive entry");
+            assert_eq!(entry.key, TestKey(value));
+            assert_eq!(
+                entry
+                    .input
+                    .actions
+                    .iter()
+                    .fold(0_u8, |sum, action| sum.wrapping_add(action.input)),
+                value
+            );
+            sources.push((value, campaign.archive, snapshots));
+            if sources.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(sources.len(), 2, "two distinct saved states are required");
+        let (source_value, source_report, source_snapshots) = sources.remove(0);
+        let (foreign_value, _, foreign_snapshots) = sources.remove(0);
+        let source = ArchiveSource::from_bytes(&serde_json::to_vec(&source_report).unwrap())
+            .expect("archive source");
+        let checkpoint_for = |path: &str, snapshots: SnapshotCheckpoint<u8>| {
+            let bytes = snapshots.to_bytes().expect("encode checkpoint");
+            CampaignCheckpoint {
+                path: path.to_owned(),
+                file_sha256: format!("{:x}", Sha256::digest(&bytes)),
+                snapshots: SnapshotCheckpoint::from_bytes(&bytes, workload.checkpoint_format())
+                    .expect("decode checkpoint"),
+            }
+        };
+        config.campaign_seed = 101;
+        config.execution_budget = 0;
+        let matched_checkpoint = checkpoint_for("source.snapshots", source_snapshots.clone());
+        let mut matched_stream = Vec::new();
+        let (matched_report, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                source: source.clone(),
+                checkpoint: Some(matched_checkpoint.clone()),
+            },
+            &mut matched_stream,
+            None,
+        )
+        .expect("matching serialized source and checkpoint import");
+        assert_eq!(
+            replay_campaign_checkpointed(
+                &workload,
+                &matched_stream,
+                Some(&source),
+                Some(&matched_checkpoint),
+            )
+            .expect("matching serialized source and checkpoint replay")
+            .0
+            .archive,
+            matched_report.archive
+        );
+        let checkpoint = checkpoint_for("foreign.snapshots", foreign_snapshots);
+        let mut stream = Vec::new();
+        let mixed = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                source: source.clone(),
+                checkpoint: Some(checkpoint.clone()),
+            },
+            &mut stream,
+            None,
+        );
+        assert_ne!(source_value, foreign_value);
+        assert!(
+            mixed
+                .unwrap_err()
+                .to_string()
+                .contains("source entry digest")
+        );
+        let mut changed = source_snapshots.clone();
+        changed
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 1)
+            .expect("saved source entry")
+            .snapshot = foreign_value;
+        let changed_checkpoint = checkpoint_for("changed.snapshots", changed);
+        let mut changed_stream = Vec::new();
+        let changed_result = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                source: source.clone(),
+                checkpoint: Some(changed_checkpoint.clone()),
+            },
+            &mut changed_stream,
+            None,
+        );
+        assert!(
+            changed_result
+                .unwrap_err()
+                .to_string()
+                .contains("source entry digest")
+        );
+        let mut lines = matched_stream
+            .split(|byte| *byte == b'\n')
+            .filter(|line| !line.is_empty())
+            .map(|line| String::from_utf8(line.to_vec()).unwrap())
+            .collect::<Vec<_>>();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["origin_checkpoint_path"] = serde_json::json!(changed_checkpoint.path);
+        header["origin_checkpoint_sha256"] = serde_json::json!(changed_checkpoint.file_sha256);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let replay_result = replay_campaign_checkpointed(
+            &workload,
+            lines.join("\n").as_bytes(),
+            Some(&source),
+            Some(&changed_checkpoint),
+        );
+        assert!(
+            replay_result
+                .unwrap_err()
+                .to_string()
+                .contains("source entry digest")
+        );
+        let reject_entries = |report: TestArchiveReport,
+                              snapshots: SnapshotCheckpoint<u8>,
+                              expected: &str| {
+            let source = ArchiveSource::from_bytes(&serde_json::to_vec(&report).unwrap()).unwrap();
+            let checkpoint = checkpoint_for("invalid.snapshots", snapshots);
+            let result = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Archive {
+                    path: "source.archive".to_owned(),
+                    source,
+                    checkpoint: Some(checkpoint),
+                },
+                &mut Vec::new(),
+                None,
+            );
+            assert!(
+                result.unwrap_err().to_string().contains(expected),
+                "expected {expected}"
+            );
+        };
+        let mut duplicate = source_snapshots.clone();
+        duplicate.entries.push(
+            duplicate
+                .entries
+                .iter()
+                .find(|entry| entry.id == 1)
+                .unwrap()
+                .clone(),
+        );
+        reject_entries(source_report.clone(), duplicate, "duplicate entry IDs");
+        let mut unknown = source_snapshots.clone();
+        unknown
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 1)
+            .unwrap()
+            .id = u64::MAX;
+        reject_entries(source_report.clone(), unknown, "unknown entry ID");
+        let mut unbound = source_report;
+        unbound
+            .entries
+            .iter_mut()
+            .find(|entry| entry.id == 1)
+            .unwrap()
+            .snapshot_identity_sha256 = None;
+        reject_entries(unbound, source_snapshots, "lacks a snapshot digest");
+    }
+
+    #[test]
     fn replay_rejects_more_reservations_than_its_execution_budget() {
         let (workload, mut lines) = five_job_campaign_stream();
         let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
@@ -6257,7 +6530,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":13,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":14,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -6645,7 +6918,9 @@ mod tests {
                 actions: vec![winning]
             })
         );
-        let (report, _) = core.into_archive_report_and_snapshots(&workload, 0, true);
+        let (report, _) = core
+            .into_archive_report_and_snapshots(&workload, 0, true)
+            .expect("report and snapshots");
         assert_eq!(
             report.entries.len(),
             3,
@@ -6670,6 +6945,7 @@ mod tests {
                 input: Input { actions },
                 key: TestKey(0),
                 milestones: (),
+                snapshot_identity_sha256: None,
                 selector: None,
             };
         let source = TestArchiveReport {
