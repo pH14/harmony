@@ -133,7 +133,8 @@ PT_LOAD memory ranges are rejected so one load cannot overwrite another's
 fence. Decoded direct branches from kernel or decompressor code into loaded
 non-code bytes, including reviewed data and load slack, fail admission. The
 decompressor head is decoded as 32-bit code before `startup_64` and in both
-64-bit modes afterward; a present head with missing mode anchors fails.
+64-bit modes afterward; missing mode anchors or a truncated decode at a symbol
+boundary fail.
 Indirect or computed
 transfers into reviewed data and code copied out of data require separate
 admission review.

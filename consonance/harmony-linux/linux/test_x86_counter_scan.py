@@ -831,11 +831,19 @@ class CounterScanCoverage(unittest.TestCase):
                 "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
                 ".text : { *(.text) } :all .rodata : { *(.rodata) } :all }\n"
             )
-            for mode in ("head32", "head64"):
+            for mode in ("head32", "head64", "split32"):
+                head32 = {
+                    "head32": "jmp entropy_site\n",
+                    "head64": "nop\n",
+                    "split32": (
+                        ".byte 0xe9\n.global hidden_operand\nhidden_operand:\n"
+                        ".long entropy_site-(startup_32+5)\n"
+                    ),
+                }[mode]
                 hazard = root / "hazard.s"
                 hazard.write_text(
                     '.section .head.text,"ax"\n.global startup_32\nstartup_32:\n'
-                    + ('jmp entropy_site\n' if mode == "head32" else 'nop\n')
+                    + head32
                     + '.fill 27,1,0xcc\n.global startup_64\nstartup_64:\n'
                     + ('jmp entropy_site\n' if mode == "head64" else 'ret\n')
                     + '.fill 15,1,0xcc\n'
@@ -853,7 +861,11 @@ class CounterScanCoverage(unittest.TestCase):
                         ["bash", str(SCAN), str(kernel)], capture_output=True, text=True
                     )
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn("direct branch into loaded non-code", result.stderr)
+                    self.assertIn(
+                        "incomplete 32-bit decompressor head" if mode == "split32"
+                        else "direct branch into loaded non-code",
+                        result.stderr,
+                    )
 
 
 if __name__ == "__main__":

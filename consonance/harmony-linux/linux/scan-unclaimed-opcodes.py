@@ -224,8 +224,10 @@ def scan_mixed_mode_raw_code(data, programs, tag):
 
 def require_complete_head(instructions, first, last, mode):
     cursor = first
-    for site, length, _instruction in instructions:
+    for site, length, instruction in instructions:
         if site != cursor:
+            raise ValueError(f"incomplete {mode} decompressor head")
+        if truncated_instruction(instruction):
             raise ValueError(f"incomplete {mode} decompressor head")
         cursor += length
     if cursor != last:
