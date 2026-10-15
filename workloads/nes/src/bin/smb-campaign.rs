@@ -388,7 +388,8 @@ fn load_checkpoint(
     path: &std::path::Path,
     checkpoint_format: &str,
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    load_checkpoint_as(path, path.to_string_lossy().into_owned(), checkpoint_format)
+    let logical_path = path.to_str().ok_or("checkpoint path must be UTF-8")?;
+    load_checkpoint_as(path, logical_path.to_owned(), checkpoint_format)
 }
 
 fn load_checkpoint_as(
@@ -554,6 +555,18 @@ mod tests {
             replay_error.contains("origin must be UTF-8"),
             "{replay_error}"
         );
+    }
+
+    #[test]
+    fn checkpoint_origin_rejects_non_utf8_path_before_open() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = std::path::PathBuf::from(OsString::from_vec(vec![0xff]));
+        let error = super::load_checkpoint(&path, "test")
+            .expect_err("checkpoint path with ambiguous recorded identity was accepted")
+            .to_string();
+        assert!(error.contains("checkpoint path must be UTF-8"), "{error}");
     }
 
     fn archive_bytes(seed: u64) -> Vec<u8> {
