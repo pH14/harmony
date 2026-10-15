@@ -226,6 +226,11 @@ def verify_image(vmlinux, setup, decompressor, image, config, paths, scanner_pat
     verify_embedded_kernel(compressed, stripped_kernel)
 
     setup_padding = (-len(setup_binary)) % 4096
+    if len(setup_binary) <= 0x1f1:
+        raise ValueError("packed setup lacks setup_sects header")
+    setup_sects = setup_binary[0x1f1] or 4
+    if (setup_sects + 1) * 512 != len(setup_binary) + setup_padding:
+        raise ValueError("setup_sects disagrees with packed decompressor offset")
     expected = setup_binary + b"\0" * setup_padding + decompressor_binary
     if image != expected:
         raise ValueError("packed bzImage differs from scanned setup/decompressor")
