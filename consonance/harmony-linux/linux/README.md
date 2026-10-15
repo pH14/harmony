@@ -177,7 +177,9 @@ ELF entry, ordered program headers, and every loaded file-source byte. It
 verifies that the compressed kernel embedded in the decompressor expands to
 that stripped `vmlinux`, and that the packed image exactly matches Kbuild's
 setup binary padded to a 4 KiB
-boundary followed by the decompressor binary. Allocated setup and decompressor
+boundary followed by the decompressor binary. The setup header's `setup_sects`
+must point the VM loader to that same decompressor boundary before its 64-bit
+entry offset is applied. Allocated setup and decompressor
 sections must map uniquely to loaded bytes without overlap; the publisher also
 raw-scans the complete setup binary and checks that the embedded compressed
 kernel bytes survive the decompressor binary conversion. It publishes the

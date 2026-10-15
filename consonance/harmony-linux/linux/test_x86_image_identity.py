@@ -22,7 +22,7 @@ def run(*command):
     subprocess.run(command, check=True, capture_output=True)
 
 
-def fixture(root):
+def fixture(root, setup_sects=7):
     build = root / "kernel-build"
     boot = build / "arch/x86/boot"
     compressed = boot / "compressed"
@@ -59,9 +59,19 @@ def fixture(root):
     )
 
     setup_source = root / "setup.s"
-    setup_source.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+    setup_source.write_text(
+        '.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n'
+        f'.section .header,"a",@progbits\n.byte {setup_sects}\n'
+    )
+    setup_linker = root / "setup.ld"
+    setup_linker.write_text(
+        "PHDRS { all PT_LOAD FLAGS(5); }\n"
+        "SECTIONS { . = 0x400000; .text : { *(.text) } :all "
+        ". = 0x4001f1; .header : { *(.header) } :all }\n"
+    )
     run("as", "--64", "-o", str(root / "setup.o"), str(setup_source))
-    run("ld", "-nostdlib", "-e", "_start", "-o", str(boot / "setup.elf"),
+    run("ld", "-nostdlib", "-T", str(setup_linker), "-e", "_start",
+        "-o", str(boot / "setup.elf"),
         str(root / "setup.o"))
 
     decompressor_source = root / "decompressor.s"
@@ -88,6 +98,7 @@ def fixture(root):
     run("objcopy", "-O", "binary", "-R", ".note", "-R", ".comment", "-S",
         str(compressed / "vmlinux"), str(boot / "vmlinux.bin"))
     setup_binary = (boot / "setup.bin").read_bytes()
+    assert setup_binary[0x1f1] == setup_sects
     decompressor_binary = (boot / "vmlinux.bin").read_bytes()
     image = setup_binary + b"\0" * ((-len(setup_binary)) % 4096) + decompressor_binary
     (boot / "bzImage").write_bytes(image)
@@ -131,6 +142,18 @@ class X86ImageIdentity(unittest.TestCase):
                 (output / "x86_64/bzImage.vmlinux").read_bytes(),
                 (build / "vmlinux").read_bytes(),
             )
+
+    def test_rejects_setup_header_with_wrong_packed_decompressor_offset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build, image = fixture(root, setup_sects=6)
+            self.assertEqual(image[0x1f1], 6)
+            self.assertEqual(image[4096:4098], b"\xcb\x00")
+            output = root / "published"
+            result = verify(build, output)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("setup_sects disagrees with packed decompressor offset", result.stderr)
+            self.assertFalse(output.exists())
 
     def test_rejects_configured_physical_base_mismatch(self):
         with tempfile.TemporaryDirectory() as directory:
