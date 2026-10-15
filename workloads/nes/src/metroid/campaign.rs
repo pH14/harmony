@@ -30,11 +30,11 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            PREFERENCE_POLICY_FIELD, Reporting, SnapshotCheckpoint, TargetExecution,
-            WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
+            ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignCandidate,
+            CampaignCheckpoint, CampaignConfig, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
+            Evaluation, InputPolicy, PREFERENCE_POLICY_FIELD, Reporting, SnapshotCheckpoint,
+            TargetExecution, WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
             run_campaign_checkpointed,
         },
         draw::DrawMixture,
@@ -1081,10 +1081,10 @@ pub fn run_metroid_campaign_checkpointed(
 pub fn replay_metroid_campaign_checkpointed(
     game: &MetroidGame,
     stream_bytes: &[u8],
-    origin_report: Option<&MetroidArchiveReport>,
+    origin_source: Option<&ArchiveSource<MetroidArchiveReport>>,
     origin_checkpoint: Option<&MetroidCampaignCheckpoint>,
 ) -> Result<(MetroidCampaignModeReport, MetroidSnapshotCheckpoint), Box<dyn Error>> {
-    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_source, origin_checkpoint)
 }
 
 #[cfg(test)]

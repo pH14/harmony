@@ -4,7 +4,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt::Debug,
-    io::Write,
+    io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
@@ -558,14 +558,61 @@ pub enum CampaignOrigin<G: Workload + ?Sized> {
     },
     Archive {
         path: String,
-        file_sha256: String,
-        report: Box<G::ArchiveReport>,
+        source: ArchiveSource<G::ArchiveReport>,
         checkpoint: Option<CampaignCheckpoint<G::Snapshot>>,
     },
     SearchCheckpoint {
         path: PathBuf,
         expected_sha256: Option<String>,
     },
+}
+
+#[derive(Clone)]
+pub struct ArchiveSource<R> {
+    file_sha256: String,
+    report: R,
+}
+
+struct ArchiveHashReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R: Read> Read for ArchiveHashReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(bytes)?;
+        self.digest.update(&bytes[..read]);
+        Ok(read)
+    }
+}
+
+impl<R: DeserializeOwned> ArchiveSource<R> {
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, Box<dyn Error>> {
+        Self::from_reader(bytes)
+    }
+
+    pub fn from_reader(source: impl Read) -> Result<Self, Box<dyn Error>> {
+        let mut reader = BufReader::new(ArchiveHashReader {
+            inner: source,
+            digest: Sha256::new(),
+        });
+        let report = serde_json::from_reader(&mut reader)?;
+        std::io::copy(&mut reader, &mut std::io::sink())?;
+        Ok(Self {
+            file_sha256: format!("{:x}", reader.into_inner().digest.finalize()),
+            report,
+        })
+    }
+}
+
+impl<R> ArchiveSource<R> {
+    pub fn file_sha256(&self) -> &str {
+        &self.file_sha256
+    }
+
+    pub fn report(&self) -> &R {
+        &self.report
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2013,8 +2060,7 @@ fn resolve_origin<G: Workload>(
         ),
         CampaignOrigin::Archive {
             path,
-            file_sha256,
-            report,
+            source,
             checkpoint,
         } => {
             if let Some(checkpoint) = checkpoint {
@@ -2023,9 +2069,9 @@ fn resolve_origin<G: Workload>(
             (
                 ORIGIN_ARCHIVE.to_owned(),
                 Some(path.clone()),
-                Some(file_sha256.clone()),
+                Some(source.file_sha256().to_owned()),
                 checkpoint.as_ref(),
-                workload.resume_input(report)?,
+                workload.resume_input(source.report())?,
             )
         }
     };
@@ -2862,12 +2908,12 @@ fn bootstrap_core<G: Workload>(
 ) -> Result<Option<TreeImportCounts>, Box<dyn Error>> {
     match origin {
         CampaignOrigin::Archive {
-            report, checkpoint, ..
+            source, checkpoint, ..
         } => Ok(Some(core.import_tree(
             workload,
             run,
             target,
-            report,
+            source.report(),
             checkpoint.as_ref().map(|checkpoint| &checkpoint.snapshots),
         )?)),
         CampaignOrigin::Genesis => {
@@ -3032,11 +3078,7 @@ where
         CampaignOrigin::Genesis => None,
         CampaignOrigin::SnapshotRoot { .. } => None,
         CampaignOrigin::SearchCheckpoint { .. } => None,
-        CampaignOrigin::Archive {
-            file_sha256,
-            report,
-            ..
-        } => Some((file_sha256.as_str(), report.as_ref())),
+        CampaignOrigin::Archive { source, .. } => Some((source.file_sha256(), source.report())),
     };
     let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
     let mut duration_policies = DurationPolicies::<G::Key>::new();
@@ -4502,7 +4544,7 @@ impl ReplaySkipSchedule {
 pub fn replay_campaign_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
@@ -4511,7 +4553,7 @@ where
     replay_campaign_checkpointed_inner(
         workload,
         stream_bytes,
-        origin_report,
+        origin_source,
         origin_checkpoint,
         true,
     )
@@ -4520,7 +4562,7 @@ where
 pub fn replay_campaign_prefix_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
@@ -4529,7 +4571,7 @@ where
     replay_campaign_checkpointed_inner(
         workload,
         stream_bytes,
-        origin_report,
+        origin_source,
         origin_checkpoint,
         false,
     )
@@ -4539,7 +4581,7 @@ where
 fn replay_campaign_checkpointed_inner<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
-    origin_report: Option<&G::ArchiveReport>,
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
     origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
     require_terminal: bool,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
@@ -4707,7 +4749,7 @@ where
         .collect::<Vec<_>>();
     let resume_input = match header.origin_kind.as_str() {
         ORIGIN_GENESIS => {
-            if origin_report.is_some() {
+            if origin_source.is_some() {
                 return Err("genesis campaign replay does not take a source archive".into());
             }
             if origin_checkpoint.is_some() {
@@ -4716,7 +4758,7 @@ where
             Input::default()
         }
         ORIGIN_SNAPSHOT_ROOT => {
-            if origin_report.is_some() {
+            if origin_source.is_some() {
                 return Err("snapshot-root replay does not take a source archive".into());
             }
             if origin_checkpoint.is_none() {
@@ -4726,13 +4768,18 @@ where
         }
         ORIGIN_ARCHIVE => {
             let source =
-                origin_report.ok_or("archive campaign replay requires the source archive")?;
+                origin_source.ok_or("archive campaign replay requires the source archive")?;
+            if header.origin_archive_sha256.as_deref() != Some(source.file_sha256()) {
+                return Err(
+                    "campaign replay source archive bytes do not match the recorded digest".into(),
+                );
+            }
             if header.origin_checkpoint_sha256.is_some() != origin_checkpoint.is_some() {
                 return Err(
                     "archive campaign replay checkpoint does not match the recorded stream".into(),
                 );
             }
-            workload.resume_input(source)?
+            workload.resume_input(source.report())?
         }
         ORIGIN_SEARCH_CHECKPOINT => {
             return Err("a stream that resumes from a search checkpoint cannot be replayed".into());
@@ -4775,8 +4822,12 @@ where
     }
     let draw_origin = match header.origin_kind.as_str() {
         ORIGIN_ARCHIVE => Some((
-            header.origin_archive_sha256.as_deref().unwrap_or_default(),
-            origin_report.ok_or("archive campaign replay requires the source archive")?,
+            origin_source
+                .ok_or("archive campaign replay requires the source archive")?
+                .file_sha256(),
+            origin_source
+                .ok_or("archive campaign replay requires the source archive")?
+                .report(),
         )),
         ORIGIN_GENESIS | ORIGIN_SNAPSHOT_ROOT => None,
         _ => return Err("campaign stream origin kind is not recognized".into()),
@@ -4833,13 +4884,17 @@ where
             )?;
             None
         }
-        ORIGIN_ARCHIVE => Some(core.import_tree(
-            workload,
-            &replay_run,
-            &mut target,
-            origin_report.ok_or("archive campaign replay requires the source archive")?,
-            origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
-        )?),
+        ORIGIN_ARCHIVE => Some(
+            core.import_tree(
+                workload,
+                &replay_run,
+                &mut target,
+                origin_source
+                    .ok_or("archive campaign replay requires the source archive")?
+                    .report(),
+                origin_checkpoint.map(|checkpoint| &checkpoint.snapshots),
+            )?,
+        ),
         _ => return Err("campaign stream origin kind is not recognized".into()),
     };
     counters.bootstrap_execution_work = execution_work_delta(
@@ -5649,24 +5704,24 @@ mod tests {
     };
 
     use super::{
-        ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignCheckpoint, CampaignConfig, CampaignCounters, CampaignExecutionOptions,
-        CampaignJobRecord, CampaignJobResult, CampaignOrigin, CampaignOutcome,
-        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-        CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
-        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, LONGEST_SPLICE_TAIL,
-        LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL,
-        PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry,
-        TargetExecution, ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid,
-        compact_progress_curve, default_window, draws_continuation, draws_highest_preference,
-        execution_work_delta, finish_record, full_selector_report_due, is_zero_usize,
-        memory_is_within_reserve, postcard_value_sha256, profile_elapsed, progress_checkpoint_due,
-        progress_line_interval, progress_policy_is_supported, record_compaction_elapsed,
-        record_mixture_outcome, replay_campaign_checkpointed, replay_campaign_prefix_checkpointed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        run_campaign_checkpointed, run_campaign_checkpointed_with_options,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective,
+        ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignAdmissionDecision,
+        CampaignCandidate, CampaignCheckpoint, CampaignConfig, CampaignCounters,
+        CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
+        CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader,
+        CampaignStreamRecord, CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables,
+        DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy,
+        LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
+        PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint,
+        SnapshotCheckpointEntry, TargetExecution, ThreadPlacement, WorkloadPolicies,
+        archive_entry_limit_is_valid, compact_progress_curve, default_window, draws_continuation,
+        draws_highest_preference, execution_work_delta, finish_record, full_selector_report_due,
+        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
+        progress_checkpoint_due, progress_line_interval, progress_policy_is_supported,
+        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
+        replay_campaign_prefix_checkpointed, replay_splice, resident_memory_is_within_budget,
+        retained_archive_indexes, run_campaign_checkpointed,
+        run_campaign_checkpointed_with_options, schedule_policy_identifier,
+        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -5780,6 +5835,8 @@ mod tests {
     struct TestArchiveReport {
         #[serde(with = "entries_by_suffix")]
         entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
+        #[serde(default)]
+        marker: u8,
     }
 
     struct TestWorkload {
@@ -5794,17 +5851,17 @@ mod tests {
         type Progress = ();
         type Snapshot = u8;
         type Observations = ();
-        type Evidence = ();
+        type Evidence = u8;
         type ArchiveReport = TestArchiveReport;
         type Run = ();
     }
 
     impl Reporting for TestWorkload {
-        fn evidence_checkpoint(_evidence: &()) -> Result<Vec<u8>, Box<dyn Error>> {
-            Ok(Vec::new())
+        fn evidence_checkpoint(evidence: &u8) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(vec![*evidence])
         }
-        fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-            Ok(())
+        fn evidence_from_checkpoint(bytes: &[u8]) -> Result<u8, Box<dyn Error>> {
+            Ok(bytes.first().copied().unwrap_or_default())
         }
         fn stream_format(&self) -> &'static str {
             "test-campaign-v1"
@@ -5830,11 +5887,12 @@ mod tests {
 
         fn archive_report(
             &self,
-            _evidence: &Self::Evidence,
+            evidence: &Self::Evidence,
             state: ArchiveReportState<Self>,
         ) -> Self::ArchiveReport {
             TestArchiveReport {
                 entries: state.entries,
+                marker: *evidence,
             }
         }
     }
@@ -6025,9 +6083,10 @@ mod tests {
         fn aggregate_progress(_evidence: &Self::Evidence) -> Self::Progress {}
         fn merge_origin_evidence(
             &self,
-            _evidence: &mut Self::Evidence,
-            _source: &Self::ArchiveReport,
+            evidence: &mut Self::Evidence,
+            source: &Self::ArchiveReport,
         ) {
+            *evidence = source.marker;
         }
         fn merge_snapshot_root_evidence(
             &self,
@@ -6775,10 +6834,8 @@ mod tests {
         )
         .expect("source campaign");
         let source_archive = source.archive;
-        let source_archive_sha256 = format!(
-            "{:x}",
-            Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
-        );
+        let source_archive =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&source_archive).unwrap()).unwrap();
         let source_checkpoint = CampaignCheckpoint {
             path: "source.snapshots".to_owned(),
             file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
@@ -6789,8 +6846,7 @@ mod tests {
             let mut archive_stream = Vec::new();
             let archive_origin = CampaignOrigin::Archive {
                 path: "source.archive".to_owned(),
-                file_sha256: source_archive_sha256.clone(),
-                report: Box::new(source_archive.clone()),
+                source: source_archive.clone(),
                 checkpoint: checkpoint.clone(),
             };
             run_campaign_checkpointed(
@@ -6827,8 +6883,7 @@ mod tests {
                 let mut changed_stream = Vec::new();
                 let changed_origin = CampaignOrigin::Archive {
                     path: "source.archive".to_owned(),
-                    file_sha256: source_archive_sha256.clone(),
-                    report: Box::new(source_archive.clone()),
+                    source: source_archive.clone(),
                     checkpoint: Some(changed),
                 };
                 assert!(
@@ -7472,6 +7527,7 @@ mod tests {
                 entry(3, Some(1), vec![action(0x01), action(0x80)]),
                 entry(9, Some(7), vec![action(0x01), action(0x02), action(0x40)]),
             ],
+            marker: 0,
         };
         let mut core = CoordinatorCore::new(&workload, &run, 32_768, None);
         let suffix_json = serde_json::to_string(&source).expect("serialize source archive");
@@ -9160,14 +9216,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let source_archive = source.archive;
+        let source_archive =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&source.archive).unwrap()).unwrap();
         let origin = CampaignOrigin::Archive {
             path: "source.archive".to_owned(),
-            file_sha256: format!(
-                "{:x}",
-                Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
-            ),
-            report: Box::new(source_archive.clone()),
+            source: source_archive.clone(),
             checkpoint: None,
         };
         let config = CampaignConfig {
@@ -9211,5 +9264,88 @@ mod tests {
                 .expect_err("replay certified a skip limit live selection did not record")
                 .to_string();
         assert!(error.contains("skip suffix limit"), "{error}");
+    }
+
+    #[test]
+    fn archive_replay_rejects_changed_source_evidence_under_the_original_digest() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 5;
+        config.window = 2;
+        let mut source_stream = Vec::new();
+        let (source, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .unwrap();
+        let source_report = source.archive;
+        let source_bytes = serde_json::to_vec(&source_report).unwrap();
+        config.execution_budget = 0;
+        let source = ArchiveSource::from_bytes(&source_bytes).unwrap();
+        let origin = CampaignOrigin::Archive {
+            path: "source.archive".to_owned(),
+            source: source.clone(),
+            checkpoint: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None)
+            .expect("record archive-origin campaign");
+        assert_eq!(live.archive.marker, 0);
+        assert_eq!(
+            live.origin.archive_sha256.as_deref(),
+            Some(source.file_sha256())
+        );
+        replay_campaign_checkpointed(&workload, &stream, Some(&source), None)
+            .expect("unchanged source replays");
+        let mut prefix_lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>();
+        let end: serde_json::Value = serde_json::from_str(prefix_lines.pop().unwrap()).unwrap();
+        assert_eq!(end["event"], "end");
+        let prefix = prefix_lines.join("\n");
+        let (prefix_replay, _) =
+            replay_campaign_prefix_checkpointed(&workload, prefix.as_bytes(), Some(&source), None)
+                .expect("unchanged source prefix replays");
+        assert_eq!(prefix_replay.archive.marker, 0);
+        let mut changed = source_report;
+        changed.marker = 37;
+        assert_eq!(changed.entries, source.report().entries);
+        assert_eq!(
+            workload.resume_input(&changed).unwrap(),
+            workload.resume_input(source.report()).unwrap()
+        );
+        let changed_source =
+            ArchiveSource::from_bytes(&serde_json::to_vec(&changed).unwrap()).unwrap();
+        assert_ne!(source.file_sha256(), changed_source.file_sha256());
+        let error = replay_campaign_checkpointed(&workload, &stream, Some(&changed_source), None)
+            .expect_err("replay accepted changed source evidence under the recorded digest")
+            .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+        let error = replay_campaign_prefix_checkpointed(
+            &workload,
+            prefix.as_bytes(),
+            Some(&changed_source),
+            None,
+        )
+        .expect_err("prefix replay accepted changed source evidence")
+        .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
+        let mut whitespace_changed = source_bytes;
+        whitespace_changed.extend_from_slice(b" \n\t");
+        let same_report_source = ArchiveSource::from_bytes(&whitespace_changed).unwrap();
+        assert_eq!(same_report_source.report(), source.report());
+        assert_ne!(same_report_source.file_sha256(), source.file_sha256());
+        let error =
+            replay_campaign_checkpointed(&workload, &stream, Some(&same_report_source), None)
+                .expect_err("replay accepted semantically equal but byte-distinct source archive")
+                .to_string();
+        assert!(error.contains("source archive bytes"), "{error}");
     }
 }

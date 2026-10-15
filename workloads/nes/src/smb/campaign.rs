@@ -20,11 +20,11 @@ use crate::{
     nes_backend::{NesBackend, SnapshotState},
     search::archive::RetentionPolicy,
     search::campaign::{
-        CampaignActionResult, CampaignCheckpoint, CampaignJobRecord, CampaignJobResult,
-        CampaignModeReport, CampaignOrigin, CampaignProgressRecord, CampaignSkipRecord,
-        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation, InputPolicy,
-        Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies, postcard_result_sha256,
-        replay_campaign_checkpointed, run_campaign_checkpointed,
+        ArchiveSource, CampaignActionResult, CampaignCheckpoint, CampaignJobRecord,
+        CampaignJobResult, CampaignModeReport, CampaignOrigin, CampaignProgressRecord,
+        CampaignSkipRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, Evaluation,
+        InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
+        postcard_result_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
     },
     search::draw::DrawMixture,
     search::draw_tables::DrawTableHeader,
@@ -883,27 +883,27 @@ where
 pub fn replay_smb_campaign<M, P>(
     game: &SmbGame<M, P>,
     stream_bytes: &[u8],
-    origin_report: Option<&SmbArchiveReport>,
+    origin_source: Option<&ArchiveSource<SmbArchiveReport>>,
 ) -> Result<SmbCampaignModeReport, Box<dyn Error>>
 where
     M: SmbMachineKind<P>,
     P: SnapshotState,
 {
-    replay_smb_campaign_checkpointed(game, stream_bytes, origin_report, None)
+    replay_smb_campaign_checkpointed(game, stream_bytes, origin_source, None)
         .map(|(report, _)| report)
 }
 
 pub fn replay_smb_campaign_checkpointed<M, P>(
     game: &SmbGame<M, P>,
     stream_bytes: &[u8],
-    origin_report: Option<&SmbArchiveReport>,
+    origin_source: Option<&ArchiveSource<SmbArchiveReport>>,
     origin_checkpoint: Option<&SmbCampaignCheckpoint<P>>,
 ) -> Result<(SmbCampaignModeReport, SmbSnapshotCheckpoint<P>), Box<dyn Error>>
 where
     M: SmbMachineKind<P>,
     P: SnapshotState,
 {
-    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_source, origin_checkpoint)
 }
 
 impl<M, P> crate::film::Endpointed for SmbGame<M, P>
@@ -942,10 +942,11 @@ mod tests {
     use std::{cell::Cell, collections::BTreeSet};
 
     use super::{
-        DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary, SmbCampaignActionResult,
-        SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignOrigin, SmbCampaignProgressRecord,
-        SmbCampaignRun, SmbCampaignStreamRecord, SmbGame, SmbSnapshotCheckpoint,
-        SmbSnapshotCheckpointEntry, SmbTerminalPredicate, derive_selection_seed,
+        ArchiveSource, DrawMixture, SNAPSHOT_CHECKPOINT_FORMAT, SmbButtonVocabulary,
+        SmbCampaignActionResult, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignOrigin,
+        SmbCampaignProgressRecord, SmbCampaignRun, SmbCampaignStreamRecord, SmbGame,
+        SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTerminalPredicate,
+        derive_selection_seed,
     };
     use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
@@ -1051,22 +1052,22 @@ mod tests {
     fn replay_smb_campaign(
         rom: &[u8],
         stream_bytes: &[u8],
-        origin_report: Option<&SmbArchiveReport>,
+        origin_source: Option<&ArchiveSource<SmbArchiveReport>>,
     ) -> Result<super::SmbCampaignModeReport, Box<dyn std::error::Error>> {
-        super::replay_smb_campaign(&test_game(rom), stream_bytes, origin_report)
+        super::replay_smb_campaign(&test_game(rom), stream_bytes, origin_source)
     }
 
     fn replay_smb_campaign_checkpointed(
         rom: &[u8],
         stream_bytes: &[u8],
-        origin_report: Option<&SmbArchiveReport>,
+        origin_source: Option<&ArchiveSource<SmbArchiveReport>>,
         origin_checkpoint: Option<&SmbCampaignCheckpoint>,
     ) -> Result<(super::SmbCampaignModeReport, SmbSnapshotCheckpoint), Box<dyn std::error::Error>>
     {
         super::replay_smb_campaign_checkpointed(
             &test_game(rom),
             stream_bytes,
-            origin_report,
+            origin_source,
             origin_checkpoint,
         )
     }
@@ -2084,7 +2085,8 @@ mod tests {
         )
         .expect("seed campaign");
         let source = seed_campaign.archive.clone();
-        let source_sha = "0000000000000000000000000000000000000000000000000000000000000000";
+        let archive_source = ArchiveSource::from_bytes(&serde_json::to_vec(&source).unwrap())
+            .expect("source archive bytes parse");
         let tree_config = genesis_config(0x5eed_ca06, 1, 16);
         let mut tree_stream = Vec::new();
         let tree_live = run_smb_campaign(
@@ -2092,14 +2094,13 @@ mod tests {
             &tree_config,
             &SmbCampaignOrigin::Archive {
                 path: "seed-archive.json".to_owned(),
-                file_sha256: source_sha.to_owned(),
-                report: Box::new(source.clone()),
+                source: archive_source.clone(),
                 checkpoint: None,
             },
             &mut tree_stream,
         )
         .expect("whole-tree campaign");
-        let tree_replayed = replay_smb_campaign(&rom, &tree_stream, Some(&source))
+        let tree_replayed = replay_smb_campaign(&rom, &tree_stream, Some(&archive_source))
             .expect("replay whole-tree campaign");
         assert_eq!(tree_live, tree_replayed);
         assert_eq!(tree_live.origin.kind, "archive");
@@ -2157,8 +2158,7 @@ mod tests {
             &tree_config,
             &SmbCampaignOrigin::Archive {
                 path: "seed-archive.json".to_owned(),
-                file_sha256: source_sha.to_owned(),
-                report: Box::new(source.clone()),
+                source: archive_source.clone(),
                 checkpoint: Some(checkpoint.clone()),
             },
             &mut restored_stream,
@@ -2184,7 +2184,7 @@ mod tests {
         let (replayed_with, replayed_checkpoint) = replay_smb_campaign_checkpointed(
             &rom,
             &restored_stream,
-            Some(&source),
+            Some(&archive_source),
             Some(&checkpoint),
         )
         .expect("replay with checkpoint");
@@ -2198,21 +2198,27 @@ mod tests {
             replay_smb_campaign_checkpointed(
                 &rom,
                 &restored_stream,
-                Some(&source),
+                Some(&archive_source),
                 Some(&moved_checkpoint),
             )
             .is_err()
         );
         assert!(
-            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), None).is_err()
+            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&archive_source), None)
+                .is_err()
         );
         let wrong = SmbCampaignCheckpoint {
             file_sha256: "00".to_owned(),
             ..checkpoint.clone()
         };
         assert!(
-            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), Some(&wrong))
-                .is_err()
+            replay_smb_campaign_checkpointed(
+                &rom,
+                &restored_stream,
+                Some(&archive_source),
+                Some(&wrong)
+            )
+            .is_err()
         );
         let imported_inputs: std::collections::BTreeSet<_> = tree_live
             .archive

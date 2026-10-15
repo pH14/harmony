@@ -11,9 +11,8 @@ use std::{
 
 use nes_workload::{
     search::archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy, retention_policy_from_identifier},
-    search::campaign::default_window,
+    search::campaign::{ArchiveSource, default_window},
     search::draw::{DrawMixture, draw_mixture_from_identifier},
-    smb::archive::SmbArchiveReport,
     smb::campaign::{
         SmbButtonVocabulary, SmbCampaignCheckpoint, SmbCampaignConfig, SmbCampaignModeReport,
         SmbCampaignOrigin, SmbGame, SmbSnapshotCheckpoint, SmbTerminalPredicate,
@@ -231,13 +230,12 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let checkpoint_format = game.snapshot_checkpoint_format();
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
     let origin = load_origin(&origin_arg, checkpoint_arg.as_deref(), checkpoint_format)?;
-    ensure_replay_archive_digest(&stream_bytes, &origin)?;
-    let (origin_report, origin_checkpoint) = match origin {
+    let (origin_source, origin_checkpoint) = match origin {
         SmbCampaignOrigin::Genesis => (None, None),
         SmbCampaignOrigin::SnapshotRoot { checkpoint } => (None, Some(checkpoint)),
         SmbCampaignOrigin::Archive {
-            report, checkpoint, ..
-        } => (Some(*report), checkpoint),
+            source, checkpoint, ..
+        } => (Some(source), checkpoint),
         SmbCampaignOrigin::SearchCheckpoint { .. } => {
             return Err("a run resumed from a search checkpoint cannot be replayed".into());
         }
@@ -245,7 +243,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let (report, checkpoint) = replay_smb_campaign_checkpointed(
         &game,
         &stream_bytes,
-        origin_report.as_ref(),
+        origin_source.as_ref(),
         origin_checkpoint.as_ref(),
     )?;
     write_report_files(
@@ -367,17 +365,12 @@ fn load_origin_with_source_hook(
             )?,
         });
     }
-    let mut reader = BufReader::new(HashingReader {
-        inner: fs::File::open(origin_arg)?,
-        digest: Sha256::new(),
-    });
+    let file = fs::File::open(origin_arg)?;
     after_first_access();
-    let report: SmbArchiveReport = serde_json::from_reader(&mut reader)?;
-    let file_sha256 = format!("{:x}", reader.into_inner().digest.finalize());
+    let source = ArchiveSource::from_reader(file)?;
     Ok(SmbCampaignOrigin::Archive {
         path: origin_arg.to_owned(),
-        file_sha256,
-        report: Box::new(report),
+        source,
         checkpoint: checkpoint_path
             .map(|path| load_checkpoint(path, checkpoint_format))
             .transpose()?,
@@ -423,28 +416,6 @@ fn load_checkpoint_as_with_source_hook(
         file_sha256: format!("{:x}", reader.into_inner().digest.finalize()),
         snapshots,
     })
-}
-
-fn ensure_replay_archive_digest(
-    stream_bytes: &[u8],
-    origin: &SmbCampaignOrigin,
-) -> Result<(), Box<dyn Error>> {
-    let SmbCampaignOrigin::Archive { file_sha256, .. } = origin else {
-        return Ok(());
-    };
-    let header_line = stream_bytes
-        .split(|byte| *byte == b'\n')
-        .next()
-        .ok_or("campaign stream has no header")?;
-    let header: serde_json::Value = serde_json::from_slice(header_line)?;
-    if header
-        .get("origin_archive_sha256")
-        .and_then(serde_json::Value::as_str)
-        != Some(file_sha256.as_str())
-    {
-        return Err("campaign replay source archive bytes do not match the recorded digest".into());
-    }
-    Ok(())
 }
 
 fn write_report_files(
@@ -530,9 +501,10 @@ fn parse_u64(value: &str) -> Result<u64, Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::{
-        SmbArchiveReport, SmbCampaignOrigin, SmbSnapshotCheckpoint, ensure_replay_archive_digest,
+        ArchiveSource, SmbCampaignOrigin, SmbSnapshotCheckpoint,
         load_checkpoint_as_with_source_hook, load_origin_with_source_hook,
     };
+    use nes_workload::smb::archive::SmbArchiveReport;
     use nes_workload::smb::campaign::SmbSnapshotCheckpointEntry;
     use sha2::{Digest, Sha256};
 
@@ -636,23 +608,22 @@ mod tests {
             std::fs::rename(&replacement_path, &path).unwrap();
         })
         .unwrap();
-        let SmbCampaignOrigin::Archive {
-            file_sha256,
-            report,
-            ..
-        } = origin
-        else {
+        let SmbCampaignOrigin::Archive { source, .. } = origin else {
             panic!("expected archive origin");
         };
-        assert_eq!(file_sha256, format!("{:x}", Sha256::digest(&original)));
         assert_eq!(
-            report.seed, 7,
+            source.file_sha256(),
+            format!("{:x}", Sha256::digest(&original))
+        );
+        assert_eq!(
+            source.report().seed,
+            7,
             "archive loader parsed replaced source bytes"
         );
     }
 
     #[test]
-    fn replay_refuses_semantically_equal_archive_with_different_source_bytes() {
+    fn archive_source_distinguishes_equal_reports_with_different_source_bytes() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("source-archive.json");
         let original = archive_bytes(7);
@@ -661,19 +632,16 @@ mod tests {
         std::fs::write(&path, &changed).unwrap();
         let origin =
             load_origin_with_source_hook(path.to_str().unwrap(), None, "test", || {}).unwrap();
-        let recorded = serde_json::to_vec(&serde_json::json!({
-            "origin_archive_sha256": format!("{:x}", Sha256::digest(&original))
-        }))
-        .unwrap();
-        assert!(
-            ensure_replay_archive_digest(&recorded, &origin).is_err(),
-            "replay accepted archive bytes that differ from the recorded digest"
+        let recorded = ArchiveSource::<SmbArchiveReport>::from_bytes(&original).unwrap();
+        let SmbCampaignOrigin::Archive { source, .. } = origin else {
+            panic!("expected archive origin");
+        };
+        assert_eq!(recorded.report(), source.report());
+        assert_ne!(recorded.file_sha256(), source.file_sha256());
+        assert_eq!(
+            source.file_sha256(),
+            format!("{:x}", Sha256::digest(&changed))
         );
-        let matched = serde_json::to_vec(&serde_json::json!({
-            "origin_archive_sha256": format!("{:x}", Sha256::digest(&changed))
-        }))
-        .unwrap();
-        ensure_replay_archive_digest(&matched, &origin).unwrap();
     }
 
     fn checkpoint_bytes(id: u64) -> Vec<u8> {

@@ -28,7 +28,12 @@ configuration, policies, origins, jobs, admissions, skips, and progress needed
 for replay. Replay checks the source fields allowed by each origin kind, requires
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
-into a completed report. Live archive import verifies the same bytes before execution.
+into a completed report. Archive-origin recording and full or prefix replay require
+an `ArchiveSource` built by parsing and hashing one byte stream. Its private report
+and digest cannot be replaced separately, and replay checks that raw-byte digest
+against the recorded origin before deriving resume input or importing evidence.
+Changing only JSON whitespace still changes the source identity. Live archive
+import uses that same sealed source.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
