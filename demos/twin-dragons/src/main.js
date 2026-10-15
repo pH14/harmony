@@ -27,6 +27,7 @@ import {
   isMapEvidence,
   finishedLevel,
   followExit,
+  busierDeeperLevel,
 } from "./world.js";
 const params = new URLSearchParams(location.search);
 const liveView = params.has("live");
@@ -644,14 +645,9 @@ function followStalledPath(now) {
   const counts = new Map();
   for (const [room, points] of swarmRooms) {
     const level = roomLevel(room);
-    if (points.length && level != null && level >= path.level) counts.set(level, (counts.get(level) || 0) + points.length);
+    if (points.length && level != null) counts.set(level, (counts.get(level) || 0) + points.length);
   }
-  const here = counts.get(path.level) || 0;
-  let deepest = null;
-  for (const [level, count] of counts) {
-    const entry = catalog.levels.find((candidate) => candidate.id === level)?.rooms[0];
-    if (level > path.level && count > here && maps.has(entry) && (deepest == null || level > deepest)) deepest = level;
-  }
+  const deepest = busierDeeperLevel(counts, path.level);
   if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
     path.idle = 0;
     return;

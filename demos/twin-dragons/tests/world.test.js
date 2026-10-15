@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import {
   finishedLevel,
   followExit,
+  busierDeeperLevel,
   project,
   completedLevels,
   mergeProgress,
@@ -66,4 +67,11 @@ test("a state finishes only its own level", () => {
   assert.equal(finishedLevel({ cleared: 2 }, 1), 1);
   assert.equal(finishedLevel({ cleared: 12 }, 12), null, "a warp arrival does not finish the levels it skipped");
   assert.equal(finishedLevel({ cleared: 3 }, null), null);
+});
+test("the followed path moves to the deepest level that holds more players than its own", () => {
+  assert.equal(busierDeeperLevel(new Map([[1, 5], [4, 6]]), 1), 4, "a level two ahead with no players between still draws the path");
+  assert.equal(busierDeeperLevel(new Map([[1, 5], [3, 9], [4, 2]]), 1), 3, "a deeper level with fewer players than the path's own is passed over");
+  assert.equal(busierDeeperLevel(new Map([[4, 1]]), 1), 4, "any player ahead draws a path whose level is empty");
+  assert.equal(busierDeeperLevel(new Map([[0, 50], [1, 5]]), 1), null, "players behind the path never move it back");
+  assert.equal(busierDeeperLevel(new Map([[1, 5], [2, 5]]), 1), null);
 });

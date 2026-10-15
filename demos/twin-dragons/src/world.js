@@ -30,3 +30,11 @@ export function followExit(path, from, to, levels) {
   if (!path.levels.includes(to)) path.levels.push(to);
   return true;
 }
+
+export function busierDeeperLevel(counts, level) {
+  const here = counts.get(level) || 0;
+  let deepest = null;
+  for (const [candidate, count] of counts)
+    if (candidate > level && count > here && (deepest == null || candidate > deepest)) deepest = candidate;
+  return deepest;
+}
