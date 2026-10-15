@@ -923,6 +923,67 @@ class CounterScanCoverage(unittest.TestCase):
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn(expected_error, result.stderr)
 
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_32_bit_helper_counter_hidden_by_64_bit_decode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
+                str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            safe_bytes = (root / "safe.elf").read_bytes()
+            kernel.write_bytes(safe_bytes)
+            setup.write_bytes(safe_bytes)
+
+            assembly = root / "mixed-mode.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\njmp mode_entry\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'lea startup_32(%rip), %rax\npushq $0x23\npushq %rax\nlretq\n'
+                '.fill 15,1,0xcc\n'
+                '.section .text,"ax"\n.fill 16,1,0x90\n'
+                '.global mode_entry\nmode_entry:\n'
+                '.byte 0x48,0xb8,0x90,0x90,0x90,0x90,0x0f,0x31,0x89,0xc3\n'
+                'mov $1,%eax\nint $0x80\n.fill 15,1,0xcc\n'
+            )
+            linker = root / "mixed-mode.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all }\n"
+            )
+            run("as", "--64", "-o", str(root / "mixed-mode.o"), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o",
+                str(decompressor), str(root / "mixed-mode.o"))
+            decoded_64 = subprocess.run(
+                ["objdump", "-d", "-z", "-w", "-M", "amd64", "-j", ".text",
+                 str(decompressor)],
+                capture_output=True, text=True, check=True,
+            )
+            decoded_32 = subprocess.run(
+                ["objdump", "-d", "-z", "-w", "-M", "i386", "-j", ".text",
+                 str(decompressor)],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertNotIn("rdtsc", decoded_64.stdout)
+            self.assertIn("rdtsc", decoded_32.stdout)
+
+            result = subprocess.run(
+                ["bash", str(SCAN), str(kernel)], capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("raw counter-opcode bytes in decompressor section .text", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
