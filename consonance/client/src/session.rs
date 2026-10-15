@@ -1144,7 +1144,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn deferred_checkpoint_hashing_stays_out_of_execution_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::deferred_checkpoint_hashing_stays_out_of_execution_identity",
+        ) {
+            return;
+        }
         let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
         let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
         assert_eq!(
@@ -1184,7 +1190,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain",
+        ) {
+            return;
+        }
         for ordinary in [
             SessionConfig::default(),
             SessionConfig::default().with_identity_tag("workload"),
@@ -1276,7 +1288,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn image_identity_is_ordered_and_hex_stable() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::image_identity_is_ordered_and_hex_stable",
+        ) {
+            return;
+        }
         assert_eq!(image_identity_hex(b"a", b"b").unwrap().len(), 64);
         assert_ne!(image_identity(b"a", b"b"), image_identity(b"b", b"a"));
         assert_eq!(image_identity(b"a", b"b"), image_identity(b"a", b"b"));
@@ -1292,7 +1310,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn loaded_executable_identity_separates_equal_setup_and_preboot_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::loaded_executable_identity_separates_equal_setup_and_preboot_identity",
+        ) {
+            return;
+        }
         let config = SessionConfig::default().with_identity_tag("same-workload");
         let payloads = vec![b"setup".to_vec()];
         let loaded = crate::image_identity::loaded_executable_identity_self().unwrap();
@@ -1324,7 +1348,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn session_config_is_validated_and_part_of_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::session_config_is_validated_and_part_of_identity",
+        ) {
+            return;
+        }
         let default = SessionConfig::default();
         assert_eq!(default.ram_bytes, 128 * 1024 * 1024);
         assert_eq!(default.cmdline, default_cmdline());
@@ -1354,7 +1384,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn session_config_identity_tag_changes_domain_without_dropping_image_bytes() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::session_config_identity_tag_changes_domain_without_dropping_image_bytes",
+        ) {
+            return;
+        }
         let default = SessionConfig::default();
         let tagged = default.clone().with_identity_tag("subject-a");
         assert_eq!(tagged.identity_tag, "subject-a");
@@ -1369,7 +1405,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn tagged_image_identity_includes_execution_setup() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::tagged_image_identity_includes_execution_setup",
+        ) {
+            return;
+        }
         let base = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
             .with_identity_tag("same-workload");
         let identity = image_identity_with_config(b"kernel", b"initramfs", &base);
@@ -1404,7 +1446,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setup_payload_identity_preserves_order_and_boundaries() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::setup_payload_identity_preserves_order_and_boundaries",
+        ) {
+            return;
+        }
         let config = SessionConfig::default();
         let base = image_identity_with_config(b"kernel", b"initramfs", &config);
         let payloads = vec![b"a".to_vec(), b"bc".to_vec()];

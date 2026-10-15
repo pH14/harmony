@@ -11,6 +11,7 @@ const LOADER_OVERRIDE_VARS: &[&str] = &[
     "LD_HWCAP_MASK",
     "LD_ASSUME_KERNEL",
     "LD_DYNAMIC_WEAK",
+    "GLIBC_TUNABLES",
 ];
 
 #[cfg(target_os = "macos")]
@@ -40,6 +41,30 @@ pub(crate) fn reject_loader_overrides() -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn rerun_clean_loader_test(test: &str) -> bool {
+    if !LOADER_OVERRIDE_VARS
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
+    {
+        return false;
+    }
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.arg("--exact").arg(test);
+    for name in LOADER_OVERRIDE_VARS {
+        command.env_remove(name);
+    }
+    let output = command.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.lines().any(|line| line.trim() == "running 1 test"),
+        "{test}: {}\nstdout: {stdout}\nstderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
 }
 
 #[cfg(target_os = "linux")]
@@ -157,25 +182,40 @@ mod loader_override_tests {
     #[cfg_attr(miri, ignore)]
     fn ambient_loader_override_refuses_identity_even_when_empty() {
         #[cfg(target_os = "linux")]
-        let override_name = "LD_LIBRARY_PATH";
+        let override_names = ["LD_LIBRARY_PATH", "GLIBC_TUNABLES"];
         #[cfg(target_os = "macos")]
-        let override_name = "DYLD_LIBRARY_PATH";
+        let override_names = ["DYLD_LIBRARY_PATH"];
 
         if std::env::var_os(CHILD_ENV).is_some() {
             let error = loaded_executable_identity_self().unwrap_err();
-            assert!(error.to_string().contains(override_name), "{error}");
+            let expected = std::env::var(CHILD_ENV).unwrap();
+            assert!(error.to_string().contains(&expected), "{error}");
             return;
         }
 
-        for value in [std::env::temp_dir().into_os_string(), "".into()] {
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .arg("--exact")
-                .arg("image_identity::loader_override_tests::ambient_loader_override_refuses_identity_even_when_empty")
-                .env(CHILD_ENV, "1")
-                .env(override_name, &value)
-                .status()
-                .unwrap();
-            assert!(status.success(), "{value:?}: {status}");
+        for override_name in override_names {
+            for value in [std::env::temp_dir().into_os_string(), "".into()] {
+                let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+                command
+                    .arg("--exact")
+                    .arg("image_identity::loader_override_tests::ambient_loader_override_refuses_identity_even_when_empty");
+                for name in LOADER_OVERRIDE_VARS {
+                    command.env_remove(name);
+                }
+                let output = command
+                    .env(CHILD_ENV, override_name)
+                    .env(override_name, &value)
+                    .output()
+                    .unwrap();
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    output.status.success()
+                        && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                    "{override_name}={value:?}: {}\nstdout: {stdout}\nstderr: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
         }
     }
 }
