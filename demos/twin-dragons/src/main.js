@@ -344,7 +344,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
     const p = shown[i], raw = shown[i + 1];
     ctx.globalAlpha = raw.life === undefined ? 0.8 : Math.min(1, raw.life / 0.05 + 0.2) * (0.97 - 0.32 * raw.life);
     ctx.drawImage(sprites, (p.pose >> 1) * SPRITE.width, (p.pose & 1) * SPRITE.height, SPRITE.width, SPRITE.height,
-      p.x - (SPRITE.originX + 8) * size, p.y - 8 - (SPRITE.originY + 8) * size, SPRITE.width * size, SPRITE.height * size);
+      p.x - (SPRITE.originX + 8) * size, p.y - 8 - SPRITE.originY - 8 + SPRITE.height * (1 - size), SPRITE.width * size, SPRITE.height * size);
   }
   ctx.restore();
   return count;
