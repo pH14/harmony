@@ -121,6 +121,18 @@ boundary fail.
 Indirect or computed
 transfers into reviewed data and code copied out of data require separate
 admission review.
+After Kbuild finishes, the publisher seals snapshots of all three ELFs and
+`bzImage` before running the scan. It verifies that the compressed kernel
+embedded in the decompressor expands to the stripped scanned `vmlinux`, and
+that the packed image exactly matches Kbuild's setup binary padded to a 4 KiB
+boundary followed by the decompressor binary. Allocated setup and decompressor
+sections must map uniquely to loaded bytes without overlap; the publisher also
+raw-scans the complete setup binary and checks that the embedded compressed
+kernel bytes survive the decompressor binary conversion. It publishes the
+verified image snapshot at both guest artifact paths and the scanned `vmlinux`
+snapshot using atomic replacement for each destination. A concurrent change to
+a build-tree path therefore cannot substitute different bytes between
+qualification and publication.
 For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
 both AMD64 and Intel64 modes; operand-size prefixes can change instruction
 boundaries on Intel hardware. ELF symbols can restart objdump inside an

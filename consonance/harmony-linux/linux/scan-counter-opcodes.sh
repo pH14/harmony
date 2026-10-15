@@ -22,20 +22,24 @@
 #
 # CONFIG_MODULES is off, so the built image is all the kernel code that can run.
 #
-# Usage: scan-counter-opcodes.sh <vmlinux>
-#   <vmlinux> is the uncompressed kernel ELF. The boot artifacts are found in its
-#   build tree (arch/x86/boot/{setup.elf,compressed/vmlinux}).
+# Usage: scan-counter-opcodes.sh <vmlinux> [<setup.elf> <compressed/vmlinux>]
+#   One argument finds boot artifacts in vmlinux's build tree. Three arguments
+#   allow the publisher to scan immutable snapshots of all three artifacts.
 set -euo pipefail
 
-VMLINUX=${1:?usage: scan-counter-opcodes.sh <vmlinux>}
+VMLINUX=${1:-}
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 
 # KOBJ is vmlinux's build tree.
-KOBJ=$(dirname "$VMLINUX")
-RAW_ARTIFACTS=(
-    "setup=$KOBJ/arch/x86/boot/setup.elf"
-    "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
-)
+KOBJ=$(dirname "${VMLINUX:-.}")
+if [ "$#" -eq 3 ]; then
+    RAW_ARTIFACTS=("setup=$2" "decompressor=$3")
+else
+    RAW_ARTIFACTS=(
+        "setup=$KOBJ/arch/x86/boot/setup.elf"
+        "decompressor=$KOBJ/arch/x86/boot/compressed/vmlinux"
+    )
+fi
 
 # sites <disasm-file> [artifact-tag] [mnemonic-regex]: emit
 # "[tag:]symbol+0xOFFSET" for each matching instruction, so a failure names
@@ -412,6 +416,11 @@ EOF
 }
 
 self_test
+
+if [ "$#" -ne 1 ] && [ "$#" -ne 3 ]; then
+    echo "usage: scan-counter-opcodes.sh <vmlinux> [<setup.elf> <compressed/vmlinux>]" >&2
+    exit 2
+fi
 
 command -v objdump >/dev/null 2>&1 || {
     echo "FAIL: objdump not found (binutils required)" >&2
