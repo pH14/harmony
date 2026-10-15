@@ -41,6 +41,7 @@ KNOWN_DATA = {
     "decompressor": frozenset((".rodata..compressed", ".rodata", ".data")),
 }
 MAX_X86_INSTRUCTION_BYTES = 15
+DECOMPRESSOR_ENTRY_64_OFFSET = 0x200
 FALLTHROUGH_FENCE = b"\xcc" * MAX_X86_INSTRUCTION_BYTES
 TRAILING_PREFIXES = frozenset(
     ("data16", "data32", "addr16", "addr32", "lock", "rep", "repz", "repnz",
@@ -261,6 +262,8 @@ def decompressor_head_32(data, sections, path):
     if anchors.get("startup_32") != address or boundary is None \
             or not address < boundary < address + size:
         raise ValueError("decompressor head mode boundary is unavailable")
+    if boundary - address != DECOMPRESSOR_ENTRY_64_OFFSET:
+        raise ValueError("decompressor head mode boundary does not match 64-bit loader entry")
     decoded = [
         item for item in disassembled_instructions(result.stdout)
         if address <= item[0] < boundary

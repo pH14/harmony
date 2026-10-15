@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import importlib.util
 import platform
+import re
 import struct
 import subprocess
 import tempfile
@@ -161,6 +162,28 @@ def rename_hidden_to_rodata(path):
 
 
 class CounterScanCoverage(unittest.TestCase):
+    def test_decompressor_entry_offset_matches_vmm(self):
+        source = Path(__file__).resolve()
+        loader = next(
+            (
+                parent / "consonance/vmm-core/src/vendor/x86/linux_loader.rs"
+                for parent in source.parents
+                if (parent / "consonance/vmm-core/src/vendor/x86/linux_loader.rs").is_file()
+            ),
+            None,
+        )
+        self.assertIsNotNone(loader)
+        offsets = re.findall(
+            r"^pub const ENTRY_64_OFFSET: u64 = (0x[0-9a-fA-F]+);$",
+            loader.read_text(),
+            re.MULTILINE,
+        )
+        self.assertEqual(len(offsets), 1)
+        spec = importlib.util.spec_from_file_location("scan_unclaimed_opcodes", SCAN_UNCLAIMED)
+        scanner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scanner)
+        self.assertEqual(scanner.DECOMPRESSOR_ENTRY_64_OFFSET, int(offsets[0], 16))
+
     @unittest.skipUnless(
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
@@ -915,7 +938,8 @@ class CounterScanCoverage(unittest.TestCase):
                 hazard.write_text(
                     '.section .head.text,"ax"\n.global startup_32\nstartup_32:\n'
                     + head32
-                    + ('.fill 27,1,0xcc\n' if mode == "split32" else 'lret\n.balign 512,0\n')
+                    + ('.fill 27,1,0xcc\n.balign 512,0\n'
+                       if mode == "split32" else 'lret\n.balign 512,0\n')
                     + '.global startup_64\nstartup_64:\n'
                     + ('jmp entropy_site\n' if mode == "head64" else 'ret\n')
                     + '.fill 15,1,0xcc\n'
@@ -1379,6 +1403,50 @@ class CounterScanCoverage(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("reviewed-data RDTSCP", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_64_bit_entry_matches_loader_offset(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "misplaced-entry.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\n.fill 511,1,0x90\n'
+                '.byte 0xb8,0xe9\n.long compressed_target-(.+4)\n'
+                '.byte 0xc0\nlret\n'
+                '.balign 1024,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                '.section .rodata..compressed,"a"\n'
+                'compressed_target:\n.byte 0x0f,0x31,0xc3\n'
+            )
+            linker = root / "misplaced-entry.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all "
+                ".rodata..compressed : { *(.rodata..compressed) } :all }\n"
+            )
+            obj = root / "misplaced-entry.o"
+            elf = root / "misplaced-entry.elf"
+            binary = root / "misplaced-entry.bin"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_64", "-o", str(elf), str(obj))
+            verify_loaded_sections(elf)
+            run("objcopy", "-O", "binary", str(elf), str(binary))
+            image = binary.read_bytes()
+            self.assertEqual(image[0x200], 0xe9)
+            displacement = struct.unpack_from("<i", image, 0x201)[0]
+            self.assertEqual(image[0x205 + displacement : 0x208 + displacement], b"\x0f\x31\xc3")
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"decompressor={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("decompressor head mode boundary", result.stderr)
 
     @unittest.skipUnless(
         platform.system() == "Linux" and platform.machine() == "x86_64",
