@@ -234,15 +234,15 @@ def require_complete_head(instructions, first, last, mode):
         raise ValueError(f"incomplete {mode} decompressor head")
 
 
-def decompressor_head_32(sections, path):
+def decompressor_head_32(data, sections, path):
     head = [
-        (address, size)
-        for name, kind, flags, address, _offset, size in sections
+        (address, offset, size)
+        for name, kind, flags, address, offset, size in sections
         if name == ".head.text" and kind == 1 and flags & 2 and flags & 4 and size
     ]
     if len(head) != 1:
         raise ValueError("missing/duplicate executable decompressor head")
-    address, size = head[0]
+    address, offset, size = head[0]
     result = subprocess.run(
         ["objdump", "-d", "-z", "-w", "-M", "i386", "-j", ".head.text", path],
         capture_output=True, text=True, check=False,
@@ -264,7 +264,15 @@ def decompressor_head_32(sections, path):
         item for item in disassembled_instructions(result.stdout)
         if address <= item[0] < boundary
     ]
-    require_complete_head(decoded, address, boundary, "32-bit")
+    head_bytes = data[offset : offset + boundary - address]
+    if len(head_bytes) != boundary - address:
+        raise ValueError("incomplete 32-bit decompressor head")
+    code_end = address + len(head_bytes.rstrip(b"\0"))
+    decoded = [item for item in decoded if item[0] < code_end]
+    require_complete_head(decoded, address, code_end, "32-bit")
+    if not decoded or code_end < boundary \
+            and instruction_mnemonic(decoded[-1][2]) != "lret":
+        raise ValueError("incomplete 32-bit decompressor head")
     return boundary, decoded
 
 
@@ -291,7 +299,7 @@ def scan_symbol_restarts(data, programs, sections, tag, path):
     if not names:
         return
     head_boundary, head_32 = (
-        decompressor_head_32(sections, path)
+        decompressor_head_32(data, sections, path)
         if tag == "decompressor" and any(name == ".head.text" for name, *_rest in sections)
         else (None, [])
     )

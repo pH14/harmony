@@ -117,8 +117,9 @@ fence. Decoded direct branches from kernel or decompressor code into loaded
 non-code bytes, including reviewed data and load slack, fail admission. The
 decompressor head is decoded as 32-bit code before `startup_64` and in both
 64-bit modes afterward; missing mode anchors or a truncated decode at a symbol
-boundary fail.
-Indirect or computed
+boundary fail. Its 32-bit startup can end in a far return followed by zero
+alignment up to `startup_64`; the scan requires a complete far return before
+excluding that padding and rejects direct branches into it. Indirect or computed
 transfers into reviewed data and code copied out of data require separate
 admission review.
 After Kbuild finishes, the publisher seals snapshots of all three ELFs and
