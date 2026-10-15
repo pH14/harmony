@@ -1697,7 +1697,7 @@ function startSearch(level = bootLevel) {
         updateSearchControl();
         $("goal-status").textContent = data.won ? "Game complete" : ended;
         $("pause").disabled = true;
-        $("memory-limit").hidden = data.won;
+        $("memory-limit").hidden = data.won || data.finished;
         $("memory-limit").textContent = `The search used its ${fmt(budget.searchMiB)} MiB memory limit. Delete a branch or restart the search to free memory.`;
         $("status-dot").className = "paused";
       }

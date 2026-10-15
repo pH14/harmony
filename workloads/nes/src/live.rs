@@ -435,14 +435,16 @@ fn feed_loop<V: Serialize + Copy>(
         let wait = next_tick.saturating_duration_since(wall_now());
         match events.recv_timeout(wait) {
             Ok(Event::Ready(message)) => {
+                let stats = lock(shared).stats;
                 viewers.broadcast(&message);
-                viewers.broadcast(&backlog(lock(shared).stats, &history, workers));
+                viewers.broadcast(&backlog(stats, &history, workers));
                 ready = Some(message);
             }
             Ok(Event::Viewer(sender)) => {
                 if let Some(ready) = &ready {
+                    let stats = lock(shared).stats;
                     let _ = sender.try_send(Arc::clone(ready));
-                    let _ = sender.try_send(backlog(lock(shared).stats, &history, workers));
+                    let _ = sender.try_send(backlog(stats, &history, workers));
                 }
                 viewers.senders.push(sender);
             }

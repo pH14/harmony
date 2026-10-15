@@ -763,9 +763,9 @@ stream as the pool for the same seed and window.
 hook wraps each job on the worker thread and returns a note with the outcome.
 Its `admitted` hook receives that note and the coordinator on the coordinator
 thread after each admission, and `start` runs once after the coordinator
-starts; an error from `start` stops the campaign. `watch_admissions` makes the coordinator keep each admission's
-decisions, and `take_admissions` drains them, so a watcher reads retained ids
-without parsing the stream.
+starts; an error from `start` stops the campaign. `watch_admissions` makes the
+coordinator keep each admission's decisions, and `take_admissions` drains them,
+so a watcher reads retained ids without parsing the stream.
 
 The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
 reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`
