@@ -270,6 +270,22 @@ milestone verification, and result export. `nes-eval` keeps the existing game
 dispatch and option validation. Dedicated workload binaries can reuse the same
 protocol and validation machinery without copying the evaluation loop.
 
+## Live view
+
+A request with `live` set to an address such as `0.0.0.0:8790` runs the
+campaign with `eval::evaluate_watched` and serves the arcade page's view of it
+over HTTP. `live_site` names a directory with the built arcade page and its
+`roms` directory, which the server serves at `/`. `GET /live/events` is a
+Server-Sent Events stream: a `ready` message with the root state, then one
+`batch` every 100 ms in the shape the browser search worker posts, with at most
+32 trails and 2,000 unretained points per batch. A viewer that connects late
+first receives up to 40,000 earlier points. `GET /live/states?ids=&request=`
+returns the archived controller input and core snapshot of each id; the
+coordinator thread answers it between admissions. Open
+`http://HOST:PORT/?game=GAME&live=` to watch. The live view supports Super
+Mario Bros., Mega Man 2, Metroid, Famidash and Twin Dragons, and rejects
+`stage`, `ai`, `root_input` and `metroid_terminal`.
+
 ## Product CLI adapter
 
 The CLI's NES adapter owns ROM identification and guest-image preparation. The

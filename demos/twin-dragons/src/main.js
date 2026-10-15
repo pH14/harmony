@@ -19,6 +19,7 @@ import {
   branchInfo,
 } from "./branch.js";
 import { StateCache, memoryBudget } from "./memory.js";
+import { liveSearch } from "./live-source.js";
 import {
   project,
   completedLevels,
@@ -28,6 +29,7 @@ import {
   followExit,
 } from "./world.js";
 const params = new URLSearchParams(location.search);
+const liveSource = params.get("live");
 const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
 const manifest = await fetch(new URL("manifest.json", bundledRoms))
   .then((response) => (response.ok ? response.json() : {}))
@@ -1514,7 +1516,7 @@ function startSearch(level = bootLevel) {
   $("status-dot").className = "";
   $("cell-title").textContent = "Saved paths";
   const ports = [];
-  rolloutWorkers = Array.from({ length: budget.workers }, () => {
+  rolloutWorkers = liveSource !== null ? [] : Array.from({ length: budget.workers }, () => {
     const rollout = new Worker(new URL("./rollout-worker.js", import.meta.url), { type: "module" });
     const channel = new MessageChannel();
     rollout.onerror = (e) => fail(e.message || "Rollout worker failed");
@@ -1522,9 +1524,9 @@ function startSearch(level = bootLevel) {
     ports.push(channel.port2);
     return rollout;
   });
-  worker = new Worker(new URL("./search-worker.js", import.meta.url), {
-    type: "module",
-  });
+  worker = liveSource !== null
+    ? liveSearch(liveSource, game.id)
+    : new Worker(new URL("./search-worker.js", import.meta.url), { type: "module" });
   worker.onerror = (e) => fail(e.message);
   worker.onmessage = ({ data }) => {
     try {
@@ -1819,7 +1821,7 @@ function updateStats() {
   setText("work", fmt(stats.frames));
   setText("memory", `${((stats.snapshot_bytes || 0) / 1000000).toFixed(1)} MB`);
   setTitle("memory", "Retained snapshots across all search branches");
-  setText("workers", fmt(budget.workers));
+  setText("workers", fmt(stats.workers ?? budget.workers));
   setTitle("workers", "Web Workers running game rollouts in parallel");
 }
 function liveLevel() {
@@ -3479,6 +3481,7 @@ createEngine(base, game, engineInputs)
   .catch(fail);
 const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
 if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
+else if (liveSource !== null) startSearch(catalog.levels[0].id);
 else {
   askedForRom = true;
   $("new-search").onclick();

@@ -7,6 +7,8 @@ pub mod allocator;
 pub mod eval;
 pub mod famidash;
 pub mod film;
+#[cfg(unix)]
+pub mod live;
 pub mod prepare;
 pub mod smb;
 pub mod witness;

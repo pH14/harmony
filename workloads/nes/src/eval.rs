@@ -4,8 +4,8 @@ use crate::{
     search::{
         archive::{ArchiveKey, Input, MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, Workload,
-            replay_campaign_checkpointed, run_campaign_checkpointed_with_options,
+            CampaignConfig, CampaignExecutionOptions, CampaignOrigin, CampaignWatch, Workload,
+            replay_campaign_checkpointed, run_campaign_watched,
         },
         checkpoint::CheckpointPlan,
         draw::draw_mixture_from_identifier,
@@ -69,6 +69,10 @@ pub struct Request {
     pub checkpoint_on_progress: bool,
     #[serde(default)]
     pub resume: Option<PathBuf>,
+    #[serde(default)]
+    pub live: Option<String>,
+    #[serde(default)]
+    pub live_site: Option<PathBuf>,
 }
 
 struct StreamDigest {
@@ -116,6 +120,24 @@ pub fn evaluate<G: Workload>(
     request: &Request,
     out: &Path,
     started: Instant,
+) -> Result<()>
+where
+    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Snapshot: crate::witness::EndpointIdentity,
+{
+    if request.live.is_some() {
+        return Err("this game has no live view".into());
+    }
+    evaluate_watched(game, run, request, out, started, &())
+}
+
+pub fn evaluate_watched<G: Workload, W: CampaignWatch<G>>(
+    game: G,
+    run: G::Run,
+    request: &Request,
+    out: &Path,
+    started: Instant,
+    watch: &W,
 ) -> Result<()>
 where
     G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
@@ -192,7 +214,7 @@ where
     let preparation_seconds = started.elapsed().as_secs_f64();
     phase(out, "search", started)?;
     let search_started = telemetry_now();
-    let (report, checkpoint) = run_campaign_checkpointed_with_options(
+    let (report, checkpoint) = run_campaign_watched(
         &game,
         &config,
         &origin,
@@ -203,6 +225,7 @@ where
             checkpoints,
             placement: None,
         },
+        watch,
     )?;
     stream.flush()?;
     progress.flush()?;

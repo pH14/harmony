@@ -81,33 +81,48 @@ hands the coordinator a `MessageChannel` port to each rollout worker, because
 some browsers fail to load a worker started from inside another worker.
 
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid run the
-same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`, a `machine::Machine`,
-`NesBackend` and `NesMemory` that drives the browser QuickNES core through
-`globalThis.harmonyCores`, and a coordinator and rollout worker that are generic
-over `BrowserGame`. Each game implements `BrowserGame` in its own file
-(`rust/src/twin_dragons.rs`, `rust/src/famidash.rs`, `rust/src/smb.rs`,
-`rust/src/mega_man.rs`, `rust/src/metroid.rs`): it builds the `nes-games`
-workload (`TwinDragonsGame`, `FamidashGame`, `SmbGame`, `Mm2Game`,
-`MetroidGame`) over `JsMachine` from a target factory,
-names the run and draw mixture, and maps the workload's decoded state to the
-page's observation and motion samples. `CampaignSearch` and `CampaignWorker`
-take the game id. The coordinator worker owns a Dissonance
+same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
+a `machine::Machine`, `NesBackend` and `NesMemory` that drives the browser
+QuickNES core through `globalThis.harmonyCores`, and a coordinator and rollout
+worker that are generic over `BrowserGame`. `BrowserGame` is the `nes-games`
+`ArcadeGame` over `Traced<JsMachine>`; `ArcadeGame` holds each game's view,
+motion samples and level count, so a native live campaign draws the same page.
+Each game's file (`rust/src/twin_dragons.rs`, `rust/src/famidash.rs`,
+`rust/src/smb.rs`, `rust/src/mega_man.rs`, `rust/src/metroid.rs`) adds its root
+snapshot and the page's observation functions. `CampaignSearch` and
+`CampaignWorker` take the game id. The coordinator worker owns a Dissonance
 `CampaignCoordinator`. It sends each planned `JobSpec` to a rollout worker as
-postcard bytes; the rollout worker runs it with `run_job` and returns the
-`JobOutcome` bytes. The coordinator admits outcomes in reservation order,
-whatever order they arrive in, so the seed alone decides the search. The
-browser always uses an admission window of 16 and records workers as 16,
-independent of the device's worker count, so its decision stream equals the
-native campaign run with 16 workers. The archive key, draw, milestones,
+postcard bytes; the rollout worker runs it with `feed::run_noted` and returns
+the `JobOutcome` and its `Note` as bytes. The coordinator admits outcomes in
+reservation order, whatever order they arrive in, so the seed alone decides the
+search. The browser always uses an admission window of 16 and records workers
+as 16, independent of the device's worker count, so its decision stream equals
+the native campaign run with 16 workers. The archive key, draw, milestones,
 admission rules and objective are the workload's; the game READMEs under
 `workloads/nes/src` describe them. Famidash draws from the controller alphabet
 like its native run; the other games use the `energy_splice:6` mixture of
-`nes-eval`, the native Twin Dragons campaign and the search benchmarks. Each
-rollout worker samples motion inside `JsMachine` and reports whether the
-rollout cleared a level. The coordinator releases a trail with the batch only
-once its job is admitted. Twin Dragons archives the level-load frames in
-stages; the other games do not, so a clearing rollout there often ends before
-the next level loads.
+`nes-eval`, the native Twin Dragons campaign and the search benchmarks. The
+coordinator's `feed::Feed` releases a trail with the batch only once its job is
+admitted. Twin Dragons archives the level-load frames in stages; the other
+games do not, so a clearing rollout there often ends before the next level
+loads.
+
+### Live view
+
+`?live=` replaces the browser search with a native campaign. `nes-eval` with a
+`live` request serves the built page, its `roms` directory and the campaign's
+event stream from one address, and `src/live-source.js` reads that stream in
+place of the coordinator worker: the same `ready`, `batch` and `states`
+messages, without rollout workers. Open
+`http://HOST:PORT/?game=super-mario-bros&live=` on any machine that can reach
+the host. `live=URL` reads the stream from another server; the live server
+allows any origin, and an `https` page can read only an `https` stream. Pause
+stops drawing new results and leaves the campaign running. A live view cannot
+branch. Build
+the page with `npm run build` and pass the `dist` directory, with a `roms`
+directory added beside `index.html`, as the request's `live_site`.
+[`workloads/nes`](../../workloads/nes/README.md#live-view) documents the request
+fields and routes.
 
 A target can press buttons the archived input does not hold: the Mega Man 2
 whole-game target walks through the weapon screen and stage select after each
