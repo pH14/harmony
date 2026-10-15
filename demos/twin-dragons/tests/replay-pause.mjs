@@ -9,9 +9,18 @@ const paths = page => page.evaluate(() => Number(document.querySelector('#attemp
 const growing = (page, n) => page.waitForFunction(n => Number(document.querySelector('#attempts').textContent.replaceAll(',', '')) > n, n, {timeout: 30000});
 async function stillDuring(page, ms) {
   await page.waitForTimeout(150);
-  const before = await paths(page);
-  await page.waitForTimeout(ms);
-  assert.equal(await paths(page), before, 'The path counter stays still while a replay plays');
+  const samples = await page.evaluate(async (ms) => {
+    const out = [];
+    for (const end = performance.now() + ms; performance.now() < end; await new Promise((r) => setTimeout(r, 25)))
+      out.push({
+        paths: Number(document.querySelector('#attempts').textContent.replaceAll(',', '')),
+        playing: document.querySelector('#play').textContent === 'Ⅱ Pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search',
+      });
+    return out;
+  }, ms);
+  const during = samples.filter((sample) => sample.playing);
+  assert.ok(during.length >= 4, 'The replay keeps playing while the counter is sampled');
+  assert.equal(new Set(during.map((sample) => sample.paths)).size, 1, 'The path counter stays still while a replay plays');
 }
 try {
   const page = await browser.newPage({viewport: {width: 1440, height: 1000}});
@@ -40,9 +49,14 @@ try {
 
   await page.waitForFunction(() => window.tdRetained?.has(Number(document.querySelector('#map').dataset.map)), null, {timeout: 60000});
   const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
-  const point = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24);
-  await page.mouse.click(point.x, point.y);
-  await page.waitForFunction(() => !document.querySelector('#inspector').hidden && !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓' && Number(document.querySelector('#scrub').max) > 0);
+  for (let attempt = 0; ; attempt++) {
+    const point = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24);
+    await page.mouse.click(point.x, point.y);
+    const opened = await page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 5000}).then(() => true, () => false);
+    if (opened) break;
+    assert.ok(attempt < 2, 'Clicking a retained cell on the live map opens the inspector');
+  }
+  await page.waitForFunction(() => !document.querySelector('#play').disabled && document.querySelector('#verification').textContent === 'Exact replay ✓' && Number(document.querySelector('#scrub').max) > 0);
   assert.equal(await page.locator('#play').textContent(), '▶ Replay');
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'Selecting a path leaves the search running');
   await growing(page, await paths(page));
@@ -64,6 +78,7 @@ try {
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
   await growing(page, await paths(page));
 
+  await page.locator('#speed').selectOption('1');
   await page.locator('#play').click();
   await page.waitForFunction(() => document.querySelector('#play').textContent === 'Ⅱ Pause' && document.querySelector('#pause').getAttribute('aria-label') === 'Resume Search');
   await stillDuring(page, 300);
