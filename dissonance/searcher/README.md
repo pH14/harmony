@@ -102,6 +102,11 @@ queued, running or finished but not yet admitted. Memory held by finished
 results is outside the archive's logical budget and must be measured in host
 RSS. Telemetry charges idle worker time to the pool: `idle_admission_order_ns`
 when finished results wait on an earlier job and `idle_no_job_ns` otherwise.
+Worker execution errors also wait for their reservation's planned admission;
+the coordinator can record every earlier successful job and its checkpoint
+before returning a failure identified by reservation. Checkpointed coordinator
+profile timings are observational telemetry, so checkpoint hashes may differ
+across host schedules even when their search state and resumptions agree.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve
