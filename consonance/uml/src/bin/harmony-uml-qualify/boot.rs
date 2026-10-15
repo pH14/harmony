@@ -98,6 +98,7 @@ fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value
             && contains(&exit, "HARMONY_UML PASS")
             && contains(&exit, SECCOMP_OK)
             && !contains(&exit, PTRACE_CHECK)
+            && !contains(&exit, "Address space: host top 0x")
             && clean(&exit)
             && console_matches_first;
         if !passed {
