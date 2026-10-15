@@ -33,7 +33,14 @@ an `ArchiveSource` built by parsing and hashing one byte stream. Its private rep
 and digest cannot be replaced separately, and replay checks that raw-byte digest
 against the recorded origin before deriving resume input or importing evidence.
 Changing only JSON whitespace still changes the source identity. Live archive
-import uses that same sealed source.
+import uses that same sealed source. Each exported archive snapshot also has a
+SHA-256 digest of its postcard serialization in the matching source entry.
+Before an archive checkpoint restores any state, live import and replay check
+each checkpoint entry's ID and snapshot against that source-bound digest.
+Duplicate or unknown checkpoint IDs, and source entries without a bound digest,
+are rejected. Older archive reports without snapshot digests remain usable for
+whole-tree import without a checkpoint, but cannot authorize checkpoint restore.
+Snapshot-root origins use their separate checkpoint contract.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
@@ -45,7 +52,7 @@ result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
 stops the campaign on an objective, replay rejects work selected after it while allowing jobs
 already reserved in the admission window to finish. The same admission-window
-rule applies when cumulative work reaches the recorded work budget. Schema version 13
+rule applies when cumulative work reaches the recorded work budget. Schema version 14
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
