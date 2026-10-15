@@ -1058,7 +1058,13 @@ fn open_archive<R: Read + Send + 'static>(mut input: R) -> Result<ArchiveReader,
     let feeder = std::thread::spawn(move || {
         let mut whole = whole;
         let mut stdin = stdin;
-        std::io::copy(&mut whole, &mut stdin).map(|_| ())
+        match std::io::copy(&mut whole, &mut stdin) {
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                std::io::copy(&mut whole, &mut std::io::sink()).map(|_| ())
+            }
+            Err(error) => Err(error),
+        }
     });
     Ok(ArchiveReader {
         reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, stdout)),
@@ -1607,6 +1613,7 @@ fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
     check_portable_staging_root(dest)?;
     let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
     let (decoded, members) = decode_archive(&pinned, dest.parent().unwrap_or(dest))?;
+    drop(pinned);
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
@@ -2003,6 +2010,7 @@ fn apply_layer_tracked(
         verify_pinned_archive(&pinned, descriptor)?;
     }
     let (decoded, members) = decode_archive(&pinned, staging)?;
+    drop(pinned);
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
@@ -2690,6 +2698,57 @@ mod tests {
         std::fs::create_dir(&dest).unwrap();
         untar(&decoded, &dest).unwrap();
         assert_eq!(std::fs::read(dest.join("marker")).unwrap(), b"ORIGINAL");
+    }
+
+    #[test]
+    fn early_exiting_decoder_still_verifies_unread_archive_bytes() {
+        if let Some(source) = std::env::var_os("HARMONY_OCI_EARLY_DECODER_CHILD") {
+            let staging =
+                PathBuf::from(std::env::var_os("HARMONY_OCI_EARLY_DECODER_STAGE").unwrap());
+            let pinned = pin_archive(Path::new(&source), &staging).unwrap();
+            let (_, members) = decode_archive(&pinned, &staging).unwrap();
+            assert_eq!(members.len(), 1);
+            let mut retained = pinned.file.try_clone().unwrap();
+            retained.seek(SeekFrom::Start(pinned.size - 1)).unwrap();
+            retained.write_all(b"X").unwrap();
+            assert!(matches!(
+                decode_archive(&pinned, &staging),
+                Err(ImageError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+            ));
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let tarball = tar_layer(dir.path(), "layer", &[("marker", b"ORIGINAL")]);
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::copy(tarball, bin.join("decoded")).unwrap();
+        let decoder = bin.join("bzip2");
+        std::fs::write(&decoder, b"#!/bin/sh\ndir=${0%/*}\ncat \"$dir/decoded\"\n").unwrap();
+        std::fs::set_permissions(&decoder, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let source = dir.path().join("layer.tar.bz2");
+        let mut bytes = b"BZh9".to_vec();
+        bytes.extend(vec![b'x'; 2 * 1024 * 1024]);
+        std::fs::write(&source, bytes).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::early_exiting_decoder_still_verifies_unread_archive_bytes",
+            ])
+            .env("HARMONY_OCI_EARLY_DECODER_CHILD", &source)
+            .env("HARMONY_OCI_EARLY_DECODER_STAGE", dir.path())
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]
