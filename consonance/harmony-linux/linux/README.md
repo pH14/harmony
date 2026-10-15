@@ -120,10 +120,12 @@ fence. Decoded direct branches from kernel or decompressor code into loaded
 non-code bytes, including reviewed data and load slack, fail admission. The
 decompressor head is decoded as 32-bit code before `startup_64` and in both
 64-bit modes afterward; missing mode anchors or a truncated decode at a symbol
-boundary fail. Its 32-bit startup can end in a far return followed by zero
-alignment up to `startup_64`; the scan requires a complete far return before
-excluding that padding and rejects direct branches into it. Indirect or computed
-transfers into the executable compressed payload and code copied out of data
+boundary fail. A single executable `.head.text` must be the first loaded
+section, because its `startup_32` bytes begin the packed decompressor image.
+Its 32-bit startup must end in a far return even without zero alignment
+before `startup_64`, and the scan rejects direct branches into that padding.
+Indirect or computed transfers into the executable compressed payload and code
+copied out of data
 require separate admission review. The decompressor's other reviewed data
 sections are raw-scanned for counter and hardware-RNG instruction bytes, so a
 near or far return into those sections cannot reach such an instruction.
