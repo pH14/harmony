@@ -5,9 +5,7 @@
 from __future__ import annotations
 
 import struct
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 
@@ -24,7 +22,7 @@ RNDRRS = 0xD53B2420
 
 
 def executable_ranges(path: Path) -> tuple[int, list[tuple[str, int, bytes]]]:
-    """Return executable segments and mapped sections as decoder starts."""
+    """Return the full executable file-page mappings and section labels."""
     data = path.read_bytes()
     header_size = struct.calcsize(ELF_HEADER)
     program_size = struct.calcsize(PROGRAM_HEADER)
@@ -167,202 +165,48 @@ def arm64_hits(data: bytes) -> list[tuple[int, str]]:
 
 
 def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
-    """Decode executable ranges and every directly reachable alternate entry."""
+    """Reject every register-form RDRAND/RDSEED encoding in executable bytes."""
     hits: list[tuple[str, int, str]] = []
-    seen: set[tuple[int, str]] = set()
-    targets: set[int] = set()
-    instructions: dict[int, tuple[int, str, int | None, int]] = {}
-    parsed = 0
     ordered = sorted(segments, key=lambda segment: segment[1])
-    for left, right in zip(ordered, ordered[1:]):
-        if left[1] + len(left[2]) > right[1]:
+    group = bytearray()
+    spans: list[tuple[int, int, str, int]] = []
+    group_base = 0
+
+    def scan_group() -> None:
+        cursor = 0
+        while True:
+            offset = group.find(b"\x0f\xc7", cursor)
+            if offset < 0:
+                return
+            cursor = offset + 1
+            if offset + 2 >= len(group) or group[offset + 2] < 0xF0:
+                continue
+            address = group_base + offset
+            for begin, end, label, base in spans:
+                if begin <= address < end:
+                    mnemonic = "RDRAND" if group[offset + 2] < 0xF8 else "RDSEED"
+                    hits.append((label, address - base, mnemonic))
+                    break
+            else:
+                raise ValueError("unlabeled executable opcode")
+
+    for label, base, data in ordered:
+        if spans and base < spans[-1][1]:
             raise ValueError("overlapping executable mappings")
-    with tempfile.TemporaryDirectory() as temporary:
-        segment_path = Path(temporary) / "segment"
-
-        def decode(data: bytes, base: int, label: str, first_only: bool = False):
-            segment_path.write_bytes(data)
-            try:
-                output = subprocess.run(
-                    [
-                        "objdump", "-D", "-z", "-w", "-b", "binary", "-m", "i386:x86-64",
-                        f"--adjust-vma=0x{base:x}", str(segment_path),
-                    ],
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                ).stdout
-            except (OSError, subprocess.CalledProcessError) as error:
-                raise ValueError(f"objdump failed: {error}") from error
-            cursor = 0
-            decoded_instructions = []
-            for line in output.splitlines():
-                if ":" not in line:
-                    continue
-                address_text, remainder = line.split(":", 1)
-                try:
-                    address = int(address_text.strip(), 16)
-                except ValueError:
-                    continue
-                fields = remainder.split("\t")
-                if len(fields) < 3:
-                    raise ValueError(f"objdump omitted instruction bytes in {label}")
-                hex_bytes = fields[1].split()
-                if not hex_bytes or any(
-                    len(part) != 2 or any(digit not in "0123456789abcdefABCDEF" for digit in part)
-                    for part in hex_bytes
-                ):
-                    raise ValueError(f"objdump emitted malformed bytes in {label}")
-                decoded = bytes(int(part, 16) for part in hex_bytes)
-                if address != base + cursor or data[cursor : cursor + len(decoded)] != decoded:
-                    raise ValueError(f"objdump bytes differ from executable {label}")
-                cursor += len(decoded)
-                mnemonic_fields = " ".join(fields[2:]).strip().split()
-                if not mnemonic_fields:
-                    raise ValueError(f"objdump omitted instruction in {label}")
-                instruction = next(
-                    (
-                        index for index, field in enumerate(mnemonic_fields)
-                        if field.lower() not in ("bnd", "notrack", "data16", "addr32")
-                    ),
-                    len(mnemonic_fields),
-                )
-                if instruction == len(mnemonic_fields):
-                    raise ValueError(f"objdump emitted only instruction prefixes in {label}")
-                opcode = mnemonic_fields[instruction].lower()
-                decoded_instructions.append(
-                    (address, len(decoded), opcode, mnemonic_fields[instruction + 1 :])
-                )
-                if first_only:
-                    break
-            if cursor != len(data) and not first_only:
-                raise ValueError(f"objdump skipped executable bytes in {label}")
-            return decoded_instructions
-
-        def branch_target(opcode: str, operands: list[str], label: str) -> int | None:
-            if opcode in ("ljmp", "lcall"):
-                raise ValueError(f"unreviewable far branch in {label}")
-            direct = (
-                opcode.startswith("j")
-                or opcode in (
-                    "call", "callq", "loop", "loope", "loopne", "loopz", "loopnz",
-                    "xbegin",
-                )
-            )
-            if not direct:
-                return None
-            if not operands:
-                raise ValueError(f"objdump omitted branch operand in {label}")
-            if operands[0].startswith("0x"):
-                try:
-                    return int(operands[0].rstrip(","), 16)
-                except ValueError as error:
-                    raise ValueError(f"objdump emitted invalid branch target in {label}") from error
-            if not operands[0].startswith("*"):
-                raise ValueError(f"unresolved direct branch in {label}")
-            return None
-
-        def record_hit(
-            label: str, base: int, address: int, opcode: str, operands: list[str]
-        ) -> None:
-            mnemonic = next(
-                (
-                    instruction
-                    for field in (opcode, *operands)
-                    for instruction in ("rdrand", "rdseed")
-                    if field.lower() == instruction
-                    or field.lower() in (
-                        f"{instruction}w", f"{instruction}l", f"{instruction}q"
-                    )
-                ),
-                None,
-            )
-            if mnemonic is not None:
-                key = (address, mnemonic.upper())
-                if key not in seen:
-                    hits.append((label, address - base, mnemonic.upper()))
-                    seen.add(key)
-
-        def slice_at(address: int) -> int | None:
-            return next(
-                (
-                    index for index, (_, base, data) in enumerate(ordered)
-                    if base <= address < base + len(data)
-                ),
-                None,
-            )
-
-        def first_bytes(address: int, index: int) -> bytes:
-            _, base, data = ordered[index]
-            result = bytearray(data[address - base : address - base + 15])
-            next_base = base + len(data)
-            next_index = index + 1
-            while len(result) < 15 and next_index < len(ordered):
-                _, adjoining_base, adjoining = ordered[next_index]
-                if adjoining_base != next_base:
-                    break
-                result.extend(adjoining[: 15 - len(result)])
-                next_base += len(adjoining)
-                next_index += 1
-            return bytes(result)
-
-        for index, (label, base, data) in enumerate(ordered):
-            for address, size, opcode, operands in decode(data, base, label):
-                parsed += 1
-                target = branch_target(opcode, operands, label)
-                if target is not None:
-                    targets.add(target)
-                instructions[address] = (address + size, opcode, target, index)
-                record_hit(label, base, address, opcode, operands)
-
-        pending = sorted(target for target in targets if slice_at(target) is not None)
-        reached: set[int] = set()
-        alternate_starts = 0
-        while pending:
-            address = pending.pop()
-            if address in reached:
-                continue
-            reached.add(address)
-            if address not in instructions:
-                index = slice_at(address)
-                if index is None:
-                    continue
-                alternate_starts += 1
-                if alternate_starts > 4096:
-                    raise ValueError("alternate decoder start budget exceeded")
-                label, base, _ = ordered[index]
-                decoded = decode(first_bytes(address, index), address, label, first_only=True)
-                if not decoded:
-                    raise ValueError(f"objdump omitted reachable instruction at 0x{address:x}")
-                _, size, opcode, operands = decoded[0]
-                target = branch_target(opcode, operands, label)
-                record_hit(label, base, address, opcode, operands)
-                instructions[address] = (address + size, opcode, target, index)
-            end, opcode, target, index = instructions[address]
-            label, base, data = ordered[index]
-            remaining = base + len(data) - address
-            if remaining < 15 and index + 1 < len(ordered):
-                suffix = first_bytes(address, index)
-                if len(suffix) > remaining:
-                    extended = decode(suffix, address, label, first_only=True)
-                    if not extended or extended[0][1] > remaining:
-                        raise ValueError(
-                            f"branch stream crosses executable slice at 0x{address:x}"
-                        )
-            if target is not None and slice_at(target) is not None:
-                pending.append(target)
-            if opcode in ("jmp", "jmpq", "jmpl", "ret", "retq", "retl", "retw",
-                          "lret", "lretq", "iret", "iretq", "iretd"):
-                continue
-            if slice_at(end) is not None:
-                pending.append(end)
-    if parsed == 0:
-        raise ValueError("objdump parsed zero executable instructions")
+        if spans and base != spans[-1][1]:
+            scan_group()
+            group = bytearray()
+            spans = []
+        if not spans:
+            group_base = base
+        group.extend(data)
+        spans.append((base, base + len(data), label, base))
+    scan_group()
     return hits
 
 
 def scan(path: Path) -> list[tuple[str, int, str]]:
-    """Return entropy-opcode hits with segment-relative offsets."""
+    """Return entropy-opcode hits with labeled-range-relative offsets."""
     machine, segments = executable_ranges(path)
     if machine == EM_X86_64:
         return x86_hits(segments)
@@ -379,6 +223,12 @@ def scan(path: Path) -> list[tuple[str, int, str]]:
 
 def self_test() -> None:
     """Pin both positive detections and neighboring non-entropy encodings."""
+    x86 = b"\x0f\xc7\xf0\x0f\xc7\xf8\x0f\xc7\x30"
+    if x86_hits([("x86", 0, x86)]) != [
+        ("x86", 0, "RDRAND"),
+        ("x86", 3, "RDSEED"),
+    ]:
+        raise ValueError("x86 entropy scanner self-test failed")
     arm = RNDR.to_bytes(4, "little") + RNDRRS.to_bytes(4, "little") + b"\xc0\x03\x5f\xd6"
     if arm64_hits(arm) != [(0, "RNDR"), (4, "RNDRRS")]:
         raise ValueError("AArch64 entropy decoder self-test failed")

@@ -9,20 +9,17 @@ including bytes before the declared start and after `p_filesz`, and requires the
 load's file offset and virtual address to agree within a page. Linux can leave
 the file-backed tail executable even when `p_memsz` exceeds `p_filesz` on a
 read-only executable load.
-On x86 it decodes contained allocated sections from their starts and scans the
-gaps between them, so headers or padding cannot shift an instruction boundary
-or create a false hit across a section boundary. Arm64 is checked as aligned
-words across the whole executable segment, regardless of section lengths.
-The x86 scan follows direct branches into alternate instruction streams and
-decodes those streams until they rejoin the section-start stream. This catches
-entropy opcodes hidden inside an instruction operand while accepting legitimate
-entry past a prefix. Alternate starts have a bounded budget and fail closed
-when it is exhausted. A branch-reachable instruction crossing an executable
-section or gap boundary is rejected, where decoding each range separately
-could hide an entropy opcode. An unbranched executable prelude does not redefine
-a section's decoder start.
-Indirect or computed transfers and returns into another instruction's operand
-bytes remain outside this static scanner's guarantee.
+On x86 it checks every byte offset of each contiguous executable file-page
+mapping for the register-form `0F C7 F0`–`0F C7 FF` encodings of RDRAND and
+RDSEED. It joins address-adjacent slices before checking, so an opcode split at
+a section or load boundary is still rejected. Sections only label findings;
+their flags and starting addresses do not control what bytes are checked.
+The scan deliberately rejects opcode-shaped bytes inside instruction operands,
+including LEA displacements and immediates: a computed jump or return can enter
+those bytes as a different instruction stream. The shipped N6 guest has no such
+bytes. Arm64 is checked as aligned words across the whole executable segment,
+regardless of section lengths. Runtime-generated or modified executable code is
+outside this static image audit.
 Its hidden-section negative control clears the `.text` executable flag while
 leaving `PT_LOAD` executable and must still be rejected.
 

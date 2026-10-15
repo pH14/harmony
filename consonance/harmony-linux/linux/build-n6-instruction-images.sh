@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 n6_cc=${HARMONY_N6_CC:-cc}
-require_tools "$n6_cc" cc gzip objdump python3
+require_tools "$n6_cc" cc gzip python3
 extract_kernel # usr/gen_init_cpio.c is the deterministic packer.
 
 repo_root=$(cd ../../.. && pwd)
@@ -38,7 +38,7 @@ case "$(uname -m)" in
         march=()
         negative_body='.byte 0x0f, 0xc7, 0xf0
 .byte 0x0f, 0xc7, 0xf8'
-        false_positive_body='.byte 0x48, 0x8d, 0x3d, 0x0f, 0xc7, 0xf8, 0x00'
+        displacement_body='.byte 0x48, 0x8d, 0x3d, 0x0f, 0xc7, 0xf8, 0x00'
         ;;
     *)
         echo "FAIL: N6 guest images require native Linux/aarch64 or Linux/x86_64" >&2
@@ -120,18 +120,27 @@ fi
 echo "ok: mislabeled executable section still rejected"
 
 if [ "$arch" = x86_64 ]; then
-    false_positive=$n6_root/n6-entropy-false-positive.S
-    cat >"$false_positive" <<EOF
+    displacement=$n6_root/n6-entropy-displacement.S
+    cat >"$displacement" <<EOF
 .text
 .global _start
 _start:
-$false_positive_body
+$displacement_body
 ret
 EOF
     "$n6_cc" -nostdlib -static -Wl,-e,_start \
-        -o "$n6_root/n6-entropy-false-positive" "$false_positive"
-    python3 "$entropy_scan" "$n6_root/n6-entropy-false-positive"
-    echo "ok: entropy scanner ignored opcode-shaped LEA displacement"
+        -o "$n6_root/n6-entropy-displacement" "$displacement"
+    if python3 "$entropy_scan" "$n6_root/n6-entropy-displacement" \
+        >"$n6_root/n6-entropy-displacement.log" 2>&1; then
+        echo "FAIL: entropy scanner accepted opcode-shaped LEA displacement" >&2
+        exit 1
+    fi
+    if ! grep -q '^N6_ENTROPY_REJECT .* hits=1$' "$n6_root/n6-entropy-displacement.log"; then
+        echo "FAIL: entropy scanner did not identify the LEA displacement" >&2
+        cat "$n6_root/n6-entropy-displacement.log" >&2
+        exit 1
+    fi
+    echo "ok: opcode-shaped LEA displacement rejected"
 fi
 
 build_guest() {
