@@ -49,6 +49,8 @@ jobs:
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
       - name: Extended platform replay
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: |
           set -o pipefail
           for repetition in 1 2 3; do

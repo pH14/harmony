@@ -75,6 +75,8 @@ jobs:
       - name: Qualify the released runtime on hardware
         env:
           GUEST_ISA: ${{ matrix.isa }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: |
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm

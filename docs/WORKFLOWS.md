@@ -83,9 +83,11 @@ port, and every check below runs on an x86-64 and an arm64 runner.
 
 The root Nextest configuration starts Linux test binaries through
 `scripts/linux-clean-loader-test.sh`, which removes Cargo's code-selecting
-loader variables before the test begins. The Fault Injection job uses that
-runner only for its Linux Cargo test step. This test-only cleanup does not
-change production identity admission or Miri execution.
+loader variables before the test begins. The Fault Injection, NES Adapter,
+Container Execution, extended guest runtime qualification, and release runtime
+qualification jobs use that runner only for their Linux Cargo test steps. This
+test-only cleanup does not change production identity admission or Miri
+execution.
 
 `UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
 sequence as the runner's ordinary UID, natively and under Docker's default
