@@ -2094,7 +2094,70 @@ mod tests {
             String::from_utf8_lossy(&child.stdout),
             String::from_utf8_lossy(&child.stderr)
         );
+        assert!(
+            String::from_utf8_lossy(&child.stdout).contains("running 1 test"),
+            "isolated {name} did not run: {}",
+            String::from_utf8_lossy(&child.stdout)
+        );
         false
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn failed_private_open_keeps_missing_symbol_diagnostic() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, process::Command};
+
+        if !isolated_loader_test(
+            "quicknes::tests::failed_private_open_keeps_missing_symbol_diagnostic",
+        ) {
+            return;
+        }
+        let directory =
+            std::env::temp_dir().join(format!("quicknes-missing-symbol-{}", std::process::id()));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("core.c");
+        fs::write(&source, "int unrelated_core_symbol(void) { return 1; }\n").unwrap();
+        #[cfg(target_os = "macos")]
+        let core = directory.join("core.dylib");
+        #[cfg(target_os = "linux")]
+        let core = directory.join("core.so");
+        let mut compiler = Command::new("cc");
+        #[cfg(target_os = "macos")]
+        compiler.arg("-dynamiclib");
+        #[cfg(target_os = "linux")]
+        compiler.args(["-shared", "-fPIC"]);
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&core)
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let sha256 = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+        let error = match super::Library::open_private(&core, &sha256) {
+            Ok(_) => panic!("core without libretro exports was admitted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("missing retro_get_system_info"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("native loader changed"),
+            "{error}"
+        );
+        let retry = match super::Library::open_private(&core, &sha256) {
+            Ok(_) => panic!("poisoned native loader was admitted"),
+            Err(error) => error,
+        };
+        assert!(
+            retry.to_string().contains("native loader changed"),
+            "{retry}"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[cfg(all(unix, not(miri)))]
@@ -2198,6 +2261,11 @@ mod tests {
             "{} {}",
             String::from_utf8_lossy(&child.stdout),
             String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&child.stdout).contains("running 1 test"),
+            "worker identity child did not run: {}",
+            String::from_utf8_lossy(&child.stdout)
         );
         fs::remove_dir_all(directory).unwrap();
     }
@@ -2309,6 +2377,11 @@ mod tests {
                     "{kind}/{mode}: {} {}",
                     String::from_utf8_lossy(&child.stdout),
                     String::from_utf8_lossy(&child.stderr)
+                );
+                assert!(
+                    String::from_utf8_lossy(&child.stdout).contains("running 1 test"),
+                    "{kind}/{mode} did not run: {}",
+                    String::from_utf8_lossy(&child.stdout)
                 );
             }
         }

@@ -109,8 +109,10 @@ fn mutation<T>(
         Err(error) => {
             guard.poisoned = true;
             drop(guard);
-            drop(result);
-            return Err(error);
+            return match result {
+                Err(original) => Err(MachineError::Backend(format!("{original}; {error}"))),
+                Ok(_) => Err(error),
+            };
         }
     };
     if !lifecycle_matches(before, after, cleanup, result.is_ok(), guard.active)
@@ -120,6 +122,10 @@ fn mutation<T>(
         drop(guard);
         return match result {
             Err(error) if cleanup => Err(error),
+            Err(error) => Err(MachineError::Backend(format!(
+                "{error}; {}",
+                changed_error()
+            ))),
             _ => Err(changed_error()),
         };
     }
