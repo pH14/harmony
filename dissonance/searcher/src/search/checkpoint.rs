@@ -13,7 +13,7 @@ use std::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
-pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v6";
+pub const SEARCH_CHECKPOINT_FORMAT: &str = "dissonance-search-checkpoint-v7";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PinnedCheckpoint {
@@ -60,6 +60,7 @@ pub struct CheckpointHeader {
     pub checkpoint_owner: Option<String>,
     pub reason: String,
     pub workload_identity_sha256: String,
+    pub executable_identity: String,
     pub campaign_seed: u64,
     pub window: usize,
     pub archive_entry_limit: usize,
@@ -655,6 +656,7 @@ mod tests {
             checkpoint_owner: None,
             reason: reason.to_owned(),
             workload_identity_sha256: String::new(),
+            executable_identity: String::new(),
             campaign_seed: 1,
             window: 1,
             archive_entry_limit: 8,
@@ -832,6 +834,7 @@ mod tests {
             checkpoint_owner: None,
             reason: "interval".to_owned(),
             workload_identity_sha256: String::new(),
+            executable_identity: String::new(),
             campaign_seed: 1,
             window: 1,
             archive_entry_limit: 8,

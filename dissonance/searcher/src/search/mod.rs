@@ -8,6 +8,7 @@ pub mod draw;
 pub mod draw_tables;
 pub mod duration;
 pub mod empirical_steps;
+mod executable_identity;
 pub mod parallel;
 pub mod rand;
 pub mod rollout;
