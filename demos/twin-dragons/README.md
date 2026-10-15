@@ -310,7 +310,9 @@ three live sprites, so the view never shows a level the search has not started
 exploring. Levels that other
 lineages reach, such as the worlds past a warp zone the path did not take, do
 not move the view. When the path's level has had no live rollouts for 8 seconds
-while a deeper level has some, the path moves to the deepest such level. The map
+while a deeper level has some, the path moves to the deepest such level. A
+search whose root has already cleared its level, such as a branch started after
+the flag or the axe, moves as soon as a deeper level has live rollouts. The map
 always draws clearing rollouts and the camera follows the one that leaves the
 level first. The automatic
 replay pick skips states outside the shown level. Showing a level also builds

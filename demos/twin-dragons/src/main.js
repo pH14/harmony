@@ -646,12 +646,13 @@ function followStalledPath(now) {
     if (level === path.level) here = true;
     else if (level != null && level > path.level && (deepest == null || level > deepest)) deepest = level;
   }
-  if (here || deepest == null || now - path.since < PATH_STALL_MS) {
+  if (here || deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
     path.idle = 0;
     return;
   }
   path.idle ||= now;
-  if (now - path.idle < PATH_STALL_MS) return;
+  if (!path.leftRoot && now - path.idle < PATH_STALL_MS) return;
+  path.leftRoot = false;
   const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
   path.level = deepest;
   if (!path.levels.includes(deepest)) path.levels.push(deepest);
@@ -1582,7 +1583,8 @@ function startSearch(level = bootLevel) {
           for (const level of completedLevels(levelProgress(state.observation), bootLevel))
             wins.set(level, state.id);
           const start = roomLevel(state.observation.level) ?? bootLevel;
-          Object.assign(path, { level: start, levels: [start], since: performance.now(), idle: 0 });
+          const leftRoot = finishedLevel(levelProgress(state.observation), start) != null;
+          Object.assign(path, { level: start, levels: [start], since: performance.now(), idle: 0, leftRoot });
         }
         if (isMapEvidence(state.observation, catalog.levels)) {
           seenMaps.add(state.observation.level);
