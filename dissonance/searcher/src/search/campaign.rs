@@ -56,7 +56,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 12;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 13;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -220,6 +220,9 @@ pub trait Reporting: CampaignTypes {
     fn stream_format(&self) -> &'static str;
     fn checkpoint_format(&self) -> &'static str;
     fn workload_identity_sha256(&self) -> String;
+    fn executable_identity(&self) -> Result<String, Box<dyn Error>> {
+        Ok(crate::search::executable_identity::loaded_executable_identity_self()?)
+    }
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
@@ -659,6 +662,7 @@ pub struct CampaignStreamHeader<T> {
     pub executor_mode: String,
     pub selection_seed_derivation: String,
     pub workload_identity_sha256: String,
+    pub executable_identity: String,
     pub action_cost_unit: String,
     pub execution_work_unit: String,
 }
@@ -837,6 +841,7 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub executor_mode: String,
     pub selection_seed_derivation: String,
     pub workload_identity_sha256: String,
+    pub executable_identity: String,
     pub action_cost_unit: String,
     pub execution_work_unit: String,
     pub bootstrap_execution_work: u64,
@@ -1952,12 +1957,25 @@ fn resolve_origin<G: Workload>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     search_checkpoint: Option<&CheckpointReader>,
+    executable_identity: &str,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
     if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
+        if reader.header.executable_identity != executable_identity {
+            return Err("search checkpoint belongs to a different executable".into());
+        }
         let checkpoint_policy_changes = search_checkpoint_policy_changes(
             &reader.header,
-            &search_checkpoint_header(workload, config, &reader.header.reason, 0, 0, 0, 0),
+            &search_checkpoint_header(
+                workload,
+                config,
+                executable_identity,
+                &reader.header.reason,
+                0,
+                0,
+                0,
+                0,
+            ),
         )?;
         let path = path.display().to_string();
         let resume_input_sha256 = format!(
@@ -2040,6 +2058,7 @@ fn stream_header<G: Workload>(
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
     draw_header: Option<DrawTableHeader>,
+    executable_identity: &str,
 ) -> CampaignStreamHeader<DrawTableHeader> {
     CampaignStreamHeader {
         schema_version: CAMPAIGN_SCHEMA_VERSION,
@@ -2077,6 +2096,7 @@ fn stream_header<G: Workload>(
         executor_mode: EXECUTOR_MODE.to_owned(),
         selection_seed_derivation: SELECTION_SEED_DERIVATION.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
+        executable_identity: executable_identity.to_owned(),
         action_cost_unit: workload.action_cost_unit().to_owned(),
         execution_work_unit: workload.execution_work_unit().to_owned(),
     }
@@ -2428,6 +2448,7 @@ fn build_report<G: Workload>(
         executor_mode: header.executor_mode.clone(),
         selection_seed_derivation: header.selection_seed_derivation.clone(),
         workload_identity_sha256: header.workload_identity_sha256.clone(),
+        executable_identity: header.executable_identity.clone(),
         action_cost_unit: header.action_cost_unit.clone(),
         execution_work_unit: header.execution_work_unit.clone(),
         bootstrap_execution_work: counters.bootstrap_execution_work,
@@ -2957,6 +2978,7 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
+    let executable_identity = workload.executable_identity()?;
     let work_budget = options.work_budget;
     let placement = options.placement.as_ref();
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
@@ -3001,7 +3023,13 @@ where
         }
         _ => None,
     };
-    let origin_record = resolve_origin(workload, config, origin, search_checkpoint.as_ref())?;
+    let origin_record = resolve_origin(
+        workload,
+        config,
+        origin,
+        search_checkpoint.as_ref(),
+        &executable_identity,
+    )?;
     let draw_origin = match origin {
         CampaignOrigin::Genesis => None,
         CampaignOrigin::SnapshotRoot { .. } => None,
@@ -3020,7 +3048,13 @@ where
     ) {
         return Err("initial draw state exceeds its deterministic memory reserve".into());
     }
-    let mut header = stream_header(workload, config, &origin_record, draw_header);
+    let mut header = stream_header(
+        workload,
+        config,
+        &origin_record,
+        draw_header,
+        &executable_identity,
+    );
     header.work_budget = work_budget;
     let mut writer = StreamWriter::new(stream);
     writer.write_line(&header)?;
@@ -3098,6 +3132,7 @@ where
                 Some(reader) => Some(restore_search_checkpoint(
                     workload,
                     config,
+                    &executable_identity,
                     reader,
                     &mut core,
                     &mut draw_state,
@@ -3861,6 +3896,7 @@ where
                         write_search_checkpoint(
                             workload,
                             config,
+                            &executable_identity,
                             checkpoints,
                             reason,
                             &core,
@@ -3895,6 +3931,7 @@ where
                 write_search_checkpoint(
                     workload,
                     config,
+                    &executable_identity,
                     checkpoints,
                     "final",
                     &core,
@@ -4014,9 +4051,11 @@ fn bootstrap_campaign<G: Workload>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_checkpoint_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
+    executable_identity: &str,
     reason: &str,
     executions: u64,
     reserved: u64,
@@ -4053,6 +4092,7 @@ fn search_checkpoint_header<G: Workload>(
         checkpoint_owner: None,
         reason: reason.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
+        executable_identity: executable_identity.to_owned(),
         campaign_seed: config.campaign_seed,
         window: config.window,
         archive_entry_limit: config.archive_entry_limit,
@@ -4102,9 +4142,11 @@ fn search_checkpoint_policy_changes(
     Ok(changes)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn restore_search_checkpoint<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
+    executable_identity: &str,
     mut reader: CheckpointReader,
     core: &mut CoordinatorCore<G>,
     draw_state: &mut DrawTables<G::Action>,
@@ -4112,7 +4154,19 @@ fn restore_search_checkpoint<G: Workload>(
     counters: &mut CampaignCounters,
 ) -> Result<SearchResume<G>, Box<dyn Error>> {
     let header = reader.header.clone();
-    let expected = search_checkpoint_header(workload, config, &header.reason, 0, 0, 0, 0);
+    let expected = search_checkpoint_header(
+        workload,
+        config,
+        executable_identity,
+        &header.reason,
+        0,
+        0,
+        0,
+        0,
+    );
+    if header.executable_identity != expected.executable_identity {
+        return Err("search checkpoint belongs to a different executable".into());
+    }
     if header.workload_identity_sha256 != expected.workload_identity_sha256 {
         return Err("search checkpoint belongs to a different workload".into());
     }
@@ -4202,6 +4256,7 @@ fn restore_search_checkpoint<G: Workload>(
 fn write_search_checkpoint<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
+    executable_identity: &str,
     checkpoints: &mut CheckpointWriter<<G::Key as ArchiveKey>::Progress>,
     reason: &str,
     core: &CoordinatorCore<G>,
@@ -4242,6 +4297,7 @@ fn write_search_checkpoint<G: Workload>(
     let header = search_checkpoint_header(
         workload,
         config,
+        executable_identity,
         reason,
         core.sequence,
         reserved,
@@ -4463,6 +4519,7 @@ fn replay_campaign_checkpointed_inner<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
+    let executable_identity = workload.executable_identity()?;
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
@@ -4525,6 +4582,11 @@ where
     }
     if header.workload_identity_sha256 != workload.workload_identity_sha256() {
         return Err("campaign replay workload identity does not match the recorded stream".into());
+    }
+    if header.executable_identity != executable_identity {
+        return Err(
+            "campaign replay executable identity does not match the recorded stream".into(),
+        );
     }
     if header.action_cost_unit != workload.action_cost_unit() {
         return Err("campaign replay action-cost unit does not match the recorded stream".into());
@@ -6902,7 +6964,7 @@ mod tests {
         assert!(error.contains("suffix limit"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":12,"format":"campaign-v1","campaign_seed":7,
+    const RECORDED_HEADER: &str = r#"{"schema_version":13,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -6911,7 +6973,7 @@ mod tests {
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
 "parent_scheduler":"tier_pace_yield_cell_recent_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
-"selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
+"selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd","executable_identity":"test-executable",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
     #[test]

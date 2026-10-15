@@ -29,14 +29,20 @@ for replay. Replay checks the source fields allowed by each origin kind, require
 an archive checkpoint exactly when the stream names one, and matches the supplied
 checkpoint path, format, serialized bytes, and digest before copying its provenance
 into a completed report. Live archive import verifies the same bytes before execution.
-It also checks the fixed executor and selection-seed derivation labels. Replay reconstructs
-adaptive mixture weights from each admitted
+It also checks the fixed executor and selection-seed derivation labels. The stream and
+completed report record the loaded Harmony executable identity separately from the
+workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
+its running code-directory hash. Replay fails closed when that identity cannot be
+read or differs, even if the guest image and workload policies match. The campaign
+reads the identity once before writing the stream and uses the same value for its
+checkpoints. Replay reconstructs adaptive mixture weights from each admitted
 result at the original reservation boundary and rejects job or skip weights
 that the recorded policy could not have produced. When the recorded policy
 stops the campaign on an objective, replay rejects work selected after it while allowing jobs
 already reserved in the admission window to finish. The same admission-window
-rule applies when cumulative work reaches the recorded work budget. Schema version 12 records
-the reservation that owns each duplicate skip. Replay checks that skips follow
+rule applies when cumulative work reaches the recorded work budget. Schema version 13
+requires the loaded executable identity and records the reservation that owns each
+duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
 limit of 1,024 attempts for one reservation. A terminal record follows only
 after the campaign has drained its jobs and finished
@@ -710,8 +716,10 @@ selected checkpoint's SHA-256. `CampaignOrigin::SearchCheckpoint` resumes one.
 When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission
-window, limits, workload identity and the workload policies that give stored
-inputs and keys their meaning must match. The mixture and retention
+window, limits, workload identity, loaded executable identity, and the workload
+policies that give stored inputs and keys their meaning must match. The search
+checkpoint format is version 7; a checkpoint from another executable is refused
+before the new stream is written. The mixture and retention
 policies, the selector, the continuation policy and the objective stop may
 change, so a search can continue under a revised algorithm. The draw table
 policy, the preference portfolio and a workload's `preference_policy` may also
