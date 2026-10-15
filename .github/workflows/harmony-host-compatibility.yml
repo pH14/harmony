@@ -166,7 +166,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: harmony-host-compatibility-linux-arm64
+          shared-key: harmony-host-compatibility-linux-arm64-qualification
           workspaces: |
             . -> target
             dissonance -> target
