@@ -224,15 +224,18 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
     not(miri)
 ))]
 impl SmbGame<ConsonanceMachine, ConsonancePortable> {
-    #[must_use]
-    pub fn new_consonance(rom: &[u8], kernel: &[u8], initramfs: &[u8]) -> Self {
-        Self {
+    pub fn new_consonance(
+        rom: &[u8],
+        kernel: &[u8],
+        initramfs: &[u8],
+    ) -> Result<Self, machine::MachineError> {
+        Ok(Self {
             rom: rom.to_vec(),
             core_path: PathBuf::new(),
             core_sha256: String::new(),
             identity: format!(
                 "{};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4",
-                consonance_identity(kernel, initramfs),
+                consonance_identity(kernel, initramfs)?,
             ),
             backend: SmbBackend::Consonance {
                 kernel: kernel.to_vec(),
@@ -241,7 +244,7 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
             machine: PhantomData,
             #[cfg(test)]
             loopback: false,
-        }
+        })
     }
 }
 
@@ -962,6 +965,33 @@ mod tests {
 
     fn test_game(rom: &[u8]) -> SmbGame {
         SmbGame::loopback_for_tests(rom)
+    }
+
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ))]
+    #[test]
+    fn consonance_policy_binds_the_session_identity_before_guest_replay() {
+        let kernel = b"kernel";
+        let initramfs = b"initramfs";
+        let game = SmbGame::new_consonance(&synthetic_nrom(), kernel, initramfs).unwrap();
+        let expected = machine::consonance::identity(kernel, initramfs).unwrap();
+        assert!(game.emulator_identity().starts_with(&expected));
+
+        let run = SmbCampaignRun {
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: None,
+        };
+        let mut policies = game.policies(&run);
+        assert!(game.resolve_recorded(&policies).is_ok());
+        policies.insert(
+            super::EMULATOR_BACKEND_FIELD.to_owned(),
+            "another loaded executable".to_owned(),
+        );
+        assert!(game.resolve_recorded(&policies).is_err());
     }
 
     fn run_smb_campaign(

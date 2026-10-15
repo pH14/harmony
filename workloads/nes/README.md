@@ -265,6 +265,10 @@ QuickNES loader checks its private copy against the same digest on every load.
 For a saved search origin, the CLI checks the ROM and, for Consonance, the
 kernel and initramfs against the inherited manifest at their final read before
 passing those bytes to the package.
+The Consonance SMB campaign's emulator policy and prepared execution identity
+also bind the loaded Harmony executable through the exact client session
+identity, so a saved stream or checkpoint from another build is refused before
+the guest is replayed.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search
