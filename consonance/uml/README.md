@@ -159,6 +159,8 @@
   overrides at admission; it
   does not bind ordinary dependent libraries, code loaded later, or an injected
   library that clears its override before admission.
+  Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
+  recording or replay binaries directly with the listed variables unset.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation derives identity from the admitted `Launch`;

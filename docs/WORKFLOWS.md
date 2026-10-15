@@ -80,6 +80,12 @@ arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
 fails unless every artifact is byte-identical; two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
 port, and every check below runs on an x86-64 and an arm64 runner.
+
+Linux Cargo test binaries run through `scripts/linux-clean-loader-runner.sh`,
+which removes code-selecting loader variables inherited from Cargo (including
+its `LD_LIBRARY_PATH`) before starting a test. Production identity admission
+still refuses those variables when they are present.
+
 `UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
 sequence as the runner's ordinary UID, natively and under Docker's default
 seccomp profile with every capability dropped. A failing suite does not stop

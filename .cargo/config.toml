@@ -1,2 +1,8 @@
 [target.aarch64-apple-darwin]
 runner = "scripts/macos-hvf-runner.sh"
+
+[target.x86_64-unknown-linux-gnu]
+runner = "scripts/linux-clean-loader-runner.sh"
+
+[target.aarch64-unknown-linux-gnu]
+runner = "scripts/linux-clean-loader-runner.sh"
