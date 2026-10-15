@@ -72,7 +72,6 @@ pub enum Stop {
     Violation { moment: u64, id: u32, data: Vec<u8> },
     Exhausted(u64),
     Closed,
-    Stopped(ExitReason),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -426,14 +425,12 @@ impl Session {
     }
 
     pub fn run(mut self) -> Result<Exit, SessionError> {
-        let reason = match self.serve(Until::End)? {
-            Stop::Stopped(reason) => reason,
-            _ => loop {
-                if let Some(reason) = self.guest.stopped()? {
-                    break reason;
-                }
-                std::thread::sleep(POLL);
-            },
+        self.serve(Until::End)?;
+        let reason = loop {
+            if let Some(reason) = self.guest.stopped()? {
+                break reason;
+            }
+            std::thread::sleep(POLL);
         };
         self.finish(reason)
     }
@@ -732,13 +729,7 @@ impl Session {
                 let length = match self.receive() {
                     Ok(0) => return Ok(due.unwrap_or(Stop::Closed)),
                     Ok(length) => length,
-                    Err(SessionError::Stopped(reason)) => {
-                        let stop = match reason {
-                            ExitReason::Exited(_) | ExitReason::Signaled(_) => Stop::Closed,
-                            reason => Stop::Stopped(reason),
-                        };
-                        return Ok(due.unwrap_or(stop));
-                    }
+                    Err(SessionError::Stopped(_)) => return Ok(due.unwrap_or(Stop::Closed)),
                     Err(error) => return Err(error),
                 };
                 if length > STAMP_LEN + MAX_FRAME {
@@ -1480,6 +1471,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn process_exit_after_poll_timeout_is_a_closed_terminal_bridge() {
         struct ReleaseTerminalPoll;
@@ -1543,6 +1535,89 @@ mod tests {
         assert_eq!(stop, Stop::Closed);
         assert!(session.events().is_empty());
         session.kill().unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn bridge_eof_precedes_delayed_console_limit_publication() {
+        struct ReleaseReader;
+        impl Drop for ReleaseReader {
+            fn drop(&mut self) {
+                crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(false, Ordering::Release);
+                crate::launch::TEST_TERMINAL_CONSOLE_PID.store(0, Ordering::Release);
+            }
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let release = parent.path().join("release");
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(bridge::Bridge::new(7));
+        launch.console_limit_bytes = 8;
+        launch.console_tail_bytes = 64;
+        launch.wall_limit = Duration::from_secs(5);
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                &format!(
+                    "while [ ! -e {} ]; do sleep 0.001; done; printf abcdefghijklmnop; exit 0",
+                    release.display()
+                ),
+            ])
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let work = launch.work_directory().unwrap();
+        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let pid = session.guest.pid();
+        crate::launch::TEST_TERMINAL_CONSOLE_READY.store(false, Ordering::Release);
+        crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(true, Ordering::Release);
+        crate::launch::TEST_TERMINAL_CONSOLE_PID.store(pid, Ordering::Release);
+        let _release = ReleaseReader;
+        std::fs::write(release, []).unwrap();
+        let deadline = now() + Duration::from_secs(5);
+        loop {
+            let reader_ready = crate::launch::TEST_TERMINAL_CONSOLE_READY.load(Ordering::Acquire);
+            let zombie = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|status| {
+                    status
+                        .rsplit_once(") ")
+                        .map(|(_, fields)| fields.starts_with('Z'))
+                })
+                .unwrap_or(false);
+            if reader_ready && zombie {
+                break;
+            }
+            assert!(
+                now() < deadline,
+                "guest did not exit with console reader held"
+            );
+            std::thread::yield_now();
+        }
+        let mut socket = [rustix::event::PollFd::new(
+            &session.socket,
+            rustix::event::PollFlags::IN,
+        )];
+        assert_eq!(
+            rustix::event::poll(&mut socket, Some(&rustix::event::Timespec::default())).unwrap(),
+            1
+        );
+        assert!(session.console_tail().is_empty());
+        assert_eq!(session.run_until(1).unwrap(), Stop::Closed);
+        crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(false, Ordering::Release);
+        let exit = session.run().unwrap();
+        assert_eq!(exit.reason, ExitReason::ConsoleLimit);
+        assert_eq!(exit.console_bytes, 16);
+        assert_eq!(exit.console, b"abcdefghijklmnop");
+        assert!(exit.events.is_empty());
+        assert!(exit.leftovers.is_empty());
+        assert!(exit.work_removed);
+        assert!(exit.bridge_failure.is_none());
+        assert_eq!(
+            crate::bridge::event_hash(&exit.events),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]

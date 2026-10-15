@@ -89,11 +89,12 @@
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
   unanswered when the deadline is checked again. Each returns a `Stop`: an
-  event count, deadline, snapshot point, violation, exhausted input, a closed
-  bridge, or a host-enforced limit. With no earlier stop due, a guest process
-  exit or signal is reported as `Stop::Closed` whether the host poll observes
-  bridge EOF or process status first; the caller settles the final process
-  reason after collecting console output. A guest whose virtual time
+  event count, deadline, snapshot point, violation, exhausted input, or a
+  provisional terminal observation. With no earlier stop due, bridge EOF,
+  process exit or signal, and a host-enforced console or wall limit all report
+  `Stop::Closed` regardless of which host poll wins. Callers use `Session::run`
+  or `settle_terminal_console` to classify the final process reason;
+  settlement refuses host limits. A guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
   checkpoint is bounded while it waits for the restore request and replies.
