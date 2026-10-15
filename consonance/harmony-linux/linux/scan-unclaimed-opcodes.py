@@ -117,19 +117,46 @@ def headers(data):
     return programs, sections
 
 
-def kernel_physical_entry(data, programs, sections):
-    entry = unpack("<Q" if data[4] == 2 else "<I", data, 24)[0]
+def kernel_load_layout(data, programs):
     program_offset = unpack("<Q" if data[4] == 2 else "<I", data, 32 if data[4] == 2 else 28)[0]
     program_size = unpack("<H", data, 54 if data[4] == 2 else 42)[0]
     physical_offset = 24 if data[4] == 2 else 12
     physical_format = "<Q" if data[4] == 2 else "<I"
-    matches = []
-    for index, kind, _flags, offset, address, size, _memory_size in programs:
+    limit = 1 << (64 if data[4] == 2 else 32)
+    physical_addresses = {}
+    ranges = []
+    deltas = set()
+    for index, kind, _flags, _offset, address, _size, memory_size in programs:
         if kind != 1:
             continue
         physical = unpack(
             physical_format, data, program_offset + index * program_size + physical_offset
         )[0]
+        physical_addresses[index] = physical
+        if not memory_size:
+            continue
+        if physical + memory_size > limit or address + memory_size > limit:
+            raise ValueError(f"PT_LOAD {index} address range wraps")
+        ranges.append((physical, physical + memory_size, index))
+        deltas.add(address - physical)
+    ranges.sort()
+    for left, right in zip(ranges, ranges[1:]):
+        if right[0] < left[1]:
+            raise ValueError(
+                f"overlapping PT_LOAD physical memory ranges {left[2]} and {right[2]}"
+            )
+    if len(deltas) > 1:
+        raise ValueError("inconsistent PT_LOAD physical/virtual address offsets")
+    return physical_addresses
+
+
+def kernel_physical_entry(data, programs, sections, physical_addresses):
+    entry = unpack("<Q" if data[4] == 2 else "<I", data, 24)[0]
+    matches = []
+    for index, kind, _flags, offset, address, size, _memory_size in programs:
+        if kind != 1:
+            continue
+        physical = physical_addresses[index]
         if not physical <= entry < physical + size:
             continue
         displacement = entry - physical
@@ -599,6 +626,7 @@ def unclaimed_opcode(data, programs, sections, tag, path):
     for left, right in zip(loads, loads[1:]):
         if right[0] < left[1]:
             raise ValueError(f"overlapping PT_LOAD memory ranges {left[2]} and {right[2]}")
+    physical_addresses = kernel_load_layout(data, programs) if tag == "vmlinux" else None
     seen_data = set()
     saw_load = False
     missing_fences = []
@@ -747,7 +775,8 @@ def unclaimed_opcode(data, programs, sections, tag, path):
         run_tail = tuple((a + b)[-2:] for a, b in zip(run_tail, edge["tail"]))
         run_origins = (run_origins + edge["tail_origins"])[-2:]
         run_end = edge["end"]
-    entry = kernel_physical_entry(data, programs, sections) if tag == "vmlinux" else None
+    entry = kernel_physical_entry(data, programs, sections, physical_addresses) \
+        if tag == "vmlinux" else None
     scan_symbol_restarts(data, programs, sections, tag, path, entry)
     if reviewed_data_hit is not None:
         return reviewed_data_hit

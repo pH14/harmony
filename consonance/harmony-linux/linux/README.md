@@ -133,7 +133,11 @@ or continue into the following data or load. This includes zero-filled gaps,
 page slack, and loads without the executable ELF flag; setup and the
 decompressor do not use that flag as an execution boundary. Overlapping
 PT_LOAD memory ranges are rejected so one load cannot overwrite another's
-fence. Decoded direct branches from kernel or decompressor code into loaded
+fence. The kernel's loads are also checked by physical address, because its
+decompressor copies each segment there. Physical overlaps are rejected and all
+kernel loads must use one virtual-to-physical offset, so physical adjacency
+matches the virtual adjacency used by the opcode scan. Decoded direct branches
+from kernel or decompressor code into loaded
 non-code bytes, including reviewed data and load slack, fail admission. The
 kernel ELF's physical entry must map uniquely to a complete loaded executable
 section. If that entry is inside a canonical instruction, the scanner decodes
