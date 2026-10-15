@@ -3,7 +3,48 @@
 use std::io;
 
 #[cfg(target_os = "linux")]
+const LOADER_OVERRIDE_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_AUDIT",
+    "LD_LIBRARY_PATH",
+    "LD_ORIGIN_PATH",
+    "LD_HWCAP_MASK",
+    "LD_ASSUME_KERNEL",
+    "LD_DYNAMIC_WEAK",
+];
+
+#[cfg(target_os = "macos")]
+const LOADER_OVERRIDE_VARS: &[&str] = &[
+    "DYLD_FRAMEWORK_PATH",
+    "DYLD_FALLBACK_FRAMEWORK_PATH",
+    "DYLD_VERSIONED_FRAMEWORK_PATH",
+    "DYLD_LIBRARY_PATH",
+    "DYLD_FALLBACK_LIBRARY_PATH",
+    "DYLD_VERSIONED_LIBRARY_PATH",
+    "DYLD_IMAGE_SUFFIX",
+    "DYLD_INSERT_LIBRARIES",
+    "DYLD_SHARED_REGION",
+    "DYLD_SHARED_CACHE_DIR",
+];
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const LOADER_OVERRIDE_VARS: &[&str] = &[];
+
+pub(crate) fn reject_loader_overrides() -> io::Result<()> {
+    for &name in LOADER_OVERRIDE_VARS {
+        if std::env::var_os(name).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("ambient loader override {name} is set"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
+    reject_loader_overrides()?;
     digest_executable("/proc/self/exe")
 }
 
@@ -57,6 +98,7 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
+    reject_loader_overrides()?;
     loaded_executable_identity_for_child(std::process::id())
 }
 
@@ -99,9 +141,43 @@ fn loaded_executable_identity_from_csops(
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
+    reject_loader_overrides()?;
     Err(io::Error::other(
         "cannot identify the loaded executable on this host",
     ))
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod loader_override_tests {
+    use super::*;
+
+    const CHILD_ENV: &str = "HARMONY_LOADER_IDENTITY_TEST_CHILD";
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn ambient_loader_override_refuses_identity_even_when_empty() {
+        #[cfg(target_os = "linux")]
+        let override_name = "LD_LIBRARY_PATH";
+        #[cfg(target_os = "macos")]
+        let override_name = "DYLD_LIBRARY_PATH";
+
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let error = loaded_executable_identity_self().unwrap_err();
+            assert!(error.to_string().contains(override_name), "{error}");
+            return;
+        }
+
+        for value in [std::env::temp_dir().into_os_string(), "".into()] {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("image_identity::loader_override_tests::ambient_loader_override_refuses_identity_even_when_empty")
+                .env(CHILD_ENV, "1")
+                .env(override_name, &value)
+                .status()
+                .unwrap();
+            assert!(status.success(), "{value:?}: {status}");
+        }
+    }
 }
 
 #[cfg(all(test, target_os = "macos"))]
