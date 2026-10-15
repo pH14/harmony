@@ -117,16 +117,22 @@ fn metroid_game(
     rom: &[u8],
     core_path: &std::path::Path,
     core_sha256: &str,
+    execution_sha256: &str,
     root_input: Option<&std::path::Path>,
 ) -> Result<MetroidGame, Box<dyn Error>> {
     let Some(root_input) = root_input else {
-        return Ok(MetroidGame::new(rom, core_path, core_sha256));
+        return Ok(MetroidGame::new(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        ));
     };
     let input: MetroidInput = serde_json::from_slice(&fs::read(root_input)?)?;
     if input.actions.is_empty() {
         return Err("root input carries no actions".into());
     }
-    let mut prefix = MetroidGame::new(rom, core_path, core_sha256)
+    let mut prefix = MetroidGame::new(rom, core_path, core_sha256, execution_sha256)
         .new_target()?
         .genesis_prefix()
         .to_vec();
@@ -135,6 +141,7 @@ fn metroid_game(
         rom,
         core_path,
         core_sha256,
+        execution_sha256,
         prefix,
         GenesisDepth::Rooted,
     ))
@@ -146,8 +153,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     fs::create_dir_all(&args.output)?;
     let rom = fs::read(&args.rom)?;
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&args.core)?));
-    let game = metroid_game(&rom, &args.core, &core_sha256, args.root_input.as_deref())?
-        .with_champion_input_path(args.output.join("champion-input.json"));
+    let execution_sha256 = machine::quicknes::prepared_execution_sha256(&args.core, &core_sha256)?;
+    let game = metroid_game(
+        &rom,
+        &args.core,
+        &core_sha256,
+        &execution_sha256,
+        args.root_input.as_deref(),
+    )?
+    .with_champion_input_path(args.output.join("champion-input.json"));
     let config = MetroidCampaignConfig {
         campaign_seed: args.seed,
         workers: args.workers,

@@ -322,6 +322,22 @@ impl<M: NesBackend<Vec<u8>>> StbTarget<M> {
 }
 
 impl StbTarget<QuickNesMachine> {
+    pub fn from_rom_bytes_headless_with_ai_and_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        ai: StbAi,
+    ) -> Result<Self, MachineError> {
+        let machine = QuickNesMachine::from_rom_bytes_with_identity(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        )?;
+        Self::from_loaded_machine_with_ai(machine, ai)
+    }
+
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -336,7 +352,14 @@ impl StbTarget<QuickNesMachine> {
         core_sha256: &str,
         ai: StbAi,
     ) -> Result<Self, MachineError> {
-        let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        let machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        Self::from_loaded_machine_with_ai(machine, ai)
+    }
+
+    fn from_loaded_machine_with_ai(
+        mut machine: QuickNesMachine,
+        ai: StbAi,
+    ) -> Result<Self, MachineError> {
         let power_on = machine.snapshot()?;
         machine.branch(power_on, &nes::reproducer(&setup_tape_with_ai(ai)))?;
         let run = machine.run(StopConditions::default(), None)?;

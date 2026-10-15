@@ -278,6 +278,18 @@ image in `workload.options.guest_image`.
 Native search and replay require the saved core digest from the run manifest;
 the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
+Before a native campaign creates its identity, it prepares a digest of the
+executable QuickNES load, including its loaded dependency closure. SMB, Mega Man
+2, Metroid and Super Tilt Bro bind this prepared execution digest in the
+recorded emulator policy. Each campaign worker checks that digest while loading
+its private core and before running the ROM. Native prepared.json, evaluation
+identity.json, power-on fixture descriptors, progress replay records and STB
+film evidence record the same digest, so replacing a dependency while keeping
+the core file unchanged cannot reuse a saved campaign identity.
+The standalone film and probe commands are diagnostic runs: they open the
+selected private core and report observations, but their transient outputs do
+not carry a campaign replay identity. The identity-bearing STB film command
+records the prepared execution digest in film.json.
 For a saved search origin, the CLI checks the ROM and, for Consonance, the
 kernel and initramfs against the inherited manifest at their final read before
 passing those bytes to the package.

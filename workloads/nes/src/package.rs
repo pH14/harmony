@@ -304,6 +304,8 @@ pub fn search_native(
 ) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
     verify_native_core(core, expected_core_sha256)?;
+    let execution_sha256 =
+        machine::quicknes::prepared_execution_sha256(core, expected_core_sha256)?;
     record_identity(
         rom,
         ExecutionIdentity {
@@ -315,12 +317,16 @@ pub fn search_native(
                 machine::quicknes::QUICKNES_BUILD,
                 machine::quicknes::QUICKNES_OPTIONS
             ),
-            artifacts: [("core".into(), expected_core_sha256.into())].into(),
+            artifacts: [
+                ("core".into(), expected_core_sha256.into()),
+                ("prepared-execution".into(), execution_sha256.clone()),
+            ]
+            .into(),
         },
         options,
     )?;
     search(
-        SmbGame::new(rom, core, expected_core_sha256),
+        SmbGame::new(rom, core, expected_core_sha256, &execution_sha256),
         smb_run(),
         "native",
         options,
@@ -384,8 +390,10 @@ pub fn replay_native(
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     verify_native_core(core, expected_core_sha256)?;
     RomKind::identify(rom)?;
+    let execution_sha256 =
+        machine::quicknes::prepared_execution_sha256(core, expected_core_sha256)?;
     replay_witness(
-        &SmbGame::new(rom, core, expected_core_sha256),
+        &SmbGame::new(rom, core, expected_core_sha256, &execution_sha256),
         &smb_run(),
         &serde_json::from_value(input)?,
     )

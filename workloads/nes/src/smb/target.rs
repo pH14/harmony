@@ -497,6 +497,21 @@ where
 }
 
 impl SmbTarget<QuickNesMachine, Vec<u8>> {
+    pub fn from_smb_rom_bytes_headless_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        let machine = QuickNesMachine::from_rom_bytes_with_identity(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        )?;
+        Self::from_machine(machine)
+    }
+
     pub fn from_smb_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,

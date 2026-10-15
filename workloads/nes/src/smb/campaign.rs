@@ -93,6 +93,7 @@ pub struct SmbGame<M = QuickNesMachine, P = Vec<u8>> {
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
+    execution_sha256: String,
     identity: String,
     backend: SmbBackend,
     machine: PhantomData<fn() -> (M, P)>,
@@ -114,9 +115,9 @@ enum SmbBackend {
     },
 }
 
-fn quicknes_identity(core_sha256: &str) -> String {
+fn quicknes_identity(core_sha256: &str, execution_sha256: &str) -> String {
     format!(
-        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;result_digest=postcard-1.1.3-sha256-hex-v3;sha256={core_sha256};prepared-execution-sha256={execution_sha256}",
         machine::quicknes::QUICKNES_REVISION,
         machine::quicknes::QUICKNES_BUILD,
         machine::quicknes::QUICKNES_OPTIONS,
@@ -138,10 +139,11 @@ impl SmbMachineKind<Vec<u8>> for QuickNesMachine {
             return SmbTarget::loopback_for_tests(&game.rom).map_err(|error| error.to_string());
         }
         match &game.backend {
-            SmbBackend::QuickNes => SmbTarget::from_smb_rom_bytes_headless(
+            SmbBackend::QuickNes => SmbTarget::from_smb_rom_bytes_headless_with_identity(
                 &game.rom,
                 &game.core_path,
                 &game.core_sha256,
+                &game.execution_sha256,
             )
             .map_err(|error| error.to_string()),
             #[cfg(all(
@@ -180,12 +182,13 @@ impl SmbMachineKind<ConsonancePortable> for ConsonanceMachine {
 
 impl SmbGame<QuickNesMachine, Vec<u8>> {
     #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str) -> Self {
+    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str, execution_sha256: &str) -> Self {
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
-            identity: quicknes_identity(core_sha256),
+            execution_sha256: execution_sha256.to_owned(),
+            identity: quicknes_identity(core_sha256, execution_sha256),
             backend: SmbBackend::QuickNes,
             machine: PhantomData,
             #[cfg(test)]
@@ -199,17 +202,21 @@ impl SmbGame<QuickNesMachine, Vec<u8>> {
                 .ok_or("HARMONY_QUICKNES_CORE must name the pinned libretro core")?,
         );
         let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
-        Ok(Self::new(rom, &core_path, &core_sha256))
+        let execution_sha256 =
+            machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
+        Ok(Self::new(rom, &core_path, &core_sha256, &execution_sha256))
     }
 
     #[cfg(test)]
     pub(crate) fn loopback_for_tests(rom: &[u8]) -> Self {
         let core_sha256 = "a".repeat(64);
+        let execution_sha256 = "b".repeat(64);
         Self {
             rom: rom.to_vec(),
             core_path: PathBuf::new(),
-            identity: quicknes_identity(&core_sha256),
+            identity: quicknes_identity(&core_sha256, &execution_sha256),
             core_sha256,
+            execution_sha256,
             backend: SmbBackend::QuickNes,
             machine: PhantomData,
             loopback: true,
@@ -233,6 +240,7 @@ impl SmbGame<ConsonanceMachine, ConsonancePortable> {
             rom: rom.to_vec(),
             core_path: PathBuf::new(),
             core_sha256: String::new(),
+            execution_sha256: String::new(),
             identity: format!(
                 "{};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4",
                 consonance_identity(kernel, initramfs)?,
@@ -965,6 +973,22 @@ mod tests {
 
     fn test_game(rom: &[u8]) -> SmbGame {
         SmbGame::loopback_for_tests(rom)
+    }
+
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = SmbGame::new(&[0], std::path::Path::new("core.so"), "core", "first");
+        let second = SmbGame::new(&[0], std::path::Path::new("core.so"), "core", "second");
+        let run = SmbCampaignRun {
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: None,
+        };
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(second.resolve_recorded(&first.policies(&run)).is_err());
     }
 
     #[cfg(all(
