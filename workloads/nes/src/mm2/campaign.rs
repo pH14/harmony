@@ -28,11 +28,12 @@ use crate::{
     search::{
         archive::RetentionPolicy,
         campaign::{
-            ArchiveReportState, CampaignActionResult, CampaignCandidate, CampaignCheckpoint,
-            CampaignConfig, CampaignJobResult, CampaignModeReport, CampaignOrigin,
-            CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
-            Reporting, SnapshotCheckpoint, TargetExecution, WorkloadPolicies,
-            postcard_value_sha256, replay_campaign_checkpointed, run_campaign_checkpointed,
+            ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignCandidate,
+            CampaignCheckpoint, CampaignConfig, CampaignJobResult, CampaignModeReport,
+            CampaignOrigin, CampaignProgressRecord, CampaignStreamHeader, CampaignTypes,
+            Evaluation, InputPolicy, Reporting, SnapshotCheckpoint, TargetExecution,
+            WorkloadPolicies, postcard_value_sha256, replay_campaign_checkpointed,
+            run_campaign_checkpointed,
         },
         draw::DrawMixture,
         draw_tables::DrawTableHeader,
@@ -1004,10 +1005,10 @@ pub fn run_mm2_campaign_checkpointed(
 pub fn replay_mm2_campaign_checkpointed(
     game: &Mm2Game,
     stream_bytes: &[u8],
-    origin_report: Option<&Mm2ArchiveReport>,
+    origin_source: Option<&ArchiveSource<Mm2ArchiveReport>>,
     origin_checkpoint: Option<&Mm2CampaignCheckpoint>,
 ) -> Result<(Mm2CampaignModeReport, Mm2SnapshotCheckpoint), Box<dyn Error>> {
-    replay_campaign_checkpointed(game, stream_bytes, origin_report, origin_checkpoint)
+    replay_campaign_checkpointed(game, stream_bytes, origin_source, origin_checkpoint)
 }
 
 #[cfg(test)]
