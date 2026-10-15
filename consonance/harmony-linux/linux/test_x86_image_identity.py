@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import gzip
+import importlib.util
 import os
 import platform
 import shutil
+import struct
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 VERIFY = ROOT / "verify-x86-kernel-image.py"
 SCAN = ROOT / "scan-counter-opcodes.sh"
+SCAN_UNCLAIMED = ROOT / "scan-unclaimed-opcodes.py"
 
 
 def run(*command):
@@ -27,9 +30,28 @@ def fixture(root):
 
     kernel_source = root / "kernel.s"
     kernel_source.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+    kernel_linker = root / "kernel.ld"
+    kernel_linker.write_text(
+        "PHDRS { text PT_LOAD FLAGS(5); }\n"
+        "SECTIONS { . = 0x400000; .text : { *(.text) } :text }\n"
+    )
     run("as", "--64", "-o", str(root / "kernel.o"), str(kernel_source))
-    run("ld", "-nostdlib", "-e", "_start", "-o", str(build / "vmlinux"),
+    run("ld", "-nostdlib", "-T", str(kernel_linker), "-e", "_start",
+        "-o", str(build / "vmlinux"),
         str(root / "kernel.o"))
+    kernel = (build / "vmlinux").read_bytes()
+    program_offset = struct.unpack_from("<Q", kernel, 32)[0]
+    program_size, program_count = struct.unpack_from("<HH", kernel, 54)
+    physical = [
+        struct.unpack_from("<Q", kernel, program_offset + index * program_size + 24)[0]
+        for index in range(program_count)
+        if struct.unpack_from("<I", kernel, program_offset + index * program_size)[0] == 1
+    ]
+    base = min(physical)
+    assert base % 4096 == 0
+    (build / ".config").write_text(
+        f"CONFIG_PHYSICAL_START=0x{base:x}\nCONFIG_PHYSICAL_ALIGN=0x1000\n"
+    )
     run("objcopy", "-R", ".comment", "-S", str(build / "vmlinux"),
         str(root / "stripped-vmlinux"))
     (root / "kernel.gz").write_bytes(
@@ -110,6 +132,42 @@ class X86ImageIdentity(unittest.TestCase):
                 (build / "vmlinux").read_bytes(),
             )
 
+    def test_rejects_configured_physical_base_mismatch(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build, _image = fixture(root)
+            config = build / ".config"
+            base = int(config.read_text().splitlines()[0].partition("=")[2], 0)
+            config.write_text(
+                f"CONFIG_PHYSICAL_START=0x{base + 4096:x}\nCONFIG_PHYSICAL_ALIGN=0x1000\n"
+            )
+            output = root / "published"
+            result = verify(build, output)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("physical load base differs from build config", result.stderr)
+            self.assertFalse(output.exists())
+
+    def test_rejects_stripped_loaded_source_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            build, _image = fixture(root)
+            original = (build / "vmlinux").read_bytes()
+            stripped = bytearray((root / "stripped-vmlinux").read_bytes())
+            spec = importlib.util.spec_from_file_location("verify_x86_image", VERIFY)
+            publisher = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(publisher)
+            spec = importlib.util.spec_from_file_location("scan_x86_image", SCAN_UNCLAIMED)
+            scanner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(scanner)
+            _programs, sections = scanner.headers(stripped)
+            text_offset = next(offset for name, _kind, _flags, _address, offset, _size
+                               in sections if name == ".text")
+            stripped[text_offset] ^= 1
+            with self.assertRaisesRegex(ValueError, "source bytes differ"):
+                publisher.verify_runtime_kernel_identity(
+                    original, bytes(stripped), (build / ".config").read_bytes(), scanner
+                )
+
     def test_rejects_packed_image_unrelated_to_scanned_elfs(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -128,7 +186,8 @@ class X86ImageIdentity(unittest.TestCase):
             source = root / "replacement.s"
             source.write_text('.section .text,"ax"\n.global _start\n_start:\nnop\nret\n')
             run("as", "--64", "-o", str(root / "replacement.o"), str(source))
-            run("ld", "-nostdlib", "-e", "_start", "-o", str(build / "vmlinux"),
+            run("ld", "-nostdlib", "-T", str(root / "kernel.ld"), "-e", "_start",
+                "-o", str(build / "vmlinux"),
                 str(root / "replacement.o"))
             output = root / "published"
             result = verify(build, output)
@@ -143,7 +202,8 @@ class X86ImageIdentity(unittest.TestCase):
             source = root / "counter.s"
             source.write_text('.section .text,"ax"\n.global _start\n_start:\nrdtsc\nret\n')
             run("as", "--64", "-o", str(root / "counter.o"), str(source))
-            run("ld", "-nostdlib", "-e", "_start", "-o", str(build / "vmlinux"),
+            run("ld", "-nostdlib", "-T", str(root / "kernel.ld"), "-e", "_start",
+                "-o", str(build / "vmlinux"),
                 str(root / "counter.o"))
             output = root / "published"
             result = verify(build, output)
@@ -192,6 +252,7 @@ class X86ImageIdentity(unittest.TestCase):
                 "printf tampered > \"$RACE_KERNEL\"\n"
                 "printf tampered > \"$RACE_SETUP\"\n"
                 "printf tampered > \"$RACE_DECOMPRESSOR\"\n"
+                "printf tampered > \"$RACE_CONFIG\"\n"
                 "exec /usr/bin/objdump \"$@\"\n"
             )
             objdump.chmod(0o755)
@@ -202,6 +263,7 @@ class X86ImageIdentity(unittest.TestCase):
             env["RACE_KERNEL"] = str(build / "vmlinux")
             env["RACE_SETUP"] = str(build / "arch/x86/boot/setup.elf")
             env["RACE_DECOMPRESSOR"] = str(build / "arch/x86/boot/compressed/vmlinux")
+            env["RACE_CONFIG"] = str(build / ".config")
             output = root / "published"
             result = verify(build, output, env)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

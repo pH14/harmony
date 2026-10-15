@@ -126,7 +126,8 @@ def kernel_load_layout(data, programs):
     physical_addresses = {}
     ranges = []
     deltas = set()
-    for index, kind, _flags, _offset, address, _size, memory_size in programs:
+    copied = []
+    for index, kind, _flags, offset, address, size, memory_size in programs:
         if kind != 1:
             continue
         physical = unpack(
@@ -139,6 +140,7 @@ def kernel_load_layout(data, programs):
             raise ValueError(f"PT_LOAD {index} address range wraps")
         ranges.append((physical, physical + memory_size, index))
         deltas.add(address - physical)
+        copied.append((index, physical, offset, size, memory_size))
     ranges.sort()
     for left, right in zip(ranges, ranges[1:]):
         if right[0] < left[1]:
@@ -147,6 +149,17 @@ def kernel_load_layout(data, programs):
             )
     if len(deltas) > 1:
         raise ValueError("inconsistent PT_LOAD physical/virtual address offsets")
+    if ranges:
+        base = ranges[0][0]
+        for earlier_position, (earlier_index, physical, _offset, _size, memory_size) in enumerate(copied):
+            destination = physical - base
+            for later_index, _physical, source, size, _memory_size in copied[earlier_position + 1:]:
+                if size and source < destination + memory_size \
+                        and destination < source + size:
+                    raise ValueError(
+                        "earlier PT_LOAD overwrites later file source: "
+                        f"PT_LOAD {earlier_index} before {later_index}"
+                    )
     return physical_addresses
 
 
