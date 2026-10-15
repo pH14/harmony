@@ -118,7 +118,12 @@ decompressor do not use that flag as an execution boundary. Overlapping
 PT_LOAD memory ranges are rejected so one load cannot overwrite another's
 fence. Decoded direct branches from kernel or decompressor code into loaded
 non-code bytes, including reviewed data and load slack, fail admission. The
-decompressor head is decoded as 32-bit code before `startup_64` and in both
+kernel ELF's physical entry must map uniquely to a complete loaded executable
+section. If that entry is inside a canonical instruction, the scanner decodes
+again from the entry byte; an executable-section flag alone does not make the
+ordinary disassembly's instruction boundary safe. The pinned kernel enters
+`.init.text`, which is executable even though its containing PT_LOAD is writable.
+The decompressor head is decoded as 32-bit code before `startup_64` and in both
 64-bit modes afterward; missing mode anchors or a truncated decode at a symbol
 boundary fail. `startup_64` must be exactly 0x200 bytes after the packed image
 start, matching the VM's 64-bit entry offset. A single executable `.head.text`

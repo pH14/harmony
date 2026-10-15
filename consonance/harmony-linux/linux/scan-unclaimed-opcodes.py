@@ -117,6 +117,39 @@ def headers(data):
     return programs, sections
 
 
+def kernel_physical_entry(data, programs, sections):
+    entry = unpack("<Q" if data[4] == 2 else "<I", data, 24)[0]
+    program_offset = unpack("<Q" if data[4] == 2 else "<I", data, 32 if data[4] == 2 else 28)[0]
+    program_size = unpack("<H", data, 54 if data[4] == 2 else 42)[0]
+    physical_offset = 24 if data[4] == 2 else 12
+    physical_format = "<Q" if data[4] == 2 else "<I"
+    matches = []
+    for index, kind, _flags, offset, address, size, _memory_size in programs:
+        if kind != 1:
+            continue
+        physical = unpack(
+            physical_format, data, program_offset + index * program_size + physical_offset
+        )[0]
+        if not physical <= entry < physical + size:
+            continue
+        displacement = entry - physical
+        virtual = address + displacement
+        file_offset = offset + displacement
+        for name, section_kind, section_flags, section_address, section_offset, section_size in sections:
+            if section_kind != 1 or section_flags & 6 != 6:
+                continue
+            if section_offset < offset or section_offset + section_size > offset + size \
+                    or section_address - address != section_offset - offset:
+                continue
+            if section_address <= virtual < section_address + section_size \
+                    and section_offset <= file_offset < section_offset + section_size \
+                    and virtual - section_address == file_offset - section_offset:
+                matches.append((name, virtual))
+    if len(matches) != 1:
+        raise ValueError("kernel physical entry is not executable code")
+    return matches[0]
+
+
 def check_complete_tail(decoded, end, name):
     last = decoded[-1] if decoded else None
     if last is None or last[0] + last[1] != end:
@@ -375,7 +408,7 @@ def scan_decompressor_32_reachable(data, programs, sections, path, head_32):
             pending.append((site + length, site, "fallthrough"))
 
 
-def scan_symbol_restarts(data, programs, sections, tag, path):
+def scan_symbol_restarts(data, programs, sections, tag, path, entry):
     if tag == "setup":
         scan_mixed_mode_raw_code(data, programs, tag)
         return
@@ -479,6 +512,10 @@ def scan_symbol_restarts(data, programs, sections, tag, path):
                     first = bisect_left(markers, symbol - (MAX_X86_INSTRUCTION_BYTES - 1))
                     last = bisect_left(markers, symbol)
                     starts.update(markers[first:last])
+                entry_restart = entry is not None and entry[0] == name \
+                    and entry[1] not in canonical and entry[1] not in starts
+                if entry_restart:
+                    starts.add(entry[1])
                 if not starts:
                     continue
                 raw_section = Path(directory) / f"section-{mode}-{offset:x}.bin"
@@ -501,8 +538,10 @@ def scan_symbol_restarts(data, programs, sections, tag, path):
                         site = address + raw_address
                         mnemonic = instruction_mnemonic(instruction)
                         if mnemonic in COUNTER_INSTRUCTIONS:
+                            source = "entry-restart" if entry_restart and entry == (name, start) \
+                                else "symbol-restart"
                             raise ValueError(
-                                f"symbol-restart counter instruction {mnemonic} in "
+                                f"{source} counter instruction {mnemonic} in "
                                 f"{tag}:{name}:{mode} at 0x{site:x}"
                             )
                         ordinary = canonical.get(site)
@@ -708,7 +747,8 @@ def unclaimed_opcode(data, programs, sections, tag, path):
         run_tail = tuple((a + b)[-2:] for a, b in zip(run_tail, edge["tail"]))
         run_origins = (run_origins + edge["tail_origins"])[-2:]
         run_end = edge["end"]
-    scan_symbol_restarts(data, programs, sections, tag, path)
+    entry = kernel_physical_entry(data, programs, sections) if tag == "vmlinux" else None
+    scan_symbol_restarts(data, programs, sections, tag, path, entry)
     if reviewed_data_hit is not None:
         return reviewed_data_hit
     if tag == "decompressor":
