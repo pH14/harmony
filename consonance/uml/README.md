@@ -158,7 +158,11 @@
   the cut even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
-  tail. It stops the guest at a wall-clock limit or a console byte limit.
+  tail. It stops the guest at a wall-clock limit or a console byte limit. After
+  a clean process exit, cleanup joins the console reader before classifying
+  the exit, so output already written beyond the byte limit is a console-limit
+  stop even if the process-exit poll won the race against the reader. A UML
+  session refuses that host stop instead of treating it as a guest crash.
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.

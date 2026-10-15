@@ -727,6 +727,13 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
+        let reason = if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_))
+            && self.over_limit.load(Ordering::Acquire)
+        {
+            ExitReason::ConsoleLimit
+        } else {
+            reason
+        };
         let work_removed = match self.work.take() {
             Some(work) => {
                 let path = work.path().to_path_buf();
@@ -1506,6 +1513,38 @@ mod tests {
                 .any(|window| window == b"Kernel panic")
         );
         assert!(exit.leftovers.is_empty());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn completed_guest_over_console_limit_reports_limit_after_reader_joins() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.console_limit_bytes = 8;
+        launch.console_tail_bytes = 64;
+        let release_path = parent.path().join("release");
+        let script = format!(
+            "while [ ! -e {} ]; do sleep 0.001; done; printf abcdefghijklmnop; exit 0",
+            release_path.display()
+        );
+        let mut guest = shell(&launch, &script);
+        let console = Arc::clone(&guest.console);
+        let held = console.lock().unwrap();
+        std::fs::write(release_path, []).unwrap();
+        let deadline = now() + Duration::from_secs(5);
+        let reason = loop {
+            if let Some(reason) = guest.stopped().unwrap() {
+                break reason;
+            }
+            assert!(now() < deadline, "guest did not exit");
+            std::thread::yield_now();
+        };
+        assert_eq!(reason, ExitReason::Exited(0));
+        drop(held);
+        let exit = guest.finish(reason).unwrap();
+        assert_eq!(exit.console_bytes, 16);
+        assert_eq!(exit.reason, ExitReason::ConsoleLimit);
     }
 
     #[test]

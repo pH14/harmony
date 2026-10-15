@@ -464,7 +464,10 @@ impl Session {
                 exit.leftovers.len()
             )));
         }
-        Ok(exit.reason)
+        match exit.reason {
+            ExitReason::Exited(_) | ExitReason::Signaled(_) => Ok(exit.reason),
+            reason => Err(SessionError::Stopped(reason)),
+        }
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
