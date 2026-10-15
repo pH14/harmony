@@ -95,9 +95,15 @@ load from its start, regardless of the section's executable flag, and scans
 the gaps separately. Each decode continues through later ranges when their
 virtual addresses are contiguous. This preserves instruction alignment when a
 segment begins with headers or other data while finding an instruction reached
-by falling through a boundary. It rejects instruction patterns split across
-decoded ranges or adjacent executable loads, and rejects overlapping x86
-executable mappings. On arm64 it checks aligned
+by falling through a boundary. At each mapped-section or adjacent executable-load
+boundary, it also decodes the first complete instruction from every candidate
+start within the preceding 14 bytes. Entropy and CPU-identity instructions
+whose prefixes, operands, SIB bytes, or displacements cross a boundary become
+exact-address review sites. A VM image can review such a site against its
+executable digest; UML rejects native host-input sites even when reviewed.
+Executable pages can contain data that resembles an instruction at a boundary,
+so those bytes may need explicit VM review. Overlapping x86 executable mappings
+are rejected. On arm64 it checks aligned
 instruction words across the complete 4 KiB page-rounded file mapping of each
 executable load, including bytes beyond the declared load size, and rejects
 another load segment that aliases an executable memory page. Images with

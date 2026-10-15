@@ -500,13 +500,12 @@ where
     }
 }
 
-fn x86_crossing_host_input(candidate: &[u8]) -> Option<&'static str> {
-    if candidate.len() != 3 || candidate[0] != 0x0f {
-        return None;
-    }
-    match candidate[1] {
-        0xc7 if ((candidate[2] >> 3) & 7) >= 6 => Some("hardware entropy"),
-        0x03 => Some("CPU-identity"),
+fn x86_host_input_name(mnemonic: Mnemonic) -> Option<&'static str> {
+    match mnemonic {
+        Mnemonic::Rdrand => Some("RDRAND"),
+        Mnemonic::Rdseed => Some("RDSEED"),
+        Mnemonic::Rdpid => Some("RDPID"),
+        Mnemonic::Lsl => Some("LSL"),
         _ => None,
     }
 }
@@ -681,36 +680,17 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                     }
                 } else {
                     mapped_ranges.sort_unstable();
-                    for &(range_start, range_end) in &mapped_ranges {
-                        for boundary in [range_start, range_end] {
-                            if boundary == 0 || boundary >= code.len() {
-                                continue;
-                            }
-                            for candidate_start in boundary.saturating_sub(2)..boundary {
-                                let Some(candidate) = code
-                                    .get(candidate_start..)
-                                    .and_then(|remaining| remaining.get(..3))
-                                else {
-                                    continue;
-                                };
-                                if let Some(kind) = x86_crossing_host_input(candidate) {
-                                    let address = mapped_start + u64::try_from(candidate_start)?;
-                                    return Err(format!(
-                                        "{kind} opcode crosses executable section boundary at 0x{address:x}"
-                                    )
-                                    .into());
-                                }
-                            }
-                        }
-                    }
                     let mut anchors = BTreeSet::from([0, page_head]);
+                    let mut boundaries = BTreeSet::new();
                     for (range_start, range_end) in mapped_ranges {
                         anchors.insert(range_start);
+                        boundaries.insert(range_start);
                         if range_end < code.len() {
                             anchors.insert(range_end);
+                            boundaries.insert(range_end);
                         }
                     }
-                    x86_executable_loads.push((mapped_start, code, anchors));
+                    x86_executable_loads.push((mapped_start, code, anchors, boundaries));
                 }
             }
             _ => {}
@@ -719,46 +699,37 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     if executable_segments == 0 {
         return Err("no executable ELF segment".into());
     }
-    x86_executable_loads.sort_unstable_by_key(|(start, _, _)| *start);
+    x86_executable_loads.sort_unstable_by_key(|(start, _, _, _)| *start);
     for pair in x86_executable_loads.windows(2) {
-        let (left_start, left, _) = &pair[0];
-        let (right_start, right, _) = &pair[1];
+        let (left_start, left, _, _) = &pair[0];
+        let (right_start, _, _, _) = &pair[1];
         let left_end = left_start
             .checked_add(u64::try_from(left.len())?)
             .ok_or("executable ELF mapped address overflow")?;
         if left_end > *right_start {
             return Err("overlapping executable ELF mappings".into());
         }
-        if left_end != *right_start {
-            continue;
-        }
-        let suffix_len = left.len().min(2);
-        let mut boundary = left[left.len() - suffix_len..].to_vec();
-        boundary.extend_from_slice(&right[..right.len().min(2)]);
-        for (offset, candidate) in boundary.windows(3).enumerate() {
-            if offset < suffix_len
-                && offset + 3 > suffix_len
-                && let Some(kind) = x86_crossing_host_input(candidate)
-            {
-                let address = right_start - u64::try_from(suffix_len - offset)?;
-                return Err(format!(
-                    "{kind} opcode crosses executable segment boundary at 0x{address:x}"
-                )
-                .into());
-            }
-        }
     }
     let mut group_start: Option<u64> = None;
     let mut group_code = Vec::new();
     let mut group_anchors = BTreeSet::new();
-    for (start, code, anchors) in x86_executable_loads {
+    let mut group_boundaries = BTreeSet::new();
+    for (start, code, anchors, boundaries) in x86_executable_loads {
         if let Some(first) = group_start
             && first.checked_add(u64::try_from(group_code.len())?) != Some(start)
         {
-            push_x86_sites(first, &group_code, &group_anchors, digest, &mut sites)?;
+            push_x86_sites(
+                first,
+                &group_code,
+                &group_anchors,
+                &group_boundaries,
+                digest,
+                &mut sites,
+            )?;
             group_start = None;
             group_code.clear();
             group_anchors.clear();
+            group_boundaries.clear();
         }
         if group_start.is_none() {
             group_start = Some(start);
@@ -766,12 +737,23 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         let offset = group_code.len();
         group_code.extend_from_slice(&code);
         group_anchors.insert(offset);
+        group_boundaries.insert(offset);
         for anchor in anchors {
             group_anchors.insert(offset + anchor);
         }
+        for boundary in boundaries {
+            group_boundaries.insert(offset + boundary);
+        }
     }
     if let Some(first) = group_start {
-        push_x86_sites(first, &group_code, &group_anchors, digest, &mut sites)?;
+        push_x86_sites(
+            first,
+            &group_code,
+            &group_anchors,
+            &group_boundaries,
+            digest,
+            &mut sites,
+        )?;
     }
     sites.sort();
     sites.dedup();
@@ -782,9 +764,32 @@ fn push_x86_sites(
     start: u64,
     code: &[u8],
     anchors: &BTreeSet<usize>,
+    boundaries: &BTreeSet<usize>,
     digest: &str,
     sites: &mut Vec<InstructionSite>,
 ) -> Result<(), Box<dyn Error>> {
+    for &boundary in boundaries {
+        if boundary == 0 || boundary >= code.len() {
+            continue;
+        }
+        for candidate_start in boundary.saturating_sub(14)..boundary {
+            let address = start
+                .checked_add(u64::try_from(candidate_start)?)
+                .ok_or("executable ELF segment address overflow")?;
+            let mut decoder =
+                Decoder::with_ip(64, &code[candidate_start..], address, DecoderOptions::NONE);
+            let instruction = decoder.decode();
+            if let Some(name) = x86_host_input_name(instruction.mnemonic())
+                && candidate_start + instruction.len() > boundary
+            {
+                sites.push(InstructionSite {
+                    digest: digest.to_owned(),
+                    address,
+                    instruction: name.into(),
+                });
+            }
+        }
+    }
     for &offset in anchors {
         if offset >= code.len() {
             continue;
@@ -814,14 +819,9 @@ fn scan_code(
     if architecture == object::Architecture::X86_64 {
         let decoder = Decoder::with_ip(64, data, address, DecoderOptions::NONE);
         for instruction in decoder {
-            let name = match instruction.mnemonic() {
-                Mnemonic::Rdrand => "RDRAND",
-                Mnemonic::Rdseed => "RDSEED",
-                Mnemonic::Rdpid => "RDPID",
-                Mnemonic::Lsl => "LSL",
-                _ => continue,
-            };
-            sites.push((instruction.ip(), name));
+            if let Some(name) = x86_host_input_name(instruction.mnemonic()) {
+                sites.push((instruction.ip(), name));
+            }
         }
     } else {
         if !address.is_multiple_of(4) {
@@ -903,6 +903,74 @@ mod tests {
         bytes[368..376].copy_from_slice(&1_u64.to_le_bytes());
         bytes[4096..4096 + code.len()].copy_from_slice(code);
         bytes
+    }
+
+    fn adjacent_x86_elf(left_tail: &[u8], right: &[u8]) -> Vec<u8> {
+        let mut bytes = elf(&vec![0x90; 4096], 5, 6);
+        bytes.resize(8193 + right.len(), 0);
+        bytes[56..58].copy_from_slice(&3_u16.to_le_bytes());
+        bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+        bytes[62..64].copy_from_slice(&3_u16.to_le_bytes());
+        bytes[120..124].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
+        bytes[124..128].copy_from_slice(&5_u32.to_le_bytes());
+        for (offset, value) in [
+            (128, 8192_u64),
+            (136, 0x2000),
+            (144, 0x2000),
+            (152, right.len() as u64),
+            (160, right.len() as u64),
+            (168, 4096),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[176..180].copy_from_slice(&object::elf::PT_GNU_STACK.to_le_bytes());
+        bytes[180..184].copy_from_slice(&6_u32.to_le_bytes());
+        bytes[324..328].copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+        for (offset, value) in [
+            (328, 6_u64),
+            (336, 0x2000),
+            (344, 8192),
+            (352, right.len() as u64),
+            (368, 1),
+        ] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[388..392].copy_from_slice(&object::elf::SHT_STRTAB.to_le_bytes());
+        bytes[408..416].copy_from_slice(&(8192_u64 + right.len() as u64).to_le_bytes());
+        bytes[416..424].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[432..440].copy_from_slice(&1_u64.to_le_bytes());
+        bytes[8192 - left_tail.len()..8192].copy_from_slice(left_tail);
+        bytes[8192..8192 + right.len()].copy_from_slice(right);
+        bytes
+    }
+
+    fn assert_x86_lsl_needs_vm_review_and_blocks_uml(bytes: &[u8], address: u64) {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), bytes).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(report.scan_errors.iter().any(|error| error.contains("LSL")));
+        assert_eq!(
+            report.executables[0]
+                .sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(address, "LSL")]
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+        assert!(report.require_for(ExecutionMode::Uml).is_err());
+        fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+        fs::write(
+            root.path().join(ALLOWLIST_PATH),
+            format!(
+                "{:x} 0x{address:x} LSL reviewed executable bytes\n",
+                Sha256::digest(bytes)
+            ),
+        )
+        .unwrap();
+        let reviewed = inspect_root(root.path()).unwrap();
+        assert!(reviewed.require_for(ExecutionMode::Vm).is_ok());
+        assert!(reviewed.require_for(ExecutionMode::Uml).is_err());
     }
 
     fn arm_elf(code: &[u8], declared_size: usize) -> Vec<u8> {
@@ -1409,7 +1477,7 @@ mod tests {
     }
 
     #[test]
-    fn x86_host_input_split_across_mapped_section_boundary_is_rejected() {
+    fn x86_host_input_split_across_mapped_section_boundary_is_reviewable() {
         for (mnemonic, opcode, modrm) in [
             ("RDRAND", 0xc7, 0xf0),
             ("RDSEED", 0xc7, 0xf8),
@@ -1418,26 +1486,34 @@ mod tests {
             for section_size in [1_u64, 2] {
                 let mut bytes = elf(&[0x0f, opcode, modrm, 0xc3], 5, 6);
                 bytes[288..296].copy_from_slice(&section_size.to_le_bytes());
-                let error = scan_elf(&bytes, "").unwrap_err().to_string();
-                assert!(
-                    error.contains("crosses executable section boundary"),
-                    "{mnemonic} crossing section end {section_size}: {error}"
+                let sites = scan_elf(&bytes, "").unwrap().unwrap();
+                assert_eq!(
+                    sites
+                        .iter()
+                        .map(|site| (site.address, site.instruction.as_str()))
+                        .collect::<Vec<_>>(),
+                    [(0x1000, mnemonic)],
+                    "{mnemonic} crossing section end {section_size}"
                 );
             }
             let mut bytes = elf(&[0x0f, opcode, modrm, 0xc3], 5, 6);
             bytes[272..280].copy_from_slice(&0x1002_u64.to_le_bytes());
             bytes[280..288].copy_from_slice(&4098_u64.to_le_bytes());
             bytes[288..296].copy_from_slice(&2_u64.to_le_bytes());
-            let error = scan_elf(&bytes, "").unwrap_err().to_string();
-            assert!(
-                error.contains("crosses executable section boundary"),
-                "{mnemonic} crossing section start: {error}"
+            let sites = scan_elf(&bytes, "").unwrap().unwrap();
+            assert_eq!(
+                sites
+                    .iter()
+                    .map(|site| (site.address, site.instruction.as_str()))
+                    .collect::<Vec<_>>(),
+                [(0x1000, mnemonic)],
+                "{mnemonic} crossing section start"
             );
         }
     }
 
     #[test]
-    fn x86_lsl_split_across_misaligned_section_boundary_is_rejected() {
+    fn x86_lsl_split_across_misaligned_section_boundary_needs_review() {
         let code = [
             0xb9, 0x7b, 0, 0, 0, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0xc1, 0x89, 0xc7, 0xb8, 0x3c, 0, 0,
             0, 0x0f, 0x05,
@@ -1454,16 +1530,111 @@ mod tests {
         bytes[408..416].copy_from_slice(&4105_u64.to_le_bytes());
         bytes[416..424].copy_from_slice(&(code.len() as u64 - 9).to_le_bytes());
         bytes[432..440].copy_from_slice(&1_u64.to_le_bytes());
-        let error = scan_elf(&bytes, "probe").unwrap_err().to_string();
-        assert!(
-            error.contains("CPU-identity opcode crosses executable section boundary"),
-            "{error}"
+        let sites = scan_elf(&bytes, "probe").unwrap().unwrap();
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x1008, "LSL")]
         );
         let root = tempfile::tempdir().unwrap();
-        fs::write(root.path().join("probe"), bytes).unwrap();
+        fs::write(root.path().join("probe"), &bytes).unwrap();
         let report = inspect_root(root.path()).unwrap();
         assert!(report.require_for(ExecutionMode::Vm).is_err());
         assert!(report.require_for(ExecutionMode::Uml).is_err());
+        fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+        fs::write(
+            root.path().join(ALLOWLIST_PATH),
+            format!(
+                "{:x} 0x1008 LSL native host CPU identity\n",
+                Sha256::digest(&bytes)
+            ),
+        )
+        .unwrap();
+        let reviewed = inspect_root(root.path()).unwrap();
+        assert!(reviewed.require_for(ExecutionMode::Vm).is_ok());
+        assert!(reviewed.require_for(ExecutionMode::Uml).is_err());
+    }
+
+    #[test]
+    fn x86_memory_lsl_split_after_modrm_or_sib_across_sections_needs_review() {
+        for (code, boundary) in [
+            (
+                vec![
+                    0x6a, 0x7b, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0x04, 0x24, 0x89, 0xc7, 0xb8, 0x3c,
+                    0, 0, 0, 0x0f, 0x05,
+                ],
+                8_usize,
+            ),
+            (
+                vec![
+                    0x6a, 0x7b, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0x44, 0x24, 0x08, 0x89, 0xc7, 0xb8,
+                    0x3c, 0, 0, 0, 0x0f, 0x05,
+                ],
+                9,
+            ),
+        ] {
+            let mut bytes = elf(&code, 5, 6);
+            bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+            bytes[288..296].copy_from_slice(&(boundary as u64).to_le_bytes());
+            bytes[388..392].copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+            for (offset, value) in [
+                (392, 6_u64),
+                (400, 0x1000 + boundary as u64),
+                (408, 4096 + boundary as u64),
+                (416, (code.len() - boundary) as u64),
+                (432, 1),
+            ] {
+                bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            assert_x86_lsl_needs_vm_review_and_blocks_uml(&bytes, 0x1005);
+        }
+    }
+
+    #[test]
+    fn x86_prefixed_lsl_with_full_displacement_uses_the_whole_boundary_lookback() {
+        let code = [
+            0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x0f, 0x03, 0x84, 0x24, 0, 0, 0, 0,
+        ];
+        let mut sites = Vec::new();
+        push_x86_sites(
+            0x1000,
+            &code,
+            &BTreeSet::new(),
+            &BTreeSet::from([14]),
+            "probe",
+            &mut sites,
+        )
+        .unwrap();
+        assert_eq!(
+            sites
+                .first()
+                .map(|site| (site.address, site.instruction.as_str())),
+            Some((0x1000, "LSL"))
+        );
+        assert!(sites.iter().all(|site| site.instruction == "LSL"));
+    }
+
+    #[test]
+    fn x86_memory_lsl_completed_in_executable_page_tail_needs_review() {
+        let code = [
+            0x6a, 0x7b, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0x04, 0x24, 0x89, 0xc7, 0xb8, 0x3c, 0, 0, 0,
+            0x0f, 0x05,
+        ];
+        let mut bytes = elf(&code, 5, 6);
+        bytes[96..104].copy_from_slice(&8_u64.to_le_bytes());
+        bytes[104..112].copy_from_slice(&8_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&8_u64.to_le_bytes());
+        assert_x86_lsl_needs_vm_review_and_blocks_uml(&bytes, 0x1005);
+    }
+
+    #[test]
+    fn x86_data_sections_with_lsl_shaped_boundary_are_reviewable_in_vm() {
+        let mut bytes = elf(&[0x0f, 0x03, 0x00, 0xc3], 5, 6);
+        bytes[264..272].copy_from_slice(&u64::from(object::elf::SHF_ALLOC).to_le_bytes());
+        bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+        assert_x86_lsl_needs_vm_review_and_blocks_uml(&bytes, 0x1000);
     }
 
     #[test]
@@ -1481,7 +1652,7 @@ mod tests {
     }
 
     #[test]
-    fn x86_host_input_split_across_adjacent_executable_loads_is_rejected() {
+    fn x86_host_input_split_across_adjacent_executable_loads_is_reviewable() {
         for (mnemonic, opcode, modrm) in [
             ("RDRAND", 0xc7, 0xf0),
             ("RDSEED", 0xc7, 0xf8),
@@ -1546,10 +1717,14 @@ mod tests {
                 bytes[8190..8192].copy_from_slice(&[0x0f, opcode]);
                 bytes[8192..8202]
                     .copy_from_slice(&[modrm, 0xb8, 0x3c, 0, 0, 0, 0x31, 0xff, 0x0f, 0x05]);
-                let error = scan_elf(&bytes, "").unwrap_err().to_string();
-                assert!(
-                    error.contains("crosses executable segment boundary"),
-                    "{mnemonic} with left file size {left_file_size}: {error}"
+                let sites = scan_elf(&bytes, "").unwrap().unwrap();
+                assert_eq!(
+                    sites
+                        .iter()
+                        .map(|site| (site.address, site.instruction.as_str()))
+                        .collect::<Vec<_>>(),
+                    [(0x1ffe, mnemonic)],
+                    "{mnemonic} with left file size {left_file_size}"
                 );
                 if left_file_size == 4096 {
                     bytes[8190..8192].copy_from_slice(&[0x90, 0xb0]);
@@ -1566,6 +1741,25 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn x86_memory_lsl_split_after_modrm_or_sib_across_loads_needs_review() {
+        for (left, right, address) in [
+            (
+                vec![0x6a, 0x7b, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0x04],
+                vec![0x24, 0x89, 0xc7, 0xb8, 0x3c, 0, 0, 0, 0x0f, 0x05],
+                0x1ffd,
+            ),
+            (
+                vec![0x6a, 0x7b, 0xeb, 0x01, 0xb0, 0x0f, 0x03, 0x44, 0x24],
+                vec![0x08, 0x89, 0xc7, 0xb8, 0x3c, 0, 0, 0, 0x0f, 0x05],
+                0x1ffc,
+            ),
+        ] {
+            let bytes = adjacent_x86_elf(&left, &right);
+            assert_x86_lsl_needs_vm_review_and_blocks_uml(&bytes, address);
         }
     }
 
