@@ -41,6 +41,7 @@ KNOWN_DATA = {
     "decompressor": frozenset((".rodata..compressed", ".rodata", ".data")),
 }
 MAX_X86_INSTRUCTION_BYTES = 15
+FALLTHROUGH_FENCE = b"\xcc" * MAX_X86_INSTRUCTION_BYTES
 TRAILING_PREFIXES = frozenset(
     ("data16", "data32", "addr16", "addr32", "lock", "rep", "repz", "repnz",
      "cs", "ds", "es", "fs", "gs", "ss", "bnd", "notrack")
@@ -65,7 +66,7 @@ def headers(data):
         program_size, program_count, section_size, section_count = unpack("<HHHH", data, 54)
         program_format = "<IIQQQQQQ"
         section_format = "<IIQQQQIIQQ"
-        program_fields = (0, 1, 2, 3, 5)
+        program_fields = (0, 1, 2, 3, 5, 6)
         names_index_offset = 62
     elif data[4] == 1:
         if unpack("<H", data, 18)[0] != 3:
@@ -74,7 +75,7 @@ def headers(data):
         program_size, program_count, section_size, section_count = unpack("<HHHH", data, 42)
         program_format = "<IIIIIIII"
         section_format = "<IIIIIIIIII"
-        program_fields = (0, 6, 1, 2, 4)
+        program_fields = (0, 6, 1, 2, 4, 5)
         names_index_offset = 50
     else:
         raise ValueError("unsupported ELF class")
@@ -90,7 +91,10 @@ def headers(data):
     programs = []
     for index in range(program_count):
         fields = unpack(program_format, data, program_offset + index * program_size)
-        programs.append((index, *(fields[position] for position in program_fields)))
+        program = (index, *(fields[position] for position in program_fields))
+        if program[1] == 1 and program[6] < program[5]:
+            raise ValueError(f"PT_LOAD {index} memory size is smaller than its file size")
+        programs.append(program)
     names_index = unpack("<H", data, names_index_offset)[0]
     if names_index >= section_count:
         raise ValueError("section-name table is missing")
@@ -317,27 +321,18 @@ def unclaimed_opcode(data, programs, sections, tag, path):
     ]
     if len(code_names) != len(set(code_names)):
         raise ValueError("duplicate executable section name")
-    executable_loads = [
-        (index, address, size)
-        for index, kind, flags, _offset, address, size in programs
-        if kind == 1 and flags & 1 and size
-    ]
-    for left_index, left_address, left_size in executable_loads:
-        left_end = left_address + left_size
-        for right_index, right_address, _right_size in executable_loads:
-            if right_index == left_index or right_address < left_end:
-                continue
-            if any(kind == 1 and flags & 4 and size
-                   and left_address <= address < left_end
-                   and address + size <= left_end
-                   and right_address - (address + size) < MAX_X86_INSTRUCTION_BYTES - 1
-                   for _name, kind, flags, address, _offset, size in sections):
-                raise ValueError(
-                    f"nearby executable PT_LOAD boundary after segment {left_index}"
-                )
+    loads = sorted(
+        (address, address + memory_size, index)
+        for index, kind, _flags, _offset, address, _size, memory_size in programs
+        if kind == 1 and memory_size
+    )
+    for left, right in zip(loads, loads[1:]):
+        if right[0] < left[1]:
+            raise ValueError(f"overlapping PT_LOAD memory ranges {left[2]} and {right[2]}")
     seen_data = set()
     saw_load = False
-    for index, kind, _flags, offset, address, size in programs:
+    missing_fences = []
+    for index, kind, _flags, offset, address, size, _memory_size in programs:
         if kind != 1:
             continue
         saw_load = True
@@ -413,13 +408,27 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             boundary = section[2] + section[3] - offset
             if boundary in nearby_code:
                 complete_section_tail(data, path, *section)
-            if boundary < size and not executable[boundary]:
-                for position in range(boundary, min(size - 1, boundary + MAX_X86_INSTRUCTION_BYTES - 1)):
-                    hit = counter_encoding(segment, position)
-                    if hit is not None:
-                        return hit[0], offset + position, index, "code-data boundary"
+        for name, section_address, section_offset, section_size in executable_sections:
+            boundary = section_offset + section_size - offset
+            if boundary < size and executable[boundary]:
+                continue
+            if boundary == size and not any(
+                other_index != index and other_kind == 1 and other_memory_size
+                and other_address + other_memory_size > section_address + section_size
+                for other_index, other_kind, _other_flags, _other_offset, other_address, _other_size, other_memory_size in programs
+            ):
+                continue
+            if boundary < MAX_X86_INSTRUCTION_BYTES or segment[
+                boundary - MAX_X86_INSTRUCTION_BYTES : boundary
+            ] != FALLTHROUGH_FENCE:
+                missing_fences.append((name, index))
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
+    if missing_fences:
+        name, index = missing_fences[0]
+        raise ValueError(
+            f"executable section {name} in PT_LOAD {index} can fall through into loaded bytes"
+        )
     scan_symbol_restarts(data, sections, tag, path)
     return None
 

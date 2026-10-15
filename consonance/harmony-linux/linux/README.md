@@ -118,15 +118,18 @@ disassembly starts decoding it anew. The scan rejects an incomplete instruction
 starting in the final 14 bytes of a code section when another code section
 begins within those 14 bytes. This catches a truncated opcode followed by
 otherwise complete instructions and a prefix chain that shifts decoding
-farther than one maximum instruction length into the next section. Where
-reviewed data follows code in one loaded segment, a counter encoding starting
-in the first 14 bytes after the section is rejected even if a decoder calls
-the last code instruction complete. This also covers setup and the
-decompressor's mode-mixed head, where a 64-bit tail decode cannot prove 16-bit
-or 32-bit instruction boundaries. Executable PT_LOADs separated by fewer than
-14 virtual bytes whose code ends near the next load are rejected; the gap may
-be zero-filled, mapped page slack, or absent. Separate segment scans cannot
-prove an instruction that crosses those load boundaries.
+farther than one maximum instruction length into the next section. Code that
+ends before loaded non-code bytes or a later PT_LOAD must instead end with
+fifteen consecutive INT3 bytes. The pinned x86 linker patch emits these fences
+without moving setup's fixed boot header. Because an x86 instruction is at
+most fifteen bytes long, straight-line execution in any 16-, 32-, or 64-bit
+decoder mode cannot consume the entire fence as part of an earlier instruction
+or continue into the following data or load. This includes zero-filled gaps,
+page slack, and loads without the executable ELF flag; setup and the
+decompressor do not use that flag as an execution boundary. Overlapping
+PT_LOAD memory ranges are rejected so one load cannot overwrite another's
+fence. Direct jumps into reviewed data and code copied out of a reviewed data
+section require separate admission review.
 For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
 both AMD64 and Intel64 modes; operand-size prefixes can change instruction
 boundaries on Intel hardware. ELF symbols can restart objdump inside an
