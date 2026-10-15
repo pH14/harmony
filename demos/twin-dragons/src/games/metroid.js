@@ -232,6 +232,7 @@ export default {
   ramBytes: 0x2800,
   cartridgeMemory: true,
   levelCount: 1,
+  levelsCleared: (observation) => (observation.goal ? 1 : 0),
   grid: true,
   route: routeOrder,
   entry,

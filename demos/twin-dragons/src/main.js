@@ -1293,7 +1293,7 @@ function renderDetails(observation) {
     ["Position", `${observation.x}, ${observation.y}`],
     ...(game.maxHealth ? [["Health", `${observation.health} / ${game.maxHealth}`]] : []),
     ...(observation.percent === undefined ? [] : [["Level progress", `${observation.percent}%`]]),
-    ["Levels cleared", observation.cleared - bootLevel],
+    ["Levels cleared", levelProgress(observation).cleared - bootLevel],
     [
       "Level",
       isMapEvidence(observation, catalog.levels)
@@ -1578,8 +1578,8 @@ function startSearch(level = bootLevel) {
         const state = data.state;
         stateCache.set(state.id, state);
         if (fresh) {
-          mergeProgress(cleared, state.observation, bootLevel);
-          for (const level of completedLevels(state.observation, bootLevel))
+          mergeProgress(cleared, levelProgress(state.observation), bootLevel);
+          for (const level of completedLevels(levelProgress(state.observation), bootLevel))
             wins.set(level, state.id);
           const start = roomLevel(state.observation.level) ?? bootLevel;
           Object.assign(path, { level: start, levels: [start], since: performance.now(), idle: 0 });
@@ -1628,7 +1628,7 @@ function startSearch(level = bootLevel) {
         for (const point of data.points) {
           const o = point.observation,
             map = maps.get(o.level),
-            finished = finishedLevel(o, roomLevel(o.level));
+            finished = finishedLevel(levelProgress(o), roomLevel(o.level));
           if (finished != null) {
             cleared.add(finished);
             if (!wins.has(finished) && point.retained !== null) wins.set(finished, point.retained);
@@ -1649,7 +1649,7 @@ function startSearch(level = bootLevel) {
         }
         (finishes || []).forEach((index, i) => {
           const from = roomLevel(trailRoom(motion[index]));
-          if (from == null) return;
+          if (from == null || game.levelsCleared) return;
           cleared.add(from);
           const onPath = roomLevel(branchPreview?.room ?? mapLevel) === path.level;
           if (!followExit(path, from, exits?.[i], catalog.levels)) return;
@@ -1759,6 +1759,9 @@ function replaceDropped(replacements) {
       for (const [level, id] of states)
         if (id === dropped) next === null ? states.delete(level) : states.set(level, next);
   }
+}
+function levelProgress(observation) {
+  return game.levelsCleared ? { ...observation, cleared: game.levelsCleared(observation) } : observation;
 }
 function levelLabel(id) {
   return catalog.levels.find((level) => level.id === id)?.label ?? `Level ${id + 1}`;

@@ -572,7 +572,9 @@ The site ships nothing from Metroid. The level selector accepts the ROM with
 SHA-256 `e6e6b701…65b6`. Metroid has one level, Zebes, whose five rooms are the
 areas Brinstar, Norfair, Kraid's Lair, Ridley's Lair and Tourian. The search
 starts from a new game, and the view follows it between areas the same way it
-follows Super Mario Bros. between bonus areas.
+follows Super Mario Bros. between bonus areas. The observation's cleared count
+adds items, energy tanks, bosses and the ending, which ranks search progress,
+while the page marks Zebes finished, and offers to watch it, only at the ending.
 
 Metroid keeps its items in cartridge RAM. The QuickNES shim keeps a 10 KiB copy
 of memory, the 2 KiB console RAM followed by the 8 KiB cartridge RAM at
