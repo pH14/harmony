@@ -296,7 +296,21 @@ class CounterScanCoverage(unittest.TestCase):
                     '.byte 0xb8,0x90,0x90,0x90,0x66\n'
                     '.section .rodata,"a"\n.byte 0x0f,0x31,0xc3\n'
                     '.section .safe,"ax"\n.byte 0xc3\n',
-                    "mixed-mode boundary RDTSC",
+                    "code-data boundary RDTSC",
+                ),
+                (
+                    "code-data-fallthrough-incomplete",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
+                    '.section .rodata,"a"\n.byte 0x90,0x90,0x90,0x90,0x0f,0x31\n'
+                    '.fill 20,1,0x90\n.section .safe,"ax"\n.byte 0xc3\n',
+                    "code-data boundary RDTSC",
+                ),
+                (
+                    "code-data-fallthrough-complete",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0x90\n'
+                    '.section .rodata,"a"\n.byte 0x0f,0x31\n'
+                    '.fill 20,1,0x90\n.section .safe,"ax"\n.byte 0xc3\n',
+                    "code-data boundary RDTSC",
                 ),
                 (
                     "code-data-code-desync",
@@ -344,6 +358,8 @@ class CounterScanCoverage(unittest.TestCase):
                     targets = targets[:1]
                 elif mode == "setup-code-data-mixed-mode-prefix":
                     targets = targets[1:2]
+                elif mode.startswith("code-data-fallthrough"):
+                    targets = (targets[0], targets[2])
                 for target, tag in targets:
                     kernel.write_bytes(safe_bytes)
                     setup.write_bytes(safe_bytes)
@@ -353,6 +369,60 @@ class CounterScanCoverage(unittest.TestCase):
                         result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn(expected, result.stderr)
+
+            split_linker = root / "split-load.ld"
+            split_linker.write_text(
+                "PHDRS { a PT_LOAD FLAGS(5); b PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400fff; .text : { *(.text) } :a "
+                ". = 0x401000; .safe : { *(.safe) } :b }\n"
+            )
+            split_cases = (
+                ("split-load-rdtsc", '.byte 0x0f\n', '.byte 0x31,0xc3\n'),
+                ("split-load-desync", '.byte 0xb0\n', '.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n'),
+            )
+            for mode, left, right in split_cases:
+                asm = root / f"{mode}.s"
+                asm.write_text(
+                    '.section .text,"ax"\n.global _start\n_start:\n' + left
+                    + '.section .safe,"ax"\n' + right
+                )
+                obj = root / f"{mode}.o"
+                elf = root / f"{mode}.elf"
+                run("as", "--64", "-o", str(obj), str(asm))
+                run("ld", "-nostdlib", "-T", str(split_linker), "-e", "_start", "-o", str(elf), str(obj))
+                kernel.write_bytes(elf.read_bytes())
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                with self.subTest(mode=mode, target="vmlinux"):
+                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("nearby executable PT_LOAD boundary", result.stderr)
+
+            bss_linker = root / "split-load-bss.ld"
+            bss_linker.write_text(
+                "PHDRS { a PT_LOAD FLAGS(5); b PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400ffe; .text : { *(.text) } :a "
+                ".bss (NOLOAD) : { *(.bss) } :a "
+                ". = 0x401000; .safe : { *(.safe) } :b }\n"
+            )
+            bss_asm = root / "split-load-bss.s"
+            bss_asm.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
+                '.section .bss,"aw",@nobits\n.skip 1\n'
+                '.section .safe,"ax"\n.byte 0xb8,0x90,0x90,0x0f,0x31\n'
+                'mov %eax,%edi\nmov $60,%eax\nsyscall\n'
+            )
+            bss_obj = root / "split-load-bss.o"
+            bss_elf = root / "split-load-bss.elf"
+            run("as", "--64", "-o", str(bss_obj), str(bss_asm))
+            run("ld", "-nostdlib", "-T", str(bss_linker), "-e", "_start", "-o", str(bss_elf), str(bss_obj))
+            kernel.write_bytes(bss_elf.read_bytes())
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="split-load-bss-gap", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("nearby executable PT_LOAD boundary", result.stderr)
 
             control = root / "boundary-control.s"
             control.write_text(

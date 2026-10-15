@@ -47,8 +47,6 @@ TRAILING_PREFIXES = frozenset(
 )
 COUNTER_INSTRUCTIONS = frozenset(("rdtsc", "rdtscp", "rdrand", "rdseed"))
 SYMBOL_RESTART_LIMIT = 4096
-X86_PREFIX_BYTES = frozenset((0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67,
-                              0xF0, 0xF2, 0xF3, *range(0x40, 0x50)))
 
 
 def unpack(fmt, data, offset):
@@ -319,6 +317,24 @@ def unclaimed_opcode(data, programs, sections, tag, path):
     ]
     if len(code_names) != len(set(code_names)):
         raise ValueError("duplicate executable section name")
+    executable_loads = [
+        (index, address, size)
+        for index, kind, flags, _offset, address, size in programs
+        if kind == 1 and flags & 1 and size
+    ]
+    for left_index, left_address, left_size in executable_loads:
+        left_end = left_address + left_size
+        for right_index, right_address, _right_size in executable_loads:
+            if right_index == left_index or right_address < left_end:
+                continue
+            if any(kind == 1 and flags & 4 and size
+                   and left_address <= address < left_end
+                   and address + size <= left_end
+                   and right_address - (address + size) < MAX_X86_INSTRUCTION_BYTES - 1
+                   for _name, kind, flags, address, _offset, size in sections):
+                raise ValueError(
+                    f"nearby executable PT_LOAD boundary after segment {left_index}"
+                )
     seen_data = set()
     saw_load = False
     for index, kind, _flags, offset, address, size in programs:
@@ -398,20 +414,10 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             if boundary in nearby_code:
                 complete_section_tail(data, path, *section)
             if boundary < size and not executable[boundary]:
-                mixed_mode = tag == "setup" or tag == "decompressor" and section[0] != ".text"
-                if mixed_mode:
-                    for position in range(boundary, min(size - 1, boundary + MAX_X86_INSTRUCTION_BYTES - 1)):
-                        hit = counter_encoding(segment, position)
-                        if hit is not None:
-                            return hit[0], offset + position, index, "mixed-mode boundary"
-            if boundary < size and not executable[boundary] \
-                    and segment[boundary - 1] in X86_PREFIX_BYTES:
                 for position in range(boundary, min(size - 1, boundary + MAX_X86_INSTRUCTION_BYTES - 1)):
-                    if counter_encoding(segment, position) is not None:
-                        complete_section_tail(data, path, *section)
-                        break
-                    if segment[position] not in X86_PREFIX_BYTES:
-                        break
+                    hit = counter_encoding(segment, position)
+                    if hit is not None:
+                        return hit[0], offset + position, index, "code-data boundary"
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
     scan_symbol_restarts(data, sections, tag, path)
