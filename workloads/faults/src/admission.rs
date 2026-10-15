@@ -8,7 +8,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use iced_x86::{Decoder, DecoderOptions, Mnemonic};
+use iced_x86::{Decoder, DecoderOptions, Mnemonic, OpKind};
 use object::read::elf::ProgramHeader;
 use object::{Object, ObjectSection};
 use serde::Serialize;
@@ -790,21 +790,42 @@ fn push_x86_sites(
             }
         }
     }
-    for &offset in anchors {
+    let mut pending: VecDeque<_> = anchors.iter().copied().collect();
+    let mut visited = vec![false; code.len()];
+    while let Some(offset) = pending.pop_front() {
         if offset >= code.len() {
             continue;
         }
         let address = start
             .checked_add(u64::try_from(offset)?)
             .ok_or("executable ELF segment address overflow")?;
-        for (address, instruction) in
-            scan_code(object::Architecture::X86_64, address, &code[offset..])?
-        {
-            sites.push(InstructionSite {
-                digest: digest.to_owned(),
-                address,
-                instruction: instruction.into(),
-            });
+        let mut decoder = Decoder::with_ip(64, &code[offset..], address, DecoderOptions::NONE);
+        while decoder.can_decode() {
+            let instruction_offset = offset + decoder.position();
+            let instruction = decoder.decode();
+            if visited[instruction_offset] {
+                break;
+            }
+            visited[instruction_offset] = true;
+            if let Some(name) = x86_host_input_name(instruction.mnemonic()) {
+                sites.push(InstructionSite {
+                    digest: digest.to_owned(),
+                    address: instruction.ip(),
+                    instruction: name.into(),
+                });
+            }
+            if matches!(
+                instruction.op0_kind(),
+                OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+            ) && let Some(target_offset) = instruction
+                .near_branch_target()
+                .checked_sub(start)
+                .and_then(|relative| usize::try_from(relative).ok())
+                && target_offset < code.len()
+                && !visited[target_offset]
+            {
+                pending.push_back(target_offset);
+            }
         }
     }
     Ok(())
@@ -1355,6 +1376,57 @@ mod tests {
         assert_eq!(
             sites.iter().map(|site| site.address).collect::<Vec<_>>(),
             [0x100c, 0x1010]
+        );
+    }
+
+    #[test]
+    fn direct_transfer_into_x86_immediate_is_scanned_at_its_real_target() {
+        for (code, address, instruction) in [
+            (
+                vec![0xeb, 0x01, 0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3],
+                0x1003,
+                "RDRAND",
+            ),
+            (
+                vec![0x75, 0x01, 0xb8, 0x0f, 0xc7, 0xf8, 0x90, 0xc3],
+                0x1003,
+                "RDSEED",
+            ),
+            (
+                vec![0xe8, 0x01, 0, 0, 0, 0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3],
+                0x1006,
+                "RDRAND",
+            ),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("probe"), elf(&code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert_eq!(
+                report.executables[0]
+                    .sites
+                    .iter()
+                    .map(|site| (site.address, site.instruction.as_str()))
+                    .collect::<Vec<_>>(),
+                [(address, instruction)],
+                "{report:?}"
+            );
+            assert!(report.require_for(ExecutionMode::Uml).is_err());
+        }
+        assert!(
+            scan_elf(&elf(&[0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3], 5, 6), "")
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        let mut cross_section = elf(
+            &[0xeb, 0x03, 0x90, 0xc3, 0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3],
+            5,
+            6,
+        );
+        cross_section[288..296].copy_from_slice(&4_u64.to_le_bytes());
+        assert_eq!(
+            scan_elf(&cross_section, "").unwrap().unwrap()[0].address,
+            0x1005
         );
     }
 
