@@ -362,6 +362,15 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             for boundary in boundaries
             if 0 < boundary < size and executable[boundary - 1] and executable[boundary]
         }
+        nearby_code = adjacent_code | {
+            section_offset + section_size - offset
+            for _name, _address, section_offset, section_size in executable_sections
+            if section_offset + section_size - offset < size
+            and any(executable[
+                section_offset + section_size - offset :
+                min(size, section_offset + section_size - offset + MAX_X86_INSTRUCTION_BYTES - 1)
+            ])
+        }
 
         segment = data[offset : offset + size]
         for position in range(size - 1):
@@ -377,18 +386,25 @@ def unclaimed_opcode(data, programs, sections, tag, path):
                 return opcode, offset + position, index, "cross-section"
             if all(executable[position : position + length]) and any(
                 boundary <= position < boundary + MAX_X86_INSTRUCTION_BYTES
-                for boundary in adjacent_code
+                for boundary in nearby_code
             ):
                 return opcode, offset + position, index, "boundary-desync"
-        for boundary in adjacent_code:
+        for boundary in nearby_code:
             if sum(section[2] + section[3] == offset + boundary
                    for section in executable_sections) != 1:
-                raise ValueError(f"ambiguous adjacent executable section boundary in PT_LOAD {index}")
+                raise ValueError(f"ambiguous nearby executable section boundary in PT_LOAD {index}")
         for section in executable_sections:
             boundary = section[2] + section[3] - offset
-            if boundary in adjacent_code:
+            if boundary in nearby_code:
                 complete_section_tail(data, path, *section)
-            elif boundary < size and executable[boundary - 1] and not executable[boundary] \
+            if boundary < size and not executable[boundary]:
+                mixed_mode = tag == "setup" or tag == "decompressor" and section[0] != ".text"
+                if mixed_mode:
+                    for position in range(boundary, min(size - 1, boundary + MAX_X86_INSTRUCTION_BYTES - 1)):
+                        hit = counter_encoding(segment, position)
+                        if hit is not None:
+                            return hit[0], offset + position, index, "mixed-mode boundary"
+            if boundary < size and not executable[boundary] \
                     and segment[boundary - 1] in X86_PREFIX_BYTES:
                 for position in range(boundary, min(size - 1, boundary + MAX_X86_INSTRUCTION_BYTES - 1)):
                     if counter_encoding(segment, position) is not None:
