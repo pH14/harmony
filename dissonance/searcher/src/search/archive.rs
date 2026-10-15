@@ -2310,6 +2310,14 @@ where
             .cells
             .get(&cell_of(key))
             .is_none_or(|state| state.active == 0);
+        let novel_cell = !self.cells.contains_key(&cell_of(key))
+            && !self
+                .tiers
+                .range((
+                    std::ops::Bound::Excluded(key.progress()),
+                    std::ops::Bound::Unbounded,
+                ))
+                .any(|(_, tier)| tier.places.contains_key(&key.place()));
         let new_slot = slot.is_empty();
         let displaced: Vec<usize> = slot
             .iter()
@@ -2499,11 +2507,11 @@ where
             let fresh = self.tier_runs(key.progress()).yields == 0;
             let runs = self.tier_runs_mut(key.progress());
             runs.yields = runs.yields.saturating_add(1);
-            if new_cell {
-                runs.cells = runs.cells.saturating_add(1);
-            }
             runs.wins = runs.wins.saturating_add(1);
-            runs.dry = 0;
+            if novel_cell {
+                runs.cells = runs.cells.saturating_add(1);
+                runs.dry = 0;
+            }
             if fresh {
                 self.restart_tier_run(key.progress());
             }
@@ -8472,6 +8480,69 @@ mod tests {
         archive.tier_runs_mut((1, 9)).cells = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+    }
+
+    #[test]
+    fn a_lower_tier_cell_at_a_place_a_higher_tier_holds_is_not_new() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0), (1, 9, 5)]);
+        assert_eq!(archive.tier_runs((2, 1)).cells, 1);
+        assert_eq!(archive.tier_runs((1, 9)).cells, 1);
+        archive.deactivate(2);
+        let mut key = probe_key(1, 9, 5, 0);
+        key.state_fingerprint = 9;
+        archive
+            .insert(
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![9],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert a revisited cell")
+            .expect("retain the revisited cell");
+        assert_eq!(archive.tier_runs((1, 9)).cells, 1);
+    }
+
+    fn every_dry_tier_falls_to_the_lowest<const SHIFT: u32>() {
+        let mut archive = Archive::<u8, TierKey<SHIFT>, (), ()>::new(|_| 1);
+        for tier in 0..4_u8 {
+            archive.prepare_selection();
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![tier],
+                        key: TierKey(usize::from(tier)),
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert tier entry")
+                .expect("retain tier entry");
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x7ea1_0013 + u64::from(SHIFT));
+        for _ in 0..1 << 16 {
+            let (id, draw) = archive.select_parent(&mut rand).expect("a tier draw");
+            archive.record_selection(id, &draw);
+        }
+        let lowest = (0..8192)
+            .filter(|_| archive.select_parent(&mut rand).expect("a tier draw").0 == 0)
+            .count();
+        assert!(
+            lowest * 5 > 8192,
+            "shift {SHIFT}: lowest tier drew {lowest} of 8192"
+        );
+    }
+
+    #[test]
+    fn every_dry_tier_falls_until_the_lowest_draws_a_real_share_at_any_shift() {
+        every_dry_tier_falls_to_the_lowest::<1>();
+        every_dry_tier_falls_to_the_lowest::<3>();
+        every_dry_tier_falls_to_the_lowest::<7>();
     }
 
     #[test]
