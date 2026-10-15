@@ -376,7 +376,15 @@ to the weight of the rank below, the same rule is applied to that rank against
 the rank below it, and so on down. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
 fall back past several stalled tiers at once, which matters when the states
-that decide a later death lie several tiers back. A
+that decide a later death lie several tiers back. A progress floor sits on
+top of this cascade. The archive counts selections since any entry last
+reached a deeper progress value than every earlier entry, and keeps the
+longest such interval that has ended. While the count stays at or below four
+times that longest interval, the floor does nothing. Each time the count
+doubles past it, the floor adds one halving, `shift` halvings per rank, and the
+draw uses whichever of the floor and the cascade reaches further down. The
+yield comparison does not apply to the floor, so a campaign that stops reaching
+deeper progress ends with every tier drawn alike whatever the ratio. A
 workload whose progress order has many close steps, such as fine progress
 bands, supplies a shift of one so each rank takes half of the one ahead. The
 largest accepted shift is seven, because a larger one overflows the leading
@@ -414,7 +422,8 @@ new ground instead of settling to an equal share with every cell behind them.
 `tier_runs` keyed by each tier's progress value with its current and longest
 run, its total draws and yields, its carried-in wins in the current run, and
 the rank below's name, draws and yields when the run began, and the draws each
-cell received, and
+cell received, `progress_draws` and `progress_longest` for the progress
+floor, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear once each time the executions double,
 on the line at 102,400 executions times a power of two, and on the final line.

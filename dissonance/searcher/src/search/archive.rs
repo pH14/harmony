@@ -145,6 +145,8 @@ const TIER_RANK_CAP: u8 = 8;
 
 const TIER_RANK_SHIFT: u32 = 3;
 
+const PROGRESS_FLOOR_FACTOR: u64 = 4;
+
 const MAX_TIER_RANK_SHIFT: u32 = (u64::BITS - 1) / TIER_RANK_CAP as u32;
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
@@ -248,6 +250,10 @@ pub struct SelectorAccounting {
     pub tier_runs: BTreeMap<String, TierRuns>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
+    #[serde(default)]
+    pub progress_draws: u64,
+    #[serde(default)]
+    pub progress_longest: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -492,6 +498,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(skip, default = "unset_action_cost::<A>")]
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
+    deepest_progress: Option<K::Progress>,
     selector_indexed: bool,
     #[serde(skip)]
     selector_weighted: bool,
@@ -1028,6 +1035,7 @@ where
             deepest_leaf: Vec::new(),
             action_cost,
             live_progress: None,
+            deepest_progress: None,
             selector_indexed: false,
             selector_weighted: false,
             active_ids: ActiveIds::default(),
@@ -2491,6 +2499,16 @@ where
         let carried_in =
             parent_id.is_some_and(|parent| cell_of(self.entries[parent].key) != cell_of(key));
         let carried_win = carried_in && (replacement_preferences != 0 || improved_preference);
+        if self
+            .deepest_progress
+            .is_none_or(|deepest| key.progress() > deepest)
+        {
+            self.deepest_progress = Some(key.progress());
+            let accounting = &mut self.selector_accounting;
+            accounting.progress_longest =
+                accounting.progress_longest.max(accounting.progress_draws);
+            accounting.progress_draws = 0;
+        }
         if new_cell || carried_win {
             let next = self
                 .tiers
@@ -2723,6 +2741,23 @@ where
         }
     }
 
+    fn progress_floor(&self, tiers: usize, shift: u32) -> (usize, u32) {
+        let accounting = &self.selector_accounting;
+        let limit = PROGRESS_FLOOR_FACTOR.saturating_mul(accounting.progress_longest.max(1));
+        if accounting.progress_draws <= limit || shift == 0 {
+            return (0, 0);
+        }
+        let halvings =
+            usize::try_from((accounting.progress_draws / limit).ilog2() + 1).unwrap_or(usize::MAX);
+        let shift_ranks = usize::try_from(shift).unwrap_or(usize::MAX);
+        let last = tiers.saturating_sub(1);
+        let floor = (halvings / shift_ranks).min(last);
+        let rest = halvings
+            .saturating_sub(floor.saturating_mul(shift_ranks))
+            .min(shift_ranks);
+        (floor, u32::try_from(rest).unwrap_or(shift))
+    }
+
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let shift = checked_tier_rank_shift(K::tier_rank_shift())?;
         let tiers = self.tiers.len();
@@ -2736,6 +2771,7 @@ where
             }
             floor += 1;
         }
+        let (floor, halvings) = (floor, halvings).max(self.progress_floor(tiers, shift));
         let floor_weight =
             (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX), shift) >> halvings).max(1);
         let weights = (0..tiers).map(|rank| {
@@ -3169,6 +3205,8 @@ where
         self.selected[id] = self.selected[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
+        self.selector_accounting.progress_draws =
+            self.selector_accounting.progress_draws.saturating_add(1);
         let runs = self.tier_runs_mut(key.progress());
         runs.current = runs.current.saturating_add(1);
         runs.draws = runs.draws.saturating_add(1);
@@ -8225,6 +8263,7 @@ mod tests {
                 .expect("insert tier entry")
                 .expect("retain tier entry");
         }
+        archive.selector_accounting.progress_longest = 1 << 20;
         archive
     }
 
@@ -8405,6 +8444,47 @@ mod tests {
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
         assert!(counts[1] > counts[2] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn every_tier_draws_alike_once_the_campaign_goes_long_without_deeper_progress() {
+        let mut archive = tier_archive(&[(1, 8, 0), (1, 9, 0), (2, 1, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        archive.selector_accounting.progress_longest = 64;
+        for _ in 0..256 {
+            archive.record_selection(2, &draw);
+        }
+        archive.tier_runs_mut((2, 1)).current = 0;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0010, 6144);
+        assert!(counts[2] > (counts[0] + counts[1]) * 5, "{counts:?}");
+        for _ in 0..(256 * 63) {
+            archive.record_selection(2, &draw);
+        }
+        archive.tier_runs_mut((2, 1)).current = 0;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0010, 6144);
+        assert!(roughly_equal(counts[0], counts[2]), "{counts:?}");
+        assert!(roughly_equal(counts[1], counts[2]), "{counts:?}");
+        let mut key = probe_key(3, 1, 5, 0);
+        key.state_fingerprint = 9;
+        archive
+            .insert(
+                Some(2),
+                0,
+                ArchiveCandidate {
+                    suffix: vec![9],
+                    key,
+                    milestones: (),
+                },
+                (),
+            )
+            .expect("insert deeper entry")
+            .expect("retain deeper entry");
+        assert_eq!(archive.selector_accounting.progress_draws, 0);
+        assert_eq!(archive.selector_accounting.progress_longest, 256 * 64);
     }
 
     #[test]
