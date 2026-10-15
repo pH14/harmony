@@ -714,22 +714,20 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     let mut group_code = Vec::new();
     let mut group_anchors = BTreeSet::new();
     let mut group_boundaries = BTreeSet::new();
+    let mut groups = Vec::new();
     for (start, code, anchors, boundaries) in x86_executable_loads {
         if let Some(first) = group_start
             && first.checked_add(u64::try_from(group_code.len())?) != Some(start)
         {
-            push_x86_sites(
+            let code = std::mem::take(&mut group_code);
+            groups.push((
                 first,
-                &group_code,
-                &group_anchors,
-                &group_boundaries,
-                digest,
-                &mut sites,
-            )?;
+                vec![false; code.len()],
+                code,
+                std::mem::take(&mut group_anchors),
+                std::mem::take(&mut group_boundaries),
+            ));
             group_start = None;
-            group_code.clear();
-            group_anchors.clear();
-            group_boundaries.clear();
         }
         if group_start.is_none() {
             group_start = Some(start);
@@ -746,14 +744,44 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         }
     }
     if let Some(first) = group_start {
-        push_x86_sites(
+        let code = std::mem::take(&mut group_code);
+        groups.push((
             first,
-            &group_code,
-            &group_anchors,
-            &group_boundaries,
+            vec![false; code.len()],
+            code,
+            group_anchors,
+            group_boundaries,
+        ));
+    }
+    let mut pending = VecDeque::new();
+    for (start, visited, code, anchors, boundaries) in &mut groups {
+        pending.extend(push_x86_sites(
+            *start, code, anchors, boundaries, visited, digest, &mut sites,
+        )?);
+    }
+    let mut seen_targets = BTreeSet::new();
+    while let Some(target) = pending.pop_front() {
+        if !seen_targets.insert(target) {
+            continue;
+        }
+        let Some((start, visited, code, _, _)) =
+            groups.iter_mut().find(|(start, _, code, _, _)| {
+                *start <= target
+                    && usize::try_from(target - *start).is_ok_and(|offset| offset < code.len())
+            })
+        else {
+            continue;
+        };
+        let offset = usize::try_from(target - *start)?;
+        pending.extend(push_x86_sites(
+            *start,
+            code,
+            &BTreeSet::from([offset]),
+            &BTreeSet::new(),
+            visited,
             digest,
             &mut sites,
-        )?;
+        )?);
     }
     sites.sort();
     sites.dedup();
@@ -765,9 +793,10 @@ fn push_x86_sites(
     code: &[u8],
     anchors: &BTreeSet<usize>,
     boundaries: &BTreeSet<usize>,
+    visited: &mut [bool],
     digest: &str,
     sites: &mut Vec<InstructionSite>,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<Vec<u64>, Box<dyn Error>> {
     for &boundary in boundaries {
         if boundary == 0 || boundary >= code.len() {
             continue;
@@ -791,7 +820,7 @@ fn push_x86_sites(
         }
     }
     let mut pending: VecDeque<_> = anchors.iter().copied().collect();
-    let mut visited = vec![false; code.len()];
+    let mut external_targets = Vec::new();
     while let Some(offset) = pending.pop_front() {
         if offset >= code.len() {
             continue;
@@ -817,18 +846,23 @@ fn push_x86_sites(
             if matches!(
                 instruction.op0_kind(),
                 OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
-            ) && let Some(target_offset) = instruction
-                .near_branch_target()
-                .checked_sub(start)
-                .and_then(|relative| usize::try_from(relative).ok())
-                && target_offset < code.len()
-                && !visited[target_offset]
-            {
-                pending.push_back(target_offset);
+            ) {
+                let target = instruction.near_branch_target();
+                if let Some(target_offset) = target
+                    .checked_sub(start)
+                    .and_then(|relative| usize::try_from(relative).ok())
+                    .filter(|offset| *offset < code.len())
+                {
+                    if !visited[target_offset] {
+                        pending.push_back(target_offset);
+                    }
+                } else {
+                    external_targets.push(target);
+                }
             }
         }
     }
-    Ok(())
+    Ok(external_targets)
 }
 
 fn scan_code(
@@ -1431,6 +1465,28 @@ mod tests {
     }
 
     #[test]
+    fn direct_transfer_to_a_separate_executable_load_restarts_at_its_target() {
+        let mut bytes = adjacent_x86_elf(&[], &[0xb8, 0x0f, 0xc7, 0xf0, 0x90, 0xc3]);
+        bytes[4096..4101].copy_from_slice(&[0xe9, 0xfc, 0x1f, 0, 0]);
+        for address_offset in [136, 144, 336] {
+            bytes[address_offset..address_offset + 8].copy_from_slice(&0x3000_u64.to_le_bytes());
+        }
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), bytes).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert_eq!(
+            report.executables[0]
+                .sites
+                .iter()
+                .map(|site| (site.address, site.instruction.as_str()))
+                .collect::<Vec<_>>(),
+            [(0x3001, "RDRAND")],
+            "{report:?}"
+        );
+        assert!(report.require_for(ExecutionMode::Uml).is_err());
+    }
+
+    #[test]
     fn arm64_entropy_sites_ignore_the_destination_register_and_skip_trapped_counters() {
         let code: Vec<u8> = [
             0xd53b240f_u32,
@@ -1670,11 +1726,13 @@ mod tests {
             0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x0f, 0x03, 0x84, 0x24, 0, 0, 0, 0,
         ];
         let mut sites = Vec::new();
+        let mut visited = vec![false; code.len()];
         push_x86_sites(
             0x1000,
             &code,
             &BTreeSet::new(),
             &BTreeSet::from([14]),
+            &mut visited,
             "probe",
             &mut sites,
         )
