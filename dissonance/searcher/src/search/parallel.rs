@@ -306,7 +306,11 @@ where
                     }
                 }
                 if let Some(target) = state.as_ref() {
-                    telemetry.target = finish(target);
+                    telemetry.target =
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| finish(target)))
+                            .map_err(|_| {
+                            format!("campaign worker {worker} panicked during finalization")
+                        })?;
                 }
                 if let (Some((cpu_before, wait_before)), Some((cpu_after, wait_after))) =
                     (schedstat_before, thread_schedstat())
@@ -331,14 +335,19 @@ where
         drop(pool);
         let mut telemetry = Vec::with_capacity(handles.len());
         let mut worker_error = None;
-        for handle in handles {
+        for (worker, handle) in handles.into_iter().enumerate() {
             match handle.join() {
                 Ok(Ok(worker)) => telemetry.push(worker),
                 Ok(Err(error)) => {
                     worker_error.get_or_insert(error);
                     telemetry.push(WorkerTelemetry::default());
                 }
-                Err(_) => telemetry.push(WorkerTelemetry::default()),
+                Err(_) => {
+                    worker_error.get_or_insert(format!(
+                        "campaign worker {worker} panicked outside the handled worker phases"
+                    ));
+                    telemetry.push(WorkerTelemetry::default());
+                }
             }
         }
         let value = result?;
@@ -840,6 +849,56 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "worker target could not be recreated after panic"
+        );
+    }
+
+    #[test]
+    fn finalization_panic_fails_the_pool_after_a_clean_coordinator_return() {
+        let error = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(()),
+            |_| Ok::<_, String>(()),
+            |(), (): ()| Ok::<_, String>(()),
+            |()| panic!("injected finalization panic"),
+            |pool: &mut WorkerPool<u8, (), ()>| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                pool.close();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "campaign worker 0 panicked during finalization"
+        );
+    }
+
+    #[test]
+    fn uncaught_worker_panic_fails_the_pool_after_a_clean_coordinator_return() {
+        struct PanicsOnDrop;
+
+        impl Drop for PanicsOnDrop {
+            fn drop(&mut self) {
+                panic!("injected target drop panic");
+            }
+        }
+
+        let error = with_worker_pool(
+            1,
+            |_| Ok::<_, String>(PanicsOnDrop),
+            |_| Ok::<_, String>(PanicsOnDrop),
+            |_, (): ()| Ok::<_, String>(()),
+            |_| TargetCounters::new(),
+            |pool: &mut WorkerPool<u8, (), ()>| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(1)?;
+                pool.close();
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "campaign worker 0 panicked outside the handled worker phases"
         );
     }
 }
