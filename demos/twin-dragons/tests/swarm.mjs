@@ -193,6 +193,7 @@ try {
       await page.locator("#search-here").click();
       await page.waitForFunction(() => document.querySelector("#branch-tree button[aria-pressed=true]").dataset.search === "1" && !document.querySelector("#branch-tree button[aria-pressed=true]").disabled && document.querySelector("#inspector").hidden);
       await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 30);
+      await page.waitForFunction(stripHasSprites, null, { timeout: 60000 });
       await page.locator("#pause").click();
       await setView(page,'both');
       await page.waitForFunction(stripHasSprites);
