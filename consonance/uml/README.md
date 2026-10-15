@@ -155,10 +155,11 @@
   path cannot make a different host build claim the recording. Creation, replay
   checks and replay launch refuse defined `LD_PRELOAD`, `LD_AUDIT`,
   `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, or
-  `LD_DYNAMIC_WEAK`, or `GLIBC_TUNABLES`, including empty definitions. This checks explicit loader
-  overrides at admission; it
-  does not bind ordinary dependent libraries, code loaded later, or an injected
-  library that clears its override before admission.
+  `LD_DYNAMIC_WEAK`, or `GLIBC_TUNABLES`, including empty definitions. It also
+  requires the recording identity code to map from the same inode as
+  `/proc/self/exe`, refusing direct dynamic-loader launches with command-line
+  code selectors. These checks do not bind ordinary dependent libraries, code
+  loaded later, or an injected library that clears its override before admission.
   Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
   recording or replay binaries directly with the listed variables unset.
   It derives the seed from the live launch's

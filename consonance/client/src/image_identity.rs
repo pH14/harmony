@@ -70,7 +70,50 @@ pub(crate) fn rerun_clean_loader_test(test: &str) -> bool {
 #[cfg(target_os = "linux")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
+    reject_mismatched_executable_mapping(loaded_executable_identity_self as *const () as usize)?;
     digest_executable("/proc/self/exe")
+}
+
+#[cfg(target_os = "linux")]
+fn reject_mismatched_executable_mapping(code_address: usize) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let executable = std::fs::metadata("/proc/self/exe")?;
+    let maps = std::fs::read_to_string("/proc/self/maps")?;
+    let mapped = maps.lines().find_map(|line| {
+        let mut fields = line.split_whitespace();
+        let range = fields.next()?;
+        fields.next()?;
+        fields.next()?;
+        let device = fields.next()?;
+        let inode = fields.next()?;
+        let (start, end) = range.split_once('-')?;
+        let start = usize::from_str_radix(start, 16).ok()?;
+        let end = usize::from_str_radix(end, 16).ok()?;
+        (start <= code_address && code_address < end).then_some((device, inode))
+    });
+    let (device, inode) =
+        mapped.ok_or_else(|| io::Error::other("cannot locate running code in /proc/self/maps"))?;
+    let (major, minor) = device
+        .split_once(':')
+        .ok_or_else(|| io::Error::other("cannot parse running code device"))?;
+    let major = u64::from_str_radix(major, 16)
+        .map_err(|_| io::Error::other("cannot parse running code device"))?;
+    let minor = u64::from_str_radix(minor, 16)
+        .map_err(|_| io::Error::other("cannot parse running code device"))?;
+    let inode = inode
+        .parse::<u64>()
+        .map_err(|_| io::Error::other("cannot parse running code inode"))?;
+    let dev = executable.dev();
+    let expected_major = ((dev >> 8) & 0xfff) | ((dev >> 32) & 0xfffff000);
+    let expected_minor = (dev & 0xff) | ((dev >> 12) & 0xffffff00);
+    if (major, minor, inode) != (expected_major, expected_minor, executable.ino()) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "running code is not mapped from /proc/self/exe",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -250,6 +293,50 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn direct_dynamic_loader_launch_cannot_claim_executable_identity() {
+        const CHILD_ENV: &str = "HARMONY_DIRECT_LOADER_IDENTITY_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            assert!(std::env::var_os("LD_LIBRARY_PATH").is_none());
+            let error = loaded_executable_identity_self().unwrap_err();
+            assert!(
+                error.to_string().contains("not mapped from /proc/self/exe"),
+                "{error}"
+            );
+            return;
+        }
+
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let loader = maps
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(5))
+            .find(|path| {
+                std::path::Path::new(path)
+                    .file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with("ld-linux"))
+            })
+            .unwrap();
+        let mut command = std::process::Command::new(loader);
+        command
+            .arg("--library-path")
+            .arg(std::env::temp_dir())
+            .arg(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("image_identity::linux_tests::direct_dynamic_loader_launch_cannot_claim_executable_identity");
+        for name in LOADER_OVERRIDE_VARS {
+            command.env_remove(name);
+        }
+        let output = command.env(CHILD_ENV, "1").output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.lines().any(|line| line.trim() == "running 1 test"),
+            "{}\nstdout: {stdout}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[test]
     fn foreign_procfs_pid_namespace_is_never_used_for_child_identity() {
