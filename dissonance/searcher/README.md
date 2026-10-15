@@ -369,7 +369,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_cascade_pace_yield_cell_recent_count_decay_v1`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v1`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * shift)`, where the key's
@@ -383,23 +383,32 @@ reconstruct every selector draw.
 Replay also rejects a best-holder preference index outside the workload key's
 compiled portfolio; otherwise selector accounting would silently ignore it.
 
-The leading tier gives up weight while it finds nothing new. Each tier counts its
-draws since a new cell last appeared in it and keeps the longest such run; its
-pace is that longest run or its cell count, whichever is larger. When the
-current count passes twice the pace, the leading tier's weight halves, and it
-halves again each time the count doubles, down to the weight of the rank
-below. The halvings apply only while the rank below yields more per draw than
-the leading tier since the leading tier's last new cell. A tier's yields are
-its new cells and its carried-in wins, admissions that take a slot's
-preference from a parent in another cell. The leading tier counts only its
-carried-in wins there, since a new cell ends the run. With `Td` and `Ty` the
-leading tier's draws and wins in the run, and `Nd` and `Ny` the draws and
-yields of the rank below over the same span, the halvings apply while
-`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`. When the rank below is a
-different tier from the one recorded when the run began, or no tier was
-recorded, `Nd` and `Ny` are that tier's total draws and yields. A leading tier
-that yields at least as much per draw as the rank below keeps its full weight. A new cell in
-the tier restores the full weight. When the leading tier has halved all the way
+The leading tier gives up weight while it makes no progress. A tier makes
+progress when a parent drawn from it opens a cell at a deeper progress value;
+a new cell beside its parent at the same progress value is not progress. Each
+tier counts its draws since it last made progress, or since it appeared, and
+keeps the longest such run; its pace is that longest run or its cell count,
+whichever is larger. When the current count passes twice the pace, the leading
+tier's weight halves, and it halves again each time the count doubles, down to
+the weight of the rank below. The halvings apply only while the rank below
+yields more per draw than the leading tier since the run began. A tier's
+yields are its new cells and its carried-in wins, admissions that take a
+slot's preference from a parent in another cell. A cell is new when the
+archive has never held it and no higher tier holds a cell at its place, so a
+cell that comes back after its entries were dropped, or a lower tier reaching
+a place a higher tier already holds, yields nothing. The rank below counts
+only its new cells in the comparison, so a lower tier that keeps refilling
+stock at the same places does not take weight from a leading tier that keeps
+opening ground. With `Td` and `Ty` the leading tier's draws and yields in the
+run, and `Nd` and `Ny` the draws and new cells of the rank below over the same
+span, the halvings apply while `(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`.
+When the rank below is a different tier from the one recorded when the run
+began, or no tier was recorded, `Nd` and `Ny` are that tier's totals. A
+leading tier that yields at least as much per draw as the rank below opens
+cells keeps its full weight. Progress from the tier restores its full weight.
+A dead-end route that keeps opening cells beside each other at its deepest
+progress value therefore still loses weight, because its cells are finite and
+each opens no deeper ground. When the leading tier has halved all the way
 to the weight of the rank below, the same rule is applied to that rank against
 the rank below it, and so on down. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
@@ -440,8 +449,9 @@ new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
 `cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
 `tier_runs` keyed by each tier's progress value with its current and longest
-run, its total draws and yields, its carried-in wins in the current run, and
-the rank below's name, draws and yields when the run began, and the draws each
+run, its total draws and yields, its yields in the current run as `wins`,
+its new cells as `cells`, and the rank below's name, draws and new cells when
+the run began, and the draws each
 cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear once each time the executions double,
