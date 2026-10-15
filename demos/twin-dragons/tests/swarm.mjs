@@ -8,6 +8,7 @@ import { NO_ROOM, MOTION_STRIDE } from "../src/swarm.js";
 import { Heatmap, cellKey } from "../src/heat.js";
 import { project, isMapEvidence } from "../src/world.js";
 import { TOUR_KEY } from "../src/tour.js";
+import { showOnMap } from "./map-point.mjs";
 import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
 const setView=async(page,mode)=>{const want=mode==='both'?['movement','heat']:[mode];const b=v=>page.locator(`[data-viz="${v}"]`);for(const v of want)if(await b(v).getAttribute('aria-pressed')!=='true')await b(v).click();for(const v of ['movement','heat'])if(!want.includes(v)&&await b(v).getAttribute('aria-pressed')==='true')await b(v).click();};
 const base = new URL("../public/", import.meta.url);
@@ -78,6 +79,7 @@ try {
           super(...args);
           this.addEventListener("message", ({ data }) => {
             if (!["ready", "batch"].includes(data.type)) return;
+            if (data.type === "ready") window.tdRoot ??= data.state.observation;
             if (!window.tdTestHeat.has(data.active)) window.tdTestHeat.set(data.active, { motion: new Set(), endpoints: new Set() });
             const cells = window.tdTestHeat.get(data.active);
             for (const point of data.type === "ready" ? [data.state] : data.points) {
@@ -185,6 +187,10 @@ try {
       await page.keyboard.press('Enter');
       await page.waitForFunction(() => document.querySelector('#visualization').dataset.value === 'movement' && document.querySelector('#verification').textContent === 'Exact replay ✓' && [...document.querySelectorAll('.area-map')].some(c => Number(c.dataset.tracePoints) > 0));
       await setView(page,'both');
+      const root = await page.evaluate(() => window.tdRoot);
+      const spawn = await showOnMap(page, root.level, Math.floor((root.x + 8) / 32) * 32 + 16, Math.floor(root.y / 32) * 32 + 24);
+      await page.mouse.click(spawn.x, spawn.y);
+      await page.waitForFunction(() => !document.querySelector("#inspector").hidden && !document.querySelector("#take-control").disabled, null, { timeout: 60000 });
       await page.locator("#take-control").click();
       await page.keyboard.down("ArrowRight");
       await page.waitForTimeout(140);
