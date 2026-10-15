@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{io, path::PathBuf};
+use std::path::PathBuf;
+
+#[cfg(target_os = "linux")]
+use std::io;
 
 use serde::{Deserialize, Serialize};
 
