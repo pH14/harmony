@@ -393,7 +393,8 @@ tier's weight halves, and it halves again each time the count doubles, down to
 the weight of the rank below. The halvings apply only while the rank below
 yields more per draw than the leading tier since the run began, or while the
 leading tier has gone longer without a yield than the rank below has been
-drawn in the run. A tier's
+drawn in the run, or while it has gone more than eight times its own average
+gap without a yield. A tier's
 yields are its new cells and its carried-in wins, admissions that take a
 slot's preference from a parent in another cell. A cell is new when the
 archive has never held it and no higher tier holds a cell at its place, so a
@@ -404,10 +405,15 @@ stock at the same places does not take weight from a leading tier that keeps
 opening ground. With `Td` and `Ty` the leading tier's draws and yields in the
 run, `Tq` its draws since its last yield, and `Nd` and `Ny` the draws and new
 cells of the rank below over the same span, the halvings apply while
-`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)` or `Tq > Nd`. The second condition
+`(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`, `Tq > Nd`, or
+`Tq * (Ty + 1) > 8 * Td`. The second condition
 makes a leading tier that stops yielding lose its weight even when the rank
 below yields nothing: `Tq` grows with every leading-tier draw and `Nd` grows
-only with the rank below's smaller share, and a tier's yields are finite.
+only with the rank below's smaller share, and a tier's yields are finite. The
+third condition sets how soon the fall starts: a tier that still wins now and
+then, but far less often than it used to, falls without waiting for `Tq` to
+pass every draw the rank below received since the run began, while a tier that
+keeps farming at its usual gap holds.
 When the rank below is a different tier from the one recorded when the run
 began, or no tier was recorded, `Nd` and `Ny` are that tier's totals. A
 leading tier that yields at least as much per draw as the rank below opens

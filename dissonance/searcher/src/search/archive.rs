@@ -145,6 +145,8 @@ const TIER_RANK_CAP: u8 = 8;
 
 const TIER_RANK_SHIFT: u32 = 3;
 
+const DRY_GAP_FACTOR: u64 = 8;
+
 const MAX_TIER_RANK_SHIFT: u32 = (u64::BITS - 1) / TIER_RANK_CAP as u32;
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
@@ -2743,7 +2745,9 @@ where
         let next_yields_more = u128::from(next_cells.saturating_add(1))
             * u128::from(runs.current.saturating_add(1))
             > u128::from(runs.wins.saturating_add(1)) * u128::from(next_draws.saturating_add(1));
-        if next_yields_more || runs.dry > next_draws {
+        let dry_past_its_gap = u128::from(runs.dry) * u128::from(runs.wins.saturating_add(1))
+            > u128::from(DRY_GAP_FACTOR) * u128::from(runs.current);
+        if next_yields_more || runs.dry > next_draws || dry_past_its_gap {
             (runs.current.saturating_sub(1) / pace)
                 .max(1)
                 .ilog2()
@@ -8561,7 +8565,7 @@ mod tests {
         for _ in 0..1024 {
             archive.record_selection(1, &draw);
         }
-        archive.tier_runs_mut((2, 1)).wins = 16;
+        archive.tier_runs_mut((2, 1)).wins = 7;
         for _ in 0..512 {
             archive.record_selection(0, &draw);
         }
@@ -8572,6 +8576,37 @@ mod tests {
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000f, 4096);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+    }
+
+    fn top_tier_with_a_busy_rank_below(top_draws: u64, wins: u64, dry: u64) -> [u64; 2] {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..4096 {
+            archive.record_selection(1, &draw);
+        }
+        for _ in 0..top_draws {
+            archive.record_selection(0, &draw);
+        }
+        let runs = archive.tier_runs_mut((2, 1));
+        runs.wins = wins;
+        runs.dry = dry;
+        top_tier_draws(&mut archive, 0x7ea1_0015, 6144)
+    }
+
+    #[test]
+    fn a_tier_dry_far_past_its_own_usual_gap_falls_while_the_rank_below_draws_more() {
+        let counts = top_tier_with_a_busy_rank_below(4096, 255, 1024);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+    }
+
+    #[test]
+    fn a_tier_that_keeps_winning_at_its_usual_gap_keeps_its_weight() {
+        let counts = top_tier_with_a_busy_rank_below(4096, 255, 64);
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
 
     #[test]
