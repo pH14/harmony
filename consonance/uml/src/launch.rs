@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
+#[cfg(test)]
+use std::sync::atomic::AtomicI32;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -34,6 +36,11 @@ const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
+
+#[cfg(test)]
+static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+static TEST_EVENT_CUT_FINISH_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 fn fixed_host_layout(command: &mut Command) {
@@ -708,6 +715,12 @@ impl Guest {
         kill_group(self.pid);
         self.child.wait()?;
         let leftovers = sweep(self.pid);
+        #[cfg(test)]
+        if reason == ExitReason::EventCut
+            && TEST_EVENT_CUT_FINISH_PID.load(Ordering::Acquire) == self.pid
+        {
+            TEST_EVENT_CUT_FINISH_READY.store(true, Ordering::Release);
+        }
         if leftovers.is_empty()
             && let Some(reader) = self.reader.take()
         {
@@ -727,15 +740,13 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
-        let reason = if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
-            if self.over_limit.load(Ordering::Acquire) {
-                ExitReason::ConsoleLimit
-            } else {
-                match self.bridge_state.load(Ordering::Acquire) {
-                    bridge::CUT => ExitReason::EventCut,
-                    bridge::FAILED => ExitReason::BridgeFailure,
-                    _ => reason,
-                }
+        let reason = if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
+            ExitReason::ConsoleLimit
+        } else if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
+            match self.bridge_state.load(Ordering::Acquire) {
+                bridge::CUT => ExitReason::EventCut,
+                bridge::FAILED => ExitReason::BridgeFailure,
+                _ => reason,
             }
         } else {
             reason
@@ -1550,6 +1561,67 @@ mod tests {
         drop(held);
         let exit = guest.finish(reason).unwrap();
         assert_eq!(exit.console_bytes, 16);
+        assert_eq!(exit.reason, ExitReason::ConsoleLimit);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn completed_console_overflow_precedes_event_cut() {
+        struct ResetProbe;
+        impl Drop for ResetProbe {
+            fn drop(&mut self) {
+                TEST_EVENT_CUT_FINISH_PID.store(0, Ordering::Release);
+            }
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.console_limit_bytes = 8;
+        launch.console_tail_bytes = 64;
+        launch.bridge = Some(Bridge {
+            seed: 7,
+            cut: Some(1),
+        });
+        let mut request = [0_u8; hypercall_proto::MAX_FRAME];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            7,
+            b"\0\0\0\0{}",
+            &mut request,
+        )
+        .unwrap();
+        let mut frame = 1_u64.to_le_bytes().to_vec();
+        frame.extend_from_slice(&request[..length]);
+        let packet = parent.path().join("event-packet");
+        std::fs::write(&packet, frame).unwrap();
+        let release = parent.path().join("release");
+        let script = format!(
+            "while [ ! -e {} ]; do sleep 0.001; done; printf abcdefghijklmnop; cat {} >&3; sleep 30",
+            release.display(),
+            packet.display()
+        );
+        let guest = shell(&launch, &script);
+        let console = Arc::clone(&guest.console);
+        let held = console.lock().unwrap();
+        TEST_EVENT_CUT_FINISH_READY.store(false, Ordering::Release);
+        TEST_EVENT_CUT_FINISH_PID.store(guest.pid, Ordering::Release);
+        let _reset = ResetProbe;
+        std::fs::write(release, []).unwrap();
+        let waiter = std::thread::spawn(move || guest.wait().unwrap());
+        let deadline = now() + Duration::from_secs(5);
+        while !TEST_EVENT_CUT_FINISH_READY.load(Ordering::Acquire) {
+            assert!(now() < deadline, "event cut did not reach cleanup");
+            std::thread::yield_now();
+        }
+        drop(held);
+        let exit = waiter.join().unwrap();
+        assert_eq!(exit.console_bytes, 16);
+        assert_eq!(exit.console, b"abcdefghijklmnop");
+        assert_eq!(exit.events.len(), 1);
+        assert!(exit.leftovers.is_empty());
+        assert!(exit.bridge_failure.is_none());
         assert_eq!(exit.reason, ExitReason::ConsoleLimit);
     }
 
