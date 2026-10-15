@@ -263,11 +263,13 @@ pub struct TierRuns {
     #[serde(default)]
     pub dry: u64,
     #[serde(default)]
+    pub cells: u64,
+    #[serde(default)]
     pub next_tier: String,
     #[serde(default)]
     pub next_draws: u64,
     #[serde(default)]
-    pub next_yields: u64,
+    pub next_cells: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -2497,6 +2499,9 @@ where
             let fresh = self.tier_runs(key.progress()).yields == 0;
             let runs = self.tier_runs_mut(key.progress());
             runs.yields = runs.yields.saturating_add(1);
+            if new_cell {
+                runs.cells = runs.cells.saturating_add(1);
+            }
             runs.wins = runs.wins.saturating_add(1);
             runs.dry = 0;
             if fresh {
@@ -2704,7 +2709,7 @@ where
         let (tier, next_runs) = next.unwrap_or_default();
         runs.next_tier = tier;
         runs.next_draws = next_runs.draws;
-        runs.next_yields = next_runs.yields;
+        runs.next_cells = next_runs.cells;
     }
 
     fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>, shift: u32) -> u32 {
@@ -2717,15 +2722,15 @@ where
         });
         let pace = runs.longest.max(cells);
         let counts = self.tier_runs(next);
-        let (next_draws, next_yields) = if format!("{next:?}") == runs.next_tier {
+        let (next_draws, next_cells) = if format!("{next:?}") == runs.next_tier {
             (
                 counts.draws.saturating_sub(runs.next_draws),
-                counts.yields.saturating_sub(runs.next_yields),
+                counts.cells.saturating_sub(runs.next_cells),
             )
         } else {
-            (counts.draws, counts.yields)
+            (counts.draws, counts.cells)
         };
-        let next_yields_more = u128::from(next_yields.saturating_add(1))
+        let next_yields_more = u128::from(next_cells.saturating_add(1))
             * u128::from(runs.current.saturating_add(1))
             > u128::from(runs.wins.saturating_add(1)) * u128::from(next_draws.saturating_add(1));
         if next_yields_more || runs.dry > next_draws {
@@ -8400,7 +8405,7 @@ mod tests {
         runs.wins = 32;
         runs.next_tier = String::new();
         runs.next_draws = 0;
-        runs.next_yields = 0;
+        runs.next_cells = 0;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
         let next = SelectorDraw {
@@ -8443,6 +8448,30 @@ mod tests {
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
         assert!(counts[1] > counts[2] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn carried_in_wins_in_the_rank_below_do_not_take_weight_from_a_yielding_top_tier() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for id in [0, 1] {
+            for _ in 0..64 {
+                archive.record_selection(id, &draw);
+            }
+        }
+        let runs = archive.tier_runs_mut((2, 1));
+        runs.wins = 8;
+        runs.dry = 0;
+        archive.tier_runs_mut((1, 9)).yields = 64;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        archive.tier_runs_mut((1, 9)).cells = 64;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
     }
 
     #[test]
