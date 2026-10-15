@@ -160,15 +160,23 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
     """Decode executable ranges at their natural boundaries."""
     hits: list[tuple[str, int, str]] = []
     seen: set[tuple[int, str]] = set()
+    starts: set[int] = set()
+    targets: set[int] = set()
+    instructions: dict[int, tuple[int, str, int | None, int]] = {}
     parsed = 0
+    ordered = sorted(segments, key=lambda segment: segment[1])
+    for left, right in zip(ordered, ordered[1:]):
+        if left[1] + len(left[2]) > right[1]:
+            raise ValueError("overlapping executable mappings")
     with tempfile.TemporaryDirectory() as temporary:
         segment_path = Path(temporary) / "segment"
-        for label, base, data in segments:
+
+        def decode(data: bytes, base: int, label: str):
             segment_path.write_bytes(data)
             try:
                 output = subprocess.run(
                     [
-                        "objdump", "-D", "-b", "binary", "-m", "i386:x86-64",
+                        "objdump", "-D", "-z", "-w", "-b", "binary", "-m", "i386:x86-64",
                         f"--adjust-vma=0x{base:x}", str(segment_path),
                     ],
                     check=True,
@@ -177,6 +185,8 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
                 ).stdout
             except (OSError, subprocess.CalledProcessError) as error:
                 raise ValueError(f"objdump failed: {error}") from error
+            cursor = 0
+            decoded_instructions = []
             for line in output.splitlines():
                 if ":" not in line:
                     continue
@@ -185,19 +195,66 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
                     address = int(address_text.strip(), 16)
                 except ValueError:
                     continue
-                if not base <= address < base + len(data):
-                    raise ValueError(f"objdump address outside {label}")
                 fields = remainder.split("\t")
-                if len(fields) < 2:
-                    continue
-                mnemonic_fields = " ".join(fields[1:]).strip().split()
+                if len(fields) < 3:
+                    raise ValueError(f"objdump omitted instruction bytes in {label}")
+                hex_bytes = fields[1].split()
+                if not hex_bytes or any(
+                    len(part) != 2 or any(digit not in "0123456789abcdefABCDEF" for digit in part)
+                    for part in hex_bytes
+                ):
+                    raise ValueError(f"objdump emitted malformed bytes in {label}")
+                decoded = bytes(int(part, 16) for part in hex_bytes)
+                if address != base + cursor or data[cursor : cursor + len(decoded)] != decoded:
+                    raise ValueError(f"objdump bytes differ from executable {label}")
+                cursor += len(decoded)
+                mnemonic_fields = " ".join(fields[2:]).strip().split()
                 if not mnemonic_fields:
-                    continue
+                    raise ValueError(f"objdump omitted instruction in {label}")
+                instruction = next(
+                    (
+                        index for index, field in enumerate(mnemonic_fields)
+                        if field.lower() not in ("bnd", "notrack", "data16", "addr32")
+                    ),
+                    len(mnemonic_fields),
+                )
+                if instruction == len(mnemonic_fields):
+                    raise ValueError(f"objdump emitted only instruction prefixes in {label}")
+                opcode = mnemonic_fields[instruction].lower()
+                decoded_instructions.append(
+                    (address, len(decoded), opcode, mnemonic_fields[instruction + 1 :])
+                )
+            if cursor != len(data):
+                raise ValueError(f"objdump skipped executable bytes in {label}")
+            return decoded_instructions
+
+        for index, (label, base, data) in enumerate(ordered):
+            for address, size, opcode, operands in decode(data, base, label):
                 parsed += 1
+                starts.add(address)
+                if opcode in ("ljmp", "lcall"):
+                    raise ValueError(f"unreviewable far branch in {label}")
+                direct = (
+                    opcode.startswith("j")
+                    or opcode in ("call", "callq", "loop", "loope", "loopne", "loopz", "loopnz", "xbegin")
+                )
+                target = None
+                if direct:
+                    if not operands:
+                        raise ValueError(f"objdump omitted branch operand in {label}")
+                    if operands[0].startswith("0x"):
+                        try:
+                            target = int(operands[0].rstrip(","), 16)
+                            targets.add(target)
+                        except ValueError as error:
+                            raise ValueError(f"objdump emitted invalid branch target in {label}") from error
+                    elif not operands[0].startswith("*"):
+                        raise ValueError(f"unresolved direct branch in {label}")
+                instructions[address] = (address + size, opcode, target, index)
                 mnemonic = next(
                     (
                         instruction
-                        for field in mnemonic_fields
+                        for field in (opcode, *operands)
                         for instruction in ("rdrand", "rdseed")
                         if field.lower() == instruction
                         or field.lower() in (
@@ -211,6 +268,45 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
                     if key not in seen:
                         hits.append((label, address - base, mnemonic.upper()))
                         seen.add(key)
+        for target in sorted(targets):
+            if any(base <= target < base + len(data) for _, base, data in ordered):
+                if target not in starts:
+                    raise ValueError(f"noncanonical direct branch target 0x{target:x}")
+
+        pending = sorted(target for target in targets if target in instructions)
+        reached: set[int] = set()
+        while pending:
+            address = pending.pop()
+            if address in reached:
+                continue
+            reached.add(address)
+            end, opcode, target, index = instructions[address]
+            label, base, data = ordered[index]
+            remaining = base + len(data) - address
+            if remaining < 15 and index + 1 < len(ordered):
+                suffix = bytearray(data[address - base :])
+                next_index = index + 1
+                next_base = base + len(data)
+                while len(suffix) < 15 and next_index < len(ordered):
+                    _, adjoining_base, adjoining = ordered[next_index]
+                    if adjoining_base != next_base:
+                        break
+                    suffix.extend(adjoining[: 15 - len(suffix)])
+                    next_base += len(adjoining)
+                    next_index += 1
+                if len(suffix) > remaining:
+                    extended = decode(bytes(suffix), address, label)
+                    if not extended or extended[0][1] > remaining:
+                        raise ValueError(
+                            f"branch stream crosses executable slice at 0x{address:x}"
+                        )
+            if target in instructions:
+                pending.append(target)
+            if opcode in ("jmp", "jmpq", "jmpl", "ret", "retq", "retl", "retw",
+                          "lret", "lretq", "iret", "iretq", "iretd"):
+                continue
+            if end in instructions:
+                pending.append(end)
     if parsed == 0:
         raise ValueError("objdump parsed zero executable instructions")
     return hits

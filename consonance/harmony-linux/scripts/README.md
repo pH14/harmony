@@ -8,6 +8,12 @@ On x86 it decodes contained allocated sections from their starts and scans the
 gaps between them, so headers or padding cannot shift an instruction boundary
 or create a false hit across a section boundary. Arm64 is checked as aligned
 words across the whole executable segment, regardless of section lengths.
+The x86 scan also rejects direct branches into the middle of a decoded
+instruction. It follows direct branch targets through the canonical instruction
+stream and rejects a branch-reachable instruction that crosses an executable
+section or gap boundary, where decoding each range separately could hide an
+entropy opcode. An unbranched executable prelude does not redefine a section's
+decoder start.
 Its hidden-section negative control clears the `.text` executable flag while
 leaving `PT_LOAD` executable and must still be rejected.
 

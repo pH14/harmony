@@ -112,6 +112,58 @@ class EntropyScanTests(unittest.TestCase):
         self.assertEqual(self.check(elf(scan.EM_X86_64, lea, b"\xc3", 6)), [])
 
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_direct_transfer_cannot_enter_an_instruction_immediate(self):
+        for code in (
+            b"\xeb\x01\xb8\x0f\xc7\xf0\x90\xc3",
+            b"\x75\x01\xb8\x0f\xc7\xf0\x90\xc3",
+            b"\xe8\x01\x00\x00\x00\xb8\x0f\xc7\xf0\x90\xc3",
+        ):
+            with self.subTest(code=code.hex()):
+                with self.assertRaisesRegex(ValueError, "noncanonical direct branch target"):
+                    self.check(elf(scan.EM_X86_64, code, b"", 6))
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_direct_transfer_checks_neighboring_section(self):
+        text = b"\xeb\x03\x90\xc3"
+        safe = b"\xb8\x0f\xc7\xf0\x90\xc3"
+        with self.assertRaisesRegex(ValueError, "noncanonical direct branch target"):
+            self.check(elf(scan.EM_X86_64, text, safe, 6))
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_branch_into_split_instruction_cannot_hide_entropy(self):
+        text = b"\xeb\x00"
+        safe_and_gap = b"\x3c\xb8\x90\x0f\xc7\xf0\xc3"
+        data = elf(scan.EM_X86_64, text, safe_and_gap, 6)
+        struct.pack_into("<Q", data, 256 + 32, 1)
+        with self.assertRaisesRegex(ValueError, "branch stream crosses executable slice"):
+            self.check(data)
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_branch_reaches_split_instruction_after_fallthrough(self):
+        data = elf(
+            scan.EM_X86_64,
+            b"\xeb\x00",
+            b"\x90\x90\x3c\xb8\x90\x0f\xc7\xf0\xc3",
+            6,
+        )
+        struct.pack_into("<Q", data, 256 + 32, 3)
+        with self.assertRaisesRegex(ValueError, "branch stream crosses executable slice"):
+            self.check(data)
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_return_before_split_instruction_does_not_invent_entropy(self):
+        data = elf(scan.EM_X86_64, b"\xeb\x00", b"\xc3\x3c\xb8\x90\x0f\xc7\xf0\xc3", 6)
+        struct.pack_into("<Q", data, 256 + 32, 2)
+        self.assertEqual(self.check(data), [])
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
+    def test_x86_unused_entropy_shaped_immediate_stays_clean(self):
+        self.assertEqual(
+            self.check(elf(scan.EM_X86_64, b"\xb8\x0f\xc7\xf0\x90\xc3", b"", 6)),
+            [],
+        )
+
+    @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_mapped_section_start_recovers_instruction_after_segment_prelude(self):
         data = elf(scan.EM_X86_64, b"\x0f\xc7\xf0", b"\xc3", 2)
         data[383] = 0xe8
