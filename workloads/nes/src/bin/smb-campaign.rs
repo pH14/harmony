@@ -52,7 +52,9 @@ struct LiveThroughput {
 fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
     let origin_arg = args
         .next()
-        .ok_or("missing origin (genesis or a source archive path)")?;
+        .ok_or("missing origin (genesis or a source archive path)")?
+        .into_string()
+        .map_err(|_| "origin must be UTF-8")?;
     let campaign_seed = parse_u64(
         &args
             .next()
@@ -160,11 +162,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let rom = read_rom()?;
     let game = SmbGame::from_environment(&rom)?;
     let checkpoint_format = game.snapshot_checkpoint_format();
-    let origin = load_origin(
-        &origin_arg.to_string_lossy(),
-        checkpoint_path.as_deref(),
-        checkpoint_format,
-    )?;
+    let origin = load_origin(&origin_arg, checkpoint_path.as_deref(), checkpoint_format)?;
     let config = SmbCampaignConfig {
         vocabulary,
         terminal,
@@ -221,7 +219,9 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let run_dir = PathBuf::from(args.next().ok_or("missing recorded run directory")?);
     let origin_arg = args
         .next()
-        .ok_or("missing origin (genesis or the recorded source archive path)")?;
+        .ok_or("missing origin (genesis or the recorded source archive path)")?
+        .into_string()
+        .map_err(|_| "origin must be UTF-8")?;
     let checkpoint_arg = args.next().map(PathBuf::from);
     if args.next().is_some() {
         return Err("unexpected extra replay argument".into());
@@ -230,11 +230,7 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let game = SmbGame::from_environment(&rom)?;
     let checkpoint_format = game.snapshot_checkpoint_format();
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
-    let origin = load_origin(
-        &origin_arg.to_string_lossy(),
-        checkpoint_arg.as_deref(),
-        checkpoint_format,
-    )?;
+    let origin = load_origin(&origin_arg, checkpoint_arg.as_deref(), checkpoint_format)?;
     ensure_replay_archive_digest(&stream_bytes, &origin)?;
     let (origin_report, origin_checkpoint) = match origin {
         SmbCampaignOrigin::Genesis => (None, None),
@@ -538,6 +534,27 @@ mod tests {
     };
     use nes_workload::smb::campaign::SmbSnapshotCheckpointEntry;
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn campaign_modes_reject_non_utf8_origin_before_loading_inputs() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = OsString::from_vec(vec![0xff]);
+        let run_error = super::run_mode(&mut [invalid.clone()].into_iter())
+            .expect_err("run accepted an origin path with an ambiguous recorded identity")
+            .to_string();
+        assert!(run_error.contains("origin must be UTF-8"), "{run_error}");
+
+        let replay_error =
+            super::replay_mode(&mut [OsString::from("unused-run"), invalid].into_iter())
+                .expect_err("replay accepted an origin path with an ambiguous recorded identity")
+                .to_string();
+        assert!(
+            replay_error.contains("origin must be UTF-8"),
+            "{replay_error}"
+        );
+    }
 
     fn archive_bytes(seed: u64) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
