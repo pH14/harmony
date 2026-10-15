@@ -1,0 +1,31 @@
+Keep host ASLR pointers out of the Arm UML startup console
+
+Docker's default seccomp profile refuses UML's attempt to disable host ASLR.
+Each boot therefore places the host stack and stub at different addresses.
+Those private pointers were printed in the captured guest console even though
+the guest TASK_SIZE and execution were unchanged. Keep the guest limit
+diagnostic and omit the host addresses.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/kernel/um_arch.c
++++ b/arch/um/kernel/um_arch.c
+@@ -425,12 +425,10 @@
+ 	 * from where the *host* put this process's stack. When that derivation
+ 	 * goes wrong the failure is silent and total: every guest mmap returns
+ 	 * -ENOMEM, so the first exec fails with -12 and nothing anywhere says
+-	 * why. Print the three numbers -- one line, once, at boot -- because
+-	 * reconstructing them afterwards requires a debugger on a host that may
+-	 * be a phone.
++	 * why. Print the guest limit once at boot. Host stack and stub addresses
++	 * vary under ASLR and cannot enter the captured guest console.
+ 	 */
+-	os_info("Address space: host top 0x%lx, stub at 0x%lx, guest TASK_SIZE 0x%lx\n",
+-		stub_start + STUB_SIZE, stub_start, task_size);
++	os_info("Address space: guest TASK_SIZE 0x%lx\n", task_size);
+ 
+ 	/*
+ 	 * Before os_early_checks(), which is where a host that can only offer
