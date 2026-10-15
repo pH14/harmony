@@ -192,7 +192,7 @@ class CounterScanCoverage(unittest.TestCase):
             inert = root / "inert.s"
             inert.write_text(
                 '.section .data,"aw"\n.byte 0x0f,0x31,0x0f,0xc7,0xf8\n'
-                '.section .text,"ax"\n.global _start\n_start:\nret\n'
+                '.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n'
             )
             run("as", "--64", "-o", str(root / "inert.o"), str(inert))
             run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "inert.elf"), str(root / "inert.o"))
@@ -209,7 +209,7 @@ class CounterScanCoverage(unittest.TestCase):
             read_only = root / "read_only.s"
             read_only.write_text(
                 '.section .rodata,"a"\n.byte 0x0f,0xc7,0xf8\n'
-                '.section .text,"ax"\n.global _start\n_start:\nret\n'
+                '.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n'
             )
             run("as", "--64", "-o", str(root / "read_only.o"), str(read_only))
             run(
@@ -296,21 +296,29 @@ class CounterScanCoverage(unittest.TestCase):
                     '.byte 0xb8,0x90,0x90,0x90,0x66\n'
                     '.section .rodata,"a"\n.byte 0x0f,0x31,0xc3\n'
                     '.section .safe,"ax"\n.byte 0xc3\n',
-                    "code-data boundary RDTSC",
+                    "can fall through into loaded bytes",
                 ),
                 (
                     "code-data-fallthrough-incomplete",
                     '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
                     '.section .rodata,"a"\n.byte 0x90,0x90,0x90,0x90,0x0f,0x31\n'
                     '.fill 20,1,0x90\n.section .safe,"ax"\n.byte 0xc3\n',
-                    "code-data boundary RDTSC",
+                    "can fall through into loaded bytes",
                 ),
                 (
                     "code-data-fallthrough-complete",
                     '.section .text,"ax"\n.global _start\n_start:\n.byte 0x90\n'
                     '.section .rodata,"a"\n.byte 0x0f,0x31\n'
                     '.fill 20,1,0x90\n.section .safe,"ax"\n.byte 0xc3\n',
-                    "code-data boundary RDTSC",
+                    "can fall through into loaded bytes",
+                ),
+                (
+                    "code-data-fallthrough-long",
+                    '.section .text,"ax"\n.global _start\n_start:\nnop\n'
+                    '.section .rodata,"a"\n.fill 14,1,0x90\nrdtsc\n'
+                    'mov %eax,%edi\nmov $60,%eax\nsyscall\n'
+                    '.section .safe,"ax"\nret\n',
+                    "can fall through into loaded bytes",
                 ),
                 (
                     "code-data-code-desync",
@@ -396,7 +404,85 @@ class CounterScanCoverage(unittest.TestCase):
                 with self.subTest(mode=mode, target="vmlinux"):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn("nearby executable PT_LOAD boundary", result.stderr)
+                    self.assertIn("can fall through into loaded bytes", result.stderr)
+
+            long_linker = root / "split-load-long.ld"
+            long_linker.write_text(split_linker.read_text().replace("0x400fff", "0x400fee"))
+            long_source = root / "split-load-long.s"
+            long_source.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nmov %rsp,%rax\n'
+                '.section .safe,"ax"\n.byte 0xc0,0x0f,0x31\n'
+                'mov %eax,%edi\nmov $60,%eax\nsyscall\n'
+            )
+            run("as", "--64", "-o", str(root / "split-load-long.o"), str(long_source))
+            run(
+                "ld", "-nostdlib", "-T", str(long_linker), "-e", "_start", "-o",
+                str(root / "split-load-long.elf"), str(root / "split-load-long.o"),
+            )
+            kernel.write_bytes((root / "split-load-long.elf").read_bytes())
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="split-load-long-gap", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("can fall through into loaded bytes", result.stderr)
+
+            data_linker = root / "split-load-data.ld"
+            data_linker.write_text(
+                "PHDRS { a PT_LOAD FLAGS(5); b PT_LOAD FLAGS(6); }\n"
+                "SECTIONS { . = 0x400fff; .text : { *(.text) } :a "
+                ". = 0x401000; .data : { *(.data) } :b }\n"
+            )
+            data_source = root / "split-load-data.s"
+            data_source.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nnop\n'
+                '.section .data,"aw"\n.byte 0x0f,0x31\n'
+            )
+            run("as", "--64", "-o", str(root / "split-load-data.o"), str(data_source))
+            run(
+                "ld", "-nostdlib", "-T", str(data_linker), "-e", "_start", "-o",
+                str(root / "split-load-data.elf"), str(root / "split-load-data.o"),
+            )
+            for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
+                kernel.write_bytes(safe_bytes)
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                target.write_bytes((root / "split-load-data.elf").read_bytes())
+                with self.subTest(mode="split-load-nonexecutable-data", target=tag):
+                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("can fall through into loaded bytes", result.stderr)
+
+            overlap = bytearray((root / "split-load-data.elf").read_bytes())
+            program_offset = struct.unpack_from("<Q", overlap, 32)[0]
+            program_size, program_count = struct.unpack_from("<HH", overlap, 54)
+            load_headers = [
+                program_offset + index * program_size
+                for index in range(program_count)
+                if struct.unpack_from("<I", overlap, program_offset + index * program_size)[0] == 1
+            ]
+            self.assertEqual(len(load_headers), 2)
+            first_address = struct.unpack_from("<Q", overlap, load_headers[0] + 16)[0]
+            struct.pack_into("<Q", overlap, load_headers[1] + 16, first_address)
+            kernel.write_bytes(overlap)
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="overlapping-loads", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("overlapping PT_LOAD memory ranges", result.stderr)
+
+            zero_fill_overlap = bytearray((root / "split-load-data.elf").read_bytes())
+            next_address = struct.unpack_from("<Q", zero_fill_overlap, load_headers[1] + 16)[0]
+            struct.pack_into(
+                "<Q", zero_fill_overlap, load_headers[0] + 40,
+                next_address - first_address + 1,
+            )
+            kernel.write_bytes(zero_fill_overlap)
+            with self.subTest(mode="overlapping-zero-filled-loads", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("overlapping PT_LOAD memory ranges", result.stderr)
 
             bss_linker = root / "split-load-bss.ld"
             bss_linker.write_text(
@@ -422,7 +508,7 @@ class CounterScanCoverage(unittest.TestCase):
             with self.subTest(mode="split-load-bss-gap", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("nearby executable PT_LOAD boundary", result.stderr)
+                self.assertIn("can fall through into loaded bytes", result.stderr)
 
             control = root / "boundary-control.s"
             control.write_text(
@@ -440,6 +526,41 @@ class CounterScanCoverage(unittest.TestCase):
             with self.subTest(mode="boundary-control", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            fenced = root / "boundary-fenced.s"
+            fenced.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n'
+                '.section .rodata,"a"\n.byte 0x0f,0x31,0x0f,0xc7,0xf8\n'
+                '.section .safe,"ax"\nret\n'
+            )
+            run("as", "--64", "-o", str(root / "boundary-fenced.o"), str(fenced))
+            run(
+                "ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o",
+                str(root / "boundary-fenced.elf"), str(root / "boundary-fenced.o"),
+            )
+            for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
+                kernel.write_bytes(safe_bytes)
+                setup.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_bytes)
+                target.write_bytes((root / "boundary-fenced.elf").read_bytes())
+                with self.subTest(mode="boundary-fenced-reviewed-data", target=tag):
+                    result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            short_fence = root / "boundary-short-fence.s"
+            short_fence.write_text(fenced.read_text().replace(".fill 15,1,0xcc", ".fill 14,1,0xcc"))
+            run("as", "--64", "-o", str(root / "boundary-short-fence.o"), str(short_fence))
+            run(
+                "ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o",
+                str(root / "boundary-short-fence.elf"), str(root / "boundary-short-fence.o"),
+            )
+            kernel.write_bytes((root / "boundary-short-fence.elf").read_bytes())
+            setup.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_bytes)
+            with self.subTest(mode="boundary-short-fence", target="vmlinux"):
+                result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("can fall through into loaded bytes", result.stderr)
 
             prefixed = root / "boundary-prefixed.s"
             prefixed.write_text(
