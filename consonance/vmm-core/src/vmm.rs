@@ -1063,6 +1063,10 @@ where
         self.completion_staged = false;
         self.sdk_snapshot_reentry_required = engine_state.sdk_snapshot_reentry_required;
         self.snapshot_ready = true;
+        if let Some(vt) = self.vtime.as_ref() {
+            self.virtual_time_progress
+                .store(vt.virtual_time_vns(), std::sync::atomic::Ordering::Release);
+        }
         Ok(())
     }
 
@@ -3130,6 +3134,28 @@ mod tests {
         snapshot.vns = 4_096;
         vmm.restore_vtime(&snapshot).unwrap();
         assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_096);
+    }
+
+    #[test]
+    fn in_place_restore_resets_virtual_time_progress_before_repeated_tick() {
+        let mut vmm = Vmm::new(configured_mock(Vec::new()), GuestRam::new(0x1000).unwrap());
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 1).unwrap());
+        vmm.advance_virtual_time_vtime(4_096).unwrap();
+        let saved = vmm.save_vm_state().unwrap();
+        let progress = vmm.virtual_time_progress().unwrap();
+
+        vmm.advance_virtual_time_vtime(17).unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_113);
+        let mut invalid = saved.clone();
+        invalid.contract_hash = [0; 32];
+        assert!(vmm.restore_vm_state(&invalid).is_err());
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_113);
+
+        vmm.restore_vm_state(&saved).unwrap();
+        assert_eq!(vmm.effective_vns(), Some(4_096));
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_096);
+        vmm.advance_virtual_time_vtime(17).unwrap();
+        assert_eq!(progress.load(std::sync::atomic::Ordering::Acquire), 4_113);
     }
 
     fn configured_mock(exits: Vec<Exit<X86>>) -> MockBackend {
