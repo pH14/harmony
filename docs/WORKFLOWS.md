@@ -81,6 +81,12 @@ fails unless every artifact is byte-identical; two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
 port, and every check below runs on an x86-64 and an arm64 runner.
 
+The root Nextest configuration starts Linux test binaries through
+`scripts/linux-clean-loader-test.sh`, which removes Cargo's code-selecting
+loader variables before the test begins. The Fault Injection job uses that
+runner only for its Linux Cargo test step. This test-only cleanup does not
+change production identity admission or Miri execution.
+
 `UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
 sequence as the runner's ordinary UID, natively and under Docker's default
 seccomp profile with every capability dropped. A failing suite does not stop

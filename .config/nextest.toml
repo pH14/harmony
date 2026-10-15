@@ -1,5 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
+experimental = ["wrapper-scripts"]
+
+[scripts.wrapper.clean-loader]
+command = { command-line = "scripts/linux-clean-loader-test.sh", relative-to = "workspace-root" }
+
+[[profile.default.scripts]]
+platform = 'cfg(target_os = "linux")'
+run-wrapper = "clean-loader"
+
 [profile.mutants]
 fail-fast = true
 
