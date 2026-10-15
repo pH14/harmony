@@ -261,6 +261,8 @@ pub struct TierRuns {
     #[serde(default)]
     pub wins: u64,
     #[serde(default)]
+    pub dry: u64,
+    #[serde(default)]
     pub next_tier: String,
     #[serde(default)]
     pub next_draws: u64,
@@ -2496,6 +2498,7 @@ where
             let runs = self.tier_runs_mut(key.progress());
             runs.yields = runs.yields.saturating_add(1);
             runs.wins = runs.wins.saturating_add(1);
+            runs.dry = 0;
             if fresh {
                 self.restart_tier_run(key.progress());
             }
@@ -2697,6 +2700,7 @@ where
         runs.longest = runs.longest.max(runs.current);
         runs.current = 0;
         runs.wins = 0;
+        runs.dry = 0;
         let (tier, next_runs) = next.unwrap_or_default();
         runs.next_tier = tier;
         runs.next_draws = next_runs.draws;
@@ -2724,7 +2728,7 @@ where
         let next_yields_more = u128::from(next_yields.saturating_add(1))
             * u128::from(runs.current.saturating_add(1))
             > u128::from(runs.wins.saturating_add(1)) * u128::from(next_draws.saturating_add(1));
-        if next_yields_more {
+        if next_yields_more || runs.dry > next_draws {
             (runs.current.saturating_sub(1) / pace)
                 .max(1)
                 .ilog2()
@@ -3182,6 +3186,7 @@ where
         let key = self.entries[id].key;
         let runs = self.tier_runs_mut(key.progress());
         runs.current = runs.current.saturating_add(1);
+        runs.dry = runs.dry.saturating_add(1);
         runs.draws = runs.draws.saturating_add(1);
         let state = self.cells.entry(cell_of(key)).or_default();
         state.draws = state.draws.saturating_add(1);
@@ -8308,7 +8313,9 @@ mod tests {
                 archive.record_selection(id, &draw);
             }
         }
-        archive.tier_runs_mut((2, 1)).wins = 64;
+        let runs = archive.tier_runs_mut((2, 1));
+        runs.wins = 64;
+        runs.dry = 0;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0009, 4096);
         assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
@@ -8436,6 +8443,30 @@ mod tests {
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
         assert!(counts[1] > counts[2] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn a_top_tier_that_stops_winning_falls_even_when_the_next_tier_yields_nothing() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..1024 {
+            archive.record_selection(1, &draw);
+        }
+        archive.tier_runs_mut((2, 1)).wins = 16;
+        for _ in 0..512 {
+            archive.record_selection(0, &draw);
+        }
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000f, 4096);
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        for _ in 0..1024 {
+            archive.record_selection(0, &draw);
+        }
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000f, 4096);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
     }
 
     #[test]
