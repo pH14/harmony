@@ -392,8 +392,12 @@ its full weight. Progress
 from the tier restores its full weight. A dead-end route that keeps opening
 cells beside each other at its deepest progress value therefore still loses
 weight, because its cells are finite and each opens no deeper ground. When the leading tier has halved all the way
-to the weight of the rank below, the same rule is applied to that rank against
-the rank below it, and so on down. Every rank down to the first one still short
+to the weight of the rank below under the first or second condition, the same
+rule is applied to that rank against the rank below it, and so on down. The
+third condition alone takes a tier no lower than the weight of the rank below:
+a tier that wins far less often than it used to may be one attempt from a
+crossing, so it keeps an equal share with the rank below until it also passes
+`Tq > Nd`. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
 fall back past several stalled tiers at once, which matters when the states
 that decide a later death lie several tiers back. A

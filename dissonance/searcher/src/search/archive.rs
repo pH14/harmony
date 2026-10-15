@@ -2724,9 +2724,14 @@ where
         runs.next_cells = next_runs.cells;
     }
 
-    fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>, shift: u32) -> u32 {
+    fn tier_halvings(
+        &self,
+        progress: K::Progress,
+        next: Option<K::Progress>,
+        shift: u32,
+    ) -> (u32, bool) {
         let Some(next) = next else {
-            return 0;
+            return (0, false);
         };
         let runs = self.tier_runs(progress);
         let cells = self.tiers.get(&progress).map_or(1, |tier| {
@@ -2747,13 +2752,15 @@ where
             > u128::from(runs.wins.saturating_add(1)) * u128::from(next_draws.saturating_add(1));
         let dry_past_its_gap = u128::from(runs.dry) * u128::from(runs.wins.saturating_add(1))
             > u128::from(DRY_GAP_FACTOR) * u128::from(runs.current);
-        if next_yields_more || runs.dry > next_draws || dry_past_its_gap {
-            (runs.current.saturating_sub(1) / pace)
+        let cascades = next_yields_more || runs.dry > next_draws;
+        if cascades || dry_past_its_gap {
+            let halvings = (runs.current.saturating_sub(1) / pace)
                 .max(1)
                 .ilog2()
-                .min(shift)
+                .min(shift);
+            (halvings, cascades)
         } else {
-            0
+            (0, false)
         }
     }
 
@@ -2764,8 +2771,9 @@ where
         let mut floor = 0_usize;
         let mut halvings = 0;
         while let Some(progress) = ranked.next() {
-            halvings = self.tier_halvings(progress, ranked.peek().copied(), shift);
-            if halvings < shift || ranked.peek().is_none() {
+            let cascades;
+            (halvings, cascades) = self.tier_halvings(progress, ranked.peek().copied(), shift);
+            if halvings < shift || !cascades || ranked.peek().is_none() {
                 break;
             }
             floor += 1;
@@ -8601,6 +8609,34 @@ mod tests {
     fn a_tier_dry_far_past_its_own_usual_gap_falls_while_the_rank_below_draws_more() {
         let counts = top_tier_with_a_busy_rank_below(4096, 255, 1024);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+    }
+
+    #[test]
+    fn a_tier_dry_past_its_own_gap_alone_falls_no_lower_than_the_rank_below() {
+        let mut archive = tier_archive(&[(3, 1, 0), (2, 1, 0), (1, 9, 0)]);
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..4096 {
+            archive.record_selection(2, &draw);
+        }
+        for _ in 0..4096 {
+            archive.record_selection(1, &draw);
+        }
+        let runs = archive.tier_runs_mut((2, 1));
+        runs.wins = 255;
+        runs.dry = 1024;
+        for _ in 0..4096 {
+            archive.record_selection(0, &draw);
+        }
+        let runs = archive.tier_runs_mut((3, 1));
+        runs.wins = 255;
+        runs.dry = 1024;
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0017, 6144);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+        assert!(counts[1] > counts[2] * 5, "{counts:?}");
     }
 
     #[test]
