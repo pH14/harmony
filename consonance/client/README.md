@@ -36,9 +36,12 @@ admission refuses defined ambient loader overrides that can select host code:
 `DYLD_FALLBACK_LIBRARY_PATH`, `DYLD_VERSIONED_LIBRARY_PATH`,
 `DYLD_IMAGE_SUFFIX`, `DYLD_INSERT_LIBRARIES`, `DYLD_SHARED_REGION`, and
 `DYLD_SHARED_CACHE_DIR` on macOS. Even empty definitions are refused because
-some loader variables give empty values a meaning. This check does
-not bind ordinary dependent libraries, code loaded later, or an injected
-library that clears its loader variable before admission. A nonempty
+some loader variables give empty values a meaning. Linux admission also checks
+that the running identity code is mapped from the same inode as
+`/proc/self/exe`, refusing direct dynamic-loader launches whose command-line
+options bypass the environment check. These checks do not bind ordinary
+dependent libraries, code loaded later, or an injected library that clears
+its loader variable before admission. A nonempty
 `identity_tag` adds a workload domain; it does not replace those setup inputs.
 
 On Linux, `cargo run` itself defines `LD_LIBRARY_PATH`; build first and run the
