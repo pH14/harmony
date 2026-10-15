@@ -7,6 +7,7 @@ mod metroid;
 mod smb;
 mod twin_dragons;
 
+use nes_games::arcade::snapshot_digest;
 use searcher::search::{
     archive::{Archive, ArchiveCandidate, ArchiveKey},
     rand::RomuDuoJrRand,
@@ -241,18 +242,6 @@ struct Job {
 
 const MIN_SNAPSHOT_BUDGET: usize = 2 * 1024 * 1024;
 const MIN_ACTIVE_ENTRIES: usize = 256;
-
-pub(crate) fn snapshot_digest(bytes: &[u8]) -> u64 {
-    let mut a: u32 = 0x811c_9dc5;
-    let mut b: u32 = 0x01c9_3a75;
-    for &byte in bytes {
-        a = (a ^ u32::from(byte)).wrapping_mul(0x0100_0193);
-        b = (b ^ u32::from(byte))
-            .wrapping_mul(0x0100_0193)
-            .rotate_left(5);
-    }
-    (u64::from(a) << 32) | u64::from(b)
-}
 
 fn compress_snapshot(bytes: &[u8]) -> Box<[u8]> {
     miniz_oxide::deflate::compress_to_vec(bytes, 1).into_boxed_slice()
@@ -576,12 +565,6 @@ impl Explorer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn snapshot_digest_matches_the_browser_reference() {
-        assert_eq!(snapshot_digest(&[]), 0x811c_9dc5_01c9_3a75);
-        assert_eq!(snapshot_digest(b"twin"), 0x9a87_04f3_35dd_7e16);
-        assert_ne!(snapshot_digest(b"twin"), snapshot_digest(b"twio"));
-    }
     #[test]
     fn human_histories_reject_invalid_inputs_and_bound_total_work() {
         assert!(

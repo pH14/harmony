@@ -35,7 +35,8 @@ export function runCampaign(search, worker, { jobs = Infinity, onJob } = {}) {
   for (let done = 0; done < jobs; done++) {
     const job = search.plan();
     if (!job) return false;
-    search.admit(worker.run(job));
+    const outcome = worker.run(job);
+    search.admit(outcome, worker.note());
     onJob?.(worker);
   }
   return true;

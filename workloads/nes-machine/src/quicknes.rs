@@ -19,7 +19,7 @@ use std::{
 
 use crate::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{ButtonChord, WRAM_SIZE, actions_of},
+    nes::{ButtonChord, STATE_HEADER_LEN, STATE_MAGIC, WRAM_SIZE, actions_of},
 };
 #[cfg(not(miri))]
 use sha2::{Digest, Sha256};
@@ -83,8 +83,6 @@ define_quicknes_options!(
 pub const QUICKNES_BUILD: &str =
     "DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32";
 
-const STATE_MAGIC: &[u8; 8] = b"HQNESST2";
-const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 8;
 const QUICKNES_FILE_MAGIC: &[u8; 8] = b"NESS\xff\xff\xff\xff";
 const QUICKNES_BLOCK_HEADER_LEN: usize = 8;
 const QUICKNES_PPU_STATE_LEN: usize = 52;

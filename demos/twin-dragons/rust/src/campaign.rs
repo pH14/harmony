@@ -7,6 +7,7 @@ use std::{
     io::Write,
     ops::Range,
     rc::Rc,
+    sync::Arc,
 };
 
 use machine::{
@@ -14,30 +15,31 @@ use machine::{
     nes::{ButtonChord, WRAM_SIZE, actions_of},
 };
 use nes_games::{
+    arcade::{
+        ArcadeGame,
+        feed::{self, Feed, Note, State, actions, chord_frames, raw_state, run_noted},
+        snapshot_digest,
+        trail::Traced,
+    },
     nes_backend::{NesBackend, NesMemory, pack_quicknes_state, unpack_state_into},
     search::{
         archive::{MAX_ARCHIVE_ENTRIES, RetentionPolicy},
         campaign::{
-            CampaignAdmissionDecision, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
-            CampaignExecutionOptions, CampaignJobResult, CampaignOrigin, JobOutcome, JobSpec,
-            SnapshotCheckpoint, SnapshotCheckpointEntry, Workload, run_job,
+            CampaignCheckpoint, CampaignConfig, CampaignCoordinator, CampaignExecutionOptions,
+            CampaignOrigin, JobOutcome, JobSpec, SnapshotCheckpoint, SnapshotCheckpointEntry,
+            run_job,
         },
-        draw::DrawMixture,
-        rollout::ExecutionDisposition,
     },
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use wasm_bindgen::prelude::*;
 
 use crate::{
-    famidash::Famidash, mega_man::MegaMan, metroid::Metroid, smb::Smb, snapshot_digest,
-    twin_dragons::TwinDragons,
+    famidash::Famidash, mega_man::MegaMan, metroid::Metroid, smb::Smb, twin_dragons::TwinDragons,
 };
 
 const WINDOW: usize = 16;
-const TRAIL_STRIDE: usize = 4;
-pub const HIDDEN: u16 = u16::MAX;
 
 #[wasm_bindgen(
     inline_js = "const core = (id) => globalThis.harmonyCores[id]; export function core_reset(id){core(id).reset()} export function core_frames(id,buttons,frames){return core(id).frames(buttons,frames)} export function core_capture(id){return core(id).capture()} export function core_restore(id,state){core(id).restore(state)} export function core_ram(id){return core(id).memory()} export function core_poke(id,addr,value){core(id).ramView()[addr]=value}"
@@ -70,50 +72,30 @@ pub fn restore_ram(core: u32, raw: &[u8]) -> Result<Vec<u8>, MachineError> {
     core_ram(core).map_err(backend)
 }
 
-pub trait BrowserGame:
-    Workload<Action = ButtonChord, ArchiveReport: Serialize> + Sized + 'static
-{
-    type View: Serialize + Copy;
-
-    const MEMORY_BYTES: usize = WRAM_SIZE;
-
-    fn create(core: u32, rom: &[u8], identity: &str, identity_sha256: &str) -> Self;
-
-    fn run() -> Self::Run;
-
-    fn mixture() -> DrawMixture;
-
-    fn motion(memory: &[u8]) -> [u16; 4];
-
-    fn memory_cleared(memory: &[u8]) -> u8;
-
-    fn memory_view(memory: &[u8]) -> Result<Self::View, Box<dyn Error>>;
-
-    fn view(observation: &Self::Observations) -> Self::View;
-
-    fn frame_count(observation: &Self::Observations) -> u64;
-
-    fn cleared(observation: &Self::Observations) -> u8;
-
-    fn emulator_state(snapshot: &Self::Snapshot) -> &[u8];
-
+pub trait BrowserGame: ArcadeGame<Machine = Traced<JsMachine>> {
     fn root_snapshot(
         target: &mut Self::Target,
         core: u32,
         raw: &[u8],
         frames: u64,
     ) -> Result<Self::Snapshot, Box<dyn Error>>;
-}
 
-#[derive(Default)]
-struct Trail {
-    skip: u64,
-    samples: Vec<u16>,
-    start_cleared: u8,
+    fn create(core: u32, rom: &[u8], identity: &str, identity_sha256: &str) -> Self {
+        Self::arcade(
+            rom,
+            identity,
+            identity_sha256,
+            Arc::new(move || {
+                Ok(Traced::new(
+                    JsMachine::new(core, Self::MEMORY_BYTES)?,
+                    Self::probe(),
+                ))
+            }),
+        )
+    }
 }
 
 thread_local! {
-    static TRAILS: RefCell<BTreeMap<u32, Trail>> = const { RefCell::new(BTreeMap::new()) };
     static RECORDED_PATH: RefCell<Option<Option<RecordedPath>>> = const { RefCell::new(None) };
 }
 
@@ -130,8 +112,6 @@ fn recording<T>(run: impl FnOnce() -> T) -> (T, Option<RecordedPath>) {
 
 struct Held {
     state: Vec<u8>,
-    elapsed: u64,
-    trail: usize,
     path: Option<(usize, bool)>,
 }
 
@@ -139,12 +119,9 @@ pub struct JsMachine {
     core: u32,
     state_len: usize,
     memory_bytes: usize,
-    motion: fn(&[u8]) -> [u16; 4],
-    cleared: fn(&[u8]) -> u8,
     snapshots: BTreeMap<u64, Held>,
     next: u64,
     staged: VecDeque<ButtonChord>,
-    elapsed: u64,
     vtime: u64,
     memory: Vec<u8>,
     frames: Vec<[u8; WRAM_SIZE]>,
@@ -154,11 +131,11 @@ pub struct JsMachine {
 }
 
 impl JsMachine {
-    pub fn new<G: BrowserGame>(core: u32) -> Result<Self, MachineError> {
+    pub fn new(core: u32, memory_bytes: usize) -> Result<Self, MachineError> {
         core_reset(core).map_err(backend)?;
         let state_len = core_capture(core).map_err(backend)?.len();
         let memory = core_ram(core).map_err(backend)?;
-        if memory.len() != G::MEMORY_BYTES {
+        if memory.len() != memory_bytes {
             return Err(MachineError::Backend(
                 "QuickNES returned the wrong amount of memory".to_owned(),
             ));
@@ -166,13 +143,10 @@ impl JsMachine {
         Ok(Self {
             core,
             state_len,
-            memory_bytes: G::MEMORY_BYTES,
-            motion: G::motion,
-            cleared: G::memory_cleared,
+            memory_bytes,
             snapshots: BTreeMap::new(),
             next: 0,
             staged: VecDeque::new(),
-            elapsed: 0,
             vtime: 0,
             memory,
             frames: Vec::new(),
@@ -200,8 +174,6 @@ impl JsMachine {
             .get(&snap.0)
             .ok_or(MachineError::UnknownSnapshot)?;
         core_restore(self.core, &held.state).map_err(backend)?;
-        self.elapsed = held.elapsed;
-        let trail = held.trail;
         if let Some(path) = self.path.as_mut() {
             let (len, from_power_on) = held.path.unwrap_or((0, false));
             path.actions.truncate(len);
@@ -209,36 +181,7 @@ impl JsMachine {
         }
         self.memory = core_ram(self.core).map_err(backend)?;
         self.staged.clear();
-        self.with_trail(|trail_state, _, _| trail_state.samples.truncate(trail));
-        self.begin_trail();
         Ok(())
-    }
-
-    fn with_trail(&self, update: impl FnOnce(&mut Trail, u64, &[u8])) {
-        TRAILS.with_borrow_mut(|trails| {
-            if let Some(trail) = trails.get_mut(&self.core) {
-                update(trail, self.elapsed, &self.memory);
-            }
-        });
-    }
-
-    fn begin_trail(&self) {
-        let (motion, cleared) = (self.motion, self.cleared);
-        self.with_trail(|trail, elapsed, memory| {
-            if elapsed == trail.skip && trail.samples.is_empty() {
-                trail.samples.push(0);
-                trail.samples.extend(motion(memory));
-                trail.start_cleared = cleared(memory);
-            }
-        });
-    }
-
-    fn trail_len(&self) -> usize {
-        TRAILS.with_borrow(|trails| {
-            trails
-                .get(&self.core)
-                .map_or(0, |trail| trail.samples.len())
-        })
     }
 
     fn wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
@@ -263,8 +206,6 @@ impl Machine for JsMachine {
         let state = core_capture(self.core).map_err(backend)?;
         let held = Held {
             state,
-            elapsed: self.elapsed,
-            trail: self.trail_len(),
             path: self
                 .path
                 .as_ref()
@@ -306,9 +247,8 @@ impl Machine for JsMachine {
                 "the browser QuickNES machine runs whole actions".to_owned(),
             ));
         }
-        let (motion, size) = (self.motion, self.memory_bytes);
+        let size = self.memory_bytes;
         while let Some(chord) = self.staged.pop_front() {
-            self.begin_trail();
             let hold = chord.bounded_hold_frames();
             if let Some(path) = self.path.as_mut() {
                 path.actions.push(ButtonChord::new(chord.buttons, hold));
@@ -319,7 +259,7 @@ impl Machine for JsMachine {
                     "QuickNES returned the wrong number of frames".to_owned(),
                 ));
             }
-            for (index, frame) in bytes.chunks_exact(size).enumerate() {
+            for frame in bytes.chunks_exact(size) {
                 self.memory.copy_from_slice(frame);
                 self.frames.push(self.wram()?);
                 if let Some(range) = &self.save_ram_range {
@@ -330,17 +270,7 @@ impl Machine for JsMachine {
                             .ok_or(MachineError::ReadOutOfBounds)?,
                     );
                 }
-                self.elapsed += 1;
                 self.vtime += 1;
-                if (index + 1) % TRAIL_STRIDE == 0 || index + 1 == usize::from(hold) {
-                    self.with_trail(|trail, elapsed, memory| {
-                        if elapsed > trail.skip && !trail.samples.is_empty() {
-                            let frame = u16::try_from(elapsed - trail.skip).unwrap_or(u16::MAX);
-                            trail.samples.push(frame);
-                            trail.samples.extend(motion(memory));
-                        }
-                    });
-                }
             }
         }
         Ok(StopReason::Quiescent {
@@ -370,12 +300,7 @@ impl Machine for JsMachine {
     fn import(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
         let mut state = Vec::new();
         unpack_state_into(portable, self.state_len, &mut state)?;
-        Ok(self.hold(Held {
-            state,
-            elapsed: 0,
-            trail: 0,
-            path: None,
-        }))
+        Ok(self.hold(Held { state, path: None }))
     }
 
     fn portable_memory_charge(portable: &Vec<u8>) -> usize {
@@ -482,104 +407,9 @@ impl Write for Sink {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-enum Line {
-    Job {
-        reservation: usize,
-        decisions: Vec<CampaignAdmissionDecision>,
-    },
-    Skip {},
-}
-
-struct Step<V> {
-    view: V,
-    frame: u64,
-    digest: Option<u64>,
-    objective: bool,
-}
-
-#[derive(Serialize)]
-struct Point<V> {
-    observation: V,
-    retained: Option<u64>,
-    frame: u64,
-}
-
-#[derive(Serialize)]
-struct Batch<V> {
-    executions: u64,
-    states: usize,
-    deaths: u64,
-    frames: u64,
-    snapshot_bytes: usize,
-    stopped: bool,
-    won: bool,
-    points: Vec<Point<V>>,
-}
-
-#[derive(Serialize)]
-pub(crate) struct Action {
-    buttons: u8,
-    frames: u8,
-}
-
-#[derive(Serialize)]
-struct State<V> {
-    id: u64,
-    observation: V,
-    actions: Vec<Action>,
-    frames: u64,
-}
-
-#[derive(Deserialize)]
 struct PrefixAction {
     buttons: u8,
     frames: u8,
-}
-
-fn steps<G: BrowserGame>(
-    result: &CampaignJobResult<G>,
-) -> Result<Vec<Step<G::View>>, MachineError> {
-    let mut steps = Vec::with_capacity(result.actions.len());
-    for action in &result.actions {
-        let Some(last) = action.observations.last() else {
-            continue;
-        };
-        let digest = match &action.candidate {
-            Some(candidate) => Some(snapshot_digest(&raw_state(G::emulator_state(
-                &candidate.snapshot,
-            ))?)),
-            None => None,
-        };
-        steps.push(Step {
-            view: G::view(last),
-            frame: G::frame_count(last),
-            digest,
-            objective: action.outcome.objective_reached,
-        });
-    }
-    Ok(steps)
-}
-
-pub(crate) fn actions(chords: &[ButtonChord]) -> Vec<Action> {
-    chords
-        .iter()
-        .map(|chord| Action {
-            buttons: chord.buttons,
-            frames: chord.bounded_hold_frames(),
-        })
-        .collect()
-}
-
-fn raw_state(packed: &[u8]) -> Result<Vec<u8>, MachineError> {
-    let declared = packed
-        .get(..4)
-        .and_then(|bytes| bytes.try_into().ok())
-        .map(u32::from_le_bytes)
-        .ok_or_else(|| MachineError::Backend("snapshot has no size prefix".to_owned()))?;
-    let mut state = Vec::new();
-    unpack_state_into(packed, declared as usize, &mut state)?;
-    Ok(state)
 }
 
 fn root_checkpoint<G: BrowserGame>(
@@ -606,7 +436,7 @@ fn root_checkpoint<G: BrowserGame>(
 
 trait SearchApi {
     fn plan(&mut self) -> Result<Option<Vec<u8>>, JsValue>;
-    fn admit(&mut self, outcome: &[u8]) -> Result<Vec<u32>, JsValue>;
+    fn admit(&mut self, outcome: &[u8], note: &[u8]) -> Result<(), JsValue>;
     fn won(&self) -> bool;
     fn stopped(&self) -> bool;
     fn snapshot_bytes(&self) -> usize;
@@ -625,13 +455,7 @@ struct Search<G: BrowserGame> {
     stream: Rc<RefCell<Vec<u8>>>,
     recorded: Option<String>,
     prefix: Vec<ButtonChord>,
-    pending: BTreeMap<usize, Vec<Step<G::View>>>,
-    views: BTreeMap<u64, G::View>,
-    frames_at: BTreeMap<u64, u64>,
-    digests: BTreeMap<u64, u64>,
-    points: Vec<Point<G::View>>,
-    frames: u64,
-    deaths: u64,
+    feed: Feed<G::View>,
 }
 
 pub struct SearchOptions<'a> {
@@ -664,10 +488,7 @@ impl<G: BrowserGame> Search<G> {
             u64::from(options.executions),
             options.memory_mib as usize,
         )));
-        let frames: u64 = prefix
-            .iter()
-            .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum();
+        let frames = chord_frames(&prefix);
         let (origin, raw, root, genesis_actions) = match options.root {
             None => {
                 let (raw, path) = recording(|| {
@@ -691,7 +512,7 @@ impl<G: BrowserGame> Search<G> {
         };
         let stream = Rc::new(RefCell::new(Vec::new()));
         let sink: &'static mut Sink = Box::leak(Box::new(Sink(Rc::clone(&stream))));
-        let coordinator = CampaignCoordinator::start(
+        let mut coordinator = CampaignCoordinator::start(
             game,
             config,
             &origin,
@@ -699,6 +520,12 @@ impl<G: BrowserGame> Search<G> {
             None,
             CampaignExecutionOptions::default(),
         )?;
+        coordinator.watch_admissions();
+        let feed = Feed::new(
+            G::memory_view(&restore_ram(options.core, &raw)?)?,
+            frames,
+            snapshot_digest(&raw),
+        );
         let mut search = Self {
             game,
             root,
@@ -707,89 +534,20 @@ impl<G: BrowserGame> Search<G> {
             stream,
             recorded: options.record.then(String::new),
             prefix,
-            pending: BTreeMap::new(),
-            views: BTreeMap::new(),
-            frames_at: BTreeMap::from([(0, frames)]),
-            digests: BTreeMap::new(),
-            points: Vec::new(),
-            frames: 0,
-            deaths: 0,
+            feed,
         };
-        search.drain_header();
-        search
-            .views
-            .insert(0, G::memory_view(&restore_ram(options.core, &raw)?)?);
-        search.digests.insert(0, snapshot_digest(&raw));
+        search.record_stream()?;
         Ok(search)
     }
 
-    fn drain_header(&mut self) {
-        let mut stream = self.stream.borrow_mut();
-        if let Some(end) = stream.iter().position(|&byte| byte == b'\n') {
-            let header: Vec<u8> = stream.drain(..=end).collect();
-            if let Some(recorded) = self.recorded.as_mut() {
-                recorded.push_str(&String::from_utf8_lossy(&header));
-            }
-        }
-    }
-
-    fn read_stream(&mut self) -> Result<Vec<u32>, Box<dyn Error>> {
-        let mut admitted = Vec::new();
+    fn record_stream(&mut self) -> Result<(), Box<dyn Error>> {
         let bytes = std::mem::take(&mut *self.stream.borrow_mut());
         if let Some(recorded) = self.recorded.as_mut() {
             recorded.push_str(std::str::from_utf8(&bytes)?);
         }
-        for line in bytes
-            .split(|&byte| byte == b'\n')
-            .filter(|line| !line.is_empty())
-        {
-            let Line::Job {
-                reservation,
-                decisions,
-            } = serde_json::from_slice(line)?
-            else {
-                continue;
-            };
-            admitted.push(u32::try_from(reservation)?);
-            let steps = self
-                .pending
-                .remove(&reservation)
-                .ok_or("the search admitted a job it did not receive")?;
-            let mut decisions = decisions.into_iter();
-            for step in steps {
-                if step.objective {
-                    decisions.next();
-                }
-                let retained = if step.digest.is_some() {
-                    match decisions.next() {
-                        Some(
-                            CampaignAdmissionDecision::Retained { id }
-                            | CampaignAdmissionDecision::Duplicate { id },
-                        ) => Some(id),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-                if let (Some(id), Some(digest)) = (retained, step.digest)
-                    && !self.views.contains_key(&id)
-                {
-                    self.views.insert(id, step.view);
-                    self.frames_at.insert(id, step.frame);
-                    self.digests.insert(id, digest);
-                }
-                self.points.push(Point {
-                    observation: step.view,
-                    retained,
-                    frame: step.frame,
-                });
-            }
-        }
-        Ok(admitted)
+        Ok(())
     }
-}
 
-impl<G: BrowserGame> Search<G> {
     fn played(&self, input: &[ButtonChord]) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
         let (played, path) = recording(|| -> Result<(), Box<dyn Error>> {
             let mut target = self.game.new_target()?;
@@ -831,21 +589,13 @@ impl<G: BrowserGame> SearchApi for Search<G> {
             .transpose()
     }
 
-    fn admit(&mut self, outcome: &[u8]) -> Result<Vec<u32>, JsValue> {
+    fn admit(&mut self, outcome: &[u8], note: &[u8]) -> Result<(), JsValue> {
         let outcome: JobOutcome<G> = postcard::from_bytes(outcome).map_err(js_error)?;
-        self.frames = self.frames.saturating_add(outcome.execution_work);
-        if outcome.result.actions.last().is_some_and(|action| {
-            action.outcome.disposition == ExecutionDisposition::Terminal
-                && !action.outcome.objective_reached
-        }) {
-            self.deaths += 1;
-        }
-        self.pending.insert(
-            outcome.reservation,
-            steps(&outcome.result).map_err(js_error)?,
-        );
+        let note: Note<G::View> = postcard::from_bytes(note).map_err(js_error)?;
+        self.feed.note(note);
         self.coordinator.admit(outcome).map_err(js_error)?;
-        self.read_stream().map_err(js_error)
+        self.feed.admit(self.coordinator.take_admissions());
+        self.record_stream().map_err(js_error)
     }
 
     fn won(&self) -> bool {
@@ -861,17 +611,8 @@ impl<G: BrowserGame> SearchApi for Search<G> {
     }
 
     fn take_batch(&mut self) -> Result<String, JsValue> {
-        serde_json::to_string(&Batch {
-            executions: self.coordinator.executions(),
-            states: self.coordinator.archive().active_count(),
-            deaths: self.deaths,
-            frames: self.frames,
-            snapshot_bytes: self.snapshot_bytes(),
-            stopped: self.stopped(),
-            won: self.won(),
-            points: std::mem::take(&mut self.points),
-        })
-        .map_err(js_error)
+        let stats = feed::stats(&self.coordinator);
+        serde_json::to_string(&self.feed.take_batch(stats)).map_err(js_error)
     }
 
     fn take_stream(&mut self) -> String {
@@ -887,41 +628,33 @@ impl<G: BrowserGame> SearchApi for Search<G> {
         let index = archive
             .index_of_id(id)
             .ok_or_else(|| js_error("unknown state"))?;
-        let observation = *self
-            .views
-            .get(&id)
+        let observation = self
+            .feed
+            .view(id)
             .ok_or_else(|| js_error("unknown state"))?;
         let input = archive.entry_input(index).map_err(js_error)?.actions;
         let mut chords = self.prefix.clone();
         chords.extend(&input);
-        let sum = |chords: &[ButtonChord]| -> u64 {
-            chords
-                .iter()
-                .map(|chord| u64::from(chord.bounded_hold_frames()))
-                .sum()
-        };
         if self
-            .frames_at
-            .get(&id)
-            .is_some_and(|&frames| frames != sum(&chords))
+            .feed
+            .frames_at(id)
+            .is_some_and(|frames| frames != chord_frames(&chords))
         {
             chords.truncate(self.prefix.len());
             chords.extend(self.played(&input).map_err(js_error)?);
         }
-        let frames = sum(&chords);
-        let actions = actions(&chords);
         serde_json::to_string(&State {
             id,
             observation,
-            actions,
-            frames,
+            actions: actions(&chords),
+            frames: chord_frames(&chords),
         })
         .map_err(js_error)
     }
 
     fn digest(&self, id: u32) -> Result<String, JsValue> {
-        self.digests
-            .get(&u64::from(id))
+        self.feed
+            .digest(u64::from(id))
             .map(|digest| format!("{digest:016x}"))
             .ok_or_else(|| js_error("digest unavailable"))
     }
@@ -938,32 +671,24 @@ impl<G: BrowserGame> SearchApi for Search<G> {
 
 trait WorkerApi {
     fn run(&mut self, job: &[u8]) -> Result<Vec<u8>, JsValue>;
-    fn trail(&mut self) -> Option<Vec<u16>>;
-    fn reservation(&self) -> u32;
-    fn next_level(&self) -> u8;
+    fn note(&mut self) -> Option<Vec<u8>>;
 }
 
 struct Worker<G: BrowserGame> {
-    core: u32,
     game: &'static G,
     config: CampaignConfig<G>,
     target: G::Target,
-    trail: Option<Vec<u16>>,
-    next_level: u8,
-    reservation: u32,
+    note: Option<Vec<u8>>,
 }
 
 impl<G: BrowserGame> Worker<G> {
     fn new(core: u32, rom: &[u8], identity: &str, identity_sha256: &str) -> Result<Self, String> {
         let game = game::<G>(core, rom, identity, identity_sha256);
         Ok(Self {
-            core,
             game,
             config: config(0, 0, 0),
             target: game.new_target()?,
-            trail: None,
-            next_level: 0,
-            reservation: 0,
+            note: None,
         })
     }
 }
@@ -971,48 +696,16 @@ impl<G: BrowserGame> Worker<G> {
 impl<G: BrowserGame> WorkerApi for Worker<G> {
     fn run(&mut self, job: &[u8]) -> Result<Vec<u8>, JsValue> {
         let job: JobSpec<G> = postcard::from_bytes(job).map_err(js_error)?;
-        self.reservation = u32::try_from(job.reservation).map_err(js_error)?;
-        let skip = job
-            .replay
-            .iter()
-            .map(|action| u64::from(action.bounded_hold_frames()))
-            .sum();
-        TRAILS.with_borrow_mut(|trails| {
-            trails.insert(
-                self.core,
-                Trail {
-                    skip,
-                    ..Trail::default()
-                },
-            )
-        });
-        let outcome = run_job(self.game, &self.config, &mut self.target, &job);
-        let trail = TRAILS
-            .with_borrow_mut(|trails| trails.remove(&self.core))
-            .unwrap_or_default();
-        let outcome = outcome.map_err(js_error)?;
-        self.next_level = outcome
-            .result
-            .actions
-            .iter()
-            .flat_map(|action| action.observations.last())
-            .map(G::cleared)
-            .find(|&cleared| cleared > trail.start_cleared)
-            .unwrap_or(0);
-        self.trail = (trail.samples.len() > 5).then_some(trail.samples);
+        let (outcome, note) = run_noted(&job, || {
+            run_job(self.game, &self.config, &mut self.target, &job)
+        })
+        .map_err(js_error)?;
+        self.note = Some(postcard::to_allocvec(&note).map_err(js_error)?);
         postcard::to_allocvec(&outcome).map_err(js_error)
     }
 
-    fn trail(&mut self) -> Option<Vec<u16>> {
-        self.trail.take()
-    }
-
-    fn reservation(&self) -> u32 {
-        self.reservation
-    }
-
-    fn next_level(&self) -> u8 {
-        self.next_level
+    fn note(&mut self) -> Option<Vec<u8>> {
+        self.note.take()
     }
 }
 
@@ -1067,8 +760,8 @@ impl CampaignSearch {
         self.0.plan()
     }
 
-    pub fn admit(&mut self, outcome: &[u8]) -> Result<Vec<u32>, JsValue> {
-        self.0.admit(outcome)
+    pub fn admit(&mut self, outcome: &[u8], note: &[u8]) -> Result<(), JsValue> {
+        self.0.admit(outcome, note)
     }
 
     pub fn won(&self) -> bool {
@@ -1143,16 +836,8 @@ impl CampaignWorker {
         self.0.run(job)
     }
 
-    pub fn trail(&mut self) -> Option<Vec<u16>> {
-        self.0.trail()
-    }
-
-    pub fn reservation(&self) -> u32 {
-        self.0.reservation()
-    }
-
-    pub fn next_level(&self) -> u8 {
-        self.0.next_level()
+    pub fn note(&mut self) -> Option<Vec<u8>> {
+        self.0.note()
     }
 }
 

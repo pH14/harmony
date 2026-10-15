@@ -36,6 +36,20 @@ target for that reason. Job results are digested with
 state, so a browser campaign and a native one produce the same decision
 stream.
 
+`arcade` holds what the arcade page draws, for both the browser campaign and a
+native live campaign. `ArcadeGame` extends `Workload` with a view of each
+observation, the four-number motion sample of a frame, the cleared-level count
+and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `famidash`
+and `twin_dragons` submodules implement it for each campaign game over any
+backend. `trail::Traced` wraps a machine and records each job's motion trail
+every four frames and at every chord end. `feed::run_noted` runs a job inside
+that recorder and returns a `Note` with the trail, the view of every step and
+each candidate's snapshot digest. `feed::Feed` joins notes with the
+coordinator's admission decisions into the `Batch` the page reads: points,
+trails, finished trails and their exits. The digest is taken over the QuickNES
+core state without the native snapshot header, so a native snapshot and a
+browser capture of the same state have the same digest.
+
 [`../nes`](../nes/README.md) re-exports these modules and keeps everything
 else: campaign drivers and configuration, Super Tilt Bro's `Workload`
 implementation, streams, films, evaluation, packaging, guest preparation and

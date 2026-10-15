@@ -18,9 +18,9 @@ async function handle({ data }) {
       return;
     }
     if (data.type === "job") {
-      const outcome = campaign.run(new Uint8Array(data.job)), trail = campaign.trail() ?? null;
-      channel.postMessage({ type: "done", chunk: data.chunk, outcome: outcome.buffer, reservation: campaign.reservation(), trail, nextLevel: campaign.next_level() },
-        [outcome.buffer, ...(trail ? [trail.buffer] : [])]);
+      const outcome = campaign.run(new Uint8Array(data.job)), note = campaign.note();
+      channel.postMessage({ type: "done", chunk: data.chunk, outcome: outcome.buffer, note: note.buffer },
+        [outcome.buffer, note.buffer]);
       return;
     }
     if (data.type !== "run") return;

@@ -19,11 +19,11 @@ const identity = coreIdentity("browser"), worker = campaignWorker(engine, identi
 const root = engine.boot(), catalog = JSON.parse(await readFile(new URL("maps.json", base)));
 const mapCatalog = new Map(catalog.maps.map(m => [m.id, m]));
 const JOBS = 256;
-const search = campaignSearch(engine, identity, { seed: 2 }), trails = [];
-runCampaign(search, worker, { jobs: JOBS, onJob: (w) => { const trail = w.trail(); if (trail) trails.push(trail); } });
+const search = campaignSearch(engine, identity, { seed: 2 });
+runCampaign(search, worker, { jobs: JOBS });
+const { points, motion: trails } = JSON.parse(search.take_batch());
 assert.ok(trails.length >= JOBS / 2, "Most rollouts must record a sampled trail");
 assert.ok(trails.every((t) => t.length % MOTION_STRIDE === 0 && t[0] === 0), "Trails start at the rollout's first frame");
-const points = JSON.parse(search.take_batch()).points;
 search.free();
 const sampledHeat = new Heatmap(), endpointKeys = new Set();
 sampledHeat.visitMotion(trails, mapCatalog, 0);
@@ -41,8 +41,11 @@ for (const a of tape.actions) engine.run(a.buttons, a.frames);
 const near = campaignSearch(engine, identity, { seed: 5, root: engine.capture(), prefix: tape.actions });
 let crossing = null, jobs = 0;
 while (!crossing && jobs++ < 2000 && runCampaign(near, worker, { jobs: 1 })) {
-  const trail = worker.trail(), rooms = new Set((trail ?? []).filter((_, index) => index % MOTION_STRIDE === 1));
-  if (worker.next_level() && rooms.has(0)) crossing = rooms;
+  const { motion, finishes } = JSON.parse(near.take_batch());
+  for (const index of finishes) {
+    const rooms = new Set(motion[index].filter((_, k) => k % MOTION_STRIDE === 1));
+    if (rooms.has(0)) crossing = rooms;
+  }
 }
 near.free();
 assert.ok(crossing?.has(NO_ROOM), "The rollout that clears Level 1 must be sampled with its loading frames hidden");

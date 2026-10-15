@@ -7,6 +7,17 @@ use crate::{Machine, MachineError, Reproducer, StopConditions};
 pub const WRAM_SIZE: usize = 2 * 1024;
 pub const ADDRESS_SPACE_SIZE: u64 = 64 * 1024;
 pub const MAX_HOLD_FRAMES: u8 = 120;
+pub(crate) const STATE_MAGIC: &[u8; 8] = b"HQNESST2";
+pub(crate) const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 8;
+
+#[must_use]
+pub fn core_state(state: &[u8]) -> &[u8] {
+    if state.len() >= STATE_HEADER_LEN && state.starts_with(STATE_MAGIC) {
+        &state[STATE_HEADER_LEN..]
+    } else {
+        state
+    }
+}
 
 const INES_HEADER_LEN: usize = 16;
 const INES_FLAGS6: usize = 6;
@@ -351,5 +362,16 @@ mod tests {
         assert_eq!(machine.held.len(), 1);
         assert_eq!(machine.drop_calls, 3);
         assert_eq!(machine.dropped.len(), 2);
+    }
+
+    #[test]
+    fn core_state_drops_only_the_quicknes_envelope() {
+        let core = b"NESS\xff\xff\xff\xffbody";
+        let mut wrapped = super::STATE_MAGIC.to_vec();
+        wrapped.resize(super::STATE_HEADER_LEN, 7);
+        wrapped.extend_from_slice(core);
+        assert_eq!(super::core_state(&wrapped), core);
+        assert_eq!(super::core_state(core), core);
+        assert_eq!(super::core_state(super::STATE_MAGIC), super::STATE_MAGIC);
     }
 }
