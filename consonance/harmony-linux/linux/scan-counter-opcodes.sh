@@ -14,11 +14,10 @@
 #
 # bzImage contains three executable artifacts, and all three run: the real-mode
 # setup code, the decompressor, and the kernel proper. The kernel proper is a
-# 64-bit ELF and is scanned by disassembly. Setup and the decompressor's
-# mode-mixed head run 16-bit code, where one disassembly mode can consume a real
-# opcode as another instruction's operand, so their executable sections are
-# searched for the raw opcode bytes. The decompressor's 64-bit `.text` is
-# disassembled.
+# 64-bit ELF and is scanned by disassembly. Setup and the decompressor execute
+# in multiple decoder modes, including 32-bit helpers in the decompressor's
+# `.text`. Their executable sections are searched for raw opcode bytes; the
+# decompressor's `.text` is also disassembled in both 64-bit modes.
 #
 # CONFIG_MODULES is off, so the built image is all the kernel code that can run.
 #
@@ -144,15 +143,13 @@ require_code_sections() {
 }
 
 # raw_byte_scan: fail-closed opcode scan of the boot artifacts. Setup and the
-# decompressor's `.head.text` really are 16-bit / mode-mixed, so their scan is
-# raw and decode-independent: `0f 31`, `0f 01 f9`, or a hardware-RNG encoding
-# anywhere in an executable section fails. The decompressor's ordinary `.text`
-# is compiler-generated 64-bit code, however, and is disassembled in that
-# architectural mode. Treating a `0f31` pair inside a 64-bit instruction's
-# displacement as RDTSC makes the check depend on unrelated link layout while
-# proving nothing about an executable instruction. Both paths still require
-# ZERO counter and hardware-RNG instructions. Runs on every build (r7 P2), not
-# once. Returns 1 on any hit, decode failure, or missing artifact.
+# decompressor run in multiple decoder modes, including 32-bit helpers in
+# decompressor `.text`. A `0f 31`, `0f 01 f9`, or hardware-RNG encoding
+# anywhere in their executable sections fails even when 64-bit disassembly
+# treats it as an operand. A future benign displacement with those bytes also
+# fails closed until the mixed-mode execution boundary can be proved. Runs on
+# every build (r7 P2), not once. Returns 1 on any hit, decode failure, or
+# missing artifact.
 # raw_byte_scan_one <path> <tag>: scan one artifact's executable sections. 0 =
 # clean, 1 = a hit or a structural problem (missing/no-sections).
 raw_byte_scan_one() {
@@ -219,8 +216,6 @@ raw_byte_scan_one() {
                     rc=1
                 fi
             done
-            rm -f "$bin"
-            continue
         fi
         rm -f "$bin"
         n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
@@ -366,10 +361,8 @@ EOF
                 echo "FAIL: self-test — raw-byte scan MISSED a planted 0f 31 in a .text section" >&2
                 exit 1
             fi
-            # The decompressor's compiler-generated `.text` is known 64-bit.
-            # A real decoded RDTSC must still fail there, while the same bytes
-            # inside a LEA displacement must pass. The mixed-mode tags retain
-            # the stricter raw rule and therefore reject that LEA fixture.
+            # Decompressor `.text` includes 32-bit helpers as well as 64-bit
+            # code, so both decoded and raw counter bytes must fail there.
             if raw_byte_scan_one "$d/dirty.elf" decompressor >/dev/null 2>&1; then
                 echo "FAIL: self-test — 64-bit decompressor scan MISSED a planted RDTSC" >&2
                 exit 1
@@ -377,8 +370,8 @@ EOF
             printf '.section .text,"ax"\n.global fixture\nfixture:\n.byte 0x48,0x8d,0x3d,0x0f,0x31,0,0\n.byte 0xc3\n' \
                 | as -o "$d/lea.elf" - 2>/dev/null && lea_ok=1
             if [ "${lea_ok:-0}" = 1 ]; then
-                if ! raw_byte_scan_one "$d/lea.elf" decompressor >/dev/null 2>&1; then
-                    echo "FAIL: self-test — 64-bit LEA displacement was misread as RDTSC" >&2
+                if raw_byte_scan_one "$d/lea.elf" decompressor >/dev/null 2>&1; then
+                    echo "FAIL: self-test — decompressor accepted a mode-hidden 0f 31 pair" >&2
                     exit 1
                 fi
                 if raw_byte_scan_one "$d/lea.elf" setup >/dev/null 2>&1; then

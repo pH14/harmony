@@ -85,10 +85,13 @@ linker-defined code sections present in each image are marked executable before
 relying on section-based disassembly. It rejects unknown or duplicate allocated
 data sections and scans opcode bytes in loaded file ranges outside reviewed
 sections. Kernel and decompressor reviewed data are exempt from raw-byte scanning
-because ordinary tables contain the same byte sequences by chance. Setup instead
-raw-scans every file-backed PT_LOAD byte across its mixed 16-/32-bit execution;
-an unreadable or empty disassembly also fails the build. This guards against an
-executable image whose section flags or sizes hide code from `objdump -d`.
+because ordinary tables contain the same byte sequences by chance. Setup
+raw-scans every file-backed PT_LOAD byte across its mixed 16-/32-bit execution.
+The decompressor raw-scans every executable section because its 32-bit startup
+calls helpers in `.text` before switching modes; `.text` is also disassembled
+in both 64-bit modes. Even opcode-shaped immediates in decompressor code fail
+closed. An unreadable or empty disassembly also fails the build. This guards
+against an executable image whose section flags or sizes hide code from `objdump -d`.
 Read-only data shares some executable ELF segments, so segment flags alone do
 not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden
 code in shortened, non-executable, separately allocated, and duplicate-name
