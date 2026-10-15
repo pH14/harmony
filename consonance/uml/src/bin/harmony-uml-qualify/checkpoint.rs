@@ -125,14 +125,13 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
             return Ok(json!({"error": "the terminal fixture repeated exhausted stops"}));
         }
         let before_events = session.events().len();
-        let resolved = session.settle_terminal_console(None, base.wall_limit)?;
+        let resolved = session.settle_terminal_console(base.wall_limit)?;
         let after_events = session.events().len();
         let tail = session.console_tail();
         Ok(json!({
             "marker": tail.contains("Kernel panic: abandoned branch sentinel"),
             "before_events": before_events,
             "after_events": after_events,
-            "terminal": "None",
             "resolved": format!("{resolved:?}"),
         }))
     })();
