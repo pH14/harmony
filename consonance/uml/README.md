@@ -162,12 +162,14 @@
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit. After
-  a clean process exit, cleanup joins the console reader and bridge before
+  an automatic stop, cleanup joins the console reader and bridge before
   classifying the exit. Output already written beyond the byte limit is a
-  console-limit stop, and a completed event cut or bridge failure takes
-  precedence over the process status, even if the exit poll won the race. A
-  UML session refuses a console-limit host stop instead of treating it as a
-  guest crash.
+  console-limit stop, including when an event cut or another automatic stop
+  was observed before the reader caught up. Without an overflow, a completed
+  event cut or bridge failure takes precedence over the process status, even
+  if the exit poll won the race. An explicit kill remains a kill. A UML
+  session refuses a console-limit host stop instead of treating it as a guest
+  crash.
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.
