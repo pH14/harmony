@@ -302,6 +302,11 @@ mod tests {
             };
             let report = crate::run(&workload, crate::test_seed(), 2000, true).unwrap();
             assert_eq!(report["verified"], true);
+            let runs = report["selector"]["tier_runs"].as_object().unwrap();
+            let most = |field: &str| runs.values().filter_map(|r| r[field].as_u64()).max();
+            assert!(runs.len() > 1, "{runs:?}");
+            assert!(most("dry") > Some(0), "{runs:?}");
+            assert!(most("cells") > Some(1), "{runs:?}");
         }
     }
 }
