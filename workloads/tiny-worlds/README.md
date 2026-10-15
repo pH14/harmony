@@ -87,7 +87,9 @@ field is required:
 | `snapshot_bytes` | 0–1,048,576 | Pseudorandom payload stored in every snapshot and charged to the memory budget. |
 
 The payload is derived from the world state, so it adds real resident memory
-without changing any search decision, and job-result hashes leave it out. The
+without changing any search decision, and job-result hashes leave it out.
+Archive snapshot identities likewise exclude the payload because restore uses
+only the world state. The checkpoint file hash still covers the payload bytes. The
 spin reads the thread's CPU clock only to wait. A scaled run accepts 1–10,000,000,000
 logical work units and requires `verify=false` and `keep=portfolio`. It counts the
 campaign stream's bytes instead of storing them, keeps no per-job evidence,

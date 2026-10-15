@@ -64,6 +64,8 @@ A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
 snapshots after `SnapshotState::logical_identity`. The native Mega Man 2,
 Metroid, and Super Tilt Bro campaign result digests cover the complete job
 result, including preparation failures and retained QuickNES snapshots. Replay
+binds SMB archive checkpoints to the same logical snapshot identity; the
+checkpoint file hash continues to cover its exact serialized bytes. Replay
 therefore detects a latent endpoint-state change even when its decoded game
 observations and archive key agree. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,

@@ -226,6 +226,8 @@ pub trait Reporting: CampaignTypes {
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
+    fn snapshot_identity_sha256(&self, snapshot: &Self::Snapshot)
+    -> Result<String, Box<dyn Error>>;
     fn archive_report(
         &self,
         evidence: &Self::Evidence,
@@ -1992,10 +1994,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .get(id)
                 .ok_or("archive snapshot has no matching entry")?;
             let entry = &mut entries[*index];
-            if entry.snapshot_sha256.is_some() {
+            if entry.snapshot_identity_sha256.is_some() {
                 return Err("archive report contains duplicate snapshot IDs".into());
             }
-            entry.snapshot_sha256 = Some(snapshot_sha256(snapshot)?);
+            entry.snapshot_identity_sha256 = Some(workload.snapshot_identity_sha256(snapshot)?);
         }
         let report = workload.archive_report(
             &self.evidence,
@@ -2969,12 +2971,6 @@ impl Write for CheckpointHashWriter {
     }
 }
 
-fn snapshot_sha256<S: Serialize>(snapshot: &S) -> Result<String, Box<dyn Error>> {
-    let mut writer = CheckpointHashWriter(Sha256::new());
-    postcard::to_io(snapshot, &mut writer)?;
-    Ok(format!("{:x}", writer.0.finalize()))
-}
-
 fn validate_archive_checkpoint_entries<G: Workload + ?Sized>(
     workload: &G,
     source: &G::ArchiveReport,
@@ -2983,7 +2979,7 @@ fn validate_archive_checkpoint_entries<G: Workload + ?Sized>(
     let mut expected = BTreeMap::new();
     for entry in workload.source_entries(source) {
         if expected
-            .insert(entry.id, entry.snapshot_sha256.as_deref())
+            .insert(entry.id, entry.snapshot_identity_sha256.as_deref())
             .is_some()
         {
             return Err("source archive has duplicate entry IDs".into());
@@ -2998,7 +2994,7 @@ fn validate_archive_checkpoint_entries<G: Workload + ?Sized>(
             .get(&entry.id)
             .ok_or("archive snapshot checkpoint has an unknown entry ID")?
             .ok_or("source archive entry lacks a snapshot digest")?;
-        if snapshot_sha256(&entry.snapshot)? != *bound {
+        if workload.snapshot_identity_sha256(&entry.snapshot)? != *bound {
             return Err("archive snapshot checkpoint differs from its source entry digest".into());
         }
     }
@@ -5946,6 +5942,12 @@ mod tests {
         ) -> Result<String, Box<dyn Error>> {
             postcard_value_sha256(result)
         }
+        fn snapshot_identity_sha256(
+            &self,
+            snapshot: &Self::Snapshot,
+        ) -> Result<String, Box<dyn Error>> {
+            postcard_value_sha256(snapshot)
+        }
 
         fn archive_report(
             &self,
@@ -7190,7 +7192,7 @@ mod tests {
             .iter_mut()
             .find(|entry| entry.id == 1)
             .unwrap()
-            .snapshot_sha256 = None;
+            .snapshot_identity_sha256 = None;
         reject_entries(unbound, source_snapshots, "lacks a snapshot digest");
     }
 
@@ -7790,7 +7792,7 @@ mod tests {
                 input: Input { actions },
                 key: TestKey(0),
                 milestones: (),
-                snapshot_sha256: None,
+                snapshot_identity_sha256: None,
                 selector: None,
             };
         let source = TestArchiveReport {
