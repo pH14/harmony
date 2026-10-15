@@ -1084,8 +1084,15 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     read_members_file(std::fs::File::open(archive)?)
 }
 
+#[cfg(test)]
 fn read_members_file<R: Read + Send + 'static>(reader: R) -> Result<Vec<Member>, ImageError> {
     let mut stream = open_archive(reader)?;
+    let members = read_members_stream(&mut stream)?;
+    stream.finish()?;
+    Ok(members)
+}
+
+fn read_members_stream(mut stream: &mut impl Read) -> Result<Vec<Member>, ImageError> {
     let mut members: Vec<Member> = Vec::new();
     let mut long_name: Option<Vec<u8>> = None;
     let mut long_link: Option<Vec<u8>> = None;
@@ -1095,7 +1102,6 @@ fn read_members_file<R: Read + Send + 'static>(reader: R) -> Result<Vec<Member>,
     while read_block(&mut stream, &mut block)? {
         if block.iter().all(|byte| *byte == 0) {
             require_trailing_zeros(&mut stream)?;
-            stream.finish()?;
             if long_name.is_some() || long_link.is_some() || pax_header_seen {
                 return Err(ImageError::Tar(
                     "archive ends with an orphaned extension header".into(),
@@ -1600,11 +1606,12 @@ fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
     check_portable_staging_root(dest)?;
     let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
-    let members = read_members_file(pinned.reader()?)?;
+    let decoded = decode_archive(&pinned, dest.parent().unwrap_or(dest))?;
+    let members = read_members_stream(&mut decoded.reader()?)?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
-    untar(&pinned, dest)
+    untar(&decoded, dest)
 }
 
 fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
@@ -1691,6 +1698,17 @@ impl Read for VerifiedArchiveReader {
 
 fn pin_archive(archive: &Path, staging: &Path) -> Result<PinnedArchive, ImageError> {
     let mut source = std::fs::File::open(archive)?;
+    pin_reader(&mut source, staging)
+}
+
+fn decode_archive(archive: &PinnedArchive, staging: &Path) -> Result<PinnedArchive, ImageError> {
+    let mut stream = open_archive(archive.reader()?)?;
+    let decoded = pin_reader(&mut stream, staging)?;
+    stream.finish()?;
+    Ok(decoded)
+}
+
+fn pin_reader(source: &mut impl Read, staging: &Path) -> Result<PinnedArchive, ImageError> {
     let mut file = tempfile::tempfile_in(staging)?;
     let mut buffer = [0u8; ARCHIVE_CHUNK];
     let mut chunks = Vec::new();
@@ -1879,7 +1897,7 @@ fn resolve_under(
 }
 
 fn untar(tarball: &PinnedArchive, dest: &Path) -> Result<(), ImageError> {
-    let mut archive = open_archive(tarball.reader()?)?;
+    let mut archive = tarball.reader()?;
     let mut stderr = tempfile::tempfile_in(dest.parent().unwrap_or(dest))?;
     let mut child = archive_tool("sh")
         .arg("-c")
@@ -1909,7 +1927,6 @@ fn untar(tarball: &PinnedArchive, dest: &Path) -> Result<(), ImageError> {
         Err(error) => Err(error.into()),
     };
     drop(input);
-    let decoded = transferred.and_then(|()| archive.finish());
     let status = child.wait()?;
     if !status.success() {
         stderr.seek(SeekFrom::Start(0))?;
@@ -1917,7 +1934,7 @@ fn untar(tarball: &PinnedArchive, dest: &Path) -> Result<(), ImageError> {
         stderr.read_to_string(&mut detail)?;
         return Err(ImageError::Tar(detail));
     }
-    decoded
+    transferred
 }
 
 #[cfg(test)]
@@ -1938,7 +1955,8 @@ fn apply_layer_tracked(
     if let Some(descriptor) = descriptor {
         verify_pinned_archive(&pinned, descriptor)?;
     }
-    let members = read_members_file(pinned.reader()?)?;
+    let decoded = decode_archive(&pinned, staging)?;
+    let members = read_members_stream(&mut decoded.reader()?)?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
@@ -1946,7 +1964,7 @@ fn apply_layer_tracked(
     check_portable_staging_root(staged.path())?;
     let opaque_modes = apply_whiteouts(&members, rootfs)?;
     let implicit_dirs = implicit_layer_dirs(&members);
-    untar(&pinned, staged.path())?;
+    untar(&decoded, staged.path())?;
     let mut preserved_modes = BTreeMap::new();
     merge_layer(
         staged.path(),
@@ -2540,6 +2558,71 @@ mod tests {
         );
         assert!(bin.join("stdin").exists());
         assert!(!bin.join("swapped").exists());
+    }
+
+    #[test]
+    fn staging_validates_and_extracts_one_decoded_archive() {
+        if let Some(source) = std::env::var_os("HARMONY_OCI_DECODE_CHILD") {
+            let stage_dir = PathBuf::from(std::env::var_os("HARMONY_OCI_DECODE_STAGE").unwrap());
+            let marker = if std::env::var("HARMONY_OCI_DECODE_KIND").unwrap() == "layer" {
+                stage(Path::new(&source).to_str().unwrap(), &stage_dir)
+                    .unwrap()
+                    .rootfs
+                    .join("marker")
+            } else {
+                std::fs::create_dir(&stage_dir).unwrap();
+                extract_checked(Path::new(&source), &stage_dir).unwrap();
+                stage_dir.join("marker")
+            };
+            assert_eq!(std::fs::read(marker).unwrap(), b"ORIGINAL");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = tar_layer(dir.path(), "original", &[("marker", b"ORIGINAL")]);
+        let replacement = tar_layer(dir.path(), "replacement", &[("marker", b"SPOOFED!")]);
+        let layout = dir.path().join("layout");
+        write_oci_layout(&layout, br#"{"config":{}}"#, &[b"\x28\xb5\x2f\xfdlayer"]);
+        let outer = dir.path().join("outer.zst");
+        std::fs::write(&outer, b"\x28\xb5\x2f\xfdouter").unwrap();
+        for (kind, source) in [("layer", &layout), ("outer", &outer)] {
+            let bin = dir.path().join(format!("bin-{kind}"));
+            std::fs::create_dir(&bin).unwrap();
+            std::fs::copy(&original, bin.join("original")).unwrap();
+            std::fs::copy(&replacement, bin.join("replacement")).unwrap();
+            let wrapper = bin.join("zstd");
+            std::fs::write(
+                &wrapper,
+                b"#!/bin/sh\ndir=${0%/*}\ncat >/dev/null\nif [ -e \"$dir/seen\" ]; then\n  touch \"$dir/again\"\n  cat \"$dir/replacement\"\nelse\n  touch \"$dir/seen\"\n  cat \"$dir/original\"\nfi\n",
+            )
+            .unwrap();
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "image::tests::staging_validates_and_extracts_one_decoded_archive",
+                ])
+                .env("HARMONY_OCI_DECODE_CHILD", source)
+                .env("HARMONY_OCI_DECODE_KIND", kind)
+                .env(
+                    "HARMONY_OCI_DECODE_STAGE",
+                    dir.path().join(format!("stage-{kind}")),
+                )
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{kind}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(bin.join("seen").exists());
+            assert!(!bin.join("again").exists());
+        }
     }
 
     #[test]
