@@ -47,6 +47,8 @@ TRAILING_PREFIXES = frozenset(
 )
 COUNTER_INSTRUCTIONS = frozenset(("rdtsc", "rdtscp", "rdrand", "rdseed"))
 SYMBOL_RESTART_LIMIT = 4096
+X86_PREFIX_BYTES = frozenset((0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67,
+                              0xF0, 0xF2, 0xF3, *range(0x40, 0x50)))
 
 
 def unpack(fmt, data, offset):
@@ -114,11 +116,11 @@ def headers(data):
 def check_complete_tail(decoded, end, name):
     last = decoded[-1] if decoded else None
     if last is None or last[0] + last[1] != end:
-        raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+        raise ValueError(f"incomplete instruction at executable section boundary after {name}")
     for address, _length, instruction in decoded:
         if address >= end - (MAX_X86_INSTRUCTION_BYTES - 1) \
                 and truncated_instruction(instruction):
-            raise ValueError(f"incomplete instruction at adjacent code boundary after {name}")
+            raise ValueError(f"incomplete instruction at executable section boundary after {name}")
 
 
 def complete_section_tail(data, path, name, address, offset, size):
@@ -291,6 +293,22 @@ def scan_symbol_restarts(data, sections, tag, path):
                         )
 
 
+def counter_encoding(segment, position):
+    if position + 1 >= len(segment) or segment[position] != 0x0F:
+        return None
+    if segment[position + 1] == 0x31:
+        return "RDTSC", 2
+    if position + 2 >= len(segment):
+        return None
+    if segment[position + 1 : position + 3] == b"\x01\xf9":
+        return "RDTSCP", 3
+    if segment[position + 1] == 0xC7:
+        reg = (segment[position + 2] >> 3) & 7
+        if reg in (6, 7):
+            return ("RDRAND" if reg == 6 else "RDSEED"), 3
+    return None
+
+
 def unclaimed_opcode(data, programs, sections, tag, path):
     allowed_data = KNOWN_DATA.get(tag)
     if allowed_data is None:
@@ -347,38 +365,37 @@ def unclaimed_opcode(data, programs, sections, tag, path):
 
         segment = data[offset : offset + size]
         for position in range(size - 1):
-            if segment[position] != 0x0F:
+            hit = counter_encoding(segment, position)
+            if hit is None:
                 continue
-            opcode = None
-            length = 0
-            if segment[position + 1] == 0x31:
-                opcode, length = "RDTSC", 2
-            elif position + 2 < size and segment[position + 1 : position + 3] == b"\x01\xf9":
-                opcode, length = "RDTSCP", 3
-            elif position + 2 < size and segment[position + 1] == 0xC7:
-                reg = (segment[position + 2] >> 3) & 7
-                if reg in (6, 7):
-                    opcode, length = ("RDRAND" if reg == 6 else "RDSEED"), 3
-            if opcode:
-                if not all(claimed[position : position + length]):
-                    return opcode, offset + position, index, "unclaimed"
-                if executable[position] and any(
-                    position < boundary < position + length for boundary in boundaries
-                ):
-                    return opcode, offset + position, index, "cross-section"
-                if all(executable[position : position + length]) and any(
-                    boundary <= position < boundary + MAX_X86_INSTRUCTION_BYTES
-                    for boundary in adjacent_code
-                ):
-                    return opcode, offset + position, index, "boundary-desync"
+            opcode, length = hit
+            if not all(claimed[position : position + length]):
+                return opcode, offset + position, index, "unclaimed"
+            if executable[position] and any(
+                position < boundary < position + length for boundary in boundaries
+            ):
+                return opcode, offset + position, index, "cross-section"
+            if all(executable[position : position + length]) and any(
+                boundary <= position < boundary + MAX_X86_INSTRUCTION_BYTES
+                for boundary in adjacent_code
+            ):
+                return opcode, offset + position, index, "boundary-desync"
         for boundary in adjacent_code:
-            left = [
-                section for section in executable_sections
-                if section[2] + section[3] == offset + boundary
-            ]
-            if len(left) != 1:
+            if sum(section[2] + section[3] == offset + boundary
+                   for section in executable_sections) != 1:
                 raise ValueError(f"ambiguous adjacent executable section boundary in PT_LOAD {index}")
-            complete_section_tail(data, path, *left[0])
+        for section in executable_sections:
+            boundary = section[2] + section[3] - offset
+            if boundary in adjacent_code:
+                complete_section_tail(data, path, *section)
+            elif boundary < size and executable[boundary - 1] and not executable[boundary] \
+                    and segment[boundary - 1] in X86_PREFIX_BYTES:
+                for position in range(boundary, min(size - 1, boundary + MAX_X86_INSTRUCTION_BYTES - 1)):
+                    if counter_encoding(segment, position) is not None:
+                        complete_section_tail(data, path, *section)
+                        break
+                    if segment[position] not in X86_PREFIX_BYTES:
+                        break
     if not saw_load:
         raise ValueError("no PT_LOAD segments to scan")
     scan_symbol_restarts(data, sections, tag, path)
