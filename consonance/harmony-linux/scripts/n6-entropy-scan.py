@@ -157,10 +157,9 @@ def arm64_hits(data: bytes) -> list[tuple[int, str]]:
 
 
 def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str]]:
-    """Decode executable ranges at their natural boundaries."""
+    """Decode executable ranges and every directly reachable alternate entry."""
     hits: list[tuple[str, int, str]] = []
     seen: set[tuple[int, str]] = set()
-    starts: set[int] = set()
     targets: set[int] = set()
     instructions: dict[int, tuple[int, str, int | None, int]] = {}
     parsed = 0
@@ -171,7 +170,7 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
     with tempfile.TemporaryDirectory() as temporary:
         segment_path = Path(temporary) / "segment"
 
-        def decode(data: bytes, base: int, label: str):
+        def decode(data: bytes, base: int, label: str, first_only: bool = False):
             segment_path.write_bytes(data)
             try:
                 output = subprocess.run(
@@ -224,88 +223,128 @@ def x86_hits(segments: list[tuple[str, int, bytes]]) -> list[tuple[str, int, str
                 decoded_instructions.append(
                     (address, len(decoded), opcode, mnemonic_fields[instruction + 1 :])
                 )
-            if cursor != len(data):
+                if first_only:
+                    break
+            if cursor != len(data) and not first_only:
                 raise ValueError(f"objdump skipped executable bytes in {label}")
             return decoded_instructions
+
+        def branch_target(opcode: str, operands: list[str], label: str) -> int | None:
+            if opcode in ("ljmp", "lcall"):
+                raise ValueError(f"unreviewable far branch in {label}")
+            direct = (
+                opcode.startswith("j")
+                or opcode in (
+                    "call", "callq", "loop", "loope", "loopne", "loopz", "loopnz",
+                    "xbegin",
+                )
+            )
+            if not direct:
+                return None
+            if not operands:
+                raise ValueError(f"objdump omitted branch operand in {label}")
+            if operands[0].startswith("0x"):
+                try:
+                    return int(operands[0].rstrip(","), 16)
+                except ValueError as error:
+                    raise ValueError(f"objdump emitted invalid branch target in {label}") from error
+            if not operands[0].startswith("*"):
+                raise ValueError(f"unresolved direct branch in {label}")
+            return None
+
+        def record_hit(
+            label: str, base: int, address: int, opcode: str, operands: list[str]
+        ) -> None:
+            mnemonic = next(
+                (
+                    instruction
+                    for field in (opcode, *operands)
+                    for instruction in ("rdrand", "rdseed")
+                    if field.lower() == instruction
+                    or field.lower() in (
+                        f"{instruction}w", f"{instruction}l", f"{instruction}q"
+                    )
+                ),
+                None,
+            )
+            if mnemonic is not None:
+                key = (address, mnemonic.upper())
+                if key not in seen:
+                    hits.append((label, address - base, mnemonic.upper()))
+                    seen.add(key)
+
+        def slice_at(address: int) -> int | None:
+            return next(
+                (
+                    index for index, (_, base, data) in enumerate(ordered)
+                    if base <= address < base + len(data)
+                ),
+                None,
+            )
+
+        def first_bytes(address: int, index: int) -> bytes:
+            _, base, data = ordered[index]
+            result = bytearray(data[address - base : address - base + 15])
+            next_base = base + len(data)
+            next_index = index + 1
+            while len(result) < 15 and next_index < len(ordered):
+                _, adjoining_base, adjoining = ordered[next_index]
+                if adjoining_base != next_base:
+                    break
+                result.extend(adjoining[: 15 - len(result)])
+                next_base += len(adjoining)
+                next_index += 1
+            return bytes(result)
 
         for index, (label, base, data) in enumerate(ordered):
             for address, size, opcode, operands in decode(data, base, label):
                 parsed += 1
-                starts.add(address)
-                if opcode in ("ljmp", "lcall"):
-                    raise ValueError(f"unreviewable far branch in {label}")
-                direct = (
-                    opcode.startswith("j")
-                    or opcode in ("call", "callq", "loop", "loope", "loopne", "loopz", "loopnz", "xbegin")
-                )
-                target = None
-                if direct:
-                    if not operands:
-                        raise ValueError(f"objdump omitted branch operand in {label}")
-                    if operands[0].startswith("0x"):
-                        try:
-                            target = int(operands[0].rstrip(","), 16)
-                            targets.add(target)
-                        except ValueError as error:
-                            raise ValueError(f"objdump emitted invalid branch target in {label}") from error
-                    elif not operands[0].startswith("*"):
-                        raise ValueError(f"unresolved direct branch in {label}")
+                target = branch_target(opcode, operands, label)
+                if target is not None:
+                    targets.add(target)
                 instructions[address] = (address + size, opcode, target, index)
-                mnemonic = next(
-                    (
-                        instruction
-                        for field in (opcode, *operands)
-                        for instruction in ("rdrand", "rdseed")
-                        if field.lower() == instruction
-                        or field.lower() in (
-                            f"{instruction}w", f"{instruction}l", f"{instruction}q"
-                        )
-                    ),
-                    None,
-                )
-                if mnemonic is not None:
-                    key = (address, mnemonic.upper())
-                    if key not in seen:
-                        hits.append((label, address - base, mnemonic.upper()))
-                        seen.add(key)
-        for target in sorted(targets):
-            if any(base <= target < base + len(data) for _, base, data in ordered):
-                if target not in starts:
-                    raise ValueError(f"noncanonical direct branch target 0x{target:x}")
+                record_hit(label, base, address, opcode, operands)
 
-        pending = sorted(target for target in targets if target in instructions)
+        pending = sorted(target for target in targets if slice_at(target) is not None)
         reached: set[int] = set()
+        alternate_starts = 0
         while pending:
             address = pending.pop()
             if address in reached:
                 continue
             reached.add(address)
+            if address not in instructions:
+                index = slice_at(address)
+                if index is None:
+                    continue
+                alternate_starts += 1
+                if alternate_starts > 4096:
+                    raise ValueError("alternate decoder start budget exceeded")
+                label, base, _ = ordered[index]
+                decoded = decode(first_bytes(address, index), address, label, first_only=True)
+                if not decoded:
+                    raise ValueError(f"objdump omitted reachable instruction at 0x{address:x}")
+                _, size, opcode, operands = decoded[0]
+                target = branch_target(opcode, operands, label)
+                record_hit(label, base, address, opcode, operands)
+                instructions[address] = (address + size, opcode, target, index)
             end, opcode, target, index = instructions[address]
             label, base, data = ordered[index]
             remaining = base + len(data) - address
             if remaining < 15 and index + 1 < len(ordered):
-                suffix = bytearray(data[address - base :])
-                next_index = index + 1
-                next_base = base + len(data)
-                while len(suffix) < 15 and next_index < len(ordered):
-                    _, adjoining_base, adjoining = ordered[next_index]
-                    if adjoining_base != next_base:
-                        break
-                    suffix.extend(adjoining[: 15 - len(suffix)])
-                    next_base += len(adjoining)
-                    next_index += 1
+                suffix = first_bytes(address, index)
                 if len(suffix) > remaining:
-                    extended = decode(bytes(suffix), address, label)
+                    extended = decode(suffix, address, label, first_only=True)
                     if not extended or extended[0][1] > remaining:
                         raise ValueError(
                             f"branch stream crosses executable slice at 0x{address:x}"
                         )
-            if target in instructions:
+            if target is not None and slice_at(target) is not None:
                 pending.append(target)
             if opcode in ("jmp", "jmpq", "jmpl", "ret", "retq", "retl", "retw",
                           "lret", "lretq", "iret", "iretq", "iretd"):
                 continue
-            if end in instructions:
+            if slice_at(end) is not None:
                 pending.append(end)
     if parsed == 0:
         raise ValueError("objdump parsed zero executable instructions")
