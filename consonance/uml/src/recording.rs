@@ -55,6 +55,23 @@ fn loaded_executable_identity_self() -> std::io::Result<String> {
         use sha2::{Digest, Sha256};
         use std::io::Read as _;
 
+        for name in [
+            "LD_PRELOAD",
+            "LD_AUDIT",
+            "LD_LIBRARY_PATH",
+            "LD_ORIGIN_PATH",
+            "LD_HWCAP_MASK",
+            "LD_ASSUME_KERNEL",
+            "LD_DYNAMIC_WEAK",
+        ] {
+            if std::env::var_os(name).is_some() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("ambient loader override {name} is set"),
+                ));
+            }
+        }
+
         let mut executable = std::fs::File::open("/proc/self/exe")?;
         let mut digest = Sha256::new();
         let mut block = [0_u8; 65536];
@@ -396,5 +413,42 @@ mod tests {
             crate::Guest::start(std::process::Command::new("true"), work, &replay),
             Err(LaunchError::HostIdentity { .. })
         ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn recording_refuses_ambient_loader_override() {
+        const CHILD_ENV: &str = "HARMONY_UML_LOADER_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let profile = profile("a");
+            let mut launch = Launch::new(PathBuf::from("/work"));
+            launch.bridge = Some(Bridge::new(41));
+            assert!(matches!(
+                Recording::new(&profile, &launch, &[]),
+                Err(ReplayRefused::HostExecutable(error)) if error.contains("LD_LIBRARY_PATH")
+            ));
+            let recording =
+                Recording::new_with_host(&profile, &host("test"), EXECUTABLE, &launch, &[])
+                    .unwrap();
+            assert!(matches!(
+                recording.check(&profile),
+                Err(ReplayRefused::HostExecutable(error)) if error.contains("LD_LIBRARY_PATH")
+            ));
+            assert!(matches!(
+                recording.launch(std::env::temp_dir()),
+                Err(ReplayRefused::HostExecutable(error)) if error.contains("LD_LIBRARY_PATH")
+            ));
+            return;
+        }
+
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("recording::tests::recording_refuses_ambient_loader_override")
+            .env(CHILD_ENV, "1")
+            .env("LD_LIBRARY_PATH", std::env::temp_dir())
+            .status()
+            .unwrap();
+        assert!(status.success(), "{status}");
     }
 }

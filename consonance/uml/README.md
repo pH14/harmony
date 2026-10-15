@@ -152,7 +152,13 @@
   host identity, seed, memory, boot arguments, event count and event hash of a
   run. Earlier schemas are refused. The executable identity is the SHA-256 of
   the running Linux `/proc/self/exe` inode, so a replacement at the original
-  path cannot make a different host build claim the recording.
+  path cannot make a different host build claim the recording. Creation, replay
+  checks and replay launch refuse defined `LD_PRELOAD`, `LD_AUDIT`,
+  `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, or
+  `LD_DYNAMIC_WEAK`, including empty definitions. This checks explicit loader
+  overrides at admission; it
+  does not bind ordinary dependent libraries, code loaded later, or an injected
+  library that clears its override before admission.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation derives identity from the admitted `Launch`;
