@@ -21,9 +21,13 @@ fn image_files(
         if metadata.is_dir() {
             image_files(root, &path, files)?;
         } else if metadata.is_file() {
+            let relative = path.strip_prefix(root)?;
+            let name = relative
+                .to_str()
+                .ok_or("OCI input path is not valid UTF-8")?;
             let bytes = std::fs::read(&path)?;
             files.insert(
-                path.strip_prefix(root)?.to_string_lossy().into_owned(),
+                name.to_owned(),
                 json!({"sha256": sha(&bytes), "size": bytes.len()}),
             );
         } else {
@@ -156,6 +160,25 @@ mod tests {
     use super::*;
     use oci_support::image::{Ownership, RuntimeConfig};
     use std::os::unix::fs::PermissionsExt;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn image_file_manifest_rejects_lossy_name_collision() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("\u{fffd}"), b"referenced file").unwrap();
+        std::fs::write(
+            root.path().join(OsString::from_vec(vec![0xff])),
+            b"distinct file",
+        )
+        .unwrap();
+        let mut files = BTreeMap::new();
+        let error = image_files(root.path(), root.path(), &mut files)
+            .expect_err("distinct source files collapsed into one manifest path");
+        assert!(error.to_string().contains("not valid UTF-8"));
+    }
 
     #[test]
     fn postgres_code_inputs_read_unreadable_staged_files_and_restore_modes() {

@@ -12,7 +12,9 @@ use control_proto::{
     encode_reply,
 };
 use environment::{
-    channel::{ChannelError, Effect, NominalHandler, RecordedEnv, ServiceHandler},
+    channel::{
+        ChannelError, Effect, HandlerFingerprint, NominalHandler, RecordedEnv, ServiceHandler,
+    },
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
 use hypercall_proto::Service as _;
@@ -28,7 +30,7 @@ use crate::host_telemetry::{Cost, HostTelemetry};
 use crate::portable_snapshot::{
     PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparseDelta,
     SparsePortableSidecarRef, SparsePortableSnapshot, SparsePortableSnapshotReceipt,
-    decode_sparse_sidecar, encode_sparse_sidecar,
+    decode_sparse_sidecar, encode_sparse_sidecar_with_target_pages,
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
@@ -105,6 +107,38 @@ fn sparse_page_order_error(previous: Option<u64>, current: u64) -> Option<Snapsh
         return Some(SnapshotError::SparsePageDuplicate { gfn: current });
     }
     None
+}
+
+fn sparse_target_pages_digest(pages: &[(u64, Arc<[u8; 4096]>)]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"consonance-sparse-target-pages-v1\0");
+    hasher.update((pages.len() as u64).to_le_bytes());
+    for (gfn, page) in pages {
+        hasher.update(gfn.to_le_bytes());
+        hasher.update(&page[..]);
+    }
+    hasher.finalize().into()
+}
+
+fn sparse_delta_target_pages_digest<'a>(
+    engine: &SnapshotEngine,
+    setup: snapshot_store::SnapshotId,
+    pages: impl IntoIterator<Item = (u64, &'a [u8; 4096])>,
+) -> Result<[u8; 32], PortableSnapshotError> {
+    let mut changed = Vec::new();
+    for (gfn, page) in pages {
+        if engine.read_page(setup, gfn)? != *page {
+            changed.push((gfn, page));
+        }
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"consonance-sparse-delta-target-pages-v1\0");
+    hasher.update((changed.len() as u64).to_le_bytes());
+    for (gfn, page) in changed {
+        hasher.update(gfn.to_le_bytes());
+        hasher.update(page);
+    }
+    Ok(hasher.finalize().into())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,6 +221,7 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     schedule_poisoned: Option<ScheduleFailure>,
     sdk_snaps: BTreeMap<u64, SdkSnap>,
     timeline_tainted: bool,
+    reproducer_tainted: bool,
     tainted_snaps: BTreeSet<u64>,
     snapshot_meta: BTreeMap<u64, SnapshotMeta>,
     exec_nonce: u64,
@@ -195,6 +230,12 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     last_seal_dirty_gfns: Option<Vec<u64>>,
     telemetry: HostTelemetry,
     export_telemetry: std::cell::Cell<(Cost, u64)>,
+    retired_observations: Option<RetiredObservations>,
+}
+
+struct RetiredObservations {
+    console: Vec<u8>,
+    sdk_events: Vec<(u64, u32, Vec<u8>)>,
 }
 
 struct SdkSnap {
@@ -251,6 +292,27 @@ fn validate_control_import_sections<'a>(
 }
 
 impl<B: Backend<A: Vendor>> ControlServer<B> {
+    fn live_sdk_handler_fingerprint(&self) -> Result<Option<HandlerFingerprint>, ChannelError> {
+        self.vmm
+            .as_ref()
+            .map(Vmm::sdk_handler_fingerprint)
+            .transpose()
+            .map(Option::flatten)
+    }
+
+    fn verify_live_sdk_handler_unchanged(
+        &self,
+        before: &Option<HandlerFingerprint>,
+    ) -> Result<(), ChannelError> {
+        if let Some(before) = before {
+            self.vmm
+                .as_ref()
+                .ok_or(ChannelError::Poisoned)?
+                .verify_sdk_handler_unchanged(before)?;
+        }
+        Ok(())
+    }
+
     fn project_imported_hash_suffix(
         &self,
         vm_state: &<B::A as Vendor>::Snapshot,
@@ -281,16 +343,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         sdk: &SdkSnapshot,
         policy: &ServiceConfig,
     ) -> Result<(), PortableSnapshotError> {
-        let handler = (self.service_factory)(policy)?;
-        if handler.identity() != policy.identity || handler.configuration() != policy.configuration
-        {
-            return Err(PortableSnapshotError::Malformed(
-                "portable service implementation differs from policy",
-            ));
-        }
-        let mut environment = RecordedEnv::new(0, handler);
-        sdk.recorded.restore_into(&mut environment)?;
-        Ok(())
+        let before = self.live_sdk_handler_fingerprint()?;
+        let result = (|| {
+            let handler = (self.service_factory)(policy)?;
+            if handler.identity() != policy.identity
+                || handler.configuration() != policy.configuration
+            {
+                return Err(PortableSnapshotError::Malformed(
+                    "portable service implementation differs from policy",
+                ));
+            }
+            let mut environment = RecordedEnv::new(0, handler);
+            sdk.recorded.restore_into(&mut environment)?;
+            Ok(())
+        })();
+        self.verify_live_sdk_handler_unchanged(&before)?;
+        result
     }
 
     pub fn new(mut vmm: Vmm<B>, factory: VmmFactory<B>) -> Self {
@@ -321,6 +389,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             schedule_poisoned: None,
             sdk_snaps: BTreeMap::new(),
             timeline_tainted: false,
+            reproducer_tainted: false,
             tainted_snaps: BTreeSet::new(),
             snapshot_meta: BTreeMap::new(),
             exec_nonce: 0,
@@ -329,6 +398,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             last_seal_dirty_gfns: None,
             telemetry: HostTelemetry::default(),
             export_telemetry: std::cell::Cell::new((Cost::default(), 0)),
+            retired_observations: None,
         }
     }
 
@@ -411,9 +481,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn retire_vmm(&mut self) {
+        self.retired_observations = None;
         if let Some(vmm) = self.vmm.take() {
             self.telemetry.exits.merge(&vmm.exit_telemetry());
         }
+    }
+
+    fn retire_failed_vmm(&mut self) {
+        let observations = self.vmm.as_ref().map(|vmm| RetiredObservations {
+            console: vmm.serial().to_vec(),
+            sdk_events: vmm.sdk_events().to_vec(),
+        });
+        self.retire_vmm();
+        self.retired_observations = observations;
     }
 
     pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
@@ -465,12 +545,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     ) -> Result<SparsePortableSnapshot, PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let target_id = self.store_id(target)?;
-        let sidecar = self.sparse_sidecar(
-            base,
-            target,
-            target_id,
-            SparsePageVerification::BaseAndTarget(target_id),
-        )?;
         let candidates = self.engine.diff_pages(Some(base_id), target_id)?;
         let mut pages = Vec::with_capacity(candidates.len());
         for (gfn, page) in candidates {
@@ -478,6 +552,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 pages.push((gfn, Arc::new(*page)));
             }
         }
+        let sidecar = self.sparse_sidecar(
+            base,
+            target,
+            target_id,
+            SparsePageVerification::BaseAndTarget(target_id),
+            Some(sparse_target_pages_digest(&pages)),
+        )?;
         Ok(SparsePortableSnapshot { pages, sidecar })
     }
 
@@ -493,11 +574,15 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
         let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
+        let target_pages = self.engine.diff_pages(Some(setup_id), target_id)?;
+        let target_pages_digest =
+            sparse_delta_target_pages_digest(&self.engine, setup_id, target_pages)?;
         let sidecar = self.sparse_sidecar(
             setup,
             target,
             target_id,
             SparsePageVerification::AlreadyVerified,
+            Some(target_pages_digest),
         )?;
         let (mut cost, pages) = self.export_telemetry.get();
         cost.add(started.elapsed().as_nanos());
@@ -566,6 +651,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
         verification: SparsePageVerification,
+        target_pages_digest: Option<[u8; 32]>,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
         let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
         let meta = self
@@ -578,19 +664,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             ));
         }
         let vm_state = self.engine.vm_state_bytes(target_id)?;
-        encode_sparse_sidecar(&SparsePortableSidecarRef {
-            vm_state,
-            sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
-            policy: &meta.policy,
-            control_state: &meta.control_state,
-            at: meta.at,
-            sdk_events: meta.sdk_events,
-            trace_events: meta.trace_events,
-            trace_schedules: meta.trace_schedules,
-            tainted: meta.tainted,
-            base_ram_digest,
-            state_blob_suffix: &meta.state_blob_suffix,
-        })
+        encode_sparse_sidecar_with_target_pages(
+            &SparsePortableSidecarRef {
+                vm_state,
+                sdk: self.sdk_snaps.get(&target.0).map(|s| &s.channel),
+                policy: &meta.policy,
+                control_state: &meta.control_state,
+                at: meta.at,
+                sdk_events: meta.sdk_events,
+                trace_events: meta.trace_events,
+                trace_schedules: meta.trace_schedules,
+                tainted: meta.tainted,
+                base_ram_digest,
+                state_blob_suffix: &meta.state_blob_suffix,
+            },
+            target_pages_digest,
+        )
     }
 
     pub fn import_sparse_snapshot(
@@ -614,6 +703,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
+            Some(sparse_target_pages_digest(pages)),
             |engine, base_id, vm_state| {
                 let mut owned_pages = Vec::new();
                 owned_pages
@@ -643,12 +733,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
         let setup_id = self.store_id(setup)?;
+        let target_pages_digest = sparse_delta_target_pages_digest(
+            &self.engine,
+            setup_id,
+            pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
+        )?;
         let mut written = 0usize;
         let receipt = self.import_sparse_untimed(
             setup,
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
+            Some(target_pages_digest),
             |engine, near_id, vm_state| {
                 let near_id = if engine
                     .stats(near_id)
@@ -698,6 +794,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         base: SnapId,
         gfns: impl Iterator<Item = u64>,
         sidecar: &[u8],
+        target_pages_digest: Option<[u8; 32]>,
         derive: impl FnOnce(
             &mut SnapshotEngine,
             snapshot_store::SnapshotId,
@@ -722,6 +819,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
 
         let portable = decode_sparse_sidecar(sidecar)?;
+        if portable.target_pages_digest != target_pages_digest {
+            return Err(PortableSnapshotError::Malformed(
+                "sparse target pages differ",
+            ));
+        }
         let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
@@ -988,6 +1090,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Branch { snap, env } => self.timed_restore(*snap, Some(env)),
             Request::Replay(snap) => self.timed_restore(*snap, None),
             Request::Run { until, resolve } => {
+                if let Some(error) = &self.schedule_poisoned {
+                    return Ok(Err(error.reply()));
+                }
+                if until.deadline.is_some()
+                    && self
+                        .vmm
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .effective_vns()
+                        .is_none()
+                {
+                    return Ok(Err(ControlError::Unsupported));
+                }
                 if let Some(resolution) = resolve {
                     let Some((at, question)) = self
                         .vmm
@@ -1069,14 +1184,31 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             },
             Request::Perturb { fault, at } => Ok(self.perturb(fault, *at)),
             Request::SdkEvents { offset } => {
-                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                let events = match self.vmm.as_ref() {
+                    Some(vmm) => vmm.sdk_events(),
+                    None => self
+                        .retired_observations
+                        .as_ref()
+                        .ok_or(ServeError::Poisoned)?
+                        .sdk_events
+                        .as_slice(),
+                };
                 Ok(Ok(Reply::SdkEvents(page_sdk_events(
-                    vmm.sdk_events(),
+                    events,
                     *offset as usize,
                 ))))
             }
             Request::Console { offset } => {
-                let serial = self.vmm.as_ref().map(|v| v.serial()).unwrap_or(&[]);
+                let serial = self
+                    .vmm
+                    .as_ref()
+                    .map(Vmm::serial)
+                    .or_else(|| {
+                        self.retired_observations
+                            .as_ref()
+                            .map(|observations| observations.console.as_slice())
+                    })
+                    .unwrap_or(&[]);
                 let (total, chunk) = page_console(serial, *offset as usize);
                 Ok(Ok(Reply::Console { total, chunk }))
             }
@@ -1089,7 +1221,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
             }
             Request::Exec { cmd, deadline } => self.exec(cmd, *deadline),
-            Request::RecordedEnv => Ok(self.recorded_env_reply()),
+            Request::RecordedEnv => {
+                self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(self.recorded_env_reply())
+            }
         }
     }
 
@@ -1427,6 +1562,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.last_restore_bytes_written = 0;
         self.reset_schedule_to_fresh_vm();
         self.timeline_tainted = false;
+        self.reproducer_tainted = false;
         self.session_trace_start = SessionTraceStart::RecoveryBoot;
         let sdk_env = RecordedEnv::new(
             self.recorded.seed(),
@@ -1442,6 +1578,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         &mut self,
         snap: SnapId,
         env: Option<&control_proto::Reproducer>,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
+        let before = self.live_sdk_handler_fingerprint()?;
+        let mut preflight_complete = false;
+        let result = self.restore_inner(snap, env, &before, &mut preflight_complete);
+        if !preflight_complete {
+            self.verify_live_sdk_handler_unchanged(&before)?;
+        }
+        result
+    }
+
+    fn restore_inner(
+        &mut self,
+        snap: SnapId,
+        env: Option<&control_proto::Reproducer>,
+        before: &Option<HandlerFingerprint>,
+        preflight_complete: &mut bool,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         let mut host: Vec<(u64, Effect)> = Vec::new();
         let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
@@ -1581,7 +1733,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             } else {
                 0
             };
-            prepared_env.reseed(handler_seed);
+            if prepared_env.reseed(handler_seed).is_err() {
+                return Ok(Err(ControlError::Unsupported));
+            }
             if prepared_env.handler().identity() != restore_config.identity
                 || prepared_env.handler().configuration() != restore_config.configuration
             {
@@ -1619,6 +1773,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         {
             return Ok(Err(ControlError::Unsupported));
         }
+        self.verify_live_sdk_handler_unchanged(before)?;
+        *preflight_complete = true;
         self.finish_session_trace_segment();
         let in_place = self.restore_mode == RestoreMode::InPlace;
         let in_place_result = in_place.then(|| self.restore_in_place(store_id, &vm_state));
@@ -1693,6 +1849,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             SessionTraceStart::Replay { snapshot: snap.0 }
         };
         self.timeline_tainted = self.tainted_snaps.contains(&snap.0);
+        self.reproducer_tainted = seed.is_none() && source_control.reproducer_tainted;
         self.reset_schedule_to_fresh_vm();
         let sdk_snap = self.sdk_snaps.get(&snap.0);
         let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
@@ -1787,6 +1944,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             pending,
             poisoned: self.schedule_poisoned,
             exec_nonce: self.exec_nonce,
+            reproducer_tainted: self.reproducer_tainted,
         }
     }
 
@@ -1808,10 +1966,23 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         until: &control_proto::StopConditions,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
         let result = self.run_inner(until);
-        if result.is_ok() {
-            self.sync_recorded_request_bindings()?;
+        match result {
+            Ok(reply) => match self.sync_recorded_request_bindings() {
+                Ok(()) => Ok(reply),
+                Err(error) => {
+                    if self.vmm.is_some() {
+                        self.retire_failed_vmm();
+                    }
+                    Err(error)
+                }
+            },
+            Err(error) => {
+                if self.vmm.is_some() {
+                    self.retire_failed_vmm();
+                }
+                Err(error)
+            }
         }
-        result
     }
 
     fn sync_recorded_request_bindings(&mut self) -> Result<(), ServeError> {
@@ -1830,6 +2001,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
         }
         Ok(())
+    }
+
+    fn poison_crossed_schedule(&mut self, vns: u64) -> Option<ControlError> {
+        let moment = [
+            self.schedule.keys().next().copied(),
+            self.reseed_schedule.keys().next().copied(),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .filter(|&moment| moment <= vns)?;
+        let failure = ScheduleFailure { moment, vtime: vns };
+        let error = failure.reply();
+        self.schedule_poisoned = Some(failure);
+        Some(error)
     }
 
     fn run_inner(
@@ -1898,22 +2084,35 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(vns) })));
             }
 
-            let next_wake = [
+            let scheduled_wake = [
                 self.schedule.keys().next().copied(),
                 self.reseed_schedule.keys().next().copied(),
-                until.deadline.map(|deadline| deadline.0),
             ]
             .into_iter()
             .flatten()
             .min();
+            let next_wake = [scheduled_wake, until.deadline.map(|deadline| deadline.0)]
+                .into_iter()
+                .flatten()
+                .min();
             vmm.set_idle_wake_vns(next_wake);
 
-            match vmm.step()? {
+            let step = vmm.step()?;
+            if until.deadline.is_some_and(|deadline| {
+                scheduled_wake.is_none_or(|scheduled| deadline.0 < scheduled)
+                    && vmm.last_step_control_idle_landing_vns.is_some()
+            }) {
+                self.reproducer_tainted = true;
+            }
+            match step {
                 Step::Continued => {}
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     let stop = vmm.take_sdk_stop();
                     if matches!(stop, Some(SdkStop::Decision { .. })) {
+                        if let Some(error) = self.poison_crossed_schedule(vns) {
+                            return Ok(Err(error));
+                        }
                         return Ok(Ok(Reply::Stop(sdk_stop_to_reason(
                             stop.expect("decision is present"),
                             vns,
@@ -1973,6 +2172,27 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         cmd: &str,
         deadline: Moment,
     ) -> Result<Result<Reply, ControlError>, ServeError> {
+        let result = self.exec_inner(cmd, deadline);
+        if result.is_err() && self.vmm.is_some() {
+            self.retire_failed_vmm();
+        }
+        result
+    }
+
+    fn exec_inner(
+        &mut self,
+        cmd: &str,
+        deadline: Moment,
+    ) -> Result<Result<Reply, ControlError>, ServeError> {
+        if self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .effective_vns()
+            .is_none()
+        {
+            return Ok(Err(ControlError::Unsupported));
+        }
         if self
             .vmm
             .as_ref()
@@ -2032,7 +2252,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     }
 
     fn recorded_env_reply(&self) -> Result<Reply, ControlError> {
-        if self.timeline_tainted {
+        if self.timeline_tainted || self.reproducer_tainted {
             return Err(ControlError::Tainted);
         }
         Ok(Reply::Recorded(Reproducer {
@@ -2139,7 +2359,7 @@ mod tests {
         Reproducer, Request, Resolution, SnapId, StopConditions, StopMask, StopReason,
     };
     use environment::{
-        channel::{Effect as EnvHostEffect, RecordedEnv},
+        channel::{ChannelError, Effect as EnvHostEffect, RecordedEnv},
         input_spec::{InputSpec as EnvSpec, ServiceConfig, nominal_factory},
     };
 
@@ -2306,6 +2526,88 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn unmodeled_guest_exit_must_retire_the_failed_run() {
+        let mut server = server(vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x3F8,
+                size: 1,
+                write: Some(b'X' as u32),
+            }),
+            Exit::Common(CommonExit::Mmio {
+                gpa: vmm_backend::Gpa(0xdead_0000),
+                size: 4,
+                write: Some(1),
+            }),
+        ]);
+        hello(&mut server);
+        let base = snap(&mut server);
+        assert!(
+            server
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: seeded_env(1),
+                })
+                .unwrap()
+                .is_ok()
+        );
+        let expected_event = (0, 91, vec![1, 2, 3]);
+        let vmm = server.vmm_mut().unwrap();
+        let mut channel = vmm.sdk_snapshot().unwrap().unwrap();
+        channel.events.push(expected_event.clone());
+        vmm.sdk_restore_events(&channel);
+        let run = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert!(matches!(server.handle(&run), Err(ServeError::Vmm(_))));
+        assert_eq!(
+            server.handle(&Request::Console { offset: 0 }).unwrap(),
+            Ok(Reply::Console {
+                total: 1,
+                chunk: vec![b'X'],
+            })
+        );
+        assert_eq!(
+            server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+            Ok(Reply::SdkEvents(vec![expected_event.clone()]))
+        );
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(server.handle(&run), Err(ServeError::Poisoned)));
+        assert_eq!(
+            server.handle(&Request::Console { offset: 0 }).unwrap(),
+            Ok(Reply::Console {
+                total: 1,
+                chunk: vec![b'X'],
+            })
+        );
+        assert_eq!(
+            server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+            Ok(Reply::SdkEvents(vec![expected_event]))
+        );
+        assert_eq!(
+            server.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            server.handle(&Request::Console { offset: 0 }).unwrap(),
+            Ok(Reply::Console {
+                total: 0,
+                chunk: Vec::new(),
+            })
+        );
+        assert_eq!(
+            server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+            Ok(Reply::SdkEvents(Vec::new()))
+        );
     }
 
     #[test]
@@ -4964,9 +5266,14 @@ mod tests {
     }
 
     #[test]
-    fn oversized_service_state_refuses_snapshot_without_retiring_the_vm() {
+    fn oversized_live_recording_refuses_capture_but_allows_replay_and_import() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
+        let origin = snap(&mut server);
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(origin, &mut artifact)
+            .unwrap();
         let config = ServiceConfig::default();
         let mut oversized = RecordedEnv::new(
             7,
@@ -4993,6 +5300,11 @@ mod tests {
             Err(ControlError::SnapshotRefused { .. })
         ));
         assert!(server.vmm().is_some());
+        assert!(server.import_portable_snapshot(artifact.as_slice()).is_ok());
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
         server.vmm.as_mut().unwrap().enable_sdk(
             RecordedEnv::new(
                 7,
@@ -5008,6 +5320,36 @@ mod tests {
                 })
                 .unwrap(),
             Ok(Reply::Hash(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_live_handler_allows_replay_recovery() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                0,
+                Box::new(MaxStateExternalService(vec![
+                    0;
+                    environment::channel::MAX_CHANNEL_BYTES
+                        + 1
+                ])) as Box<dyn environment::channel::ServiceHandler>,
+            ),
+            &ServiceConfig::default(),
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Err(ControlError::SnapshotRefused { .. })
+        ));
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
         ));
     }
 
@@ -6043,19 +6385,22 @@ mod tests {
         );
         assert_eq!(hash(&mut destination), source_hash);
 
-        let sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &decoded.vm_state,
-            sdk: None,
-            policy: &decoded.policy,
-            control_state: &decoded.control_state,
-            at: decoded.at,
-            sdk_events: 0,
-            trace_events: decoded.trace_events,
-            trace_schedules: decoded.trace_schedules,
-            tainted: decoded.tainted,
-            base_ram_digest: decoded.base_ram_digest,
-            state_blob_suffix: &decoded.state_blob_suffix,
-        })
+        let sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &decoded.vm_state,
+                sdk: None,
+                policy: &decoded.policy,
+                control_state: &decoded.control_state,
+                at: decoded.at,
+                sdk_events: 0,
+                trace_events: decoded.trace_events,
+                trace_schedules: decoded.trace_schedules,
+                tainted: decoded.tainted,
+                base_ram_digest: decoded.base_ram_digest,
+                state_blob_suffix: &decoded.state_blob_suffix,
+            },
+            decoded.target_pages_digest,
+        )
         .unwrap();
         let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut destination);
@@ -6140,6 +6485,103 @@ mod tests {
         );
         assert_eq!(run_all(&mut source), run_all(&mut destination));
         assert_eq!(hash(&mut source), hash(&mut destination));
+    }
+
+    #[test]
+    fn sparse_import_rejects_changed_target_page_with_original_sidecar() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let source_base = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xa5);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let artifact = source.export_sparse_snapshot(source_base, target).unwrap();
+        assert_eq!(artifact.pages.len(), 1);
+        let mut changed = artifact.clone();
+        std::sync::Arc::make_mut(&mut changed.pages[0].1)[0] ^= 1;
+        let mut omitted = artifact.clone();
+        omitted.pages.clear();
+        let mut added = artifact.clone();
+        added.pages.push((2, std::sync::Arc::new([0x5a; 4096])));
+        let mut moved = artifact.clone();
+        moved.pages[0].0 = 2;
+        let mut missing_digest = artifact.clone();
+        missing_digest.sidecar[10] &= !4;
+        missing_digest.sidecar.drain(116..148);
+        assert_eq!(
+            super::decode_sparse_sidecar(&missing_digest.sidecar)
+                .unwrap()
+                .target_pages_digest,
+            None
+        );
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let destination_base = snap(&mut destination);
+        destination
+            .import_sparse_snapshot(destination_base, artifact)
+            .unwrap();
+
+        for tampered in [changed, omitted, added, moved, missing_digest] {
+            let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+            hello(&mut destination);
+            let destination_base = snap(&mut destination);
+            let before = destination.snapshot_store_stats();
+            assert!(matches!(
+                destination.import_sparse_snapshot(destination_base, tampered),
+                Err(super::PortableSnapshotError::Malformed(
+                    "sparse target pages differ"
+                ))
+            ));
+            assert_eq!(destination.snapshot_store_stats(), before);
+            assert_eq!(destination.latest_snapshot(), Some(destination_base));
+        }
+    }
+
+    #[test]
+    fn sparse_delta_rejects_changed_target_page_list_with_original_sidecar() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xa5);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let delta = source.export_sparse_delta(setup, None, target).unwrap();
+        assert_eq!(delta.pages.len(), 1);
+
+        let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut destination);
+        let base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        let changed = delta.pages[0];
+        for pages in [
+            vec![],
+            vec![(2, changed.1, changed.2)],
+            vec![changed, (2, changed.1, changed.2)],
+        ] {
+            assert!(matches!(
+                destination.import_sparse_delta(base, base, &pages, &delta.sidecar),
+                Err(super::PortableSnapshotError::Malformed(
+                    "sparse target pages differ"
+                ))
+            ));
+            assert_eq!(destination.snapshot_store_stats(), before);
+            assert_eq!(destination.latest_snapshot(), Some(base));
+        }
+        destination
+            .import_sparse_delta(base, base, &delta.pages, &delta.sidecar)
+            .unwrap();
     }
 
     #[test]
@@ -6430,10 +6872,8 @@ mod tests {
         ];
         assert!(matches!(
             destination.import_sparse_delta(destination_setup, near, &corrupted, &sidecar),
-            Err(PortableSnapshotError::Snapshot(
-                crate::snapshot::SnapshotError::Store(snapshot_store::StoreError::PageIntegrity {
-                    gfn: 3
-                })
+            Err(PortableSnapshotError::Malformed(
+                "sparse target pages differ"
             ))
         ));
         assert_eq!(destination.snapshot_store_stats(), before);
@@ -6519,19 +6959,22 @@ mod tests {
         assert_rejected(corrupted);
 
         let decoded = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
-        let malformed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &decoded.vm_state,
-            sdk: None,
-            policy: &decoded.policy,
-            control_state: &decoded.control_state,
-            at: decoded.at,
-            sdk_events: 1,
-            trace_events: decoded.trace_events,
-            trace_schedules: decoded.trace_schedules,
-            tainted: decoded.tainted,
-            base_ram_digest: decoded.base_ram_digest,
-            state_blob_suffix: &decoded.state_blob_suffix,
-        })
+        let malformed_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &decoded.vm_state,
+                sdk: None,
+                policy: &decoded.policy,
+                control_state: &decoded.control_state,
+                at: decoded.at,
+                sdk_events: 1,
+                trace_events: decoded.trace_events,
+                trace_schedules: decoded.trace_schedules,
+                tainted: decoded.tainted,
+                base_ram_digest: decoded.base_ram_digest,
+                state_blob_suffix: &decoded.state_blob_suffix,
+            },
+            decoded.target_pages_digest,
+        )
         .unwrap();
         let mut sdk_count_without_channel = exported.clone();
         sdk_count_without_channel.sidecar = malformed_sidecar;
@@ -6630,19 +7073,22 @@ mod tests {
         let sidecar = super::decode_sparse_sidecar(&exported.sidecar).unwrap();
         let mut sdk = sidecar.sdk.unwrap();
         sdk.pending_snapshot = !sdk.pending_snapshot;
-        let altered_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &sidecar.vm_state,
-            sdk: Some(&sdk),
-            policy: &sidecar.policy,
-            control_state: &sidecar.control_state,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: sidecar.tainted,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-        })
+        let altered_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &sidecar.vm_state,
+                sdk: Some(&sdk),
+                policy: &sidecar.policy,
+                control_state: &sidecar.control_state,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: sidecar.tainted,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         let mut destination = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut destination);
@@ -6732,19 +7178,22 @@ mod tests {
         let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
         let mut sdk = sidecar.sdk.unwrap();
         sdk.events[0].2.push(0x5a);
-        let changed_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &sidecar.vm_state,
-            sdk: Some(&sdk),
-            policy: &sidecar.policy,
-            control_state: &sidecar.control_state,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: sidecar.tainted,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-        })
+        let changed_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &sidecar.vm_state,
+                sdk: Some(&sdk),
+                policy: &sidecar.policy,
+                control_state: &sidecar.control_state,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: sidecar.tainted,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         let mut sparse_destination = seal_cut_server();
         hello(&mut sparse_destination);
@@ -6843,19 +7292,22 @@ mod tests {
         let sparse = source.export_sparse_snapshot(cut, cut).unwrap();
         let sidecar = super::decode_sparse_sidecar(&sparse.sidecar).unwrap();
         assert!(sidecar.tainted);
-        let cleared_sidecar = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &sidecar.vm_state,
-            sdk: sidecar.sdk.as_ref(),
-            policy: &sidecar.policy,
-            control_state: &sidecar.control_state,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: false,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-        })
+        let cleared_sidecar = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &sidecar.vm_state,
+                sdk: sidecar.sdk.as_ref(),
+                policy: &sidecar.policy,
+                control_state: &sidecar.control_state,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: false,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         let mut original_sparse = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut original_sparse);
@@ -7082,19 +7534,22 @@ mod tests {
         let mut state = VmState::decode(&sidecar.vm_state).unwrap();
         mutate(&mut state);
         let vm_state = state.encode().unwrap();
-        let sidecar_bytes = super::encode_sparse_sidecar(&super::SparsePortableSidecarRef {
-            vm_state: &vm_state,
-            sdk: sidecar.sdk.as_ref(),
-            policy: &sidecar.policy,
-            at: sidecar.at,
-            sdk_events: sidecar.sdk_events,
-            trace_events: sidecar.trace_events,
-            trace_schedules: sidecar.trace_schedules,
-            tainted: sidecar.tainted,
-            base_ram_digest: sidecar.base_ram_digest,
-            state_blob_suffix: &sidecar.state_blob_suffix,
-            control_state: &sidecar.control_state,
-        })
+        let sidecar_bytes = super::encode_sparse_sidecar_with_target_pages(
+            &super::SparsePortableSidecarRef {
+                vm_state: &vm_state,
+                sdk: sidecar.sdk.as_ref(),
+                policy: &sidecar.policy,
+                at: sidecar.at,
+                sdk_events: sidecar.sdk_events,
+                trace_events: sidecar.trace_events,
+                trace_schedules: sidecar.trace_schedules,
+                tainted: sidecar.tainted,
+                base_ram_digest: sidecar.base_ram_digest,
+                state_blob_suffix: &sidecar.state_blob_suffix,
+                control_state: &sidecar.control_state,
+            },
+            sidecar.target_pages_digest,
+        )
         .unwrap();
         super::SparsePortableSnapshot {
             pages: exported.pages,
@@ -8389,6 +8844,241 @@ mod tests {
         ));
     }
 
+    struct CompletionChainBackend(MockBackend, bool);
+
+    impl Backend for CompletionChainBackend {
+        type A = vmm_backend::X86;
+
+        fn set_policy(&mut self, policy: &X86Policy) -> vmm_backend::Result<()> {
+            self.0.set_policy(policy)
+        }
+
+        unsafe fn map_memory(
+            &mut self,
+            gpa: vmm_backend::Gpa,
+            host: &mut [u8],
+        ) -> vmm_backend::Result<()> {
+            // SAFETY: the inner mock only records the region and does not dereference host memory.
+            unsafe { self.0.map_memory(gpa, host) }
+        }
+
+        fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
+            self.0.run()
+        }
+
+        fn inject(&mut self, event: vmm_backend::Injection) -> vmm_backend::Result<()> {
+            self.0.inject(event)
+        }
+
+        fn set_pending_irq(&mut self, irq: Option<u8>) -> vmm_backend::Result<()> {
+            self.0.set_pending_irq(irq)
+        }
+
+        fn take_accepted_interrupt(&mut self) -> Option<u8> {
+            self.0.take_accepted_interrupt()
+        }
+
+        fn complete_read(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.0.complete_read(value)
+        }
+
+        fn complete_fault(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_fault()
+        }
+
+        fn complete_ok(&mut self) -> vmm_backend::Result<()> {
+            self.0.complete_ok()
+        }
+
+        fn complete_hypercall(&mut self, value: u64) -> vmm_backend::Result<()> {
+            self.0.complete_hypercall(value)
+        }
+
+        fn complete_arch(
+            &mut self,
+            completion: vmm_backend::X86Completion,
+        ) -> vmm_backend::Result<()> {
+            self.0.complete_arch(completion)
+        }
+
+        fn retire_pending_completion(&mut self) -> vmm_backend::Result<()> {
+            self.0.retire_pending_completion()
+        }
+
+        fn finish_exit(&mut self) -> vmm_backend::Result<Option<Exit<vmm_backend::X86>>> {
+            if std::mem::take(&mut self.1) {
+                return self.0.run().map(Some);
+            }
+            Ok(None)
+        }
+
+        fn save(&mut self) -> vmm_backend::Result<vmm_backend::VcpuState> {
+            self.0.save()
+        }
+
+        fn restore(&mut self, state: &vmm_backend::VcpuState) -> vmm_backend::Result<()> {
+            self.0.restore(state)
+        }
+
+        fn exit_counts(&self) -> vmm_backend::ExitCounts {
+            self.0.exit_counts()
+        }
+
+        fn reset_exit_counts(&mut self) {
+            self.0.reset_exit_counts();
+        }
+
+        fn capabilities(&self) -> vmm_backend::Capabilities<vmm_backend::X86Caps> {
+            self.0.capabilities()
+        }
+    }
+
+    #[test]
+    fn chained_decision_cannot_skip_a_crossed_fault() {
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0u8; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let mut backend = MockBackend::with_exits(vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(u32::from(b'x')),
+            }),
+            Exit::Arch(X86Exit::Io {
+                port: 0x0ca1,
+                size: 4,
+                write: Some(len as u32),
+            }),
+        ]);
+        backend
+            .set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+        let mut vmm = Vmm::new(
+            CompletionChainBackend(backend, true),
+            GuestRam::new(BIG_RAM).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
+        vmm.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[0xe000..0xe000 + len].copy_from_slice(&frame[..len]);
+        vmm.restore_guest_memory(&ram).unwrap();
+        let mut server = ControlServer::new(
+            vmm,
+            Box::new(|| Err(VmmError::ContractViolation("unused".into()))),
+        );
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(
+                        EnvHostEffect::XorMemory {
+                            gpa: 0x40,
+                            bytes: vec![1],
+                        }
+                        .encode()
+                    ),
+                    at: Moment(1),
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let result = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap();
+        assert!(
+            matches!(result, Err(ControlError::ScheduleUnsatisfiable { moment: 1, vtime }) if vtime >= 1),
+            "crossed fault must fail closed before surfacing the decision: {result:?}"
+        );
+        assert_eq!(server.vmm().unwrap().guest_memory()[0x40], 0);
+        assert!(server.recorded.effects().is_empty());
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let response_before = server.vmm().unwrap().guest_memory()[0xf000..0xf020].to_vec();
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(environment::channel::Answer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment: 1,
+                vtime: at,
+            })
+        );
+        assert_eq!(
+            server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            response_before
+        );
+        assert!(server.recorded.answers().is_empty());
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable { moment: 1, .. })
+        ));
+        server.vmm.as_mut().unwrap().map_doorbell_pages().unwrap();
+    }
+
     #[test]
     fn stop_mask_checks_the_sdk_snapshot_point_and_assertion() {
         const REQ_GPA: usize = 0xE000;
@@ -9650,6 +10340,114 @@ mod tests {
     }
 
     #[test]
+    fn deadline_requests_without_virtual_time_are_rejected_before_mutation() {
+        use environment::channel::{Answer as ServiceAnswer, RecordedEnv};
+
+        let make_vm = || {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vmm = Vmm::new(backend, GuestRam::new(BIG_RAM).unwrap());
+            vmm.wire_snapshot_hashing();
+            Ok(vmm)
+        };
+        let mut server = ControlServer::new(make_vm().unwrap(), Box::new(make_vm));
+        hello(&mut server);
+        let before = hash(&mut server);
+
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(10)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+
+        assert_eq!(
+            server
+                .handle(&Request::Exec {
+                    cmd: "echo hi".to_string(),
+                    deadline: Moment(10),
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+        assert_eq!(
+            vmm.pending_service_question()
+                .map(|(at, question)| (at, question.request_id())),
+            Some((0, 77))
+        );
+        let before_pending = hash(&mut server);
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(10)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: Some(Resolution {
+                        vtime: Moment(0),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(ServiceAnswer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before_pending);
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(_, question)| question.request_id()),
+            Some(77)
+        );
+    }
+
+    #[test]
     #[cfg_attr(
         miri,
         ignore = "reaches snapshot restore (materialize through snapshot-store's tempfile and mmap)"
@@ -9864,7 +10662,7 @@ mod tests {
         }
     }
 
-    struct IdleBackend(MockBackend);
+    struct IdleBackend(MockBackend, bool, bool);
     impl Backend for IdleBackend {
         type A = vmm_backend::X86;
 
@@ -9880,7 +10678,24 @@ mod tests {
             unsafe { self.0.map_memory(gpa, host) }
         }
         fn run(&mut self) -> vmm_backend::Result<Exit<vmm_backend::X86>> {
-            Ok(Exit::Common(CommonExit::Idle))
+            if self.1 {
+                Ok(Exit::Arch(X86Exit::Io {
+                    port: crate::vendor::x86::dispatch::IDLE_PORT,
+                    size: 4,
+                    write: Some(1),
+                }))
+            } else {
+                Ok(Exit::Common(CommonExit::Idle))
+            }
+        }
+        fn finish_exit(&mut self) -> vmm_backend::Result<Option<Exit<vmm_backend::X86>>> {
+            if self.2 {
+                Err(vmm_backend::BackendError::Internal(
+                    "injected post-idle failure",
+                ))
+            } else {
+                Ok(None)
+            }
         }
         fn inject(&mut self, e: vmm_backend::Injection) -> vmm_backend::Result<()> {
             self.0.inject(e)
@@ -9940,7 +10755,7 @@ mod tests {
             },
             ..Default::default()
         });
-        let mut v = Vmm::new(IdleBackend(m), GuestRam::new(RAM).unwrap());
+        let mut v = Vmm::new(IdleBackend(m, false, false), GuestRam::new(RAM).unwrap());
         v.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), seed).unwrap());
         v.wire_lapic(
             lapic::Lapic::new(lapic::LapicConfig {
@@ -9956,6 +10771,102 @@ mod tests {
 
     fn idle_server() -> ControlServer<IdleBackend> {
         ControlServer::new(idle_vmm(0x1D1E), Box::new(|| Ok(idle_vmm(0x1D1E))))
+    }
+
+    fn charged_idle_vmm(seed: u64) -> Vmm<IdleBackend> {
+        let mut vmm = idle_vmm(seed);
+        vmm.backend.1 = true;
+        vmm
+    }
+
+    #[test]
+    fn a_charged_idle_exit_crossing_the_deadline_refuses_a_false_reproducer() {
+        let mut live = ControlServer::new(
+            charged_idle_vmm(0x1D1E),
+            Box::new(|| Ok(charged_idle_vmm(0x1D1E))),
+        );
+        assert_eq!(
+            live.handle(&Request::Hello(server_caps())).unwrap(),
+            Ok(Reply::Hello(server_caps()))
+        );
+        assert_eq!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(1_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
+    }
+
+    #[test]
+    fn a_post_idle_failure_cannot_mint_a_false_reproducer() {
+        let mut probe = charged_idle_vmm(0x1D1E);
+        probe.backend.2 = true;
+        probe.set_idle_wake_vns(Some(1_000));
+        assert!(probe.step().is_err());
+        assert_eq!(probe.effective_vns(), Some(10_000));
+
+        let mut failed = charged_idle_vmm(0x1D1E);
+        failed.backend.2 = true;
+        let mut live = ControlServer::new(failed, Box::new(|| Ok(charged_idle_vmm(0x1D1E))));
+        assert!(live.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+        let run = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(1_000)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert!(matches!(live.handle(&run), Err(ServeError::Vmm(_))));
+        assert!(matches!(
+            live.handle(&Request::RecordedEnv),
+            Err(ServeError::Poisoned)
+        ));
+    }
+
+    #[test]
+    fn a_failed_exec_step_cannot_publish_a_snapshot() {
+        let mut failed = charged_idle_vmm(0x1D1E);
+        failed.backend.2 = true;
+        let mut live = ControlServer::new(failed, Box::new(|| Ok(charged_idle_vmm(0x1D1E))));
+        assert!(live.handle(&Request::Hello(server_caps())).unwrap().is_ok());
+        assert!(matches!(
+            live.handle(&Request::Exec {
+                cmd: "true".into(),
+                deadline: Moment(1_000),
+            }),
+            Err(ServeError::Vmm(_))
+        ));
+        assert!(matches!(
+            live.handle(&Request::Snapshot),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(
+            live.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            }),
+            Err(ServeError::Poisoned)
+        ));
+        assert!(matches!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            }),
+            Err(ServeError::Poisoned)
+        ));
     }
 
     #[test]
@@ -9986,6 +10897,185 @@ mod tests {
                 vtime: Moment(deadline)
             })
         );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
+    fn an_idle_deadline_wake_keeps_snapshot_but_refuses_a_false_reproducer() {
+        let mut live = idle_server();
+        assert_eq!(
+            live.handle(&Request::Hello(server_caps())).unwrap(),
+            Ok(Reply::Hello(server_caps()))
+        );
+        let base = match live.handle(&Request::Snapshot).unwrap().unwrap() {
+            Reply::Snapshot { id, .. } => id,
+            reply => panic!("unexpected snapshot reply: {reply:?}"),
+        };
+        assert_eq!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(1_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(1_000),
+            }))
+        );
+        assert_eq!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
+        let (landed, tainted) = match live.handle(&Request::Snapshot).unwrap().unwrap() {
+            Reply::Snapshot { id, tainted, .. } => (id, tainted),
+            reply => panic!("unexpected snapshot reply: {reply:?}"),
+        };
+        assert!(!tainted);
+        let landed_hash = match live
+            .handle(&Request::Hash {
+                scope: control_proto::HashScope::Whole,
+            })
+            .unwrap()
+            .unwrap()
+        {
+            Reply::Hash(hash) => hash,
+            reply => panic!("unexpected hash reply: {reply:?}"),
+        };
+        let mut artifact = Vec::new();
+        live.export_portable_snapshot(landed, &mut artifact)
+            .unwrap();
+        let mut cold = idle_server();
+        cold.handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let imported = cold.import_portable_snapshot(artifact.as_slice()).unwrap();
+        assert!(!imported.tainted);
+        assert_eq!(
+            cold.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            cold.handle(&Request::Hash {
+                scope: control_proto::HashScope::Whole,
+            })
+            .unwrap(),
+            Ok(Reply::Hash(landed_hash))
+        );
+        assert_eq!(
+            cold.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
+        assert_eq!(
+            live.handle(&Request::Replay(landed)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(live.vmm().unwrap().effective_vns(), Some(1_000));
+        assert_eq!(
+            live.handle(&Request::Hash {
+                scope: control_proto::HashScope::Whole,
+            })
+            .unwrap(),
+            Ok(Reply::Hash(landed_hash))
+        );
+        assert_eq!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Err(ControlError::Tainted)
+        );
+        assert_eq!(
+            live.handle(&Request::Branch {
+                snap: landed,
+                env: seeded_env(13),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+        assert_eq!(
+            live.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            live.handle(&Request::RecordedEnv).unwrap(),
+            Ok(Reply::Recorded(_))
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
+    fn a_staged_effect_at_the_idle_deadline_keeps_the_reproducer() {
+        let mut live = idle_server();
+        live.handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let effect = EnvHostEffect::XorMemory {
+            gpa: 0x40,
+            bytes: vec![0xA5],
+        };
+        assert_eq!(
+            live.handle(&Request::Perturb {
+                fault: HostFault(effect.encode()),
+                at: Moment(1_000),
+            })
+            .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            live.handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(1_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(1_000),
+            }))
+        );
+        let reproducer = match live.handle(&Request::RecordedEnv).unwrap().unwrap() {
+            Reply::Recorded(reproducer) => reproducer,
+            reply => panic!("unexpected recorded env reply: {reply:?}"),
+        };
+
+        let mut replay = idle_server();
+        replay
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let base = match replay.handle(&Request::Snapshot).unwrap().unwrap() {
+            Reply::Snapshot { id, .. } => id,
+            reply => panic!("unexpected snapshot reply: {reply:?}"),
+        };
+        assert_eq!(
+            replay
+                .handle(&Request::Branch {
+                    snap: base,
+                    env: reproducer
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            replay
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: None,
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Quiescent {
+                vtime: Moment(1_000)
+            }))
+        );
+        assert_eq!(live.vmm().unwrap().guest_memory()[0x40], 0xA5);
+        assert_eq!(replay.vmm().unwrap().guest_memory()[0x40], 0xA5);
     }
 
     #[test]
@@ -10997,5 +12087,305 @@ mod tests {
             "a pvclock composition mismatch rejects the restore loudly"
         );
         let _ = hash(&mut s);
+    }
+
+    #[derive(Clone)]
+    struct AliasedService(
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    );
+
+    impl environment::channel::ServiceHandler for AliasedService {
+        fn identity(&self) -> &[u8] {
+            b"aliased-service-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, ChannelError> {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(self
+                .0
+                .load(std::sync::atomic::Ordering::SeqCst)
+                .to_le_bytes()
+                .to_vec())
+        }
+
+        fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ChannelError> {
+            let value = u64::from_le_bytes(bytes.try_into().map_err(|_| ChannelError::Malformed)?);
+            self.0.store(value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            self.0.store(seed, std::sync::atomic::Ordering::SeqCst);
+            self.1.lock().unwrap().push(seed);
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[derive(Clone)]
+    struct FalsePoisonService(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl environment::channel::ServiceHandler for FalsePoisonService {
+        fn identity(&self) -> &[u8] {
+            b"false-poison-service-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, ChannelError> {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            let state = self.0.load(std::sync::atomic::Ordering::SeqCst);
+            if state == 1 {
+                Err(ChannelError::Poisoned)
+            } else {
+                Ok(state.to_le_bytes().to_vec())
+            }
+        }
+
+        fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ChannelError> {
+            let state = u64::from_le_bytes(bytes.try_into().map_err(|_| ChannelError::Malformed)?);
+            self.0.store(state, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            self.0.store(seed, std::sync::atomic::Ordering::SeqCst);
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    fn install_aliased_service(
+        server: &mut ControlServer<MockBackend>,
+        state: &std::sync::Arc<std::sync::atomic::AtomicU64>,
+        reseeds: &std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+        seed: u64,
+    ) -> ServiceConfig {
+        let config = ServiceConfig {
+            identity: b"aliased-service-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                seed,
+                Box::new(AliasedService(state.clone(), reseeds.clone())),
+            ),
+            &config,
+        );
+        let factory_state = state.clone();
+        let factory_reseeds = reseeds.clone();
+        server.set_service_factory(std::sync::Arc::new(move |_| {
+            Ok(Box::new(AliasedService(
+                factory_state.clone(),
+                factory_reseeds.clone(),
+            )))
+        }));
+        config
+    }
+
+    fn assert_aliased_service_cannot_certify(server: &mut ControlServer<MockBackend>) {
+        assert!(matches!(
+            server.vmm().unwrap().sdk_snapshot(),
+            Err(ChannelError::Poisoned)
+        ));
+        assert!(!matches!(
+            server.handle(&Request::Hash {
+                scope: HashScope::Whole,
+            }),
+            Ok(Ok(Reply::Hash(_)))
+        ));
+        assert!(!matches!(
+            server.handle(&Request::Snapshot),
+            Ok(Ok(Reply::Snapshot { .. }))
+        ));
+    }
+
+    #[test]
+    fn poisoned_live_handler_allows_replay_and_import_recovery() {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::{Arc, Mutex};
+
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(origin, &mut artifact)
+            .unwrap();
+
+        let poisoned_env = || {
+            let mut env = RecordedEnv::new(
+                0,
+                Box::new(AliasedService(
+                    Arc::new(AtomicU64::new(0)),
+                    Arc::new(Mutex::new(Vec::new())),
+                )) as Box<dyn environment::channel::ServiceHandler>,
+            );
+            assert!(matches!(env.reseed(7), Err(ChannelError::Poisoned)));
+            env
+        };
+        server
+            .vmm_mut()
+            .unwrap()
+            .enable_sdk(poisoned_env(), &ServiceConfig::default());
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+
+        server
+            .vmm_mut()
+            .unwrap()
+            .enable_sdk(poisoned_env(), &ServiceConfig::default());
+        let imported = server
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        assert_eq!(
+            server.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+    }
+
+    #[test]
+    fn handler_poison_error_does_not_skip_live_guard() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let state = Arc::new(AtomicU64::new(0));
+        server.vmm_mut().unwrap().enable_sdk(
+            RecordedEnv::new(
+                1,
+                Box::new(FalsePoisonService(state.clone()))
+                    as Box<dyn environment::channel::ServiceHandler>,
+            ),
+            &ServiceConfig::default(),
+        );
+        let factory_state = state.clone();
+        server.set_service_factory(Arc::new(move |_| {
+            factory_state.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::new(FalsePoisonService(factory_state.clone())))
+        }));
+        let reply = server.handle(&Request::Replay(origin));
+        assert!(!matches!(
+            server.handle(&Request::Snapshot),
+            Ok(Ok(Reply::Snapshot { .. }))
+        ));
+        assert!(matches!(
+            reply,
+            Err(ServeError::Service(ChannelError::Poisoned))
+        ));
+        assert_eq!(state.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn rejected_branch_poisoned_when_factory_aliases_live_service() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let state = Arc::new(AtomicU64::new(0));
+        let reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let config = install_aliased_service(&mut server, &state, &reseeds, 0);
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(config);
+        let missing = SnapId(999_999);
+        let reply = server.handle(&Request::Branch {
+            snap: missing,
+            env: Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: spec.encode(),
+            },
+        });
+        assert!(matches!(
+            reply,
+            Err(ServeError::Service(ChannelError::Poisoned))
+        ));
+        assert_eq!(state.load(Ordering::SeqCst), 7);
+        assert_eq!(*reseeds.lock().unwrap(), vec![0, 0, 7]);
+        assert_aliased_service_cannot_certify(&mut server);
+    }
+
+    #[test]
+    fn full_and_sparse_import_poisoned_when_factory_aliases_live_service() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let source_state = Arc::new(AtomicU64::new(0));
+        let source_reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let config = install_aliased_service(&mut source, &source_state, &source_reseeds, 7);
+        let source_snap = snap(&mut source);
+        let mut artifact = Vec::new();
+        source
+            .export_portable_snapshot(source_snap, &mut artifact)
+            .unwrap();
+        let sparse = source
+            .export_sparse_snapshot(source_snap, source_snap)
+            .unwrap();
+
+        let full_state = Arc::new(AtomicU64::new(0));
+        let full_reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut full = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut full);
+        install_aliased_service(&mut full, &full_state, &full_reseeds, 5);
+        assert!(matches!(
+            full.import_portable_snapshot(artifact.as_slice()),
+            Err(PortableSnapshotError::Environment(ChannelError::Poisoned))
+        ));
+        assert!(full.snaps.is_empty());
+        assert_eq!(full_state.load(Ordering::SeqCst), 7);
+        assert_eq!(*full_reseeds.lock().unwrap(), vec![5, 0]);
+        assert_aliased_service_cannot_certify(&mut full);
+
+        let sparse_state = Arc::new(AtomicU64::new(0));
+        let sparse_reseeds = Arc::new(Mutex::new(Vec::new()));
+        let mut sparse_dest = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut sparse_dest);
+        sparse_dest.recorded.set_config(config.clone());
+        install_aliased_service(&mut sparse_dest, &sparse_state, &sparse_reseeds, 5);
+        let base = snap(&mut sparse_dest);
+        assert!(matches!(
+            sparse_dest.import_sparse_snapshot(base, sparse),
+            Err(PortableSnapshotError::Environment(ChannelError::Poisoned))
+        ));
+        assert_eq!(sparse_dest.snaps.len(), 1);
+        assert_eq!(sparse_state.load(Ordering::SeqCst), 7);
+        assert_eq!(*sparse_reseeds.lock().unwrap(), vec![5, 0]);
+        assert_aliased_service_cannot_certify(&mut sparse_dest);
     }
 }

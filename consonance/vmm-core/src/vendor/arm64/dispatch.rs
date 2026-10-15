@@ -447,6 +447,11 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
         }
 
         if in_frame(addr, PVCLOCK) {
+            if !self.pvclock_offered() {
+                return Err(VmmError::ContractViolation(
+                    "arm64 pvclock MMIO while the pvclock service is not offered".to_string(),
+                ));
+            }
             let offset = addr - PVCLOCK.0;
             let exact = matches!(
                 (offset, size, write),
@@ -1348,9 +1353,13 @@ mod tests {
     }
 
     fn clocked_mock_vmm() -> Vmm<MockArm64Backend> {
+        clocked_mock_vmm_with_exits(Vec::new())
+    }
+
+    fn clocked_mock_vmm_with_exits(exits: Vec<Exit<Arm64>>) -> Vmm<MockArm64Backend> {
         use crate::vmm::VtimeWiring;
 
-        let mut vmm = mock_vmm(Vec::new());
+        let mut vmm = mock_vmm(exits);
         vmm.wire_vtime(
             VtimeWiring::new_virtual_time(
                 vtime::VClockConfig {
@@ -1584,6 +1593,44 @@ mod tests {
         assert!(matches!(result, Err(VmmError::ContractViolation(_))));
         assert_eq!(vmm.effective_vns(), before);
         assert_eq!(vmm.devices.clockevent.deadline, None);
+    }
+
+    #[test]
+    fn unoffered_clockevent_is_rejected_before_state_changes() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut vmm = clocked_mock_vmm_with_exits(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(CNTFRQ_HZ),
+        })]);
+        let before_vns = vmm.effective_vns();
+        let before_hash = vmm.state_hash().unwrap();
+        assert!(matches!(vmm.step(), Err(VmmError::ContractViolation(_))));
+        assert_eq!(vmm.effective_vns(), before_vns);
+        assert_eq!(vmm.devices.clockevent.deadline, None);
+        assert_eq!(vmm.state_hash().unwrap(), before_hash);
+    }
+
+    #[test]
+    fn offered_clockevent_snapshot_preserves_the_deadline() {
+        use crate::vendor::arm64::board::PVCLOCK;
+
+        let mut live = clocked_mock_vmm_with_exits(vec![Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(PVCLOCK.0 + 0x10),
+            size: 8,
+            write: Some(CNTFRQ_HZ),
+        })]);
+        live.enable_pvclock();
+        assert_eq!(live.step().unwrap(), Step::Continued);
+        let live_hash = live.state_hash().unwrap();
+        let snapshot = live.save_vm_state().unwrap();
+        let mut restored = clocked_mock_vmm();
+        restored.enable_pvclock();
+        restored.restore_vm_state(&snapshot).unwrap();
+        assert_eq!(live.devices.clockevent.deadline, Some(CNTFRQ_HZ));
+        assert_eq!(restored.devices.clockevent.deadline, Some(CNTFRQ_HZ));
+        assert_eq!(restored.state_hash().unwrap(), live_hash);
     }
 
     #[test]

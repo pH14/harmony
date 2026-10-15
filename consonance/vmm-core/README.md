@@ -28,12 +28,42 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+When a `Run` deadline is the earlier idle wake and resumes the guest, control
+refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
+so that tape alone cannot replay the continuation from genesis. This includes
+an idle exit whose own virtual-time cost crosses the deadline. The landed VM
+state is still a usable snapshot; replaying that snapshot retains the
+`RecordedEnv` refusal, while branching from it starts a new reproducible
+origin. A timer or staged input that would wake the guest at the same time
+does not cause this refusal. A deadline reached by ordinary guest steps also
+does not cause it. An `Exec` request still taints the snapshot timeline.
+`Run` with a deadline and `Exec` require a wired virtual clock. An unwired VM
+rejects either request before resolving a pending service answer, injecting a
+command, or entering the guest; it cannot treat a missing clock as time zero.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+If a backend completion chains a later SDK decision into the same guest step
+after virtual time crosses a staged host effect or reseed, control rejects the
+decision as an unsatisfiable schedule instead of exposing it before the input.
+Further `Run` requests reject that poisoned schedule before resolving the
+pending service answer.
+If a backend step or scheduled-input application fails after `Run` begins,
+control retires the live VM. A failed step can already have advanced virtual
+time or changed guest state, so the session cannot mint a reproducer or accept
+another run from an unverified continuation.
+The failed run's console and SDK events remain readable from a diagnostic
+copy without keeping the failed VM executable. Replay starts with fresh
+observations.
+An `Exec` substrate failure also retires the VM before a snapshot or hash can
+certify a partially completed guest step. Its console and SDK events remain
+available for diagnosis.
 Arm clockevent deadlines require a zero guest-clock offset. Arm guests do not
 write that offset, and both full-VM snapshot restore and V-time-only restore
 reject a nonzero value before changing live state. This keeps an armed
 clockevent in the next-deadline and virtual-time trace schedules.
+An Arm guest MMIO transaction against the pvclock frame is rejected before
+advancing virtual time unless the VM offers pvclock. An unoffered frame cannot
+arm a clockevent that would be absent from the VM snapshot.
 
 The run loop also times each backend run and each exit it services, keyed by
 exit reason, address or port, and direction. `ControlServer::host_telemetry`
@@ -82,6 +112,20 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Branch and import preparation also compare a handler-only fingerprint of the
+live SDK handler's identity, configuration, and state before and after calling
+a service factory or restoring a prepared handler. If a factory or shallow
+clone changes that live state, the operation fails and poisons the live SDK
+channel, so later hashes and snapshots cannot certify the changed session.
+This check relies on
+the handler snapshot covering all state that can affect future responses;
+service factories must not mutate external state outside that captured contract.
+Using the handler alone keeps replay and import available when an otherwise
+healthy live recording exceeds the SDK snapshot size limits. An already-poisoned
+live channel has no valid state to protect and does not block recovery through
+replay or import.
+The guard checks the channel's poison flag, since a handler can independently
+return a `Poisoned` error while the channel is still live.
 Control-server imports require both SDK and control-state sections because every
 control snapshot captures both; missing sections are rejected before minting a
 handle. The SDK hash chunk also binds its captured event history, including
@@ -111,11 +155,16 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 7, and the sparse sidecar is version 8;
-older sparse sidecars are rejected. A sparse sidecar does not carry a target RAM
-hash, so independently recomposing both its source-base digest and the outer
-archive identity is outside this snapshot identity check. Use a complete
-portable snapshot when the imported target's whole-state hash must be verified.
+The complete portable format is version 7, and the sparse sidecar is version 9;
+older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
+changed-page numbers and bytes to its sidecar; import verifies them before
+deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
+page numbers and bytes that differ from setup, independently of the parent or
+near snapshot. Import checks this commitment and every supplied page hash
+before minting a handle. Together with the setup RAM digest, the commitment
+checks reconstructed target RAM; it is not a standalone whole-state hash. Use
+a complete portable snapshot when the imported target's whole-state hash must
+be verified directly.
 Control seals and imports require VM-state
 hashing so every restored VM record participates in identity. Standalone VMM
 hashing remains optional. When KVM rejects a nonportable XSAVE MXCSR state,
@@ -125,9 +174,11 @@ guard remains in force. A mapped x86 doorbell cannot seal because the
 x86 VM-state record has no dedicated doorbell pages; the production dedicated
 mapping belongs to arm64 and is preserved in its device record.
 Whole-state hashes include this control state and the recorded prefix used for
-duplicate-input rejection. A tainted control timeline also contributes a
-dedicated hash chunk, so an imported artifact cannot clear the taint and make
-`RecordedEnv` available under the same claimed identity. Writers always emit
+duplicate-input rejection. The control state includes the separate
+`RecordedEnv` refusal caused by an unrecorded operator deadline wake. A
+tainted control timeline also contributes a dedicated hash chunk, so an
+imported artifact cannot clear either refusal and make `RecordedEnv` available
+under the same claimed identity. Writers always emit
 the current format, and readers reject older envelopes. Complete reads
 allocate incrementally from received bytes, and sparse section lengths are
 bounded by the supplied input.
@@ -503,8 +554,9 @@ page list over the setup snapshot and derives the imported snapshot from `near`,
 writing only the pages where the two differ. Once `near`'s chain reaches the
 maximum chain length, the import derives from `setup` instead, so repeated
 imports keep the same chain bound as seals. Every supplied page must match its
-hash, including a page reused from `near`; a mismatch is refused before a
-handle is minted.
+hash, including a page reused from `near`. The complete page list must match
+the sidecar's target-page commitment; a mismatch is refused before a handle is
+minted.
 
 Full and sparse portable imports share the VMM's read-only restore preparation
 before entering the snapshot store. Invalid engine state, XSAVE provenance,

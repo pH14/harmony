@@ -19,12 +19,18 @@ pub enum SubjectError {
     },
     #[error("checkpoint_every must be at least 1")]
     ZeroCheckpointInterval,
+    #[error(
+        "bisection probe at target {target} observed divergence after a halt at work {actual}; no exact work coordinate is available"
+    )]
+    UnreplayableTerminal { target: u64, actual: u64 },
+    #[error("comparison checkpoint at work {target} differs from direct replay")]
+    UnreplayableCheckpoint { target: u64 },
     #[error("bisection interval is empty: lo {lo} >= hi {hi}")]
     EmptyInterval { lo: u64, hi: u64 },
-    #[error("state hashes are equal at hi = {hi}: no divergence to bisect")]
+    #[error("state hashes and observable digests agree at hi = {hi}: no divergence to bisect")]
     NoDivergence { hi: u64 },
     #[error(
-        "state hashes already differ at lo = {lo}: interval does not bracket the first divergence"
+        "state hashes or observable digests already differ at lo = {lo}: interval does not bracket the first divergence"
     )]
     DivergesAtLo { lo: u64 },
 }
@@ -47,6 +53,19 @@ pub trait SubjectFactory {
     fn spawn(&self, seed: u64) -> Self::M;
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Observation {
+    state_hash: [u8; 32],
+    observable_digest: [u8; 32],
+}
+
+fn observe<M: Subject>(machine: &M) -> Result<Observation, SubjectError> {
+    Ok(Observation {
+        state_hash: machine.state_hash()?,
+        observable_digest: machine.observable_digest(),
+    })
+}
+
 fn run_checked<M: Subject>(machine: &mut M, target: u64) -> Result<RunOutcome, SubjectError> {
     let before = machine.work();
     let outcome = machine.run_to(target)?;
@@ -64,9 +83,37 @@ fn run_checked<M: Subject>(machine: &mut M, target: u64) -> Result<RunOutcome, S
     Ok(outcome)
 }
 
+fn reached_replay_matches<F: SubjectFactory>(
+    factory: &F,
+    seed: u64,
+    target: u64,
+    expected: Observation,
+) -> Result<bool, SubjectError> {
+    let mut machine = factory.spawn(seed);
+    Ok(
+        run_checked(&mut machine, target)? == RunOutcome::ReachedTarget
+            && observe(&machine)? == expected,
+    )
+}
+
+fn initial_replay_matches<F: SubjectFactory>(
+    factory: &F,
+    seed: u64,
+    expected_outcome: RunOutcome,
+    expected_work: u64,
+    expected: Observation,
+) -> Result<bool, SubjectError> {
+    let mut machine = factory.spawn(seed);
+    Ok(run_checked(&mut machine, 0)? == expected_outcome
+        && machine.work() == expected_work
+        && observe(&machine)? == expected)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CompareReport {
     pub verdict: Verdict,
+    pub checkpoint_every: u64,
+    pub requested_limit: u64,
     pub checkpoints_compared: u64,
     pub halted_at: Option<u64>,
     pub limit_reached: bool,
@@ -75,10 +122,17 @@ pub struct CompareReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    Identical,
+    MatchingCheckpoints,
+    UnreplayableDivergence {
+        observed_at: u64,
+    },
     Diverged {
         last_match: Option<u64>,
         first_mismatch: u64,
+    },
+    TerminalDiverged {
+        last_match: Option<u64>,
+        halted_at: u64,
     },
     HaltMismatch {
         a: Option<u64>,
@@ -108,6 +162,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                 a: (initial_a == RunOutcome::Halted).then_some(ma.work()),
                 b: (initial_b == RunOutcome::Halted).then_some(mb.work()),
             },
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at: None,
             limit_reached: false,
@@ -119,25 +175,67 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                 a: Some(ma.work()),
                 b: Some(mb.work()),
             },
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at: None,
             limit_reached: false,
         });
     }
-    if ma.state_hash()? != mb.state_hash()? {
+    let mut last_match_observations = (observe(&ma)?, observe(&mb)?);
+    if last_match_observations.0 != last_match_observations.1 {
+        let replayable =
+            initial_replay_matches(a, seed, initial_a, ma.work(), last_match_observations.0)?
+                && initial_replay_matches(
+                    b,
+                    seed,
+                    initial_b,
+                    mb.work(),
+                    last_match_observations.1,
+                )?;
+        if !replayable {
+            return Ok(CompareReport {
+                verdict: Verdict::UnreplayableDivergence {
+                    observed_at: ma.work(),
+                },
+                checkpoint_every,
+                requested_limit: limit,
+                checkpoints_compared,
+                halted_at: (initial_a == RunOutcome::Halted).then_some(ma.work()),
+                limit_reached: false,
+            });
+        }
+        let (verdict, halted_at) = if initial_a == RunOutcome::Halted && ma.work() != 0 {
+            (
+                Verdict::TerminalDiverged {
+                    last_match: None,
+                    halted_at: ma.work(),
+                },
+                Some(ma.work()),
+            )
+        } else {
+            (
+                Verdict::Diverged {
+                    last_match: None,
+                    first_mismatch: 0,
+                },
+                (initial_a == RunOutcome::Halted).then_some(ma.work()),
+            )
+        };
         return Ok(CompareReport {
-            verdict: Verdict::Diverged {
-                last_match: None,
-                first_mismatch: 0,
-            },
+            verdict,
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
-            halted_at: None,
+            halted_at,
             limit_reached: false,
         });
     }
     if initial_a == RunOutcome::Halted {
         return Ok(CompareReport {
-            verdict: Verdict::Identical,
+            verdict: Verdict::MatchingCheckpoints,
+            checkpoint_every,
+            requested_limit: limit,
             checkpoints_compared,
             halted_at: Some(ma.work()),
             limit_reached: false,
@@ -151,18 +249,39 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         match (oa, ob) {
             (RunOutcome::ReachedTarget, RunOutcome::ReachedTarget) => {
                 checkpoints_compared += 1;
-                if ma.state_hash()? != mb.state_hash()? {
+                let observations = (observe(&ma)?, observe(&mb)?);
+                if observations.0 != observations.1 {
+                    let matching_target = last_match.unwrap_or(0);
+                    let replayable = reached_replay_matches(
+                        a,
+                        seed,
+                        matching_target,
+                        last_match_observations.0,
+                    )? && reached_replay_matches(
+                        b,
+                        seed,
+                        matching_target,
+                        last_match_observations.1,
+                    )? && reached_replay_matches(a, seed, t, observations.0)?
+                        && reached_replay_matches(b, seed, t, observations.1)?;
                     return Ok(CompareReport {
-                        verdict: Verdict::Diverged {
-                            last_match,
-                            first_mismatch: t,
+                        verdict: if replayable {
+                            Verdict::Diverged {
+                                last_match,
+                                first_mismatch: t,
+                            }
+                        } else {
+                            Verdict::UnreplayableDivergence { observed_at: t }
                         },
+                        checkpoint_every,
+                        requested_limit: limit,
                         checkpoints_compared,
                         halted_at: None,
                         limit_reached: false,
                     });
                 }
                 last_match = Some(t);
+                last_match_observations = observations;
             }
             (RunOutcome::Halted, RunOutcome::Halted) => {
                 if wa != wb {
@@ -171,22 +290,26 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                             a: Some(wa),
                             b: Some(wb),
                         },
+                        checkpoint_every,
+                        requested_limit: limit,
                         checkpoints_compared,
                         halted_at: None,
                         limit_reached: false,
                     });
                 }
                 checkpoints_compared += 1;
-                let verdict = if ma.state_hash()? != mb.state_hash()? {
-                    Verdict::Diverged {
+                let verdict = if observe(&ma)? != observe(&mb)? {
+                    Verdict::TerminalDiverged {
                         last_match,
-                        first_mismatch: wa,
+                        halted_at: wa,
                     }
                 } else {
-                    Verdict::Identical
+                    Verdict::MatchingCheckpoints
                 };
                 return Ok(CompareReport {
                     verdict,
+                    checkpoint_every,
+                    requested_limit: limit,
                     checkpoints_compared,
                     halted_at: Some(wa),
                     limit_reached: false,
@@ -198,6 +321,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                         a: Some(wa),
                         b: None,
                     },
+                    checkpoint_every,
+                    requested_limit: limit,
                     checkpoints_compared,
                     halted_at: None,
                     limit_reached: false,
@@ -209,6 +334,8 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
                         a: None,
                         b: Some(wb),
                     },
+                    checkpoint_every,
+                    requested_limit: limit,
                     checkpoints_compared,
                     halted_at: None,
                     limit_reached: false,
@@ -217,7 +344,9 @@ pub fn compare_runs<FA: SubjectFactory, FB: SubjectFactory>(
         }
     }
     Ok(CompareReport {
-        verdict: Verdict::Identical,
+        verdict: Verdict::MatchingCheckpoints,
+        checkpoint_every,
+        requested_limit: limit,
         checkpoints_compared,
         halted_at: None,
         limit_reached: true,
@@ -231,7 +360,53 @@ pub struct DivergencePoint {
     pub hash_a: [u8; 32],
     #[serde(with = "hex32")]
     pub hash_b: [u8; 32],
+    #[serde(with = "hex32")]
+    pub observable_digest_a: [u8; 32],
+    #[serde(with = "hex32")]
+    pub observable_digest_b: [u8; 32],
     pub runs_executed: u64,
+}
+
+impl DivergencePoint {
+    fn from_observations(
+        first_divergent_work: u64,
+        a: Observation,
+        b: Observation,
+        runs_executed: u64,
+    ) -> Self {
+        Self {
+            first_divergent_work,
+            hash_a: a.state_hash,
+            hash_b: b.state_hash,
+            observable_digest_a: a.observable_digest,
+            observable_digest_b: b.observable_digest,
+            runs_executed,
+        }
+    }
+}
+
+fn direct_probe_pair<FA: SubjectFactory, FB: SubjectFactory>(
+    a: &FA,
+    b: &FB,
+    seed: u64,
+    target: u64,
+    runs_executed: &mut u64,
+) -> Result<(Observation, Observation), SubjectError> {
+    let mut ma = a.spawn(seed);
+    let outcome_a = run_checked(&mut ma, target)?;
+    *runs_executed += 1;
+    let mut mb = b.spawn(seed);
+    let outcome_b = run_checked(&mut mb, target)?;
+    *runs_executed += 1;
+    let observations = (observe(&ma)?, observe(&mb)?);
+    if observations.0 != observations.1 {
+        for (outcome, actual) in [(outcome_a, ma.work()), (outcome_b, mb.work())] {
+            if outcome == RunOutcome::Halted && actual != target {
+                return Err(SubjectError::UnreplayableTerminal { target, actual });
+            }
+        }
+    }
+    Ok(observations)
 }
 
 pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
@@ -245,54 +420,89 @@ pub fn bisect_divergence<FA: SubjectFactory, FB: SubjectFactory>(
         return Err(SubjectError::EmptyInterval { lo, hi });
     }
     let mut runs_executed = 0u64;
-    let mut probe = |t: u64| -> Result<([u8; 32], [u8; 32]), SubjectError> {
-        let mut ma = a.spawn(seed);
-        run_checked(&mut ma, t)?;
-        runs_executed += 1;
-        let mut mb = b.spawn(seed);
-        run_checked(&mut mb, t)?;
-        runs_executed += 1;
-        Ok((ma.state_hash()?, mb.state_hash()?))
-    };
-    if lo == 0 {
-        let (hash_a, hash_b) = probe(0)?;
-        if hash_a != hash_b {
-            return Ok(DivergencePoint {
-                first_divergent_work: 0,
-                hash_a,
-                hash_b,
+    let initial = if lo == 0 {
+        let observations = direct_probe_pair(a, b, seed, 0, &mut runs_executed)?;
+        if observations.0 != observations.1 {
+            return Ok(DivergencePoint::from_observations(
+                0,
+                observations.0,
+                observations.1,
                 runs_executed,
-            });
+            ));
         }
-    }
-    let (mut hash_a, mut hash_b) = probe(hi)?;
-    if hash_a == hash_b {
+        Some(observations)
+    } else {
+        None
+    };
+    let upper = direct_probe_pair(a, b, seed, hi, &mut runs_executed)?;
+    if upper.0 == upper.1 {
         return Err(SubjectError::NoDivergence { hi });
     }
-    if lo > 0 {
-        let (ha, hb) = probe(lo)?;
-        if ha != hb {
-            return Err(SubjectError::DivergesAtLo { lo });
+    let lower = match initial {
+        Some(observations) => observations,
+        None => direct_probe_pair(a, b, seed, lo, &mut runs_executed)?,
+    };
+    if lower.0 != lower.1 {
+        return Err(SubjectError::DivergesAtLo { lo });
+    }
+    let mut scan_a = a.spawn(seed);
+    let mut scan_b = b.spawn(seed);
+    runs_executed += 2;
+    run_checked(&mut scan_a, lo)?;
+    run_checked(&mut scan_b, lo)?;
+    if (observe(&scan_a)?, observe(&scan_b)?) != lower {
+        return Err(SubjectError::UnreplayableCheckpoint { target: lo });
+    }
+    for target in lo + 1..=hi {
+        let outcome_a = run_checked(&mut scan_a, target)?;
+        let outcome_b = run_checked(&mut scan_b, target)?;
+        let candidate = (observe(&scan_a)?, observe(&scan_b)?);
+        if candidate.0 != candidate.1 {
+            for (outcome, actual) in [(outcome_a, scan_a.work()), (outcome_b, scan_b.work())] {
+                if outcome == RunOutcome::Halted && actual != target {
+                    return Err(SubjectError::UnreplayableTerminal { target, actual });
+                }
+            }
+            let direct = if target == hi {
+                upper
+            } else {
+                direct_probe_pair(a, b, seed, target, &mut runs_executed)?
+            };
+            if candidate != direct {
+                return Err(SubjectError::UnreplayableCheckpoint { target });
+            }
+            return Ok(DivergencePoint::from_observations(
+                target,
+                direct.0,
+                direct.1,
+                runs_executed,
+            ));
         }
     }
-    let (mut lo, mut hi) = (lo, hi);
-    while hi - lo > 1 {
-        let mid = lo + (hi - lo) / 2;
-        let (ha, hb) = probe(mid)?;
-        if ha == hb {
-            lo = mid;
-        } else {
-            hi = mid;
-            hash_a = ha;
-            hash_b = hb;
+    Err(SubjectError::UnreplayableCheckpoint { target: hi })
+}
+
+pub fn first_divergence_from_report<FA: SubjectFactory, FB: SubjectFactory>(
+    a: &FA,
+    b: &FB,
+    seed: u64,
+    report: &CompareReport,
+) -> Result<Option<DivergencePoint>, SubjectError> {
+    match report.verdict {
+        Verdict::Diverged { first_mismatch, .. } => {
+            bisect_divergence(a, b, seed, 0, first_mismatch).map(Some)
         }
+        Verdict::TerminalDiverged { halted_at, .. } => {
+            match bisect_divergence(a, b, seed, 0, halted_at) {
+                Ok(point) => Ok(Some(point)),
+                Err(SubjectError::NoDivergence { .. })
+                | Err(SubjectError::UnreplayableTerminal { .. })
+                | Err(SubjectError::UnreplayableCheckpoint { .. }) => Ok(None),
+                Err(error) => Err(error),
+            }
+        }
+        _ => Ok(None),
     }
-    Ok(DivergencePoint {
-        first_divergent_work: hi,
-        hash_a,
-        hash_b,
-        runs_executed,
-    })
 }
 
 mod hex32 {
@@ -435,7 +645,7 @@ mod tests {
     fn zero_limit_checks_only_initial_state() {
         let f = factory();
         let r = compare_runs(&f, &f, 3, 10, 0).unwrap();
-        assert_eq!(r.verdict, Verdict::Identical);
+        assert_eq!(r.verdict, Verdict::MatchingCheckpoints);
         assert_eq!(r.checkpoints_compared, 0);
         assert_eq!(r.halted_at, None);
         assert!(r.limit_reached);
@@ -450,7 +660,7 @@ mod tests {
         };
         for limit in [0, 10] {
             let report = compare_runs(&halted, &halted, 3, 10, limit).unwrap();
-            assert_eq!(report.verdict, Verdict::Identical);
+            assert_eq!(report.verdict, Verdict::MatchingCheckpoints);
             assert_eq!(report.checkpoints_compared, 0);
             assert_eq!(report.halted_at, Some(0));
             assert!(!report.limit_reached);
@@ -595,6 +805,8 @@ mod tests {
             first_divergent_work: 42,
             hash_a: [0xAB; 32],
             hash_b: [0x01; 32],
+            observable_digest_a: [0x23; 32],
+            observable_digest_b: [0x45; 32],
             runs_executed: 12,
         };
         let json = serde_json::to_string(&p).unwrap();

@@ -298,11 +298,12 @@ fn smb_run() -> SmbCampaignRun {
 pub fn search_native(
     rom: &[u8],
     core: &Path,
+    expected_core_sha256: &str,
     options: &SearchOptions,
     start: &SearchStart,
 ) -> Result<SearchEvidence, Box<dyn Error>> {
     validate_output(options)?;
-    let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    verify_native_core(core, expected_core_sha256)?;
     record_identity(
         rom,
         ExecutionIdentity {
@@ -314,12 +315,12 @@ pub fn search_native(
                 machine::quicknes::QUICKNES_BUILD,
                 machine::quicknes::QUICKNES_OPTIONS
             ),
-            artifacts: [("core".into(), core_hash.clone())].into(),
+            artifacts: [("core".into(), expected_core_sha256.into())].into(),
         },
         options,
     )?;
     search(
-        SmbGame::new(rom, core, &core_hash),
+        SmbGame::new(rom, core, expected_core_sha256),
         smb_run(),
         "native",
         options,
@@ -383,16 +384,25 @@ pub fn search_consonance(
 pub fn replay_native(
     rom: &[u8],
     core: &Path,
+    expected_core_sha256: &str,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, Box<dyn Error>> {
-    let hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    verify_native_core(core, expected_core_sha256)?;
     RomKind::identify(rom)?;
     replay_witness(
-        &SmbGame::new(rom, core, &hash),
+        &SmbGame::new(rom, core, expected_core_sha256),
         &smb_run(),
         &serde_json::from_value(input)?,
     )
 }
+
+fn verify_native_core(core: &Path, expected: &str) -> Result<(), Box<dyn Error>> {
+    if format!("{:x}", Sha256::digest(fs::read(core)?)) != expected {
+        return Err("saved QuickNES core has changed".into());
+    }
+    Ok(())
+}
+
 #[cfg(all(
     feature = "consonance",
     target_os = "linux",
@@ -435,4 +445,20 @@ pub fn search_saved_guest(
         options,
         start,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_native_core_digest_rejects_a_replaced_core() {
+        let temp = tempfile::tempdir().unwrap();
+        let core = temp.path().join("quicknes.so");
+        fs::write(&core, b"original core").unwrap();
+        let expected = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+        fs::write(&core, b"different core").unwrap();
+        let error = replay_native(&[], &core, &expected, serde_json::Value::Null).unwrap_err();
+        assert_eq!(error.to_string(), "saved QuickNES core has changed");
+    }
 }

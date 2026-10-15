@@ -162,3 +162,11 @@ nested-host kernel and `base_initramfs` to the OCI base. The adapter captures th
 prepared initramfs and kernel; developer verification uses `harmony debug replay
 SEARCH`. Host search accepts wall budgets in seconds. Historical qualification
 continues to invoke the historical binary's own CLI.
+The host producer returns its serialized report bytes to the adapter as well as
+writing `report.json`; the adapter requires the moved file to match those bytes
+before it records a completed search or replay.
+Developer replay also compares the saved report with the freshly rederived
+report. A saved search must have no materialized archive entries; replay ignores
+only the fresh entries materialized while verifying that search. If a different
+source mode reaches report comparison, every field, including its entries, must
+agree. Execution counts, work, evidence and stream identity must always agree.

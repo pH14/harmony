@@ -63,7 +63,7 @@ pub struct FaultConfig {
 pub enum GuestBackend {
     #[default]
     Vm,
-    Uml(UmlGuest),
+    Uml(Box<UmlGuest>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -109,13 +109,7 @@ impl UmlGuest {
     }
 
     fn identity(profile: &str, host: &uml::HostIdentity) -> String {
-        format!(
-            "profile={profile};architecture={};processor={};cpu={};features={:x}",
-            host.architecture,
-            host.processor,
-            host.cpu_model,
-            Sha256::digest(host.cpu_features.as_bytes())
-        )
+        format!("profile={profile};host={}", host.identity_sha256())
     }
 
     #[cfg(target_os = "linux")]
@@ -153,7 +147,7 @@ impl FaultConfig {
     pub fn uml(&self) -> Option<&UmlGuest> {
         match &self.backend {
             GuestBackend::Vm => None,
-            GuestBackend::Uml(guest) => Some(guest),
+            GuestBackend::Uml(guest) => Some(guest.as_ref()),
         }
     }
 
@@ -1424,6 +1418,8 @@ mod tests {
                 processor: 0,
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
+                boot_cpuinfo: "flags: features\n".into(),
+                auxv: uml::HostAuxv::default(),
             },
             identity: "admitted-host".into(),
             work_parent: directory.path().to_path_buf(),
@@ -1431,7 +1427,7 @@ mod tests {
         let config = FaultConfig {
             knobs: Vec::new(),
             ram_mib: DEFAULT_RAM_MIB,
-            backend: GuestBackend::Uml(guest.clone()),
+            backend: GuestBackend::Uml(Box::new(guest.clone())),
             root: None,
         };
         let launch = uml_launch(&guest, b"initramfs", &config).unwrap();
@@ -1440,6 +1436,12 @@ mod tests {
         assert_eq!(std::fs::read(&launch.initramfs).unwrap(), b"initramfs");
         std::fs::write(&launch.initramfs, b"stale initramfs").unwrap();
         assert!(uml_launch(&guest, b"initramfs", &config).is_err());
+        let mut foreign_boot = guest.host.clone();
+        foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
+        assert_ne!(
+            UmlGuest::identity("admitted-profile", &guest.host),
+            UmlGuest::identity("admitted-profile", &foreign_boot)
+        );
     }
 
     #[test]
@@ -1452,6 +1454,8 @@ mod tests {
                 processor: 0,
                 cpu_model: "model".into(),
                 cpu_features: "features".into(),
+                boot_cpuinfo: "flags: features\n".into(),
+                auxv: uml::HostAuxv::default(),
             },
             identity: "admitted-host".into(),
             work_parent: PathBuf::from("work"),
@@ -1459,7 +1463,7 @@ mod tests {
         let mut joined = FaultConfig {
             knobs: vec!["foo=bar root=/dev/ram0".into()],
             ram_mib: DEFAULT_RAM_MIB,
-            backend: GuestBackend::Uml(guest),
+            backend: GuestBackend::Uml(Box::new(guest)),
             root: None,
         };
         let split = FaultConfig {

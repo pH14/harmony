@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# AA-4(c) level-2: the executable-page exclusive-opcode scan. This is the primitive a W^X
-# rescan-on-exec would run to enforce "no LL/SC in the guest": scan the raw instruction words of
-# an aarch64 image's executable sections for the load/store-EXCLUSIVE family and reject any hit.
+# AA-4(c) level-2: the static exclusive-opcode scan. Scan loaded executable
+# sections and executable-segment gaps for load/store-EXCLUSIVE instructions.
 #
 # The LL/SC exclusive family (monitor-based): LDXR/LDXRB/LDXRH/LDAXR.., STXR/STLXR..,
 # LDXP/STXP/LDAXP/STLXP. These and LSE CASP share the broad encoding class
@@ -12,10 +11,9 @@
 # EXCLUDES acquire/release non-exclusives LDAR/STLR and LSE CAS/CASP: they carry no reservation
 # monitor and are deterministic, so an LSE-only build is clean by construction.
 #
-# The scan operates on RAW bytes (what a page rescan sees). It then SELF-VALIDATES against
-# `objdump -d` wherever objdump renders an instruction: the ELF word, decoder verdict, and
-# mnemonic must agree. Mapping-symbol data remains covered by the authoritative byte walk even
-# though the disassembler intentionally does not render it as an instruction.
+# The scan operates on raw ELF bytes and cross-checks objdump wherever it renders
+# an instruction. Known non-executable data sections in a PF_X segment are excluded
+# from AA-4 because ordinary data can match the broad exclusive opcode mask.
 import bisect
 import re
 import struct
@@ -25,6 +23,7 @@ from pathlib import Path
 
 EXCL_MASK = 0x3F800000
 EXCL_MATCH = 0x08000000
+GUEST_PAGE_BYTES = 4096
 
 
 def is_llsc_exclusive(word: int) -> bool:
@@ -57,7 +56,25 @@ def self_test_mask() -> None:
         raise SystemExit(f"SCANNER MASK SELF-TEST FAILED for words: {', '.join(wrong)}")
 
 
-def executable_words(path: str):
+REVIEWED_DATA_SECTIONS = {
+    ".altinstructions", ".data", ".data..percpu", ".dynamic", ".dynstr",
+    ".dynsym", ".eh_frame", ".eh_frame_hdr", ".gnu.hash", ".gnu.version",
+    ".gnu.version_d", ".gnu.version_r", ".got", ".got.plt", ".hash",
+    ".gopclntab", ".init.data", ".interp", ".itablink",
+    ".mmuoff.data.read", ".mmuoff.data.write",
+    ".note", ".note.ABI-tag", ".note.gnu.build-id", ".note.gnu.property",
+    ".notes", ".rela.dyn", ".rela.plt", ".rodata", ".stapsdt.base",
+    ".typelink",
+    "__ex_table", "__modver", "__param", "runtime_ptr_dentry_hashtable",
+    "runtime_shift_d_hash_shift",
+}
+
+
+def reviewed_data_section(name: str) -> bool:
+    return name in REVIEWED_DATA_SECTIONS
+
+
+def executable_words(path: str, include_segment_data: bool = False):
     data = Path(path).read_bytes()
     elf_header = "<16sHHIQQQIHHHHHH"
     section_header = "<IIQQQQIIQQ"
@@ -112,31 +129,117 @@ def executable_words(path: str):
             raise SystemExit(f"SCANNER ELF ERROR for {path}: unterminated section name")
         return names[name_offset:end].decode("ascii", errors="replace")
 
+    program_header = "<IIQQQQQQ"
+    if program_count == 0 or program_entry_size < struct.calcsize(program_header):
+        raise SystemExit(f"SCANNER ELF ERROR for {path}: missing load segments")
+    program_table_size = program_count * program_entry_size
+    if program_offset > len(data) or program_table_size > len(data) - program_offset:
+        raise SystemExit(f"SCANNER ELF ERROR for {path}: program table outside file")
+    load_segments = []
+    executable_segments = []
+    for index in range(program_count):
+        off = program_offset + index * program_entry_size
+        p_type, p_flags, p_offset, p_vaddr, _paddr, p_filesz, p_memsz, _align = struct.unpack_from(
+            program_header, data, off
+        )
+        if p_type != 1:
+            continue
+        if p_offset > len(data) or p_filesz > len(data) - p_offset:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: load segment {index} outside file")
+        if p_filesz > p_memsz or p_memsz > (1 << 64) - p_vaddr:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: load segment {index} wraps")
+        if p_offset % GUEST_PAGE_BYTES != p_vaddr % GUEST_PAGE_BYTES:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: load segment {index} page mapping disagrees")
+        load_segments.append((index, p_flags, p_offset, p_vaddr, p_filesz, p_memsz))
+        if p_flags & 0x1:
+            if p_vaddr % 4 != 0 or p_filesz % 4 != 0:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: unaligned executable segment {index}")
+            executable_segments.append((index, p_flags, p_offset, p_vaddr, p_filesz))
+    if not executable_segments:
+        raise SystemExit(f"SCANNER ELF ERROR for {path}: no executable load segment")
+    ordered_segments = sorted(executable_segments, key=lambda segment: segment[3])
+    for previous, current in zip(ordered_segments, ordered_segments[1:]):
+        if previous[3] + previous[4] > current[3]:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: overlapping executable segments")
+
+    def page_span(start, size):
+        if not size:
+            return None
+        return (start // GUEST_PAGE_BYTES,
+                (start + size + GUEST_PAGE_BYTES - 1) // GUEST_PAGE_BYTES)
+
+    def overlaps(first, second):
+        return first is not None and second is not None and first[0] < second[1] and second[0] < first[1]
+
+    load_memsz = {segment[0]: segment[5] for segment in load_segments}
+    for ex_index, _flags, ex_offset, ex_vaddr, ex_filesz in executable_segments:
+        ex_memsz = load_memsz[ex_index]
+        ex_file_pages = page_span(ex_offset, ex_filesz)
+        ex_virtual_pages = page_span(ex_vaddr, ex_memsz)
+        for other_index, _other_flags, other_offset, other_vaddr, other_filesz, other_memsz in load_segments:
+            if other_index == ex_index:
+                continue
+            if (overlaps(ex_file_pages, page_span(other_offset, other_filesz))
+                    or overlaps(ex_virtual_pages, page_span(other_vaddr, other_memsz))):
+                raise SystemExit(
+                    f"SCANNER ELF ERROR for {path}: executable page alias between loads {ex_index} and {other_index}"
+                )
+
     words = []
     addresses = set()
-    data_ranges = []  # allocated, non-exec, file-backed section extents (excluded from the segment walk)
+    data_ranges = []
+    allocated_ranges = []
+    loaded_names = set()
+    text_count = 0
+    entry_in_code = _entry == 0
     for index in range(section_count):
         name_offset, section_type, flags, address, offset, size, *_rest = read_section(index)
         if size == 0:
             continue
-        if flags & 0x4 == 0:  # not SHF_EXECINSTR — record data extents, then skip
-            # hm-jth / hm-7o68-F3: a non-exec ALLOC section (.rodata, .altinstructions, .data)
-            # can share the executable init PT_LOAD segment in a vmlinux ELF, yet is mapped
-            # non-executable at runtime under STRICT_KERNEL_RWX. The segment walk below must
-            # NOT read its data words as instructions (they cause false LL/SC-mask rejects).
-            # NOBITS (.bss) has no file bytes to scan.
-            if (flags & 0x2) and section_type != 8:  # SHF_ALLOC and not SHT_NOBITS
-                data_ranges.append((address, address + size))
-            continue
         name = section_name(name_offset, index)
-        if section_type == 8:  # SHT_NOBITS
+        if name == ".text":
+            text_count += 1
+            if flags & 0x6 != 0x6 or section_type == 8:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: non-executable .text section")
+        if flags & 0x6 == 0 and section_type != 8:
+            continue
+        if flags & 0x4 and section_type == 8:
             raise SystemExit(f"SCANNER ELF ERROR for {path}: executable NOBITS section {name}")
+        if size > (1 << 64) - address:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: section {name} wraps")
+        if section_type == 8:
+            continue
+        if offset > len(data) or size > len(data) - offset:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: section {name} outside file")
+        covering = [
+            segment for segment in executable_segments
+            if address < segment[3] + segment[4] and segment[3] < address + size
+        ]
+        if flags & 0x4 and not covering:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: executable section {name} outside executable load segment")
+        if not covering:
+            continue
+        if len(covering) != 1:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: section {name} overlaps load segments")
+        _seg_index, _seg_flags, p_offset, p_vaddr, p_filesz = covering[0]
+        if (address < p_vaddr or address + size > p_vaddr + p_filesz
+                or offset != p_offset + address - p_vaddr):
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: section {name} disagrees with segment mapping")
+        if name in loaded_names:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: duplicate loaded section {name}")
+        loaded_names.add(name)
+        allocated_ranges.append((address, address + size, name))
+        if flags & 0x4 == 0:
+            if not reviewed_data_section(name):
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: unreviewed loaded data section {name}")
+            if address <= _entry < address + size:
+                raise SystemExit(f"SCANNER ELF ERROR for {path}: entrypoint in data section {name}")
+            data_ranges.append((address, address + size))
+            continue
         if address % 4 != 0 or size % 4 != 0:
             raise SystemExit(f"SCANNER ELF ERROR for {path}: unaligned executable section {name}")
-        if size > (1 << 64) - address:
-            raise SystemExit(f"SCANNER ELF ERROR for {path}: executable section {name} wraps")
-        if offset > len(data) or size > len(data) - offset:
-            raise SystemExit(f"SCANNER ELF ERROR for {path}: executable section {name} outside file")
+        if address <= _entry < address + size:
+            entry_in_code = True
         section = data[offset : offset + size]
         for word_offset in range(0, size, 4):
             word_address = address + word_offset
@@ -146,16 +249,18 @@ def executable_words(path: str):
             word = int.from_bytes(section[word_offset : word_offset + 4], "little")
             words.append((word_address, word, name))
 
-    # F3-SCAN-SEG (section-aware; hm-jth / hm-7o68-F3): also walk executable PT_LOAD SEGMENTS,
-    # not just SHF_EXECINSTR sections — to catch executable-segment words that NO section
-    # describes (or that a forged/stripped section header would hide). But EXCLUDE words that a
-    # defined non-exec DATA section already describes: those are data, mapped non-executable at
-    # runtime under STRICT_KERNEL_RWX (they only share the executable init PT_LOAD in the vmlinux
-    # ELF), so scanning them as instructions is a false reject. This makes the STATIC scanner a
-    # section-aware PRE-FLIGHT; the AUTHORITATIVE W^X check is the runtime page-granular
-    # execute-guard (hm-rfz), which rescans the ACTUAL bytes of any page the guest makes
-    # executable. A forged ELF that mislabels executable hazard-bearing code as a data section
-    # therefore passes HERE but is rejected THERE — proven by a forged-ELF fixture.
+    if text_count != 1:
+        raise SystemExit(f"SCANNER ELF ERROR for {path}: require one executable .text section")
+    if not entry_in_code:
+        raise SystemExit(f"SCANNER ELF ERROR for {path}: entrypoint outside executable sections")
+    allocated_ranges.sort()
+    for previous, current in zip(allocated_ranges, allocated_ranges[1:]):
+        if previous[1] > current[0]:
+            raise SystemExit(f"SCANNER ELF ERROR for {path}: overlapping loaded sections {previous[2]} and {current[2]}")
+
+    # The segment walk covers gaps and bypassed section flags. AA-4 skips reviewed
+    # non-X data ranges because real kernel and user images contain incidental
+    # exclusive-shaped data. AA-5 requests every PF_X word for its narrower mask.
     data_ranges.sort()
     _data_starts = [lo for lo, _ in data_ranges]
 
@@ -163,35 +268,23 @@ def executable_words(path: str):
         i = bisect.bisect_right(_data_starts, addr) - 1
         return i >= 0 and data_ranges[i][0] <= addr < data_ranges[i][1]
 
-    program_header = "<IIQQQQQQ"  # p_type, p_flags, p_offset, p_vaddr, p_paddr, p_filesz, p_memsz, p_align
-    if program_count and program_entry_size >= struct.calcsize(program_header):
-        table_size = program_count * program_entry_size
-        if program_offset > len(data) or table_size > len(data) - program_offset:
-            raise SystemExit(f"SCANNER ELF ERROR for {path}: program table outside file")
-        for index in range(program_count):
-            off = program_offset + index * program_entry_size
-            p_type, p_flags, p_offset, p_vaddr, _paddr, p_filesz, _memsz, _align = struct.unpack_from(
-                program_header, data, off
-            )
-            if p_type != 1 or p_flags & 0x1 == 0:  # PT_LOAD with PF_X
+    for index, _p_flags, p_offset, p_vaddr, p_filesz in executable_segments:
+        if not p_filesz:
+            continue
+        page_offset = p_offset - p_offset % GUEST_PAGE_BYTES
+        page_end = ((p_offset + p_filesz + GUEST_PAGE_BYTES - 1)
+                    // GUEST_PAGE_BYTES * GUEST_PAGE_BYTES)
+        mapped_address = p_vaddr - p_offset % GUEST_PAGE_BYTES
+        label = f"<exec-segment {index}>"
+        for file_offset in range(page_offset, page_end, 4):
+            word_address = mapped_address + file_offset - page_offset
+            if word_address in addresses:
                 continue
-            if p_vaddr % 4 != 0 or p_filesz % 4 != 0:
-                raise SystemExit(f"SCANNER ELF ERROR for {path}: unaligned executable segment {index}")
-            if p_offset > len(data) or p_filesz > len(data) - p_offset:
-                raise SystemExit(f"SCANNER ELF ERROR for {path}: executable segment {index} outside file")
-            if p_filesz > (1 << 64) - p_vaddr:
-                raise SystemExit(f"SCANNER ELF ERROR for {path}: executable segment {index} wraps")
-            segment = data[p_offset : p_offset + p_filesz]
-            label = f"<exec-segment {index}>"
-            for word_offset in range(0, p_filesz, 4):
-                word_address = p_vaddr + word_offset
-                if word_address in addresses:
-                    continue  # already scanned as part of an executable section
-                if _in_data_section(word_address):
-                    continue  # described by a non-exec data section: data, non-X at runtime
-                addresses.add(word_address)
-                word = int.from_bytes(segment[word_offset : word_offset + 4], "little")
-                words.append((word_address, word, label))
+            if not include_segment_data and _in_data_section(word_address):
+                continue
+            addresses.add(word_address)
+            word = int.from_bytes(data[file_offset : file_offset + 4].ljust(4, b"\0"), "little")
+            words.append((word_address, word, label))
 
     if not words:
         raise SystemExit(f"SCANNER ELF ERROR for {path}: no executable words")
@@ -276,7 +369,7 @@ def main():
                 print(f"    {addr}: {raw}  {asm}")
         else:
             print(f"[CLEAN]  {name}: no LL/SC exclusive instructions (mask self-check passed)")
-    # Exit 1 if any scanned image carries an exclusive -- a rescan-on-exec would reject it.
+    # Exit 1 if any scanned image carries an exclusive.
     sys.exit(1 if any_hits else 0)
 
 

@@ -24,8 +24,13 @@ planned-finish order and that reservations form a contiguous sequence. One coord
 random generator draws every selection, so a fixed seed and window write the
 same stream at any worker count. Worker ids appear only in run telemetry. The stream records the
 configuration, policies, origins, jobs, admissions, skips, and progress needed
-for replay. Schema version 11 appends a terminal record only after the campaign
-has drained its jobs and finished successfully. Replay requires that record and
+for replay. Replay reconstructs adaptive mixture weights from each admitted
+result at the original reservation boundary and rejects job or skip weights
+that the recorded policy could not have produced. When the recorded policy
+stops the campaign on an objective, replay rejects work selected after it while allowing jobs
+already reserved in the admission window to finish. Schema version 11 appends a
+terminal record only after the campaign has drained its jobs and finished
+successfully. Replay requires that record and
 checks its job, skip, and admission totals, so a stream cut after a complete
 JSON line cannot be certified as a finished campaign. Callers that deliberately
 rebuild an intermediate state use `replay_campaign_prefix_checkpointed`, whose
@@ -42,7 +47,10 @@ fixed reserves, so a budget smaller than that working set leaves the archive
 above its limit. The archive picks the anchor, and reactivates it when no entry
 is expandable, during the maintenance after bootstrap and after each admission
 and skip. Parent selection does not change the archive, so replay reaches the
-same archive state without repeating selection. The final report selects no
+same archive state without repeating selection. The recorded parent choice is
+an input to replay, while its tier rank must be below the archive population
+limit because no selector draw can name a tier beyond that many active entries.
+The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
 schedule policy version 5

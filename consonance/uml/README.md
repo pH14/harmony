@@ -19,8 +19,19 @@
   reserves those numbers for its lifetime and refuses profiles if another host
   resource already occupies one.
 - `HostIdentity::current` reads the first processor allowed by the calling
-  thread and its CPU model and features from `/proc/cpuinfo`. Each `Launch`
-  admits one processor on first use and shares that admission with its clones;
+  thread and its CPU model and features from `/proc/cpuinfo`. It also records
+  the exact CPU-info lines the pinned UML kernel imports at boot. On x86, the
+  kernel consumes lines containing `flags` or `cache_alignment` until it has
+  seen two matches; those lines may belong to processors other than the one
+  running the guest. On arm64, it consumes leading `cache_alignment` lines
+  before the first ordinary line. The identity also records the host
+  auxiliary-vector hardware capabilities, minimum signal-stack size, and
+  platform string, which UML reads at boot. It reads the platform string's
+  bytes from the parent process, rather than recording its process-specific
+  pointer. `HostIdentity::identity_sha256` binds all recorded fields with
+  lengths. Each
+  `Launch` admits one processor and host identity on first use and shares that
+  admission with its clones;
   moving an ordinary launch to a thread that excludes that processor refuses
   execution. A caller can instead bind a verified expected host identity when
   multiple worker threads must run guests on one canonical processor. The
@@ -28,13 +39,24 @@
   in its final pre-exec step, after caller-supplied callbacks. The child fails
   to spawn if its cpuset no longer permits the processor. Qualification's
   pinned replay perturbation contends for the actual guest processor and
-  verifies the final affinity despite an earlier override callback.
+  verifies the final affinity despite an earlier override callback. The host
+  identity is checked before spawn. At the final check, `Guest::start` passes
+  the admitted parser-input lines through `HARMONY_UML_CPUINFO`; the owned UML
+  kernel consumes those bytes instead of reopening `/proc/cpuinfo`. A changed
+  host CPU-info file after the check cannot alter the boot import. Schema 4
+  profiles require the matching owned kernel patches for the CPU-info import
+  and auxiliary-vector check: the launcher passes the admitted values
+  at spawn, and the kernel refuses a child whose initial vector differs before
+  it imports guest-visible features. Missing or malformed pinned values refuse
+  boot on both x86 and arm64.
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
   per-launch work directory for
-  `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR` and
-  `GLIBC_TUNABLES`. With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
+  `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR`,
+  `GLIBC_TUNABLES`, and the pinned boot CPU-info and auxiliary-vector values
+  passed at `Guest::start`.
+  With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
   It refuses extra kernel arguments that would replace these settings or
   attach host files, disks, consoles or network devices, because a
   `Recording` cannot carry those host resources. `set_initramfs` likewise
@@ -59,8 +81,11 @@
   questions answered by a `ServiceHandler`, payload pulls and coverage.
   `branch` installs a seed, handler and payloads after checking that reseeding
   with both the branch seed and the decode seed zero keeps the handler identity
-  and configuration unchanged. A rejected branch leaves the live services
-  untouched. `run_until` runs to a
+  and configuration unchanged. It also rejects a decode-seed probe that changes
+  the original handler. A rejected branch leaves independent live services
+  untouched; if a shallow handler clone changes the live service state, the
+  service channel is poisoned so it cannot export a misleading checkpoint.
+  `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
   unanswered when the deadline is checked again. Each returns a `Stop`: an
@@ -118,8 +143,9 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` names the profile, host, seed, memory, boot arguments, event
-  count and event hash of a run. Schema 2 includes the selected host processor.
+- `Recording` schema 4 names the profile, full host identity, seed, memory,
+  boot arguments, event count and event hash of a run. Earlier schemas are
+  refused.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation derives identity from the admitted `Launch`;

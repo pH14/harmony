@@ -9,6 +9,8 @@ use std::mem::size_of;
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 #[cfg(target_os = "linux")]
+use std::os::unix::fs::FileExt;
+#[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
@@ -21,7 +23,7 @@ use std::sync::OnceLock;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-const SCHEMA: u32 = 2;
+const SCHEMA: u32 = 4;
 const PT_INTERP: u32 = 3;
 #[cfg(target_os = "linux")]
 const KERNEL_FD: i32 = 240;
@@ -66,6 +68,17 @@ pub struct HostIdentity {
     pub processor: usize,
     pub cpu_model: String,
     pub cpu_features: String,
+    pub boot_cpuinfo: String,
+    pub auxv: HostAuxv,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HostAuxv {
+    pub hwcap: u64,
+    pub hwcap2: u64,
+    pub minsigstksz: u64,
+    pub platform: String,
 }
 
 #[derive(Clone, Debug)]
@@ -426,18 +439,43 @@ fn pin_path(path: &Path, name: &std::ffi::CStr, executable: bool) -> io::Result<
 }
 
 impl HostIdentity {
+    pub fn identity_sha256(&self) -> String {
+        let mut digest = Sha256::new();
+        digest.update(b"harmony-uml-host-v2\0");
+        digest.update((self.processor as u64).to_le_bytes());
+        for field in [
+            &self.architecture,
+            &self.cpu_model,
+            &self.cpu_features,
+            &self.boot_cpuinfo,
+            &self.auxv.platform,
+        ] {
+            digest.update((field.len() as u64).to_le_bytes());
+            digest.update(field.as_bytes());
+        }
+        for value in [self.auxv.hwcap, self.auxv.hwcap2, self.auxv.minsigstksz] {
+            digest.update(value.to_le_bytes());
+        }
+        hex(&digest.finalize())
+    }
+
     pub fn current() -> io::Result<Self> {
         #[cfg(target_os = "linux")]
         let selected = Some(selected_processor()?);
         #[cfg(not(target_os = "linux"))]
         let selected = None;
         let cpuinfo = std::fs::read_to_string("/proc/cpuinfo")?;
-        Self::from_cpuinfo(&cpuinfo, selected)
+        let mut host = Self::from_cpuinfo(&cpuinfo, selected)?;
+        host.auxv = HostAuxv::current()?;
+        Ok(host)
     }
 
     #[cfg(target_os = "linux")]
     pub fn for_processor(processor: usize) -> io::Result<Self> {
-        Self::from_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo")?, Some(processor))
+        let mut host =
+            Self::from_cpuinfo(&std::fs::read_to_string("/proc/cpuinfo")?, Some(processor))?;
+        host.auxv = HostAuxv::current()?;
+        Ok(host)
     }
 
     fn from_cpuinfo(cpuinfo: &str, selected: Option<usize>) -> io::Result<Self> {
@@ -486,8 +524,124 @@ impl HostIdentity {
                 .collect::<Vec<_>>()
                 .join(";"),
             cpu_features: value(features_key).unwrap_or_default(),
+            boot_cpuinfo: boot_cpuinfo(cpuinfo),
+            auxv: HostAuxv::default(),
         })
     }
+}
+
+impl HostAuxv {
+    #[cfg(target_os = "linux")]
+    fn current() -> io::Result<Self> {
+        const WORD: usize = size_of::<usize>();
+        const ENTRY: usize = 2 * WORD;
+        let bytes = std::fs::read("/proc/self/auxv")?;
+        if bytes.len() % ENTRY != 0 {
+            return Err(io::Error::other(
+                "host auxiliary vector has a partial entry",
+            ));
+        }
+        let mut hwcap = None;
+        let mut hwcap2 = None;
+        let mut minsigstksz = None;
+        let mut platform = None;
+        let mut terminated = false;
+        for entry in bytes.chunks_exact(ENTRY) {
+            let kind = usize::from_ne_bytes(entry[..WORD].try_into().unwrap());
+            let value = usize::from_ne_bytes(entry[WORD..].try_into().unwrap());
+            if kind == 0 {
+                terminated = true;
+                break;
+            }
+            let slot = match kind {
+                16 => &mut hwcap,
+                26 => &mut hwcap2,
+                51 => &mut minsigstksz,
+                15 => &mut platform,
+                _ => continue,
+            };
+            if slot.replace(value).is_some() {
+                return Err(io::Error::other(
+                    "host auxiliary vector repeats an imported key",
+                ));
+            }
+        }
+        if !terminated {
+            return Err(io::Error::other("host auxiliary vector has no terminator"));
+        }
+        let platform = platform
+            .filter(|address| *address != 0)
+            .ok_or_else(|| io::Error::other("host auxiliary vector has no platform"))?;
+        let memory = File::open("/proc/self/mem")?;
+        let mut bytes = [0u8; 64];
+        let mut length = 0;
+        while length < bytes.len() {
+            let address = platform
+                .checked_add(length)
+                .ok_or_else(|| io::Error::other("host auxiliary platform address overflows"))?;
+            let read = memory.read_at(
+                &mut bytes[length..],
+                u64::try_from(address).map_err(io::Error::other)?,
+            )?;
+            if read == 0 {
+                return Err(io::Error::other("host auxiliary platform is unreadable"));
+            }
+            if let Some(end) = bytes[length..length + read]
+                .iter()
+                .position(|byte| *byte == 0)
+            {
+                length += end;
+                let platform =
+                    String::from_utf8(bytes[..length].to_vec()).map_err(io::Error::other)?;
+                return Ok(Self {
+                    hwcap: hwcap.unwrap_or(0) as u64,
+                    hwcap2: hwcap2.unwrap_or(0) as u64,
+                    minsigstksz: minsigstksz.unwrap_or(0) as u64,
+                    platform,
+                });
+            }
+            length += read;
+        }
+        Err(io::Error::other("host auxiliary platform exceeds 63 bytes"))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn current() -> io::Result<Self> {
+        Ok(Self::default())
+    }
+}
+
+fn boot_cpuinfo(cpuinfo: &str) -> String {
+    let mut imported = String::new();
+    #[cfg(target_arch = "x86_64")]
+    let mut matches = 0;
+    for line in cpuinfo.split_inclusive('\n') {
+        #[cfg(target_arch = "x86_64")]
+        {
+            let flags = line.contains("flags");
+            let cache = line.contains("cache_alignment");
+            if flags || cache {
+                imported.push_str(line);
+                matches += usize::from(flags) + usize::from(cache);
+                if matches > 1 {
+                    break;
+                }
+            }
+        }
+        #[cfg(target_arch = "aarch64")]
+        {
+            if line.contains("cache_alignment") {
+                imported.push_str(line);
+            } else {
+                break;
+            }
+        }
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        {
+            let _ = line;
+        }
+    }
+    imported
 }
 
 #[cfg(target_os = "linux")]
@@ -668,6 +822,13 @@ mod tests {
         let verified = Profile::load(directory.path()).unwrap();
         assert_eq!(verified.identity_sha256.len(), 64);
 
+        write_profile(directory.path(), |profile| profile.schema = 2);
+        assert!(matches!(
+            Profile::load(directory.path()),
+            Err(ProfileError::Schema(2))
+        ));
+        write_profile(directory.path(), |_| {});
+
         std::fs::write(directory.path().join("config"), b"CONFIG_UML=n\n").unwrap();
         assert!(matches!(
             Profile::load(directory.path()),
@@ -792,5 +953,61 @@ mod tests {
             assert_ne!(first.cpu_model, second.cpu_model);
         }
         assert!(HostIdentity::from_cpuinfo(text, Some(1)).is_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn host_identity_tracks_uml_boot_cpuinfo_ingress() {
+        let base =
+            "processor: 0\nflags: fpu tsc\n\nprocessor: 1\nflags: fpu tsc\nmodel name: CPU\n";
+        let other_flags = "processor: 0\nflags: fpu tsc avx512f\n\nprocessor: 1\nflags: fpu tsc\nmodel name: CPU\n";
+        let other_cache = "processor: 0\nflags: fpu tsc\ncache_alignment: 128\n\nprocessor: 1\nflags: fpu tsc\nmodel name: CPU\n";
+        let admitted = HostIdentity::from_cpuinfo(base, Some(1)).unwrap();
+        assert_ne!(
+            admitted,
+            HostIdentity::from_cpuinfo(other_flags, Some(1)).unwrap()
+        );
+        assert_ne!(
+            admitted,
+            HostIdentity::from_cpuinfo(other_cache, Some(1)).unwrap()
+        );
+        let irrelevant = base.replace("model name: CPU", "model name: CPU\ncpu MHz: 1000");
+        assert_eq!(
+            admitted,
+            HostIdentity::from_cpuinfo(&irrelevant, Some(1)).unwrap()
+        );
+        let late_cache = base.replace("model name: CPU", "model name: CPU\ncache_alignment: 128");
+        assert_eq!(
+            admitted,
+            HostIdentity::from_cpuinfo(&late_cache, Some(1)).unwrap()
+        );
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn host_identity_tracks_arm_uml_boot_cache_alignment() {
+        let base = "cache_alignment: 64\nprocessor: 0\nFeatures: fp asimd\n";
+        let changed = "cache_alignment: 128\nprocessor: 0\nFeatures: fp asimd\n";
+        assert_ne!(
+            HostIdentity::from_cpuinfo(base, Some(0)).unwrap(),
+            HostIdentity::from_cpuinfo(changed, Some(0)).unwrap()
+        );
+    }
+
+    #[test]
+    fn host_identity_binds_imported_auxiliary_vector() {
+        let mut base = HostIdentity::from_cpuinfo("processor: 0\nflags: fpu\n", Some(0)).unwrap();
+        let admitted = base.identity_sha256();
+        base.auxv.hwcap ^= 8;
+        assert_ne!(base.identity_sha256(), admitted);
+        base.auxv.hwcap ^= 8;
+        base.auxv.hwcap2 ^= 8;
+        assert_ne!(base.identity_sha256(), admitted);
+        base.auxv.hwcap2 ^= 8;
+        base.auxv.minsigstksz += 1;
+        assert_ne!(base.identity_sha256(), admitted);
+        base.auxv.minsigstksz -= 1;
+        base.auxv.platform.push('x');
+        assert_ne!(base.identity_sha256(), admitted);
     }
 }

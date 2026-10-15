@@ -47,7 +47,11 @@ recorded and writes `film.json` beside `witness.mp4`, so the film is that run's
 own input rather than a second search.
 
 A witness's `snapshot_sha256` and the SMB campaign's job-result digest hash
-snapshots after `SnapshotState::logical_identity`. On Intel KVM hosts a whole-VM endpoint's raw
+snapshots after `SnapshotState::logical_identity`. The native Mega Man 2,
+Metroid, and Super Tilt Bro campaign result digests cover the complete job
+result, including preparation failures and retained QuickNES snapshots. Replay
+therefore detects a latent endpoint-state change even when its decoded game
+observations and archive key agree. On Intel KVM hosts a whole-VM endpoint's raw
 x87 presence bit changes between runs of the same input with equal guest RAM,
 so the raw bytes cannot serve as a replay identity.
 
@@ -195,7 +199,9 @@ other hosts. It serializes the real `SessionConfig::default()` as
 boot flags. Custom session configurations, including campaign and fault adapters,
 are outside this scope. Inputs must be local OCI layouts. The dump includes exact platform, rootfs and
 control archives, serialized execution and image configuration, input hashes,
-prepared identity, kernel bytes, and ordered concatenated initramfs bytes. NES
+prepared identity, kernel bytes, and ordered concatenated initramfs bytes. Source
+filenames must be valid UTF-8 so each source file has a distinct input
+manifest path; ambiguous names are rejected before the dump is written. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by
@@ -253,6 +259,12 @@ this adapter. Runner libraries live in `runner.options.core`, and the guest OCI
 image in `workload.options.guest_image`.
 
 `package` exposes typed search and replay for native and prepared guest execution.
+Native search and replay require the saved core digest from the run manifest;
+the package checks the on-disk core before constructing a target, and the
+QuickNES loader checks its private copy against the same digest on every load.
+For a saved search origin, the CLI checks the ROM and, for Consonance, the
+kernel and initramfs against the inherited manifest at their final read before
+passing those bytes to the package.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search

@@ -30,6 +30,11 @@ pub struct Options {
     pub output: PathBuf,
 }
 
+pub struct PreparedRun {
+    pub finding: bool,
+    pub report: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Failure {
     pub layer: String,
@@ -540,7 +545,7 @@ pub fn run_prepared(
     options: &Options,
     replay: Option<&[u8]>,
     repeat: u32,
-) -> Result<bool, Box<dyn Error>> {
+) -> Result<PreparedRun, Box<dyn Error>> {
     if options.executions == 0 || options.ram_mib == 0 || repeat == 0 {
         return Err("search budgets, RAM and repeat must be positive".into());
     }
@@ -593,10 +598,8 @@ pub fn run_prepared(
             )?
         }
     };
-    fs::write(
-        options.output.join("report.json"),
-        serde_json::to_vec_pretty(&report)?,
-    )?;
+    let report_bytes = serde_json::to_vec_pretty(&report)?;
+    fs::write(options.output.join("report.json"), &report_bytes)?;
     for (index, failure) in report.archive.evidence.failures.iter().enumerate() {
         fs::write(
             options.output.join(format!("failure-{index}.json")),
@@ -611,7 +614,10 @@ pub fn run_prepared(
         report.archive.evidence.pairs,
         report.archive.evidence.failures.len()
     );
-    Ok(!report.archive.evidence.failures.is_empty())
+    Ok(PreparedRun {
+        finding: !report.archive.evidence.failures.is_empty(),
+        report: report_bytes,
+    })
 }
 
 #[cfg(test)]

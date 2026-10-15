@@ -200,6 +200,9 @@ impl Package for Nes {
             nes_workload::package::search_native(
                 &rom,
                 &out.join("artifacts/core"),
+                m.artifacts
+                    .get("core")
+                    .ok_or("saved run has no core digest")?,
                 &search,
                 &nes_workload::package::SearchStart::Genesis,
             )
@@ -235,21 +238,32 @@ impl Package for Nes {
 fn replay(path: &Path, m: &Manifest, input: serde_json::Value) -> Result<serde_json::Value> {
     let rom = fs::read(path.join("artifacts/input"))?;
     if m.config.runner.kind == "quicknes" {
-        return nes_workload::package::replay_native(&rom, &path.join("artifacts/core"), input);
+        return nes_workload::package::replay_native(
+            &rom,
+            &path.join("artifacts/core"),
+            m.artifacts
+                .get("core")
+                .ok_or("saved run has no core digest")?,
+            input,
+        );
     }
     #[cfg(target_os = "linux")]
     {
-        nes_workload::package::replay_consonance(
-            &rom,
-            &fs::read(path.join("artifacts/kernel"))?,
-            &fs::read(path.join("artifacts/initramfs"))?,
-            input,
-        )
+        let (kernel, initramfs) = guest_replay_runtime(path, m)?;
+        nes_workload::package::replay_consonance(&rom, &kernel, &initramfs, input)
     }
     #[cfg(not(target_os = "linux"))]
     {
         Err("the NES guest adapter requires Linux".into())
     }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn guest_replay_runtime(path: &Path, manifest: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
+    Ok((
+        read_recorded_artifact(path, manifest, "kernel")?,
+        read_recorded_artifact(path, manifest, "initramfs")?,
+    ))
 }
 fn saved(request: Request) -> Result<u8> {
     if matches!(request.operation, Operation::Search | Operation::Resume) {
@@ -441,6 +455,18 @@ fn checkpoint_origin_input(parent: &Path, manifest: &Manifest) -> Result<serde_j
     Ok(saved)
 }
 
+fn read_recorded_artifact(path: &Path, manifest: &Manifest, name: &str) -> Result<Vec<u8>> {
+    let bytes = fs::read(path.join("artifacts").join(name))?;
+    let expected = manifest
+        .artifacts
+        .get(name)
+        .ok_or_else(|| format!("saved run has no {name} digest"))?;
+    if crate::runtime::digest(&bytes) != *expected {
+        return Err(format!("recorded artifact {name} changed during load").into());
+    }
+    Ok(bytes)
+}
+
 fn rooted_search_start(
     original: &Manifest,
     point: &crate::selection::Point,
@@ -522,16 +548,24 @@ fn continue_search(request: Request) -> Result<u8> {
         wall_seconds: m.config.search.wall_seconds,
         checkpoint_owner: m.checkpoint_owner.clone(),
     };
-    let rom = fs::read(out.join("artifacts/input"))?;
+    let rom = read_recorded_artifact(&out, &m, "input")?;
     let result = if m.config.runner.kind == "quicknes" {
-        nes_workload::package::search_native(&rom, &out.join("artifacts/core"), &options, &start)
+        nes_workload::package::search_native(
+            &rom,
+            &out.join("artifacts/core"),
+            m.artifacts
+                .get("core")
+                .ok_or("saved run has no core digest")?,
+            &options,
+            &start,
+        )
     } else {
         #[cfg(target_os = "linux")]
         {
             nes_workload::package::search_saved_guest(
                 &rom,
-                &fs::read(out.join("artifacts/kernel"))?,
-                &fs::read(out.join("artifacts/initramfs"))?,
+                &read_recorded_artifact(&out, &m, "kernel")?,
+                &read_recorded_artifact(&out, &m, "initramfs")?,
                 &options,
                 &start,
             )
@@ -602,6 +636,69 @@ mod tests {
         CheckpointHeader, SEARCH_CHECKPOINT_FORMAT, StoredSnapshot,
     };
     use sha2::{Digest, Sha256};
+
+    #[test]
+    fn guest_replay_refuses_changed_runtime_after_inheritance() {
+        let source = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest
+            .store(source.path(), "kernel", b"kernel A")
+            .unwrap();
+        manifest
+            .store(source.path(), "initramfs", b"initramfs A")
+            .unwrap();
+        let inherited = manifest
+            .inherit(source.path(), child.path(), "replay")
+            .unwrap();
+
+        for (name, original, changed) in [
+            ("kernel", b"kernel A".as_slice(), b"kernel B".as_slice()),
+            (
+                "initramfs",
+                b"initramfs A".as_slice(),
+                b"initramfs B".as_slice(),
+            ),
+        ] {
+            fs::write(child.path().join("artifacts").join(name), changed).unwrap();
+            let loaded = guest_replay_runtime(child.path(), &inherited);
+            fs::write(child.path().join("artifacts").join(name), original).unwrap();
+            assert!(loaded.is_err());
+        }
+    }
+
+    #[test]
+    fn rooted_search_refuses_artifacts_changed_after_manifest_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let mut manifest = Manifest::new(config, "branch").unwrap();
+        for name in ["input", "kernel", "initramfs"] {
+            manifest
+                .store(directory.path(), name, name.as_bytes())
+                .unwrap();
+        }
+        manifest.save(directory.path()).unwrap();
+        manifest.verify(directory.path()).unwrap();
+
+        for name in ["input", "kernel", "initramfs"] {
+            let original = name.as_bytes();
+            let path = directory.path().join("artifacts").join(name);
+            fs::write(&path, b"different bytes").unwrap();
+            let error = read_recorded_artifact(directory.path(), &manifest, name)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(&format!("artifact {name} changed during load")));
+            fs::write(&path, original).unwrap();
+            assert_eq!(
+                read_recorded_artifact(directory.path(), &manifest, name).unwrap(),
+                original
+            );
+        }
+    }
 
     #[test]
     fn rooted_search_records_the_canonical_accepted_input() {

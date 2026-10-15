@@ -7,6 +7,7 @@ use super::{
 use crate::runs::Destination;
 use faults_workload::{
     Artifacts, FaultVocabulary,
+    admission::ExecutionMode,
     package::{self, SearchStart},
 };
 use std::{
@@ -81,11 +82,9 @@ fn configure(mut c: Config, offline: bool) -> Result<Config> {
     Ok(c)
 }
 
-fn capture_runtime(manifest: &mut Manifest, path: &Path, initramfs: &[u8]) -> Result<()> {
-    let kernel = manifest.config.kernel.as_ref().ok_or("missing kernel")?;
-    let kernel = fs::read(kernel)?;
-    manifest.store(path, "kernel", &kernel)?;
-    manifest.store(path, "initramfs", initramfs)?;
+fn capture_runtime(manifest: &mut Manifest, path: &Path, artifacts: &Artifacts) -> Result<()> {
+    manifest.store(path, "kernel", &artifacts.kernel)?;
+    manifest.store(path, "initramfs", &artifacts.initramfs)?;
     if let Some(profile) = manifest.config.uml_profile.clone() {
         crate::runs::store_tree(&mut manifest.record, path, &profile, "uml")?;
     }
@@ -109,6 +108,28 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
         prepared.bundle,
         prepared.vocabulary,
     ))
+}
+
+fn prepare_plain_staged(
+    staged: &oci_support::image::StagedImage,
+    request: &oci_support::bundle::LaunchRequest,
+    mode: ExecutionMode,
+) -> Result<oci_support::bundle::PreparedExecution> {
+    prepare_plain_staged_with(staged, request, mode, || {})
+}
+
+fn prepare_plain_staged_with(
+    staged: &oci_support::image::StagedImage,
+    request: &oci_support::bundle::LaunchRequest,
+    mode: ExecutionMode,
+    after_archive: impl FnOnce(),
+) -> Result<oci_support::bundle::PreparedExecution> {
+    let prepared = oci_support::bundle::prepare(staged, request)?;
+    after_archive();
+    faults_workload::admission::ArchivedImage::new(&prepared.archived_rootfs()?)
+        .inspect()?
+        .require_for(mode)?;
+    Ok(prepared)
 }
 
 pub fn finish(path: &Path, manifest: &mut Manifest, result: Result<u8>) -> Result<u8> {
@@ -144,7 +165,7 @@ pub fn search(c: Config, destination: Destination, offline: bool) -> Result<u8> 
     let (artifacts, bundle, vocabulary) = prepare_faults(&c)?;
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "search", Some(bundle), true)?;
-    capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
+    capture_runtime(&mut manifest, &out, &artifacts)?;
     manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
     manifest.save(&out)?;
     let result = search_faults(&out, &manifest, &SearchStart::Genesis).and_then(|report| {
@@ -213,15 +234,26 @@ pub fn continue_search(request: crate::adapters::Request) -> Result<u8> {
     finish(&out, &mut manifest, result)
 }
 
+fn read_vocabulary(out: &Path, manifest: &Manifest) -> Result<FaultVocabulary> {
+    let bytes = fs::read(out.join("artifacts/vocabulary.json"))?;
+    let expected = manifest
+        .artifacts
+        .get("vocabulary.json")
+        .ok_or("recorded vocabulary.json artifact is missing")?;
+    if crate::runtime::digest(&bytes) != *expected {
+        return Err("recorded artifact vocabulary.json changed during load".into());
+    }
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn search_faults(
     out: &Path,
     manifest: &Manifest,
     start: &SearchStart,
 ) -> Result<faults_workload::Report> {
     let artifacts = manifest.fault_artifacts(out)?;
-    let vocabulary: FaultVocabulary =
-        serde_json::from_slice(&fs::read(out.join("artifacts/vocabulary.json"))?)?;
-    let options = manifest.options(out);
+    let vocabulary = read_vocabulary(out, manifest)?;
+    let options = manifest.options(out)?;
     let resources = package::resources(&options)?;
     let worker = if manifest.config.backend == Backend::Uml {
         None
@@ -271,19 +303,16 @@ pub fn run(
         let out = destination.create()?;
         let mut manifest = Manifest::new(c, "run", Some(bundle), true)?;
         manifest.actions = actions;
-        capture_runtime(&mut manifest, &out, &artifacts.initramfs)?;
+        capture_runtime(&mut manifest, &out, &artifacts)?;
         manifest.store(&out, "vocabulary.json", &serde_json::to_vec(&vocabulary)?)?;
         manifest.save(&out)?;
-        let result = package::replay(
-            &artifacts,
-            &manifest.actions,
-            repeat,
-            &manifest.options(&out),
-        )
-        .and_then(|report| {
-            manifest.pin_outcome(&report)?;
-            Ok(report_code(&report))
-        });
+        let result = manifest
+            .options(&out)
+            .and_then(|options| package::replay(&artifacts, &manifest.actions, repeat, &options))
+            .and_then(|report| {
+                manifest.pin_outcome(&report)?;
+                Ok(report_code(&report))
+            });
         return finish(&out, &mut manifest, result);
     }
     if repeat != 1 {
@@ -294,41 +323,181 @@ pub fn run(
     let stage = tempfile::tempdir()?;
     let staged =
         oci_support::image::stage(c.image.as_deref().ok_or("missing image")?, stage.path())?;
-    oci_support::image::with_staged_read_access(&staged, || {
-        faults_workload::admission::inspect_root(&staged.rootfs)
-    })?
-    .require_for(super::execution_mode(c.backend))?;
-    let prepared = oci_support::bundle::prepare(
+    let prepared = prepare_plain_staged(
         &staged,
         &oci_support::bundle::LaunchRequest::new(c.command.clone()),
+        super::execution_mode(c.backend),
     )?;
     let initramfs =
         prepared.initramfs(&fs::read(c.base_initramfs.as_ref().ok_or("missing base")?)?);
+    let artifacts = Artifacts {
+        kernel: fs::read(c.kernel.as_ref().ok_or("missing kernel")?)?,
+        initramfs,
+    };
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
-    capture_runtime(&mut manifest, &out, &initramfs)?;
-    let kernel = fs::read(out.join("artifacts/kernel"))?;
-    let result = crate::oci::execute(
-        &manifest.config.runtime(),
-        &manifest.runner_identity,
-        manifest.config.seed,
-        &manifest.config.knobs,
-        manifest.config.wall_seconds,
-        &kernel,
-        &initramfs,
-        &out,
-        console,
-    )
-    .and_then(|(passed, record)| {
+    capture_runtime(&mut manifest, &out, &artifacts)?;
+    let result = (|| -> Result<u8> {
+        let profile_identity = manifest.uml_profile_identity(&out)?;
+        let (passed, record) = crate::oci::execute(
+            &manifest.config.runtime(),
+            &manifest.runner_identity,
+            profile_identity.as_deref(),
+            manifest.config.seed,
+            &manifest.config.knobs,
+            manifest.config.wall_seconds,
+            &artifacts.kernel,
+            &artifacts.initramfs,
+            &out,
+            console,
+        )?;
         manifest.pin_outcome(&record)?;
         Ok(if passed { 0 } else { 1 })
-    });
+    })();
     finish(&out, &mut manifest, result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn elf(code: &[u8; 4]) -> Vec<u8> {
+        let mut bytes = vec![0; 389];
+        bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
+        for (offset, value) in [
+            (16, 2_u16),
+            (18, 62),
+            (52, 64),
+            (54, 56),
+            (56, 2),
+            (58, 64),
+            (60, 3),
+            (62, 2),
+        ] {
+            bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[20..24].copy_from_slice(&1_u32.to_le_bytes());
+        for (offset, value) in [(24, 0x1000_u64), (32, 64), (40, 192)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[64..68].copy_from_slice(&1_u32.to_le_bytes());
+        bytes[68..72].copy_from_slice(&5_u32.to_le_bytes());
+        for (offset, value) in [(72, 384_u64), (80, 0x1000), (96, 4), (104, 4), (112, 1)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[120..124].copy_from_slice(&0x6474e551_u32.to_le_bytes());
+        bytes[124..128].copy_from_slice(&6_u32.to_le_bytes());
+        bytes[260..264].copy_from_slice(&1_u32.to_le_bytes());
+        for (offset, value) in [(264, 6_u64), (272, 0x1000), (280, 384), (288, 4), (304, 1)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[324..328].copy_from_slice(&3_u32.to_le_bytes());
+        for (offset, value) in [(344, 388_u64), (352, 1), (368, 1)] {
+            bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes[384..388].copy_from_slice(code);
+        bytes
+    }
+
+    #[test]
+    fn plain_run_admits_the_executable_that_was_packed() {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir(root.path().join("bin")).unwrap();
+        let path = root.path().join("bin/app");
+        fs::write(&path, elf(&[0x90, 0x90, 0x90, 0xc3])).unwrap();
+        let staged = oci_support::image::StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: oci_support::image::Ownership::default(),
+            config: oci_support::image::RuntimeConfig::default(),
+        };
+        let request = oci_support::bundle::LaunchRequest::default();
+        let expected = oci_support::bundle::prepare(&staged, &request)
+            .unwrap()
+            .rootfs_segment;
+        let prepared = prepare_plain_staged_with(&staged, &request, ExecutionMode::Uml, || {
+            fs::write(&path, elf(&[0x0f, 0xc7, 0xf0, 0xc3])).unwrap()
+        })
+        .unwrap();
+        assert_eq!(prepared.rootfs_segment, expected);
+        assert!(
+            faults_workload::admission::inspect_root(root.path())
+                .unwrap()
+                .require_for(ExecutionMode::Uml)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn search_refuses_vocabulary_changed_after_initial_verification() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        let saved = FaultVocabulary::new(1, vec![1, 2]).unwrap();
+        record
+            .store(
+                directory.path(),
+                "vocabulary.json",
+                &serde_json::to_vec(&saved).unwrap(),
+            )
+            .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(directory.path()).unwrap();
+        let manifest = Manifest::read(directory.path()).unwrap();
+        manifest.record.verify(directory.path()).unwrap();
+        let substituted = FaultVocabulary::new(1, vec![]).unwrap();
+        fs::write(
+            directory.path().join("artifacts/vocabulary.json"),
+            serde_json::to_vec(&substituted).unwrap(),
+        )
+        .unwrap();
+
+        assert!(
+            read_vocabulary(directory.path(), &manifest)
+                .unwrap_err()
+                .to_string()
+                .contains("vocabulary.json changed during load")
+        );
+
+        fs::write(
+            directory.path().join("artifacts/vocabulary.json"),
+            serde_json::to_vec(&saved).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read_vocabulary(directory.path(), &manifest).unwrap(), saved);
+    }
+
+    #[test]
+    fn captured_kernel_is_the_prepared_kernel_after_source_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("kernel-source");
+        fs::write(&source, b"executed kernel").unwrap();
+        let artifacts = Artifacts {
+            kernel: fs::read(&source).unwrap(),
+            initramfs: b"prepared initramfs".to_vec(),
+        };
+        fs::write(&source, b"later kernel").unwrap();
+        let config = Config {
+            backend: Backend::Kvm,
+            kernel: Some(source),
+            ..Config::default()
+        };
+        let mut manifest = Manifest::new(config, "run", None, true).unwrap();
+
+        capture_runtime(&mut manifest, directory.path(), &artifacts).unwrap();
+
+        assert_eq!(
+            fs::read(directory.path().join("artifacts/kernel")).unwrap(),
+            artifacts.kernel
+        );
+        assert_eq!(
+            manifest.artifacts["kernel"],
+            crate::runtime::digest(&artifacts.kernel)
+        );
+    }
 
     #[test]
     fn completed_search_refuses_report_replaced_after_package_return() {
@@ -337,14 +506,18 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.store(directory.path(), "kernel", b"kernel").unwrap();
+        record
+            .store(directory.path(), "initramfs", b"image")
+            .unwrap();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
         });
         record.save(directory.path()).unwrap();
         let mut manifest = Manifest::read(directory.path()).unwrap();
         let returned: faults_workload::Report = serde_json::from_value(serde_json::json!({
-            "package":"faults","mode":"search","image_sha256":"image",
-            "kernel_sha256":"kernel","identity":"runner","seed":0,"workers":1,
+            "package":"faults","mode":"search","image_sha256":crate::runtime::digest(b"image"),
+            "kernel_sha256":crate::runtime::digest(b"kernel"),"identity":"runner","seed":0,"workers":1,
             "ram_mib":1024,"executions":1,"bug_found":false,
             "first_bug_execution":null,"bugs":[],"never_satisfied":[],"replays":[],
             "execution_ticks":1,"wall_seconds":1,"execution_failures":0

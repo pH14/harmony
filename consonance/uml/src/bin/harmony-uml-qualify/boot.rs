@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::io;
+use std::process::Command;
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -20,27 +21,97 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
         console(options, profile),
         orphans(options, profile),
         seccomp_denied(options, profile),
+        pinned_auxv(
+            options,
+            profile,
+            "missing_pinned_auxv",
+            "unset HARMONY_UML_HWCAP; exec \"$0\"",
+            "HARMONY_UML_HWCAP",
+        ),
+        pinned_auxv(
+            options,
+            profile,
+            "malformed_pinned_auxv",
+            "HARMONY_UML_HWCAP=malformed; export HARMONY_UML_HWCAP; exec \"$0\"",
+            "HARMONY_UML_HWCAP",
+        ),
+        pinned_auxv(
+            options,
+            profile,
+            "wrong_pinned_hwcap",
+            "HARMONY_UML_HWCAP=$((HARMONY_UML_HWCAP ^ 8)); export HARMONY_UML_HWCAP; exec \"$0\"",
+            "HARMONY_UML_HWCAP",
+        ),
+        pinned_auxv(
+            options,
+            profile,
+            "wrong_pinned_platform",
+            "HARMONY_UML_PLATFORM=\"${HARMONY_UML_PLATFORM}x\"; export HARMONY_UML_PLATFORM; exec \"$0\"",
+            "AT_PLATFORM",
+        ),
         init_exit(options, profile),
     ]
     .into_iter()
     .collect()
 }
 
+fn pinned_auxv(
+    options: &Options,
+    profile: &VerifiedProfile,
+    name: &str,
+    mutation: &str,
+    diagnostic: &str,
+) -> io::Result<Value> {
+    let mut launch = launch(options, "boot");
+    launch.wall_limit = Duration::from_secs(5);
+    let work = launch.work_directory()?;
+    let mut command = Command::new("/bin/sh");
+    command.arg("-c").arg(mutation);
+    command.arg(profile.directory().join(&profile.profile().executable.name));
+    let exit = Guest::start(command, work, &launch)
+        .map_err(io::Error::other)?
+        .wait()?;
+    let passed = matches!(exit.reason, ExitReason::Exited(code) if code != 0)
+        && contains(
+            &exit,
+            &format!("Harmony host auxiliary vector mismatch: {diagnostic}"),
+        )
+        && !contains(&exit, "HARMONY_UML READY")
+        && clean(&exit);
+    Ok(check(name, passed, summary(&exit)))
+}
+
 fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {
     let mut walls = Vec::new();
     let mut failures = Vec::new();
+    let mut first_console = None;
     for cycle in 0..options.cycles {
         let exit = Guest::spawn(&launch(options, "boot"), profile)
             .map_err(io::Error::other)?
             .wait()?;
         walls.push(exit.wall.as_millis());
+        let console_matches_first = first_console
+            .get_or_insert_with(|| exit.console.clone())
+            .as_slice()
+            == exit.console;
         let passed = exit.reason == ExitReason::Exited(0)
             && contains(&exit, "HARMONY_UML PASS")
             && contains(&exit, SECCOMP_OK)
             && !contains(&exit, PTRACE_CHECK)
-            && clean(&exit);
+            && !contains(&exit, "Address space: host top 0x")
+            && clean(&exit)
+            && console_matches_first;
         if !passed {
-            failures.push(json!({"cycle": cycle, "exit": summary(&exit)}));
+            let console_difference = first_console
+                .as_deref()
+                .filter(|reference| *reference != exit.console.as_slice())
+                .map(|reference| console_difference(reference, &exit.console));
+            failures.push(json!({
+                "cycle": cycle,
+                "console_matches_first": console_matches_first,
+                "console_difference": console_difference,
+                "exit": summary(&exit),
+            }));
         }
     }
     let mut sorted = walls.clone();
@@ -56,6 +127,27 @@ fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value
             "failures": failures,
         }),
     ))
+}
+
+fn console_difference(reference: &[u8], actual: &[u8]) -> Value {
+    let offset = reference
+        .iter()
+        .zip(actual)
+        .position(|(left, right)| left != right)
+        .unwrap_or(reference.len().min(actual.len()));
+    let start = offset.saturating_sub(64);
+    let reference_end = reference.len().min(offset.saturating_add(192));
+    let actual_end = actual.len().min(offset.saturating_add(192));
+    json!({
+        "offset": offset,
+        "reference_len": reference.len(),
+        "actual_len": actual.len(),
+        "reference_byte": reference.get(offset),
+        "actual_byte": actual.get(offset),
+        "window_start": start,
+        "reference_window": String::from_utf8_lossy(&reference[start..reference_end]),
+        "actual_window": String::from_utf8_lossy(&actual[start..actual_end]),
+    })
 }
 
 fn hang(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {

@@ -267,7 +267,7 @@ fn synchronous_checkpoint_due(checkpoint: bool, deferred: bool) -> bool {
 enum IdleAction {
     Terminal,
     DeliverPending,
-    JumpToDeadline(u64),
+    JumpToDeadline { vns: u64, control_wake: bool },
 }
 
 pub(crate) struct SdkChannel {
@@ -337,6 +337,7 @@ where
     checkpoint_hash_preimage_armed: bool,
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
+    pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
 }
@@ -410,6 +411,7 @@ where
             checkpoint_hash_preimage_armed: false,
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
+            last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
         }
@@ -1095,6 +1097,7 @@ where
     }
 
     pub fn step(&mut self) -> Result<Step, VmmError> {
+        self.last_step_control_idle_landing_vns = None;
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
         }
@@ -1878,6 +1881,27 @@ where
             .transpose()
     }
 
+    pub(crate) fn sdk_handler_fingerprint(
+        &self,
+    ) -> Result<Option<channel::HandlerFingerprint>, channel::ChannelError> {
+        match self.sdk.as_ref() {
+            None => Ok(None),
+            Some(sdk) if sdk.env.is_poisoned() => Ok(None),
+            Some(sdk) => sdk.env.handler_fingerprint().map(Some),
+        }
+    }
+
+    pub(crate) fn verify_sdk_handler_unchanged(
+        &self,
+        before: &channel::HandlerFingerprint,
+    ) -> Result<(), channel::ChannelError> {
+        self.sdk
+            .as_ref()
+            .ok_or(channel::ChannelError::Poisoned)?
+            .env
+            .verify_handler_fingerprint_unchanged(before)
+    }
+
     pub fn sdk_snapshot_after_answer(
         &self,
         moment: u64,
@@ -2520,7 +2544,7 @@ where
     pub(crate) fn on_idle(&mut self) -> Result<Step, VmmError> {
         match self.idle_action()? {
             IdleAction::DeliverPending => Ok(Step::Continued),
-            IdleAction::JumpToDeadline(deadline_vns) => self.resume_idle(deadline_vns),
+            IdleAction::JumpToDeadline { vns, control_wake } => self.resume_idle(vns, control_wake),
             IdleAction::Terminal => Ok(self.terminate(TerminalReason::Idle)),
         }
     }
@@ -2537,17 +2561,22 @@ where
         }
         let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self)?;
         let wake = match (timer, self.idle_wake_vns) {
-            (Some(timer), Some(host)) => Some(timer.min(host)),
-            (Some(timer), None) => Some(timer),
-            (None, host) => host,
+            (Some(timer), Some(host)) if host < timer => Some((host, true)),
+            (Some(timer), _) => Some((timer, false)),
+            (None, Some(host)) => Some((host, true)),
+            (None, None) => None,
         };
         match wake {
-            Some(vns) => Ok(IdleAction::JumpToDeadline(vns)),
+            Some((vns, control_wake)) => Ok(IdleAction::JumpToDeadline { vns, control_wake }),
             None => Ok(IdleAction::Terminal),
         }
     }
 
-    pub(crate) fn resume_idle(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
+    pub(crate) fn resume_idle(
+        &mut self,
+        deadline_vns: u64,
+        control_wake: bool,
+    ) -> Result<Step, VmmError> {
         let (landing, snap) = {
             let vt = self
                 .vtime
@@ -2563,6 +2592,9 @@ where
             (landing, snap)
         };
         self.restore_vtime(&snap)?;
+        if control_wake {
+            self.last_step_control_idle_landing_vns = Some(landing);
+        }
         if self.idle_landings.len() < EVENT_TRACE_CAP {
             self.idle_landings.push(landing);
         }
@@ -5994,6 +6026,43 @@ mod tests {
         let r = v.run().expect("run");
         assert_eq!(r.reason, TerminalReason::Idle);
         assert!(v.idle_landings().is_empty(), "no armed timer ⇒ terminal");
+    }
+
+    #[test]
+    fn idle_wake_distinguishes_an_earlier_control_deadline_from_the_timer() {
+        let make = || {
+            let mut exits = arm_timer_exits(1000);
+            exits.push(Exit::Common(CommonExit::Idle));
+            let mut mock = configured_mock(exits);
+            mock.set_state(if_set_state());
+            let mut v = lapic_vmm(mock);
+            for _ in 0..3 {
+                assert_eq!(v.step().unwrap(), Step::Continued);
+            }
+            v
+        };
+
+        let mut timer_wake = make();
+        let timer = timer_wake
+            .devices
+            .lapic
+            .as_ref()
+            .unwrap()
+            .next_timer_deadline()
+            .unwrap();
+        timer_wake.set_idle_wake_vns(Some(timer));
+        assert_eq!(timer_wake.step().unwrap(), Step::Continued);
+        assert_eq!(timer_wake.effective_vns(), Some(timer));
+        assert_eq!(timer_wake.last_step_control_idle_landing_vns, None);
+
+        let mut control_wake = make();
+        control_wake.set_idle_wake_vns(Some(timer - 1));
+        assert_eq!(control_wake.step().unwrap(), Step::Continued);
+        assert_eq!(control_wake.effective_vns(), Some(timer - 1));
+        assert_eq!(
+            control_wake.last_step_control_idle_landing_vns,
+            Some(timer - 1)
+        );
     }
 
     #[test]

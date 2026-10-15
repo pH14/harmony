@@ -32,6 +32,10 @@ configuration always starts `/usr/lib/harmony/supervisor` as root. The
 supervisor reads the mounted execution specification and applies its argv,
 environment, working directory, and resolved image credentials to the
 application process.
+`PreparedExecution::archived_rootfs` verifies and visits the exact rootfs CPIO
+segment already chosen for the guest image. Consumers that admit executable
+bytes or read supervisor metadata use that archived view after packing, so a
+later mutation of the staging tree cannot change what they admit.
 
 External destinations are absolute normalized paths with bounded count and
 payload size. Platform-owned paths, duplicate destinations, and file/parent
@@ -183,8 +187,10 @@ fields containing only spaces and NULs, and base-256 encodings with a `0x80`
 or `0xff` lead byte, remain admitted on both hosts.
 Compressed archives must also finish decompression successfully after their
 tar terminator; a bad gzip checksum can be ignored by macOS tar while GNU tar
-reports failure despite both tools writing the member bytes.
-Layer admission and extraction invoke decompressors and tar with a cleared child
+reports failure despite both tools writing the member bytes. Gzip admission
+uses one Rust decoder on every host and rejects trailing padding bytes: Apple
+gzip rejects that padding while GNU gzip accepts it.
+Other layer decompressors and tar run with a cleared child
 environment, retaining only `PATH` for the tools and setting `LC_ALL=C`.
 Inherited `XZ_DEFAULTS` can otherwise reject a valid archive before admission.
 GNU tar honors inherited `TAR_OPTIONS` such as

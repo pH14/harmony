@@ -6,16 +6,10 @@ use faults_workload::{
     FaultAction,
     package::{self, ReplaySummary, Report, StateHashEncoding},
 };
-use std::{fs, path::Path};
+use std::fs;
 
 use crate::selection::Point;
 pub use crate::selection::Selection;
-
-fn report(path: &Path) -> Result<Report> {
-    Ok(serde_json::from_slice(&fs::read(
-        path.join("report.json"),
-    )?)?)
-}
 
 fn recorded_report(manifest: &Manifest) -> Result<Report> {
     Ok(serde_json::from_value(
@@ -60,10 +54,6 @@ fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> 
     }
 }
 
-fn witness(path: &Path, bug: Option<usize>) -> Result<ReplaySummary> {
-    report_witness(&report(path)?, bug)
-}
-
 fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
     report_witness(&recorded_report(manifest)?, bug)
 }
@@ -73,6 +63,7 @@ fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
         && actual.state_hash_encoding != StateHashEncoding::Unavailable
         && expected.state_hash == actual.state_hash
         && expected.state_hash_encoding == actual.state_hash_encoding
+        && expected.bug == actual.bug
         && expected.stop == actual.stop
         && expected.violations == actual.violations
         && expected.sometimes == actual.sometimes
@@ -82,6 +73,7 @@ fn equivalent(expected: &ReplaySummary, actual: &ReplaySummary) -> bool {
         && expected.event_kill_fires == actual.event_kill_fires
         && expected.event_park_fires == actual.event_park_fires
         && expected.check == actual.check
+        && expected.timeline == actual.timeline
 }
 
 fn command_replay_matches(original: &Manifest, actual: serde_json::Value) -> bool {
@@ -99,6 +91,9 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
     let source = crate::runs::locate(&selection.run)?;
     let original = Manifest::read(&source)?;
     original.verify(&source)?;
+    if original.status != "complete" {
+        return Err("a failed or incomplete recording cannot certify exact replay".into());
+    }
     if original.bundle.is_some()
         && let Some(finding) = selection.finding
     {
@@ -109,10 +104,20 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
         }
     }
     let recorded = if original.bundle.is_some() {
-        Some((
-            selected_actions(&original, selection.finding)?,
-            recorded_witness(&original, selection.finding)?,
-        ))
+        let actions = selected_actions(&original, selection.finding)?;
+        let report = recorded_report(&original)?;
+        let expected = report_witness(&report, selection.finding)?;
+        if selection.finding.is_none()
+            && expected.state_hash_encoding != StateHashEncoding::Unavailable
+            && report
+                .replays
+                .iter()
+                .skip(1)
+                .any(|saved| !equivalent(&expected, saved))
+        {
+            return Err("saved repeats disagree; exact replay cannot be verified".into());
+        }
+        Some((actions, expected))
     } else {
         if selection.finding.is_some() || repeat != 1 {
             return Err("command runs have no finding selector and replay once".into());
@@ -129,9 +134,11 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 c.uml_profile = Some(out.join("artifacts/uml"));
             }
             let artifacts = manifest.fault_artifacts(&out)?;
+            let profile_identity = manifest.uml_profile_identity(&out)?;
             let (_, new) = crate::oci::execute(
                 &c.runtime(),
                 &manifest.runner_identity,
+                profile_identity.as_deref(),
                 c.seed,
                 &c.knobs,
                 c.wall_seconds,
@@ -155,7 +162,7 @@ pub fn replay(selection: Selection, destination: Destination, repeat: u32) -> Re
                 &artifacts,
                 &manifest.actions,
                 repeat,
-                &manifest.options(&out),
+                &manifest.options(&out)?,
                 original.settle,
             )?;
             manifest.pin_outcome(&replay)?;
@@ -233,7 +240,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
         let mut target = package::prepare_debug(
             &manifest.fault_artifacts(&out)?,
             &actions[..cut],
-            &manifest.options(&out),
+            &manifest.options(&out)?,
         )?;
         if let Some(script) = &script {
             manifest.store(&out, "debug-script.sh", script)?;
@@ -253,7 +260,7 @@ pub fn branch(request: crate::adapters::Request) -> Result<u8> {
             &manifest.fault_artifacts(&out)?,
             &manifest.actions,
             1,
-            &manifest.options(&out),
+            &manifest.options(&out)?,
             !stop,
         )?;
         manifest.pin_outcome(&report)?;
@@ -319,16 +326,7 @@ pub fn prefix(
 pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
     let manifest = Manifest::read(&path)?;
-    let report_path = if path.join("report.json").exists() {
-        path.join("report.json")
-    } else {
-        path.join("run.json")
-    };
-    let report: serde_json::Value = if report_path.is_file() {
-        serde_json::from_slice(&fs::read(report_path)?)?
-    } else {
-        serde_json::Value::Null
-    };
+    let report = manifest.record.payload["outcome"].clone();
     let selected = if let Some(bug) = selection.finding {
         let bugs = report["bugs"]
             .as_array()
@@ -424,7 +422,8 @@ pub fn inspect(selection: Selection, json: bool) -> Result<u8> {
 
 pub fn timeline(selection: Selection, point: Point, json: bool) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
-    let mut witness = witness(&path, selection.finding)?;
+    let manifest = Manifest::read(&path)?;
+    let mut witness = recorded_witness(&manifest, selection.finding)?;
     if point.specified() {
         let (_, boundaries, anchor) = trajectory(&witness, selection.finding.is_some());
         let step = point.resolve(&boundaries, anchor)?;
@@ -469,6 +468,7 @@ pub fn logs(
     json: bool,
 ) -> Result<u8> {
     let path = crate::runs::locate(&selection.run)?;
+    let manifest = Manifest::read(&path)?;
     let mut sections = Vec::new();
     let filter = |text: &str| -> Vec<String> {
         text.lines()
@@ -476,13 +476,24 @@ pub fn logs(
             .map(str::to_owned)
             .collect()
     };
-    if path.join("serial.log").is_file() && selection.finding.is_none() {
+    if manifest.bundle.is_none() && path.join("serial.log").is_file() && selection.finding.is_none()
+    {
         if point.specified() {
             return Err("command logs have no action boundaries; omit point selectors".into());
         }
-        sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&fs::read_to_string(path.join("serial.log"))?)}));
+        let serial = fs::read(path.join("serial.log"))?;
+        if manifest.bundle.is_none() {
+            if let Some(expected) = manifest.record.payload["outcome"]["serial_sha256"].as_str() {
+                if crate::runtime::digest(&serial) != expected {
+                    return Err("recorded serial.log has changed".into());
+                }
+            } else if manifest.status == "complete" {
+                return Err("completed command has no saved serial digest".into());
+            }
+        }
+        sections.push(serde_json::json!({"source":"console","step":null,"lines":filter(&String::from_utf8(serial)?)}));
     } else {
-        let witness = match witness(&path, selection.finding) {
+        let witness = match recorded_witness(&manifest, selection.finding) {
             Ok(witness) => Some(witness),
             Err(_)
                 if selection.finding.is_none()
@@ -534,6 +545,136 @@ mod tests {
     use super::*;
     use faults_workload::FaultOperation;
     use std::num::NonZeroU16;
+
+    #[test]
+    fn exact_replay_rejects_changed_timeline_and_console() {
+        use faults_workload::{package::ReplayStep, target::FaultObservations};
+        let mut expected =
+            ReplaySummary::from_observation(&FaultObservations::default(), Some([7; 32]), 0, 0);
+        expected.timeline = vec![ReplayStep {
+            step: 0,
+            action: None,
+            observation: FaultObservations::default(),
+            console: "ready".into(),
+            settlement: false,
+        }];
+        let mut actual = expected.clone();
+        actual.timeline[0].console = "different output".into();
+        assert!(!equivalent(&expected, &actual));
+        actual = expected.clone();
+        actual.timeline[0].observation.moment = 1;
+        assert!(!equivalent(&expected, &actual));
+        actual = expected.clone();
+        actual.run = 2;
+        actual.guest_horizons = 1;
+        assert!(equivalent(&expected, &actual));
+    }
+
+    fn saved_replay_record(path: &std::path::Path, digests: &[Option<[u8; 32]>], status: &str) {
+        use faults_workload::{package::Report, target::FaultObservations};
+
+        let options = faults_workload::Options {
+            seed: 0,
+            executions: 1,
+            ram_mib: 1024,
+            knobs: Vec::new(),
+            wall_seconds: None,
+            output: path.to_path_buf(),
+            uml_profile: None,
+            root: None,
+            checkpoint_owner: None,
+        };
+        let mut report = Report::new(
+            "replay",
+            &faults_workload::Artifacts {
+                kernel: Vec::new(),
+                initramfs: Vec::new(),
+            },
+            "runner".into(),
+            &options,
+            1,
+        );
+        for (index, digest) in digests.iter().enumerate() {
+            let mut summary =
+                ReplaySummary::from_observation(&FaultObservations::default(), *digest, 0, 0);
+            summary.run = (index + 1) as u32;
+            report.replays.push(summary);
+        }
+        report.write(path).unwrap();
+
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(config, "run").unwrap();
+        record.store(path, "kernel", b"").unwrap();
+        record.store(path, "initramfs", b"").unwrap();
+        record.status = status.into();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
+            "outcome":serde_json::to_value(&report).unwrap()
+        });
+        record.save(path).unwrap();
+    }
+
+    #[test]
+    fn saved_replay_refuses_disagreeing_recorded_repeats_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        saved_replay_record(dir.path(), &[Some([7; 32]), Some([8; 32])], "complete");
+
+        let error = replay(
+            Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            },
+            Destination {
+                out: Some(dir.path().join("child")),
+                name: None,
+            },
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("saved repeats disagree"), "{error}");
+        assert!(!dir.path().join("child").exists());
+    }
+
+    #[test]
+    fn saved_replay_refuses_failed_recording_before_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        saved_replay_record(dir.path(), &[Some([7; 32]), Some([7; 32])], "failed");
+        let original = Manifest::read(dir.path()).unwrap();
+        assert!(recorded_witness(&original, None).is_ok());
+
+        let error = replay(
+            Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            },
+            Destination {
+                out: Some(dir.path().join("child")),
+                name: None,
+            },
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("failed or incomplete recording"), "{error}");
+        assert!(!dir.path().join("child").exists());
+    }
+
+    #[test]
+    fn divergent_and_uml_saved_repeats_remain_inspectable() {
+        for digests in [[Some([7; 32]), Some([8; 32])], [None, None]] {
+            let dir = tempfile::tempdir().unwrap();
+            saved_replay_record(dir.path(), &digests, "complete");
+            let selection = Selection {
+                run: dir.path().display().to_string(),
+                finding: None,
+            };
+            assert!(timeline(selection.clone(), Point::default(), true).is_ok());
+            assert!(logs(selection, Point::default(), None, true).is_ok());
+        }
+    }
 
     #[test]
     fn command_replay_uses_the_outcome_from_the_verified_manifest() {
@@ -692,6 +833,9 @@ mod tests {
         shared.runner.kind = "test".into();
         shared.workload.package = "faults".into();
         let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.store(dir.path(), "kernel", b"").unwrap();
+        record.store(dir.path(), "initramfs", b"").unwrap();
+        record.status = "complete".into();
         record.payload = serde_json::json!({
             "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,
             "outcome":serde_json::to_value(&report).unwrap()

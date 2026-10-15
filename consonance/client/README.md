@@ -96,7 +96,7 @@ VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
 Embedded complete portable snapshots use format version 7; sparse sidecars use
-version 8. Older embedded versions are rejected. The outer sparse archive layout
+version 9. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -162,7 +162,8 @@ eviction asks the worker with the largest store to shrink.
 
 `Session::publish_snapshot` exports a delta straight into an extent and
 publishes it. `Session::import_cached` resolves a chain into one page list over
-setup and imports it; the store checks each page against its hash. Hardware
+setup and imports it; the store checks each page against its hash and the
+sparse sidecar's complete target-page commitment. Hardware
 session cache extents carry the publishing session's image identity beside the
 sparse sidecar. Import checks every extent's identity before changing the
 snapshot store, including when a caller passes a lease from another namespace.
@@ -202,9 +203,10 @@ boot; its sealed bytes define the root identity and serve every later fresh
 process. Boot checks their SHA-256 against the caller's admitted initramfs
 digest. The caller supplies the admitted profile and exact host processor
 identity; boot checks both against the pinned profile and
-processor before starting a guest. The root identity includes that host
-identity and the exact boot argument list and initramfs bytes, with explicit
-field boundaries. An import from a different physical processor or launch
+processor before starting a guest. The root identity includes a length-delimited
+digest of the complete admitted host identity, including the CPU-info lines
+UML imports at boot, and the exact boot argument list and initramfs bytes.
+An import from a different physical processor or launch
 input is refused before the checkpoint store changes. Fresh restore spawns
 recheck the same admitted processor and host identity. A publish exports the
 checkpoint into one extent,

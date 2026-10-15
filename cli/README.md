@@ -259,14 +259,28 @@ Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
-the search report's stream digest and runs from the verified bytes.
+the search report's stream digest and runs from the verified bytes. Its kernel
+and initramfs are checked against the source recording when finally loaded,
+before inheritance can copy a later version of either file. Each replay saves
+the same verified stream bytes, so a completed replay can itself be replayed.
+Failed or incomplete saved campaigns cannot become replay sources, even if a
+producer wrote a report before the failure. The saved seed, execution budget and
+wall limit must agree with the producer report before replay begins.
 
 ## Developer qualification
 
 Hidden `harmony debug run` executes a fixed action input or an OCI command;
 `harmony debug replay NAME [--finding N] [--repeat N]` checks exact reproduction.
+For supervised runs it compares the final state and outcome as well as every
+recorded action boundary, including the action, observation, settlement marker,
+and bounded console evidence. The repeat ordinal and `guest_horizons` cache
+diagnostic are not replay invariants.
+
 Finding replay refuses an unconfirmed saved finding, because replay did not
 establish its reported failure. Branching can still inspect that evidence.
+Faults replay also refuses a failed or incomplete recording. A saved supervised
+run with multiple replays must have matching outcomes before one can serve as
+the reference for a fresh replay.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
@@ -285,6 +299,12 @@ evidence. Replay and branch selection use that verified manifest copy, even
 if a source outcome file changes later. Search resume restores its
 checkpoint and does not consume the report;
 an interrupted report write does not invalidate an earlier checkpoint.
+Faults `show`, `--timeline` and report-backed `--logs` display the manifest's
+saved outcome, so later edits to an outcome file cannot change the displayed
+recording. Command runs with a saved serial digest check it before displaying
+`--logs`; a completed command without one refuses display. Other raw console
+and terminal logs remain diagnostic output. A supervised recording always uses
+its saved action-boundary console; a stray `serial.log` cannot replace it.
 After a faults package returns, completion compares the saved report with the
 in-memory result before recording its outcome. A replaced or missing report
 cannot become a completed search, replay, or branch result. Command replay
@@ -292,10 +312,22 @@ and standalone command runs likewise bind the record built by the execution
 producer before completion.
 Derived runs also verify the bytes copied from each source artifact against its
 recorded hash, so a replacement between source verification and inheritance is
-rejected. UML also pins the exact physical processor identity selected by the fastest
+rejected. Faults recordings capture the kernel and initramfs actually prepared for
+execution, and completed reports must name those saved digests. Saved faults
+execution checks the kernel, initramfs and search vocabulary at their final
+read against the manifest; rooted search passes the verified root bytes to its
+workers. Fault search and plain command execution admit executable bytes from
+the same packed OCI rootfs segment that becomes the guest initramfs. UML search
+and command execution also check the loaded profile's
+identity against the verified recording before guest launch. The saved UML
+kernel digest must match that profile's executable before a run can complete.
+Nested replay and NES guest replay likewise compare their saved kernel and
+initramfs bytes with the recording at the final read before execution.
+UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
-same processor. Standalone command runs and replays bind that saved identity
-before launching the guest. KVM and HVF application replay compare final state,
+same processor.
+Standalone command runs and replays bind that saved identity before launching
+the guest. KVM and HVF application replay compare final state,
 assertions, actions and recovery evidence. UML application replay records
 assertions, actions and recovery evidence but cannot establish full-state
 identity. Plain UML command replay compares application output and

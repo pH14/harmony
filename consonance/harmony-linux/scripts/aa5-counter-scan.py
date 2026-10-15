@@ -4,7 +4,7 @@
 # AA-5(b) closure scan: the counter-read opcode scan. FEAT_ECV is ABSENT on N1 (AA-0:
 # ID_AA64MMFR0_EL1.ECV = 0x0), so the guest's CNTVCT_EL0 cannot be trapped in hardware — raw
 # counter access must be closed at the CONTRACT level. One layer of that closure is a build-time
-# / rescan-on-exec scan that rejects any image emitting an MRS of a generic-timer counter, so the
+# scan that rejects any image emitting an MRS of a generic-timer counter, so the
 # guest reads time ONLY via the exit-count-derived clock page.
 #
 #   aa5-counter-scan.py <aarch64-elf> [<elf> ...]
@@ -90,7 +90,7 @@ def executable_words(path: str):
         raise SystemExit(f"SCANNER ELF ERROR: cannot load {parser_path}")
     parser = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(parser)
-    return parser.executable_words(path)
+    return parser.executable_words(path, include_segment_data=True)
 
 
 def scan(path: str):
