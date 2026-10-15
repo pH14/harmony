@@ -260,6 +260,7 @@ mod tests {
                         every,
                         on_marks: true,
                         on_top_progress: true,
+                        checkpoint_owner: None,
                     }),
                     ..CampaignExecutionOptions::default()
                 },
@@ -295,7 +296,10 @@ mod tests {
 
         let resumed_directory = directory.join("resumed");
         let (resumed, _) = search(
-            CampaignOrigin::SearchCheckpoint { path: interval },
+            CampaignOrigin::SearchCheckpoint {
+                path: interval,
+                expected_sha256: None,
+            },
             &resumed_directory,
             None,
         );
