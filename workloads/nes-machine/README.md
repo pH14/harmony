@@ -24,11 +24,14 @@ libretro QuickNES shared object, validates its revision and supplied SHA-256,
 and exposes the core's 2 KiB system RAM. The dynamic loader receives a path to
 the descriptor of the exact copy that was hashed. Linux seals an anonymous
 in-memory copy before loading it. macOS keeps an owner-only, read-only private
-file named through the load, then unlinks it. The descriptor stays open as
-long as its loaded library, so another core cannot reuse the same descriptor
-pathname while the loader still holds the first image. A replacement of the
-private file name cannot redirect the descriptor. Each run
-records system RAM after every frame, and a caller can also name a cartridge
+file named through the load, then unlinks it. The descriptor stays open while
+its library handle is live, so another core cannot reuse the same descriptor
+pathname during that load. Linux checks the loader cache before opening a
+private core and checks for a retained image after every close. If a core
+stays loaded after `dlclose`, including NODELETE or GNU_UNIQUE cases,
+preparation reports an error and the process refuses further private QuickNES
+loads. A replacement of the private file name cannot redirect the descriptor.
+Each run records system RAM after every frame, and a caller can also name a cartridge
 RAM range to record after every frame. Search runs with audio and video disabled.
 Replay-only callers can capture video and stereo PCM. A caller that stops
 reading partway through a run can keep the video and audio of the run's first
