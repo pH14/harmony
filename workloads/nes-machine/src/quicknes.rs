@@ -28,6 +28,11 @@ pub use crate::SharedState;
 
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
 
+#[must_use]
+pub fn core_identity() -> String {
+    format!("quicknes-libretro:{QUICKNES_REVISION};{QUICKNES_BUILD};{QUICKNES_OPTIONS}")
+}
+
 const QUICKNES_LIBRARY_VERSION: &str = "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32";
 
 macro_rules! define_quicknes_options {

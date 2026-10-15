@@ -64,8 +64,12 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         || request.ai.is_some()
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
+        || request.resume.is_some()
     {
-        return Err("a live view runs the arcade game without stage, ai or root options".into());
+        return Err(
+            "a live view runs the arcade game from genesis without stage, ai, root or resume options"
+                .into(),
+        );
     }
     match request.game.as_str() {
         "smb" => {

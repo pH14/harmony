@@ -81,16 +81,6 @@ fn chords_sha256(chords: &[ButtonChord]) -> String {
     format!("{:x}", digest.finalize())
 }
 
-#[cfg(unix)]
-fn quicknes_core() -> String {
-    format!(
-        "quicknes-libretro:{};{};{}",
-        machine::quicknes::QUICKNES_REVISION,
-        machine::quicknes::QUICKNES_BUILD,
-        machine::quicknes::QUICKNES_OPTIONS,
-    )
-}
-
 fn emulator_identity(core: &str, genesis: &str, core_sha256: &str) -> String {
     format!(
         "{core};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=semantic-postcard-1.1.3-sha256-hex-v1;sha256={core_sha256}"
@@ -129,7 +119,7 @@ impl Mm2Game<QuickNesMachine> {
     ) -> Self {
         Self::at_stage_after(
             rom,
-            &quicknes_core(),
+            &machine::quicknes::core_identity(),
             core_sha256,
             prefix,
             stage,
@@ -146,7 +136,7 @@ impl Mm2Game<QuickNesMachine> {
     ) -> Self {
         Self::whole_game(
             rom,
-            &quicknes_core(),
+            &machine::quicknes::core_identity(),
             core_sha256,
             root,
             Self::quicknes(rom, core_path, core_sha256),

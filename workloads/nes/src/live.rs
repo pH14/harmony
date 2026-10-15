@@ -4,21 +4,26 @@ use std::{
     collections::VecDeque,
     error::Error,
     fs,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Component, Path, PathBuf},
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
     },
     thread,
     time::{Duration, Instant},
 };
 
-use machine::{MachineError, nes::core_state, quicknes::QuickNesMachine};
+use machine::{
+    MachineError,
+    nes::{ButtonChord, core_state},
+    quicknes::QuickNesMachine,
+};
 use nes_games::arcade::{
     ArcadeGame,
-    feed::{self, Batch, Feed, Note, Point, Stats, actions, chord_frames, raw_state, run_noted},
+    feed::{self, Batch, Feed, Note, Point, State, Stats, raw_state, run_noted},
     snapshot_digest,
     trail::Traced,
 };
@@ -27,15 +32,16 @@ use serde_json::{Value, json};
 
 use crate::{
     eval::{Request, Result, evaluate_watched},
-    search::campaign::{
-        CampaignAdmission, CampaignCoordinator, CampaignWatch, JobOutcome, JobSpec, WatchedJob,
-    },
+    search::campaign::{CampaignCoordinator, CampaignWatch, JobOutcome, JobSpec, WatchedJob},
     witness::EndpointIdentity,
 };
 
 const TICK: Duration = Duration::from_millis(100);
 const HEARTBEAT: Duration = Duration::from_secs(15);
 const LOOKUP_WAIT: Duration = Duration::from_secs(10);
+const IO_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_REQUEST_BYTES: u64 = 65_536;
+const MAX_CONNECTIONS: usize = 64;
 const TRAILS_PER_TICK: usize = 32;
 const FINISHES_PER_TICK: usize = 8;
 const POINTS_PER_TICK: usize = 2_000;
@@ -44,16 +50,6 @@ const STATES_PER_LOOKUP: usize = 12;
 const CLIENT_QUEUE: usize = 64;
 
 pub type NativeMachine = Traced<QuickNesMachine>;
-
-#[must_use]
-pub fn quicknes_core() -> String {
-    format!(
-        "quicknes-libretro:{};{};{}",
-        machine::quicknes::QUICKNES_REVISION,
-        machine::quicknes::QUICKNES_BUILD,
-        machine::quicknes::QUICKNES_OPTIONS,
-    )
-}
 
 pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     rom: &[u8],
@@ -67,7 +63,7 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     );
     G::arcade(
         rom,
-        &quicknes_core(),
+        &machine::quicknes::core_identity(),
         core_sha256,
         Arc::new(move || {
             Ok(Traced::new(
@@ -78,42 +74,48 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
     )
 }
 
-struct Lookup<V> {
-    request: i64,
-    ids: Vec<u64>,
-    views: Vec<Option<(V, u64)>>,
-    reply: Sender<String>,
+type Games<G> = Arc<dyn Fn() -> G + Send + Sync>;
+
+type Memory = Box<dyn Fn(&[u8]) -> std::result::Result<Vec<u8>, MachineError> + Send + Sync>;
+
+struct Shared<V> {
+    feed: Option<Feed<V>>,
+    stats: Stats,
 }
 
-enum Event<V> {
-    Root {
-        view: V,
-        digest: u64,
-        snapshot: Vec<u8>,
-    },
-    Admitted {
-        note: Note<V>,
-        admissions: Vec<CampaignAdmission>,
-        stats: Stats,
-    },
+type SharedFeed<V> = Arc<Mutex<Shared<V>>>;
+
+fn lock<V>(shared: &Mutex<Shared<V>>) -> MutexGuard<'_, Shared<V>> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+struct Found<V> {
+    id: u64,
+    observation: V,
+    digest: u64,
+    frames_at: Option<u64>,
+    input: Vec<ButtonChord>,
+    snapshot: Option<Vec<u8>>,
+}
+
+struct Lookup<V> {
+    ids: Vec<u64>,
+    reply: Sender<Vec<Found<V>>>,
+}
+
+enum Event {
+    Ready(Arc<str>),
+    Viewer(SyncSender<Arc<str>>),
     Finished,
-    Query {
-        request: i64,
-        ids: Vec<String>,
-        reply: Sender<String>,
-    },
-    Viewer {
-        sender: SyncSender<Arc<str>>,
-    },
 }
 
 pub struct LiveWatch<G: ArcadeGame> {
-    events: Sender<Event<G::View>>,
+    shared: SharedFeed<G::View>,
+    events: Sender<Event>,
     lookups: Mutex<Receiver<Lookup<G::View>>>,
     memory: Memory,
+    game: String,
 }
-
-type Memory = Box<dyn Fn(&[u8]) -> std::result::Result<Vec<u8>, MachineError> + Send + Sync>;
 
 fn native_memory(rom: &[u8], core_path: &Path, core_sha256: &str, bytes: usize) -> Memory {
     let (rom, path, sha256) = (
@@ -141,14 +143,32 @@ impl<G: ArcadeGame> LiveWatch<G> {
         let snapshot = archive
             .index_of_id(0)
             .and_then(|index| archive.entry_snapshot(index))
-            .ok_or("the campaign has no root snapshot")?;
+            .ok_or("the live view needs a campaign that starts at genesis")?;
         let raw = raw_state(G::emulator_state(snapshot))?;
         let view = G::memory_view(&(self.memory)(&raw)?)?;
-        let _ = self.events.send(Event::Root {
-            view,
-            digest: snapshot_digest(core_state(&raw)),
-            snapshot: core_state(&raw).to_vec(),
+        let snapshot = core_state(&raw);
+        let digest = snapshot_digest(snapshot);
+        {
+            let mut shared = lock(&self.shared);
+            shared.feed = Some(Feed::new(view, 0, digest));
+            shared.stats = feed::stats(campaign);
+        }
+        let root = State {
+            id: 0,
+            observation: view,
+            actions: Vec::new(),
+            frames: 0,
+        };
+        let ready = json!({
+            "type": "ready",
+            "game": self.game,
+            "live": true,
+            "active": 0,
+            "paused": false,
+            "searches": [{"id": 0, "origin": null, "branch": null, "parent": null}],
+            "state": state_json(&root, digest, Some(snapshot)),
         });
+        let _ = self.events.send(Event::Ready(Arc::from(ready.to_string())));
         Ok(())
     }
 
@@ -161,32 +181,28 @@ impl<G: ArcadeGame> LiveWatch<G> {
         };
         while let Ok(lookup) = lookups.try_recv() {
             let archive = campaign.archive();
-            let mut states = Vec::new();
-            let mut missing = Vec::new();
-            for (id, view) in lookup.ids.iter().zip(lookup.views) {
-                let found = view.and_then(|(observation, digest)| {
-                    let index = archive.index_of_id(*id)?;
-                    let input = archive.entry_input(index).ok()?.actions;
-                    let snapshot = archive
-                        .entry_snapshot(index)
-                        .and_then(|snapshot| raw_state(G::emulator_state(snapshot)).ok());
-                    Some(state_json(
-                        *id,
-                        observation,
-                        &input,
-                        digest,
-                        snapshot.as_deref().map(core_state),
-                    ))
-                });
-                match found {
-                    Some(state) => states.push(state),
-                    None => missing.push(json!(id)),
-                }
-            }
-            let _ = lookup.reply.send(
-                json!({"type": "states", "request": lookup.request, "states": states, "missing": missing})
-                    .to_string(),
-            );
+            let shared = lock(&self.shared);
+            let found = lookup
+                .ids
+                .iter()
+                .filter_map(|&id| {
+                    let feed = shared.feed.as_ref()?;
+                    let index = archive.index_of_id(id)?;
+                    Some(Found {
+                        id,
+                        observation: feed.view(id)?,
+                        digest: feed.digest(id)?,
+                        frames_at: feed.frames_at(id),
+                        input: archive.entry_input(index).ok()?.actions,
+                        snapshot: archive
+                            .entry_snapshot(index)
+                            .and_then(|snapshot| raw_state(G::emulator_state(snapshot)).ok())
+                            .map(|raw| core_state(&raw).to_vec()),
+                    })
+                })
+                .collect();
+            drop(shared);
+            let _ = lookup.reply.send(found);
         }
     }
 }
@@ -195,54 +211,55 @@ impl<G: ArcadeGame> CampaignWatch<G> for LiveWatch<G>
 where
     G::ArchiveReport: Serialize,
 {
-    type Note = Option<Note<G::View>>;
+    type Note = Note<G::View>;
 
     fn run(
         &self,
         job: &JobSpec<G>,
         run: impl FnOnce() -> std::result::Result<JobOutcome<G>, Box<dyn Error>>,
     ) -> WatchedJob<G, Self::Note> {
-        let (outcome, note) = run_noted(job, run)?;
-        Ok((outcome, Some(note)))
+        run_noted(job, run)
     }
 
     fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
         let admissions = campaign.take_admissions();
-        if let Some(note) = note {
-            let _ = self.events.send(Event::Admitted {
-                note,
-                admissions,
-                stats: feed::stats(campaign),
-            });
+        {
+            let mut shared = lock(&self.shared);
+            if let Some(feed) = shared.feed.as_mut() {
+                feed.note(note);
+                feed.admit(admissions);
+                feed.forget_dropped(campaign);
+            }
+            shared.stats = feed::stats(campaign);
         }
         self.serve(campaign);
     }
 
-    fn start(&self, campaign: &mut CampaignCoordinator<'_, G>) {
+    fn start(&self, campaign: &mut CampaignCoordinator<'_, G>) -> Result<()> {
         campaign.watch_admissions();
-        if let Err(error) = self.root(campaign) {
-            eprintln!("live view has no root state: {error}");
-        }
+        self.root(campaign)
     }
 }
 
-fn state_json<V: Serialize>(
-    id: u64,
-    observation: V,
-    input: &[machine::nes::ButtonChord],
-    digest: u64,
-    snapshot: Option<&[u8]>,
-) -> Value {
-    json!({
-        "id": id,
-        "observation": observation,
-        "actions": actions(input),
-        "frames": chord_frames(input),
-        "digest": format!("{digest:016x}"),
-        "snapshot": snapshot.map(encode_snapshot),
-        "branch": null,
-        "boot_level": 0,
-    })
+fn with_fields(mut value: Value, fields: impl IntoIterator<Item = (&'static str, Value)>) -> Value {
+    if let Value::Object(object) = &mut value {
+        for (key, field) in fields {
+            object.insert(key.to_owned(), field);
+        }
+    }
+    value
+}
+
+fn state_json<V: Serialize>(state: &State<V>, digest: u64, snapshot: Option<&[u8]>) -> Value {
+    with_fields(
+        serde_json::to_value(state).unwrap_or_default(),
+        [
+            ("digest", json!(format!("{digest:016x}"))),
+            ("snapshot", json!(snapshot.map(encode_snapshot))),
+            ("branch", Value::Null),
+            ("boot_level", json!(0)),
+        ],
+    )
 }
 
 fn encode_snapshot(bytes: &[u8]) -> String {
@@ -310,17 +327,15 @@ impl Viewers {
 }
 
 fn batch_json<V: Serialize>(batch: &Batch<V>, workers: u32) -> Arc<str> {
-    let mut message = serde_json::to_value(batch).unwrap_or_default();
-    if let Value::Object(fields) = &mut message {
-        for (key, value) in [
+    let message = with_fields(
+        serde_json::to_value(batch).unwrap_or_default(),
+        [
             ("type", json!("batch")),
             ("active", json!(0)),
             ("workers", json!(workers)),
             ("wasm_bytes", json!(0)),
-        ] {
-            fields.insert(key.to_owned(), value);
-        }
-    }
+        ],
+    );
     Arc::from(message.to_string())
 }
 
@@ -329,113 +344,120 @@ fn wall_now() -> Instant {
     Instant::now()
 }
 
-fn backlog<V: Copy>(stats: Stats, points: Vec<Point<V>>) -> Batch<V> {
+fn backlog<V: Serialize + Copy>(
+    stats: Stats,
+    history: &VecDeque<Point<V>>,
+    workers: u32,
+) -> Arc<str> {
+    batch_json(
+        &Batch {
+            stats,
+            deaths: 0,
+            frames: 0,
+            points: history.iter().copied().collect(),
+            motion: Vec::new(),
+            finishes: Vec::new(),
+            exits: Vec::new(),
+        },
+        workers,
+    )
+}
+
+fn sampled<V: Copy>(batch: Batch<V>, sampler: &mut Sampler) -> Batch<V> {
+    let (mut points, open): (Vec<_>, Vec<_>) = batch
+        .points
+        .iter()
+        .copied()
+        .partition(|point| point.retained.is_some());
+    points.extend(
+        sampler
+            .pick(open.len(), POINTS_PER_TICK)
+            .into_iter()
+            .map(|index| open[index]),
+    );
+    let finished: Vec<usize> = sampler
+        .pick(batch.finishes.len(), FINISHES_PER_TICK)
+        .into_iter()
+        .map(|index| batch.finishes[index])
+        .collect();
+    let others: Vec<usize> = (0..batch.motion.len())
+        .filter(|index| !batch.finishes.contains(index))
+        .collect();
+    let mut kept: Vec<usize> = sampler
+        .pick(others.len(), TRAILS_PER_TICK.saturating_sub(finished.len()))
+        .into_iter()
+        .map(|index| others[index])
+        .collect();
+    kept.extend(&finished);
+    kept.sort_unstable();
+    let motion = kept
+        .iter()
+        .map(|&index| batch.motion[index].clone())
+        .collect();
+    let mut finishes = Vec::new();
+    let mut exits = Vec::new();
+    for (position, index) in batch.finishes.iter().enumerate() {
+        if let Ok(slot) = kept.binary_search(index)
+            && finished.contains(index)
+        {
+            finishes.push(slot);
+            exits.push(batch.exits[position]);
+        }
+    }
     Batch {
-        stats,
-        deaths: 0,
-        frames: 0,
         points,
-        motion: Vec::new(),
-        finishes: Vec::new(),
-        exits: Vec::new(),
+        motion,
+        finishes,
+        exits,
+        ..batch
     }
 }
 
-fn feed_loop<V: Serialize + Copy + Send + 'static>(
-    events: Receiver<Event<V>>,
-    lookups: Sender<Lookup<V>>,
-    game: String,
+fn take_batch<V: Copy>(shared: &Mutex<Shared<V>>) -> Option<Batch<V>> {
+    let mut shared = lock(shared);
+    let stats = shared.stats;
+    shared.feed.as_mut().map(|feed| feed.take_batch(stats))
+}
+
+fn feed_loop<V: Serialize + Copy>(
+    events: &Receiver<Event>,
+    shared: &Mutex<Shared<V>>,
     workers: u32,
 ) {
-    let mut feed: Option<Feed<V>> = None;
     let mut ready: Option<Arc<str>> = None;
     let mut viewers = Viewers {
         senders: Vec::new(),
     };
     let mut history: VecDeque<Point<V>> = VecDeque::new();
-    let mut stats = Stats::default();
     let mut sampler = Sampler(0x9e37_79b9_7f4a_7c15);
     let mut next_tick = wall_now() + TICK;
     loop {
         let wait = next_tick.saturating_duration_since(wall_now());
         match events.recv_timeout(wait) {
-            Ok(Event::Root {
-                view,
-                digest,
-                snapshot,
-            }) => {
-                feed = Some(Feed::new(view, 0, digest));
-                ready = Some(Arc::from(
-                    json!({
-                        "type": "ready",
-                        "game": game,
-                        "live": true,
-                        "active": 0,
-                        "paused": false,
-                        "searches": [{"id": 0, "origin": null, "branch": null, "parent": null}],
-                        "state": state_json(0, view, &[], digest, Some(&snapshot)),
-                    })
-                    .to_string(),
-                ));
+            Ok(Event::Ready(message)) => {
+                viewers.broadcast(&message);
+                viewers.broadcast(&backlog(lock(shared).stats, &history, workers));
+                ready = Some(message);
             }
-            Ok(Event::Admitted {
-                note,
-                admissions,
-                stats: latest,
-            }) => {
-                if let Some(feed) = feed.as_mut() {
-                    feed.note(note);
-                    feed.admit(admissions);
-                }
-                stats = latest;
-            }
-            Ok(Event::Query {
-                request,
-                ids,
-                reply,
-            }) => {
-                let ids: Vec<u64> = ids
-                    .iter()
-                    .take(STATES_PER_LOOKUP)
-                    .filter_map(|id| id.parse().ok())
-                    .collect();
-                let views = ids
-                    .iter()
-                    .map(|&id| {
-                        feed.as_ref()
-                            .and_then(|feed| Some((feed.view(id)?, feed.digest(id)?)))
-                    })
-                    .collect();
-                let _ = lookups.send(Lookup {
-                    request,
-                    ids,
-                    views,
-                    reply,
-                });
-            }
-            Ok(Event::Viewer { sender }) => {
+            Ok(Event::Viewer(sender)) => {
                 if let Some(ready) = &ready {
                     let _ = sender.try_send(Arc::clone(ready));
-                    let history_points: Vec<Point<V>> = history.iter().copied().collect();
-                    let _ = sender.try_send(batch_json(&backlog(stats, history_points), workers));
+                    let _ = sender.try_send(backlog(lock(shared).stats, &history, workers));
                 }
                 viewers.senders.push(sender);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Ok(Event::Finished) | Err(RecvTimeoutError::Disconnected) => {
-                if let Some(feed) = feed.as_mut() {
-                    let batch = feed.take_batch(stats);
-                    let mut batch = batch;
+                let won = lock(shared).stats.won;
+                if let Some(mut batch) = take_batch(shared) {
                     batch.points.retain(|point| point.retained.is_some());
                     batch.motion.clear();
                     batch.finishes.clear();
                     batch.exits.clear();
                     viewers.broadcast(&batch_json(&batch, workers));
                 }
-                let done: Arc<str> = Arc::from(
-                    json!({"type": "limit", "won": stats.won, "finished": true}).to_string(),
-                );
-                viewers.broadcast(&done);
+                let done = json!({"type": "limit", "won": won, "finished": true});
+                viewers.broadcast(&Arc::from(done.to_string()));
                 return;
             }
         }
@@ -443,68 +465,17 @@ fn feed_loop<V: Serialize + Copy + Send + 'static>(
             continue;
         }
         next_tick = wall_now() + TICK;
-        let Some(feed) = feed.as_mut() else {
+        let Some(batch) = take_batch(shared) else {
             continue;
         };
-        let batch = feed.take_batch(stats);
-        let (retained, open): (Vec<_>, Vec<_>) = batch
-            .points
-            .iter()
-            .copied()
-            .partition(|point| point.retained.is_some());
-        let mut points = retained;
-        points.extend(
-            sampler
-                .pick(open.len(), POINTS_PER_TICK)
-                .into_iter()
-                .map(|index| open[index]),
-        );
-        for point in &points {
+        let batch = sampled(batch, &mut sampler);
+        for point in &batch.points {
             if history.len() == HISTORY_POINTS {
                 history.pop_front();
             }
             history.push_back(*point);
         }
-        let finished: Vec<usize> = sampler
-            .pick(batch.finishes.len(), FINISHES_PER_TICK)
-            .into_iter()
-            .map(|index| batch.finishes[index])
-            .collect();
-        let others: Vec<usize> = (0..batch.motion.len())
-            .filter(|index| !batch.finishes.contains(index))
-            .collect();
-        let mut kept: Vec<usize> = sampler
-            .pick(others.len(), TRAILS_PER_TICK.saturating_sub(finished.len()))
-            .into_iter()
-            .map(|index| others[index])
-            .collect();
-        kept.extend(&finished);
-        kept.sort_unstable();
-        let motion: Vec<Vec<u16>> = kept
-            .iter()
-            .map(|&index| batch.motion[index].clone())
-            .collect();
-        let mut finishes = Vec::new();
-        let mut exits = Vec::new();
-        for (position, index) in batch.finishes.iter().enumerate() {
-            if let Ok(slot) = kept.binary_search(index)
-                && finished.contains(index)
-            {
-                finishes.push(slot);
-                exits.push(batch.exits[position]);
-            }
-        }
-        let message = batch_json(
-            &Batch {
-                points,
-                motion,
-                finishes,
-                exits,
-                ..batch
-            },
-            workers,
-        );
-        viewers.broadcast(&message);
+        viewers.broadcast(&batch_json(&batch, workers));
     }
 }
 
@@ -525,7 +496,7 @@ fn content_type(path: &Path) -> &'static str {
 fn respond(stream: &mut TcpStream, status: &str, kind: &str, body: &[u8]) -> std::io::Result<()> {
     write!(
         stream,
-        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
         body.len()
     )?;
     stream.write_all(body)
@@ -539,120 +510,169 @@ fn query<'a>(target: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|pair| pair.strip_prefix(key)?.strip_prefix('='))
 }
 
-fn site_file(site: &Path, target: &str) -> Option<PathBuf> {
+fn site_path(target: &str) -> Option<PathBuf> {
     let path = target.split('?').next()?.trim_start_matches('/');
     let relative = Path::new(if path.is_empty() { "index.html" } else { path });
-    if relative
+    relative
         .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return None;
-    }
-    let file = site.join(relative);
+        .all(|component| matches!(component, Component::Normal(_)))
+        .then(|| relative.to_path_buf())
+}
+
+fn site_file(site: &Path, target: &str) -> Option<PathBuf> {
+    let file = site.join(site_path(target)?);
     file.is_file().then_some(file)
 }
 
-fn handle<V>(
-    mut stream: TcpStream,
-    events: &Sender<Event<V>>,
-    site: Option<&Path>,
-) -> std::io::Result<()> {
-    let mut reader = BufReader::new(stream.try_clone()?);
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    let mut parts = line.split_whitespace();
-    let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
-        return Ok(());
-    };
-    let target = target.to_owned();
-    loop {
-        let mut header = String::new();
-        if reader.read_line(&mut header)? == 0 || header == "\r\n" || header == "\n" {
-            break;
-        }
-    }
-    if method != "GET" {
-        return respond(
-            &mut stream,
-            "405 Method Not Allowed",
-            "text/plain",
-            b"GET only",
-        );
-    }
-    if target.starts_with("/live/events") {
-        let (sender, receiver) = mpsc::sync_channel(CLIENT_QUEUE);
-        if events.send(Event::Viewer { sender }).is_err() {
-            return respond(
-                &mut stream,
-                "410 Gone",
-                "text/plain",
-                b"the campaign has ended",
-            );
-        }
-        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nAccess-Control-Allow-Origin: *\r\n\r\n")?;
-        loop {
-            match receiver.recv_timeout(HEARTBEAT) {
-                Ok(message) => {
-                    stream.write_all(b"data: ")?;
-                    stream.write_all(message.as_bytes())?;
-                    stream.write_all(b"\n\n")?;
-                }
-                Err(RecvTimeoutError::Timeout) => stream.write_all(b": heartbeat\n\n")?,
-                Err(RecvTimeoutError::Disconnected) => return Ok(()),
-            }
-        }
-    }
-    if target.starts_with("/live/states") {
-        let request = query(&target, "request")
+struct Server<G: ArcadeGame> {
+    events: Sender<Event>,
+    lookups: Sender<Lookup<G::View>>,
+    site: Option<PathBuf>,
+    games: Games<G>,
+}
+
+impl<G: ArcadeGame> Server<G> {
+    fn states(&self, target: &str) -> Option<String> {
+        let request: i64 = query(target, "request")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0);
-        let ids = query(&target, "ids")
-            .map(|ids| ids.split(',').map(str::to_owned).collect())
-            .unwrap_or_default();
+        let ids: Vec<u64> = query(target, "ids")
+            .unwrap_or_default()
+            .split(',')
+            .take(STATES_PER_LOOKUP)
+            .filter_map(|id| id.parse().ok())
+            .collect();
         let (reply, answer) = mpsc::channel();
-        let body = if events
-            .send(Event::Query {
-                request,
-                ids,
+        self.lookups
+            .send(Lookup {
+                ids: ids.clone(),
                 reply,
             })
-            .is_ok()
-        {
-            answer.recv_timeout(LOOKUP_WAIT).ok()
-        } else {
-            None
-        };
-        return match body {
-            Some(body) => respond(&mut stream, "200 OK", "application/json", body.as_bytes()),
-            None => respond(
-                &mut stream,
-                "503 Service Unavailable",
-                "text/plain",
-                b"no state lookup",
-            ),
-        };
+            .ok()?;
+        let found = answer.recv_timeout(LOOKUP_WAIT).ok()?;
+        let mut replay: Option<(G, usize)> = None;
+        let mut states = Vec::new();
+        let mut answered = Vec::new();
+        for found in found {
+            let state = feed::archived_state(
+                found.id,
+                found.observation,
+                &[],
+                &found.input,
+                found.frames_at,
+                |input| {
+                    if replay.is_none() {
+                        let game = (self.games)();
+                        let genesis = feed::genesis_actions(&game)?;
+                        replay = Some((game, genesis));
+                    }
+                    let (game, genesis) = replay.as_ref().ok_or("no replay game")?;
+                    feed::played(game, None, *genesis, input)
+                },
+            );
+            if let Ok(state) = state {
+                states.push(state_json(&state, found.digest, found.snapshot.as_deref()));
+                answered.push(found.id);
+            }
+        }
+        let missing: Vec<u64> = ids
+            .into_iter()
+            .filter(|id| !answered.contains(id))
+            .collect();
+        Some(
+            json!({"type": "states", "request": request, "states": states, "missing": missing})
+                .to_string(),
+        )
     }
-    match site.and_then(|site| site_file(site, &target)) {
-        Some(file) => respond(
-            &mut stream,
-            "200 OK",
-            content_type(&file),
-            &fs::read(&file)?,
-        ),
-        None => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+
+    fn handle(&self, mut stream: TcpStream) -> std::io::Result<()> {
+        stream.set_read_timeout(Some(IO_TIMEOUT))?;
+        stream.set_write_timeout(Some(IO_TIMEOUT))?;
+        let mut reader = BufReader::new(stream.try_clone()?.take(MAX_REQUEST_BYTES));
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let mut parts = line.split_whitespace();
+        let (Some(method), Some(target)) = (parts.next(), parts.next()) else {
+            return Ok(());
+        };
+        let target = target.to_owned();
+        loop {
+            let mut header = String::new();
+            if reader.read_line(&mut header)? == 0 || header == "\r\n" || header == "\n" {
+                break;
+            }
+        }
+        if method != "GET" {
+            return respond(
+                &mut stream,
+                "405 Method Not Allowed",
+                "text/plain",
+                b"GET only",
+            );
+        }
+        if target.starts_with("/live/events") {
+            let (sender, receiver) = mpsc::sync_channel(CLIENT_QUEUE);
+            if self.events.send(Event::Viewer(sender)).is_err() {
+                return respond(
+                    &mut stream,
+                    "410 Gone",
+                    "text/plain",
+                    b"the campaign has ended",
+                );
+            }
+            stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n\r\n",
+            )?;
+            loop {
+                match receiver.recv_timeout(HEARTBEAT) {
+                    Ok(message) => {
+                        stream.write_all(b"data: ")?;
+                        stream.write_all(message.as_bytes())?;
+                        stream.write_all(b"\n\n")?;
+                    }
+                    Err(RecvTimeoutError::Timeout) => stream.write_all(b": heartbeat\n\n")?,
+                    Err(RecvTimeoutError::Disconnected) => return Ok(()),
+                }
+            }
+        }
+        if target.starts_with("/live/states") {
+            return match self.states(&target) {
+                Some(body) => respond(&mut stream, "200 OK", "application/json", body.as_bytes()),
+                None => respond(
+                    &mut stream,
+                    "503 Service Unavailable",
+                    "text/plain",
+                    b"no state lookup",
+                ),
+            };
+        }
+        match self
+            .site
+            .as_deref()
+            .and_then(|site| site_file(site, &target))
+        {
+            Some(file) => respond(
+                &mut stream,
+                "200 OK",
+                content_type(&file),
+                &fs::read(&file)?,
+            ),
+            None => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
+        }
     }
 }
 
-fn serve<V: Send + 'static>(
-    listener: TcpListener,
-    events: Sender<Event<V>>,
-    site: Option<PathBuf>,
-) {
+fn listen<G: ArcadeGame>(listener: &TcpListener, server: &Arc<Server<G>>) {
+    let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
-        let events = events.clone();
-        let site = site.clone();
+        if open.fetch_add(1, Ordering::AcqRel) >= MAX_CONNECTIONS {
+            open.fetch_sub(1, Ordering::AcqRel);
+            continue;
+        }
+        let (server, open) = (Arc::clone(server), Arc::clone(&open));
         thread::spawn(move || {
-            let _ = handle(stream, &events, site.as_deref());
+            let _ = server.handle(stream);
+            open.fetch_sub(1, Ordering::AcqRel);
         });
     }
 }
@@ -674,21 +694,86 @@ where
         .as_deref()
         .ok_or("live evaluation needs a listen address")?;
     let listener = TcpListener::bind(address)?;
-    eprintln!("live view listening on {}", listener.local_addr()?);
+    let local = listener.local_addr()?;
+    if !local.ip().is_loopback() {
+        return Err(format!(
+            "the live view listens only on a loopback address, and {local} is not one; forward the port over SSH to watch from another machine"
+        )
+        .into());
+    }
+    eprintln!("live view listening on {local}");
+    let shared: SharedFeed<G::View> = Arc::new(Mutex::new(Shared {
+        feed: None,
+        stats: Stats::default(),
+    }));
     let (events, received) = mpsc::channel();
     let (lookups, pending) = mpsc::channel();
     let watch = LiveWatch::<G> {
+        shared: Arc::clone(&shared),
         events: events.clone(),
         lookups: Mutex::new(pending),
         memory: native_memory(rom, &request.core, &request.core_sha256, G::MEMORY_BYTES),
+        game: id.to_owned(),
     };
-    let game: G = native_game(rom, &request.core, &request.core_sha256);
-    let (game_id, workers) = (id.to_owned(), request.workers);
-    let feed = thread::spawn(move || feed_loop(received, lookups, game_id, workers));
-    let site = request.live_site.clone();
-    thread::spawn(move || serve(listener, events, site));
-    let result = evaluate_watched(game, G::run(), request, out, started, &watch);
+    let (game_rom, core, core_sha256) = (
+        rom.to_vec(),
+        request.core.clone(),
+        request.core_sha256.clone(),
+    );
+    let games: Games<G> = Arc::new(move || native_game(&game_rom, &core, &core_sha256));
+    let workers = request.workers;
+    let feed = thread::spawn(move || feed_loop(&received, &shared, workers));
+    let server = Arc::new(Server {
+        events,
+        lookups,
+        site: request.live_site.clone(),
+        games: Arc::clone(&games),
+    });
+    thread::spawn(move || listen(&listener, &server));
+    let result = evaluate_watched(games(), G::run(), request, out, started, &watch);
     let _ = watch.events.send(Event::Finished);
     let _ = feed.join();
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{Sampler, encode_snapshot, site_path};
+
+    #[test]
+    fn site_paths_stay_inside_the_site() {
+        assert_eq!(site_path("/"), Some(PathBuf::from("index.html")));
+        assert_eq!(
+            site_path("/?game=smb&live="),
+            Some(PathBuf::from("index.html"))
+        );
+        assert_eq!(
+            site_path("/assets/main.js?v=1"),
+            Some(Path::new("assets").join("main.js"))
+        );
+        for target in ["/../secret", "/assets/../../secret", "/./index.html"] {
+            assert_eq!(site_path(target), None, "{target}");
+        }
+    }
+
+    #[test]
+    fn snapshots_encode_as_padded_base_sixty_four() {
+        assert_eq!(encode_snapshot(b""), "");
+        assert_eq!(encode_snapshot(b"f"), "Zg==");
+        assert_eq!(encode_snapshot(b"fo"), "Zm8=");
+        assert_eq!(encode_snapshot(b"foo"), "Zm9v");
+        assert_eq!(encode_snapshot(&[0xff, 0xfe, 0xfd, 0xfc]), "//79/A==");
+    }
+
+    #[test]
+    fn the_sampler_keeps_sorted_distinct_indices() {
+        let mut sampler = Sampler(7);
+        assert_eq!(sampler.pick(3, 5), vec![0, 1, 2]);
+        let picked = sampler.pick(1_000, 32);
+        assert_eq!(picked.len(), 32);
+        assert!(picked.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(picked.iter().all(|&index| index < 1_000));
+    }
 }

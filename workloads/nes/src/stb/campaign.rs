@@ -69,10 +69,8 @@ impl StbGame {
     pub fn with_ai(rom: &[u8], core_path: &Path, core_sha256: &str, ai: StbAi) -> Self {
         let ai_level = ai.level();
         let identity = format!(
-            "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
+            "{};state=ppu-unused2-zero-v1;source=sgadrat/super-tilt-bro@b132fd25add46f816e04be64c434386743b84b8b;rom=tilt_no_network_unrom_E;mode=local;stocks=4;ai={ai_level};stage=0;genesis=stb-local-ai-v1;result_digest=stb-full-postcard-1.1.3-sha256-hex-v6;sha256={core_sha256}",
+            machine::quicknes::core_identity(),
         );
         Self {
             rom: rom.to_vec(),

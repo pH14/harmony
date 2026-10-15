@@ -109,16 +109,14 @@ loads.
 
 ### Live view
 
-`?live=` replaces the browser search with a native campaign. `nes-eval` with a
+`?live` replaces the browser search with a native campaign. `nes-eval` with a
 `live` request serves the built page, its `roms` directory and the campaign's
-event stream from one address, and `src/live-source.js` reads that stream in
-place of the coordinator worker: the same `ready`, `batch` and `states`
-messages, without rollout workers. Open
-`http://HOST:PORT/?game=super-mario-bros&live=` on any machine that can reach
-the host. `live=URL` reads the stream from another server; the live server
-allows any origin, and an `https` page can read only an `https` stream. Pause
-stops drawing new results and leaves the campaign running. A live view cannot
-branch. Build
+event stream from one loopback address, and `src/live-source.js` reads that
+stream in place of the coordinator worker: the same `ready`, `batch`, `states`
+and `limit` messages, without rollout workers. Open
+`http://127.0.0.1:8790/?game=super-mario-bros&live` on the host, or forward the
+port over SSH and open the same address on another machine. Pause stops drawing
+new results and leaves the campaign running. A live view cannot branch. Build
 the page with `npm run build` and pass the `dist` directory, with a `roms`
 directory added beside `index.html`, as the request's `live_site`.
 [`workloads/nes`](../../workloads/nes/README.md#live-view) documents the request
@@ -126,11 +124,11 @@ fields and routes.
 
 A target can press buttons the archived input does not hold: the Mega Man 2
 whole-game target walks through the weapon screen and stage select after each
-boss. `JsMachine` records every action the core runs, and the coordinator keeps
-each state's frame count. When a state's frame count differs from the sum of
-its archived actions, `state` replays the input through a fresh target and
-returns the recorded actions, so replay, forks and Play from here use the
-actions the core really ran.
+boss. `Traced` records every action the core runs, and the feed keeps each
+state's frame count. When a state's frame count differs from the sum of its
+archived actions, `feed::archived_state` replays the input through a fresh
+target and returns the recorded actions, so replay, forks and Play from here use
+the actions the core really ran. The native live view uses the same rule.
 
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside

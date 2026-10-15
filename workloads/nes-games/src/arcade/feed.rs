@@ -21,6 +21,7 @@ use crate::{
 };
 
 const MIN_TRAIL_SAMPLES: usize = 6;
+const PRUNE_SLACK: usize = 4_096;
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(bound = "V: Serialize + serde::de::DeserializeOwned")]
@@ -136,6 +137,73 @@ pub fn steps<G: ArcadeGame>(
         });
     }
     Ok(steps)
+}
+
+pub fn genesis_actions<G: ArcadeGame>(game: &G) -> Result<usize, Box<dyn Error>> {
+    let (reset, path) = trail::record_path(|| -> Result<(), Box<dyn Error>> {
+        let mut target = game.new_target()?;
+        game.reset(&mut target);
+        Ok(())
+    });
+    reset?;
+    Ok(path.map_or(0, |path| path.actions.len()))
+}
+
+pub fn played<G: ArcadeGame>(
+    game: &G,
+    root: Option<&G::Snapshot>,
+    genesis_actions: usize,
+    input: &[ButtonChord],
+) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
+    let (played, path) = trail::record_path(|| -> Result<(), Box<dyn Error>> {
+        let mut target = game.new_target()?;
+        match root {
+            Some(root) => game.restore(&mut target, root)?,
+            None => game.reset(&mut target),
+        }
+        let mut milestones = G::Milestones::default();
+        for action in input {
+            game.apply_action(&mut target, action, &mut milestones)?;
+            if game.execution_disposition(&target).is_terminal() {
+                break;
+            }
+        }
+        Ok(())
+    });
+    played?;
+    let path = path.ok_or("the replay recorded no controller path")?;
+    let skip = if path.from_power_on {
+        genesis_actions
+    } else {
+        0
+    };
+    Ok(path
+        .actions
+        .get(skip..)
+        .ok_or("the replay path is shorter than its starting point")?
+        .to_vec())
+}
+
+pub fn archived_state<V>(
+    id: u64,
+    observation: V,
+    prefix: &[ButtonChord],
+    input: &[ButtonChord],
+    frames_at: Option<u64>,
+    played: impl FnOnce(&[ButtonChord]) -> Result<Vec<ButtonChord>, Box<dyn Error>>,
+) -> Result<State<V>, Box<dyn Error>> {
+    let mut chords = prefix.to_vec();
+    chords.extend(input);
+    if frames_at.is_some_and(|frames| frames != chord_frames(&chords)) {
+        chords.truncate(prefix.len());
+        chords.extend(played(input)?);
+    }
+    Ok(State {
+        id,
+        observation,
+        actions: actions(&chords),
+        frames: chord_frames(&chords),
+    })
 }
 
 pub fn run_noted<G: ArcadeGame>(
@@ -273,6 +341,20 @@ impl<V: Copy> Feed<V> {
         }
     }
 
+    pub fn forget_dropped<G: Workload>(&mut self, campaign: &CampaignCoordinator<'_, G>)
+    where
+        G::ArchiveReport: Serialize,
+    {
+        let archive = campaign.archive();
+        if self.views.len() <= 2 * archive.live_entry_count() + PRUNE_SLACK {
+            return;
+        }
+        let keep = |id: &u64| *id == 0 || archive.index_of_id(*id).is_some();
+        self.views.retain(|id, _| keep(id));
+        self.frames_at.retain(|id, _| keep(id));
+        self.digests.retain(|id, _| keep(id));
+    }
+
     #[must_use]
     pub fn view(&self, id: u64) -> Option<V> {
         self.views.get(&id).copied()
@@ -286,5 +368,94 @@ impl<V: Copy> Feed<V> {
     #[must_use]
     pub fn digest(&self, id: u64) -> Option<u64> {
         self.digests.get(&id).copied()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use machine::nes::ButtonChord;
+
+    use super::{Feed, Note, Stats, Step, archived_state};
+    use crate::search::campaign::{CampaignAdmission, CampaignAdmissionDecision};
+
+    fn step(view: u8, digest: Option<u64>, objective: bool) -> Step<u8> {
+        Step {
+            view,
+            frame: u64::from(view) * 10,
+            digest,
+            objective,
+        }
+    }
+
+    #[test]
+    fn admission_decisions_name_the_retained_steps() {
+        let mut feed = Feed::new(0_u8, 0, 99);
+        feed.note(Note {
+            reservation: 3,
+            steps: vec![
+                step(1, Some(11), false),
+                step(2, None, false),
+                step(3, Some(33), true),
+                step(4, Some(44), false),
+            ],
+            trail: Some(vec![0, 1, 2, 3, 4]),
+            next_level: 2,
+            execution_work: 40,
+            death: true,
+        });
+        feed.note(Note {
+            reservation: 4,
+            steps: vec![step(5, Some(55), false)],
+            trail: None,
+            next_level: 0,
+            execution_work: 5,
+            death: false,
+        });
+        feed.admit(vec![CampaignAdmission {
+            reservation: 3,
+            decisions: vec![
+                CampaignAdmissionDecision::Retained { id: 7 },
+                CampaignAdmissionDecision::Objective,
+                CampaignAdmissionDecision::Rejected,
+                CampaignAdmissionDecision::Duplicate { id: 7 },
+            ],
+        }]);
+        let batch = feed.take_batch(Stats::default());
+        let retained: Vec<_> = batch.points.iter().map(|point| point.retained).collect();
+        assert_eq!(retained, [Some(7), None, None, Some(7)]);
+        assert_eq!(batch.motion, [vec![0, 1, 2, 3, 4]]);
+        assert_eq!((batch.finishes, batch.exits), (vec![0], vec![2]));
+        assert_eq!((batch.frames, batch.deaths), (45, 1));
+        assert_eq!(feed.view(7), Some(1));
+        assert_eq!((feed.frames_at(7), feed.digest(7)), (Some(10), Some(11)));
+        assert_eq!(feed.digest(0), Some(99));
+        assert!(feed.take_batch(Stats::default()).points.is_empty());
+        feed.admit(vec![CampaignAdmission {
+            reservation: 4,
+            decisions: vec![CampaignAdmissionDecision::Retained { id: 8 }],
+        }]);
+        assert_eq!(feed.view(8), Some(5));
+    }
+
+    #[test]
+    fn an_archived_state_replays_only_when_frames_are_missing() {
+        let input = [ButtonChord::new(1, 4), ButtonChord::new(2, 6)];
+        let prefix = [ButtonChord::new(0, 3)];
+        let state = archived_state(5, 'a', &prefix, &input, Some(13), |_| {
+            panic!("the input holds every frame")
+        })
+        .unwrap();
+        assert_eq!((state.frames, state.actions.len()), (13, 3));
+        let state = archived_state(5, 'a', &prefix, &input, Some(20), |played| {
+            assert_eq!(played, input);
+            Ok(vec![
+                ButtonChord::new(1, 4),
+                ButtonChord::new(0, 7),
+                ButtonChord::new(2, 6),
+            ])
+        })
+        .unwrap();
+        assert_eq!((state.frames, state.actions.len()), (20, 4));
+        assert_eq!(state.actions[0].frames, 3);
     }
 }

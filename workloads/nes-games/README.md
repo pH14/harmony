@@ -42,11 +42,15 @@ observation, the four-number motion sample of a frame, the cleared-level count
 and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `famidash`
 and `twin_dragons` submodules implement it for each campaign game over any
 backend. `trail::Traced` wraps a machine and records each job's motion trail
-every four frames and at every chord end. `feed::run_noted` runs a job inside
+every four frames and at every chord end, and every controller action it runs. `feed::run_noted` runs a job inside
 that recorder and returns a `Note` with the trail, the view of every step and
 each candidate's snapshot digest. `feed::Feed` joins notes with the
 coordinator's admission decisions into the `Batch` the page reads: points,
-trails, finished trails and their exits. The digest is taken over the QuickNES
+trails, finished trails and their exits. It drops ids the archive no longer
+holds once it keeps more than twice the archive's entries.
+`feed::archived_state` builds a state's controller history and replays it
+through a fresh target with `feed::played` when the archived input misses
+frames the core ran. The digest is taken over the QuickNES
 core state without the native snapshot header, so a native snapshot and a
 browser capture of the same state have the same digest.
 

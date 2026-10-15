@@ -8,7 +8,7 @@ use std::{
 
 use machine::{
     Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
-    nes::{WRAM_SIZE, actions_of},
+    nes::{ButtonChord, WRAM_SIZE, actions_of},
 };
 
 use crate::nes_backend::{NesBackend, NesMemory};
@@ -29,8 +29,21 @@ pub struct Trail {
     pub start_cleared: u8,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ControllerPath {
+    pub actions: Vec<ButtonChord>,
+    pub from_power_on: bool,
+}
+
 thread_local! {
     static RECORDING: RefCell<Option<Trail>> = const { RefCell::new(None) };
+    static PATH: RefCell<Option<Option<ControllerPath>>> = const { RefCell::new(None) };
+}
+
+pub fn record_path<T>(run: impl FnOnce() -> T) -> (T, Option<ControllerPath>) {
+    PATH.set(Some(None));
+    let value = run();
+    (value, PATH.take().flatten())
 }
 
 pub fn record<T>(skip: u64, run: impl FnOnce() -> T) -> (T, Trail) {
@@ -58,12 +71,41 @@ fn trail_len() -> usize {
     RECORDING.with_borrow(|trail| trail.as_ref().map_or(0, |trail| trail.samples.len()))
 }
 
+#[derive(Clone, Copy)]
+struct Held {
+    elapsed: u64,
+    trail: usize,
+    path: usize,
+    from_power_on: bool,
+}
+
+const IMPORTED: Held = Held {
+    elapsed: 0,
+    trail: 0,
+    path: 0,
+    from_power_on: false,
+};
+
 pub struct Traced<M> {
     inner: M,
     probe: Probe,
     elapsed: u64,
-    held: BTreeMap<u64, (u64, usize)>,
+    held: BTreeMap<u64, Held>,
     staged: VecDeque<u16>,
+    pending: Vec<ButtonChord>,
+    path: Option<ControllerPath>,
+}
+
+impl<M> Drop for Traced<M> {
+    fn drop(&mut self) {
+        if let Some(path) = self.path.take() {
+            PATH.with_borrow_mut(|recorded| {
+                if let Some(recorded) = recorded {
+                    *recorded = Some(path);
+                }
+            });
+        }
+    }
 }
 
 impl<M: Machine + NesMemory> Traced<M> {
@@ -74,6 +116,11 @@ impl<M: Machine + NesMemory> Traced<M> {
             elapsed: 0,
             held: BTreeMap::new(),
             staged: VecDeque::new(),
+            pending: Vec::new(),
+            path: PATH.with_borrow(Option::is_some).then(|| ControllerPath {
+                actions: Vec::new(),
+                from_power_on: true,
+            }),
         }
     }
 
@@ -85,10 +132,19 @@ impl<M: Machine + NesMemory> Traced<M> {
         &mut self.inner
     }
 
-    fn rewind(&mut self, elapsed: u64, trail: usize) {
-        self.elapsed = elapsed;
+    fn rewind(&mut self, held: Held) {
+        self.elapsed = held.elapsed;
         self.staged.clear();
-        with_trail(|state| state.samples.truncate(trail));
+        self.pending.clear();
+        with_trail(|state| state.samples.truncate(held.trail));
+        if let Some(path) = self.path.as_mut() {
+            path.actions.truncate(held.path);
+            path.from_power_on = held.from_power_on;
+        }
+    }
+
+    fn held(&self, snap: SnapId) -> Held {
+        self.held.get(&snap.0).copied().unwrap_or(IMPORTED)
     }
 
     fn begin(&self, wram: &[u8; WRAM_SIZE]) {
@@ -175,7 +231,13 @@ impl<M: Machine + NesMemory> Machine for Traced<M> {
 
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
         let snap = self.inner.snapshot()?;
-        self.held.insert(snap.0, (self.elapsed, trail_len()));
+        let held = Held {
+            elapsed: self.elapsed,
+            trail: trail_len(),
+            path: self.path.as_ref().map_or(0, |path| path.actions.len()),
+            from_power_on: self.path.as_ref().is_some_and(|path| path.from_power_on),
+        };
+        self.held.insert(snap.0, held);
         Ok(snap)
     }
 
@@ -187,13 +249,18 @@ impl<M: Machine + NesMemory> Machine for Traced<M> {
     fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
         let actions = actions_of(env)?;
         self.inner.branch(snap, env)?;
-        let (elapsed, trail) = self.held.get(&snap.0).copied().unwrap_or((0, 0));
-        self.rewind(elapsed, trail);
+        self.rewind(self.held(snap));
         self.staged = actions
             .iter()
             .map(|action| u16::from(action.bounded_hold_frames()))
             .filter(|&frames| frames > 0)
             .collect();
+        if self.path.is_some() {
+            self.pending = actions
+                .iter()
+                .map(|action| ButtonChord::new(action.buttons, action.bounded_hold_frames()))
+                .collect();
+        }
         if let Some(wram) = self.current_wram() {
             self.begin(&wram);
         }
@@ -202,8 +269,7 @@ impl<M: Machine + NesMemory> Machine for Traced<M> {
 
     fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
         self.inner.replay(snap)?;
-        let (elapsed, trail) = self.held.get(&snap.0).copied().unwrap_or((0, 0));
-        self.rewind(elapsed, trail);
+        self.rewind(self.held(snap));
         if let Some(wram) = self.current_wram() {
             self.begin(&wram);
         }
@@ -217,6 +283,9 @@ impl<M: Machine + NesMemory> Machine for Traced<M> {
     ) -> Result<StopReason, MachineError> {
         let start = recording().then(|| self.current_wram()).flatten();
         let stopped = self.inner.run(until, resolve)?;
+        if let Some(path) = self.path.as_mut() {
+            path.actions.append(&mut self.pending);
+        }
         self.sample(start);
         Ok(stopped)
     }
@@ -235,7 +304,7 @@ impl<M: Machine + NesMemory> Machine for Traced<M> {
 
     fn import(&mut self, portable: &Self::Portable) -> Result<SnapId, MachineError> {
         let snap = self.inner.import(portable)?;
-        self.held.insert(snap.0, (0, 0));
+        self.held.insert(snap.0, IMPORTED);
         Ok(snap)
     }
 
@@ -263,7 +332,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> NesBackend<Vec<u8>> for Traced<M> {
 
     fn import_nes(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
         let snap = self.inner.import_nes(portable)?;
-        self.held.insert(snap.0, (0, 0));
+        self.held.insert(snap.0, IMPORTED);
         Ok(snap)
     }
 
@@ -282,7 +351,7 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> NesBackend<Vec<u8>> for Traced<M> {
 
     fn restore_nes(&mut self, state: &Vec<u8>) -> Result<(), MachineError> {
         self.inner.restore_nes(state)?;
-        self.rewind(0, 0);
+        self.rewind(IMPORTED);
         if let Some(wram) = self.current_wram() {
             self.begin(&wram);
         }
@@ -313,5 +382,210 @@ impl<M: NesMemory> NesMemory for Traced<M> {
 
     fn write_save_ram(&mut self, offset: usize, bytes: &[u8]) -> Result<(), MachineError> {
         self.inner.write_save_ram(offset, bytes)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, ops::Range};
+
+    use machine::{
+        Answer, Machine, MachineError, Moment, Reproducer, SnapId, StopConditions, StopReason,
+        nes::{ButtonChord, WRAM_SIZE, actions_of, reproducer},
+    };
+
+    use super::{ControllerPath, Probe, Traced, record, record_path};
+    use crate::nes_backend::NesMemory;
+
+    #[derive(Default)]
+    struct Walker {
+        x: u8,
+        held: BTreeMap<u64, u8>,
+        next: u64,
+        staged: Vec<ButtonChord>,
+        frames: Vec<[u8; WRAM_SIZE]>,
+    }
+
+    impl Walker {
+        fn wram(&self) -> [u8; WRAM_SIZE] {
+            let mut wram = [0; WRAM_SIZE];
+            wram[0] = self.x;
+            wram
+        }
+    }
+
+    impl Machine for Walker {
+        type Portable = u8;
+
+        fn snapshot(&mut self) -> Result<SnapId, MachineError> {
+            self.next += 1;
+            self.held.insert(self.next, self.x);
+            Ok(SnapId(self.next))
+        }
+
+        fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.held.remove(&snap.0);
+            Ok(())
+        }
+
+        fn branch(&mut self, snap: SnapId, env: &Reproducer) -> Result<(), MachineError> {
+            self.replay(snap)?;
+            self.staged = actions_of(env)?;
+            Ok(())
+        }
+
+        fn replay(&mut self, snap: SnapId) -> Result<(), MachineError> {
+            self.x = *self
+                .held
+                .get(&snap.0)
+                .ok_or(MachineError::UnknownSnapshot)?;
+            Ok(())
+        }
+
+        fn run(
+            &mut self,
+            _until: StopConditions,
+            _resolve: Option<&Answer>,
+        ) -> Result<StopReason, MachineError> {
+            self.frames.clear();
+            for chord in std::mem::take(&mut self.staged) {
+                for _ in 0..chord.bounded_hold_frames() {
+                    self.x = self.x.wrapping_add(chord.buttons & 1);
+                    self.frames.push(self.wram());
+                }
+            }
+            Ok(StopReason::Quiescent { vtime: Moment(0) })
+        }
+
+        fn read(&self, _addr: u64, _len: u32) -> Result<Vec<u8>, MachineError> {
+            Ok(Vec::new())
+        }
+
+        fn export(&mut self, snap: SnapId, _base: Option<&u8>) -> Result<u8, MachineError> {
+            self.held
+                .get(&snap.0)
+                .copied()
+                .ok_or(MachineError::UnknownSnapshot)
+        }
+
+        fn import(&mut self, portable: &u8) -> Result<SnapId, MachineError> {
+            self.next += 1;
+            self.held.insert(self.next, *portable);
+            Ok(SnapId(self.next))
+        }
+
+        fn portable_memory_charge(_portable: &u8) -> usize {
+            1
+        }
+
+        fn now(&self) -> Moment {
+            Moment(0)
+        }
+
+        fn frames(&self) -> &[[u8; WRAM_SIZE]] {
+            &self.frames
+        }
+    }
+
+    impl NesMemory for Walker {
+        fn read_wram(&self) -> Result<[u8; WRAM_SIZE], MachineError> {
+            Ok(self.wram())
+        }
+
+        fn poke_wram(&mut self, _addr: usize, _byte: u8) {}
+
+        fn capture_save_ram_per_frame(&mut self, _range: Range<usize>) {}
+
+        fn save_ram_frames(&self) -> &[u8] {
+            &[]
+        }
+
+        fn read_save_ram(&self) -> Result<Vec<u8>, MachineError> {
+            Ok(Vec::new())
+        }
+
+        fn write_save_ram(&mut self, _offset: usize, _bytes: &[u8]) -> Result<(), MachineError> {
+            Ok(())
+        }
+    }
+
+    fn probe() -> Probe {
+        Probe {
+            motion: |wram| [u16::from(wram[0]), 0, 0, 0],
+            cleared: |memory| memory[0] / 100,
+            memory_bytes: WRAM_SIZE,
+        }
+    }
+
+    fn walk(machine: &mut Traced<Walker>, from: SnapId, chords: &[ButtonChord]) {
+        machine.branch(from, &reproducer(chords)).unwrap();
+        machine.run(StopConditions::default(), None).unwrap();
+    }
+
+    #[test]
+    fn a_trail_samples_every_fourth_frame_and_each_chord_end() {
+        let mut machine = Traced::new(Walker::default(), probe());
+        let root = machine.snapshot().unwrap();
+        let ((), trail) = record(0, || {
+            walk(
+                &mut machine,
+                root,
+                &[ButtonChord::new(1, 6), ButtonChord::new(0, 3)],
+            );
+        });
+        assert_eq!(
+            trail.samples,
+            [0, 0, 0, 0, 0, 4, 4, 0, 0, 0, 6, 6, 0, 0, 0, 9, 6, 0, 0, 0]
+        );
+        assert_eq!(trail.start_cleared, 0);
+    }
+
+    #[test]
+    fn a_trail_starts_after_the_replayed_prefix() {
+        let mut machine = Traced::new(Walker::default(), probe());
+        let root = machine.snapshot().unwrap();
+        let ((), trail) = record(2, || {
+            walk(
+                &mut machine,
+                root,
+                &[ButtonChord::new(1, 2), ButtonChord::new(1, 4)],
+            );
+        });
+        assert_eq!(trail.samples, [0, 2, 0, 0, 0, 4, 6, 0, 0, 0]);
+    }
+
+    #[test]
+    fn the_controller_path_follows_restores_and_imports() {
+        let ((), path) = record_path(|| {
+            let mut machine = Traced::new(Walker::default(), probe());
+            let root = machine.snapshot().unwrap();
+            walk(&mut machine, root, &[ButtonChord::new(1, 2)]);
+            let middle = machine.snapshot().unwrap();
+            walk(&mut machine, middle, &[ButtonChord::new(0, 3)]);
+            walk(&mut machine, middle, &[ButtonChord::new(1, 5)]);
+        });
+        assert_eq!(
+            path,
+            Some(ControllerPath {
+                actions: vec![ButtonChord::new(1, 2), ButtonChord::new(1, 5)],
+                from_power_on: true,
+            })
+        );
+        let ((), path) = record_path(|| {
+            let mut machine = Traced::new(Walker::default(), probe());
+            let imported = machine.import(&9).unwrap();
+            walk(&mut machine, imported, &[ButtonChord::new(1, 1)]);
+        });
+        assert_eq!(
+            path,
+            Some(ControllerPath {
+                actions: vec![ButtonChord::new(1, 1)],
+                from_power_on: false,
+            })
+        );
+        let mut outside = Traced::new(Walker::default(), probe());
+        let root = outside.snapshot().unwrap();
+        walk(&mut outside, root, &[ButtonChord::new(1, 1)]);
+        assert!(outside.path.is_none());
     }
 }

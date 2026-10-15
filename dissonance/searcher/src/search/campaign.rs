@@ -62,7 +62,9 @@ pub trait CampaignWatch<G: Workload>: Sync {
 
     fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>);
 
-    fn start(&self, _campaign: &mut CampaignCoordinator<'_, G>) {}
+    fn start(&self, _campaign: &mut CampaignCoordinator<'_, G>) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
 }
 
 impl<G: Workload> CampaignWatch<G> for () {
@@ -2968,7 +2970,7 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
-            watch.start(campaign);
+            watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
             loop {
@@ -6463,6 +6465,106 @@ mod tests {
         .expect("campaign");
         assert_eq!(targets.most.load(std::sync::atomic::Ordering::SeqCst), 3);
         assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[derive(Default)]
+    struct StaggeredWatch {
+        offset: usize,
+        notes: std::sync::Mutex<Vec<usize>>,
+        admitted: std::sync::Mutex<Vec<usize>>,
+        refuse_start: bool,
+    }
+
+    impl super::CampaignWatch<TestWorkload> for StaggeredWatch {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, usize> {
+            let delay = (job.reservation * 7 + self.offset) % 4;
+            std::thread::sleep(Duration::from_micros(250 * delay as u64));
+            Ok((run()?, job.reservation))
+        }
+
+        fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            self.notes.lock().unwrap().push(note);
+            self.admitted.lock().unwrap().extend(
+                campaign
+                    .take_admissions()
+                    .into_iter()
+                    .map(|admission| admission.reservation),
+            );
+        }
+
+        fn start(
+            &self,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) -> Result<(), Box<dyn Error>> {
+            if self.refuse_start {
+                return Err("the watch refused to start".into());
+            }
+            campaign.watch_admissions();
+            Ok(())
+        }
+    }
+
+    fn watched_stream(watch: &StaggeredWatch) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut stream = Vec::new();
+        super::run_campaign_watched(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            watch,
+        )?;
+        Ok(stream)
+    }
+
+    #[test]
+    fn a_watched_campaign_writes_the_unwatched_stream_and_sees_every_admission() {
+        let mut plain = Vec::new();
+        run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .expect("campaign");
+        for offset in 0..3 {
+            let watch = StaggeredWatch {
+                offset,
+                ..StaggeredWatch::default()
+            };
+            assert_eq!(watched_stream(&watch).expect("watched campaign"), plain);
+            let mut notes = watch.notes.into_inner().unwrap();
+            let mut admitted = watch.admitted.into_inner().unwrap();
+            notes.sort_unstable();
+            admitted.sort_unstable();
+            assert!(!notes.is_empty());
+            assert_eq!(notes, admitted);
+        }
+    }
+
+    #[test]
+    fn a_watch_that_fails_to_start_stops_the_campaign() {
+        let watch = StaggeredWatch {
+            refuse_start: true,
+            ..StaggeredWatch::default()
+        };
+        let error = watched_stream(&watch).expect_err("the campaign must stop");
+        assert!(error.to_string().contains("the watch refused to start"));
+        assert!(watch.notes.into_inner().unwrap().is_empty());
     }
 
     #[test]

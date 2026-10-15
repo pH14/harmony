@@ -98,12 +98,7 @@ impl FamidashGame<QuickNesMachine> {
 
     #[must_use]
     pub fn new_at_level(rom: &[u8], core_path: &Path, core_sha256: &str, level: u8) -> Self {
-        let core = format!(
-            "quicknes-libretro:{};{};{}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
-        );
+        let core = machine::quicknes::core_identity();
         let target_rom = rom.to_vec();
         let target_core = core_path.to_path_buf();
         let target_sha256 = core_sha256.to_owned();

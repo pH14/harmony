@@ -272,19 +272,26 @@ protocol and validation machinery without copying the evaluation loop.
 
 ## Live view
 
-A request with `live` set to an address such as `0.0.0.0:8790` runs the
-campaign with `eval::evaluate_watched` and serves the arcade page's view of it
-over HTTP. `live_site` names a directory with the built arcade page and its
-`roms` directory, which the server serves at `/`. `GET /live/events` is a
-Server-Sent Events stream: a `ready` message with the root state, then one
-`batch` every 100 ms in the shape the browser search worker posts, with at most
-32 trails and 2,000 unretained points per batch. A viewer that connects late
-first receives up to 40,000 earlier points. `GET /live/states?ids=&request=`
-returns the archived controller input and core snapshot of each id; the
-coordinator thread answers it between admissions. Open
-`http://HOST:PORT/?game=GAME&live=` to watch. The live view supports Super
-Mario Bros., Mega Man 2, Metroid, Famidash and Twin Dragons, and rejects
-`stage`, `ai`, `root_input` and `metroid_terminal`.
+A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
+the campaign with `eval::evaluate_watched` and serves the arcade page's view of
+it over HTTP. The server refuses any other address: it has no authentication
+and serves the ROM directory. To watch from another machine, forward the port
+over SSH, for example `ssh -L 8790:127.0.0.1:8790 HOST`. `live_site` names a
+directory with the built arcade page and its `roms` directory, which the server
+serves at `/`. `GET /live/events` is a Server-Sent Events stream: a `ready`
+message with the root state, then one `batch` every 100 ms in the shape the
+browser search worker posts, with at most 32 trails and 2,000 unretained points
+per batch, and a final `limit` message when the campaign ends. A viewer that
+connects late first receives up to 40,000 earlier points.
+`GET /live/states?ids=&request=` returns the controller input and core snapshot
+of up to 12 archived states. The coordinator thread reads them between
+admissions; the request thread replays a state's input through a fresh target
+when the archived input does not hold every frame the core ran, as the browser
+does. Requests are limited to 64 KiB with 10-second read and write timeouts,
+and the server holds at most 64 connections. Open
+`http://127.0.0.1:8790/?game=GAME&live` to watch. The live view supports Super
+Mario Bros., Mega Man 2, Metroid, Famidash and Twin Dragons, starts at genesis,
+and rejects `stage`, `ai`, `root_input`, `metroid_terminal` and `resume`.
 
 ## Product CLI adapter
 

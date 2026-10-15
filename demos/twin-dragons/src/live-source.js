@@ -11,8 +11,8 @@ function decodeState(state) {
   return { ...state, snapshot: state.snapshot ? decodeBase64(state.snapshot) : null };
 }
 
-export function liveSearch(source, gameId) {
-  const base = new URL(source ? `${source.replace(/\/$/, "")}/` : ".", location.href);
+export function liveSearch(gameId) {
+  const base = new URL(".", location.href);
   const events = new EventSource(new URL("live/events", base));
   const port = { onmessage: null, onerror: null };
   let paused = false;
@@ -26,6 +26,8 @@ export function liveSearch(source, gameId) {
     } else if (message.type === "batch") {
       if (paused) Object.assign(message, { points: [], motion: [], finishes: [], exits: [] });
       message.motion = message.motion.map((trail) => Uint16Array.from(trail));
+    } else if (message.type === "limit") {
+      events.close();
     }
     deliver(message);
   };

@@ -29,7 +29,7 @@ import {
   followExit,
 } from "./world.js";
 const params = new URLSearchParams(location.search);
-const liveSource = params.get("live");
+const liveView = params.has("live");
 const bundledRoms = new URL("roms/", new URL(import.meta.env.BASE_URL, location.href));
 const manifest = await fetch(new URL("manifest.json", bundledRoms))
   .then((response) => (response.ok ? response.json() : {}))
@@ -1516,7 +1516,7 @@ function startSearch(level = bootLevel) {
   $("status-dot").className = "";
   $("cell-title").textContent = "Saved paths";
   const ports = [];
-  rolloutWorkers = liveSource !== null ? [] : Array.from({ length: budget.workers }, () => {
+  rolloutWorkers = liveView ? [] : Array.from({ length: budget.workers }, () => {
     const rollout = new Worker(new URL("./rollout-worker.js", import.meta.url), { type: "module" });
     const channel = new MessageChannel();
     rollout.onerror = (e) => fail(e.message || "Rollout worker failed");
@@ -1524,8 +1524,8 @@ function startSearch(level = bootLevel) {
     ports.push(channel.port2);
     return rollout;
   });
-  worker = liveSource !== null
-    ? liveSearch(liveSource, game.id)
+  worker = liveView
+    ? liveSearch(game.id)
     : new Worker(new URL("./search-worker.js", import.meta.url), { type: "module" });
   worker.onerror = (e) => fail(e.message);
   worker.onmessage = ({ data }) => {
@@ -1692,11 +1692,10 @@ function startSearch(level = bootLevel) {
       } else if (data.type === "limit") {
         paused = true;
         replayPaused = false;
-        $("status").textContent = data.won ? "Game won" : "Memory limit reached";
+        const ended = data.finished ? "Search finished" : "Memory limit reached";
+        $("status").textContent = data.won ? "Game won" : ended;
         updateSearchControl();
-        $("goal-status").textContent = data.won
-          ? "Game complete"
-          : "Memory limit reached";
+        $("goal-status").textContent = data.won ? "Game complete" : ended;
         $("pause").disabled = true;
         $("memory-limit").hidden = data.won;
         $("memory-limit").textContent = `The search used its ${fmt(budget.searchMiB)} MiB memory limit. Delete a branch or restart the search to free memory.`;
@@ -3481,7 +3480,7 @@ createEngine(base, game, engineInputs)
   .catch(fail);
 const linkedLevel = params.has("level") ? Number(params.get("level")) : null;
 if (catalog.levels.some((level) => level.id === linkedLevel)) startSearch(linkedLevel);
-else if (liveSource !== null) startSearch(catalog.levels[0].id);
+else if (liveView) startSearch(catalog.levels[0].id);
 else {
   askedForRom = true;
   $("new-search").onclick();

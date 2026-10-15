@@ -102,12 +102,7 @@ impl MetroidGame<QuickNesMachine> {
         prefix: Vec<ButtonChord>,
         depth: GenesisDepth,
     ) -> Self {
-        let core = format!(
-            "quicknes-libretro:{};{};{}",
-            machine::quicknes::QUICKNES_REVISION,
-            machine::quicknes::QUICKNES_BUILD,
-            machine::quicknes::QUICKNES_OPTIONS,
-        );
+        let core = machine::quicknes::core_identity();
         let (image, core_path, sha256) = (
             machine::nes::with_cartridge_ram(rom),
             core_path.to_path_buf(),

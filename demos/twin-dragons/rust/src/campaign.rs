@@ -17,9 +17,9 @@ use machine::{
 use nes_games::{
     arcade::{
         ArcadeGame,
-        feed::{self, Feed, Note, State, actions, chord_frames, raw_state, run_noted},
+        feed::{self, Feed, Note, actions, chord_frames, raw_state, run_noted},
         snapshot_digest,
-        trail::Traced,
+        trail::{Traced, record_path},
     },
     nes_backend::{NesBackend, NesMemory, pack_quicknes_state, unpack_state_into},
     search::{
@@ -95,31 +95,11 @@ pub trait BrowserGame: ArcadeGame<Machine = Traced<JsMachine>> {
     }
 }
 
-thread_local! {
-    static RECORDED_PATH: RefCell<Option<Option<RecordedPath>>> = const { RefCell::new(None) };
-}
-
-struct RecordedPath {
-    actions: Vec<ButtonChord>,
-    from_power_on: bool,
-}
-
-fn recording<T>(run: impl FnOnce() -> T) -> (T, Option<RecordedPath>) {
-    RECORDED_PATH.set(Some(None));
-    let value = run();
-    (value, RECORDED_PATH.take().flatten())
-}
-
-struct Held {
-    state: Vec<u8>,
-    path: Option<(usize, bool)>,
-}
-
 pub struct JsMachine {
     core: u32,
     state_len: usize,
     memory_bytes: usize,
-    snapshots: BTreeMap<u64, Held>,
+    snapshots: BTreeMap<u64, Vec<u8>>,
     next: u64,
     staged: VecDeque<ButtonChord>,
     vtime: u64,
@@ -127,7 +107,6 @@ pub struct JsMachine {
     frames: Vec<[u8; WRAM_SIZE]>,
     save_ram_range: Option<Range<usize>>,
     save_ram_frames: Vec<u8>,
-    path: Option<RecordedPath>,
 }
 
 impl JsMachine {
@@ -152,33 +131,22 @@ impl JsMachine {
             frames: Vec::new(),
             save_ram_range: None,
             save_ram_frames: Vec::new(),
-            path: RECORDED_PATH
-                .with_borrow(Option::is_some)
-                .then(|| RecordedPath {
-                    actions: Vec::new(),
-                    from_power_on: true,
-                }),
         })
     }
 
-    fn hold(&mut self, held: Held) -> SnapId {
+    fn hold(&mut self, state: Vec<u8>) -> SnapId {
         let id = self.next;
         self.next = self.next.wrapping_add(1);
-        self.snapshots.insert(id, held);
+        self.snapshots.insert(id, state);
         SnapId(id)
     }
 
     fn restore(&mut self, snap: SnapId) -> Result<(), MachineError> {
-        let held = self
+        let state = self
             .snapshots
             .get(&snap.0)
             .ok_or(MachineError::UnknownSnapshot)?;
-        core_restore(self.core, &held.state).map_err(backend)?;
-        if let Some(path) = self.path.as_mut() {
-            let (len, from_power_on) = held.path.unwrap_or((0, false));
-            path.actions.truncate(len);
-            path.from_power_on = from_power_on;
-        }
+        core_restore(self.core, state).map_err(backend)?;
         self.memory = core_ram(self.core).map_err(backend)?;
         self.staged.clear();
         Ok(())
@@ -191,27 +159,12 @@ impl JsMachine {
     }
 }
 
-impl Drop for JsMachine {
-    fn drop(&mut self) {
-        if let Some(path) = self.path.take() {
-            RECORDED_PATH.set(Some(Some(path)));
-        }
-    }
-}
-
 impl Machine for JsMachine {
     type Portable = Vec<u8>;
 
     fn snapshot(&mut self) -> Result<SnapId, MachineError> {
         let state = core_capture(self.core).map_err(backend)?;
-        let held = Held {
-            state,
-            path: self
-                .path
-                .as_ref()
-                .map(|path| (path.actions.len(), path.from_power_on)),
-        };
-        Ok(self.hold(held))
+        Ok(self.hold(state))
     }
 
     fn drop_snapshot(&mut self, snap: SnapId) -> Result<(), MachineError> {
@@ -250,9 +203,6 @@ impl Machine for JsMachine {
         let size = self.memory_bytes;
         while let Some(chord) = self.staged.pop_front() {
             let hold = chord.bounded_hold_frames();
-            if let Some(path) = self.path.as_mut() {
-                path.actions.push(ButtonChord::new(chord.buttons, hold));
-            }
             let bytes = core_frames(self.core, chord.buttons, hold).map_err(backend)?;
             if bytes.len() != usize::from(hold) * size {
                 return Err(MachineError::Backend(
@@ -290,17 +240,17 @@ impl Machine for JsMachine {
     }
 
     fn export(&mut self, snap: SnapId, _base: Option<&Vec<u8>>) -> Result<Vec<u8>, MachineError> {
-        let held = self
+        let state = self
             .snapshots
             .get(&snap.0)
             .ok_or(MachineError::UnknownSnapshot)?;
-        pack_quicknes_state(&held.state)
+        pack_quicknes_state(state)
     }
 
     fn import(&mut self, portable: &Vec<u8>) -> Result<SnapId, MachineError> {
         let mut state = Vec::new();
         unpack_state_into(portable, self.state_len, &mut state)?;
-        Ok(self.hold(Held { state, path: None }))
+        Ok(self.hold(state))
     }
 
     fn portable_memory_charge(portable: &Vec<u8>) -> usize {
@@ -491,7 +441,7 @@ impl<G: BrowserGame> Search<G> {
         let frames = chord_frames(&prefix);
         let (origin, raw, root, genesis_actions) = match options.root {
             None => {
-                let (raw, path) = recording(|| {
+                let (raw, path) = record_path(|| {
                     let mut target = game.new_target()?;
                     game.reset(&mut target);
                     core_capture(options.core).map_err(|error| backend(error).to_string())
@@ -547,37 +497,6 @@ impl<G: BrowserGame> Search<G> {
         }
         Ok(())
     }
-
-    fn played(&self, input: &[ButtonChord]) -> Result<Vec<ButtonChord>, Box<dyn Error>> {
-        let (played, path) = recording(|| -> Result<(), Box<dyn Error>> {
-            let mut target = self.game.new_target()?;
-            match &self.root {
-                Some(root) => self.game.restore(&mut target, root)?,
-                None => self.game.reset(&mut target),
-            }
-            let mut milestones = G::Milestones::default();
-            for action in input {
-                self.game
-                    .apply_action(&mut target, action, &mut milestones)?;
-                if self.game.execution_disposition(&target).is_terminal() {
-                    break;
-                }
-            }
-            Ok(())
-        });
-        played?;
-        let path = path.ok_or("the replay recorded no controller path")?;
-        let skip = if path.from_power_on {
-            self.genesis_actions
-        } else {
-            0
-        };
-        Ok(path
-            .actions
-            .get(skip..)
-            .ok_or("the replay path is shorter than its starting point")?
-            .to_vec())
-    }
 }
 
 impl<G: BrowserGame> SearchApi for Search<G> {
@@ -595,6 +514,7 @@ impl<G: BrowserGame> SearchApi for Search<G> {
         self.feed.note(note);
         self.coordinator.admit(outcome).map_err(js_error)?;
         self.feed.admit(self.coordinator.take_admissions());
+        self.feed.forget_dropped(&self.coordinator);
         self.record_stream().map_err(js_error)
     }
 
@@ -633,23 +553,16 @@ impl<G: BrowserGame> SearchApi for Search<G> {
             .view(id)
             .ok_or_else(|| js_error("unknown state"))?;
         let input = archive.entry_input(index).map_err(js_error)?.actions;
-        let mut chords = self.prefix.clone();
-        chords.extend(&input);
-        if self
-            .feed
-            .frames_at(id)
-            .is_some_and(|frames| frames != chord_frames(&chords))
-        {
-            chords.truncate(self.prefix.len());
-            chords.extend(self.played(&input).map_err(js_error)?);
-        }
-        serde_json::to_string(&State {
+        let state = feed::archived_state(
             id,
             observation,
-            actions: actions(&chords),
-            frames: chord_frames(&chords),
-        })
-        .map_err(js_error)
+            &self.prefix,
+            &input,
+            self.feed.frames_at(id),
+            |input| feed::played(self.game, self.root.as_ref(), self.genesis_actions, input),
+        )
+        .map_err(js_error)?;
+        serde_json::to_string(&state).map_err(js_error)
     }
 
     fn digest(&self, id: u32) -> Result<String, JsValue> {
@@ -843,7 +756,7 @@ impl CampaignWorker {
 
 fn genesis_of<G: BrowserGame>(core: u32, rom: &[u8]) -> Result<String, Box<dyn Error>> {
     let game = G::create(core, rom, "genesis", "");
-    let (target, path) = recording(|| {
+    let (target, path) = record_path(|| {
         game.new_target().map(|mut target| {
             game.reset(&mut target);
         })
