@@ -82,6 +82,7 @@ fn read_pool(kind: &str) -> Result<Option<BTreeSet<u16>>> {
     }
 }
 
+#[allow(unused_unsafe)]
 fn host_reports_hybrid_architecture() -> bool {
     #[cfg(test)]
     if let Some(hybrid) = tests::fixture_hybrid() {
@@ -89,7 +90,13 @@ fn host_reports_hybrid_architecture() -> bool {
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        std::arch::x86_64::__cpuid_count(7, 0).edx & (1 << 15) != 0
+        // SAFETY: x86-64 provides CPUID, and querying its maximum basic leaf has no memory effects.
+        let maximum = unsafe { std::arch::x86_64::__cpuid(0) }.eax;
+        if maximum < 7 {
+            return false;
+        }
+        // SAFETY: leaf 7 is supported above, and this constant subleaf query has no memory effects.
+        unsafe { std::arch::x86_64::__cpuid_count(7, 0) }.edx & (1 << 15) != 0
     }
     #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
     {
