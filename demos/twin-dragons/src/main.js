@@ -2336,7 +2336,7 @@ function bindMap(c) {
       cell = heat.cells.get(`${point.level}:${point.x}:${point.y}`);
     hoverCell = cell?.ids.length ? point : null;
     c.style.cursor = hoverCell ? "pointer" : "default";
-    $("hover").hidden = false;
+    $("hover").hidden = !cell?.visits && !cell?.ids.length;
     $("hover").textContent =
       `${cell?.visits || 0} visits · ${cell?.ids.length || 0} states`;
   });
