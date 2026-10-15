@@ -2629,9 +2629,7 @@ struct PendingJob<G: Workload + ?Sized> {
 struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<std::time::Instant>,
     pending: PendingJob<G>,
-    result: CampaignJobResult<G>,
-    execution_work: u64,
-    result_sha256: String,
+    outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
@@ -3100,7 +3098,7 @@ where
         |target, spec: JobSpec<G>| {
             let reservation = spec.reservation;
             let work_before = workload.execution_work(target);
-            workload
+            let outcome = workload
                 .execute_job(
                     &config.run,
                     target,
@@ -3120,9 +3118,10 @@ where
                         workload.execution_work(target),
                         "worker",
                     )?;
-                    Ok((reservation, result, execution_work, result_sha256))
+                    Ok((result, execution_work, result_sha256))
                 })
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string());
+            Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
@@ -3559,18 +3558,18 @@ where
                 while let Some(reply) = ready_reply {
                     coordinator_profile.receives = coordinator_profile.receives.saturating_add(1);
                     let physical_worker = reply.worker;
-                    let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
-                        format!("campaign worker {physical_worker} failed: {error}").into()
-                    })?;
                     if physical_worker >= config.workers {
                         return Err(
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
+                    let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
+                        format!("campaign worker {physical_worker} failed: {error}").into()
+                    })?;
                     running = running
                         .checked_sub(1)
                         .ok_or("campaign worker replied without queued work")?;
-                    let (reservation, result, execution_work, result_sha256) = outcome;
+                    let (reservation, result) = outcome;
                     let held = Some(reservation) != next_admission;
                     idle_clock.update(
                         running,
@@ -3589,9 +3588,7 @@ where
                             CompletedJob {
                                 held_since: held.then(now),
                                 pending: pending_job,
-                                result,
-                                execution_work,
-                                result_sha256,
+                                outcome: result,
                             },
                         )
                         .is_some()
@@ -3609,9 +3606,10 @@ where
                     planned_clock = finish;
                     spec_records.remove(&reservation);
                     let pending_job = completed_job.pending;
-                    let result = completed_job.result;
-                    let execution_work = completed_job.execution_work;
-                    let result_sha256 = completed_job.result_sha256;
+                    let (result, execution_work, result_sha256) =
+                        completed_job.outcome.map_err(|error| -> Box<dyn Error> {
+                            format!("campaign reservation {reservation} failed: {error}").into()
+                        })?;
                     if let Some(since) = completed_job.held_since {
                         let held = nanos_since(since);
                         admission.results_held = admission.results_held.saturating_add(1);
@@ -5616,7 +5614,10 @@ mod continuation_tests;
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        io::Write,
+        sync::{Arc, Mutex, mpsc},
+    };
 
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
@@ -5701,12 +5702,15 @@ mod tests {
 
     const INHERITS_PARENT_PLACE: u8 = u8::MAX;
 
+    type TestActionHook = dyn Fn(TestAction) -> Result<(), String> + Send + Sync;
+
     #[derive(Default)]
     struct LiveTargets {
         refuse: bool,
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
+        action_hook: Mutex<Option<Arc<TestActionHook>>>,
     }
 
     #[derive(Default)]
@@ -5763,6 +5767,12 @@ mod tests {
     }
 
     impl Reporting for TestWorkload {
+        fn evidence_checkpoint(_evidence: &()) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+        fn evidence_from_checkpoint(_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
         fn stream_format(&self) -> &'static str {
             "test-campaign-v1"
         }
@@ -5888,6 +5898,17 @@ mod tests {
             action: &Self::Action,
             _milestones: &mut Self::Milestones,
         ) -> Result<(), Box<dyn Error>> {
+            let hook = target._counted.as_ref().and_then(|count| {
+                count
+                    .0
+                    .action_hook
+                    .lock()
+                    .expect("test action hook lock")
+                    .clone()
+            });
+            if let Some(hook) = hook {
+                hook(*action)?;
+            }
             target.apply(action);
             Ok(())
         }
@@ -7980,6 +8001,235 @@ mod tests {
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn execution_failure_waits_for_earlier_planned_admission() {
+        struct JobLineStream {
+            bytes: Vec<u8>,
+            first_job: mpsc::Sender<()>,
+        }
+
+        impl Write for JobLineStream {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.bytes.extend_from_slice(bytes);
+                if self.bytes.iter().filter(|&&byte| byte == b'\n').count() >= 2 {
+                    let _ = self.first_job.send(());
+                }
+                Ok(bytes.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 2;
+        let (baseline, earlier, later) = (0..32)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut baseline = Vec::new();
+                run_campaign_checkpointed(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: None,
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut baseline,
+                    None,
+                )
+                .ok()?;
+                let jobs = job_lines(&baseline);
+                (jobs.len() == 2
+                    && jobs[0].0 == 1
+                    && jobs[1].0 == 2
+                    && jobs[0].1.mutation_seed as u8 != jobs[1].1.mutation_seed as u8)
+                    .then(|| {
+                        (
+                            baseline,
+                            (jobs[0].1.reservation, jobs[0].1.mutation_seed as u8),
+                            (jobs[1].1.reservation, jobs[1].1.mutation_seed as u8),
+                        )
+                    })
+            })
+            .expect("two distinct jobs in planned-finish order");
+        let expected_prefix = format!(
+            "{}\n",
+            std::str::from_utf8(&baseline)
+                .unwrap()
+                .lines()
+                .take(2)
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let run_order = |held_input: u8, label: &str| {
+            let directory = std::env::temp_dir().join(format!(
+                "dissonance-failure-prefix-{}-{label}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&directory);
+            let (entered_sender, entered_receiver) = mpsc::channel();
+            let (release_sender, release_receiver) = mpsc::channel();
+            let (job_sender, job_receiver) = mpsc::channel();
+            let release_receiver = Arc::new(Mutex::new(Some(release_receiver)));
+            let targets = Arc::new(LiveTargets::default());
+            *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
+                if action.input == earlier.1 || action.input == later.1 {
+                    entered_sender.send(action.input).unwrap();
+                }
+                if action.input == held_input
+                    && let Some(release) = release_receiver.lock().unwrap().take()
+                {
+                    release.recv().map_err(|error| error.to_string())?;
+                }
+                if action.input == later.1 {
+                    return Err("planned execution failure".to_owned());
+                }
+                Ok(())
+            }));
+            let (error, stream, observed, job_before_release) = std::thread::scope(|scope| {
+                let directory_for_run = directory.clone();
+                let run = scope.spawn(|| {
+                    let mut stream = JobLineStream {
+                        bytes: Vec::new(),
+                        first_job: job_sender,
+                    };
+                    let error = run_campaign_checkpointed_with_options(
+                        &TestWorkload {
+                            bootstrap_objective: false,
+                            targets: Some(targets),
+                        },
+                        &config,
+                        &CampaignOrigin::Genesis,
+                        &mut stream,
+                        None,
+                        CampaignExecutionOptions {
+                            checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                                directory: directory_for_run,
+                                every: std::num::NonZeroU64::new(1),
+                                on_marks: false,
+                                on_top_progress: false,
+                                checkpoint_owner: None,
+                            }),
+                            ..CampaignExecutionOptions::default()
+                        },
+                    )
+                    .expect_err("later job fails")
+                    .to_string();
+                    (error, stream.bytes)
+                });
+                let mut observed = BTreeSet::new();
+                while observed.len() < 2 {
+                    let Ok(input) = entered_receiver.recv_timeout(Duration::from_secs(5)) else {
+                        break;
+                    };
+                    observed.insert(input);
+                }
+                let job_before_release = held_input == later.1
+                    && job_receiver.recv_timeout(Duration::from_secs(5)).is_ok();
+                release_sender.send(()).unwrap();
+                let (error, stream) = run.join().unwrap();
+                (error, stream, observed, job_before_release)
+            });
+            assert_eq!(observed, BTreeSet::from([earlier.1, later.1]));
+            if held_input == later.1 {
+                assert!(
+                    job_before_release,
+                    "earlier job did not admit while failure waited"
+                );
+            }
+            (error, stream, directory)
+        };
+        let (failure_first, first_stream, first_directory) = run_order(earlier.1, "failure-first");
+        let (success_first, second_stream, second_directory) = run_order(later.1, "success-first");
+        let expected_error = format!(
+            "campaign reservation {} failed: planned execution failure",
+            later.0
+        );
+        assert_eq!(failure_first, expected_error);
+        assert_eq!(success_first, expected_error);
+        assert_eq!(first_stream, second_stream);
+        assert_eq!(std::str::from_utf8(&first_stream).unwrap(), expected_prefix);
+        let checkpoint_path =
+            |directory: &std::path::Path| directory.join("000000000001-interval.ckpt");
+        let stable_checkpoint = |directory: &std::path::Path| {
+            let mut reader =
+                crate::search::checkpoint::CheckpointReader::open(&checkpoint_path(directory))
+                    .expect("the earlier planned admission wrote a checkpoint");
+            let header = reader.header.clone();
+            assert_eq!(header.executions, 1);
+            assert_eq!(header.admitted, 1);
+            assert_eq!(header.reserved, 2);
+            let core: super::CoreCheckpoint<TestWorkload> = reader.next().unwrap();
+            let archive: crate::search::archive::Archive<TestAction, TestKey, (), u8> =
+                reader.next().unwrap();
+            let evidence: Vec<u8> = reader.next().unwrap();
+            let draw: Vec<u8> = reader.next().unwrap();
+            let durations: crate::search::duration::DurationPoliciesCheckpoint<TestKey> =
+                reader.next().unwrap();
+            let rand: RomuDuoJrRand = reader.next().unwrap();
+            let counters: CampaignCounters = reader.next().unwrap();
+            let _profile: LiveCoordinatorProfile = reader.next().unwrap();
+            let in_flight: Vec<super::InFlightJob<TestWorkload>> = reader.next().unwrap();
+            let snapshots = reader.snapshots::<u8>().unwrap();
+            reader.finish().unwrap();
+            let in_flight = in_flight
+                .iter()
+                .map(|job| super::InFlightJobRef {
+                    reservation: job.reservation,
+                    spec: &job.spec,
+                    pending: &job.pending,
+                })
+                .collect::<Vec<_>>();
+            [
+                postcard::to_allocvec(&header).unwrap(),
+                postcard::to_allocvec(&core).unwrap(),
+                postcard::to_allocvec(&archive).unwrap(),
+                postcard::to_allocvec(&evidence).unwrap(),
+                postcard::to_allocvec(&draw).unwrap(),
+                postcard::to_allocvec(&durations).unwrap(),
+                postcard::to_allocvec(&rand).unwrap(),
+                postcard::to_allocvec(&counters).unwrap(),
+                postcard::to_allocvec(&in_flight).unwrap(),
+                postcard::to_allocvec(&snapshots).unwrap(),
+            ]
+        };
+        assert_eq!(
+            stable_checkpoint(&first_directory),
+            stable_checkpoint(&second_directory)
+        );
+        let resume = |directory: &std::path::Path| {
+            let mut stream = Vec::new();
+            let outcome = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: checkpoint_path(directory),
+                    expected_sha256: None,
+                },
+                &mut stream,
+                None,
+            )
+            .expect("checkpoint resumes without the injected failure");
+            (outcome, stream)
+        };
+        let (first_resume, first_resume_stream) = resume(&first_directory);
+        let (second_resume, second_resume_stream) = resume(&second_directory);
+        assert_eq!(first_resume.0.archive, second_resume.0.archive);
+        assert_eq!(first_resume.1, second_resume.1);
+        assert_eq!(
+            job_lines(&first_resume_stream),
+            job_lines(&second_resume_stream)
+        );
+        std::fs::remove_dir_all(first_directory).unwrap();
+        std::fs::remove_dir_all(second_directory).unwrap();
     }
 
     #[test]
