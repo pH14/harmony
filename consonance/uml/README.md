@@ -154,12 +154,15 @@
   the running Linux `/proc/self/exe` inode, so a replacement at the original
   path cannot make a different host build claim the recording. Creation, replay
   checks and replay launch refuse defined `LD_PRELOAD`, `LD_AUDIT`,
-  `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`, or
-  `LD_DYNAMIC_WEAK`, or `GLIBC_TUNABLES`, including empty definitions. It also
-  requires the recording identity code to map from the same inode as
-  `/proc/self/exe`, refusing direct dynamic-loader launches with command-line
-  code selectors. These checks do not bind ordinary dependent libraries, code
-  loaded later, or an injected library that clears its override before admission.
+  `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`,
+  `LD_DYNAMIC_WEAK`, and `GLIBC_TUNABLES`, including empty definitions. It also
+  reads the kernel-saved program-header location from `/proc/self/auxv` and
+  requires the recording identity code to lie in an executable load segment of
+  the opened `/proc/self/exe`; both addresses must also have matching
+  file-backed mappings. This refuses direct dynamic-loader launches with
+  command-line code selectors even when separate Btrfs subvolumes reuse a
+  mapping inode number. These checks do not bind ordinary dependent libraries,
+  code loaded later, or an injected library that clears its override before admission.
   Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
   recording or replay binaries directly with the listed variables unset.
   It derives the seed from the live launch's
