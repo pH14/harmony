@@ -362,11 +362,11 @@ pub fn search_consonance(
                 ),
                 (
                     "prepared-rootfs".into(),
-                    format!("{:x}", Sha256::digest(&prepared.rootfs_segment)),
+                    format!("{:x}", Sha256::digest(prepared.rootfs_segment())),
                 ),
                 (
                     "prepared-control".into(),
-                    format!("{:x}", Sha256::digest(&prepared.control_segment)),
+                    format!("{:x}", Sha256::digest(prepared.control_segment())),
                 ),
             ]
             .into(),

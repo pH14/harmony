@@ -5697,8 +5697,11 @@ mod tests {
         }
         let request = crate::bundle::LaunchRequest::new(vec!["/bin/true".into()]);
         let prepared = crate::bundle::prepare(&staged, &request).unwrap();
-        assert_eq!((prepared.execution.uid, prepared.execution.gid), (123, 456));
-        assert_eq!(prepared.rootfs_segment, packed);
+        assert_eq!(
+            (prepared.execution().uid, prepared.execution().gid),
+            (123, 456)
+        );
+        assert_eq!(prepared.rootfs_segment(), packed);
         assert_preparation_modes();
         for path in ["etc", "usr"] {
             std::fs::set_permissions(
@@ -6305,7 +6308,7 @@ mod tests {
                     .stdin
                     .take()
                     .unwrap()
-                    .write_all(&prepared.rootfs_segment)?;
+                    .write_all(prepared.rootfs_segment())?;
                 child.wait_with_output()
             })
             .unwrap();
