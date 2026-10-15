@@ -714,6 +714,38 @@ class CounterScanCoverage(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn("duplicate executable section name", result.stderr)
 
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_direct_branch_into_operand_counter_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hazard = root / "hazard.s"
+            hazard.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n'
+                '.byte 0xeb,0x01,0xb8,0x0f,0x31,0x89,0xc7\n'
+                'mov $60,%eax\nsyscall\n.fill 15,1,0xcc\n'
+            )
+            run("as", "--64", "-o", str(root / "hazard.o"), str(hazard))
+            kernel = root / "vmlinux"
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(kernel), str(root / "hazard.o"))
+
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"), str(root / "safe.o"))
+            for target in (
+                root / "arch/x86/boot/setup.elf",
+                root / "arch/x86/boot/compressed/vmlinux",
+            ):
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes((root / "safe.elf").read_bytes())
+
+            result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("noncanonical direct branch target", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

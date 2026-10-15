@@ -120,7 +120,10 @@ instruction, so the scanner also decodes the bounded path across every
 truncated instruction at a symbol boundary until it rejoins ordinary decoding
 or terminates. An unresolved branch or path fails admission. The section-boundary
 tail check requires both raw and symbol-aware dual-mode decoding to end on a
-complete instruction.
+complete instruction. A direct branch into an executable section must land on
+an instruction boundary in both disassemblies; otherwise operand bytes could
+become a counter instruction even though the ordinary section disassembly
+does not show one.
 
 The Linux VMM rejects non-long-mode CPU records at snapshot publication and
 before snapshot restore. State hashes can observe transient CPU modes during

@@ -181,6 +181,22 @@ def truncated_instruction(instruction):
     return mnemonic.startswith((".byte", "(bad)")) or not mnemonic
 
 
+def direct_branch_target(instruction):
+    words = instruction.lower().split()
+    while words and (words[0] in TRAILING_PREFIXES or words[0].startswith("rex")):
+        words.pop(0)
+    if len(words) < 2:
+        return None
+    mnemonic = words[0]
+    if not (mnemonic.startswith(("j", "call", "loop"))
+            or mnemonic in ("lcall", "xbegin")):
+        return None
+    operand = words[1].rstrip(",")
+    if not re.fullmatch(r"(?:0x)?[0-9a-f]+", operand):
+        return None
+    return int(operand, 16)
+
+
 def scan_mixed_mode_raw_code(data, sections, tag):
     for name, kind, flags, _address, offset, size in sections:
         if kind != 1 or not flags & 4 or not size:
@@ -226,6 +242,7 @@ def scan_symbol_restarts(data, sections, tag, path):
             section = None
             decoded = {name: [] for name in names}
             symbols = {name: set() for name in names}
+            starts = {name: bytearray(size) for name, (_address, _offset, size) in names.items()}
             for line in result.stdout.splitlines():
                 match = re.fullmatch(r"Disassembly of section (.+):", line)
                 if match:
@@ -237,7 +254,25 @@ def scan_symbol_restarts(data, sections, tag, path):
                 if match:
                     symbols[section].add(int(match.group(1), 16))
                     continue
-                decoded[section].extend(disassembled_instructions(line))
+                for site, length, instruction in disassembled_instructions(line):
+                    address, _offset, size = names[section]
+                    if address <= site < address + size:
+                        starts[section][site - address] = 1
+                    decoded[section].append((site, length, instruction))
+
+            for source, instructions in decoded.items():
+                for site, _length, instruction in instructions:
+                    target = direct_branch_target(instruction)
+                    if target is None:
+                        continue
+                    for name, (address, _offset, size) in names.items():
+                        if address <= target < address + size:
+                            if not starts[name][target - address]:
+                                raise ValueError(
+                                    f"noncanonical direct branch target in {tag}:{source}:{mode} "
+                                    f"from 0x{site:x} to {name}:0x{target:x}"
+                                )
+                            break
 
             for name, (address, offset, size) in names.items():
                 canonical = {site: (length, instruction) for site, length, instruction in decoded[name]}
