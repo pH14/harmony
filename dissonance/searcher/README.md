@@ -113,8 +113,11 @@ across host schedules even when their search state and resumptions agree.
 An execution panic produces a stable error reply carrying the dequeued job's
 schedule key. The worker discards its target and builds a fresh one before
 taking another job, so a queued earlier reservation can still complete. If
-recreation fails, the worker retires; the coordinator reports the first missing
-planned reservation with a stable keyed error after draining received results.
+recreation fails, the worker retires. Other workers may continue queued jobs;
+if all workers exit with outstanding reservations, the coordinator drains
+received results and reports the first missing planned reservation. Target
+recreation failure is an external failure, so its timing can change which
+outstanding jobs complete before the failure is reported.
 A wall-time stop, unlike a fixed work ceiling, can change with execution speed.
 
 `memory_budget_mib` is split before bootstrap: the workload's draw-state reserve

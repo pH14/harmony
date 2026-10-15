@@ -5737,6 +5737,8 @@ mod tests {
     struct LiveTargets {
         refuse: bool,
         fail_next_target: std::sync::atomic::AtomicBool,
+        first_action_started: std::sync::atomic::AtomicBool,
+        second_selection_waits_for_first_action: std::sync::atomic::AtomicBool,
         live: std::sync::atomic::AtomicUsize,
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
@@ -5855,6 +5857,7 @@ mod tests {
         ) -> Result<Self::Action, Box<dyn Error>> {
             Ok(TestAction::new(rand.next_u64() as u8, 1))
         }
+        #[allow(clippy::disallowed_methods)]
         fn expand_suffix(
             &self,
             _run: &Self::Run,
@@ -5864,9 +5867,28 @@ mod tests {
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
             if let Some(targets) = &self.targets {
-                targets
+                let selection = targets
                     .selections
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if selection == 2
+                    && targets
+                        .second_selection_waits_for_first_action
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    while !targets
+                        .first_action_started
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                    {
+                        if Instant::now() >= deadline {
+                            return Err(
+                                "the first job never started before the second selection".into()
+                            );
+                        }
+                        std::thread::yield_now();
+                    }
+                }
             }
             let long = mutation_seed >> 32 & 1 == 1;
             let length = 1 + usize::from(long);
@@ -8407,10 +8429,16 @@ mod tests {
             })
             .expect("the first dispatched job can have a later planned finish");
         let targets = Arc::new(LiveTargets::default());
+        targets
+            .second_selection_waits_for_first_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let weak_targets = Arc::downgrade(&targets);
         *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
             if action.input == failed_input {
                 let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .first_action_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 let deadline = Instant::now() + Duration::from_secs(5);
                 while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
                     if Instant::now() >= deadline {
@@ -8470,10 +8498,16 @@ mod tests {
         std::fs::remove_dir_all(directory).unwrap();
 
         let targets = Arc::new(LiveTargets::default());
+        targets
+            .second_selection_waits_for_first_action
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         let weak_targets = Arc::downgrade(&targets);
         *targets.action_hook.lock().unwrap() = Some(Arc::new(move |action| {
             if action.input == failed_input {
                 let targets = weak_targets.upgrade().unwrap();
+                targets
+                    .first_action_started
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
                 let deadline = Instant::now() + Duration::from_secs(5);
                 while targets.selections.load(std::sync::atomic::Ordering::SeqCst) < 2 {
                     if Instant::now() >= deadline {
@@ -8544,6 +8578,7 @@ mod tests {
                 (jobs.len() == 3
                     && jobs[0].0 == 1
                     && jobs[0].1.reservation == 0
+                    && jobs[1].1.reservation == 1
                     && jobs.iter().all(|(_, job)| {
                         job.reservation == 1
                             || job.mutation_seed as u8 != failed.1.mutation_seed as u8
@@ -8580,15 +8615,9 @@ mod tests {
             targets.selections.load(std::sync::atomic::Ordering::SeqCst),
             3
         );
-        let failure_reservation = job_lines(&baseline)[1].1.reservation;
-        let expected_error = if failure_reservation == 1 {
-            "worker panicked during execution"
-        } else {
-            "every worker exited before reporting its result"
-        };
         assert_eq!(
             error,
-            format!("campaign reservation {failure_reservation} failed: {expected_error}")
+            "campaign reservation 1 failed: worker panicked during execution"
         );
         assert_eq!(
             std::str::from_utf8(&stream).unwrap(),
