@@ -183,6 +183,14 @@ for layer in $(jq -r '.[0].Layers[]' "$MANI"); do
 done
 [ -x "$BUNDLE/rootfs/usr/lib/postgresql/$PG_MAJOR/bin/postgres" ] \
     || { echo "FAIL: postgres binary not in the extracted image rootfs" >&2; exit 1; }
+# Image admission rejects paths that differ only by ASCII case (consonance/oci/README.md).
+# The image's perl ships two such pairs; the workload runs postgres directly and never
+# loads perl, so drop the h2ph headers and the pod documentation directory.
+for alias in usr/lib/x86_64-linux-gnu/perl/5.40.1/sys usr/share/perl/5.40.1/pod; do
+    [ -d "$BUNDLE/rootfs/$alias" ] \
+        || { echo "FAIL: expected case-aliased perl directory $alias is missing" >&2; exit 1; }
+    rm -rf "${BUNDLE:?}/rootfs/$alias"
+done
 
 # The SAME workload v2 as the bare-Postgres image, baked INTO the container rootfs so the
 # in-container `psql -f /workload.sql` drives the live DB over its local unix socket:
