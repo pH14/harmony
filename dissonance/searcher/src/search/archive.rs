@@ -145,6 +145,8 @@ const TIER_RANK_CAP: u8 = 8;
 
 const TIER_RANK_SHIFT: u32 = 3;
 
+const PROGRESS_STALL_FACTOR: u64 = 4;
+
 const MAX_TIER_RANK_SHIFT: u32 = (u64::BITS - 1) / TIER_RANK_CAP as u32;
 
 const COUNT_DECAY_EXPONENT: u32 = 2;
@@ -248,6 +250,10 @@ pub struct SelectorAccounting {
     pub tier_runs: BTreeMap<String, TierRuns>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
+    #[serde(default)]
+    pub progress_draws: u64,
+    #[serde(default)]
+    pub progress_longest: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -496,6 +502,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(skip, default = "unset_action_cost::<A>")]
     action_cost: fn(&A) -> u64,
     live_progress: Option<(K, u64)>,
+    deepest_progress: Option<K::Progress>,
     selector_indexed: bool,
     #[serde(skip)]
     selector_weighted: bool,
@@ -1032,6 +1039,7 @@ where
             deepest_leaf: Vec::new(),
             action_cost,
             live_progress: None,
+            deepest_progress: None,
             selector_indexed: false,
             selector_weighted: false,
             active_ids: ActiveIds::default(),
@@ -2495,6 +2503,16 @@ where
         let carried_in =
             parent_id.is_some_and(|parent| cell_of(self.entries[parent].key) != cell_of(key));
         let carried_win = carried_in && (replacement_preferences != 0 || improved_preference);
+        if self
+            .deepest_progress
+            .is_none_or(|deepest| key.progress() > deepest)
+        {
+            self.deepest_progress = Some(key.progress());
+            let accounting = &mut self.selector_accounting;
+            accounting.progress_longest =
+                accounting.progress_longest.max(accounting.progress_draws);
+            accounting.progress_draws = 0;
+        }
         if new_cell || carried_win {
             let fresh = self.tier_runs(key.progress()).yields == 0;
             let runs = self.tier_runs_mut(key.progress());
@@ -2733,7 +2751,10 @@ where
         let next_yields_more = u128::from(next_cells.saturating_add(1))
             * u128::from(runs.current.saturating_add(1))
             > u128::from(runs.wins.saturating_add(1)) * u128::from(next_draws.saturating_add(1));
-        if next_yields_more || runs.dry > next_draws {
+        let stalled = runs.current
+            > PROGRESS_STALL_FACTOR
+                .saturating_mul(self.selector_accounting.progress_longest.max(1));
+        if next_yields_more || runs.dry > next_draws || stalled {
             (runs.current.saturating_sub(1) / pace)
                 .max(1)
                 .ilog2()
@@ -3189,6 +3210,8 @@ where
         self.selected[id] = self.selected[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
+        self.selector_accounting.progress_draws =
+            self.selector_accounting.progress_draws.saturating_add(1);
         let runs = self.tier_runs_mut(key.progress());
         runs.current = runs.current.saturating_add(1);
         runs.dry = runs.dry.saturating_add(1);
@@ -8246,6 +8269,7 @@ mod tests {
                 .expect("insert tier entry")
                 .expect("retain tier entry");
         }
+        archive.selector_accounting.progress_longest = 1 << 20;
         archive
     }
 
@@ -8471,6 +8495,34 @@ mod tests {
         assert!(counts[0] > counts[1] * 5, "{counts:?}");
         archive.tier_runs_mut((1, 9)).cells = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
+        assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
+    }
+
+    #[test]
+    fn a_top_tier_that_keeps_yielding_without_deeper_progress_still_falls() {
+        let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
+        archive.selector_accounting.progress_longest = 64;
+        let draw = SelectorDraw {
+            path: SelectorPath::Tiers,
+            tier_rank: Some(0),
+            best_preference: None,
+        };
+        for _ in 0..64 {
+            archive.record_selection(1, &draw);
+        }
+        let top_draws = |archive: &mut TestArchive, draws| {
+            for _ in 0..draws {
+                archive.record_selection(0, &draw);
+            }
+            let runs = archive.tier_runs_mut((2, 1));
+            runs.wins = runs.current;
+            runs.dry = 0;
+        };
+        top_draws(&mut archive, 200);
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0012, 4096);
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        top_draws(&mut archive, 824);
+        let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0012, 4096);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
     }
 
