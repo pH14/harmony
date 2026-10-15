@@ -125,8 +125,7 @@ RUN apt-get update \
 FROM ${DEBIAN_IMAGE}
 ARG ETCD_VERSION=3.5.2
 SHELL ["/bin/sh", "-euxc"]
-COPY --from=certificates /etc/ssl/certs /etc/ssl/certs
-COPY --from=certificates /usr/share/ca-certificates /usr/share/ca-certificates
+COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY workloads/languages/reviewed/bookworm-x86_64.txt /tmp/harmony-base-review
 RUN if [ "$(uname -m)" = x86_64 ]; then \
         mkdir -p /etc/harmony && cp /tmp/harmony-base-review /etc/harmony/instruction-allowlist; \

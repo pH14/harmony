@@ -87,6 +87,8 @@ inconclusive read evaluates neither. A
 passing check reports `verified` with the number of acknowledged records confirmed on every
 member.
 
-The final image copies the PEM certificate store from a build-only stage. Go's
-TLS code reads those files directly, so the image needs no OpenSSL libraries
-and none of their RDRAND sites.
+The final image copies the PEM certificate bundle
+`/etc/ssl/certs/ca-certificates.crt` from a build-only stage. Go's TLS code
+reads that file directly, so the image needs no OpenSSL libraries and none of
+their RDRAND sites. The per-certificate files and hash links stay out because
+some carry non-ASCII names, which image admission rejects.
