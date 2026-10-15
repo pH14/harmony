@@ -110,33 +110,28 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
         session.branch(SEED, handler, vec![vec![b'P']])?;
-        let mut terminal = None;
+        let mut terminal = false;
         for _ in 0..4 {
             match session.run_until(u64::MAX)? {
                 Stop::Exhausted(_) => {}
-                Stop::Stopped(reason) => {
-                    terminal = Some(Some(reason));
-                    break;
-                }
                 Stop::Closed => {
-                    terminal = Some(None);
+                    terminal = true;
                     break;
                 }
                 stop => return Ok(json!({"error": format!("unexpected stop {stop:?}")})),
             }
         }
-        let Some(terminal) = terminal else {
+        if !terminal {
             return Ok(json!({"error": "the terminal fixture repeated exhausted stops"}));
-        };
+        }
         let before_events = session.events().len();
-        let resolved = session.settle_terminal_console(terminal, base.wall_limit)?;
+        let resolved = session.settle_terminal_console(base.wall_limit)?;
         let after_events = session.events().len();
         let tail = session.console_tail();
         Ok(json!({
             "marker": tail.contains("Kernel panic: abandoned branch sentinel"),
             "before_events": before_events,
             "after_events": after_events,
-            "terminal": format!("{terminal:?}"),
             "resolved": format!("{resolved:?}"),
         }))
     })();

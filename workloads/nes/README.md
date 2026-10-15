@@ -15,6 +15,18 @@ delegates process startup to the platform supervisor.
 The `smb-*`, `mm2-*`, `metroid-*`, and `stb-*` binaries provide campaign and replay entry
 points. Set `runner.options.core` in the CLI recipe or `HARMONY_QUICKNES_CORE` in the campaign tools to the pinned QuickNES shared library for
 native execution. SMB supports native QuickNES and whole-VM Consonance execution.
+The SMB campaign binary hashes and parses a source archive through one open file,
+so a replacement of its path cannot attach one archive's digest to another's entries.
+Run and replay require a UTF-8 origin argument so its recorded path names the
+same file the command opens; an ambiguous byte path is rejected before use.
+Checkpoint paths also require UTF-8, so the recorded source path names the file
+opened.
+Saved campaign replay rejects a source archive whose exact bytes differ from the
+archive digest recorded in the stream, even if its parsed report is unchanged.
+It also decodes and hashes snapshot checkpoints from the same read bytes, so a
+source replacement cannot label one snapshot set with another file's digest.
+SMB fixture extraction likewise pins its source archive digest to the entries it
+parses into a challenge.
 Mega Man 2, Metroid, and Super Tilt Bro currently use their native campaigns or
 the common `nes-eval` runner; shared CLI dispatch and Consonance execution are
 not implemented for them.

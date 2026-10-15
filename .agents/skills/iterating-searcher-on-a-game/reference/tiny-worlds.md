@@ -16,7 +16,8 @@ near its threshold can flip.
 
 - Clearly bad on any world: drop the change.
 - Undecided at the layout limit: not plausible yet.
-- A watch leg: name the matching game leg and measure it in the slices.
+- A watch leg: name the matching game leg and measure it in same-executable
+  slices or paired rooted segments, as the change permits.
 - A world whose `identical runs` count equals its layout count never ran the
   change, so it says nothing about it.
 - Plausible means the panel did not reject the change. It forecasts the game

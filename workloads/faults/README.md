@@ -53,21 +53,29 @@ The scan rejects:
 
 - a writable executable segment or an executable stack;
 - an ELF file that is not 64-bit little-endian x86-64 or arm64;
-- a hardware entropy instruction (RDRAND, RDSEED, RNDR, RNDRRS) without a
-  review in `/etc/harmony/instruction-allowlist`
+- a hardware entropy or CPU-identity instruction (RDRAND, RDSEED, RNDR,
+  RNDRRS, RDPID, LSL) without a review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
 - an arm64 monitor-based LL/SC instruction, even if listed for review;
 - an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
-For User-mode Linux, preparation rejects all four scanned hardware entropy
-instructions even when reviewed. UML runs guest user instructions natively, so
-the VM's hidden feature bits do not protect a guarded call site. This admission
-check walks the bytes of executable load segments in the packed image. Section
-headers do not determine what the guest loader executes. The scan boundary
-still requires cooperative workloads: dynamically generated code and
-instructions hidden inside another instruction's operand bytes are outside its
-guarantee.
+For User-mode Linux, preparation rejects the scanned hardware entropy and
+CPU-identity instructions even when reviewed. UML runs guest user instructions
+natively, so the VM's hidden feature bits do not protect a guarded call site.
+The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
+identity, and LSL can read the CPU number from the host GDT segment limit.
+This admission check walks executable loads in the packed image, including
+file bytes mapped before a segment's virtual start and beyond its declared
+file size in the first and last executable pages. It also rejects loads whose
+file offset and virtual address disagree within a page. Section headers do
+not determine what the guest loader executes.
+The x86 scan follows instruction streams from each mapped section and gap
+across section and adjacent executable-load boundaries. It starts at each
+load's declared address and rejects overlapping executable mappings, which
+could combine instruction bytes from different loads. The scan still requires
+cooperative workloads: dynamically generated code and instructions hidden
+inside another instruction's operand bytes are outside its guarantee.
 The checked-in x86 Bookworm images carry reviewed libstdc++ and libgcrypt
 entropy sites, so UML refuses those images even if a particular workload
 would not call them. Build a UML image without the sites before searching or
@@ -81,20 +89,29 @@ this attestation passes, `/usr/lib/libvoidstar.so` exists, and `/symbols` holds
 a non-empty `*.sym.tsv`. An image without an attestation still runs the other
 fault actions.
 
-The scan catches entropy instructions that compilers and assemblers emit. On
-x86 it decodes each allocated section inside an executable load segment from
-its start, regardless of the section's executable flag, and separately decodes
-the gaps between sections. This preserves instruction alignment when a segment
-begins with headers or other data without reporting an instruction assembled
-across a section boundary. On arm64 it checks aligned instruction words across
-the complete 4 KiB page-rounded file mapping of each executable load, including
-bytes beyond the declared load size, and rejects another load segment that
-aliases an executable memory page. Images with read-only data in executable
-loads must link with separate code pages. It ignores a trailing partial word
-that cannot hold an instruction. The LL/SC mask excludes LSE CASP and ordinary
-acquire/release loads, which do not use the reservation monitor. A
-binary built to hide an x86 instruction inside another instruction's operand
-bytes can still pass.
+The scan catches entropy and CPU-identity instructions that compilers and
+assemblers emit. On x86 it decodes each allocated section inside an executable
+load from its start, regardless of the section's executable flag, and scans
+the gaps separately. Each decode continues through later ranges when their
+virtual addresses are contiguous. This preserves instruction alignment when a
+segment begins with headers or other data while finding an instruction reached
+by falling through a boundary. At each mapped-section or adjacent executable-load
+boundary, it also decodes the first complete instruction from every candidate
+start within the preceding 14 bytes. Entropy and CPU-identity instructions
+whose prefixes, operands, SIB bytes, or displacements cross a boundary become
+exact-address review sites. A VM image can review such a site against its
+executable digest; UML rejects native host-input sites even when reviewed.
+Executable pages can contain data that resembles an instruction at a boundary,
+so those bytes may need explicit VM review. Overlapping x86 executable mappings
+are rejected. On arm64 it checks aligned
+instruction words across the complete 4 KiB page-rounded file mapping of each
+executable load, including bytes beyond the declared load size, and rejects
+another load segment that aliases an executable memory page. Images with
+read-only data in executable loads must link with separate code pages. A
+trailing partial word with no mapped bytes to complete it cannot hold an
+instruction. The LL/SC mask excludes LSE CASP and ordinary acquire/release
+loads, which do not use the reservation monitor. A binary built to hide an
+x86 instruction inside another instruction's operand bytes can still pass.
 
 `harmony prepare IMAGE` prints the scan, the attestation, and the
 instrumented files, and exits nonzero unless the image is a complete

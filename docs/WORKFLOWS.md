@@ -57,6 +57,14 @@ The `Archive` job in `Checks / Dissonance` also checks that the searcher builds
 for `wasm32-unknown-unknown`, so the browser demo can run the campaign
 coordinator.
 
+`Checks / Harmony Host Compatibility` selects both Linux Arm64 jobs through
+`rust_checks`. `Linux Arm64` compiles the backend and enforces the portable-test
+floor; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks. Each
+retains the 15-minute pull-request limit, giving qualification its own job
+budget. The two Linux Arm64 jobs use separate Rust build caches so each can
+save its own build artifacts on main. The macOS Arm64 job continues to run
+both groups of checks in one job.
+
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
 

@@ -89,6 +89,10 @@ struct TestArchiveReport {
     entries: Vec<ArchiveEntryReport<TestAction, TestKey, ()>>,
 }
 
+thread_local! {
+    static TEST_EXECUTABLE_IDENTITY: std::cell::Cell<Option<Result<&'static str, &'static str>>> = const { std::cell::Cell::new(None) };
+}
+
 struct TestWorkload;
 impl CampaignTypes for TestWorkload {
     type Target = TestTarget;
@@ -121,6 +125,12 @@ impl Reporting for TestWorkload {
     }
     fn workload_identity_sha256(&self) -> String {
         "test-image".to_owned()
+    }
+    fn executable_identity(&self) -> Result<String, Box<dyn Error>> {
+        if let Some(identity) = TEST_EXECUTABLE_IDENTITY.with(std::cell::Cell::get) {
+            return Ok(identity?.to_owned());
+        }
+        Ok(crate::search::executable_identity::loaded_executable_identity_self()?)
     }
     fn action_cost_unit(&self) -> &'static str {
         "test-cost"
@@ -856,6 +866,113 @@ fn a_campaign_resumed_from_a_search_checkpoint_repeats_the_original_progress() {
 }
 
 #[test]
+fn a_campaign_and_checkpoint_reject_another_loaded_executable() {
+    let directory = checkpoint_directory("loaded-executable");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    config.execution_budget = 8;
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok("build-A"))));
+    let mut stream = Vec::new();
+    let source = run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: NonZeroU64::new(1),
+                on_marks: false,
+                on_top_progress: false,
+                checkpoint_owner: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .unwrap();
+    let checkpoint = directory.join("000000000008-final.ckpt");
+    assert_eq!(source.0.executable_identity, "build-A");
+    assert_eq!(
+        CheckpointReader::open(&checkpoint)
+            .unwrap()
+            .header
+            .executable_identity,
+        "build-A"
+    );
+    assert_eq!(
+        replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap(),
+        source
+    );
+    config.execution_budget = 12;
+    let origin = CampaignOrigin::SearchCheckpoint {
+        path: checkpoint,
+        expected_sha256: None,
+    };
+    let mut matching_stream = Vec::new();
+    run_campaign_checkpointed(&TestWorkload, &config, &origin, &mut matching_stream, None).unwrap();
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Ok("build-B"))));
+    let replay = replay_campaign_checkpointed(&TestWorkload, &stream, None, None)
+        .err()
+        .map(|error| error.to_string());
+    let mut resumed_stream = Vec::new();
+    let resume =
+        run_campaign_checkpointed(&TestWorkload, &config, &origin, &mut resumed_stream, None)
+            .err()
+            .map(|error| error.to_string());
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(None));
+    assert!(
+        replay
+            .as_deref()
+            .is_some_and(|error| error.contains("executable identity")),
+        "another executable replayed a completed campaign: {replay:?}"
+    );
+    assert!(
+        resume
+            .as_deref()
+            .is_some_and(|error| error.contains("different executable")),
+        "another executable resumed a search checkpoint: {resume:?}"
+    );
+    assert!(
+        resumed_stream.is_empty(),
+        "identity mismatch wrote a new stream"
+    );
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn unavailable_loaded_executable_fails_before_campaign_output() {
+    let directory = checkpoint_directory("unavailable-executable");
+    let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
+    config.execution_budget = 8;
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(Some(Err("unavailable executable"))));
+    let mut stream = Vec::new();
+    let error = run_campaign_checkpointed_with_options(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+        CampaignExecutionOptions {
+            checkpoints: Some(CheckpointPlan {
+                directory: directory.clone(),
+                every: NonZeroU64::new(1),
+                on_marks: false,
+                on_top_progress: false,
+                checkpoint_owner: None,
+            }),
+            ..CampaignExecutionOptions::default()
+        },
+    )
+    .err()
+    .map(|error| error.to_string());
+    TEST_EXECUTABLE_IDENTITY.with(|identity| identity.set(None));
+    assert_eq!(error.as_deref(), Some("unavailable executable"));
+    assert!(stream.is_empty());
+    assert!(!directory.exists());
+}
+
+#[test]
 fn a_pinned_checkpoint_refuses_a_valid_swap_after_selection() {
     let directory = checkpoint_directory("pinned-swap");
     let mut config = continuation_config(1, DrawMixture::Energy { scale: 6 }, 12);
@@ -1338,6 +1455,7 @@ fn a_resume_refuses_a_changed_workload_policy() {
         checkpoint_owner: None,
         reason: "interval".to_owned(),
         workload_identity_sha256: String::new(),
+        executable_identity: String::new(),
         campaign_seed: 1,
         window: 1,
         archive_entry_limit: 8,
@@ -1410,8 +1528,93 @@ fn doubled_suffix_limits_are_recorded_replayed_and_checked() {
         *line = serde_json::to_string(&value).unwrap();
         let error = replay_error(&lines);
         assert!(
-            error.contains("recorded suffix limit does not match the drawn suffix"),
+            error.contains("recorded suffix limit does not match the drawn suffix")
+                || error.contains("replayed job suffix limit diverged at reservation"),
             "a tampered limit failed for another reason: {error}"
         );
     }
+}
+
+#[test]
+fn replay_rejects_forged_post_admission_skip_suffix_limits() {
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.execution_budget = 800;
+    config.campaign_seed = 3;
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let index = 147;
+    let mut skip: serde_json::Value = serde_json::from_str(&lines[index]).unwrap();
+    assert_eq!(skip["event"], "skip");
+    assert_eq!(skip["suffix_limit"], 1);
+    skip["suffix_limit"] = serde_json::json!(2);
+    lines[index] = serde_json::to_string(&skip).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay certified a skip limit no live selector could have drawn")
+            .to_string();
+    assert!(error.contains("skip suffix limit diverged"), "{error}");
+}
+
+#[test]
+fn replay_rejects_a_limit_overridden_by_an_in_flight_sibling() {
+    let config = continuation_config(4, DrawMixture::EnergySplice { scale: 6 }, 12);
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let mut lines = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let job_at = |reservation| {
+        lines
+            .iter()
+            .enumerate()
+            .find(|(_, line)| {
+                let record: serde_json::Value = serde_json::from_str(line).unwrap();
+                record["event"] == "job" && record["reservation"] == reservation
+            })
+            .map(|(index, line)| {
+                (
+                    index,
+                    serde_json::from_str::<serde_json::Value>(line).unwrap(),
+                )
+            })
+            .unwrap()
+    };
+    let (_, sibling) = job_at(60);
+    let (index, mut selected) = job_at(65);
+    assert_eq!(sibling["parent_id"], selected["parent_id"]);
+    assert_eq!(sibling["suffix_limit"], 2);
+    assert_eq!(selected["suffix_limit"], 1);
+    assert!(60 + config.window > 65);
+    assert!(sibling["sequence"].as_u64().unwrap() > 65 - config.window as u64);
+    selected["suffix_limit"] = serde_json::json!(2);
+    lines[index] = serde_json::to_string(&selected).unwrap();
+    let error =
+        replay_campaign_checkpointed(&TestWorkload, lines.join("\n").as_bytes(), None, None)
+            .expect_err("replay accepted a long sibling still in flight")
+            .to_string();
+    assert!(
+        error.contains("suffix limit diverged at reservation"),
+        "{error}"
+    );
 }

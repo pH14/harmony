@@ -1408,19 +1408,18 @@ mod tests {
             path: "moved/seed-snapshots.bin".to_owned(),
             ..checkpoint.clone()
         };
-        let (replayed_moved, moved_snapshots) = replay_smb_campaign_checkpointed(
-            &rom,
-            &restored_stream,
-            Some(&source),
-            Some(&moved_checkpoint),
-        )
-        .expect("replay with moved archive checkpoint");
-        assert_eq!(replayed_moved, restored_live);
-        assert_eq!(moved_snapshots, restored_checkpoint);
-        let (replayed_without, _) =
-            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), None)
-                .expect("replay without checkpoint");
-        assert_eq!(replayed_without.archive, restored_live.archive);
+        assert!(
+            replay_smb_campaign_checkpointed(
+                &rom,
+                &restored_stream,
+                Some(&source),
+                Some(&moved_checkpoint),
+            )
+            .is_err()
+        );
+        assert!(
+            replay_smb_campaign_checkpointed(&rom, &restored_stream, Some(&source), None).is_err()
+        );
         let wrong = SmbCampaignCheckpoint {
             file_sha256: "00".to_owned(),
             ..checkpoint.clone()

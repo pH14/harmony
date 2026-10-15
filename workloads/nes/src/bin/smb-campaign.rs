@@ -52,7 +52,9 @@ struct LiveThroughput {
 fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), Box<dyn Error>> {
     let origin_arg = args
         .next()
-        .ok_or("missing origin (genesis or a source archive path)")?;
+        .ok_or("missing origin (genesis or a source archive path)")?
+        .into_string()
+        .map_err(|_| "origin must be UTF-8")?;
     let campaign_seed = parse_u64(
         &args
             .next()
@@ -160,11 +162,7 @@ fn run_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<(), B
     let rom = read_rom()?;
     let game = SmbGame::from_environment(&rom)?;
     let checkpoint_format = game.snapshot_checkpoint_format();
-    let origin = load_origin(
-        &origin_arg.to_string_lossy(),
-        checkpoint_path.as_deref(),
-        checkpoint_format,
-    )?;
+    let origin = load_origin(&origin_arg, checkpoint_path.as_deref(), checkpoint_format)?;
     let config = SmbCampaignConfig {
         vocabulary,
         terminal,
@@ -221,7 +219,9 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let run_dir = PathBuf::from(args.next().ok_or("missing recorded run directory")?);
     let origin_arg = args
         .next()
-        .ok_or("missing origin (genesis or the recorded source archive path)")?;
+        .ok_or("missing origin (genesis or the recorded source archive path)")?
+        .into_string()
+        .map_err(|_| "origin must be UTF-8")?;
     let checkpoint_arg = args.next().map(PathBuf::from);
     if args.next().is_some() {
         return Err("unexpected extra replay argument".into());
@@ -230,11 +230,8 @@ fn replay_mode(args: &mut impl Iterator<Item = std::ffi::OsString>) -> Result<()
     let game = SmbGame::from_environment(&rom)?;
     let checkpoint_format = game.snapshot_checkpoint_format();
     let stream_bytes = fs::read(run_dir.join("stream.jsonl"))?;
-    let origin = load_origin(
-        &origin_arg.to_string_lossy(),
-        checkpoint_arg.as_deref(),
-        checkpoint_format,
-    )?;
+    let origin = load_origin(&origin_arg, checkpoint_arg.as_deref(), checkpoint_format)?;
+    ensure_replay_archive_digest(&stream_bytes, &origin)?;
     let (origin_report, origin_checkpoint) = match origin {
         SmbCampaignOrigin::Genesis => (None, None),
         SmbCampaignOrigin::SnapshotRoot { checkpoint } => (None, Some(checkpoint)),
@@ -324,10 +321,32 @@ fn sha256_file(path: &Path) -> Result<String, Box<dyn Error>> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+struct HashingReader<R> {
+    inner: R,
+    digest: Sha256,
+}
+
+impl<R: Read> Read for HashingReader<R> {
+    fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+        let read = self.inner.read(bytes)?;
+        self.digest.update(&bytes[..read]);
+        Ok(read)
+    }
+}
+
 fn load_origin(
     origin_arg: &str,
     checkpoint_path: Option<&std::path::Path>,
     checkpoint_format: &str,
+) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
+    load_origin_with_source_hook(origin_arg, checkpoint_path, checkpoint_format, || {})
+}
+
+fn load_origin_with_source_hook(
+    origin_arg: &str,
+    checkpoint_path: Option<&std::path::Path>,
+    checkpoint_format: &str,
+    after_first_access: impl FnOnce(),
 ) -> Result<SmbCampaignOrigin, Box<dyn Error>> {
     if origin_arg == "genesis" {
         if checkpoint_path.is_some() {
@@ -348,9 +367,13 @@ fn load_origin(
             )?,
         });
     }
-    let file_sha256 = sha256_file(Path::new(origin_arg))?;
-    let report: SmbArchiveReport =
-        serde_json::from_reader(BufReader::new(fs::File::open(origin_arg)?))?;
+    let mut reader = BufReader::new(HashingReader {
+        inner: fs::File::open(origin_arg)?,
+        digest: Sha256::new(),
+    });
+    after_first_access();
+    let report: SmbArchiveReport = serde_json::from_reader(&mut reader)?;
+    let file_sha256 = format!("{:x}", reader.into_inner().digest.finalize());
     Ok(SmbCampaignOrigin::Archive {
         path: origin_arg.to_owned(),
         file_sha256,
@@ -365,7 +388,8 @@ fn load_checkpoint(
     path: &std::path::Path,
     checkpoint_format: &str,
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
-    load_checkpoint_as(path, path.to_string_lossy().into_owned(), checkpoint_format)
+    let logical_path = path.to_str().ok_or("checkpoint path must be UTF-8")?;
+    load_checkpoint_as(path, logical_path.to_owned(), checkpoint_format)
 }
 
 fn load_checkpoint_as(
@@ -373,20 +397,54 @@ fn load_checkpoint_as(
     logical_path: String,
     checkpoint_format: &str,
 ) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    load_checkpoint_as_with_source_hook(path, logical_path, checkpoint_format, || {})
+}
+
+fn load_checkpoint_as_with_source_hook(
+    path: &std::path::Path,
+    logical_path: String,
+    checkpoint_format: &str,
+    after_first_access: impl FnOnce(),
+) -> Result<SmbCampaignCheckpoint, Box<dyn Error>> {
+    let mut reader = BufReader::new(HashingReader {
+        inner: fs::File::open(path)?,
+        digest: Sha256::new(),
+    });
     let mut scratch = vec![0_u8; 1024 * 1024];
-    let (snapshots, _) = postcard::from_io((
-        BufReader::new(fs::File::open(path)?),
-        scratch.as_mut_slice(),
-    ))?;
+    let (snapshots, _) = postcard::from_io((&mut reader, scratch.as_mut_slice()))?;
     let snapshots: SmbSnapshotCheckpoint = snapshots;
     if snapshots.format != checkpoint_format {
         return Err("snapshot checkpoint format is not recognized".into());
     }
+    std::io::copy(&mut reader, &mut std::io::sink())?;
+    after_first_access();
     Ok(SmbCampaignCheckpoint {
         path: logical_path,
-        file_sha256: sha256_file(path)?,
+        file_sha256: format!("{:x}", reader.into_inner().digest.finalize()),
         snapshots,
     })
+}
+
+fn ensure_replay_archive_digest(
+    stream_bytes: &[u8],
+    origin: &SmbCampaignOrigin,
+) -> Result<(), Box<dyn Error>> {
+    let SmbCampaignOrigin::Archive { file_sha256, .. } = origin else {
+        return Ok(());
+    };
+    let header_line = stream_bytes
+        .split(|byte| *byte == b'\n')
+        .next()
+        .ok_or("campaign stream has no header")?;
+    let header: serde_json::Value = serde_json::from_slice(header_line)?;
+    if header
+        .get("origin_archive_sha256")
+        .and_then(serde_json::Value::as_str)
+        != Some(file_sha256.as_str())
+    {
+        return Err("campaign replay source archive bytes do not match the recorded digest".into());
+    }
+    Ok(())
 }
 
 fn write_report_files(
@@ -466,5 +524,241 @@ fn parse_u64(value: &str) -> Result<u64, Box<dyn Error>> {
         Ok(u64::from_str_radix(hex, 16)?)
     } else {
         Ok(normalized.parse()?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        SmbArchiveReport, SmbCampaignOrigin, SmbSnapshotCheckpoint, ensure_replay_archive_digest,
+        load_checkpoint_as_with_source_hook, load_origin_with_source_hook,
+    };
+    use nes_workload::smb::campaign::SmbSnapshotCheckpointEntry;
+    use sha2::{Digest, Sha256};
+
+    #[test]
+    fn campaign_modes_reject_non_utf8_origin_before_loading_inputs() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let invalid = OsString::from_vec(vec![0xff]);
+        let run_error = super::run_mode(&mut [invalid.clone()].into_iter())
+            .expect_err("run accepted an origin path with an ambiguous recorded identity")
+            .to_string();
+        assert!(run_error.contains("origin must be UTF-8"), "{run_error}");
+
+        let replay_error =
+            super::replay_mode(&mut [OsString::from("unused-run"), invalid].into_iter())
+                .expect_err("replay accepted an origin path with an ambiguous recorded identity")
+                .to_string();
+        assert!(
+            replay_error.contains("origin must be UTF-8"),
+            "{replay_error}"
+        );
+    }
+
+    #[test]
+    fn checkpoint_origin_rejects_non_utf8_path_before_open() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = std::path::PathBuf::from(OsString::from_vec(vec![0xff]));
+        let error = super::load_checkpoint(&path, "test")
+            .expect_err("checkpoint path with ambiguous recorded identity was accepted")
+            .to_string();
+        assert!(error.contains("checkpoint path must be UTF-8"), "{error}");
+    }
+
+    fn archive_bytes(seed: u64) -> Vec<u8> {
+        serde_json::to_vec(&serde_json::json!({
+            "seed": seed,
+            "executions": 0,
+            "milestones": {
+                "max_1_1_scroll_bucket": 0,
+                "reached_1_1_flag": false,
+                "reached_1_2": false,
+                "reached_onward": false
+            },
+            "first_reached": {
+                "progress_into_1_1": null,
+                "flag_1_1": null,
+                "level_1_2": null,
+                "onward": null
+            },
+            "first_inputs": {
+                "progress_into_1_1": null,
+                "flag_1_1": null,
+                "level_1_2": null,
+                "onward": null
+            },
+            "champion_input": {"actions": []},
+            "entries": [{
+                "id": 0,
+                "parent_id": null,
+                "created_execution": 0,
+                "input": {"actions": []},
+                "key": {
+                    "world": 0,
+                    "level": 0,
+                    "progress": 0,
+                    "player_y_bucket": 0,
+                    "loop_on_path": false,
+                    "clock": 0
+                },
+                "milestones": {
+                    "max_1_1_scroll_bucket": 0,
+                    "reached_1_1_flag": false,
+                    "reached_1_2": false,
+                    "reached_onward": false
+                }
+            }],
+            "progress_curve": [],
+            "retained": 1,
+            "rejected": 0,
+            "deaths": 0
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn archive_origin_digest_names_the_parsed_bytes_after_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-archive.json");
+        let replacement_path = directory.path().join("replacement-archive.json");
+        let mut original = archive_bytes(7);
+        original.extend_from_slice(b" \n\t");
+        let replacement = archive_bytes(8);
+        let _: SmbArchiveReport = serde_json::from_slice(&original).unwrap();
+        let _: SmbArchiveReport = serde_json::from_slice(&replacement).unwrap();
+        std::fs::write(&path, &original).unwrap();
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        let origin = load_origin_with_source_hook(path.to_str().unwrap(), None, "test", || {
+            std::fs::rename(&replacement_path, &path).unwrap();
+        })
+        .unwrap();
+        let SmbCampaignOrigin::Archive {
+            file_sha256,
+            report,
+            ..
+        } = origin
+        else {
+            panic!("expected archive origin");
+        };
+        assert_eq!(file_sha256, format!("{:x}", Sha256::digest(&original)));
+        assert_eq!(
+            report.seed, 7,
+            "archive loader parsed replaced source bytes"
+        );
+    }
+
+    #[test]
+    fn replay_refuses_semantically_equal_archive_with_different_source_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-archive.json");
+        let original = archive_bytes(7);
+        let mut changed = original.clone();
+        changed.extend_from_slice(b" \n\t");
+        std::fs::write(&path, &changed).unwrap();
+        let origin =
+            load_origin_with_source_hook(path.to_str().unwrap(), None, "test", || {}).unwrap();
+        let recorded = serde_json::to_vec(&serde_json::json!({
+            "origin_archive_sha256": format!("{:x}", Sha256::digest(&original))
+        }))
+        .unwrap();
+        assert!(
+            ensure_replay_archive_digest(&recorded, &origin).is_err(),
+            "replay accepted archive bytes that differ from the recorded digest"
+        );
+        let matched = serde_json::to_vec(&serde_json::json!({
+            "origin_archive_sha256": format!("{:x}", Sha256::digest(&changed))
+        }))
+        .unwrap();
+        ensure_replay_archive_digest(&matched, &origin).unwrap();
+    }
+
+    fn checkpoint_bytes(id: u64) -> Vec<u8> {
+        let snapshot: SmbSnapshotCheckpoint = serde_json::from_value(serde_json::json!({
+            "format": "test",
+            "entries": [{
+                "id": id,
+                "snapshot": {
+                    "emulator_state": [0],
+                    "observation": {
+                        "frame_count": 0,
+                        "decoded": {
+                            "world": 0,
+                            "level": 0,
+                            "progress": 0,
+                            "player_y_bucket": 0,
+                            "player_engine_state": 0,
+                            "dead": false,
+                            "flag_active": false
+                        },
+                        "milestones": {
+                            "max_1_1_scroll_bucket": 0,
+                            "reached_1_1_flag": false,
+                            "reached_1_2": false,
+                            "reached_onward": false
+                        },
+                        "dead": false
+                    },
+                    "work_ram": null,
+                    "room_area": [0, 0],
+                    "dead": false,
+                    "failed": false
+                }
+            }]
+        }))
+        .unwrap();
+        snapshot.to_bytes().unwrap()
+    }
+
+    #[test]
+    fn checkpoint_origin_digest_names_the_parsed_bytes_after_source_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("source-snapshots.bin");
+        let replacement_path = directory.path().join("replacement-snapshots.bin");
+        let original = checkpoint_bytes(7);
+        let replacement = checkpoint_bytes(8);
+        assert_ne!(original, replacement);
+        std::fs::write(&path, &original).unwrap();
+        std::fs::write(&replacement_path, &replacement).unwrap();
+        let checkpoint =
+            load_checkpoint_as_with_source_hook(&path, "recorded-root".to_owned(), "test", || {
+                std::fs::rename(&replacement_path, &path).unwrap();
+            })
+            .unwrap();
+        assert_eq!(checkpoint.snapshots.entries[0].id, 7);
+        assert_eq!(
+            checkpoint.file_sha256,
+            format!("{:x}", Sha256::digest(&original))
+        );
+    }
+
+    #[test]
+    fn whole_tree_checkpoint_larger_than_one_mib_still_loads() {
+        let small: SmbSnapshotCheckpoint =
+            SmbSnapshotCheckpoint::from_bytes(&checkpoint_bytes(0), "test").unwrap();
+        let snapshot = small.entries[0].snapshot.clone();
+        let large = SmbSnapshotCheckpoint {
+            format: "test".to_owned(),
+            entries: (0_u64..60_000)
+                .map(|id| SmbSnapshotCheckpointEntry {
+                    id,
+                    snapshot: snapshot.clone(),
+                })
+                .collect(),
+        };
+        let mut bytes = large.to_bytes().unwrap();
+        bytes.extend_from_slice(b"trailing checkpoint bytes");
+        assert!(bytes.len() > 1024 * 1024);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("whole-tree.bin");
+        std::fs::write(&path, &bytes).unwrap();
+        let loaded =
+            load_checkpoint_as_with_source_hook(&path, "whole-tree".to_owned(), "test", || {})
+                .unwrap();
+        assert_eq!(loaded.snapshots.entries.len(), 60_000);
+        assert_eq!(loaded.file_sha256, format!("{:x}", Sha256::digest(&bytes)));
     }
 }

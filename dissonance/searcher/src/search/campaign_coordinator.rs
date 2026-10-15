@@ -22,7 +22,8 @@ use super::{
     initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish, profile_elapsed,
     profile_now, progress_checkpoint_due, progress_record, record_compaction_elapsed,
     record_mixture_outcome, resolve_origin, restore_search_checkpoint, retained_archive_indexes,
-    stop_reservations_after_objective, stream_header, write_live_progress, write_search_checkpoint,
+    stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
+    write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -95,6 +96,7 @@ pub fn run_job<G: Workload>(
 pub struct CampaignCoordinator<'a, G: Workload> {
     workload: &'a G,
     config: &'a CampaignConfig<G>,
+    executable_identity: String,
     work_budget: Option<u64>,
     header: CampaignStreamHeader<DrawTableHeader>,
     origin_record: CampaignOriginRecord,
@@ -138,6 +140,7 @@ where
         progress: Option<&'a mut dyn Write>,
         options: CampaignExecutionOptions,
     ) -> Result<Self, Box<dyn Error>> {
+        let executable_identity = workload.executable_identity()?;
         let work_budget = options.work_budget;
         let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
         if work_budget == Some(0) {
@@ -183,7 +186,13 @@ where
             }
             _ => None,
         };
-        let origin_record = resolve_origin(workload, config, origin, search_checkpoint.as_ref())?;
+        let origin_record = resolve_origin(
+            workload,
+            config,
+            origin,
+            search_checkpoint.as_ref(),
+            &executable_identity,
+        )?;
         let draw_origin = match origin {
             CampaignOrigin::Genesis
             | CampaignOrigin::SnapshotRoot { .. }
@@ -202,7 +211,13 @@ where
         ) {
             return Err("initial draw state exceeds its deterministic memory reserve".into());
         }
-        let mut header = stream_header(workload, config, &origin_record, draw_header);
+        let mut header = stream_header(
+            workload,
+            config,
+            &origin_record,
+            draw_header,
+            &executable_identity,
+        );
         header.work_budget = work_budget;
         let mut writer = StreamWriter::new(stream);
         writer.write_line(&header)?;
@@ -222,6 +237,7 @@ where
             Some(reader) => Some(restore_search_checkpoint(
                 workload,
                 config,
+                &executable_identity,
                 reader,
                 &mut core,
                 &mut draw_state,
@@ -274,6 +290,7 @@ where
         let mut coordinator = Self {
             workload,
             config,
+            executable_identity,
             work_budget,
             header,
             origin_record,
@@ -499,6 +516,7 @@ where
             write_search_checkpoint(
                 self.workload,
                 self.config,
+                &self.executable_identity,
                 checkpoints,
                 "final",
                 &self.core,
@@ -640,6 +658,7 @@ where
             write_search_checkpoint(
                 self.workload,
                 self.config,
+                &self.executable_identity,
                 checkpoints,
                 reason,
                 &self.core,
@@ -938,12 +957,11 @@ where
             ..
         } = self;
         if *reserved >= config.execution_budget
-            || work_budget.is_some_and(|budget| {
-                counters
-                    .bootstrap_execution_work
-                    .saturating_add(counters.job_execution_work)
-                    >= budget
-            })
+            || stop_reservations_after_work_budget(
+                work_budget,
+                counters.bootstrap_execution_work,
+                counters.job_execution_work,
+            )
             || stop_reservations_after_objective(
                 config.stop_campaign_on_objective,
                 core.objective_witness.is_some(),
@@ -1132,6 +1150,7 @@ where
                 let draw_checkpoint_after =
                     workload.finish_stream_record(&config.run, draw_state, &[], &core.evidence)?;
                 writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
+                    reservation: *reserved,
                     parent_id,
                     mutation_seed,
                     mixture_weight,

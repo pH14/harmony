@@ -91,7 +91,7 @@ pub type InitialDrawState<G> = (
     Option<DrawTableHeader>,
 );
 
-pub const CAMPAIGN_SCHEMA_VERSION: u32 = 11;
+pub const CAMPAIGN_SCHEMA_VERSION: u32 = 13;
 
 pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a deterministic sliding \
      window; each job's planned finish is the planned finish of the admission before its \
@@ -101,6 +101,8 @@ pub const CAMPAIGN_SCHEDULE_IDENTITY: &str = "jobs are selected into a determini
      recorded stream";
 
 const CAMPAIGN_PROGRESS_POLICY: &str = "mechanical_watermark_bounded_1024_v2";
+const EXECUTOR_MODE: &str = "snapshot_resume_archive";
+const SELECTION_SEED_DERIVATION: &str = "sha256(campaign_seed_le)[0..8] as u64 le";
 const ORIGIN_GENESIS: &str = "genesis";
 const ORIGIN_SNAPSHOT_ROOT: &str = "snapshot_root";
 const ORIGIN_ARCHIVE: &str = "archive";
@@ -253,6 +255,9 @@ pub trait Reporting: CampaignTypes {
     fn stream_format(&self) -> &'static str;
     fn checkpoint_format(&self) -> &'static str;
     fn workload_identity_sha256(&self) -> String;
+    fn executable_identity(&self) -> Result<String, Box<dyn Error>> {
+        Ok(crate::search::executable_identity::loaded_executable_identity_self()?)
+    }
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
@@ -692,6 +697,7 @@ pub struct CampaignStreamHeader<T> {
     pub executor_mode: String,
     pub selection_seed_derivation: String,
     pub workload_identity_sha256: String,
+    pub executable_identity: String,
     pub action_cost_unit: String,
     pub execution_work_unit: String,
 }
@@ -758,6 +764,7 @@ pub struct CampaignJobRecord<C, K = ()> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "C: Serialize + DeserializeOwned, K: Serialize + DeserializeOwned")]
 pub struct CampaignSkipRecord<C, K = ()> {
+    pub reservation: u64,
     pub parent_id: u64,
     pub mutation_seed: u64,
     pub mixture_weight: u8,
@@ -869,6 +876,7 @@ pub struct CampaignModeReport<A: Ord, R> {
     pub executor_mode: String,
     pub selection_seed_derivation: String,
     pub workload_identity_sha256: String,
+    pub executable_identity: String,
     pub action_cost_unit: String,
     pub execution_work_unit: String,
     pub bootstrap_execution_work: u64,
@@ -1190,6 +1198,15 @@ fn stop_reservations_after_objective(
     stop_campaign_on_objective && objective_found
 }
 
+fn stop_reservations_after_work_budget(
+    work_budget: Option<u64>,
+    bootstrap_execution_work: u64,
+    job_execution_work: u64,
+) -> bool {
+    work_budget
+        .is_some_and(|budget| bootstrap_execution_work.saturating_add(job_execution_work) >= budget)
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
@@ -1325,6 +1342,29 @@ fn verify_selector_annotation(
     }
 }
 
+fn verify_selector_observed_tiers(
+    draw: &SelectorDraw,
+    observed_progress_tiers: usize,
+) -> Result<(), Box<dyn Error>> {
+    if draw
+        .tier_rank
+        .is_some_and(|rank| usize::from(rank) >= observed_progress_tiers)
+    {
+        return Err("tier rank exceeds observed progress tiers at selection".into());
+    }
+    Ok(())
+}
+
+fn verify_selector_preference<K: ArchiveKey>(draw: &SelectorDraw) -> Result<(), Box<dyn Error>> {
+    if draw
+        .best_preference
+        .is_some_and(|preference| usize::from(preference) >= K::preferences())
+    {
+        return Err("selector best preference is outside the key portfolio".into());
+    }
+    Ok(())
+}
+
 #[must_use]
 pub fn derive_selection_seed(campaign_seed: u64) -> u64 {
     let digest = Sha256::digest(campaign_seed.to_le_bytes());
@@ -1392,12 +1432,26 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     }
 
     fn suffix_limit(&self, parent_id: u64, parent_index: usize) -> u8 {
+        self.suffix_limit_excluding(parent_id, parent_index, &BTreeMap::new())
+    }
+
+    fn suffix_limit_excluding(
+        &self,
+        parent_id: u64,
+        parent_index: usize,
+        excluded: &BTreeMap<(u64, u8), u32>,
+    ) -> u8 {
         let limit = self.archive.suffix_limit(parent_index);
         if self
             .suffix_jobs_in_flight
             .range((parent_id, limit)..=(parent_id, u8::MAX))
-            .next()
-            .is_some()
+            .any(|(&(held_parent, held_limit), &count)| {
+                count
+                    > excluded
+                        .get(&(held_parent, held_limit))
+                        .copied()
+                        .unwrap_or(0)
+            })
         {
             1
         } else {
@@ -1938,12 +1992,25 @@ fn resolve_origin<G: Workload>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     search_checkpoint: Option<&CheckpointReader>,
+    executable_identity: &str,
 ) -> Result<CampaignOriginRecord, Box<dyn Error>> {
     if let CampaignOrigin::SearchCheckpoint { path, .. } = origin {
         let reader = search_checkpoint.ok_or("a search checkpoint origin was not opened")?;
+        if reader.header.executable_identity != executable_identity {
+            return Err("search checkpoint belongs to a different executable".into());
+        }
         let checkpoint_policy_changes = search_checkpoint_policy_changes(
             &reader.header,
-            &search_checkpoint_header(workload, config, &reader.header.reason, 0, 0, 0, 0),
+            &search_checkpoint_header(
+                workload,
+                config,
+                executable_identity,
+                &reader.header.reason,
+                0,
+                0,
+                0,
+                0,
+            ),
         )?;
         let path = path.display().to_string();
         let resume_input_sha256 = format!(
@@ -1984,13 +2051,18 @@ fn resolve_origin<G: Workload>(
             file_sha256,
             report,
             checkpoint,
-        } => (
-            ORIGIN_ARCHIVE.to_owned(),
-            Some(path.clone()),
-            Some(file_sha256.clone()),
-            checkpoint.as_ref(),
-            workload.resume_input(report)?,
-        ),
+        } => {
+            if let Some(checkpoint) = checkpoint {
+                validate_archive_checkpoint(workload, checkpoint)?;
+            }
+            (
+                ORIGIN_ARCHIVE.to_owned(),
+                Some(path.clone()),
+                Some(file_sha256.clone()),
+                checkpoint.as_ref(),
+                workload.resume_input(report)?,
+            )
+        }
     };
     let resume_input_sha256 = format!("{:x}", Sha256::digest(serde_json::to_vec(&resume_input)?));
     Ok(CampaignOriginRecord {
@@ -2021,6 +2093,7 @@ fn stream_header<G: Workload>(
     config: &CampaignConfig<G>,
     origin: &CampaignOriginRecord,
     draw_header: Option<DrawTableHeader>,
+    executable_identity: &str,
 ) -> CampaignStreamHeader<DrawTableHeader> {
     CampaignStreamHeader {
         schema_version: CAMPAIGN_SCHEMA_VERSION,
@@ -2055,9 +2128,10 @@ fn stream_header<G: Workload>(
         retention_policy: retention_policy_identifier(config.retention).to_owned(),
         parent_scheduler: SELECTOR_IDENTIFIER.to_owned(),
         preference_portfolio: preference_portfolio_identifier::<G::Key>(),
-        executor_mode: "snapshot_resume_archive".to_owned(),
-        selection_seed_derivation: "sha256(campaign_seed_le)[0..8] as u64 le".to_owned(),
+        executor_mode: EXECUTOR_MODE.to_owned(),
+        selection_seed_derivation: SELECTION_SEED_DERIVATION.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
+        executable_identity: executable_identity.to_owned(),
         action_cost_unit: workload.action_cost_unit().to_owned(),
         execution_work_unit: workload.execution_work_unit().to_owned(),
     }
@@ -2409,6 +2483,7 @@ fn build_report<G: Workload>(
         executor_mode: header.executor_mode.clone(),
         selection_seed_derivation: header.selection_seed_derivation.clone(),
         workload_identity_sha256: header.workload_identity_sha256.clone(),
+        executable_identity: header.executable_identity.clone(),
         action_cost_unit: header.action_cost_unit.clone(),
         execution_work_unit: header.execution_work_unit.clone(),
         bootstrap_execution_work: counters.bootstrap_execution_work,
@@ -2663,6 +2738,46 @@ fn replay_splice<G: CampaignTypes>(
     }
 }
 
+fn verify_splice_selection<G: Workload>(
+    core: &mut CoordinatorCore<G>,
+    parent_index: usize,
+    mutation_seed: u64,
+    weights: (u8, u8),
+    selector_path: SelectorPath,
+    actual_continuation: bool,
+    recorded: Option<&CampaignSpliceRecord>,
+) -> Result<(), Box<dyn Error>> {
+    if selector_path == SelectorPath::Continuation || actual_continuation {
+        return Ok(());
+    }
+    let expected =
+        if energy_strategy(mutation_seed, weights.0, weights.1)? == EnergyStrategy::Splice {
+            match core
+                .archive
+                .splice_tail_for_campaign(parent_index, LONGEST_SPLICE_TAIL)
+            {
+                Some(tail) => Some(CampaignSpliceRecord::Tail {
+                    donor_id: core
+                        .archive
+                        .stable_id(tail.donor_id)
+                        .ok_or("replayed splice donor is missing")?,
+                    leaf_id: core
+                        .archive
+                        .stable_id(tail.leaf_id)
+                        .ok_or("replayed splice leaf is missing")?,
+                    tail_postcard: postcard::to_allocvec(&tail.actions)?,
+                }),
+                None => Some(CampaignSpliceRecord::Unavailable),
+            }
+        } else {
+            None
+        };
+    if expected.as_ref() != recorded {
+        return Err("recorded splice provenance diverged from selection".into());
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(bound = "K: Serialize + DeserializeOwned")]
 pub struct CampaignProgressRecord<K> {
@@ -2859,6 +2974,35 @@ fn bootstrap_core<G: Workload>(
     }
 }
 
+struct CheckpointHashWriter(Sha256);
+
+impl Write for CheckpointHashWriter {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn validate_archive_checkpoint<G: Workload + ?Sized>(
+    workload: &G,
+    checkpoint: &CampaignCheckpoint<G::Snapshot>,
+) -> Result<(), Box<dyn Error>> {
+    if checkpoint.snapshots.format != workload.checkpoint_format() {
+        return Err("archive snapshot checkpoint format is not recognized".into());
+    }
+    let mut writer = CheckpointHashWriter(Sha256::new());
+    postcard::to_io(&checkpoint.snapshots, &mut writer)?;
+    let actual_sha256 = format!("{:x}", writer.0.finalize());
+    if checkpoint.file_sha256 != actual_sha256 {
+        return Err("archive snapshot checkpoint bytes do not match their SHA-256".into());
+    }
+    Ok(())
+}
+
 fn validate_snapshot_root_checkpoint<'a, G: Workload + ?Sized>(
     workload: &G,
     checkpoint: &'a CampaignCheckpoint<G::Snapshot>,
@@ -3046,9 +3190,11 @@ fn bootstrap_campaign<G: Workload>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn search_checkpoint_header<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
+    executable_identity: &str,
     reason: &str,
     executions: u64,
     reserved: u64,
@@ -3085,6 +3231,7 @@ fn search_checkpoint_header<G: Workload>(
         checkpoint_owner: None,
         reason: reason.to_owned(),
         workload_identity_sha256: workload.workload_identity_sha256(),
+        executable_identity: executable_identity.to_owned(),
         campaign_seed: config.campaign_seed,
         window: config.window,
         archive_entry_limit: config.archive_entry_limit,
@@ -3134,9 +3281,11 @@ fn search_checkpoint_policy_changes(
     Ok(changes)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn restore_search_checkpoint<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
+    executable_identity: &str,
     mut reader: CheckpointReader,
     core: &mut CoordinatorCore<G>,
     draw_state: &mut DrawTables<G::Action>,
@@ -3144,7 +3293,19 @@ fn restore_search_checkpoint<G: Workload>(
     counters: &mut CampaignCounters,
 ) -> Result<SearchResume<G>, Box<dyn Error>> {
     let header = reader.header.clone();
-    let expected = search_checkpoint_header(workload, config, &header.reason, 0, 0, 0, 0);
+    let expected = search_checkpoint_header(
+        workload,
+        config,
+        executable_identity,
+        &header.reason,
+        0,
+        0,
+        0,
+        0,
+    );
+    if header.executable_identity != expected.executable_identity {
+        return Err("search checkpoint belongs to a different executable".into());
+    }
     if header.workload_identity_sha256 != expected.workload_identity_sha256 {
         return Err("search checkpoint belongs to a different workload".into());
     }
@@ -3234,6 +3395,7 @@ fn restore_search_checkpoint<G: Workload>(
 fn write_search_checkpoint<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
+    executable_identity: &str,
     checkpoints: &mut CheckpointWriter<<G::Key as ArchiveKey>::Progress>,
     reason: &str,
     core: &CoordinatorCore<G>,
@@ -3274,6 +3436,7 @@ fn write_search_checkpoint<G: Workload>(
     let header = search_checkpoint_header(
         workload,
         config,
+        executable_identity,
         reason,
         core.sequence,
         reserved,
@@ -3407,6 +3570,47 @@ fn initial_draw_state<G: Workload>(
     Ok((tables, Some(header)))
 }
 
+#[derive(Default)]
+struct ReplaySkipSchedule {
+    last_reservation: Option<u64>,
+    skips_for_reservation: u64,
+    admitted: BTreeSet<u64>,
+}
+
+impl ReplaySkipSchedule {
+    fn accept_skip(
+        &mut self,
+        reservation: u64,
+        selected: usize,
+        total: usize,
+    ) -> Result<(), Box<dyn Error>> {
+        let slot = usize::try_from(reservation)?;
+        if slot >= selected || slot >= total {
+            return Err("recorded skip names a reservation outside the selection window".into());
+        }
+        if self.admitted.contains(&reservation) {
+            return Err("recorded skip follows its job admission".into());
+        }
+        if self.last_reservation.is_some_and(|last| reservation < last) {
+            return Err("recorded skips are out of reservation order".into());
+        }
+        if self.last_reservation == Some(reservation) {
+            self.skips_for_reservation = self.skips_for_reservation.saturating_add(1);
+        } else {
+            self.last_reservation = Some(reservation);
+            self.skips_for_reservation = 1;
+        }
+        if self.skips_for_reservation > CONSECUTIVE_SKIP_LIMIT {
+            return Err("recorded selection exceeds the consecutive skip limit".into());
+        }
+        Ok(())
+    }
+
+    fn admit(&mut self, reservation: u64) {
+        self.admitted.insert(reservation);
+    }
+}
+
 pub fn replay_campaign_checkpointed<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
@@ -3454,6 +3658,7 @@ fn replay_campaign_checkpointed_inner<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
+    let executable_identity = workload.executable_identity()?;
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
     let text = std::str::from_utf8(stream_bytes)?;
@@ -3478,14 +3683,49 @@ where
     if header.format != workload.stream_format() {
         return Err("campaign stream format is not recognized".into());
     }
+    let origin_fields_match = header.origin_checkpoint_policy_changes.is_empty()
+        && match header.origin_kind.as_str() {
+            ORIGIN_GENESIS => {
+                header.origin_path.is_none()
+                    && header.origin_archive_sha256.is_none()
+                    && header.origin_checkpoint_path.is_none()
+                    && header.origin_checkpoint_sha256.is_none()
+            }
+            ORIGIN_SNAPSHOT_ROOT => {
+                header.origin_path.is_none()
+                    && header.origin_archive_sha256.is_none()
+                    && header.origin_checkpoint_path.is_some()
+                    && header.origin_checkpoint_sha256.is_some()
+            }
+            ORIGIN_ARCHIVE => {
+                header.origin_path.is_some()
+                    && header.origin_archive_sha256.is_some()
+                    && (header.origin_checkpoint_path.is_some()
+                        == header.origin_checkpoint_sha256.is_some())
+            }
+            _ => true,
+        };
+    if !origin_fields_match {
+        return Err("campaign stream origin provenance is inconsistent".into());
+    }
     if !schedule_policy_is_supported(&header.schedule_policy) {
         return Err("campaign stream schedule policy is not recognized".into());
     }
     if !progress_policy_is_supported(&header.progress_policy) {
         return Err("campaign stream progress policy is not recognized".into());
     }
+    if header.executor_mode != EXECUTOR_MODE
+        || header.selection_seed_derivation != SELECTION_SEED_DERIVATION
+    {
+        return Err("campaign stream execution provenance is not recognized".into());
+    }
     if header.workload_identity_sha256 != workload.workload_identity_sha256() {
         return Err("campaign replay workload identity does not match the recorded stream".into());
+    }
+    if header.executable_identity != executable_identity {
+        return Err(
+            "campaign replay executable identity does not match the recorded stream".into(),
+        );
     }
     if header.action_cost_unit != workload.action_cost_unit() {
         return Err("campaign replay action-cost unit does not match the recorded stream".into());
@@ -3510,14 +3750,32 @@ where
         None
     };
     let mut required_draw_versions = DrawVersionSchedule::default();
-    let mut replay_job_reservations = BTreeMap::<u64, u64>::new();
+    let mut replay_job_reservations = BTreeMap::<
+        u64,
+        (
+            u64,
+            Option<u8>,
+            u64,
+            SelectorPath,
+            Option<CampaignSpliceRecord>,
+        ),
+    >::new();
     for (index, line) in record_lines.iter().enumerate() {
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         let before = match record {
             CampaignStreamRecord::Job(job) => {
                 if replay_job_reservations
-                    .insert(job.reservation, job.parent_id)
+                    .insert(
+                        job.reservation,
+                        (
+                            job.parent_id,
+                            job.suffix_limit,
+                            job.mutation_seed,
+                            job.selector.path,
+                            job.splice.clone(),
+                        ),
+                    )
                     .is_some()
                 {
                     return Err("campaign stream admits one reservation twice".into());
@@ -3540,7 +3798,21 @@ where
     {
         return Err("campaign stream job reservations are not contiguous".into());
     }
-    let replay_job_parents = replay_job_reservations.into_values().collect::<Vec<_>>();
+    if u64::try_from(replay_job_reservations.len())? > header.execution_budget {
+        return Err("campaign stream exceeds its recorded execution budget".into());
+    }
+    let replay_job_parents = replay_job_reservations
+        .values()
+        .map(|record| record.0)
+        .collect::<Vec<_>>();
+    let replay_job_suffix_limits = replay_job_reservations
+        .values()
+        .map(|record| record.1)
+        .collect::<Vec<_>>();
+    let replay_job_splices = replay_job_reservations
+        .into_values()
+        .map(|(_, _, seed, path, splice)| (seed, path, splice))
+        .collect::<Vec<_>>();
     let replay_job_metadata = replay_job_parents
         .iter()
         .map(|parent_id| vec![*parent_id])
@@ -3567,6 +3839,11 @@ where
         ORIGIN_ARCHIVE => {
             let source =
                 origin_report.ok_or("archive campaign replay requires the source archive")?;
+            if header.origin_checkpoint_sha256.is_some() != origin_checkpoint.is_some() {
+                return Err(
+                    "archive campaign replay checkpoint does not match the recorded stream".into(),
+                );
+            }
             workload.resume_input(source)?
         }
         ORIGIN_SEARCH_CHECKPOINT => {
@@ -3597,10 +3874,13 @@ where
     let replay_run = resolve_recorded_policies(workload, &header.workload_policies)?;
     let action_cost = workload.action_cost_fn();
     if let Some(checkpoint) = origin_checkpoint {
+        if header.origin_kind == ORIGIN_ARCHIVE {
+            validate_archive_checkpoint(workload, checkpoint)?;
+        }
         let sha256_matches =
             header.origin_checkpoint_sha256.as_deref() == Some(checkpoint.file_sha256.as_str());
-        let logical_path_matches = header.origin_kind != ORIGIN_SNAPSHOT_ROOT
-            || header.origin_checkpoint_path.as_deref() == Some(checkpoint.path.as_str());
+        let logical_path_matches =
+            header.origin_checkpoint_path.as_deref() == Some(checkpoint.path.as_str());
         if !sha256_matches || !logical_path_matches {
             return Err("campaign replay checkpoint does not match the recorded stream".into());
         }
@@ -3694,6 +3974,13 @@ where
     }
 
     core.archive.prepare_selection();
+    let mut observed_progress_tiers = BTreeSet::new();
+    for entry in &core.archive.entries {
+        observed_progress_tiers.insert(entry.key.progress());
+        if observed_progress_tiers.len() > usize::from(u8::MAX) {
+            break;
+        }
+    }
 
     let replay_window_depth = schedule_policy_window(&header.schedule_policy)
         .ok_or("campaign stream schedule policy is not recognized")?;
@@ -3704,6 +3991,34 @@ where
     {
         return Err("campaign replay selected work after its objective stop".into());
     }
+    if stop_reservations_after_work_budget(
+        header.work_budget,
+        counters.bootstrap_execution_work,
+        counters.job_execution_work,
+    ) && !replay_job_parents.is_empty()
+    {
+        return Err("campaign replay selected work after its work budget".into());
+    }
+    if require_terminal
+        && header.wall_budget_seconds.is_none()
+        && !stop_reservations_after_objective(
+            header.stop_campaign_on_objective,
+            core.objective_witness.is_some(),
+        )
+        && !stop_reservations_after_work_budget(
+            header.work_budget,
+            counters.bootstrap_execution_work,
+            counters.job_execution_work,
+        )
+        && replay_job_parents.len()
+            < usize::try_from(
+                header
+                    .execution_budget
+                    .min(u64::try_from(replay_window_depth)?),
+            )?
+    {
+        return Err("campaign stream ended before required reservations completed".into());
+    }
     let mut duration_admissions = VecDeque::new();
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
@@ -3712,6 +4027,7 @@ where
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
+    let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -3721,8 +4037,10 @@ where
         .take(replay_window_depth)
         .enumerate()
     {
+        replay_job_tier_limits.insert(job_slot, observed_progress_tiers.len());
         let (energy, continuation) =
             continuation_attempt(&mut core, header.campaign_seed, u64::try_from(job_slot)?);
+        let actual_continuation = continuation.is_some();
         replay_continuation_energy.insert(job_slot, energy);
         if let Some(continuation) = continuation {
             replay_continuations.insert(job_slot, continuation);
@@ -3737,6 +4055,22 @@ where
             .archive
             .index_of_id(*parent_id)
             .ok_or("initial replay job names a parent the archive does not hold")?;
+        if replay_job_suffix_limits[job_slot]
+            .is_some_and(|recorded| core.suffix_limit(*parent_id, parent_index) != recorded)
+        {
+            return Err("replayed job suffix limit diverged at reservation".into());
+        }
+        let (mutation_seed, selector_path, splice) = &replay_job_splices[job_slot];
+        verify_splice_selection(
+            &mut core,
+            parent_index,
+            *mutation_seed,
+            replay_job_weights[&job_slot],
+            *selector_path,
+            actual_continuation,
+            splice.as_ref(),
+        )?;
+        core.start_suffix_job(*parent_id, replay_job_suffix_limits[job_slot]);
         replay_job_snapshots.insert(job_slot, core.archive.pin_job_origin(parent_index)?);
         replay_selections.insert(job_slot, (replay_planned_clock, core.sequence));
         for metadata_id in &replay_job_metadata[job_slot] {
@@ -3750,17 +4084,32 @@ where
         .preserve_recorded_metadata_uses(replay_metadata_uses.clone());
 
     let mut replay_admissions = 0_usize;
+    let mut replay_skips = ReplaySkipSchedule::default();
     for (replay_record_index, line) in record_lines.into_iter().enumerate() {
         draw_state.release_versions(&required_draw_versions, replay_record_index);
         let record: CampaignStreamRecord<EmpiricalStepCheckpoint, G::Key> =
             serde_json::from_str(line)?;
         match record {
             CampaignStreamRecord::Skip(skip) => {
+                replay_skips.accept_skip(
+                    skip.reservation,
+                    replay_admissions
+                        .saturating_add(replay_window_depth)
+                        .min(replay_job_parents.len()),
+                    replay_job_parents.len(),
+                )?;
                 if stop_reservations_after_objective(
                     header.stop_campaign_on_objective,
                     core.objective_witness.is_some(),
                 ) {
                     return Err("campaign replay selected work after its objective stop".into());
+                }
+                if stop_reservations_after_work_budget(
+                    header.work_budget,
+                    counters.bootstrap_execution_work,
+                    counters.job_execution_work,
+                ) {
+                    return Err("campaign replay selected work after its work budget".into());
                 }
                 if (skip.mixture_weight, skip.splice_weight)
                     != mixture_weights(&core.mixture_energy, replay_mixture)
@@ -3773,6 +4122,15 @@ where
                     .archive
                     .index_of_id(skip.parent_id)
                     .ok_or("recorded skip names a parent the archive does not hold")?;
+                verify_splice_selection(
+                    &mut core,
+                    parent_index,
+                    skip.mutation_seed,
+                    (skip.mixture_weight, skip.splice_weight),
+                    skip.selector.path,
+                    false,
+                    skip.splice.as_ref(),
+                )?;
                 let strategy =
                     energy_strategy(skip.mutation_seed, skip.mixture_weight, skip.splice_weight)?;
                 let spliced = replay_splice::<G>(strategy, skip.splice)?;
@@ -3839,6 +4197,30 @@ where
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
                 let suffix_limit = replay_suffix_limit(spliced.is_none(), skip.suffix_limit)?;
+                if spliced.is_none() {
+                    let mut not_yet_selected = BTreeMap::<(u64, u8), u32>::new();
+                    for (&slot, _) in
+                        replay_job_snapshots.range(usize::try_from(skip.reservation)?..)
+                    {
+                        if let Some(limit) = replay_job_suffix_limits[slot] {
+                            let entry = not_yet_selected
+                                .entry((replay_job_parents[slot], limit))
+                                .or_default();
+                            *entry = entry
+                                .checked_add(1)
+                                .ok_or("suffix reservation count overflow")?;
+                        }
+                    }
+                    if suffix_limit
+                        != Some(core.suffix_limit_excluding(
+                            skip.parent_id,
+                            parent_index,
+                            &not_yet_selected,
+                        ))
+                    {
+                        return Err("replayed skip suffix limit diverged at selection".into());
+                    }
+                }
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
                     (None, draw) => workload.expand_suffix_recorded_duration(
@@ -3865,6 +4247,8 @@ where
                     return Err("continuations cannot be recorded skips".into());
                 }
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
+                verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
+                verify_selector_preference::<G::Key>(&skip.selector)?;
                 core.archive.record_selection(parent_index, &skip.selector);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
@@ -3896,6 +4280,10 @@ where
                     );
                 }
                 let replay_job_slot = usize::try_from(job.reservation)?;
+                replay_skips.admit(job.reservation);
+                let selector_tier_limit = replay_job_tier_limits
+                    .remove(&replay_job_slot)
+                    .ok_or("recorded job has no rebuilt selection tier bound")?;
                 if (job.mixture_weight, job.splice_weight)
                     != replay_job_weights
                         .remove(&replay_job_slot)
@@ -4074,6 +4462,7 @@ where
                     .as_ref()
                     .map_or(0, |taken| taken.wave.saturating_add(1));
                 core.archive.set_admission_wave(continuation_wave);
+                core.finish_suffix_job(job.parent_id, suffix_limit);
                 let (sequence, decisions, duration_admission) = core.admit_job_tracking(
                     workload,
                     job.parent_id,
@@ -4098,6 +4487,14 @@ where
                         job.sequence
                     )
                     .into());
+                }
+                if observed_progress_tiers.len() <= usize::from(u8::MAX) {
+                    for index in retained_archive_indexes(&core, &decisions) {
+                        observed_progress_tiers.insert(core.archive.entries[index].key.progress());
+                        if observed_progress_tiers.len() > usize::from(u8::MAX) {
+                            break;
+                        }
+                    }
                 }
                 if duration_admission.applied {
                     let draw = duration_draw
@@ -4146,6 +4543,8 @@ where
                 }
                 workload.remember_draw_version(&mut draw_state, &required_draw_versions)?;
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
+                verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
+                verify_selector_preference::<G::Key>(&job.selector)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
@@ -4203,12 +4602,40 @@ where
                 {
                     return Err("campaign replay selected work after its objective stop".into());
                 }
+                if stop_reservations_after_work_budget(
+                    header.work_budget,
+                    counters.bootstrap_execution_work,
+                    counters.job_execution_work.saturating_add(execution_work),
+                ) && replay_job_parents.get(next_slot).is_some()
+                {
+                    return Err("campaign replay selected work after its work budget".into());
+                }
+                if require_terminal
+                    && header.wall_budget_seconds.is_none()
+                    && u64::try_from(next_slot)? < header.execution_budget
+                    && !stop_reservations_after_objective(
+                        header.stop_campaign_on_objective,
+                        core.objective_witness.is_some(),
+                    )
+                    && !stop_reservations_after_work_budget(
+                        header.work_budget,
+                        counters.bootstrap_execution_work,
+                        counters.job_execution_work.saturating_add(execution_work),
+                    )
+                    && replay_job_parents.get(next_slot).is_none()
+                {
+                    return Err(
+                        "campaign stream ended before required reservations completed".into(),
+                    );
+                }
                 if let Some(parent_id) = replay_job_parents.get(next_slot) {
+                    replay_job_tier_limits.insert(next_slot, observed_progress_tiers.len());
                     let (energy, continuation) = continuation_attempt(
                         &mut core,
                         header.campaign_seed,
                         u64::try_from(next_slot)?,
                     );
+                    let actual_continuation = continuation.is_some();
                     replay_continuation_energy.insert(next_slot, energy);
                     if let Some(continuation) = continuation {
                         replay_continuations.insert(next_slot, continuation);
@@ -4223,6 +4650,22 @@ where
                         .archive
                         .index_of_id(*parent_id)
                         .ok_or("next replay job names a parent the archive does not hold")?;
+                    if replay_job_suffix_limits[next_slot].is_some_and(|recorded| {
+                        core.suffix_limit(*parent_id, parent_index) != recorded
+                    }) {
+                        return Err("replayed job suffix limit diverged at reservation".into());
+                    }
+                    let (mutation_seed, selector_path, splice) = &replay_job_splices[next_slot];
+                    verify_splice_selection(
+                        &mut core,
+                        parent_index,
+                        *mutation_seed,
+                        replay_job_weights[&next_slot],
+                        *selector_path,
+                        actual_continuation,
+                        splice.as_ref(),
+                    )?;
+                    core.start_suffix_job(*parent_id, replay_job_suffix_limits[next_slot]);
                     replay_job_snapshots
                         .insert(next_slot, core.archive.pin_job_origin(parent_index)?);
                     replay_selections.insert(next_slot, (replay_planned_clock, core.sequence));
@@ -4316,23 +4759,23 @@ mod tests {
 
     use super::{
         ArchiveReportState, CampaignActionResult, CampaignAdmissionDecision, CampaignCandidate,
-        CampaignConfig, CampaignCoordinator, CampaignCounters, CampaignExecutionOptions,
-        CampaignJobRecord, CampaignJobResult, CampaignOrigin, CampaignOutcome,
-        CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-        CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables, DurationAdmission,
-        EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy, JobOutcome, JobSpec,
-        LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
-        PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint,
-        SnapshotCheckpointEntry, TargetExecution, ThreadPlacement, WorkloadPolicies,
-        archive_entry_limit_is_valid, compact_progress_curve, default_window, draws_continuation,
-        draws_highest_preference, execution_work_delta, finish_record, full_selector_report_due,
-        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        progress_checkpoint_due, progress_line_interval, progress_policy_is_supported,
-        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
-        replay_splice, resident_memory_is_within_budget, retained_archive_indexes,
-        run_campaign_checkpointed, run_campaign_checkpointed_with_options, run_job,
-        schedule_policy_identifier, schedule_policy_is_supported, schedule_policy_window,
-        stop_reservations_after_objective,
+        CampaignCheckpoint, CampaignConfig, CampaignCoordinator, CampaignCounters,
+        CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
+        CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader,
+        CampaignStreamRecord, CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables,
+        DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy,
+        JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
+        MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
+        RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
+        ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
+        default_window, draws_continuation, draws_highest_preference, execution_work_delta,
+        finish_record, full_selector_report_due, is_zero_usize, memory_is_within_reserve,
+        postcard_value_sha256, profile_elapsed, progress_checkpoint_due, progress_line_interval,
+        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
+        replay_campaign_checkpointed, replay_campaign_prefix_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
+        run_campaign_checkpointed_with_options, run_job, schedule_policy_identifier,
+        schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -5253,17 +5696,23 @@ mod tests {
         )
         .expect("live campaign");
         assert_eq!(live.executions_completed, 5);
+        assert_eq!(live.bootstrap_execution_work, 0);
         assert!(live.objectives_reached > 0);
         config.stop_campaign_on_objective = true;
+        let mut stopped_stream = Vec::new();
         let (stopped, _) = run_campaign_checkpointed(
             &workload,
             &config,
             &CampaignOrigin::Genesis,
-            &mut Vec::new(),
+            &mut stopped_stream,
             None,
         )
         .expect("live objective-stop campaign");
-        assert!(stopped.executions_completed <= 2);
+        assert_eq!(stopped.executions_completed, 2);
+        let (replayed_stopped, _) =
+            replay_campaign_checkpointed(&workload, &stopped_stream, None, None)
+                .expect("in-flight job remains replayable after an objective stop");
+        assert_eq!(replayed_stopped.executions_completed, 2);
         let mut lines = std::str::from_utf8(&stream)
             .unwrap()
             .lines()
@@ -5279,7 +5728,382 @@ mod tests {
         assert!(error.contains("after its objective stop"), "{error}");
     }
 
-    const RECORDED_HEADER: &str = r#"{"schema_version":11,"format":"campaign-v1","campaign_seed":7,
+    fn five_job_campaign_stream() -> (TestWorkload, Vec<String>) {
+        let config = CampaignConfig {
+            campaign_seed: 7,
+            workers: 1,
+            execution_budget: 5,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 16,
+            window: 2,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let (live, _) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("live campaign");
+        assert_eq!(live.executions_completed, 5);
+        let lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        (workload, lines)
+    }
+
+    #[test]
+    fn replay_rejects_forged_execution_provenance_labels() {
+        let (workload, original_lines) = five_job_campaign_stream();
+        for (field, forged) in [
+            ("executor_mode", "not_snapshot_resume_archive"),
+            ("selection_seed_derivation", "not_sha256"),
+        ] {
+            let mut lines = original_lines.clone();
+            let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            header[field] = serde_json::json!(forged);
+            lines[0] = serde_json::to_string(&header).unwrap();
+            let result =
+                replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None);
+            assert!(
+                result.is_err(),
+                "replay certified forged {field}: {:?}",
+                result.unwrap().0
+            );
+        }
+    }
+
+    #[test]
+    fn replay_rejects_source_provenance_on_a_genesis_campaign() {
+        let (workload, original_lines) = five_job_campaign_stream();
+        for field in [
+            "origin_path",
+            "origin_archive_sha256",
+            "origin_checkpoint_path",
+            "origin_checkpoint_sha256",
+        ] {
+            let mut lines = original_lines.clone();
+            let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            header[field] = serde_json::json!("forged-source");
+            lines[0] = serde_json::to_string(&header).unwrap();
+            let error =
+                replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                    .expect_err("genesis replay copied a forged source into its report")
+                    .to_string();
+            assert!(error.contains("origin provenance"), "{field}: {error}");
+        }
+    }
+
+    #[test]
+    fn replay_rejects_archive_checkpoint_provenance_it_did_not_verify() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 5;
+        config.window = 2;
+        let mut source_stream = Vec::new();
+        let (source, snapshots) = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .expect("source campaign");
+        let source_archive = source.archive;
+        let source_archive_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
+        );
+        let source_checkpoint = CampaignCheckpoint {
+            path: "source.snapshots".to_owned(),
+            file_sha256: format!("{:x}", Sha256::digest(snapshots.to_bytes().unwrap())),
+            snapshots,
+        };
+        config.execution_budget = 2;
+        for checkpoint in [None, Some(source_checkpoint)] {
+            let mut archive_stream = Vec::new();
+            let archive_origin = CampaignOrigin::Archive {
+                path: "source.archive".to_owned(),
+                file_sha256: source_archive_sha256.clone(),
+                report: Box::new(source_archive.clone()),
+                checkpoint: checkpoint.clone(),
+            };
+            run_campaign_checkpointed(
+                &workload,
+                &config,
+                &archive_origin,
+                &mut archive_stream,
+                None,
+            )
+            .expect("archive campaign");
+            replay_campaign_checkpointed(
+                &workload,
+                &archive_stream,
+                Some(&source_archive),
+                checkpoint.as_ref(),
+            )
+            .expect("untouched archive replay");
+            if let Some(checkpoint) = &checkpoint {
+                let mut changed = checkpoint.clone();
+                changed.snapshots.entries.push(SnapshotCheckpointEntry {
+                    id: u64::MAX,
+                    snapshot: 0,
+                });
+                let replay = replay_campaign_checkpointed(
+                    &workload,
+                    &archive_stream,
+                    Some(&source_archive),
+                    Some(&changed),
+                );
+                assert!(
+                    replay.is_err(),
+                    "archive replay certified checkpoint bytes unrelated to its SHA-256"
+                );
+                let mut changed_stream = Vec::new();
+                let changed_origin = CampaignOrigin::Archive {
+                    path: "source.archive".to_owned(),
+                    file_sha256: source_archive_sha256.clone(),
+                    report: Box::new(source_archive.clone()),
+                    checkpoint: Some(changed),
+                };
+                assert!(
+                    run_campaign_checkpointed(
+                        &workload,
+                        &config,
+                        &changed_origin,
+                        &mut changed_stream,
+                        None,
+                    )
+                    .is_err(),
+                    "live archive campaign recorded a checkpoint SHA unrelated to its bytes"
+                );
+            }
+            let mut lines = std::str::from_utf8(&archive_stream)
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+            header["origin_checkpoint_path"] = serde_json::json!("forged.snapshots");
+            if checkpoint.is_none() {
+                header["origin_checkpoint_sha256"] = serde_json::json!("forged-sha256");
+            }
+            lines[0] = serde_json::to_string(&header).unwrap();
+            let result = replay_campaign_checkpointed(
+                &workload,
+                lines.join("\n").as_bytes(),
+                Some(&source_archive),
+                checkpoint.as_ref(),
+            );
+            assert!(
+                result.is_err(),
+                "archive replay certified forged checkpoint provenance: {:?}",
+                result.unwrap().0.origin
+            );
+        }
+    }
+
+    #[test]
+    fn replay_rejects_more_reservations_than_its_execution_budget() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["execution_budget"] = serde_json::json!(1);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified five jobs under a one-job budget")
+                .to_string();
+        assert!(error.contains("recorded execution budget"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_reservations_after_its_work_budget() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let first_job_work = lines
+            .iter()
+            .find_map(|line| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                (value["event"] == "job").then(|| value["execution_work"].as_u64().unwrap())
+            })
+            .unwrap();
+        assert!(first_job_work > 0);
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["work_budget"] = serde_json::json!(first_job_work);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified five jobs under a one-work-unit budget")
+                .to_string();
+        assert!(error.contains("after its work budget"), "{error}");
+    }
+
+    #[test]
+    fn replay_accepts_only_the_window_reserved_before_work_budget_exhaustion() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let jobs = lines
+            .iter()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let value: serde_json::Value = serde_json::from_str(line).unwrap();
+                (value["event"] == "job").then_some((index, value))
+            })
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(jobs.len(), 2);
+        let first_job_work = jobs[0].1["execution_work"].as_u64().unwrap();
+        assert!(first_job_work > 0);
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["work_budget"] = serde_json::json!(first_job_work);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let second_job = jobs[1].0;
+        let skips = lines[1..=second_job]
+            .iter()
+            .filter(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "skip"
+            })
+            .count();
+        let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        end["jobs"] = serde_json::json!(2);
+        end["skips"] = serde_json::json!(skips);
+        end["executions_completed"] = serde_json::json!(2);
+        let mut reserved_window = lines[..=second_job].to_vec();
+        reserved_window.push(serde_json::to_string(&end).unwrap());
+        let (report, _) = replay_campaign_checkpointed(
+            &workload,
+            reserved_window.join("\n").as_bytes(),
+            None,
+            None,
+        )
+        .expect("the two jobs reserved before the work budget was reached may finish");
+        assert_eq!(report.executions_completed, 2);
+    }
+
+    #[test]
+    fn replay_rejects_a_terminal_record_before_required_reservations_finish() {
+        let (workload, full_lines) = five_job_campaign_stream();
+        for keep_jobs in [1_usize, 3] {
+            let mut lines = full_lines.clone();
+            let last_job = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+                })
+                .nth(keep_jobs - 1)
+                .unwrap()
+                .0;
+            let skips = lines[1..last_job]
+                .iter()
+                .filter(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "skip"
+                })
+                .count();
+            let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+            end["jobs"] = serde_json::json!(keep_jobs);
+            end["skips"] = serde_json::json!(skips);
+            end["executions_completed"] = serde_json::json!(keep_jobs);
+            lines.truncate(last_job + 1);
+            let (prefix, _) = replay_campaign_prefix_checkpointed(
+                &workload,
+                lines.join("\n").as_bytes(),
+                None,
+                None,
+            )
+            .expect("intermediate prefix remains replayable");
+            assert_eq!(prefix.mode, "campaign-prefix");
+            lines.push(serde_json::to_string(&end).unwrap());
+            let error =
+                replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                    .expect_err(
+                        "replay certified a completed campaign before required work finished",
+                    )
+                    .to_string();
+            assert!(error.contains("required reservations"), "{error}");
+        }
+    }
+
+    #[test]
+    fn replay_rejects_a_tier_rank_absent_from_the_selection_history() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let mut header: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        header["archive_entry_limit"] = serde_json::json!(256);
+        lines[0] = serde_json::to_string(&header).unwrap();
+        let first_job = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+            })
+            .unwrap();
+        let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
+        assert_eq!(job["selector"]["tier_rank"], 0);
+        job["selector"]["tier_rank"] = serde_json::json!(1);
+        lines[first_job] = serde_json::to_string(&job).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a nonexistent tier in a one-tier campaign")
+                .to_string();
+        assert!(error.contains("observed progress tiers"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_a_selector_preference_outside_the_key_portfolio() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let first_job = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+            })
+            .unwrap();
+        let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
+        job["selector"]["best_preference"] = serde_json::json!(0);
+        lines[first_job] = serde_json::to_string(&job).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a preference the key does not define")
+                .to_string();
+        assert!(error.contains("preference"), "{error}");
+    }
+
+    #[test]
+    fn replay_rejects_an_impossible_recorded_suffix_limit() {
+        let (workload, mut lines) = five_job_campaign_stream();
+        let first_job = lines
+            .iter()
+            .position(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] == "job"
+            })
+            .unwrap();
+        let mut job: serde_json::Value = serde_json::from_str(&lines[first_job]).unwrap();
+        assert_eq!(job["suffix_limit"], 1);
+        job["suffix_limit"] = serde_json::json!(2);
+        lines[first_job] = serde_json::to_string(&job).unwrap();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err("replay certified a suffix limit inconsistent with the archive")
+                .to_string();
+        assert!(error.contains("suffix limit"), "{error}");
+    }
+
+    const RECORDED_HEADER: &str = r#"{"schema_version":13,"format":"campaign-v1","campaign_seed":7,
 "schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
@@ -5288,7 +6112,7 @@ mod tests {
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
 "parent_scheduler":"tier_cascade_pace_yield_cell_recent_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
-"selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd",
+"selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd","executable_identity":"test-executable",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
     #[test]
@@ -6346,6 +7170,147 @@ mod tests {
     }
 
     #[test]
+    fn replay_rejects_forged_ordinary_splice_provenance() {
+        let mut config = three_worker_config();
+        config.execution_budget = 2_000;
+        config.mixture = DrawMixture::EnergySplice { scale: 6 };
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        let live = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("campaign");
+        assert_eq!(
+            replay_campaign_checkpointed(&workload, &stream, None, None)
+                .expect("untampered splice replays"),
+            live
+        );
+        let lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let (index, _) = job_lines(&stream)
+            .into_iter()
+            .find(|(_, job)| {
+                job.selector.path != SelectorPath::Continuation
+                    && matches!(job.splice, Some(CampaignSpliceRecord::Tail { .. }))
+            })
+            .expect("ordinary splice job");
+        for field in ["donor_id", "leaf_id"] {
+            let mut tampered = lines.clone();
+            let mut record: serde_json::Value = serde_json::from_str(&tampered[index]).unwrap();
+            record["splice"][field] = serde_json::json!(u64::MAX);
+            tampered[index] = serde_json::to_string(&record).unwrap();
+            let mutated = format!("{}\n", tampered.join("\n"));
+            assert!(
+                replay_campaign_checkpointed(&workload, mutated.as_bytes(), None, None).is_err(),
+                "replay accepted an impossible ordinary splice {field}"
+            );
+        }
+    }
+
+    #[test]
+    fn replay_rejects_more_consecutive_skips_than_live_selection_allows() {
+        let mut config = three_worker_config();
+        config.execution_budget = 2_000;
+        config.window = 1;
+        config.workers = 1;
+        config.mixture = DrawMixture::AlphabetOnly;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let (live, mut records, skip_index, original_stream) = (0..128)
+            .find_map(|seed| {
+                config.campaign_seed = seed;
+                let mut stream = Vec::new();
+                let (live, _) = run_campaign_checkpointed(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                )
+                .expect("campaign");
+                let records = std::str::from_utf8(&stream)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .collect::<Vec<_>>();
+                let skip_index = records.iter().position(|record| {
+                    record["event"] == "skip"
+                        && record["draw_checkpoint_before"]["records"]
+                            .as_u64()
+                            .unwrap()
+                            .is_multiple_of(64)
+                })?;
+                Some((live, records, skip_index, stream))
+            })
+            .expect("campaign with a skip on an empty draw-table update boundary");
+        replay_campaign_checkpointed(&workload, &original_stream, None, None)
+            .expect("unmodified campaign replays");
+        let original = records[skip_index].clone();
+        let before = original["draw_checkpoint_before"].clone();
+        let first_record = before["records"].as_u64().unwrap();
+        let mut inserted = Vec::new();
+        for offset in 0..super::CONSECUTIVE_SKIP_LIMIT {
+            let mut skip = original.clone();
+            skip["draw_checkpoint_before"]["records"] = serde_json::json!(first_record + offset);
+            let after_record = first_record + offset + 1;
+            skip["draw_checkpoint_after"] = if after_record.is_multiple_of(1_024) {
+                let mut checkpoint = before.clone();
+                checkpoint["records"] = serde_json::json!(after_record);
+                checkpoint
+            } else {
+                serde_json::Value::Null
+            };
+            inserted.push(skip);
+        }
+        for record in records.iter_mut().skip(skip_index) {
+            for field in ["draw_checkpoint_before", "draw_checkpoint_after"] {
+                if let Some(value) = record[field]["records"].as_u64() {
+                    record[field]["records"] =
+                        serde_json::json!(value + super::CONSECUTIVE_SKIP_LIMIT);
+                }
+            }
+        }
+        records.splice(skip_index..skip_index, inserted);
+        records.last_mut().unwrap()["skips"] =
+            serde_json::json!(live.duplicates_skipped + super::CONSECUTIVE_SKIP_LIMIT);
+        let lines = records
+            .iter()
+            .map(|record| serde_json::to_string(record).unwrap())
+            .collect::<Vec<_>>();
+        let error =
+            replay_campaign_checkpointed(&workload, lines.join("\n").as_bytes(), None, None)
+                .expect_err(
+                    "replay certified more consecutive skips than live selection can record",
+                )
+                .to_string();
+        assert!(error.contains("consecutive skip limit"), "{error}");
+    }
+
+    #[test]
+    fn multi_window_reservations_each_allow_the_full_skip_limit() {
+        let mut schedule = super::ReplaySkipSchedule::default();
+        for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
+            schedule.accept_skip(0, 2, 2).unwrap();
+        }
+        for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
+            schedule.accept_skip(1, 2, 2).unwrap();
+        }
+        assert!(schedule.accept_skip(1, 2, 2).is_err());
+    }
+
+    #[test]
     fn replay_rejects_stream_truncated_after_a_complete_record() {
         let mut config = three_worker_config();
         config.workers = 1;
@@ -6452,18 +7417,21 @@ mod tests {
     #[test]
     fn a_campaign_never_holds_more_targets_than_workers() {
         let targets = Arc::new(LiveTargets::default());
+        let config = three_worker_config();
         run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
                 targets: Some(Arc::clone(&targets)),
             },
-            &three_worker_config(),
+            &config,
             &CampaignOrigin::Genesis,
             &mut Vec::new(),
             None,
         )
         .expect("campaign");
-        assert_eq!(targets.most.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let peak = targets.most.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(peak > 0);
+        assert!(peak <= config.workers as usize);
         assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -6741,5 +7709,75 @@ mod tests {
             .expect("ordinary outcome");
         }
         assert_ne!(energy.splice_weights(4), before);
+    }
+    #[test]
+    fn replay_rejects_a_forged_initial_archive_skip_suffix_limit() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut base = three_worker_config();
+        base.execution_budget = 20;
+        base.window = 3;
+        let mut source_stream = Vec::new();
+        let (source, _) = run_campaign_checkpointed(
+            &workload,
+            &base,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .unwrap();
+        let source_archive = source.archive;
+        let origin = CampaignOrigin::Archive {
+            path: "source.archive".to_owned(),
+            file_sha256: format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
+            ),
+            report: Box::new(source_archive.clone()),
+            checkpoint: None,
+        };
+        let config = CampaignConfig {
+            campaign_seed: 196,
+            workers: 3,
+            execution_budget: 8,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 16,
+            window: 3,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let mut stream = Vec::new();
+        run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None).unwrap();
+        replay_campaign_checkpointed(&workload, &stream, Some(&source_archive), None).unwrap();
+        let mut records = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[1]["event"], "skip");
+        assert_eq!(records[1]["reservation"], 1);
+        assert_eq!(records[1]["suffix_limit"], 1);
+        assert_eq!(records[2]["event"], "job");
+        records[1]["suffix_limit"] = serde_json::json!(2);
+        let forged = records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        let error =
+            replay_campaign_checkpointed(&workload, forged.as_bytes(), Some(&source_archive), None)
+                .expect_err("replay certified a skip limit live selection did not record")
+                .to_string();
+        assert!(error.contains("skip suffix limit"), "{error}");
     }
 }

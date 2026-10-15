@@ -89,8 +89,13 @@
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
   unanswered when the deadline is checked again. Each returns a `Stop`: an
-  event count, deadline, snapshot point, violation, exhausted input, a closed
-  bridge, or a guest exit. A guest whose virtual time
+  event count, deadline, snapshot point, violation, exhausted input, or a
+  provisional terminal observation. With no earlier stop due, bridge EOF,
+  process exit or signal, and a host-enforced console or wall limit all report
+  `Stop::Closed` regardless of which host poll wins. Callers use `Session::run`
+  or `settle_terminal_console` to classify the final process reason;
+  settlement probes the current process state and refuses host limits; callers
+  cannot supply an earlier exit reason. A guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
   checkpoint is bounded while it waits for the restore request and replies.
@@ -158,7 +163,15 @@
   the cut even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
-  tail. It stops the guest at a wall-clock limit or a console byte limit.
+  tail. It stops the guest at a wall-clock limit or a console byte limit. After
+  an automatic stop, cleanup joins the console reader and bridge before
+  classifying the exit. Output already written beyond the byte limit is a
+  console-limit stop, including when an event cut or another automatic stop
+  was observed before the reader caught up. Without an overflow, a completed
+  event cut or bridge failure takes precedence over the process status, even
+  if the exit poll won the race. An explicit kill remains a kill. A UML
+  session refuses a console-limit host stop instead of treating it as a guest
+  crash.
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.

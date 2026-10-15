@@ -335,26 +335,64 @@ class HostCompatibilityTests(unittest.TestCase):
         self.data = yaml.safe_load((ROOT / self.workflow.path).read_text())
         self.hosts = {key: job for key, job in self.data["jobs"].items() if key != "scope"}
 
-    def test_both_hosts_are_checked_on_every_pull_request(self):
-        self.assertEqual([job.name for job in self.workflow.jobs if not job.selects], ["macOS Arm64", "Linux Arm64"])
+    def test_host_jobs_are_selected_and_bounded_on_every_pull_request(self):
+        self.assertEqual(
+            [job.name for job in self.workflow.jobs if not job.selects],
+            ["macOS Arm64", "Linux Arm64", "Linux Arm64 Qualification"],
+        )
         for job in self.workflow.jobs:
             with self.subTest(job=job.name):
                 self.assertEqual(job.trigger, "pr")
+                self.assertLessEqual(job.timeout_minutes, 15)
+                if job.select:
+                    self.assertEqual(job.select, "rust_checks")
+                    actual = next(host for host in self.hosts.values() if host["name"] == job.name)
+                    self.assertEqual(actual["needs"], "scope")
+                    self.assertEqual(actual["if"], "needs.scope.outputs.rust_checks == 'true'")
+                    self.assertEqual(actual["timeout-minutes"], job.timeout_minutes)
 
     def test_each_job_names_an_explicit_runner(self):
         runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}
-        self.assertEqual(runners, {"macOS Arm64": "macos-14", "Linux Arm64": "ubuntu-24.04-arm"})
+        self.assertEqual(
+            runners,
+            {
+                "macOS Arm64": "macos-14",
+                "Linux Arm64": "ubuntu-24.04-arm",
+                "Linux Arm64 Qualification": "ubuntu-24.04-arm",
+            },
+        )
         for name, runner in runners.items():
             with self.subTest(job=name):
                 self.assertNotIn("latest", runner)
 
-    def test_a_host_job_runs_more_than_a_compile(self):
-        for job in self.hosts.values():
-            commands = "\n".join(str(step.get("run", "")) for step in job["steps"])
-            with self.subTest(job=job["name"]):
-                self.assertIn("cargo nextest run --workspace", commands)
-                self.assertIn("scripts/check-portable-tests.sh", commands)
-                self.assertIn("check --offline --json", commands)
+    def test_portable_and_qualification_checks_remain_split(self):
+        commands = {
+            key: "\n".join(str(step.get("run", "")) for step in job["steps"])
+            for key, job in self.hosts.items()
+        }
+        for key in ("macos-arm64", "linux-arm64"):
+            with self.subTest(job=key):
+                self.assertIn("cargo nextest run --workspace", commands[key])
+                self.assertIn("scripts/check-portable-tests.sh", commands[key])
+        self.assertNotIn("qualify-host-sha256.py", commands["linux-arm64"])
+        self.assertNotIn("cargo nextest run --workspace", commands["linux-arm64-qualification"])
+        for key in ("macos-arm64", "linux-arm64-qualification"):
+            with self.subTest(job=key):
+                self.assertIn("scripts/qualify-host-sha256.py --check", commands[key])
+                self.assertIn("check --offline --json", commands[key])
+        portable_cache = next(
+            step["with"] for step in self.hosts["linux-arm64"]["steps"]
+            if step.get("uses") == "Swatinem/rust-cache@v2"
+        )
+        qualification_cache = next(
+            step["with"] for step in self.hosts["linux-arm64-qualification"]["steps"]
+            if step.get("uses") == "Swatinem/rust-cache@v2"
+        )
+        self.assertNotEqual(portable_cache["shared-key"], qualification_cache["shared-key"])
+        self.assertEqual(
+            {key: value for key, value in portable_cache.items() if key != "shared-key"},
+            {key: value for key, value in qualification_cache.items() if key != "shared-key"},
+        )
 
     def test_a_host_job_claims_no_live_hypervisor(self):
         text = (ROOT / self.workflow.path).read_text()

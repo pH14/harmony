@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 . ./lib-build.sh
 
 require_linux_aarch64
-require_tools cc make flex bison bc xz gzip patch objdump python3
+require_tools cc make flex bison bc xz gzip patch objdump nm python3
 
 # The standard runtime configuration is the only production profile. The
 # traps-off image remains a deliberate platform negative control with a
@@ -89,7 +89,7 @@ assert_off() {
     done
 }
 
-assert_y ARM64 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
+assert_y ARM64 ARM64_4K_PAGES 64BIT SMP OF PRINTK TTY SERIAL_AMBA_PL011 \
     SERIAL_AMBA_PL011_CONSOLE BINFMT_ELF BLK_DEV_INITRD \
     RD_GZIP SYSFS DEVTMPFS POSIX_TIMERS ARM_ARCH_TIMER \
     ARM_PSCI_FW IRQCHIP ARM_GIC ARM_GIC_V3 HARMONY_ARM_PVCLOCK \
@@ -107,7 +107,7 @@ assert_off HOTPLUG_CPU CPU_FREQ CPU_IDLE MODULES FHANDLE HIGH_RES_TIMERS NO_HZ_C
     ARM_ARCH_TIMER_EVTSTREAM ARM_ARCH_TIMER_OOL_WORKAROUND \
     FSL_ERRATUM_A008585 HISILICON_ERRATUM_161010101 \
     ARM64_ERRATUM_858921 SUN50I_ERRATUM_UNKNOWN1 KVM COMPAT ACPI \
-    ARM64_MTE \
+    ARM64_MTE ARM64_16K_PAGES ARM64_64K_PAGES \
     BPF_JIT KPROBES FUNCTION_TRACER FTRACE LIVEPATCH
 assert_off RWSEM_SPIN_ON_OWNER
 # The platform image executes a shell PID 1 and an OCI runtime, so its
@@ -137,7 +137,7 @@ make -C "$KSRC" O="$arm64_object_root" ARCH=arm64 LOCALVERSION= -j"$(nproc)" Ima
 # a determinism hole: CNTFRQ differs across the supported substrates, while the
 # count registers also vary with host execution.
 # The canonical Image is therefore published only after the empty-allowlist
-# scanner accepts the symbolized vmlinux.
+# scanner accepts the exact bytes mapped executable by the owned kernel.
 echo "== arm64 kernel: zero-live-counter reachability check"
 scan=$GUEST_DIR/scripts/aa5-counter-scan.py
 scan_probe=$BUILD_ROOT/aa5-counter-scan-probe.S
@@ -178,8 +178,13 @@ if ! grep -q '^\[REJECT\].*3 live-domain timer program' "$scan_probe_log"; then
     exit 1
 fi
 echo "ok: scanner rejected the planted live-counter probe"
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" --kernel-vmlinux \
+    "$arm64_object_root/vmlinux" \
+    "$arm64_object_root/arch/arm64/boot/Image"
 python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" \
-    "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+python3 "$GUEST_DIR/scripts/aa5-counter-scan.py" --embedded-vdso \
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 
 # LL/SC permits implementation-dependent spurious STXR failures that can change
 # guest-visible control flow across hosts. The config removes the known fallback
@@ -209,8 +214,37 @@ if ! grep -q '^\[BANNED\].*: 2 LL/SC exclusive instruction(s)$' "$exclusive_prob
     exit 1
 fi
 echo "ok: scanner rejected the planted LDXR/STXR probe"
-python3 "$exclusive_scan" \
-    "$arm64_object_root/vmlinux" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+exclusive_data_probe=$BUILD_ROOT/aa4-exclusive-data-probe.S
+exclusive_data_elf=$BUILD_ROOT/aa4-exclusive-data-probe
+cat >"$exclusive_data_probe" <<'EOF'
+.section .text,"ax"
+.global _start
+_start:
+	b hidden
+.section .rodata,"a"
+.align 2
+hidden:
+	ldxr w0, [x1]
+	mov x8, #93
+	svc #0
+EOF
+cc -nostdlib -static -Wl,-e,_start -Wl,-z,noseparate-code \
+    -o "$exclusive_data_elf" "$exclusive_data_probe"
+if python3 "$exclusive_scan" "$exclusive_data_elf" >"$exclusive_probe_log" 2>&1; then
+    echo "FAIL: AA-4 exclusive scanner accepted executable .rodata LDXR" >&2
+    exit 1
+fi
+if ! grep -q '^\[BANNED\].*: 1 LL/SC exclusive instruction(s)$' "$exclusive_probe_log"; then
+    echo "FAIL: AA-4 exclusive scanner did not identify executable .rodata LDXR" >&2
+    cat "$exclusive_probe_log" >&2
+    exit 1
+fi
+echo "ok: scanner rejected the executable .rodata LDXR probe"
+python3 "$exclusive_scan" --kernel-vmlinux "$arm64_object_root/vmlinux" \
+    "$arm64_object_root/arch/arm64/boot/Image"
+python3 "$exclusive_scan" "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so.dbg"
+python3 "$exclusive_scan" --embedded-vdso \
+    "$arm64_object_root/arch/arm64/kernel/vdso/vdso.so"
 
 install -m 0644 "$arm64_object_root/arch/arm64/boot/Image" "$ARM64_ART_DIR/$arm64_output"
 echo "ok: $ARM64_ART_DIR/$arm64_output"

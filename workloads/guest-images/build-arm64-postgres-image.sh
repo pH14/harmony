@@ -79,7 +79,7 @@ mkdir -p "$pg_object"
     cd "$pg_object"
     CC="$musl_cc" \
     CFLAGS='-O2 -march=armv8.1-a+lse -mno-outline-atomics' \
-    LDFLAGS='-static' \
+    LDFLAGS='-static -Wl,-z,separate-code' \
         "$pg_source/configure" \
         --prefix="$guest_prefix" \
         --disable-rpath --disable-nls --without-icu --without-readline --without-zlib
@@ -127,6 +127,13 @@ done
 sed 's/^CONFIG_EXTRA_CFLAGS=""$/CONFIG_EXTRA_CFLAGS="-march=armv8.1-a+lse -mno-outline-atomics"/' \
     "$busybox_object/.config" >"$busybox_object/.config.tmp"
 mv "$busybox_object/.config.tmp" "$busybox_object/.config"
+grep -qxF 'CONFIG_EXTRA_LDFLAGS=""' "$busybox_object/.config" || {
+    echo "FAIL: arm64 postgres BusyBox default linker flags changed" >&2
+    exit 1
+}
+sed 's/^CONFIG_EXTRA_LDFLAGS=""$/CONFIG_EXTRA_LDFLAGS="-Wl,-z,separate-code"/' \
+    "$busybox_object/.config" >"$busybox_object/.config.tmp"
+mv "$busybox_object/.config.tmp" "$busybox_object/.config"
 set +o pipefail
 yes '' | make -C "$BBSRC" O="$busybox_object" oldconfig >/dev/null
 set -o pipefail
@@ -138,6 +145,10 @@ for symbol in STATIC BUSYBOX ASH SH_IS_ASH MOUNT MKNOD CHMOD CHOWN CHROOT \
         exit 1
     }
 done
+grep -qxF 'CONFIG_EXTRA_LDFLAGS="-Wl,-z,separate-code"' "$busybox_object/.config" || {
+    echo "FAIL: arm64 postgres BusyBox lost separate-code linker flags" >&2
+    exit 1
+}
 
 echo "== arm64 postgres image: assembling OCI rootfs"
 rm -rf "$container_root"

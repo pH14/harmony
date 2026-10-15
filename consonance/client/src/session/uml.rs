@@ -12,7 +12,7 @@ use environment::{
     input_spec::{ServiceConfig, ServiceFactory},
 };
 use sha2::{Digest, Sha256};
-use uml::{Bridge, Capture, Checkpoint, Checkpoints, ExitReason, Launch, Stop, VerifiedProfile};
+use uml::{Bridge, Capture, Checkpoint, Checkpoints, Launch, Stop, VerifiedProfile};
 
 use super::{SdkEvent, SearchSession, SessionError, UmlLaunch};
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
@@ -285,13 +285,9 @@ impl UmlSession {
         Ok(())
     }
 
-    fn crash(
-        &mut self,
-        moment: u64,
-        reason: Option<ExitReason>,
-    ) -> Result<StopReason, Box<dyn Error>> {
+    fn crash(&mut self, moment: u64) -> Result<StopReason, Box<dyn Error>> {
         let limit = self.progress_limit;
-        let terminal_reason = match self.live()?.settle_terminal_console(reason, limit) {
+        let terminal_reason = match self.live()?.settle_terminal_console(limit) {
             Ok(reason) => reason,
             Err(error) => return Err(self.abandon(error)),
         };
@@ -582,10 +578,7 @@ impl SearchSession for UmlSession {
             Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
                 vtime: Moment(moment),
             }),
-            Ok(Stop::Stopped(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_)))) => {
-                self.crash(latest, Some(reason))
-            }
-            Ok(Stop::Closed) => self.crash(latest, None),
+            Ok(Stop::Closed) => self.crash(latest),
             Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
                 "the guest stopped at {stop:?}"
             )))),

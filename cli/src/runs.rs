@@ -584,6 +584,7 @@ mod checkpoint_tests {
             checkpoint_owner: owner.map(str::to_owned),
             reason: "interval".into(),
             workload_identity_sha256: String::new(),
+            executable_identity: String::new(),
             campaign_seed: seed,
             window: 1,
             archive_entry_limit: 8,
