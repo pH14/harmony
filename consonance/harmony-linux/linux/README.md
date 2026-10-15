@@ -127,8 +127,9 @@ before `startup_64`, and the scan rejects direct branches into that padding.
 Indirect or computed transfers into the executable compressed payload and code
 copied out of data
 require separate admission review. The decompressor's other reviewed data
-sections are raw-scanned for counter and hardware-RNG instruction bytes, so a
-near or far return into those sections cannot reach such an instruction.
+sections are raw-scanned for counter and hardware-RNG instruction bytes,
+including encodings split across address-adjacent PT_LOADs. A near or far
+return cannot start one of those instructions in the reviewed data itself.
 Direct branches from the 32-bit head seed an i386 reachability scan through
 executable decompressor sections. It restarts decoding at every reachable
 branch target, including a target inside an earlier instruction, and checks
