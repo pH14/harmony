@@ -22,6 +22,13 @@ longer needed.
 Outer archives and layers are copied into private staging before admission and
 extraction, so replacing a source archive after its members are checked cannot
 change the bytes extracted into the guest image.
+For OCI layouts, the selected manifest and config are parsed from the same
+bytes whose descriptor size and SHA-256 are checked. Each layer's descriptor is
+checked against its private archive copy before that copy is validated and
+extracted. Unsupported or malformed digest names fail closed. The index selects
+the manifest; callers that cache or pin a layout must bind the index as well as
+the referenced blobs. Prepared execution identity binds the final rootfs and
+runtime configuration, including when the selected index entry changes.
 
 `PreparedExecution` owns the deterministic rootfs and platform control
 segments, the resolved `ExecutionSpec`, and a SHA-256 identity. The rootfs is

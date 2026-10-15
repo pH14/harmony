@@ -5,6 +5,7 @@ pub use crate::credentials::{CredentialsError, ProcessCredentials};
 use crate::exact;
 use guest_image::Owner;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
@@ -37,6 +38,16 @@ pub enum ImageError {
     InvalidRuntimeField { field: &'static str },
     #[error("image names a path outside its layout or rootfs: {0}")]
     UnsafePath(String),
+    #[error("OCI descriptor has an unsupported or malformed digest: {0}")]
+    InvalidDigest(String),
+    #[error("OCI descriptor {digest} declares {expected} bytes but contains {actual}")]
+    DescriptorSize {
+        digest: String,
+        expected: u64,
+        actual: u64,
+    },
+    #[error("OCI descriptor {0} does not match its blob's SHA-256")]
+    DescriptorDigest(String),
     #[error("image path is non-ASCII and not portable across host filesystems: {0}")]
     NonPortableName(String),
     #[error("image path {path:?} aliases {other:?} on case-insensitive hosts")]
@@ -310,7 +321,13 @@ fn stage_from_path(input: &Path, stage_dir: &Path) -> Result<StagedImage, ImageE
     let mut owners = Ownership::default();
     let mut portable_names = BTreeMap::new();
     for layer in &layers {
-        apply_layer_tracked(layer, &rootfs, &mut owners, &mut portable_names)?;
+        apply_layer_tracked(
+            &layer.path,
+            &rootfs,
+            &mut owners,
+            &mut portable_names,
+            layer.descriptor.as_ref(),
+        )?;
     }
     Ok(StagedImage {
         rootfs,
@@ -327,15 +344,26 @@ struct DockerSaveManifestEntry {
     layers: Vec<String>,
 }
 
-fn docker_save_layers(layout: &Path) -> Result<(Vec<PathBuf>, Vec<u8>), ImageError> {
+#[derive(Debug)]
+struct Layer {
+    path: PathBuf,
+    descriptor: Option<OciDescriptor>,
+}
+
+fn docker_save_layers(layout: &Path) -> Result<(Vec<Layer>, Vec<u8>), ImageError> {
     let manifest: Vec<DockerSaveManifestEntry> =
         serde_json::from_slice(&std::fs::read(contained_join(layout, "manifest.json")?)?)?;
     let entry = manifest.into_iter().next().ok_or(ImageError::NoConfig)?;
     let layers = entry
         .layers
         .iter()
-        .map(|l| contained_join(layout, l))
-        .collect::<Result<_, _>>()?;
+        .map(|l| {
+            Ok(Layer {
+                path: contained_join(layout, l)?,
+                descriptor: None,
+            })
+        })
+        .collect::<Result<Vec<_>, ImageError>>()?;
     let config = std::fs::read(contained_join(layout, &entry.config)?)?;
     Ok((layers, config))
 }
@@ -344,9 +372,10 @@ fn docker_save_layers(layout: &Path) -> Result<(Vec<PathBuf>, Vec<u8>), ImageErr
 struct OciIndex {
     manifests: Vec<OciDescriptor>,
 }
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct OciDescriptor {
     digest: String,
+    size: u64,
 }
 #[derive(Deserialize)]
 struct OciManifest {
@@ -355,26 +384,90 @@ struct OciManifest {
 }
 
 fn blob_path(layout: &Path, digest: &str) -> Result<PathBuf, ImageError> {
-    let relative = digest.replace(':', "/");
-    check_relative(Path::new(&relative))?;
-    if Path::new(&relative).components().next().is_none() {
-        return Err(ImageError::UnsafePath(digest.to_string()));
-    }
-    contained_join(layout, &format!("blobs/{relative}"))
+    let encoded = sha256_suffix(digest)?;
+    contained_join(layout, &format!("blobs/sha256/{encoded}"))
 }
 
-fn oci_layout_layers(layout: &Path) -> Result<(Vec<PathBuf>, Vec<u8>), ImageError> {
+fn sha256_suffix(digest: &str) -> Result<&str, ImageError> {
+    let Some(encoded) = digest.strip_prefix("sha256:") else {
+        return Err(ImageError::InvalidDigest(digest.to_string()));
+    };
+    if encoded.len() != 64
+        || !encoded
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ImageError::InvalidDigest(digest.to_string()));
+    }
+    Ok(encoded)
+}
+
+fn verify_descriptor(
+    descriptor: &OciDescriptor,
+    actual_size: u64,
+    actual_digest: impl std::fmt::LowerHex,
+) -> Result<(), ImageError> {
+    sha256_suffix(&descriptor.digest)?;
+    if actual_size != descriptor.size {
+        return Err(ImageError::DescriptorSize {
+            digest: descriptor.digest.clone(),
+            expected: descriptor.size,
+            actual: actual_size,
+        });
+    }
+    if descriptor.digest != format!("sha256:{actual_digest:x}") {
+        return Err(ImageError::DescriptorDigest(descriptor.digest.clone()));
+    }
+    Ok(())
+}
+
+fn read_verified_blob(layout: &Path, descriptor: &OciDescriptor) -> Result<Vec<u8>, ImageError> {
+    let bytes = std::fs::read(blob_path(layout, &descriptor.digest)?)?;
+    verify_descriptor(descriptor, bytes.len() as u64, Sha256::digest(&bytes))?;
+    Ok(bytes)
+}
+
+fn verify_pinned_archive(
+    pinned: &tempfile::NamedTempFile,
+    descriptor: &OciDescriptor,
+) -> Result<(), ImageError> {
+    let mut file = pinned.reopen()?;
+    let mut hasher = Sha256::new();
+    let mut size = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        size = size
+            .checked_add(read as u64)
+            .ok_or_else(|| ImageError::DescriptorSize {
+                digest: descriptor.digest.clone(),
+                expected: descriptor.size,
+                actual: u64::MAX,
+            })?;
+        hasher.update(&buffer[..read]);
+    }
+    verify_descriptor(descriptor, size, hasher.finalize())
+}
+
+fn oci_layout_layers(layout: &Path) -> Result<(Vec<Layer>, Vec<u8>), ImageError> {
     let index: OciIndex =
         serde_json::from_slice(&std::fs::read(contained_join(layout, "index.json")?)?)?;
     let first = index.manifests.first().ok_or(ImageError::NoConfig)?;
-    let manifest: OciManifest =
-        serde_json::from_slice(&std::fs::read(blob_path(layout, &first.digest)?)?)?;
+    let manifest: OciManifest = serde_json::from_slice(&read_verified_blob(layout, first)?)?;
     let layers = manifest
         .layers
-        .iter()
-        .map(|l| blob_path(layout, &l.digest))
-        .collect::<Result<_, _>>()?;
-    let config = std::fs::read(blob_path(layout, &manifest.config.digest)?)?;
+        .into_iter()
+        .map(|descriptor| {
+            Ok(Layer {
+                path: blob_path(layout, &descriptor.digest)?,
+                descriptor: Some(descriptor),
+            })
+        })
+        .collect::<Result<Vec<_>, ImageError>>()?;
+    let config = read_verified_blob(layout, &manifest.config)?;
     Ok((layers, config))
 }
 
@@ -1436,11 +1529,12 @@ fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
 }
 
 fn pin_archive(archive: &Path, staging: &Path) -> Result<tempfile::NamedTempFile, ImageError> {
-    let pinned = tempfile::Builder::new()
+    let mut source = std::fs::File::open(archive)?;
+    let mut pinned = tempfile::Builder::new()
         .prefix("checked-archive-")
         .suffix(".tar")
         .tempfile_in(staging)?;
-    std::fs::copy(archive, pinned.path())?;
+    std::io::copy(&mut source, pinned.as_file_mut())?;
     Ok(pinned)
 }
 
@@ -1625,7 +1719,7 @@ fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
 
 #[cfg(test)]
 fn apply_layer(layer: &Path, rootfs: &Path, owners: &mut Ownership) -> Result<(), ImageError> {
-    apply_layer_tracked(layer, rootfs, owners, &mut BTreeMap::new())
+    apply_layer_tracked(layer, rootfs, owners, &mut BTreeMap::new(), None)
 }
 
 fn apply_layer_tracked(
@@ -1633,10 +1727,14 @@ fn apply_layer_tracked(
     rootfs: &Path,
     owners: &mut Ownership,
     portable_names: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+    descriptor: Option<&OciDescriptor>,
 ) -> Result<(), ImageError> {
     check_portable_staging_root(rootfs)?;
     let staging = rootfs.parent().unwrap_or(rootfs);
     let pinned = pin_archive(layer, staging)?;
+    if let Some(descriptor) = descriptor {
+        verify_pinned_archive(&pinned, descriptor)?;
+    }
     let members = read_members(pinned.path())?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
@@ -1800,6 +1898,50 @@ fn apply_whiteouts(
 mod tests {
     use super::*;
 
+    struct OciFixture {
+        manifest: PathBuf,
+        config: PathBuf,
+        layers: Vec<PathBuf>,
+    }
+
+    fn write_oci_blob(layout: &Path, bytes: &[u8]) -> (serde_json::Value, PathBuf) {
+        let encoded = format!("{:x}", Sha256::digest(bytes));
+        let digest = format!("sha256:{encoded}");
+        let directory = layout.join("blobs/sha256");
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join(encoded);
+        std::fs::write(&path, bytes).unwrap();
+        (
+            serde_json::json!({"digest": digest, "size": bytes.len()}),
+            path,
+        )
+    }
+
+    fn write_oci_layout(layout: &Path, config: &[u8], layers: &[&[u8]]) -> OciFixture {
+        std::fs::create_dir_all(layout).unwrap();
+        let (config_descriptor, config) = write_oci_blob(layout, config);
+        let (layer_descriptors, layers): (Vec<_>, Vec<_>) = layers
+            .iter()
+            .map(|bytes| write_oci_blob(layout, bytes))
+            .unzip();
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "config": config_descriptor,
+            "layers": layer_descriptors
+        }))
+        .unwrap();
+        let (manifest_descriptor, manifest) = write_oci_blob(layout, &manifest);
+        std::fs::write(
+            layout.join("index.json"),
+            serde_json::to_vec(&serde_json::json!({"manifests": [manifest_descriptor]})).unwrap(),
+        )
+        .unwrap();
+        OciFixture {
+            manifest,
+            config,
+            layers,
+        }
+    }
+
     #[test]
     fn public_credential_resolver_preserves_explicit_ids() {
         let rootfs = tempfile::tempdir().unwrap();
@@ -1867,31 +2009,36 @@ mod tests {
     #[test]
     fn blob_path_splits_the_digest() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join("blobs/sha256")).unwrap();
-        std::fs::write(dir.path().join("blobs/sha256/abc"), b"blob").unwrap();
+        let (descriptor, path) = write_oci_blob(dir.path(), b"blob");
         assert_eq!(
-            blob_path(dir.path(), "sha256:abc").unwrap(),
-            dir.path().canonicalize().unwrap().join("blobs/sha256/abc")
+            blob_path(dir.path(), descriptor["digest"].as_str().unwrap()).unwrap(),
+            path.canonicalize().unwrap()
         );
     }
 
     #[test]
     fn blob_path_refuses_a_symlinked_layout() {
         let dir = tempfile::tempdir().unwrap();
+        let encoded = format!("{:x}", Sha256::digest(b"secret"));
+        let digest = format!("sha256:{encoded}");
         let outside = dir.path().join("outside/sha256");
         std::fs::create_dir_all(&outside).unwrap();
-        std::fs::write(outside.join("m"), b"secret").unwrap();
+        std::fs::write(outside.join(&encoded), b"secret").unwrap();
 
         let via_dir = dir.path().join("via-dir");
         std::fs::create_dir_all(&via_dir).unwrap();
         std::os::unix::fs::symlink(dir.path().join("outside"), via_dir.join("blobs")).unwrap();
-        let err = blob_path(&via_dir, "sha256:m").unwrap_err();
+        let err = blob_path(&via_dir, &digest).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
 
         let via_blob = dir.path().join("via-blob");
         std::fs::create_dir_all(via_blob.join("blobs/sha256")).unwrap();
-        std::os::unix::fs::symlink(outside.join("m"), via_blob.join("blobs/sha256/m")).unwrap();
-        let err = blob_path(&via_blob, "sha256:m").unwrap_err();
+        std::os::unix::fs::symlink(
+            outside.join(&encoded),
+            via_blob.join("blobs/sha256").join(&encoded),
+        )
+        .unwrap();
+        let err = blob_path(&via_blob, &digest).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
     }
 
@@ -1909,12 +2056,23 @@ mod tests {
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
 
         std::fs::remove_file(layout.join("index.json")).unwrap();
+        let encoded = format!("{:x}", Sha256::digest(br#"{"manifests":[]}"#));
         std::fs::write(
             layout.join("index.json"),
-            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
+            serde_json::to_vec(&serde_json::json!({
+                "manifests": [{
+                    "digest": format!("sha256:{encoded}"),
+                    "size": br#"{"manifests":[]}"#.len()
+                }]
+            }))
+            .unwrap(),
         )
         .unwrap();
-        std::os::unix::fs::symlink(outside.join("secret"), layout.join("blobs/sha256/m")).unwrap();
+        std::os::unix::fs::symlink(
+            outside.join("secret"),
+            layout.join("blobs/sha256").join(&encoded),
+        )
+        .unwrap();
         let err = oci_layout_layers(&layout).unwrap_err();
         assert!(matches!(err, ImageError::UnsafePath(_)), "{err:?}");
     }
@@ -1946,11 +2104,19 @@ mod tests {
 
     #[test]
     fn blob_path_refuses_a_traversing_digest() {
-        for digest in ["sha256:../../etc/passwd", "..:..", "/etc:passwd", ""] {
+        for digest in [
+            "sha256:../../etc/passwd",
+            "sha512:abcd",
+            "sha256:ABCDEF",
+            "sha256:abc",
+            "..:..",
+            "/etc:passwd",
+            "",
+        ] {
             assert!(
                 matches!(
                     blob_path(Path::new("/l"), digest),
-                    Err(ImageError::UnsafePath(_))
+                    Err(ImageError::InvalidDigest(_))
                 ),
                 "{digest} was accepted"
             );
@@ -1994,30 +2160,108 @@ mod tests {
         std::fs::write(dir.path().join("l2.tar"), b"").unwrap();
         let (layers, config) = docker_save_layers(dir.path()).unwrap();
         let real = dir.path().canonicalize().unwrap();
-        assert_eq!(layers, [real.join("l1.tar"), real.join("l2.tar")]);
+        assert_eq!(
+            layers.iter().map(|layer| &layer.path).collect::<Vec<_>>(),
+            [&real.join("l1.tar"), &real.join("l2.tar")]
+        );
         assert_eq!(config, b"{\"config\":{}}");
     }
 
     #[test]
     fn oci_layout_resolves_blobs_through_the_index() {
         let dir = tempfile::tempdir().unwrap();
-        let blobs = dir.path().join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(
-            dir.path().join("index.json"),
-            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            blobs.join("m"),
-            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(blobs.join("c"), b"cfg").unwrap();
-        std::fs::write(blobs.join("l"), b"").unwrap();
+        let fixture = write_oci_layout(dir.path(), b"cfg", &[b""]);
         let (layers, config) = oci_layout_layers(dir.path()).unwrap();
-        assert_eq!(layers, [blobs.canonicalize().unwrap().join("l")]);
+        assert_eq!(layers[0].path, fixture.layers[0].canonicalize().unwrap());
         assert_eq!(config, b"cfg");
+    }
+
+    #[test]
+    fn staging_rejects_modified_oci_manifest_config_and_layer_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let original_layer = tar_layer(dir.path(), "original", &[("marker", b"ORIGINAL")]);
+        let replacement_layer = tar_layer(dir.path(), "replacement", &[("marker", b"SPOOFED!")]);
+        let original_layer = std::fs::read(original_layer).unwrap();
+        let replacement_layer = std::fs::read(replacement_layer).unwrap();
+        assert_eq!(original_layer.len(), replacement_layer.len());
+        let original_config = br#"{"config":{"Cmd":["ORIGINAL"]}}"#;
+        let replacement_config = br#"{"config":{"Cmd":["SPOOFED!"]}}"#;
+        assert_eq!(original_config.len(), replacement_config.len());
+        let fixture = write_oci_layout(&layout, original_config, &[&original_layer]);
+
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("stage-original")).unwrap();
+        assert_eq!(staged.config.cmd, ["ORIGINAL"]);
+        assert_eq!(
+            std::fs::read(staged.rootfs.join("marker")).unwrap(),
+            b"ORIGINAL"
+        );
+
+        std::fs::write(&fixture.config, replacement_config).unwrap();
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("stage-config")),
+            Err(ImageError::DescriptorDigest(_))
+        ));
+        std::fs::write(&fixture.config, original_config).unwrap();
+
+        std::fs::write(&fixture.layers[0], &replacement_layer).unwrap();
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("stage-layer")),
+            Err(ImageError::DescriptorDigest(_))
+        ));
+        std::fs::write(&fixture.layers[0], &original_layer).unwrap();
+
+        let original_manifest = std::fs::read(&fixture.manifest).unwrap();
+        let (replacement_descriptor, _) = write_oci_blob(&layout, &replacement_layer);
+        let mut changed: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+        changed["layers"][0] = replacement_descriptor;
+        let changed = serde_json::to_vec(&changed).unwrap();
+        assert_eq!(original_manifest.len(), changed.len());
+        std::fs::write(&fixture.manifest, changed).unwrap();
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("stage-manifest")),
+            Err(ImageError::DescriptorDigest(_))
+        ));
+    }
+
+    #[test]
+    fn staging_rejects_oci_descriptor_size_mismatches() {
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let layer = tar_layer(dir.path(), "layer", &[("marker", b"data")]);
+        let layer = std::fs::read(layer).unwrap();
+        let fixture = write_oci_layout(&layout, br#"{"config":{}}"#, &[&layer]);
+        std::fs::write(&fixture.layers[0], [&layer[..], b" "].concat()).unwrap();
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("stage")),
+            Err(ImageError::DescriptorSize { .. })
+        ));
+    }
+
+    #[test]
+    fn staging_checks_the_compressed_layer_blob_not_just_its_tar_contents() {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let layout = dir.path().join("layout");
+        let tarball = tar_layer(dir.path(), "layer", &[("marker", b"data")]);
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(&std::fs::read(tarball).unwrap()).unwrap();
+        let compressed = encoder.finish().unwrap();
+        let fixture = write_oci_layout(&layout, br#"{"config":{}}"#, &[&compressed]);
+        let staged = stage(layout.to_str().unwrap(), &dir.path().join("valid")).unwrap();
+        assert_eq!(
+            std::fs::read(staged.rootfs.join("marker")).unwrap(),
+            b"data"
+        );
+
+        let mut changed = compressed;
+        changed[4] ^= 1;
+        std::fs::write(&fixture.layers[0], changed).unwrap();
+        assert!(matches!(
+            stage(layout.to_str().unwrap(), &dir.path().join("changed-header")),
+            Err(ImageError::DescriptorDigest(_))
+        ));
     }
 
     fn tar_layer(dir: &Path, name: &str, files: &[(&str, &[u8])]) -> PathBuf {
@@ -2105,21 +2349,9 @@ mod tests {
         std::fs::copy(old_layer, docker.join("layer.tar")).unwrap();
 
         let oci = dir.path().join("oci");
-        let blobs = oci.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(
-            oci.join("index.json"),
-            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            blobs.join("m"),
-            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(blobs.join("c"), br#"{"config":{"Cmd":["/new"]}}"#).unwrap();
         let new_layer = tar_layer(dir.path(), "new-layer", &[("new", b"new")]);
-        std::fs::copy(new_layer, blobs.join("l")).unwrap();
+        let new_layer = std::fs::read(new_layer).unwrap();
+        write_oci_layout(&oci, br#"{"config":{"Cmd":["/new"]}}"#, &[&new_layer]);
 
         let archive = |layout: &Path, name: &str, entries: &[&str]| {
             let path = dir.path().join(name);
@@ -2572,10 +2804,10 @@ mod tests {
         );
         let mut owners = Ownership::default();
         let mut names = BTreeMap::new();
-        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names, None).unwrap();
 
         assert!(matches!(
-            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names),
+            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names, None),
             Err(ImageError::CaseCollision { .. })
         ));
         let entries: Vec<_> = std::fs::read_dir(&rootfs)
@@ -2625,10 +2857,10 @@ mod tests {
         );
         let mut owners = Ownership::default();
         let mut names = BTreeMap::new();
-        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names, None).unwrap();
 
         assert!(matches!(
-            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names),
+            apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names, None),
             Err(ImageError::CaseCollision { .. })
         ));
         assert_eq!(std::fs::read(rootfs.join("Foo")).unwrap(), b"lower");
@@ -2655,8 +2887,8 @@ mod tests {
         );
         let mut owners = Ownership::default();
         let mut names = BTreeMap::new();
-        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names).unwrap();
-        apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names).unwrap();
+        apply_layer_tracked(&lower, &rootfs, &mut owners, &mut names, None).unwrap();
+        apply_layer_tracked(&upper, &rootfs, &mut owners, &mut names, None).unwrap();
 
         assert_eq!(std::fs::read(rootfs.join("foo")).unwrap(), b"upper");
         assert_eq!(std::fs::read_dir(&rootfs).unwrap().count(), 1);
@@ -2707,19 +2939,7 @@ mod tests {
     fn layout_type_ignores_a_case_alias_symlinked_manifest() {
         let dir = tempfile::tempdir().unwrap();
         let layout = dir.path().join("layout");
-        let blobs = layout.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(
-            layout.join("index.json"),
-            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            blobs.join("m"),
-            br#"{"config":{"digest":"sha256:c"},"layers":[]}"#,
-        )
-        .unwrap();
-        std::fs::write(blobs.join("c"), br#"{"config":{}}"#).unwrap();
+        write_oci_layout(&layout, br#"{"config":{}}"#, &[]);
         std::os::unix::fs::symlink("INDEX.JSON", layout.join("manifest.json")).unwrap();
 
         let staged = stage(layout.to_str().unwrap(), &dir.path().join("stage")).unwrap();
@@ -2730,19 +2950,7 @@ mod tests {
     fn staging_refuses_a_case_aliased_layout_path() {
         let dir = tempfile::tempdir().unwrap();
         let layout = dir.path().join("layout");
-        let blobs = layout.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(
-            layout.join("index.json"),
-            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            blobs.join("m"),
-            br#"{"config":{"digest":"sha256:c"},"layers":[]}"#,
-        )
-        .unwrap();
-        std::fs::write(blobs.join("c"), br#"{"config":{}}"#).unwrap();
+        write_oci_layout(&layout, br#"{"config":{}}"#, &[]);
 
         let aliased = dir.path().join("LAYOUT");
         assert!(matches!(
@@ -5998,19 +6206,6 @@ mod tests {
     fn staging_carries_layer_ownership_into_the_rootfs_segment() {
         let dir = tempfile::tempdir().unwrap();
         let layout = dir.path().join("layout");
-        let blobs = layout.join("blobs/sha256");
-        std::fs::create_dir_all(&blobs).unwrap();
-        std::fs::write(
-            layout.join("index.json"),
-            br#"{"manifests":[{"digest":"sha256:m"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(
-            blobs.join("m"),
-            br#"{"config":{"digest":"sha256:c"},"layers":[{"digest":"sha256:l"}]}"#,
-        )
-        .unwrap();
-        std::fs::write(blobs.join("c"), br#"{"config":{"Cmd":["/node"]}}"#).unwrap();
         let layer = [
             raw_member_owned(b"var/", b'5', "", b"", Owner::ROOT),
             raw_member_owned(b"var/data/", b'5', "", b"", SERVICE),
@@ -6018,7 +6213,8 @@ mod tests {
             raw_member(b"node", b'0', "", b"#!/bin/sh"),
         ]
         .concat();
-        std::fs::write(blobs.join("l"), [layer, vec![0u8; 1024]].concat()).unwrap();
+        let layer = [layer, vec![0u8; 1024]].concat();
+        write_oci_layout(&layout, br#"{"config":{"Cmd":["/node"]}}"#, &[&layer]);
 
         let stage_dir = dir.path().join("stage");
         std::fs::create_dir_all(&stage_dir).unwrap();
