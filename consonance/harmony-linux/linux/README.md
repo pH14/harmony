@@ -128,7 +128,8 @@ Indirect or computed transfers into the executable compressed payload and code
 copied out of data
 require separate admission review. The decompressor's other reviewed data
 sections are raw-scanned for counter and hardware-RNG instruction bytes,
-including encodings split across address-adjacent PT_LOADs. A near or far
+including encodings split across any chain of address-adjacent PT_LOADs, even
+when a middle load contains only one byte. A near or far
 return cannot start one of those instructions in the reviewed data itself.
 Direct branches from the 32-bit head seed an i386 reachability scan through
 executable decompressor sections. It restarts decoding at every reachable
