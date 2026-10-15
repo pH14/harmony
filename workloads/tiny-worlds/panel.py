@@ -125,6 +125,10 @@ def requests(seeds: int) -> list[dict]:
         trap = {"family": "trap", "parameters": {"length": 12, "pattern": pattern(12), "trap_len": 2, "rooms": 1}}
         rows.append(request("trap/ranked", trap, seed))
         rows.append(request("trap/control", trap, seed, broken=True))
+        orb = {"family": "orb", "parameters": {"length": 16, "first": 3, "orbs": 3, "gap": 3, "dead_len": 4,
+                                               "rooms": 1, "pattern": secrets.randbits(32)}}
+        rows.append(request("orb/visible", orb, seed))
+        rows.append(request("orb/hidden", orb, seed, broken=True))
         stages = [(pattern(16), pattern(12)) for _ in range(4)]
         rows += [
             request("chain/flat", chain(False, False, "place", False, stages), seed),
@@ -519,6 +523,10 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("backtrack: identity slowest", f"{shown('backtrack/identity')} vs {shown('backtrack/tier')}",
          low("backtrack/identity") > high("backtrack/tier")),
         ("backtrack: control mostly unsolved", f"{solved('backtrack/control')}/{n}", solved("backtrack/control") <= third),
+        ("orb: with the held press hidden, the goal unsolved on at least half the seeds",
+         f"{solved('orb/hidden')}/{n}", solved("orb/hidden") <= n // 2),
+        ("orb: with the held press in the key, the goal solves", f"{solved('orb/visible')}/{n}",
+         solved("orb/visible") >= most),
         ("chain: flat mostly unsolved", f"{solved('chain/flat')}/{n}", solved("chain/flat") <= third),
         ("chain: ranked stages solve", f"{solved('chain/ranked')}/{n}", solved("chain/ranked") >= most),
         ("chain: ranked stages and upgrade solve", f"{solved('chain/ranked_upgrade')}/{n}", solved("chain/ranked_upgrade") >= most),

@@ -2,7 +2,7 @@
 
 use crate::{
     Key, actions, backtrack, chain, crossing, deadline, deadline_actions, delayed, fork, graph,
-    map, maze, passive_clock, resource, route, targets, trap,
+    map, maze, orb, passive_clock, resource, route, targets, trap,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,7 @@ pub enum World {
     PassiveClock(passive_clock::Config),
     Targets(targets::Config),
     Fork(fork::Config),
+    Orb(orb::Config),
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -50,6 +51,7 @@ pub enum State {
     PassiveClock(passive_clock::State),
     Targets(targets::State),
     Fork(fork::State),
+    Orb(orb::State),
 }
 
 impl World {
@@ -71,6 +73,7 @@ impl World {
             Self::PassiveClock(w) => w.validate(),
             Self::Targets(w) => w.validate(),
             Self::Fork(w) => w.validate(),
+            Self::Orb(w) => w.validate(),
         }
     }
     pub fn valid_state(&self, state: State) -> bool {
@@ -96,6 +99,7 @@ impl World {
                 (Self::PassiveClock(w), State::PassiveClock(s)) => w.valid_state(s),
                 (Self::Targets(w), State::Targets(s)) => w.state_is_bounded(s),
                 (Self::Fork(w), State::Fork(s)) => w.state_is_bounded(s),
+                (Self::Orb(w), State::Orb(s)) => w.state_is_bounded(s),
                 _ => false,
             }
     }
@@ -117,6 +121,7 @@ impl World {
             Self::PassiveClock(w) => State::PassiveClock(w.initial()),
             Self::Targets(w) => State::Targets(w.initial()),
             Self::Fork(w) => State::Fork(w.initial()),
+            Self::Orb(w) => State::Orb(w.initial()),
         }
     }
     pub fn step(&self, state: State, action: u8) -> State {
@@ -141,6 +146,7 @@ impl World {
             }
             (Self::Targets(w), State::Targets(s)) => State::Targets(w.step(s, action)),
             (Self::Fork(w), State::Fork(s)) => State::Fork(w.step(s, action)),
+            (Self::Orb(w), State::Orb(s)) => State::Orb(w.step(s, action)),
             _ => panic!("world and state family mismatch"),
         }
     }
@@ -162,6 +168,7 @@ impl World {
             (Self::PassiveClock(w), State::PassiveClock(s)) => w.goal(s),
             (Self::Targets(w), State::Targets(s)) => w.goal(s),
             (Self::Fork(w), State::Fork(s)) => w.goal(s),
+            (Self::Orb(w), State::Orb(s)) => w.goal(s),
             _ => false,
         }
     }
@@ -183,6 +190,7 @@ impl World {
             Self::PassiveClock(w) => w.reachable(),
             Self::Targets(w) => w.reachable(),
             Self::Fork(w) => w.reachable(),
+            Self::Orb(w) => w.reachable(),
         }
     }
     pub fn key(&self, state: State, broken: bool) -> Key {
@@ -203,6 +211,7 @@ impl World {
             (Self::PassiveClock(w), State::PassiveClock(s)) => w.key(s, broken),
             (Self::Targets(w), State::Targets(s)) => w.key(s, broken),
             (Self::Fork(w), State::Fork(s)) => w.key(s, broken),
+            (Self::Orb(w), State::Orb(s)) => w.key(s, broken),
             _ => panic!("world and state family mismatch"),
         }
     }

@@ -122,6 +122,7 @@ representation or action choice affects the same world transitions.
 | `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
 | `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
 | `fork` | Take the fork action that leads to the goal while the other route, easier to walk, runs further and keeps opening side rooms before it dead-ends. | Hide the side rooms from the key. |
+| `orb` | Press at each orb after a release; holding the button through an orb drops to a floor route that runs past the last orb, opens side rooms, and dead-ends. | Hide whether the button is held from the key. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -415,6 +416,29 @@ live route until the live route passes them. The control keys every side room
 as its position. `evidence.fork_first` gives the first work on the live route,
 past the dead route's last position, and at the goal.
 
+## Orb press
+
+The orb world reproduces a Famidash stall. In level 11 (Clutterfunk) four
+gravity orbs follow each other within about 110 pixels. An orb fires only on a
+new press of A, or on a press buffered while the cube was in the air. A run
+that keeps A held from the previous orb misses the next one, falls to the
+floor, runs about 400 pixels further right than the orbs, and dies. A key
+without the press state gives the held and the released arrival at one cell
+the same key, and the first holder keeps the cell.
+
+Each action advances one position. Actions 1 and 3 hold the button and actions
+0 and 2 release it. The orbs sit at `first`, then every `gap` positions, `orbs`
+in all. A live arrival at an orb needs a held action after a released one;
+any other action there enters the floor at the same position. The floor
+advances on every action, and its explore action, chosen by the pattern, opens
+the next of up to `rooms` side rooms, which key as separate places. The floor
+ends at the last orb plus `dead_len`, below `length`, and its next action
+returns to the start. The goal is the live position `length`. The tier is the
+position on either route, so the floor's deepest tiers rank above the live
+route until the live route passes them. The key carries whether the button is
+held; the control drops it. `evidence.orb_first` gives the first work live
+past the last orb, live past the floor's last position, and at the goal.
+
 ## Configuration bounds
 
 Every parameter is required except the optional map fields. Bounds keep
@@ -435,13 +459,14 @@ family's and passive clock's reachability hold by construction.
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
+| Orb | `length` up to 63; `first`, `orbs` and `dead_len` at least 1; `gap` 2–8; the last orb plus `dead_len` below `length`; `rooms` 0–16; `pattern` encodes two-bit actions per position. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, and `fork` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, `fork`, and `orb` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
@@ -531,6 +556,7 @@ executable instead of the fresh build.
 | Unwinnable top rank | Trap world with the item ranked against the same world with the item hidden, on the same seed. The item raises the tier and makes the goal unreachable, so the search must leave the top tier to reach the goal. The ranked run takes under 60x the hidden run's median work, and the hidden run's median stays under 1,300 work. Over 600 seeds the current searcher measures 15.5x and 572 work; six-seed medians exceed 60x in 0.03% of 20,000 resamples and never exceed 1,300 work. Every job from the item's room stays in its place, so the doubling suffix grows those jobs toward 64 actions and the ranked run's work comes mostly from draws on the top tier. Drawing the top tier at its full rank weight whatever it yields misses the goal within 20,000 work on 294 of 300 seeds, and fails the first rule in every six-seed resample. |
 | Retention | Two-stage chain under `portfolio` and `capacity_two`; the rule expects equal work. |
 | Backtracking | Backtrack world with items ranked, split by identity, kept as a preference, or hidden. |
+| Orb press | Orb world with the held state in the key against the same world with it hidden, on the same seed, 20,000 work. The visible run solves on at least two thirds of the seeds and the hidden run misses on at least half. Over 150 seeds the visible run solved all 150 and the hidden run 24; six-seed samples break the hidden rule with probability under 1%. |
 | Chains | Sixteen-stage chains: flat, ranked stages, ranked stages with ranked upgrades, and kept boss credit. |
 | Growing gaps | Eight-by-eight map with the item ranked or hidden, one layout per seed; the return trip is shorter than the first trip, and per room of path the walk from the door to the goal takes longer than the return trip. |
 | Farm loop | Eight-by-eight map with `inner` 20 and 4 farms against the same layout and seed without farms, 200,000 work each. The median ratio of the trip from leaving the item region to the goal stays under 10x, which six-seed medians on the current searcher stayed below in 20,000 resamples of 300 pairs. The current searcher measures 5.87x. Resetting a cell's draw count only on its 1st, 2nd, 4th, 8th and later carried-in preference win measures 2.50x, with six-seed medians up to 4.47x in 20,000 resamples. That change is clearly bad on the gauntlet worlds: net extra goal misses are 9.0% of layouts, and 12.9% with hidden timing. |
