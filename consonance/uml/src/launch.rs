@@ -42,6 +42,10 @@ static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
 #[cfg(test)]
 static TEST_EVENT_CUT_FINISH_READY: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
+pub(crate) static TEST_EXIT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+pub(crate) static TEST_EXIT_FINISH_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
 pub(crate) static TEST_HOLD_TERMINAL_CONSOLE: AtomicBool = AtomicBool::new(false);
 #[cfg(test)]
 pub(crate) static TEST_TERMINAL_CONSOLE_PID: AtomicI32 = AtomicI32::new(0);
@@ -733,6 +737,12 @@ impl Guest {
             && TEST_EVENT_CUT_FINISH_PID.load(Ordering::Acquire) == self.pid
         {
             TEST_EVENT_CUT_FINISH_READY.store(true, Ordering::Release);
+        }
+        #[cfg(test)]
+        if reason == ExitReason::Exited(0)
+            && TEST_EXIT_FINISH_PID.load(Ordering::Acquire) == self.pid
+        {
+            TEST_EXIT_FINISH_READY.store(true, Ordering::Release);
         }
         if leftovers.is_empty()
             && let Some(reader) = self.reader.take()

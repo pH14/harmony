@@ -1546,6 +1546,7 @@ mod tests {
             fn drop(&mut self) {
                 crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(false, Ordering::Release);
                 crate::launch::TEST_TERMINAL_CONSOLE_PID.store(0, Ordering::Release);
+                crate::launch::TEST_EXIT_FINISH_PID.store(0, Ordering::Release);
             }
         }
 
@@ -1573,6 +1574,8 @@ mod tests {
         crate::launch::TEST_TERMINAL_CONSOLE_READY.store(false, Ordering::Release);
         crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(true, Ordering::Release);
         crate::launch::TEST_TERMINAL_CONSOLE_PID.store(pid, Ordering::Release);
+        crate::launch::TEST_EXIT_FINISH_READY.store(false, Ordering::Release);
+        crate::launch::TEST_EXIT_FINISH_PID.store(pid, Ordering::Release);
         let _release = ReleaseReader;
         std::fs::write(release, []).unwrap();
         let deadline = now() + Duration::from_secs(5);
@@ -1605,8 +1608,19 @@ mod tests {
         );
         assert!(session.console_tail().is_empty());
         assert_eq!(session.run_until(1).unwrap(), Stop::Closed);
-        crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(false, Ordering::Release);
+        let release_reader = std::thread::spawn(|| {
+            let deadline = now() + Duration::from_secs(5);
+            while !crate::launch::TEST_EXIT_FINISH_READY.load(Ordering::Acquire) {
+                if now() >= deadline {
+                    crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(false, Ordering::Release);
+                    panic!("guest did not enter finish with Exited(0)");
+                }
+                std::thread::yield_now();
+            }
+            crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(false, Ordering::Release);
+        });
         let exit = session.run().unwrap();
+        release_reader.join().unwrap();
         assert_eq!(exit.reason, ExitReason::ConsoleLimit);
         assert_eq!(exit.console_bytes, 16);
         assert_eq!(exit.console, b"abcdefghijklmnop");
