@@ -271,8 +271,7 @@ def decompressor_head_32(data, sections, path):
     code_end = address + len(head_bytes.rstrip(b"\0"))
     decoded = [item for item in decoded if item[0] < code_end]
     require_complete_head(decoded, address, code_end, "32-bit")
-    if not decoded or code_end < boundary \
-            and instruction_mnemonic(decoded[-1][2]) != "lret":
+    if not decoded or instruction_mnemonic(decoded[-1][2]) != "lret":
         raise ValueError("incomplete 32-bit decompressor head")
     return boundary, decoded
 
@@ -393,7 +392,7 @@ def scan_symbol_restarts(data, programs, sections, tag, path):
         if flags & 4 and kind == 1 and size
         and (tag == "vmlinux" or name in (".text", ".head.text"))
     }
-    if not names:
+    if not names and tag != "decompressor":
         return
     head_boundary, head_32 = (
         decompressor_head_32(data, sections, path)
@@ -665,6 +664,28 @@ def unclaimed_opcode(data, programs, sections, tag, path):
             f"executable section {name} in PT_LOAD {index} can fall through into loaded bytes"
         )
     scan_symbol_restarts(data, programs, sections, tag, path)
+    if reviewed_data_hit is not None:
+        return reviewed_data_hit
+    if tag == "decompressor":
+        heads = [
+            (address, offset, size) for name, kind, flags, address, offset, size in sections
+            if name == ".head.text" and kind == 1 and flags & 2 and flags & 4 and size
+        ]
+        if len(heads) != 1:
+            raise ValueError("missing/duplicate executable decompressor head")
+        head_address, head_offset, head_size = heads[0]
+        if sum(
+            kind == 1 and offset <= head_offset
+            and head_offset + head_size <= offset + size
+            and head_address - address == head_offset - offset
+            for _index, kind, _flags, offset, address, size, _memory_size in programs
+        ) != 1:
+            raise ValueError("decompressor head is not in one loaded segment")
+        if head_address != min(
+            address for _name, kind, flags, address, _offset, size in sections
+            if flags & 2 and kind != 8 and size
+        ):
+            raise ValueError("decompressor head is not the first loaded section")
     return reviewed_data_hit
 
 

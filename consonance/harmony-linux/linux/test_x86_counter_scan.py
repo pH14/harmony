@@ -17,6 +17,29 @@ def run(*args):
     subprocess.run(args, check=True, capture_output=True, text=True)
 
 
+def safe_decompressor_bytes(root):
+    elf = root / "safe-decompressor.elf"
+    if not elf.exists():
+        source = root / "safe-decompressor.s"
+        source.write_text(
+            '.section .head.text,"ax"\n.code32\n'
+            '.global startup_32\nstartup_32:\nlret\n'
+            '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+            'ret\n.fill 15,1,0xcc\n'
+            '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+        )
+        linker = root / "safe-decompressor.ld"
+        linker.write_text(
+            "PHDRS { all PT_LOAD FLAGS(5); }\n"
+            "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+            ".text : { *(.text) } :all }\n"
+        )
+        obj = root / "safe-decompressor.o"
+        run("as", "--64", "-o", str(obj), str(source))
+        run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_32", "-o", str(elf), str(obj))
+    return elf.read_bytes()
+
+
 def scan_decompressor_32_graph(path):
     spec = importlib.util.spec_from_file_location("scan_unclaimed_opcodes", SCAN_UNCLAIMED)
     scanner = importlib.util.module_from_spec(spec)
@@ -155,8 +178,9 @@ class CounterScanCoverage(unittest.TestCase):
             setup.parent.mkdir(parents=True)
             decompressor.parent.mkdir(parents=True)
             safe_bytes = (root / "safe.elf").read_bytes()
-            for target in (kernel, setup, decompressor):
+            for target in (kernel, setup):
                 target.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -167,7 +191,7 @@ class CounterScanCoverage(unittest.TestCase):
                 for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                     kernel.write_bytes(safe_bytes)
                     setup.write_bytes(safe_bytes)
-                    decompressor.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_decompressor_bytes(root))
                     target.write_bytes(hidden_bytes)
                     with self.subTest(mode=mode, target=tag):
                         result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -193,7 +217,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes(hidden_bytes)
                 with self.subTest(mode="allocated", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -212,7 +236,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes(inert_bytes)
                 with self.subTest(mode="inert-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -239,7 +263,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes(data_bytes)
                 with self.subTest(mode="read-only-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -269,7 +293,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes(duplicate_bytes)
                 with self.subTest(mode="duplicate-rodata", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -397,7 +421,7 @@ class CounterScanCoverage(unittest.TestCase):
                 for target, tag in targets:
                     kernel.write_bytes(safe_bytes)
                     setup.write_bytes(safe_bytes)
-                    decompressor.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_decompressor_bytes(root))
                     target.write_bytes(boundary_bytes)
                     with self.subTest(mode=mode, target=tag):
                         result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -426,7 +450,7 @@ class CounterScanCoverage(unittest.TestCase):
                 run("ld", "-nostdlib", "-T", str(split_linker), "-e", "_start", "-o", str(elf), str(obj))
                 kernel.write_bytes(elf.read_bytes())
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 with self.subTest(mode=mode, target="vmlinux"):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -447,7 +471,7 @@ class CounterScanCoverage(unittest.TestCase):
             )
             kernel.write_bytes((root / "split-load-long.elf").read_bytes())
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="split-load-long-gap", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -472,7 +496,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes((root / "split-load-data.elf").read_bytes())
                 with self.subTest(mode="split-load-nonexecutable-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -492,7 +516,7 @@ class CounterScanCoverage(unittest.TestCase):
             struct.pack_into("<Q", overlap, load_headers[1] + 16, first_address)
             kernel.write_bytes(overlap)
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="overlapping-loads", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -530,7 +554,7 @@ class CounterScanCoverage(unittest.TestCase):
             run("ld", "-nostdlib", "-T", str(bss_linker), "-e", "_start", "-o", str(bss_elf), str(bss_obj))
             kernel.write_bytes(bss_elf.read_bytes())
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="split-load-bss-gap", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -548,7 +572,7 @@ class CounterScanCoverage(unittest.TestCase):
             )
             kernel.write_bytes((root / "boundary-control.elf").read_bytes())
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="boundary-control", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -567,7 +591,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes((root / "boundary-fenced.elf").read_bytes())
                 with self.subTest(mode="boundary-fenced-reviewed-data", target=tag):
                     result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -589,7 +613,7 @@ class CounterScanCoverage(unittest.TestCase):
             )
             kernel.write_bytes((root / "boundary-short-fence.elf").read_bytes())
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="boundary-short-fence", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -636,7 +660,11 @@ class CounterScanCoverage(unittest.TestCase):
                 ),
                 (
                     "intel64-displacement",
-                    '.section .text,"ax"\n.global _start\n_start:\n'
+                    '.section .head.text,"ax"\n.code32\n'
+                    '.global startup_32\nstartup_32:\nlret\n'
+                    '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                    'ret\n.fill 15,1,0xcc\n'
+                    '.section .text,"ax"\n.global _start\n_start:\n.fill 16,1,0x90\n'
                     'or $1,%eax\n'
                     '.byte 0x66,0x0f,0x84,0x00,0x00,0xef,0x00,0x0f,0x31\n'
                     'mov %eax,%edi\nmov $60,%eax\nsyscall\n',
@@ -648,7 +676,12 @@ class CounterScanCoverage(unittest.TestCase):
                 obj = root / f"{mode}.o"
                 elf = root / f"{mode}.elf"
                 run("as", "--64", "-o", str(obj), str(asm))
-                run("ld", "-nostdlib", "-e", "_start", "-o", str(elf), str(obj))
+                if mode == "intel64-displacement":
+                    safe_decompressor_bytes(root)
+                    run("ld", "-nostdlib", "-T", str(root / "safe-decompressor.ld"),
+                        "-e", "startup_32", "-o", str(elf), str(obj))
+                else:
+                    run("ld", "-nostdlib", "-e", "_start", "-o", str(elf), str(obj))
                 hazard_bytes = elf.read_bytes()
                 if mode == "symbol-restart-gt-name":
                     self.assertIn(b"reset_decode\0", hazard_bytes)
@@ -669,7 +702,7 @@ class CounterScanCoverage(unittest.TestCase):
                 for target, tag in ((kernel, "vmlinux"), (decompressor, "decompressor")):
                     kernel.write_bytes(safe_bytes)
                     setup.write_bytes(safe_bytes)
-                    decompressor.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_decompressor_bytes(root))
                     target.write_bytes(hazard_bytes)
                     with self.subTest(mode=mode, target=tag):
                         result = subprocess.run(
@@ -698,7 +731,7 @@ class CounterScanCoverage(unittest.TestCase):
                 for target, tag in ((kernel, "vmlinux"), (decompressor, "decompressor")):
                     kernel.write_bytes(safe_bytes)
                     setup.write_bytes(safe_bytes)
-                    decompressor.write_bytes(safe_bytes)
+                    decompressor.write_bytes(safe_decompressor_bytes(root))
                     target.write_bytes(far_branch_elf.read_bytes())
                     with self.subTest(mode=far_mnemonic, target=tag):
                         result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
@@ -722,7 +755,7 @@ class CounterScanCoverage(unittest.TestCase):
             )
             kernel.write_bytes(tail_elf.read_bytes())
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="symbol-tail-restart", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -741,7 +774,7 @@ class CounterScanCoverage(unittest.TestCase):
             self.assertIn(b".saft\0", duplicate_bytes)
             kernel.write_bytes(duplicate_bytes.replace(b".saft\0", b".safe\0", 1))
             setup.write_bytes(safe_bytes)
-            decompressor.write_bytes(safe_bytes)
+            decompressor.write_bytes(safe_decompressor_bytes(root))
             with self.subTest(mode="duplicate-code-name", target="vmlinux"):
                 result = subprocess.run(["bash", str(SCAN), str(kernel)], capture_output=True, text=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -788,6 +821,10 @@ class CounterScanCoverage(unittest.TestCase):
             root = Path(directory)
             hazard = root / "hazard.s"
             hazard.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'ret\n.fill 15,1,0xcc\n'
                 '.section .text,"ax"\n.global _start\n_start:\njmp entropy_site\n'
                 '.fill 15,1,0xcc\n'
                 '.section .rodata,"a"\n.global entropy_site\nentropy_site:\n'
@@ -796,7 +833,8 @@ class CounterScanCoverage(unittest.TestCase):
             linker = root / "layout.ld"
             linker.write_text(
                 "PHDRS { all PT_LOAD FLAGS(5); }\n"
-                "SECTIONS { . = 0x400000; .text : { *(.text) } :all "
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all "
                 ".rodata : { *(.rodata) } :all }\n"
             )
             run("as", "--64", "-o", str(root / "hazard.o"), str(hazard))
@@ -818,7 +856,7 @@ class CounterScanCoverage(unittest.TestCase):
             for target, tag in ((kernel, "vmlinux"), (decompressor, "decompressor")):
                 kernel.write_bytes(safe_bytes)
                 setup.write_bytes(safe_bytes)
-                decompressor.write_bytes(safe_bytes)
+                decompressor.write_bytes(safe_decompressor_bytes(root))
                 target.write_bytes(hazard_bytes)
                 with self.subTest(target=tag):
                     result = subprocess.run(
@@ -865,7 +903,8 @@ class CounterScanCoverage(unittest.TestCase):
                 hazard.write_text(
                     '.section .head.text,"ax"\n.global startup_32\nstartup_32:\n'
                     + head32
-                    + '.fill 27,1,0xcc\n.global startup_64\nstartup_64:\n'
+                    + ('.fill 27,1,0xcc\n' if mode == "split32" else 'lret\n.balign 512,0\n')
+                    + '.global startup_64\nstartup_64:\n'
                     + ('jmp entropy_site\n' if mode == "head64" else 'ret\n')
                     + '.fill 15,1,0xcc\n'
                     + '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
@@ -1253,6 +1292,76 @@ class CounterScanCoverage(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("reviewed-data RDTSC", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_head_must_end_before_64_bit_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "fallthrough-head.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\n.fill 512,1,0x90\n'
+                '.code64\n.global startup_64\nstartup_64:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+            )
+            linker = root / "fallthrough-head.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all }\n"
+            )
+            obj = root / "fallthrough-head.o"
+            elf = root / "fallthrough-head.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_32", "-o", str(elf), str(obj))
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"decompressor={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("incomplete 32-bit decompressor head", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_decompressor_requires_head_at_first_loaded_address(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for mode in ("missing", "after-text"):
+                assembly = root / f"{mode}.s"
+                assembly.write_text(
+                    '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
+                    + (
+                        '.section .head.text,"ax"\n.code32\n'
+                        '.global startup_32\nstartup_32:\nlret\n'
+                        '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                        'ret\n.fill 15,1,0xcc\n'
+                        if mode == "after-text" else ""
+                    )
+                )
+                linker = root / f"{mode}.ld"
+                linker.write_text(
+                    "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                    "SECTIONS { . = 0x400000; .text : { *(.text) } :all "
+                    + (".head.text : { *(.head.text) } :all " if mode == "after-text" else "")
+                    + "}\n"
+                )
+                obj = root / f"{mode}.o"
+                elf = root / f"{mode}.elf"
+                run("as", "--64", "-o", str(obj), str(assembly))
+                run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_32" if mode == "after-text" else "0x400000", "-o", str(elf), str(obj))
+                with self.subTest(mode=mode):
+                    result = subprocess.run(
+                        ["python3", str(SCAN_UNCLAIMED), f"decompressor={elf}"],
+                        capture_output=True, text=True,
+                    )
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("decompressor head", result.stderr)
 
 
 if __name__ == "__main__":
