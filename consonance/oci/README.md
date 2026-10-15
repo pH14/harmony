@@ -24,6 +24,8 @@ admission and extraction. The compressed copy is decoded once into a second
 anonymous staging file; member validation and tar extraction use that same
 decoded copy. Both held files have 64 KiB chunks with recorded SHA-256 digests,
 and each reader verifies a chunk into a private buffer before using it.
+The parser checks headers while recording the decoded tar and drains trailing
+zero padding without storing it; extraction receives a normalized terminator.
 Replacing a source pathname, changing a held file, or making an external
 decompressor return different output on another invocation cannot substitute
 unreviewed extracted bytes. Archives remain disk-streamed; memory use is one
