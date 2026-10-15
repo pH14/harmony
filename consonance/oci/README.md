@@ -19,12 +19,15 @@ directory. Reusing that directory, including after a failed stage, cannot carry
 files from an earlier image into the next guest rootfs or its identity. The
 caller owns the staging directory and removes it when the prepared image is no
 longer needed.
-Outer archives and layers are copied into private staging before admission and
-extraction, so replacing a source archive after its members are checked cannot
-change the bytes extracted into the guest image.
+Outer archives and layers are copied into anonymous staging files before
+admission and extraction. Member validation, decompression, and tar extraction
+read the held file descriptor, so replacing a source archive or staging
+pathname after validation cannot change the bytes extracted into the guest
+image. The archive remains streamed through files and child standard input
+rather than buffered in process memory.
 For OCI layouts, the selected manifest and config are parsed from the same
 bytes whose descriptor size and SHA-256 are checked. Each layer's descriptor is
-checked against its private archive copy before that copy is validated and
+checked against its anonymous archive copy before that copy is validated and
 extracted. Unsupported or malformed digest names fail closed. The index selects
 the manifest; callers that cache or pin a layout must bind the index as well as
 the referenced blobs. Prepared execution identity binds the final rootfs and

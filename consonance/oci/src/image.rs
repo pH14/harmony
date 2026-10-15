@@ -8,7 +8,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
@@ -428,10 +428,11 @@ fn read_verified_blob(layout: &Path, descriptor: &OciDescriptor) -> Result<Vec<u
 }
 
 fn verify_pinned_archive(
-    pinned: &tempfile::NamedTempFile,
+    pinned: &std::fs::File,
     descriptor: &OciDescriptor,
 ) -> Result<(), ImageError> {
-    let mut file = pinned.reopen()?;
+    let mut file = pinned.try_clone()?;
+    file.seek(SeekFrom::Start(0))?;
     let mut hasher = Sha256::new();
     let mut size = 0u64;
     let mut buffer = [0u8; 64 * 1024];
@@ -933,14 +934,15 @@ impl Drop for ArchiveReader {
     }
 }
 
-fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
-    let file = std::fs::File::open(archive)?;
+fn open_archive(mut file: std::fs::File) -> Result<ArchiveReader, ImageError> {
+    file.seek(SeekFrom::Start(0))?;
     let mut magic = Vec::with_capacity(6);
-    file.take(6).read_to_end(&mut magic)?;
+    file.by_ref().take(6).read_to_end(&mut magic)?;
+    file.seek(SeekFrom::Start(0))?;
     if magic.starts_with(&[0x1f, 0x8b]) {
         return Ok(ArchiveReader {
             reader: Box::new(flate2::bufread::MultiGzDecoder::new(
-                std::io::BufReader::new(std::fs::File::open(archive)?),
+                std::io::BufReader::new(file),
             )),
             child: None,
         });
@@ -953,26 +955,21 @@ fn open_archive(archive: &Path) -> Result<ArchiveReader, ImageError> {
         "bzip2"
     } else {
         return Ok(ArchiveReader {
-            reader: Box::new(std::io::BufReader::with_capacity(
-                64 * 1024,
-                std::fs::File::open(archive)?,
-            )),
+            reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, file)),
             child: None,
         });
     };
     let mut child = archive_tool(tool)
         .arg("-dc")
-        .arg(archive)
+        .stdin(Stdio::from(file))
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|err| ImageError::Tar(format!("{tool} is needed to read this layer: {err}")))?;
-    let stdout = child.stdout.take().ok_or_else(|| {
-        ImageError::Tar(format!(
-            "{tool} produced no output for {}",
-            archive.display()
-        ))
-    })?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| ImageError::Tar(format!("{tool} produced no output for this layer")))?;
     Ok(ArchiveReader {
         reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, stdout)),
         child: Some(child),
@@ -991,8 +988,13 @@ fn archive_tool(tool: &str) -> Command {
     command
 }
 
+#[cfg(test)]
 fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
-    let mut stream = open_archive(archive)?;
+    read_members_file(std::fs::File::open(archive)?)
+}
+
+fn read_members_file(file: std::fs::File) -> Result<Vec<Member>, ImageError> {
+    let mut stream = open_archive(file)?;
     let mut members: Vec<Member> = Vec::new();
     let mut long_name: Option<Vec<u8>> = None;
     let mut long_link: Option<Vec<u8>> = None;
@@ -1507,11 +1509,11 @@ fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
     check_portable_staging_root(dest)?;
     let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
-    let members = read_members(pinned.path())?;
+    let members = read_members_file(pinned.try_clone()?)?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
-    untar(pinned.path(), dest)
+    untar(&pinned, dest)
 }
 
 fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
@@ -1528,13 +1530,10 @@ fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
     Ok(())
 }
 
-fn pin_archive(archive: &Path, staging: &Path) -> Result<tempfile::NamedTempFile, ImageError> {
+fn pin_archive(archive: &Path, staging: &Path) -> Result<std::fs::File, ImageError> {
     let mut source = std::fs::File::open(archive)?;
-    let mut pinned = tempfile::Builder::new()
-        .prefix("checked-archive-")
-        .suffix(".tar")
-        .tempfile_in(staging)?;
-    std::io::copy(&mut source, pinned.as_file_mut())?;
+    let mut pinned = tempfile::tempfile_in(staging)?;
+    std::io::copy(&mut source, &mut pinned)?;
     Ok(pinned)
 }
 
@@ -1696,25 +1695,46 @@ fn resolve_under(
     Ok(Some(cursor))
 }
 
-fn untar(tarball: &Path, dest: &Path) -> Result<(), ImageError> {
-    let out = archive_tool("sh")
+fn untar(tarball: &std::fs::File, dest: &Path) -> Result<(), ImageError> {
+    let mut archive = open_archive(tarball.try_clone()?)?;
+    let mut stderr = tempfile::tempfile_in(dest.parent().unwrap_or(dest))?;
+    let mut child = archive_tool("sh")
         .arg("-c")
         .arg("umask 022; exec tar \"$@\"")
         .arg("tar")
         .arg("-xpf")
-        .arg(tarball)
+        .arg("-")
         .arg("--no-same-owner")
         .arg("--no-xattrs")
         .arg("-C")
         .arg(dest)
-        .output()?;
-    if out.status.success() {
-        Ok(())
-    } else {
-        Err(ImageError::Tar(
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        ))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(stderr.try_clone()?))
+        .spawn()?;
+    let mut input = child
+        .stdin
+        .take()
+        .ok_or_else(|| ImageError::Tar("tar produced no input pipe".into()))?;
+    let transferred = match std::io::copy(&mut archive, &mut input) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+            std::io::copy(&mut archive, &mut std::io::sink())
+                .map(|_| ())
+                .map_err(ImageError::from)
+        }
+        Err(error) => Err(error.into()),
+    };
+    drop(input);
+    let decoded = transferred.and_then(|()| archive.finish());
+    let status = child.wait()?;
+    if !status.success() {
+        stderr.seek(SeekFrom::Start(0))?;
+        let mut detail = String::new();
+        stderr.read_to_string(&mut detail)?;
+        return Err(ImageError::Tar(detail));
     }
+    decoded
 }
 
 #[cfg(test)]
@@ -1735,7 +1755,7 @@ fn apply_layer_tracked(
     if let Some(descriptor) = descriptor {
         verify_pinned_archive(&pinned, descriptor)?;
     }
-    let members = read_members(pinned.path())?;
+    let members = read_members_file(pinned.try_clone()?)?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
@@ -1743,7 +1763,7 @@ fn apply_layer_tracked(
     check_portable_staging_root(staged.path())?;
     let opaque_modes = apply_whiteouts(&members, rootfs)?;
     let implicit_dirs = implicit_layer_dirs(&members);
-    untar(pinned.path(), staged.path())?;
+    untar(&pinned, staged.path())?;
     let mut preserved_modes = BTreeMap::new();
     merge_layer(
         staged.path(),
@@ -2222,6 +2242,60 @@ mod tests {
             stage(layout.to_str().unwrap(), &dir.path().join("stage-manifest")),
             Err(ImageError::DescriptorDigest(_))
         ));
+    }
+
+    #[test]
+    fn staging_uses_the_verified_oci_layer_bytes_for_extraction() {
+        if let Some(layout) = std::env::var_os("HARMONY_OCI_PINNED_ARCHIVE_CHILD") {
+            let stage_dir =
+                PathBuf::from(std::env::var_os("HARMONY_OCI_PINNED_ARCHIVE_STAGE").unwrap());
+            let staged = stage(Path::new(&layout).to_str().unwrap(), &stage_dir).unwrap();
+            assert_eq!(
+                std::fs::read(staged.rootfs.join("marker")).unwrap(),
+                b"ORIGINAL"
+            );
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let original = tar_layer(dir.path(), "original", &[("marker", b"ORIGINAL")]);
+        let replacement = tar_layer(dir.path(), "replacement", &[("marker", b"SPOOFED!")]);
+        let original = std::fs::read(original).unwrap();
+        let replacement = std::fs::read(replacement).unwrap();
+        assert_eq!(original.len(), replacement.len());
+        let layout = dir.path().join("layout");
+        write_oci_layout(&layout, br#"{"config":{}}"#, &[&original]);
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::fs::write(bin.join("replacement"), replacement).unwrap();
+        let wrapper = bin.join("tar");
+        std::fs::write(
+            &wrapper,
+            b"#!/bin/sh\ndir=${0%/*}\nif [ \"$1\" = -xpf ]; then\n  case \"$2\" in\n    */checked-archive-*.tar) cat \"$dir/replacement\" > \"$2\"; touch \"$dir/swapped\" ;;\n    -) touch \"$dir/stdin\" ;;\n  esac\nfi\nexec /usr/bin/tar \"$@\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "image::tests::staging_uses_the_verified_oci_layer_bytes_for_extraction",
+            ])
+            .env("HARMONY_OCI_PINNED_ARCHIVE_CHILD", &layout)
+            .env("HARMONY_OCI_PINNED_ARCHIVE_STAGE", dir.path().join("stage"))
+            .env(
+                "PATH",
+                format!("{}:{}", bin.display(), std::env::var("PATH").unwrap()),
+            )
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(bin.join("stdin").exists());
+        assert!(!bin.join("swapped").exists());
     }
 
     #[test]
