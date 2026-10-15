@@ -291,6 +291,21 @@ class CounterScanCoverage(unittest.TestCase):
                     "incomplete instruction at executable section boundary",
                 ),
                 (
+                    "setup-code-data-mixed-mode-prefix",
+                    '.section .text,"ax"\n.global _start\n_start:\n'
+                    '.byte 0xb8,0x90,0x90,0x90,0x66\n'
+                    '.section .rodata,"a"\n.byte 0x0f,0x31,0xc3\n'
+                    '.section .safe,"ax"\n.byte 0xc3\n',
+                    "mixed-mode boundary RDTSC",
+                ),
+                (
+                    "code-data-code-desync",
+                    '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb8\n'
+                    '.section .rodata,"a"\n.byte 0x90\n'
+                    '.section .safe,"ax"\n.byte 0x90,0x90,0xb0,0x0f,0x31,0xc3\n',
+                    "boundary-desync RDTSC",
+                ),
+                (
                     "boundary-desync",
                     '.section .text,"ax"\n.global _start\n_start:\n.byte 0xb0\n'
                     '.section .safe,"ax"\n.byte 0xb8,0x0f,0x31,0x90,0x90,0xc3\n',
@@ -325,8 +340,10 @@ class CounterScanCoverage(unittest.TestCase):
                 run("ld", "-nostdlib", "-T", str(linker), "-e", "_start", "-o", str(elf), str(obj))
                 boundary_bytes = elf.read_bytes()
                 targets = ((kernel, "vmlinux"), (setup, "setup"), (decompressor, "decompressor"))
-                if mode.startswith("boundary-desync"):
+                if mode.startswith("boundary-desync") or mode == "code-data-code-desync":
                     targets = targets[:1]
+                elif mode == "setup-code-data-mixed-mode-prefix":
+                    targets = targets[1:2]
                 for target, tag in targets:
                     kernel.write_bytes(safe_bytes)
                     setup.write_bytes(safe_bytes)

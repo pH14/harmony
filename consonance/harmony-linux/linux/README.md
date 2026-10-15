@@ -93,19 +93,21 @@ not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden
 code in shortened, non-executable, separately allocated, and duplicate-name
 sections, and inert opcode-shaped data, in all three artifacts. A new data
 section name requires review before the image can be published. The raw segment
-walk also rejects an opcode split from code into adjacent code or reviewed data,
-and opcode-shaped bytes immediately after adjacent code sections. An x86
-instruction can cross a section boundary and change how the CPU decodes the
-next section, while section-by-section disassembly starts decoding it anew.
-The scan rejects an incomplete instruction starting in the final 14 bytes of
-a code section adjacent to another code section. This catches a truncated
-opcode followed by otherwise complete instructions and a prefix chain that
-shifts decoding farther than one maximum instruction length into the next
-section. Where reviewed data follows code in one loaded segment, a counter
-opcode at the start of that data or after data prefixes also triggers the tail
-check when code ends in a prefix. This rejects a split prefix and counter
-instruction without treating a complete instruction ending in a prefix-shaped
-operand as code.
+walk also rejects an opcode split from code into nearby code or reviewed data,
+and opcode-shaped code bytes within one maximum instruction length after a code
+section ends. An x86 instruction can cross a section or short data gap and
+change how the CPU decodes the next code section, while section-by-section
+disassembly starts decoding it anew. The scan rejects an incomplete instruction
+starting in the final 14 bytes of a code section when another code section
+begins within those 14 bytes. This catches a truncated opcode followed by
+otherwise complete instructions and a prefix chain that shifts decoding
+farther than one maximum instruction length into the next section. Where
+reviewed data follows 64-bit code in one loaded segment, a counter opcode at
+the start of that data or after data prefixes also triggers the tail check when
+code ends in a prefix. This avoids treating a complete instruction ending in a
+prefix-shaped operand as code. Setup and the decompressor's mode-mixed head
+instead reject counter encodings in the first 14 bytes after a code section:
+a 64-bit tail decode cannot prove where their 16-bit or 32-bit instructions end.
 For 64-bit kernel code and the decompressor's `.text`, the scanner disassembles
 both AMD64 and Intel64 modes; operand-size prefixes can change instruction
 boundaries on Intel hardware. ELF symbols can restart objdump inside an
