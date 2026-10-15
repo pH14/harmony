@@ -143,8 +143,9 @@ reset starts a new attempt. Portable adapter tests exercise preparation-failure
 evidence through the generic rollout, report serialization and checkpoint
 roundtrip without requiring KVM.
 
-The hosted qualification runs a bounded search and replays its complete stream,
-checking execution counts, work, coverage, stream digest and failure evidence.
+The hosted qualification runs a bounded search, replays its complete stream,
+then replays the replayed run. It checks execution counts, work, coverage,
+stream digest and failure evidence across all three reports.
 It attempts replay even when the search reports a failing assertion, preserving
 both exit statuses and logs while retaining the failed qualification result.
 The runner must expose KVM-supported VMX or SVM with NPT and

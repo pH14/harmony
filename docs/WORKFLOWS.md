@@ -275,11 +275,13 @@ KVM disassembly for review.
 On Intel VMX, the job also runs `inner_operation_api_smoke` and
 `sdk_operations::outer_operation_sdk_smoke`, then runs the standard
 `harmony search --package nested` with 100 executions and a five-minute wall
-budget, followed by a replay of its recorded campaign. Intel evidence includes the
-36 ordered operation-pair coverage mask, assertion failures and their layers,
-the campaign stream, and the replay report. The final evidence check requires
+budget, followed by a replay of its recorded campaign and a replay of that
+replayed run. Intel evidence includes the 36 ordered
+operation-pair coverage mask, assertion failures and their layers, the
+campaign stream, and both replay reports. The final evidence check requires
 nonzero executed work, a valid 36-bit pair mask, no failures, and matching
-execution counts, work, stream digest and coverage/failure evidence on replay.
+execution counts, work, stream digest and coverage/failure evidence across
+search and both replays.
 It writes `qualification.json` with the tested commit and measured budget use;
 archive-entry lists may differ because replay materializes final artifacts.
 The nested-host job accepts Intel VMX or AMD SVM with NPT, selected from
