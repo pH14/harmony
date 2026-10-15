@@ -582,9 +582,6 @@ impl SearchSession for UmlSession {
             Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
                 vtime: Moment(moment),
             }),
-            Ok(Stop::Stopped(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_)))) => {
-                self.crash(latest, Some(reason))
-            }
             Ok(Stop::Closed) => self.crash(latest, None),
             Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
                 "the guest stopped at {stop:?}"

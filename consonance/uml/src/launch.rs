@@ -41,6 +41,12 @@ const HIGH_FD: i32 = 10;
 static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
 #[cfg(test)]
 static TEST_EVENT_CUT_FINISH_READY: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_HOLD_TERMINAL_CONSOLE: AtomicBool = AtomicBool::new(false);
+#[cfg(test)]
+pub(crate) static TEST_TERMINAL_CONSOLE_PID: AtomicI32 = AtomicI32::new(0);
+#[cfg(test)]
+pub(crate) static TEST_TERMINAL_CONSOLE_READY: AtomicBool = AtomicBool::new(false);
 
 #[cfg(target_os = "linux")]
 fn fixed_host_layout(command: &mut Command) {
@@ -594,6 +600,13 @@ impl Guest {
                             }
                         }
                         if console_ready {
+                            #[cfg(test)]
+                            if TEST_TERMINAL_CONSOLE_PID.load(Ordering::Acquire) == pid {
+                                TEST_TERMINAL_CONSOLE_READY.store(true, Ordering::Release);
+                                while TEST_HOLD_TERMINAL_CONSOLE.load(Ordering::Acquire) {
+                                    std::thread::yield_now();
+                                }
+                            }
                             match read_console(
                                 &mut reader,
                                 &mut block,
