@@ -34,6 +34,9 @@ use sha2::{Digest, Sha256};
 
 pub use crate::SharedState;
 
+#[cfg(not(miri))]
+mod identity;
+
 pub const QUICKNES_REVISION: &str = "26bb785c9deddb66a17717b21bb4e328f03ade32";
 
 const QUICKNES_LIBRARY_VERSION: &str = "1.0-WIP26bb785c9deddb66a17717b21bb4e328f03ade32";
@@ -91,8 +94,8 @@ define_quicknes_options!(
 pub const QUICKNES_BUILD: &str =
     "DEBUG=0;OPTIMIZE=-O2;GIT_VERSION=26bb785c9deddb66a17717b21bb4e328f03ade32";
 
-const STATE_MAGIC: &[u8; 8] = b"HQNESST2";
-const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 8;
+const STATE_MAGIC: &[u8; 8] = b"HQNESST3";
+pub const STATE_HEADER_LEN: usize = 8 + 40 + 64 + 64 + 8;
 const QUICKNES_FILE_MAGIC: &[u8; 8] = b"NESS\xff\xff\xff\xff";
 const QUICKNES_BLOCK_HEADER_LEN: usize = 8;
 const QUICKNES_PPU_STATE_LEN: usize = 52;
@@ -214,6 +217,7 @@ impl CoreApi {
 #[cfg(not(miri))]
 struct Library {
     handle: usize,
+    base: usize,
     _private: PrivateCore,
 }
 
@@ -227,17 +231,49 @@ impl Library {
             ));
         }
         let path = private.loader_path();
+        let mut bases = identity::core_bases()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         // SAFETY: `path` names the still-open descriptor of the hashed private
         // image. RTLD_LOCAL keeps its exports out of the process namespace.
         let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        let open_error = (handle.is_null()).then(dl_error);
-        let unlink_result = private.unlink();
-        if let Some(error) = open_error {
+        if handle.is_null() {
+            let error = dl_error();
             return Err(MachineError::Backend(format!(
                 "could not load private QuickNES core: {error}"
             )));
         }
-        if let Err(error) = unlink_result {
+        // SAFETY: the non-null handle remains live; the symbol name is a
+        // static NUL-terminated string used to identify the loaded image.
+        let marker = unsafe { libc::dlsym(handle, c"retro_get_system_info".as_ptr()) };
+        let base = if marker.is_null() {
+            Err(MachineError::Backend(format!(
+                "QuickNES core is missing retro_get_system_info: {}",
+                dl_error()
+            )))
+        } else {
+            identity::validate_core_owner(
+                marker,
+                &path,
+                #[cfg(target_os = "macos")]
+                private
+                    .path
+                    .as_ref()
+                    .expect("macOS private image has a name"),
+            )
+        };
+        let base = match base {
+            Ok(base) => base,
+            Err(error) => {
+                // SAFETY: the non-null handle came from the successful dlopen
+                // above and has not been closed yet.
+                unsafe { libc::dlclose(handle) };
+                return Err(error);
+            }
+        };
+        bases.insert(base);
+        if let Err(error) = private.unlink() {
+            bases.remove(&base);
             // SAFETY: `handle` is non-null and came from the successful dlopen above.
             unsafe { libc::dlclose(handle) };
             return Err(MachineError::Backend(format!(
@@ -246,8 +282,35 @@ impl Library {
         }
         Ok(Self {
             handle: handle as usize,
+            base,
             _private: private,
         })
+    }
+
+    fn execution_sha256(&self, core_sha256: &str, api: CoreApi) -> Result<String, MachineError> {
+        let bindings = [
+            ("retro_set_environment", api.set_environment as usize),
+            ("retro_set_video_refresh", api.set_video_refresh as usize),
+            ("retro_set_audio_sample", api.set_audio_sample as usize),
+            (
+                "retro_set_audio_sample_batch",
+                api.set_audio_sample_batch as usize,
+            ),
+            ("retro_set_input_poll", api.set_input_poll as usize),
+            ("retro_set_input_state", api.set_input_state as usize),
+            ("retro_init", api.init as usize),
+            ("retro_deinit", api.deinit as usize),
+            ("retro_get_system_info", api.get_system_info as usize),
+            ("retro_load_game", api.load_game as usize),
+            ("retro_unload_game", api.unload_game as usize),
+            ("retro_run", api.run as usize),
+            ("retro_serialize_size", api.serialize_size as usize),
+            ("retro_serialize", api.serialize as usize),
+            ("retro_unserialize", api.unserialize as usize),
+            ("retro_get_memory_data", api.get_memory_data as usize),
+            ("retro_get_memory_size", api.get_memory_size as usize),
+        ];
+        identity::fingerprint(core_sha256, self.base, &bindings)
     }
 
     fn symbol(&self, name: &'static [u8]) -> Result<*mut c_void, MachineError> {
@@ -270,8 +333,12 @@ impl Library {
 #[cfg(not(miri))]
 impl Drop for Library {
     fn drop(&mut self) {
+        let mut bases = identity::core_bases()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         // SAFETY: this handle was returned by dlopen and is closed exactly once.
         unsafe { libc::dlclose(self.handle as *mut c_void) };
+        bases.remove(&self.base);
     }
 }
 
@@ -532,11 +599,24 @@ fn validate_core_revision(api: CoreApi) -> Result<(), MachineError> {
     Ok(())
 }
 
+#[cfg(not(miri))]
+pub fn prepared_execution_sha256(
+    core_path: &Path,
+    core_sha256: &str,
+) -> Result<String, MachineError> {
+    validate_sha256(core_sha256)?;
+    let library = Library::open_private(core_path, core_sha256)?;
+    let api = load_api(&library)?;
+    validate_core_revision(api)?;
+    library.execution_sha256(core_sha256, api)
+}
+
 pub struct QuickNesMachine {
     api: CoreApi,
     #[cfg(not(miri))]
     _library: Option<Library>,
     core_sha256: [u8; 64],
+    execution_sha256: [u8; 64],
     state_len: usize,
     snapshots: BTreeMap<u64, Vec<u8>>,
     next_snap: u64,
@@ -571,10 +651,38 @@ impl QuickNesMachine {
         core_path: &Path,
         core_sha256: &str,
     ) -> Result<Self, MachineError> {
+        Self::from_rom_bytes_inner(rom, core_path, core_sha256, None)
+    }
+
+    #[cfg(not(miri))]
+    pub fn from_rom_bytes_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        expected_execution_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        validate_sha256(expected_execution_sha256)?;
+        Self::from_rom_bytes_inner(rom, core_path, core_sha256, Some(expected_execution_sha256))
+    }
+
+    #[cfg(not(miri))]
+    fn from_rom_bytes_inner(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        expected_execution_sha256: Option<&str>,
+    ) -> Result<Self, MachineError> {
         let identity = validate_sha256(core_sha256)?;
         let library = Library::open_private(core_path, core_sha256)?;
         let api = load_api(&library)?;
+        let execution_sha256 = library.execution_sha256(core_sha256, api)?;
+        if expected_execution_sha256.is_some_and(|expected| expected != execution_sha256) {
+            return Err(MachineError::Backend(
+                "QuickNES loaded-image identity changed before worker initialization".to_owned(),
+            ));
+        }
         let mut machine = Self::from_api(rom, identity, api)?;
+        machine.execution_sha256 = validate_sha256(&execution_sha256)?;
         machine._library = Some(library);
         Ok(machine)
     }
@@ -642,6 +750,7 @@ impl QuickNesMachine {
             #[cfg(not(miri))]
             _library: None,
             core_sha256,
+            execution_sha256: core_sha256,
             state_len,
             snapshots: BTreeMap::new(),
             next_snap: 0,
@@ -859,7 +968,8 @@ impl QuickNesMachine {
         bytes[..8].copy_from_slice(STATE_MAGIC);
         bytes[8..48].copy_from_slice(QUICKNES_REVISION.as_bytes());
         bytes[48..112].copy_from_slice(&self.core_sha256);
-        bytes[112..120].copy_from_slice(&(self.state_len as u64).to_le_bytes());
+        bytes[112..176].copy_from_slice(&self.execution_sha256);
+        bytes[176..184].copy_from_slice(&(self.state_len as u64).to_le_bytes());
         // SAFETY: the output tail has exactly the size returned by the loaded
         // core, is writable for the call, and no alias reaches it.
         let okay = unsafe {
@@ -883,13 +993,14 @@ impl QuickNesMachine {
             || &bytes[..8] != STATE_MAGIC
             || &bytes[8..48] != QUICKNES_REVISION.as_bytes()
             || bytes[48..112] != self.core_sha256
+            || bytes[112..176] != self.execution_sha256
         {
             return Err(MachineError::Backend(
                 "snapshot is not compatible with this QuickNES revision/build".to_owned(),
             ));
         }
         let stored_len = u64::from_le_bytes(
-            bytes[112..120]
+            bytes[176..184]
                 .try_into()
                 .map_err(|_| MachineError::MalformedEnv)?,
         );
@@ -1889,7 +2000,7 @@ mod tests {
             let digest = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
             libraries.push(super::Library::open_private(&path, &digest).unwrap());
         }
-        assert_ne!(libraries[0].handle, libraries[1].handle);
+        assert_ne!(libraries[0].base, libraries[1].base);
         for (library, expected) in libraries.iter().zip([13, 27]) {
             let symbol = library.symbol(b"quicknes_image_marker\0").unwrap();
             // SAFETY: the fixture declares quicknes_image_marker with this ABI,
@@ -1899,6 +2010,99 @@ mod tests {
             assert_eq!(marker(), expected);
         }
         drop(libraries);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn native_loader_rejects_changed_non_system_helper_with_same_core_hash() {
+        use sha2::{Digest, Sha256};
+        use std::{fs, process::Command};
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-helper-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let core_source = directory.join("core.c");
+        let helper_source = directory.join("helper.c");
+        fs::write(
+            &core_source,
+            include_str!("../tests/fixtures/quicknes_helper_core.c"),
+        )
+        .unwrap();
+        #[cfg(target_os = "macos")]
+        let extension = "dylib";
+        #[cfg(target_os = "linux")]
+        let extension = "so";
+        let helper = directory.join(format!("libprobe.{extension}"));
+        let mut variants = Vec::new();
+        for value in [1, 2] {
+            fs::write(
+                &helper_source,
+                format!("int probe_value(void) {{ return {value}; }}\n"),
+            )
+            .unwrap();
+            let variant = directory.join(format!("libprobe-{value}.{extension}"));
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg(format!(
+                        "-Wl,{},{}",
+                        if cfg!(target_os = "macos") {
+                            "-install_name"
+                        } else {
+                            "-soname"
+                        },
+                        helper.display()
+                    ))
+                    .arg("-o")
+                    .arg(&variant)
+                    .arg(&helper_source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            variants.push(variant);
+        }
+        fs::copy(&variants[0], &helper).unwrap();
+        let core = directory.join(format!("core.{extension}"));
+        let mut compiler = Command::new("cc");
+        #[cfg(target_os = "macos")]
+        compiler.arg("-dynamiclib");
+        #[cfg(target_os = "linux")]
+        compiler.args(["-shared", "-fPIC"]);
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&core)
+                .arg(&core_source)
+                .arg(format!("-L{}", directory.display()))
+                .arg("-lprobe")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core).unwrap()));
+        for variant in variants {
+            fs::copy(variant, &helper).unwrap();
+            let error = super::prepared_execution_sha256(&core, &core_sha256).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("unsupported non-system QuickNES dependency"),
+                "{error}"
+            );
+            assert_eq!(
+                format!("{:x}", Sha256::digest(fs::read(&core).unwrap())),
+                core_sha256
+            );
+        }
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -2397,6 +2601,17 @@ mod tests {
             .expect("foreign core");
         let imported = foreign.import_snapshot(&canonical);
         assert!(foreign.replay(imported).is_err());
+
+        let mut foreign_execution = QuickNesMachine::loopback_for_tests(&[0]).unwrap();
+        foreign_execution.execution_sha256 =
+            validate_sha256(&"c".repeat(64)).expect("foreign execution");
+        let imported = foreign_execution.import_snapshot(&canonical);
+        assert!(foreign_execution.replay(imported).is_err());
+
+        let mut old_format = canonical;
+        old_format[..8].copy_from_slice(b"HQNESST2");
+        let imported = machine.import_snapshot(&old_format);
+        assert!(machine.replay(imported).is_err());
     }
 
     #[test]

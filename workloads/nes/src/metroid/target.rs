@@ -468,6 +468,40 @@ pub struct MetroidTarget {
 }
 
 impl MetroidTarget {
+    pub fn from_rom_bytes_headless_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+    ) -> Result<Self, MachineError> {
+        Self::from_rom_bytes_rooted_with_identity(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+            &power_on_walk(),
+            GenesisDepth::NewGame,
+        )
+    }
+
+    pub fn from_rom_bytes_rooted_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        prefix: &[ButtonChord],
+        depth: GenesisDepth,
+    ) -> Result<Self, MachineError> {
+        let image = nes::with_cartridge_ram(rom)?;
+        let machine = QuickNesMachine::from_rom_bytes_with_identity(
+            &image,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        )?;
+        Self::from_machine(machine, prefix, depth)
+    }
+
     pub fn from_rom_bytes_headless(
         rom: &[u8],
         core_path: &Path,
@@ -1030,13 +1064,16 @@ fn in_door_transition(door: u8) -> bool {
 }
 
 fn resource_ram_payload(bytes: &[u8], cartridge: bool) -> Option<usize> {
-    if bytes.get(..8)? != b"HQNESST2"
-        || bytes.get(120..128)? != b"NESS\xff\xff\xff\xff"
-        || u64::from_le_bytes(bytes.get(112..120)?.try_into().ok()?) != (bytes.len() - 120) as u64
+    let header = machine::quicknes::STATE_HEADER_LEN;
+    let payload_start = header.checked_add(8)?;
+    let state_len = bytes.len().checked_sub(header)?;
+    if bytes.get(..8)? != b"HQNESST3"
+        || bytes.get(header..payload_start)? != b"NESS\xff\xff\xff\xff"
+        || u64::from_le_bytes(bytes.get(header - 8..header)?.try_into().ok()?) != state_len as u64
     {
         return None;
     }
-    let mut offset = 128_usize;
+    let mut offset = payload_start;
     let mut found = None;
     while offset < bytes.len() {
         let end = offset.checked_add(8)?;
@@ -1234,8 +1271,11 @@ mod observation_tests {
             &changes
         ));
         let mut malformed = before.clone();
-        malformed[112] ^= 1;
+        malformed[machine::quicknes::STATE_HEADER_LEN - 8] ^= 1;
         assert!(resource_ram_payload(&malformed, false).is_none());
+        let mut previous_format = before.clone();
+        previous_format[..8].copy_from_slice(b"HQNESST2");
+        assert!(resource_ram_payload(&previous_format, false).is_none());
     }
 
     #[test]

@@ -285,7 +285,9 @@ workloads/nes/target/release/nes-progress metroid CORE ROM searched-input.json >
 ```
 
 The tool starts from ordinary new-game genesis, records named discoveries,
-repeats the replay, and includes ROM/core/input hashes. In its replay report,
+repeats the replay, and includes ROM/core/input hashes and the prepared native
+execution digest in its v3 report. Earlier reports lack the dependency identity
+and cannot be compared as the same replay. In its replay report,
 `first_seen.execution` counts tape actions, not historical search executions.
 For Mega Man 2, `nes-progress mm2 CORE ROM searched-power-on-prefix.json wily4`
 checks that the retained tape still reaches that stage through the current

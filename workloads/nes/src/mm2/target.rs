@@ -666,9 +666,15 @@ pub fn walk_to_stage_select(
     rom: &[u8],
     core_path: &Path,
     core_sha256: &str,
+    execution_sha256: &str,
     chords: &[ButtonChord],
 ) -> Result<Vec<ButtonChord>, MachineError> {
-    let mut machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+    let mut machine = QuickNesMachine::from_rom_bytes_with_identity(
+        rom,
+        core_path,
+        core_sha256,
+        execution_sha256,
+    )?;
     for chunk in chords.chunks(64) {
         run_chords(&mut machine, chunk)?;
     }
@@ -738,6 +744,43 @@ fn run_chords(machine: &mut QuickNesMachine, chords: &[ButtonChord]) -> Result<(
 }
 
 impl Mm2Target {
+    pub fn from_rom_bytes_after_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        prefix: &[ButtonChord],
+        stage: Mm2Stage,
+    ) -> Result<Self, MachineError> {
+        Self::from_machine(
+            QuickNesMachine::from_rom_bytes_with_identity(
+                rom,
+                core_path,
+                core_sha256,
+                execution_sha256,
+            )?,
+            prefix,
+            stage,
+            Mm2Route::Stage(stage),
+        )
+    }
+
+    pub fn whole_game_with_identity(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        root: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
+        let machine = QuickNesMachine::from_rom_bytes_with_identity(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        )?;
+        Self::whole_game_from_machine(machine, root)
+    }
+
     pub fn from_rom_bytes_headless_at_stage(
         rom: &[u8],
         core_path: &Path,
@@ -768,8 +811,16 @@ impl Mm2Target {
         core_sha256: &str,
         root: &[ButtonChord],
     ) -> Result<Self, MachineError> {
+        let machine = QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?;
+        Self::whole_game_from_machine(machine, root)
+    }
+
+    fn whole_game_from_machine(
+        machine: QuickNesMachine,
+        root: &[ButtonChord],
+    ) -> Result<Self, MachineError> {
         let mut target = Self::from_machine(
-            QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
+            machine,
             &power_on_walk(),
             ROBOT_MASTER_ORDER[0],
             Mm2Route::WholeGame,

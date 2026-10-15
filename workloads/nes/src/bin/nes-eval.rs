@@ -23,16 +23,22 @@ fn metroid_game(
     rom: &[u8],
     core_path: &Path,
     core_sha256: &str,
+    execution_sha256: &str,
     root_input: Option<&Path>,
 ) -> Result<MetroidGame> {
     let Some(root_input) = root_input else {
-        return Ok(MetroidGame::new(rom, core_path, core_sha256));
+        return Ok(MetroidGame::new(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+        ));
     };
     let input: MetroidInput = serde_json::from_reader(BufReader::new(fs::File::open(root_input)?))?;
     if input.actions.is_empty() {
         return Err("root input carries no actions".into());
     }
-    let mut prefix = MetroidGame::new(rom, core_path, core_sha256)
+    let mut prefix = MetroidGame::new(rom, core_path, core_sha256, execution_sha256)
         .new_target()?
         .genesis_prefix()
         .to_vec();
@@ -41,6 +47,7 @@ fn metroid_game(
         rom,
         core_path,
         core_sha256,
+        execution_sha256,
         prefix,
         GenesisDepth::Rooted,
     ))
@@ -79,14 +86,16 @@ fn main() -> Result<()> {
         }
         let p = &request.core;
         let h = &request.core_sha256;
+        let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
             "smb" => evaluate(
-                SmbGame::new(&rom, p, h),
+                SmbGame::new(&rom, p, h, &execution_sha256),
                 SmbCampaignRun {
                     vocabulary: Default::default(),
                     terminal: Some(SmbTerminalPredicate::GameVictory),
                 },
                 &request,
+                &execution_sha256,
                 &out,
                 started,
             ),
@@ -95,6 +104,7 @@ fn main() -> Result<()> {
                     &rom,
                     p,
                     h,
+                    &execution_sha256,
                     root_actions::<Mm2Input>(request.root_input.as_deref())?
                         .map(|input| input.actions)
                         .unwrap_or_default(),
@@ -102,6 +112,7 @@ fn main() -> Result<()> {
                 .with_milestone_input_dir(out.join("milestone-inputs")),
                 Mm2CampaignRun,
                 &request,
+                &execution_sha256,
                 &out,
                 started,
             ),
@@ -110,15 +121,17 @@ fn main() -> Result<()> {
                     &rom,
                     p,
                     h,
+                    &execution_sha256,
                     Mm2Stage::from_number(request.stage.unwrap_or(0))?,
                 ),
                 Mm2CampaignRun,
                 &request,
+                &execution_sha256,
                 &out,
                 started,
             ),
             "metroid" => evaluate(
-                metroid_game(&rom, p, h, request.root_input.as_deref())?
+                metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
                     .with_milestone_input_dir(out.join("milestone-inputs"))
                     .with_terminal_policy(match request.metroid_terminal.as_deref() {
                         Some(identifier) => MetroidTerminalPolicy::parse(identifier)?,
@@ -126,6 +139,7 @@ fn main() -> Result<()> {
                     }),
                 MetroidCampaignRun,
                 &request,
+                &execution_sha256,
                 &out,
                 started,
             ),
@@ -137,9 +151,10 @@ fn main() -> Result<()> {
                     _ => return Err("unknown STB difficulty".into()),
                 };
                 evaluate(
-                    StbGame::with_ai(&rom, p, h, ai),
+                    StbGame::with_ai(&rom, p, h, &execution_sha256, ai),
                     StbCampaignRun,
                     &request,
+                    &execution_sha256,
                     &out,
                     started,
                 )

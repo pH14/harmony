@@ -65,6 +65,7 @@ pub struct Mm2Game {
     rom: Vec<u8>,
     core_path: PathBuf,
     core_sha256: String,
+    execution_sha256: String,
     prefix: Vec<ButtonChord>,
     route: Mm2Route,
     identity: String,
@@ -80,9 +81,9 @@ fn chords_sha256(chords: &[ButtonChord]) -> String {
     format!("{:x}", digest.finalize())
 }
 
-fn emulator_identity(genesis: &str, core_sha256: &str) -> String {
+fn emulator_identity(genesis: &str, core_sha256: &str, execution_sha256: &str) -> String {
     format!(
-        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=mm2-full-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256}",
+        "quicknes-libretro:{};{};{};state=ppu-unused2-zero-v1;genesis={genesis};result_digest=mm2-full-postcard-1.1.3-sha256-hex-v3;sha256={core_sha256};prepared-execution-sha256={execution_sha256}",
         machine::quicknes::QUICKNES_REVISION,
         machine::quicknes::QUICKNES_BUILD,
         machine::quicknes::QUICKNES_OPTIONS,
@@ -91,8 +92,21 @@ fn emulator_identity(genesis: &str, core_sha256: &str) -> String {
 
 impl Mm2Game {
     #[must_use]
-    pub fn new_at_stage(rom: &[u8], core_path: &Path, core_sha256: &str, stage: Mm2Stage) -> Self {
-        Self::new_at_stage_after(rom, core_path, core_sha256, power_on_walk(), stage)
+    pub fn new_at_stage(
+        rom: &[u8],
+        core_path: &Path,
+        core_sha256: &str,
+        execution_sha256: &str,
+        stage: Mm2Stage,
+    ) -> Self {
+        Self::new_at_stage_after(
+            rom,
+            core_path,
+            core_sha256,
+            execution_sha256,
+            power_on_walk(),
+            stage,
+        )
     }
 
     #[must_use]
@@ -100,6 +114,7 @@ impl Mm2Game {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        execution_sha256: &str,
         prefix: Vec<ButtonChord>,
         stage: Mm2Stage,
     ) -> Self {
@@ -110,11 +125,13 @@ impl Mm2Game {
                 chords_sha256(&prefix)
             ),
             core_sha256,
+            execution_sha256,
         );
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
+            execution_sha256: execution_sha256.to_owned(),
             prefix,
             route: Mm2Route::Stage(stage),
             identity,
@@ -128,6 +145,7 @@ impl Mm2Game {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
+        execution_sha256: &str,
         root: Vec<ButtonChord>,
     ) -> Self {
         let order = ROBOT_MASTER_ORDER
@@ -141,11 +159,13 @@ impl Mm2Game {
                 chords_sha256(&root)
             ),
             core_sha256,
+            execution_sha256,
         );
         Self {
             rom: rom.to_vec(),
             core_path: core_path.to_path_buf(),
             core_sha256: core_sha256.to_owned(),
+            execution_sha256: execution_sha256.to_owned(),
             prefix: root,
             route: Mm2Route::WholeGame,
             identity,
@@ -196,6 +216,7 @@ impl Mm2Game {
             &self.rom,
             &self.core_path,
             &self.core_sha256,
+            &self.execution_sha256,
             chords,
         )?)
     }
@@ -722,16 +743,21 @@ impl TargetExecution for Mm2Game {
 
     fn new_target(&self) -> Result<Mm2Target, String> {
         match self.route {
-            Mm2Route::Stage(stage) => Mm2Target::from_rom_bytes_after(
+            Mm2Route::Stage(stage) => Mm2Target::from_rom_bytes_after_with_identity(
                 &self.rom,
                 &self.core_path,
                 &self.core_sha256,
+                &self.execution_sha256,
                 &self.prefix,
                 stage,
             ),
-            Mm2Route::WholeGame => {
-                Mm2Target::whole_game(&self.rom, &self.core_path, &self.core_sha256, &self.prefix)
-            }
+            Mm2Route::WholeGame => Mm2Target::whole_game_with_identity(
+                &self.rom,
+                &self.core_path,
+                &self.core_sha256,
+                &self.execution_sha256,
+                &self.prefix,
+            ),
         }
         .map_err(|error| error.to_string())
     }
@@ -1077,6 +1103,7 @@ mod tests {
             &[1, 2, 3],
             Path::new("core.so"),
             &"a".repeat(64),
+            &"b".repeat(64),
             Mm2Stage::default(),
         );
         let policies = game.policies(&Mm2CampaignRun);
@@ -1089,11 +1116,45 @@ mod tests {
     #[test]
     fn selected_stage_is_part_of_recorded_machine_identity() {
         let stage = Mm2Stage::from_number(3).expect("stage");
-        let game = Mm2Game::new_at_stage(&[1, 2, 3], Path::new("core.so"), &"a".repeat(64), stage);
+        let game = Mm2Game::new_at_stage(
+            &[1, 2, 3],
+            Path::new("core.so"),
+            &"a".repeat(64),
+            &"b".repeat(64),
+            stage,
+        );
         assert_eq!(game.route(), Mm2Route::Stage(stage));
         assert!(
             game.emulator_identity()
                 .contains("genesis=mm2-stage-select-v2:3:prefix-sha256=")
+        );
+    }
+
+    #[test]
+    fn native_policy_rejects_a_changed_prepared_execution() {
+        let first = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("core.so"),
+            "core",
+            "first",
+            Mm2Stage::default(),
+        );
+        let second = Mm2Game::new_at_stage(
+            &[0],
+            Path::new("core.so"),
+            "core",
+            "second",
+            Mm2Stage::default(),
+        );
+        assert!(
+            first
+                .emulator_identity()
+                .contains("prepared-execution-sha256=first")
+        );
+        assert!(
+            second
+                .resolve_recorded(&first.policies(&Mm2CampaignRun))
+                .is_err()
         );
     }
 }

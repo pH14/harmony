@@ -34,6 +34,19 @@ Replay-only callers can capture video and stereo PCM. A caller that stops
 reading partway through a run can keep the video and audio of the run's first
 frames and drop the rest.
 
+`prepared_execution_sha256` identifies the code that the native loader actually
+mapped before a campaign starts. It includes the hashed private core, the owner
+and relative address of every libretro entrypoint, and the mapped read-only
+image bytes of the host executable and system libraries. Workers compute the
+same identity from their own loaded core before initializing a ROM and reject a
+mismatch. This native mode accepts the pinned core's macOS system libraries or
+Linux system libraries, including libc, libstdc++, and libgcc_s. It rejects any loaded non-system shared
+library, including a helper supplied beside the core, as well as loader preload
+and audit injection. An ordinary library search path is allowed only when the
+resulting mapped images satisfy that policy. The image census is intentionally
+conservative: an unrelated third-party module in the process also prevents
+native QuickNES admission.
+
 `scripts/build-quicknes-core.sh` patches the pinned core to skip idle loops.
 NES games spend much of each frame in a loop that waits for the next
 interrupt. At a backward branch or jump, the patched CPU compares the target
@@ -47,9 +60,10 @@ unpatched core. Interrupts are taken between `run` calls, and each call starts
 with no recorded visit. The skip is 1.04x to 1.7x faster in search across the
 NES games.
 
-Snapshots contain a format marker, the QuickNES revision, core hash, fixed
-serialized-state length, and canonicalized core state. Restore rejects a
-different core build, state size, or non-canonical state. The adapter keeps
+Snapshots contain a format marker, the QuickNES revision, core hash, prepared
+execution hash, fixed serialized-state length, and canonicalized core state.
+The current marker is `HQNESST3`; older snapshots are rejected. Restore rejects
+a different loaded execution, state size, or non-canonical state. The adapter keeps
 snapshots in an ordered handle table and resets staged input when restoring.
 
 Portable export builds shared chunks directly from the retained snapshot bytes,

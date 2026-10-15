@@ -17,13 +17,20 @@ fn replay(
     core: &Path,
     rom: &[u8],
     core_hash: &str,
+    execution_sha256: &str,
     input: &MetroidInput,
     stage: Option<Mm2Stage>,
 ) -> Result<Value, Box<dyn Error>> {
     if game == "mm2" {
         let stage = stage.ok_or("MM2 needs the expected stage name")?;
-        let mut target =
-            Mm2Target::from_rom_bytes_after(rom, core, core_hash, &input.actions, stage)?;
+        let mut target = Mm2Target::from_rom_bytes_after_with_identity(
+            rom,
+            core,
+            core_hash,
+            execution_sha256,
+            &input.actions,
+            stage,
+        )?;
         let prefix_frames: u64 = input.actions.iter().map(|a| u64::from(a.hold_frames)).sum();
         let genesis_frames: u64 = target
             .genesis_prefix()
@@ -41,8 +48,13 @@ fn replay(
     if game != "metroid" {
         return Err("game must be metroid or mm2".into());
     }
-    let mut target = MetroidTarget::from_rom_bytes_headless(rom, core, core_hash)?
-        .with_terminal_policy(MetroidTerminalPolicy::Legacy);
+    let mut target = MetroidTarget::from_rom_bytes_headless_with_identity(
+        rom,
+        core,
+        core_hash,
+        execution_sha256,
+    )?
+    .with_terminal_policy(MetroidTerminalPolicy::Legacy);
     let setup_frames: u64 = target
         .genesis_prefix()
         .iter()
@@ -98,17 +110,35 @@ fn main() -> Result<(), Box<dyn Error>> {
     let bytes = fs::read(&args[3])?;
     let input: MetroidInput = serde_json::from_slice(&bytes)?;
     let core_hash = format!("{:x}", Sha256::digest(fs::read(core)?));
+    let execution_sha256 = machine::quicknes::prepared_execution_sha256(core, &core_hash)?;
     let stage = args.get(4).map(|s| Mm2Stage::parse(s)).transpose()?;
-    let first = replay(&args[0], core, &rom, &core_hash, &input, stage)?;
-    let second = replay(&args[0], core, &rom, &core_hash, &input, stage)?;
+    let first = replay(
+        &args[0],
+        core,
+        &rom,
+        &core_hash,
+        &execution_sha256,
+        &input,
+        stage,
+    )?;
+    let second = replay(
+        &args[0],
+        core,
+        &rom,
+        &core_hash,
+        &execution_sha256,
+        &input,
+        stage,
+    )?;
     if first != second {
         return Err("replay differs between independent machines".into());
     }
     println!(
         "{}",
         json!({
-            "format": "nes-progress-replay-v2", "game": args[0], "verified_replays": 2,
+            "format": "nes-progress-replay-v3", "game": args[0], "verified_replays": 2,
             "rom_sha256": format!("{:x}", Sha256::digest(&rom)), "core_sha256": core_hash,
+            "prepared_execution_sha256": execution_sha256,
             "input_sha256": format!("{:x}", Sha256::digest(&bytes)), "result": first
         })
     );
