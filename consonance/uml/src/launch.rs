@@ -727,10 +727,16 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
-        let reason = if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_))
-            && self.over_limit.load(Ordering::Acquire)
-        {
-            ExitReason::ConsoleLimit
+        let reason = if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
+            if self.over_limit.load(Ordering::Acquire) {
+                ExitReason::ConsoleLimit
+            } else {
+                match self.bridge_state.load(Ordering::Acquire) {
+                    bridge::CUT => ExitReason::EventCut,
+                    bridge::FAILED => ExitReason::BridgeFailure,
+                    _ => reason,
+                }
+            }
         } else {
             reason
         };
@@ -1545,6 +1551,60 @@ mod tests {
         let exit = guest.finish(reason).unwrap();
         assert_eq!(exit.console_bytes, 16);
         assert_eq!(exit.reason, ExitReason::ConsoleLimit);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn completed_event_cut_overrides_process_exit_after_bridge_joins() {
+        struct ReleaseCut;
+        impl Drop for ReleaseCut {
+            fn drop(&mut self) {
+                bridge::TEST_HOLD_CUT.store(false, Ordering::Release);
+            }
+        }
+
+        let parent = tempfile::tempdir().unwrap();
+        let mut launch = launch(parent.path());
+        launch.bridge = Some(Bridge {
+            seed: bridge::TEST_DELAY_CUT_SEED,
+            cut: Some(1),
+        });
+        let mut request = [0_u8; hypercall_proto::MAX_FRAME];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            7,
+            b"\0\0\0\0{}",
+            &mut request,
+        )
+        .unwrap();
+        let mut frame = 1_u64.to_le_bytes().to_vec();
+        frame.extend_from_slice(&request[..length]);
+        let packet = parent.path().join("event-packet");
+        std::fs::write(&packet, frame).unwrap();
+        bridge::TEST_CUT_READY.store(false, Ordering::Release);
+        bridge::TEST_HOLD_CUT.store(true, Ordering::Release);
+        let _release = ReleaseCut;
+        let mut guest = shell(&launch, &format!("cat {} >&3", packet.display()));
+        let deadline = now() + Duration::from_secs(5);
+        let reason = loop {
+            if bridge::TEST_CUT_READY.load(Ordering::Acquire)
+                && let Some(reason) = guest.stopped().unwrap()
+            {
+                break reason;
+            }
+            assert!(now() < deadline, "guest did not exit after cut event");
+            std::thread::yield_now();
+        };
+        assert_eq!(reason, ExitReason::Exited(0));
+        bridge::TEST_HOLD_CUT.store(false, Ordering::Release);
+        let exit = guest.finish(reason).unwrap();
+        assert_eq!(exit.events.len(), 1);
+        assert_eq!(exit.events[0].moment, 1);
+        assert_eq!(exit.events[0].id, 0);
+        assert_eq!(&*exit.events[0].data, b"{}");
+        assert_eq!(exit.reason, ExitReason::EventCut);
     }
 
     #[test]
