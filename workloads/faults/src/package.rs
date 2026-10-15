@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, fs, path::PathBuf, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -16,8 +16,8 @@ pub struct Options {
     pub knobs: Vec<String>,
     pub wall_seconds: Option<u64>,
     pub output: PathBuf,
-    pub uml_profile: Option<PathBuf>,
-    pub root: Option<PathBuf>,
+    pub uml_profile: Option<(PathBuf, String)>,
+    pub root: Option<Arc<Vec<u8>>>,
     pub checkpoint_owner: Option<String>,
 }
 
@@ -406,22 +406,19 @@ mod live {
     fn config(options: &Options) -> Result<FaultConfig, String> {
         let backend = match &options.uml_profile {
             None => GuestBackend::Vm,
-            Some(profile) => GuestBackend::Uml(Box::new(UmlGuest::load(
-                profile,
-                options.output.join("uml-work"),
-            )?)),
+            Some((profile, expected)) => {
+                let guest = UmlGuest::load(profile, options.output.join("uml-work"))?;
+                if guest.profile_identity_sha256 != *expected {
+                    return Err("recorded UML profile changed during load".into());
+                }
+                GuestBackend::Uml(Box::new(guest))
+            }
         };
         Ok(FaultConfig {
             knobs: options.knobs.clone(),
             ram_mib: options.ram_mib,
             backend,
-            root: options
-                .root
-                .as_ref()
-                .map(std::fs::read)
-                .transpose()
-                .map_err(|e| e.to_string())?
-                .map(Arc::new),
+            root: options.root.clone(),
         })
     }
 
@@ -460,12 +457,12 @@ mod live {
                 .ok_or("User-mode Linux search needs an admitted coordinator host processor")?;
             guest.verify_processor(cpu)?;
         }
-        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
+        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
         let mut report = Report::new("search", artifacts, identity, options, workers);
         std::fs::create_dir_all(&options.output)?;
         segments::raise_descriptor_limit();
         let cache: Arc<dyn CacheIndex> = Arc::new(LocalIndex::new(resources.budget));
-        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)
+        let game = FaultWorkload::new(&artifacts.kernel, &artifacts.initramfs, &config)?
             .with_snapshot_cache(Some(Arc::clone(&cache)))
             .with_session_worker(session_worker);
         let campaign = FaultCampaignConfig {
@@ -672,7 +669,7 @@ mod live {
             return Err("--repeat must be positive".into());
         }
         let config = config(options)?;
-        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config);
+        let identity = identity(&artifacts.kernel, &artifacts.initramfs, &config)?;
         let mut report = Report::new("replay", artifacts, identity, options, 1);
         #[allow(clippy::disallowed_methods)]
         let started = Instant::now();

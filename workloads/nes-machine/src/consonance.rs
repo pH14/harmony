@@ -315,10 +315,7 @@ impl Drop for ConsonanceMachine {
 
 impl ConsonanceMachine {
     pub fn new(kernel: &[u8], initramfs: &[u8]) -> Result<Self, MachineError> {
-        let config = SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
-            .with_identity_tag("consonance-nes-execution-v2")
-            .with_deferred_virtual_time_checkpoint_hashes();
-        let setup_payloads = vec![vec![0, 1]; 16];
+        let (config, setup_payloads) = session_inputs();
         let mut session =
             Session::new_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
                 .map_err(|error| MachineError::Backend(error.to_string()))?;
@@ -763,13 +760,29 @@ fn run_deadline(last_vtime: u64, budget: u64) -> Result<u64, MachineError> {
         .ok_or_else(|| MachineError::Backend("Consonance per-run deadline overflow".to_owned()))
 }
 
-#[must_use]
-pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
+fn session_inputs() -> (SessionConfig, Vec<Vec<u8>>) {
+    (
+        SessionConfig::new(RAM, SEED, RUN_BUDGET, CMDLINE)
+            .with_identity_tag("consonance-nes-execution-v2")
+            .with_deferred_virtual_time_checkpoint_hashes(),
+        vec![vec![0, 1]; 16],
+    )
+}
+
+fn identity_with_session(kernel: &[u8], initramfs: &[u8], session: &str) -> String {
     format!(
-        "consonance-whole-vm-v2;kernel-sha256={:x};initramfs-sha256={:x};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3;environment=inputs-v5;service-state=channel-v1",
+        "consonance-whole-vm-v3;kernel-sha256={:x};initramfs-sha256={:x};session={session}",
         Sha256::digest(kernel),
         Sha256::digest(initramfs),
     )
+}
+
+pub fn identity(kernel: &[u8], initramfs: &[u8]) -> Result<String, MachineError> {
+    let (config, setup_payloads) = session_inputs();
+    let session =
+        Session::identity_with_config_and_payloads(kernel, initramfs, &config, &setup_payloads)
+            .map_err(MachineError::Backend)?;
+    Ok(identity_with_session(kernel, initramfs, &session))
 }
 
 pub fn from_paths(kernel: &Path, initramfs: &Path) -> Result<ConsonanceMachine, MachineError> {
@@ -890,5 +903,23 @@ mod tests {
         profile.record_action(1, 2, None, 0);
         assert!(profile.render().is_none());
         assert_eq!(profile.calls, [0; 5]);
+    }
+
+    #[test]
+    fn outer_identity_binds_the_exact_session_and_loaded_executable() {
+        let kernel = b"kernel";
+        let initramfs = b"initramfs";
+        let (config, setup_payloads) = session_inputs();
+        let session =
+            Session::identity_with_config_and_payloads(kernel, initramfs, &config, &setup_payloads)
+                .unwrap();
+        assert_eq!(
+            identity(kernel, initramfs).unwrap(),
+            identity_with_session(kernel, initramfs, &session)
+        );
+        assert_ne!(
+            identity_with_session(kernel, initramfs, "loaded-executable-A"),
+            identity_with_session(kernel, initramfs, "loaded-executable-B")
+        );
     }
 }

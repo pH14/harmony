@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fs,
     io::{ErrorKind, Read},
@@ -13,6 +13,8 @@ use object::read::elf::ProgramHeader;
 use object::{Object, ObjectSection};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+
+use oci_support::bundle::ArchivedRootfs;
 
 pub const ALLOWLIST_PATH: &str = "etc/harmony/instruction-allowlist";
 pub const ATTESTATION_PATH: &str = "symbols/harmony-instrumented-events";
@@ -51,6 +53,141 @@ pub struct ImageReport {
     pub attestation_errors: Vec<String>,
     pub runtime: bool,
     pub symbols: bool,
+}
+
+pub struct ArchivedImage<'a> {
+    entries: BTreeMap<&'a str, (u32, &'a [u8])>,
+}
+
+impl<'a> ArchivedImage<'a> {
+    pub fn new(archive: &'a ArchivedRootfs) -> Self {
+        Self {
+            entries: archive
+                .entries()
+                .map(|entry| (entry.path, (entry.mode, entry.data)))
+                .collect(),
+        }
+    }
+
+    pub fn file(&self, relative: &str) -> Option<&'a [u8]> {
+        let path = self.resolve_path(relative)?;
+        let (mode, data) = self.entries.get(path.as_str())?;
+        (mode & 0o170000 == 0o100000).then_some(*data)
+    }
+
+    fn resolve_path(&self, relative: &str) -> Option<String> {
+        let mut pending = relative
+            .split('/')
+            .map(str::to_owned)
+            .collect::<VecDeque<_>>();
+        let mut parts = Vec::new();
+        let mut links = 0;
+        while let Some(component) = pending.pop_front() {
+            match component.as_str() {
+                "" | "." => continue,
+                ".." => {
+                    parts.pop()?;
+                    continue;
+                }
+                _ => parts.push(component),
+            }
+            let path = parts.join("/");
+            if let Some((mode, data)) = self.entries.get(path.as_str())
+                && mode & 0o170000 == 0o120000
+            {
+                links += 1;
+                if links > 40 {
+                    return None;
+                }
+                let target = std::str::from_utf8(data).ok()?;
+                if target.starts_with('/') {
+                    return None;
+                }
+                parts.pop();
+                for part in target.split('/').rev() {
+                    pending.push_front(part.to_owned());
+                }
+            }
+        }
+        Some(parts.join("/"))
+    }
+
+    fn mentions(&self, relative: &str) -> bool {
+        if let Some(path) = self.resolve_path(relative) {
+            return self.entries.contains_key(path.as_str());
+        }
+        let mut prefix = String::new();
+        for component in relative.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(component);
+            if self
+                .entries
+                .get(prefix.as_str())
+                .is_some_and(|(mode, _)| mode & 0o170000 == 0o120000)
+            {
+                return true;
+            }
+        }
+        self.entries.contains_key(relative)
+    }
+
+    pub fn inspect(&self) -> Result<ImageReport, Box<dyn Error>> {
+        let mut report = ImageReport::default();
+        let mut found = BTreeSet::new();
+        for (&path, &(mode, data)) in &self.entries {
+            if mode & 0o170000 == 0o100000 && data.starts_with(b"\x7fELF") {
+                scan_file(&mut report, &mut found, &format!("/{path}"), data.to_vec());
+            }
+        }
+        let reviewed = if self.mentions(ALLOWLIST_PATH) {
+            let read = self
+                .file(ALLOWLIST_PATH)
+                .ok_or("instruction allowlist leaves the image")
+                .and_then(|bytes| std::str::from_utf8(bytes).map_err(|_| "invalid allowlist UTF-8"))
+                .map_err(|error| -> Box<dyn Error> { error.into() })
+                .and_then(parse_allowlist);
+            match read {
+                Ok(reviewed) => reviewed,
+                Err(error) => {
+                    report.scan_errors.push(error.to_string());
+                    BTreeMap::new()
+                }
+            }
+        } else {
+            BTreeMap::new()
+        };
+        finish_scan(&mut report, &found, &reviewed);
+        if self.mentions(ATTESTATION_PATH) {
+            match self.file(ATTESTATION_PATH) {
+                Some(bytes) => match std::str::from_utf8(bytes) {
+                    Ok(text) => parse_attestation(text, &mut report, |path| {
+                        self.file(path.trim_start_matches('/')).ok_or_else(|| {
+                            "attested executable is missing or leaves the image".into()
+                        })
+                    }),
+                    Err(error) => report
+                        .attestation_errors
+                        .push(format!("instrumentation attestation: {error}")),
+                },
+                None => report
+                    .attestation_errors
+                    .push("instrumentation attestation leaves the image".into()),
+            }
+        }
+        report.runtime = self.file("usr/lib/libvoidstar.so").is_some();
+        report.symbols = self.file(ATTESTATION_PATH).is_some()
+            && self.resolve_path("symbols").is_some_and(|directory| {
+                let prefix = format!("{directory}/");
+                self.entries.keys().any(|path| {
+                    path.strip_prefix(&prefix)
+                        .is_some_and(|name| !name.contains('/') && name.ends_with(".sym.tsv"))
+                        && self.file(path).is_some_and(|bytes| !bytes.is_empty())
+                })
+            });
+        Ok(report)
+    }
 }
 
 impl ImageReport {
@@ -153,19 +290,7 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
         let mut bytes = magic.to_vec();
         file.read_to_end(&mut bytes)?;
         let image_path = format!("/{}", path.strip_prefix(&root)?.display());
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        match scan_elf(&bytes, &digest) {
-            Ok(None) => {}
-            Ok(Some(sites)) => {
-                found.extend(sites.iter().cloned());
-                report.executables.push(ExecutableScan {
-                    path: image_path,
-                    digest,
-                    sites,
-                });
-            }
-            Err(error) => report.scan_errors.push(format!("{image_path}: {error}")),
-        }
+        scan_file(&mut report, &mut found, &image_path, bytes);
     }
     let reviewed = match read_allowlist(&root) {
         Ok(reviewed) => reviewed,
@@ -174,7 +299,58 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
             BTreeMap::new()
         }
     };
-    for site in &found {
+    finish_scan(&mut report, &found, &reviewed);
+    read_attestation(&root, &mut report);
+    report.runtime = rooted_file(&root, "usr/lib/libvoidstar.so").is_some();
+    report.symbols = rooted_file(&root, "symbols/harmony-instrumented-events").is_some()
+        && fs::read_dir(root.join("symbols"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".sym.tsv"))
+                    && entry.path().canonicalize().is_ok_and(|path| {
+                        path.starts_with(&root)
+                            && path.is_file()
+                            && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
+                    })
+            });
+    Ok(report)
+}
+
+fn scan_file(
+    report: &mut ImageReport,
+    found: &mut BTreeSet<InstructionSite>,
+    image_path: &str,
+    bytes: Vec<u8>,
+) {
+    if !bytes.starts_with(b"\x7fELF") {
+        return;
+    }
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    match scan_elf(&bytes, &digest) {
+        Ok(None) => {}
+        Ok(Some(sites)) => {
+            found.extend(sites.iter().cloned());
+            report.executables.push(ExecutableScan {
+                path: image_path.to_owned(),
+                digest,
+                sites,
+            });
+        }
+        Err(error) => report.scan_errors.push(format!("{image_path}: {error}")),
+    }
+}
+
+fn finish_scan(
+    report: &mut ImageReport,
+    found: &BTreeSet<InstructionSite>,
+    reviewed: &BTreeMap<InstructionSite, String>,
+) {
+    for site in found {
         if !reviewed.contains_key(site) {
             let paths = report
                 .executables
@@ -197,25 +373,6 @@ pub fn inspect_root(root: &Path) -> Result<ImageReport, Box<dyn Error>> {
             ));
         }
     }
-    read_attestation(&root, &mut report);
-    report.runtime = rooted_file(&root, "usr/lib/libvoidstar.so").is_some();
-    report.symbols = rooted_file(&root, "symbols/harmony-instrumented-events").is_some()
-        && fs::read_dir(root.join("symbols"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .any(|entry| {
-                entry
-                    .file_name()
-                    .to_str()
-                    .is_some_and(|name| name.ends_with(".sym.tsv"))
-                    && entry.path().canonicalize().is_ok_and(|path| {
-                        path.starts_with(&root)
-                            && path.is_file()
-                            && fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0)
-                    })
-            });
-    Ok(report)
 }
 
 fn collect_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(), Box<dyn Error>> {
@@ -237,13 +394,17 @@ fn rooted_file(root: &Path, relative: &str) -> Option<PathBuf> {
 }
 
 fn read_allowlist(root: &Path) -> Result<BTreeMap<InstructionSite, String>, Box<dyn Error>> {
-    let mut sites = BTreeMap::new();
     let path = root.join(ALLOWLIST_PATH);
     if !path.try_exists()? {
-        return Ok(sites);
+        return Ok(BTreeMap::new());
     }
     let path = rooted_file(root, ALLOWLIST_PATH).ok_or("instruction allowlist leaves the image")?;
-    for (index, line) in fs::read_to_string(path)?.lines().enumerate() {
+    parse_allowlist(&fs::read_to_string(path)?)
+}
+
+fn parse_allowlist(text: &str) -> Result<BTreeMap<InstructionSite, String>, Box<dyn Error>> {
+    let mut sites = BTreeMap::new();
+    for (index, line) in text.lines().enumerate() {
         let line = line.split('#').next().unwrap_or("").trim();
         if line.is_empty() {
             continue;
@@ -293,6 +454,18 @@ fn read_attestation(root: &Path, report: &mut ImageReport) {
             return;
         }
     };
+    parse_attestation(&text, report, |path| {
+        let executable = rooted_file(root, path.trim_start_matches('/'))
+            .ok_or("attested executable is missing or leaves the image")?;
+        Ok(fs::read(executable)?)
+    });
+}
+
+fn parse_attestation<F, R>(text: &str, report: &mut ImageReport, mut file: F)
+where
+    F: FnMut(&str) -> Result<R, Box<dyn Error>>,
+    R: AsRef<[u8]>,
+{
     let mut paths = BTreeSet::new();
     for (index, line) in text.lines().enumerate() {
         let result = (|| -> Result<InstrumentedExecutable, Box<dyn Error>> {
@@ -303,9 +476,7 @@ fn read_attestation(root: &Path, report: &mut ImageReport) {
             if !valid_digest(expected) || !path.starts_with('/') || !paths.insert(path) {
                 return Err("invalid digest, non-absolute path, or duplicate executable".into());
             }
-            let executable = rooted_file(root, path.trim_start_matches('/'))
-                .ok_or("attested executable is missing or leaves the image")?;
-            let digest = format!("{:x}", Sha256::digest(fs::read(executable)?));
+            let digest = format!("{:x}", Sha256::digest(file(path)?.as_ref()));
             if digest != expected.to_ascii_lowercase() {
                 return Err(format!("instrumentation digest mismatch: {path}").into());
             }
@@ -351,7 +522,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
     let mut sites = Vec::new();
     let mut executable_segments = 0;
-    for header in elf.elf_program_headers() {
+    for (header_index, header) in elf.elf_program_headers().iter().enumerate() {
         let flags = header.p_flags(elf.endian());
         match header.p_type(elf.endian()) {
             object::elf::PT_GNU_STACK if flags & object::elf::PF_X != 0 => {
@@ -396,6 +567,11 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                         return Err("partially mapped executable ELF section".into());
                     };
                     mapped_sections += 1;
+                    if elf.architecture() == object::Architecture::Aarch64
+                        && sh_flags & u64::from(object::elf::SHF_EXECINSTR) == 0
+                    {
+                        return Err("AArch64 executable load contains an allocated non-executable section; link with separate code pages".into());
+                    }
                     if elf.architecture() == object::Architecture::X86_64 {
                         let offset = usize::try_from(section.address() - start)?;
                         let section_end = offset
@@ -417,7 +593,60 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                     return Err("executable ELF segment without a mapped section".into());
                 }
                 if elf.architecture() == object::Architecture::Aarch64 {
-                    for (address, instruction) in scan_code(elf.architecture(), start, code)? {
+                    let page_bytes = 4096_u64;
+                    let offset = header.p_offset(elf.endian());
+                    if offset % page_bytes != start % page_bytes {
+                        return Err("unaligned AArch64 ELF load mapping".into());
+                    }
+                    let mapped_file_start = offset / page_bytes * page_bytes;
+                    let mapped_file_end = offset
+                        .checked_add(file_size)
+                        .and_then(|end| end.checked_add(page_bytes - 1))
+                        .ok_or("executable ELF file-page overflow")?
+                        / page_bytes
+                        * page_bytes;
+                    let mapped_address = start
+                        .checked_sub(offset - mapped_file_start)
+                        .ok_or("executable ELF page address underflow")?;
+                    let end_address = start
+                        .checked_add(header.p_memsz(elf.endian()))
+                        .and_then(|end| end.checked_add(page_bytes - 1))
+                        .ok_or("executable ELF memory-page overflow")?
+                        / page_bytes
+                        * page_bytes;
+                    for (other_index, other) in elf.elf_program_headers().iter().enumerate() {
+                        if other_index == header_index
+                            || other.p_type(elf.endian()) != object::elf::PT_LOAD
+                        {
+                            continue;
+                        }
+                        let other_offset = other.p_offset(elf.endian());
+                        let other_address = other.p_vaddr(elf.endian());
+                        if other_offset % page_bytes != other_address % page_bytes {
+                            return Err("unaligned loaded AArch64 ELF mapping".into());
+                        }
+                        let other_memory_size = other.p_memsz(elf.endian());
+                        let other_memory_start = other_address / page_bytes * page_bytes;
+                        let other_memory_end = if other_memory_size == 0 {
+                            other_memory_start
+                        } else {
+                            other_address
+                                .checked_add(other_memory_size)
+                                .and_then(|end| end.checked_add(page_bytes - 1))
+                                .ok_or("loaded ELF memory-page overflow")?
+                                / page_bytes
+                                * page_bytes
+                        };
+                        if other_memory_start < end_address && mapped_address < other_memory_end {
+                            return Err("executable AArch64 ELF memory-page alias".into());
+                        }
+                    }
+                    let mapped_file_end = mapped_file_end.min(bytes.len() as u64);
+                    let mapped_bytes = &bytes
+                        [usize::try_from(mapped_file_start)?..usize::try_from(mapped_file_end)?];
+                    for (address, instruction) in
+                        scan_code(elf.architecture(), mapped_address, mapped_bytes)?
+                    {
                         sites.push(InstructionSite {
                             digest: digest.to_owned(),
                             address,
@@ -489,25 +718,31 @@ fn scan_code(
         }
         for (index, bytes) in data.chunks_exact(4).enumerate() {
             let word = u32::from_le_bytes(bytes.try_into()?);
+            let site = address
+                .checked_add((index as u64) * 4)
+                .ok_or("instruction address overflow")?;
+            if is_arm_llsc_exclusive(word) {
+                return Err(format!("unsupported AArch64 LL/SC instruction at 0x{site:x}").into());
+            }
             let name = match word & !0x1f {
                 0xd53b2400 => "RNDR",
                 0xd53b2420 => "RNDRRS",
                 _ => continue,
             };
-            sites.push((
-                address
-                    .checked_add((index as u64) * 4)
-                    .ok_or("instruction address overflow")?,
-                name,
-            ));
+            sites.push((site, name));
         }
     }
     Ok(sites)
 }
 
+fn is_arm_llsc_exclusive(word: u32) -> bool {
+    word & 0x3f80_0000 == 0x0800_0000 && (word & 0x0020_0000 == 0 || word >> 30 >= 2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oci_support::image::{Ownership, RuntimeConfig, StagedImage};
 
     fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
         let mut bytes = vec![0; 385 + code.len()];
@@ -559,6 +794,154 @@ mod tests {
         bytes
     }
 
+    fn arm_elf(code: &[u8], declared_size: usize) -> Vec<u8> {
+        let mut bytes = elf(code, 5, 6);
+        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        bytes.resize(4096 + code.len() + 1, 0);
+        bytes[4096..4096 + code.len()].copy_from_slice(code);
+        bytes[80..88].copy_from_slice(&0x1000_u64.to_le_bytes());
+        bytes[72..80].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes[96..104].copy_from_slice(&(declared_size as u64).to_le_bytes());
+        bytes[104..112].copy_from_slice(&(declared_size as u64).to_le_bytes());
+        bytes[280..288].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes[288..296].copy_from_slice(&(declared_size as u64).to_le_bytes());
+        bytes[344..352].copy_from_slice(&(4096_u64 + code.len() as u64).to_le_bytes());
+        bytes
+    }
+
+    fn arm_elf_with_data_load(mut bytes: Vec<u8>, offset: u64, address: u64) -> Vec<u8> {
+        bytes[120..124].copy_from_slice(&object::elf::PT_LOAD.to_le_bytes());
+        bytes[124..128].copy_from_slice(&(object::elf::PF_R | object::elf::PF_W).to_le_bytes());
+        bytes[128..136].copy_from_slice(&offset.to_le_bytes());
+        bytes[136..144].copy_from_slice(&address.to_le_bytes());
+        bytes[144..152].copy_from_slice(&address.to_le_bytes());
+        bytes[152..160].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[160..168].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[168..176].copy_from_slice(&4096_u64.to_le_bytes());
+        bytes.resize(bytes.len().max(offset as usize + 4), 0);
+        bytes
+    }
+
+    fn arm_elf_with_readonly_data_in_code_load() -> Vec<u8> {
+        let code = [0xd65f03c0_u32.to_le_bytes(), *b"PATH"].concat();
+        let mut bytes = arm_elf(&code, code.len());
+        bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+        bytes[288..296].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[388..392].copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+        bytes[392..400].copy_from_slice(&u64::from(object::elf::SHF_ALLOC).to_le_bytes());
+        bytes[400..408].copy_from_slice(&0x1004_u64.to_le_bytes());
+        bytes[408..416].copy_from_slice(&4100_u64.to_le_bytes());
+        bytes[416..424].copy_from_slice(&4_u64.to_le_bytes());
+        bytes[432..440].copy_from_slice(&4_u64.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn arm_exclusive_retry_sequence_fails_public_vm_admission() {
+        let code = [0x885f7c20_u32, 0x88027c20, 0xd65f03c0]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), arm_elf(&code, code.len())).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("LL/SC"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_exclusive_mask_keeps_lse_and_acquire_release_loads() {
+        for word in [0x885f7c20, 0x88027c20, 0x085f7c61, 0xc87f7c20] {
+            assert!(is_arm_llsc_exclusive(word), "{word:08x}");
+        }
+        for word in [0x48207c82, 0x4860fc82, 0xc8dffc00] {
+            assert!(!is_arm_llsc_exclusive(word), "{word:08x}");
+            assert!(
+                scan_code(object::Architecture::Aarch64, 0x1000, &word.to_le_bytes())
+                    .unwrap()
+                    .is_empty()
+            );
+        }
+    }
+
+    #[test]
+    fn arm_exclusive_in_executable_page_tail_fails_public_vm_admission() {
+        let code = [0xd65f03c0_u32, 0x885f7c20]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), arm_elf(&code, 4)).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("LL/SC"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_entropy_in_executable_page_tail_needs_review() {
+        let code = [0xd65f03c0_u32, 0xd53b2400]
+            .into_iter()
+            .flat_map(u32::to_le_bytes)
+            .collect::<Vec<_>>();
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), arm_elf(&code, 4)).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("RNDR"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_readonly_data_in_executable_load_fails_clearly() {
+        let root = tempfile::tempdir().unwrap();
+        fs::write(
+            root.path().join("probe"),
+            arm_elf_with_readonly_data_in_code_load(),
+        )
+        .unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("allocated non-executable section"))
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+    }
+
+    #[test]
+    fn arm_file_page_reuse_at_distinct_memory_pages_is_admitted() {
+        let ret = 0xd65f03c0_u32.to_le_bytes();
+        let bytes = arm_elf_with_data_load(arm_elf(&ret, ret.len()), 4100, 0x3004);
+        let root = tempfile::tempdir().unwrap();
+        fs::write(root.path().join("probe"), bytes).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(report.scan_errors.is_empty(), "{:?}", report.scan_errors);
+        assert!(report.require_for(ExecutionMode::Vm).is_ok());
+    }
+
+    #[test]
+    fn arm_executable_memory_pages_cannot_alias_a_loaded_data_page() {
+        let ret = 0xd65f03c0_u32.to_le_bytes();
+        let bytes = arm_elf_with_data_load(arm_elf(&ret, ret.len()), 8196, 0x1004);
+        let error = scan_elf(&bytes, "probe").unwrap_err().to_string();
+        assert!(error.contains("memory-page alias"), "{error}");
+    }
+
     #[test]
     fn reviewed_instruction_sites_are_bound_to_the_exact_executable_digest() {
         let root = tempfile::tempdir().unwrap();
@@ -595,6 +978,88 @@ mod tests {
         let changed = inspect_root(root.path()).unwrap();
         assert_eq!(changed.scan_errors.len(), 2);
         assert!(changed.require_admission().is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn archived_admission_matches_the_exact_packed_files_and_symlink_aliases() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["bin", "etc/harmony", "symbols", "usr/lib"] {
+            fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        let executable = elf(&[0x0f, 0xc7, 0xf0, 0xc3], 5, 6);
+        let digest = format!("{:x}", Sha256::digest(&executable));
+        fs::write(root.path().join("bin/node"), &executable).unwrap();
+        fs::write(
+            root.path().join("etc/harmony/reviewed"),
+            format!("{digest} 0x1000 RDRAND guarded\n"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("reviewed", root.path().join(ALLOWLIST_PATH)).unwrap();
+        fs::write(
+            root.path().join("symbols/events"),
+            format!("{digest}  /bin/node\n"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink("events", root.path().join(ATTESTATION_PATH)).unwrap();
+        fs::write(root.path().join("symbols/node.sym.tsv"), b"1\tnode.rs:1\n").unwrap();
+        fs::write(root.path().join("usr/lib/libvoidstar.so"), b"runtime").unwrap();
+        let staged = StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let prepared =
+            oci_support::bundle::prepare(&staged, &oci_support::bundle::LaunchRequest::default())
+                .unwrap();
+        let archive = prepared.archived_rootfs().unwrap();
+        let packed = ArchivedImage::new(&archive).inspect().unwrap();
+        let staged = inspect_root(root.path()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&packed).unwrap(),
+            serde_json::to_value(&staged).unwrap()
+        );
+        assert!(packed.instrumented_events());
+        assert!(packed.require_for(ExecutionMode::Vm).is_ok());
+        assert!(packed.require_for(ExecutionMode::Uml).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn archived_admission_treats_missing_metadata_under_symlinks_as_absent() {
+        let root = tempfile::tempdir().unwrap();
+        for directory in ["usr/share/symbols", "real/etc/harmony"] {
+            fs::create_dir_all(root.path().join(directory)).unwrap();
+        }
+        std::os::unix::fs::symlink("usr/share/symbols", root.path().join("symbols")).unwrap();
+        std::os::unix::fs::symlink("real/etc", root.path().join("etc")).unwrap();
+        std::os::unix::fs::symlink(
+            "missing-review",
+            root.path().join("real/etc/harmony/instruction-allowlist"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(
+            "missing-attestation",
+            root.path()
+                .join("usr/share/symbols/harmony-instrumented-events"),
+        )
+        .unwrap();
+        let staged = StagedImage {
+            rootfs: root.path().to_path_buf(),
+            owners: Ownership::default(),
+            config: RuntimeConfig::default(),
+        };
+        let prepared =
+            oci_support::bundle::prepare(&staged, &oci_support::bundle::LaunchRequest::default())
+                .unwrap();
+        let archive = prepared.archived_rootfs().unwrap();
+        let packed = ArchivedImage::new(&archive).inspect().unwrap();
+        let staged = inspect_root(root.path()).unwrap();
+        assert_eq!(
+            serde_json::to_value(&packed).unwrap(),
+            serde_json::to_value(&staged).unwrap()
+        );
+        assert!(packed.require_for(ExecutionMode::Vm).is_ok());
     }
 
     #[test]
@@ -647,8 +1112,7 @@ mod tests {
             [(0x400, "RNDR"), (0x404, "RNDRRS")]
         );
         assert!(scan_code(object::Architecture::Aarch64, 1, &code).is_err());
-        let mut bytes = elf(&code, 5, 6);
-        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let bytes = arm_elf(&code, code.len());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
         assert_eq!(
             sites.iter().map(|site| site.address).collect::<Vec<_>>(),
@@ -743,17 +1207,16 @@ mod tests {
     }
 
     #[test]
-    fn arm_noncode_allocated_sections_need_not_be_word_aligned() {
+    fn arm_noncode_allocated_sections_in_executable_load_fail_even_if_unaligned() {
         let code: Vec<u8> = [0xd53b2400_u32, 0xd65f03c0]
             .into_iter()
             .flat_map(u32::to_le_bytes)
             .collect();
-        let mut bytes = elf(&code, 5, 6);
-        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let mut bytes = arm_elf(&code, code.len());
         bytes[264..272].copy_from_slice(&2_u64.to_le_bytes());
         bytes[288..296].copy_from_slice(&3_u64.to_le_bytes());
-        let sites = scan_elf(&bytes, "").unwrap().unwrap();
-        assert_eq!(sites[0].instruction, "RNDR");
+        let error = scan_elf(&bytes, "").unwrap_err().to_string();
+        assert!(error.contains("allocated non-executable section"));
     }
 
     #[test]
@@ -763,8 +1226,7 @@ mod tests {
             .flat_map(u32::to_le_bytes)
             .collect();
         code.push(0xff);
-        let mut bytes = elf(&code, 5, 6);
-        bytes[18..20].copy_from_slice(&object::elf::EM_AARCH64.to_le_bytes());
+        let bytes = arm_elf(&code, code.len());
         let sites = scan_elf(&bytes, "").unwrap().unwrap();
         assert_eq!(sites[0].instruction, "RNDR");
     }

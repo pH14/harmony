@@ -200,14 +200,27 @@ mod tests {
             .nested_state
             .as_deref()
             .ok_or("nested state missing")?;
-        if vmm_backend::arch::x86::NestedFormat::from_state(saved)?
-            == vmm_backend::arch::x86::NestedFormat::Vmx
-        {
+        let svm_host = vmm_backend::arch::x86::NestedFormat::from_state(saved)?
+            == vmm_backend::arch::x86::NestedFormat::Svm;
+        if !svm_host {
             assert!(saved.len() > 128, "fixture has no loaded VMCS");
         }
         advance(&mut vmm, 5)?;
         vmm.retire_pending_completion()?;
-        vmm.restore_snapshot(&memory, &state)?;
+        if svm_host {
+            let mut fresh = crate::vendor::x86::bringup::boot_linux_nested_host_virtual_time(
+                &kernel,
+                &initramfs,
+                256 << 20,
+                cmdline,
+                42,
+            )?;
+            fresh.defer_virtual_time_checkpoint_hashes()?;
+            fresh.restore_snapshot(&memory, &state)?;
+            vmm = fresh;
+        } else {
+            vmm.restore_snapshot(&memory, &state)?;
+        }
         let cpu = vmm.vcpu_record()?;
         let restored = cpu
             .nested_state
@@ -277,6 +290,12 @@ mod tests {
         advance(&mut vmm, "Linux version")?;
         let state = vmm.save_vm_state()?;
         let memory = vmm.guest_memory().to_vec();
+        let svm_host = vmm_backend::arch::x86::NestedFormat::from_state(
+            state
+                .nested_state
+                .as_deref()
+                .ok_or("nested state missing")?,
+        )? == vmm_backend::arch::x86::NestedFormat::Svm;
         if nested_enabled(&vmm.vcpu_record()?)? {
             return Err("early cut already enables nested operation".into());
         }
@@ -285,7 +304,20 @@ mod tests {
             return Err("fixture did not enable nested operation".into());
         }
         vmm.retire_pending_completion()?;
-        vmm.restore_snapshot(&memory, &state)?;
+        if svm_host {
+            let mut fresh = crate::vendor::x86::bringup::boot_linux_nested_host_virtual_time(
+                &kernel,
+                &initramfs,
+                256 << 20,
+                cmdline,
+                42,
+            )?;
+            fresh.defer_virtual_time_checkpoint_hashes()?;
+            fresh.restore_snapshot(&memory, &state)?;
+            vmm = fresh;
+        } else {
+            vmm.restore_snapshot(&memory, &state)?;
+        }
         let cpu = vmm.vcpu_record()?;
         let restored = (
             cpu.regs.rip,

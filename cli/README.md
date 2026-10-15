@@ -259,7 +259,13 @@ Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
-the search report's stream digest and runs from the verified bytes.
+the search report's stream digest and runs from the verified bytes. Its kernel
+and initramfs are checked against the source recording when finally loaded,
+before inheritance can copy a later version of either file. Each replay saves
+the same verified stream bytes, so a completed replay can itself be replayed.
+Failed or incomplete saved campaigns cannot become replay sources, even if a
+producer wrote a report before the failure. The saved seed, execution budget and
+wall limit must agree with the producer report before replay begins.
 
 ## Developer qualification
 
@@ -280,13 +286,18 @@ and further exploration uses `search`.
 
 ## Storage and boundaries
 
-The v2 manifest contains the resolved workload and runner identities, artifact
-hashes, parent recording and a package-owned payload. Shared recording storage never decodes
+The v3 manifest contains the loaded Harmony executable identity, resolved
+workload and runner identities, artifact hashes, parent recording and a
+package-owned payload. Shared recording storage never decodes
 fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
-Replay verifies the exact CLI executable, architecture and saved artifact hashes.
+Replay verifies the loaded CLI executable identity, architecture and saved artifact hashes.
+Linux hashes the executable image through `/proc/self/exe`; macOS records the
+running process's code-directory hash. Both remain bound to the loaded image
+when its pathname is replaced while the process is running. If the host cannot
+provide a loaded-image identity, recording and replay fail closed.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
 evidence. Replay and branch selection use that verified manifest copy, even
@@ -306,10 +317,22 @@ and standalone command runs likewise bind the record built by the execution
 producer before completion.
 Derived runs also verify the bytes copied from each source artifact against its
 recorded hash, so a replacement between source verification and inheritance is
-rejected. UML also pins the exact physical processor identity selected by the fastest
+rejected. Faults recordings capture the kernel and initramfs actually prepared for
+execution, and completed reports must name those saved digests. Saved faults
+execution checks the kernel, initramfs and search vocabulary at their final
+read against the manifest; rooted search passes the verified root bytes to its
+workers. Fault search and plain command execution admit executable bytes from
+the same packed OCI rootfs segment that becomes the guest initramfs. UML search
+and command execution also check the loaded profile's
+identity against the verified recording before guest launch. The saved UML
+kernel digest must match that profile's executable before a run can complete.
+Nested replay and NES guest replay likewise compare their saved kernel and
+initramfs bytes with the recording at the final read before execution.
+UML also pins the exact physical processor identity selected by the fastest
 core pool's coordinator placement; the manifest and faults campaign use the
-same processor. Standalone command runs and replays bind that saved identity
-before launching the guest. KVM and HVF application replay compare final state,
+same processor.
+Standalone command runs and replays bind that saved identity before launching
+the guest. KVM and HVF application replay compare final state,
 assertions, actions and recovery evidence. UML application replay records
 assertions, actions and recovery evidence but cannot establish full-state
 identity. Plain UML command replay compares application output and

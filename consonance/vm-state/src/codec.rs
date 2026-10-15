@@ -133,13 +133,13 @@ impl VmState {
         if magic != VM_STATE_MAGIC {
             return Err(VmStateError::BadMagic(magic));
         }
-        let version = header.version.get();
-        if version != VM_STATE_VERSION {
-            return Err(VmStateError::UnsupportedVersion(version));
-        }
         let arch = header.arch.get();
         if arch != ARCH_X86_64 {
             return Err(VmStateError::UnsupportedArch(arch));
+        }
+        let version = header.version.get();
+        if version != VM_STATE_VERSION {
+            return Err(VmStateError::UnsupportedVersion(version));
         }
         let section_count = header.section_count.get();
 

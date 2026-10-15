@@ -50,7 +50,7 @@ pub use arch::x86::{
     canonicalize_xsave_with_restore_bv, logical_xsave_restore_bv, restore_xsave_image,
 };
 pub use arch::{Arch, ArchExit};
-pub use backend::Backend;
+pub use backend::{Backend, HostCoreClass};
 pub use error::{BackendError, Result};
 pub use exit::{
     Capabilities, CommonExit, Exit, ExitCounts, ExitReason, HypercallFrame, StoreCompletions,

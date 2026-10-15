@@ -522,6 +522,7 @@ jobs:
           }
 
           failed=0
+          run_exact vmm-backend kvm_smoke rejected_rep_input_retires_uncounted_guest_progress rep-input-refusal || failed=1
           run_exact vmm-backend kvm_smoke serviced_pio_is_exactly_snapshottable_without_guest_execution pio || failed=1
           run_exact vmm-backend kvm_smoke serviced_msr_is_exactly_snapshottable_without_guest_execution msr || failed=1
           run_exact vmm-backend kvm_smoke serviced_exception_payload_round_trips_and_empty_restore_clears_it exception-payload || failed=1
@@ -539,6 +540,10 @@ jobs:
               "XSAVE_CONTINUATION_REPORT_DIR=$PWD/snapshot-report/xsave" || failed=1
             run_exact vmm-core x86_cpu_snapshots live_kvm::xsave_live_registers_survive_cold_continuation xsave-live \
               "XSAVE_LIVE_REGISTERS_REPORT_DIR=$PWD/snapshot-report/xsave-live" || failed=1
+            run_exact vmm-core x86_cpu_snapshots live_kvm::xrstor_init_guest_bytes_survive_reused_continuation xrstor-init \
+              "XSAVE_XRSTOR_REPORT_DIR=$PWD/snapshot-report/xrstor-init" || failed=1
+            run_exact vmm-core x86_cpu_snapshots live_kvm::xrstor_init_long_mode_guest_bytes_survive_reused_continuation xrstor-init-long \
+              "XSAVE_XRSTOR_LONG_REPORT_DIR=$PWD/snapshot-report/xrstor-init-long" || failed=1
           fi
           run_exact vmm-backend kvm_smoke resume_flag_preserves_instruction_breakpoint_continuation resume-flag || failed=1
           if [[ "$failed" -ne 0 ]]; then
@@ -789,6 +794,20 @@ jobs:
             'AMD NPT 32-bit PAE continuation is excluded from snapshot publication; the required amd-pae-refusal regression above proves fail-closed capture and prevents resumed execution.' \
             'The prior guest-authored PDPT A5,42 versus captured A5,99 hardware witness is retained in https://github.com/pH14/harmony/issues/314.' \
             >> "$GITHUB_STEP_SUMMARY"
+      - name: Require AMD long-mode full-VMM XRSTOR restore refusal and cold continuation
+        if: ${{ !cancelled() && steps.host.outcome == 'success' && steps.host.outputs.amd_npt == 'true' }}
+        env:
+          XSAVE_XRSTOR_LONG_REPORT_DIR: ${{ github.workspace }}/snapshot-report/xrstor-init-long-full-vmm
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          printf 'fixed_cpu=%s\nmode=64-bit long\n' "$cpu" > snapshot-report/xrstor-init-long-full-vmm.txt
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release \
+            -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::xrstor_init_long_mode_guest_bytes_survive_reused_continuation \
+            -- --ignored --exact --test-threads=1 --nocapture \
+            2>&1 | tee snapshot-report/xrstor-init-long-full-vmm.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' snapshot-report/xrstor-init-long-full-vmm.log
       - name: Explain informational XSAVE results
         if: always()
         run: |

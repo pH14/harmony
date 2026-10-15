@@ -84,18 +84,34 @@ fn pinned_auxv(
 fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {
     let mut walls = Vec::new();
     let mut failures = Vec::new();
+    let mut first_console = None;
     for cycle in 0..options.cycles {
         let exit = Guest::spawn(&launch(options, "boot"), profile)
             .map_err(io::Error::other)?
             .wait()?;
         walls.push(exit.wall.as_millis());
+        let console_matches_first = first_console
+            .get_or_insert_with(|| exit.console.clone())
+            .as_slice()
+            == exit.console;
         let passed = exit.reason == ExitReason::Exited(0)
             && contains(&exit, "HARMONY_UML PASS")
             && contains(&exit, SECCOMP_OK)
             && !contains(&exit, PTRACE_CHECK)
-            && clean(&exit);
+            && !contains(&exit, "Address space: host top 0x")
+            && clean(&exit)
+            && console_matches_first;
         if !passed {
-            failures.push(json!({"cycle": cycle, "exit": summary(&exit)}));
+            let console_difference = first_console
+                .as_deref()
+                .filter(|reference| *reference != exit.console.as_slice())
+                .map(|reference| console_difference(reference, &exit.console));
+            failures.push(json!({
+                "cycle": cycle,
+                "console_matches_first": console_matches_first,
+                "console_difference": console_difference,
+                "exit": summary(&exit),
+            }));
         }
     }
     let mut sorted = walls.clone();
@@ -111,6 +127,27 @@ fn boot_cycles(options: &Options, profile: &VerifiedProfile) -> io::Result<Value
             "failures": failures,
         }),
     ))
+}
+
+fn console_difference(reference: &[u8], actual: &[u8]) -> Value {
+    let offset = reference
+        .iter()
+        .zip(actual)
+        .position(|(left, right)| left != right)
+        .unwrap_or(reference.len().min(actual.len()));
+    let start = offset.saturating_sub(64);
+    let reference_end = reference.len().min(offset.saturating_add(192));
+    let actual_end = actual.len().min(offset.saturating_add(192));
+    json!({
+        "offset": offset,
+        "reference_len": reference.len(),
+        "actual_len": actual.len(),
+        "reference_byte": reference.get(offset),
+        "actual_byte": actual.get(offset),
+        "window_start": start,
+        "reference_window": String::from_utf8_lossy(&reference[start..reference_end]),
+        "actual_window": String::from_utf8_lossy(&actual[start..actual_end]),
+    })
 }
 
 fn hang(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> {

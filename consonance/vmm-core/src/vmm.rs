@@ -267,7 +267,7 @@ fn synchronous_checkpoint_due(checkpoint: bool, deferred: bool) -> bool {
 enum IdleAction {
     Terminal,
     DeliverPending,
-    JumpToDeadline(u64),
+    JumpToDeadline { vns: u64, control_wake: bool },
 }
 
 pub(crate) struct SdkChannel {
@@ -337,8 +337,14 @@ where
     checkpoint_hash_preimage_armed: bool,
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
+    pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
+}
+
+enum RestoreValidation {
+    CurrentBackend,
+    ImportedArtifact,
 }
 
 struct RestorePreparation<B: Backend>
@@ -405,6 +411,7 @@ where
             checkpoint_hash_preimage_armed: false,
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
+            last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
         }
@@ -922,6 +929,7 @@ where
     fn prepare_restore_vm_state(
         &self,
         s: &<B::A as Vendor>::Snapshot,
+        validation: RestoreValidation,
     ) -> Result<RestorePreparation<B>, VmmError> {
         let engine_state = EngineState::decode(s.engine_state())?;
         if *s.timers() != vm_state::TimerQueueState::default() {
@@ -934,13 +942,15 @@ where
         }
         let (vcpu, clock_offset, prep) = <B::A as Vendor>::validate_restore(self, s)?;
         self.check_guest_mode(&vcpu)?;
-        self.backend
-            .validate_restore_state(&vcpu)
-            .map_err(|error| {
-                VmmError::ContractViolation(format!(
-                    "restore_vm_state: backend rejected snapshot shape: {error}"
-                ))
-            })?;
+        let backend_validation = match validation {
+            RestoreValidation::CurrentBackend => self.backend.validate_restore_state(&vcpu),
+            RestoreValidation::ImportedArtifact => self.backend.validate_import_state(&vcpu),
+        };
+        backend_validation.map_err(|error| {
+            VmmError::ContractViolation(format!(
+                "restore_vm_state: backend rejected snapshot shape: {error}"
+            ))
+        })?;
         let svt = s.vtime();
         let vtime_commit = match self.vtime.as_ref() {
             Some(vt) => {
@@ -986,7 +996,10 @@ where
         })
     }
 
-    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
+    fn checked_restore_preparation(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<RestorePreparation<B>, VmmError> {
         if self.completion_staged {
             return Err(VmmError::ContractViolation(
                 "restore_vm_state into a backend with a staged completion: the VM just serviced a \
@@ -996,13 +1009,37 @@ where
                     .to_string(),
             ));
         }
+        let preparation = self.prepare_restore_vm_state(s, RestoreValidation::CurrentBackend)?;
+        if let Some(trace) = self.virtual_time_trace.as_ref() {
+            trace
+                .preflight_restore_clockevent_schedule(
+                    <B::A as Vendor>::restored_clockevent_trace_schedule_present(
+                        self,
+                        &preparation.vendor,
+                    ),
+                )
+                .map_err(|message| {
+                    VmmError::Backend(vmm_backend::BackendError::Internal(message))
+                })?;
+        }
+        Ok(preparation)
+    }
+
+    pub(crate) fn validate_restore_vm_state(
+        &self,
+        s: &<B::A as Vendor>::Snapshot,
+    ) -> Result<(), VmmError> {
+        self.checked_restore_preparation(s).map(|_| ())
+    }
+
+    pub fn restore_vm_state(&mut self, s: &<B::A as Vendor>::Snapshot) -> Result<(), VmmError> {
         let RestorePreparation {
             engine_state,
             vcpu,
             clock_offset,
             vendor,
             vtime,
-        } = self.prepare_restore_vm_state(s)?;
+        } = self.checked_restore_preparation(s)?;
         self.snapshot_ready = false;
         self.backend.restore(&vcpu)?;
         if let Some((cfg, clock, entropy)) = vtime {
@@ -1060,6 +1097,7 @@ where
     }
 
     pub fn step(&mut self) -> Result<Step, VmmError> {
+        self.last_step_control_idle_landing_vns = None;
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
         }
@@ -1301,7 +1339,8 @@ where
         snapshot: &<B::A as Vendor>::Snapshot,
         sdk: &SdkSnapshot,
     ) -> Result<Vec<u8>, VmmError> {
-        let prepared = self.prepare_restore_vm_state(snapshot)?;
+        let prepared =
+            self.prepare_restore_vm_state(snapshot, RestoreValidation::ImportedArtifact)?;
         let parts = <B::A as Vendor>::project_snapshot_hash_parts(snapshot)?;
         if self.doorbell_pages.is_some() != parts.doorbell.is_some() {
             return Err(VmmError::ContractViolation(
@@ -1840,6 +1879,27 @@ where
                 })
             })
             .transpose()
+    }
+
+    pub(crate) fn sdk_handler_fingerprint(
+        &self,
+    ) -> Result<Option<channel::HandlerFingerprint>, channel::ChannelError> {
+        match self.sdk.as_ref() {
+            None => Ok(None),
+            Some(sdk) if sdk.env.is_poisoned() => Ok(None),
+            Some(sdk) => sdk.env.handler_fingerprint().map(Some),
+        }
+    }
+
+    pub(crate) fn verify_sdk_handler_unchanged(
+        &self,
+        before: &channel::HandlerFingerprint,
+    ) -> Result<(), channel::ChannelError> {
+        self.sdk
+            .as_ref()
+            .ok_or(channel::ChannelError::Poisoned)?
+            .env
+            .verify_handler_fingerprint_unchanged(before)
     }
 
     pub fn sdk_snapshot_after_answer(
@@ -2484,7 +2544,7 @@ where
     pub(crate) fn on_idle(&mut self) -> Result<Step, VmmError> {
         match self.idle_action()? {
             IdleAction::DeliverPending => Ok(Step::Continued),
-            IdleAction::JumpToDeadline(deadline_vns) => self.resume_idle(deadline_vns),
+            IdleAction::JumpToDeadline { vns, control_wake } => self.resume_idle(vns, control_wake),
             IdleAction::Terminal => Ok(self.terminate(TerminalReason::Idle)),
         }
     }
@@ -2501,17 +2561,22 @@ where
         }
         let timer = <B::A as Vendor>::deliverable_timer_deadline_vns(self)?;
         let wake = match (timer, self.idle_wake_vns) {
-            (Some(timer), Some(host)) => Some(timer.min(host)),
-            (Some(timer), None) => Some(timer),
-            (None, host) => host,
+            (Some(timer), Some(host)) if host < timer => Some((host, true)),
+            (Some(timer), _) => Some((timer, false)),
+            (None, Some(host)) => Some((host, true)),
+            (None, None) => None,
         };
         match wake {
-            Some(vns) => Ok(IdleAction::JumpToDeadline(vns)),
+            Some((vns, control_wake)) => Ok(IdleAction::JumpToDeadline { vns, control_wake }),
             None => Ok(IdleAction::Terminal),
         }
     }
 
-    pub(crate) fn resume_idle(&mut self, deadline_vns: u64) -> Result<Step, VmmError> {
+    pub(crate) fn resume_idle(
+        &mut self,
+        deadline_vns: u64,
+        control_wake: bool,
+    ) -> Result<Step, VmmError> {
         let (landing, snap) = {
             let vt = self
                 .vtime
@@ -2527,6 +2592,9 @@ where
             (landing, snap)
         };
         self.restore_vtime(&snap)?;
+        if control_wake {
+            self.last_step_control_idle_landing_vns = Some(landing);
+        }
         if self.idle_landings.len() < EVENT_TRACE_CAP {
             self.idle_landings.push(landing);
         }
@@ -5958,6 +6026,43 @@ mod tests {
         let r = v.run().expect("run");
         assert_eq!(r.reason, TerminalReason::Idle);
         assert!(v.idle_landings().is_empty(), "no armed timer ⇒ terminal");
+    }
+
+    #[test]
+    fn idle_wake_distinguishes_an_earlier_control_deadline_from_the_timer() {
+        let make = || {
+            let mut exits = arm_timer_exits(1000);
+            exits.push(Exit::Common(CommonExit::Idle));
+            let mut mock = configured_mock(exits);
+            mock.set_state(if_set_state());
+            let mut v = lapic_vmm(mock);
+            for _ in 0..3 {
+                assert_eq!(v.step().unwrap(), Step::Continued);
+            }
+            v
+        };
+
+        let mut timer_wake = make();
+        let timer = timer_wake
+            .devices
+            .lapic
+            .as_ref()
+            .unwrap()
+            .next_timer_deadline()
+            .unwrap();
+        timer_wake.set_idle_wake_vns(Some(timer));
+        assert_eq!(timer_wake.step().unwrap(), Step::Continued);
+        assert_eq!(timer_wake.effective_vns(), Some(timer));
+        assert_eq!(timer_wake.last_step_control_idle_landing_vns, None);
+
+        let mut control_wake = make();
+        control_wake.set_idle_wake_vns(Some(timer - 1));
+        assert_eq!(control_wake.step().unwrap(), Step::Continued);
+        assert_eq!(control_wake.effective_vns(), Some(timer - 1));
+        assert_eq!(
+            control_wake.last_step_control_idle_landing_vns,
+            Some(timer - 1)
+        );
     }
 
     #[test]

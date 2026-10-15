@@ -307,7 +307,14 @@ fn outer_nested_state_snapshot_matrix() -> Result<()> {
             &changed[..changed.len().min(16)]
         );
         assert!(changed.is_empty(), "outer restore omitted live RAM pages");
-        assert_eq!(restored.in_place_fallbacks(), 0);
+        assert_eq!(
+            restored.in_place_fallbacks(),
+            if captured_svm_state.is_some() {
+                attempt
+            } else {
+                0
+            }
+        );
         assert_eq!(register(&restored, 3)?, 3);
         println!("NESTED_MATRIX restore_attempt={attempt}");
         assert_eq!(

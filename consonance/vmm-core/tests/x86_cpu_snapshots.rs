@@ -430,6 +430,16 @@ mod live_kvm {
         );
     }
 
+    fn amd_compatible_host() -> bool {
+        std::fs::read_to_string("/proc/cpuinfo")
+            .expect("read host CPU vendor")
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .any(|(key, value)| {
+                key.trim() == "vendor_id" && matches!(value.trim(), "AuthenticAMD" | "HygonGenuine")
+            })
+    }
+
     fn fresh_vmm(configure: bool) -> Vmm<KvmBackend> {
         let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
         let configure: fn(&mut KvmBackend) = if configure {
@@ -1457,6 +1467,7 @@ mod live_kvm {
     }
 
     const XSAVE_GPA: usize = 0x9000;
+    const XSAVE_XRSTOR_GPA: usize = 0xA000;
     const XSAVE_PAGE_LEN: usize = PAGE_SIZE;
     const XSAVE_WARMUP_LEN: usize = 10;
     const XSAVE_PROGRAM_LEN: usize = 34;
@@ -1503,6 +1514,102 @@ mod live_kvm {
         0x43,
         0xF4,
     ];
+
+    const XSAVE_XRSTOR_PROGRAM_LEN: usize = XSAVE_PROGRAM_LEN + 7;
+    const XSAVE_XRSTOR_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_XRSTOR_PROGRAM_LEN;
+    const XSAVE_XRSTOR_PROGRAM: [u8; XSAVE_XRSTOR_PROGRAM_LEN] = [
+        0xDB,
+        0xE3,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        WARMUP_MARKER,
+        0xEE,
+        0xB8,
+        0x03,
+        0x00,
+        0x00,
+        0x00,
+        0x31,
+        0xD2,
+        0x0F,
+        0xAE,
+        0x2D,
+        0x00,
+        0xA0,
+        0x00,
+        0x00,
+        0x0F,
+        0xAE,
+        0x25,
+        0x00,
+        0x90,
+        0x00,
+        0x00,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        XSAVE_MARKER,
+        0xEE,
+        0x43,
+        0xF4,
+    ];
+
+    const XSAVE_XRSTOR_LONG_PROGRAM: [u8; 46] = [
+        0xDB,
+        0xE3,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        WARMUP_MARKER,
+        0xEE,
+        0xB8,
+        0x03,
+        0x00,
+        0x00,
+        0x00,
+        0x31,
+        0xD2,
+        0x48,
+        0x0F,
+        0xAE,
+        0x2C,
+        0x25,
+        0x00,
+        0xA0,
+        0x00,
+        0x00,
+        0x48,
+        0x0F,
+        0xAE,
+        0x24,
+        0x25,
+        0x00,
+        0x90,
+        0x00,
+        0x00,
+        0xBA,
+        0xF8,
+        0x03,
+        0x00,
+        0x00,
+        0xB0,
+        XSAVE_MARKER,
+        0xEE,
+        0xFF,
+        0xC3,
+        0xF4,
+    ];
+    const XSAVE_XRSTOR_LONG_ENDPOINT_RIP: usize = CODE_GPA + XSAVE_XRSTOR_LONG_PROGRAM.len();
 
     const XSAVE_LIVE_PROGRAM: [u8; XSAVE_LIVE_PROGRAM_LEN] = [
         0xDB,
@@ -1558,10 +1665,17 @@ mod live_kvm {
 
     const XSAVE_MUTATOR: [u8; XSAVE_MUTATOR_LEN] = [0xD9, 0xEE, 0x66, 0x0F, 0xEF, 0xC0, 0xF4];
 
-    fn xsave_guest_ram_image(program: &[u8]) -> GuestRam {
+    fn xsave_guest_ram_image(program: &[u8], long_mode: bool) -> GuestRam {
         let mut ram = guest_ram_image();
         let bytes = ram.as_mut_bytes();
+        if long_mode {
+            put_u64(bytes, PDPT_GPA, 0x5003);
+            put_u64(bytes, PD_A_GPA, 0x6003);
+            put_u64(bytes, PD_B_GPA, 0x83);
+        }
         bytes[XSAVE_GPA..XSAVE_GPA + XSAVE_PAGE_LEN].fill(0);
+        bytes[XSAVE_XRSTOR_GPA + 24..XSAVE_XRSTOR_GPA + 28]
+            .copy_from_slice(&0x1f80u32.to_le_bytes());
         put_bytes(bytes, CODE_GPA, program);
         put_bytes(bytes, REMAPPED_CODE_GPA, program);
         put_bytes(bytes, XSAVE_MUTATOR_GPA, &XSAVE_MUTATOR);
@@ -1598,25 +1712,36 @@ mod live_kvm {
         );
     }
 
-    fn install_xsave_entry(backend: &mut KvmBackend) {
+    fn install_xsave_entry(backend: &mut KvmBackend, long_mode: bool) {
         install_pae_entry(backend);
         let mut state = backend.save().expect("save XSAVE entry template");
         state.sregs.cr4 |= (1 << 9) | (1 << 18);
         state.sregs.cr0 &= !((1 << 2) | (1 << 3));
+        if long_mode {
+            state.sregs.efer |= (1 << 8) | (1 << 10);
+            state.sregs.cs.l = 1;
+            state.sregs.cs.db = 0;
+            state.sregs.flags = 0;
+            state.sregs.pdptrs = [0; 4];
+            state.msrs.insert(IA32_EFER, state.sregs.efer);
+        }
         state.xcr0 = 3;
         backend
             .restore(&state)
             .expect("restore XSAVE-capable entry state");
     }
 
-    fn fresh_xsave_vmm(configure: bool, program: &[u8]) -> Vmm<KvmBackend> {
+    fn fresh_xsave_vmm(configure: bool, program: &[u8], long_mode: bool) -> Vmm<KvmBackend> {
         let backend = KvmBackend::new().unwrap_or_else(|e| panic!("KvmBackend::new failed: {e}"));
-        let configure: fn(&mut KvmBackend) = if configure {
-            install_xsave_entry
-        } else {
-            |_| {}
-        };
-        compose(xsave_guest_ram_image(program), backend, configure)
+        compose(
+            xsave_guest_ram_image(program, long_mode),
+            backend,
+            |backend| {
+                if configure {
+                    install_xsave_entry(backend, long_mode);
+                }
+            },
+        )
     }
 
     fn xsave_output_page(memory: &[u8]) -> &[u8] {
@@ -1683,11 +1808,12 @@ mod live_kvm {
         endpoint_rip: usize,
         report_env: &str,
         validate_output: fn(&[u8]),
+        long_mode: bool,
     ) {
         require_kvm();
         let report = report_root(report_env);
 
-        let mut uninterrupted = fresh_xsave_vmm(true, program);
+        let mut uninterrupted = fresh_xsave_vmm(true, program, long_mode);
         wire_snapshot_path(&mut uninterrupted);
         run_xsave_warmup(&mut uninterrupted);
         let uninterrupted_endpoint = run_xsave_endpoint(&mut uninterrupted, endpoint_rip);
@@ -1698,7 +1824,7 @@ mod live_kvm {
             xsave_output_page(&uninterrupted_endpoint.memory),
         );
 
-        let mut save_and_continue = fresh_xsave_vmm(true, program);
+        let mut save_and_continue = fresh_xsave_vmm(true, program, long_mode);
         wire_snapshot_path(&mut save_and_continue);
         run_xsave_warmup(&mut save_and_continue);
         let save_before_memory = save_and_continue.guest_memory().to_vec();
@@ -1747,7 +1873,7 @@ mod live_kvm {
             xsave_output_page(&save_and_continue_endpoint.memory),
         );
 
-        let mut reused = fresh_xsave_vmm(true, program);
+        let mut reused = fresh_xsave_vmm(true, program, long_mode);
         wire_snapshot_path(&mut reused);
         run_xsave_warmup(&mut reused);
         let reused_before_mutation = run_xsave_endpoint(&mut reused, endpoint_rip);
@@ -1760,32 +1886,54 @@ mod live_kvm {
         assert_eq!(reused_before_mutation, save_and_continue_endpoint);
         let mut mutator_state = save_stop.state.clone();
         mutator_state.regs.rip = XSAVE_MUTATOR_GPA as u64;
-        reused
-            .restore_snapshot(&save_stop.memory, &mutator_state)
-            .expect("restore XSAVE mutator continuation into reused VM");
-        let mutated = run_xsave_mutator(&mut reused);
-        retain_capture(
-            report.as_deref(),
-            "reused-mutator-endpoint",
-            &mutated,
-            xsave_output_page(&mutated.memory),
-        );
-        assert_ne!(
-            mutated.state.xsave, save_stop.state.xsave,
-            "the guest FPU/SSE continuation must change the saved XSAVE state"
-        );
-        reused
-            .restore_snapshot(&save_stop.memory, &save_stop.state)
-            .expect("restore XSAVE boundary after reused VM mutation");
-        let reused_endpoint = run_xsave_endpoint(&mut reused, endpoint_rip);
-        retain_capture(
-            report.as_deref(),
-            "reused-restored-endpoint",
-            &reused_endpoint,
-            xsave_output_page(&reused_endpoint.memory),
-        );
+        let reused_endpoint = if amd_compatible_host() {
+            let error = reused
+                .restore_snapshot(&save_stop.memory, &mutator_state)
+                .expect_err("AMD reused-vCPU restore must fail before guest mutation");
+            assert!(
+                error
+                    .to_string()
+                    .contains("AMD KVM cannot safely restore a previously run vCPU"),
+                "unexpected refusal: {error}"
+            );
+            let after_refusal = capture_full_vmm(&mut reused);
+            retain_capture(
+                report.as_deref(),
+                "reused-after-refusal-endpoint",
+                &after_refusal,
+                xsave_output_page(&after_refusal.memory),
+            );
+            assert_eq!(after_refusal, reused_before_mutation);
+            None
+        } else {
+            reused
+                .restore_snapshot(&save_stop.memory, &mutator_state)
+                .expect("restore XSAVE mutator continuation into reused VM");
+            let mutated = run_xsave_mutator(&mut reused);
+            retain_capture(
+                report.as_deref(),
+                "reused-mutator-endpoint",
+                &mutated,
+                xsave_output_page(&mutated.memory),
+            );
+            assert_ne!(
+                mutated.state.xsave, save_stop.state.xsave,
+                "the guest FPU/SSE continuation must change the saved XSAVE state"
+            );
+            reused
+                .restore_snapshot(&save_stop.memory, &save_stop.state)
+                .expect("restore XSAVE boundary after reused VM mutation");
+            let endpoint = run_xsave_endpoint(&mut reused, endpoint_rip);
+            retain_capture(
+                report.as_deref(),
+                "reused-restored-endpoint",
+                &endpoint,
+                xsave_output_page(&endpoint.memory),
+            );
+            Some(endpoint)
+        };
 
-        let mut cold_unobserved = fresh_xsave_vmm(false, program);
+        let mut cold_unobserved = fresh_xsave_vmm(false, program, long_mode);
         wire_snapshot_path(&mut cold_unobserved);
         cold_unobserved
             .restore_snapshot(&save_stop.memory, &save_stop.state)
@@ -1798,7 +1946,7 @@ mod live_kvm {
             xsave_output_page(&cold_unobserved_endpoint.memory),
         );
 
-        let mut cold_observed = fresh_xsave_vmm(false, program);
+        let mut cold_observed = fresh_xsave_vmm(false, program, long_mode);
         wire_snapshot_path(&mut cold_observed);
         cold_observed
             .restore_snapshot(&save_stop.memory, &save_stop.state)
@@ -1844,24 +1992,26 @@ mod live_kvm {
         for capture in [
             &uninterrupted_endpoint,
             &save_and_continue_endpoint,
-            &reused_endpoint,
             &cold_unobserved_endpoint,
             &cold_observed_endpoint,
         ] {
             validate_output(xsave_output_page(&capture.memory));
         }
-        assert_eq!(
-            xsave_output_page(&uninterrupted_endpoint.memory),
-            xsave_output_page(&reused_endpoint.memory),
-            "reused restore must preserve guest-authored XSAVE bytes"
-        );
+        if let Some(reused_endpoint) = reused_endpoint.as_ref() {
+            validate_output(xsave_output_page(&reused_endpoint.memory));
+            assert_eq!(
+                xsave_output_page(&uninterrupted_endpoint.memory),
+                xsave_output_page(&reused_endpoint.memory),
+                "reused restore must preserve guest-authored XSAVE bytes"
+            );
+            assert!(
+                uninterrupted_endpoint == *reused_endpoint,
+                "uninterrupted and reused-restore XSAVE futures differ; retained XSAVE evidence is available"
+            );
+        }
         assert!(
             uninterrupted_endpoint == save_and_continue_endpoint,
             "uninterrupted and save-and-continue XSAVE futures differ; retained XSAVE evidence is available"
-        );
-        assert!(
-            uninterrupted_endpoint == reused_endpoint,
-            "uninterrupted and reused-restore XSAVE futures differ; retained XSAVE evidence is available"
         );
         assert!(
             save_and_continue_endpoint == cold_unobserved_endpoint,
@@ -1882,6 +2032,7 @@ mod live_kvm {
             XSAVE_ENDPOINT_RIP,
             "XSAVE_CONTINUATION_REPORT_DIR",
             assert_nonzero_xsave_output,
+            false,
         );
     }
 
@@ -1894,6 +2045,33 @@ mod live_kvm {
             XSAVE_LIVE_ENDPOINT_RIP,
             "XSAVE_LIVE_REGISTERS_REPORT_DIR",
             assert_live_register_xsave_output,
+            false,
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_XRSTOR_REPORT_DIR"]
+    fn xrstor_init_guest_bytes_survive_reused_continuation() {
+        run_xsave_continuation(
+            &XSAVE_XRSTOR_PROGRAM,
+            CODE_GPA + XSAVE_WARMUP_LEN,
+            XSAVE_XRSTOR_ENDPOINT_RIP,
+            "XSAVE_XRSTOR_REPORT_DIR",
+            assert_nonzero_xsave_output,
+            false,
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM; run with --ignored and XSAVE_XRSTOR_LONG_REPORT_DIR"]
+    fn xrstor_init_long_mode_guest_bytes_survive_reused_continuation() {
+        run_xsave_continuation(
+            &XSAVE_XRSTOR_LONG_PROGRAM,
+            CODE_GPA + XSAVE_WARMUP_LEN,
+            XSAVE_XRSTOR_LONG_ENDPOINT_RIP,
+            "XSAVE_XRSTOR_LONG_REPORT_DIR",
+            assert_nonzero_xsave_output,
+            true,
         );
     }
 }

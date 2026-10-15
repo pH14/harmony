@@ -28,10 +28,11 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 8;
+const SPARSE_VERSION: u16 = 9;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
-const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED;
+const SPARSE_FLAG_TARGET_PAGES: u16 = 1 << 2;
+const SPARSE_KNOWN_FLAGS: u16 = SPARSE_FLAG_SDK | SPARSE_FLAG_TAINTED | SPARSE_FLAG_TARGET_PAGES;
 #[cfg(test)]
 const MAX_SUFFIX_LEN: usize = 16 * 1024 * 1024;
 #[cfg(test)]
@@ -84,6 +85,7 @@ pub(crate) struct SparsePortableSidecar {
     pub(crate) trace_schedules: u64,
     pub(crate) tainted: bool,
     pub(crate) base_ram_digest: [u8; 32],
+    pub(crate) target_pages_digest: Option<[u8; 32]>,
     pub(crate) state_blob_suffix: Vec<u8>,
     pub(crate) control_state: Vec<u8>,
 }
@@ -319,23 +321,34 @@ pub fn logical_x86_sparse_sidecar(bytes: &[u8]) -> Result<Vec<u8>, PortableSnaps
     let vm_state = state
         .encode()
         .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
-    encode_sparse_sidecar(&SparsePortableSidecarRef {
-        vm_state: &vm_state,
-        sdk: sidecar.sdk.as_ref(),
-        policy: &sidecar.policy,
-        at: sidecar.at,
-        sdk_events: sidecar.sdk_events,
-        trace_events: sidecar.trace_events,
-        trace_schedules: sidecar.trace_schedules,
-        tainted: sidecar.tainted,
-        base_ram_digest: sidecar.base_ram_digest,
-        state_blob_suffix: &sidecar.state_blob_suffix,
-        control_state: &sidecar.control_state,
-    })
+    encode_sparse_sidecar_with_target_pages(
+        &SparsePortableSidecarRef {
+            vm_state: &vm_state,
+            sdk: sidecar.sdk.as_ref(),
+            policy: &sidecar.policy,
+            at: sidecar.at,
+            sdk_events: sidecar.sdk_events,
+            trace_events: sidecar.trace_events,
+            trace_schedules: sidecar.trace_schedules,
+            tainted: sidecar.tainted,
+            base_ram_digest: sidecar.base_ram_digest,
+            state_blob_suffix: &sidecar.state_blob_suffix,
+            control_state: &sidecar.control_state,
+        },
+        sidecar.target_pages_digest,
+    )
 }
 
+#[cfg(test)]
 pub(crate) fn encode_sparse_sidecar(
     sidecar: &SparsePortableSidecarRef<'_>,
+) -> Result<Vec<u8>, PortableSnapshotError> {
+    encode_sparse_sidecar_with_target_pages(sidecar, None)
+}
+
+pub(crate) fn encode_sparse_sidecar_with_target_pages(
+    sidecar: &SparsePortableSidecarRef<'_>,
+    target_pages_digest: Option<[u8; 32]>,
 ) -> Result<Vec<u8>, PortableSnapshotError> {
     let sdk = sidecar.sdk.map(encode_sdk).transpose()?;
     let policy = sidecar.policy.encode();
@@ -349,6 +362,9 @@ pub(crate) fn encode_sparse_sidecar(
     }
     if sidecar.tainted {
         flags |= SPARSE_FLAG_TAINTED;
+    }
+    if target_pages_digest.is_some() {
+        flags |= SPARSE_FLAG_TARGET_PAGES;
     }
 
     let mut out = Vec::new();
@@ -365,6 +381,9 @@ pub(crate) fn encode_sparse_sidecar(
     put_u64(&mut out, sidecar.trace_events)?;
     put_u64(&mut out, sidecar.trace_schedules)?;
     out.extend_from_slice(&sidecar.base_ram_digest);
+    if let Some(digest) = target_pages_digest {
+        out.extend_from_slice(&digest);
+    }
     out.extend_from_slice(sidecar.vm_state);
     if let Some(bytes) = &sdk {
         out.extend_from_slice(bytes);
@@ -405,6 +424,13 @@ pub(crate) fn decode_sparse_sidecar(
     let trace_schedules = input.u64()?;
     let mut base_ram_digest = [0; 32];
     base_ram_digest.copy_from_slice(input.take(32)?);
+    let target_pages_digest = if flags & SPARSE_FLAG_TARGET_PAGES != 0 {
+        let mut digest = [0; 32];
+        digest.copy_from_slice(input.take(32)?);
+        Some(digest)
+    } else {
+        None
+    };
     let vm_state = input.section(vm_state_len)?;
     let sdk_bytes = input.section(sdk_len)?;
     let policy_bytes = input.section(policy_len)?;
@@ -423,6 +449,7 @@ pub(crate) fn decode_sparse_sidecar(
         trace_schedules,
         tainted: flags & SPARSE_FLAG_TAINTED != 0,
         base_ram_digest,
+        target_pages_digest,
         state_blob_suffix,
         control_state,
     })
@@ -811,22 +838,25 @@ mod tests {
 
     #[cfg(target_arch = "x86_64")]
     fn x86_sidecar(state: &vm_state::VmState) -> Vec<u8> {
-        encode_sparse_sidecar(&SparsePortableSidecarRef {
-            vm_state: &state.encode().unwrap(),
-            sdk: None,
-            policy: &ServiceConfig {
-                identity: b"identity".to_vec(),
-                configuration: b"configuration".to_vec(),
+        encode_sparse_sidecar_with_target_pages(
+            &SparsePortableSidecarRef {
+                vm_state: &state.encode().unwrap(),
+                sdk: None,
+                policy: &ServiceConfig {
+                    identity: b"identity".to_vec(),
+                    configuration: b"configuration".to_vec(),
+                },
+                at: 23,
+                sdk_events: 0,
+                trace_events: 17,
+                trace_schedules: 5,
+                tainted: true,
+                base_ram_digest: [0xa5; 32],
+                state_blob_suffix: b"state-suffix",
+                control_state: b"control-state",
             },
-            at: 23,
-            sdk_events: 0,
-            trace_events: 17,
-            trace_schedules: 5,
-            tainted: true,
-            base_ram_digest: [0xa5; 32],
-            state_blob_suffix: b"state-suffix",
-            control_state: b"control-state",
-        })
+            Some([0x3c; 32]),
+        )
         .unwrap()
     }
 
@@ -1131,10 +1161,15 @@ mod tests {
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 8);
+        assert_eq!(SPARSE_VERSION, 9);
         assert_eq!(
-            (SPARSE_FLAG_SDK, SPARSE_FLAG_TAINTED, SPARSE_KNOWN_FLAGS),
-            (1, 2, 3)
+            (
+                SPARSE_FLAG_SDK,
+                SPARSE_FLAG_TAINTED,
+                SPARSE_FLAG_TARGET_PAGES,
+                SPARSE_KNOWN_FLAGS,
+            ),
+            (1, 2, 4, 7)
         );
         assert_eq!(MAX_SUFFIX_LEN, 16 * 1024 * 1024);
         assert_eq!(
@@ -1499,7 +1534,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, SPARSE_VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, SPARSE_VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -1536,6 +1571,40 @@ mod tests {
             let decoded = decode_sparse_sidecar(&bytes).unwrap();
             assert_eq!(decoded.sdk.is_some(), has_sdk);
             assert_eq!(decoded.tainted, tainted);
+        }
+    }
+
+    #[test]
+    fn sparse_sidecar_target_page_digest_is_optional_and_bounded() {
+        let (_, vm_state, _, policy) = fixture();
+        let sidecar = SparsePortableSidecarRef {
+            vm_state: &vm_state,
+            sdk: None,
+            policy: &policy,
+            at: 23,
+            sdk_events: 0,
+            trace_events: 17,
+            trace_schedules: 5,
+            tainted: false,
+            base_ram_digest: [0xa5; 32],
+            state_blob_suffix: b"canonical-suffix",
+            control_state: &[],
+        };
+        let without = encode_sparse_sidecar(&sidecar).unwrap();
+        assert_eq!(
+            decode_sparse_sidecar(&without).unwrap().target_pages_digest,
+            None
+        );
+        let with = encode_sparse_sidecar_with_target_pages(&sidecar, Some([0x3c; 32])).unwrap();
+        assert_eq!(with.len(), without.len() + 32);
+        assert_eq!(
+            decode_sparse_sidecar(&with).unwrap().target_pages_digest,
+            Some([0x3c; 32])
+        );
+        for end in 116..148 {
+            let mut truncated = with.clone();
+            truncated.drain(end..148);
+            assert!(decode_sparse_sidecar(&truncated).is_err());
         }
     }
 

@@ -221,7 +221,9 @@ other hosts. It serializes the real `SessionConfig::default()` as
 boot flags. Custom session configurations, including campaign and fault adapters,
 are outside this scope. Inputs must be local OCI layouts. The dump includes exact platform, rootfs and
 control archives, serialized execution and image configuration, input hashes,
-prepared identity, kernel bytes, and ordered concatenated initramfs bytes. NES
+prepared identity, kernel bytes, and ordered concatenated initramfs bytes. Source
+filenames must be valid UTF-8 so each source file has a distinct input
+manifest path; ambiguous names are rejected before the dump is written. NES
 uses `prepare::prepare_oci`; PostgreSQL uses the image's existing command through
 `oci_support::bundle::prepare`. ROM bytes and PostgreSQL's `/workload.sql` and
 entrypoint script receive explicit hashes; all workload files remain bound by
@@ -282,6 +284,13 @@ image in `workload.options.guest_image`.
 Native search and replay require the saved core digest from the run manifest;
 the package checks the on-disk core before constructing a target, and the
 QuickNES loader checks its private copy against the same digest on every load.
+For a saved search origin, the CLI checks the ROM and, for Consonance, the
+kernel and initramfs against the inherited manifest at their final read before
+passing those bytes to the package.
+The Consonance SMB campaign's emulator policy and prepared execution identity
+also bind the loaded Harmony executable through the exact client session
+identity, so a saved stream or checkpoint from another build is refused before
+the guest is replayed.
 Search returns the exact serialized witness input and result that it wrote, so
 the CLI can reject replacements before recording a completed search.
 Search origins include genesis, a recorded input prefix and a retained whole-search

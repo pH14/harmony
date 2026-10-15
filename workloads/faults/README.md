@@ -20,9 +20,9 @@ in the platform supervisor's bundle format:
 | `workload <argv...>` | one long-lived workload driver started after initial readiness |
 | `check <argv...>` | a short-lived oracle command run continuously after initial readiness |
 
-[`prepare`](src/prepare.rs) stages that image, reads the bundle for the action
-alphabet, and passes the image to the canonical OCI preparation API with
-`/etc/harmony/bundle` selected for structured supervision. The platform control
+[`prepare`](src/prepare.rs) stages that image, packs its rootfs, reads the packed
+bundle for the action alphabet, and selects `/etc/harmony/bundle` for structured
+supervision. The platform control
 member contains the read-only execution specification and mounts the pinned
 supervisor, SDK devices, and bundle path. The supervisor runs setup and
 readiness commands with the resolved image credentials before it publishes the
@@ -36,14 +36,18 @@ a readiness command keep immediate hook launches.
 
 ## Image admission
 
-Preparation scans every executable and shared library in the staged rootfs
-before it builds the guest image ([`admission`](src/admission.rs)).
+Preparation scans every executable and shared library in the exact packed
+rootfs segment that the guest receives ([`admission`](src/admission.rs)). It
+derives the bundle and event attestation from those same archived bytes. A
+staged file changed between scanning and packing cannot make admission name
+different executable or bundle bytes from the guest image.
 
-Staged image inspection temporarily grants host read and directory search
-permission while scanning files and reading the bundle, then restores their
-original modes before guest packaging. Images containing mode-zero files and
-directories therefore receive the same admission result on privileged and
-unprivileged hosts.
+Packaging temporarily grants host read and directory search permission while
+copying staged files, then restores their original modes. The archived scan
+reads those copied bytes regardless of mode, so images containing mode-zero
+files and directories receive the same admission result on privileged and
+unprivileged hosts. The separate image-inspection command still inspects the
+staged rootfs directly.
 
 The scan rejects:
 
@@ -52,12 +56,14 @@ The scan rejects:
 - a hardware entropy instruction (RDRAND, RDSEED, RNDR, RNDRRS) without a
   review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
+- an arm64 monitor-based LL/SC instruction, even if listed for review;
+- an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
 For User-mode Linux, preparation rejects all four scanned hardware entropy
 instructions even when reviewed. UML runs guest user instructions natively, so
 the VM's hidden feature bits do not protect a guarded call site. This admission
-check walks the bytes of executable load segments in the staged image. Section
+check walks the bytes of executable load segments in the packed image. Section
 headers do not determine what the guest loader executes. The scan boundary
 still requires cooperative workloads: dynamically generated code and
 instructions hidden inside another instruction's operand bytes are outside its
@@ -81,8 +87,12 @@ its start, regardless of the section's executable flag, and separately decodes
 the gaps between sections. This preserves instruction alignment when a segment
 begins with headers or other data without reporting an instruction assembled
 across a section boundary. On arm64 it checks aligned instruction words across
-the whole executable load segment, ignoring a trailing partial word that cannot
-hold an instruction, so odd-length data sections are harmless. A
+the complete 4 KiB page-rounded file mapping of each executable load, including
+bytes beyond the declared load size, and rejects another load segment that
+aliases an executable memory page. Images with read-only data in executable
+loads must link with separate code pages. It ignores a trailing partial word
+that cannot hold an instruction. The LL/SC mask excludes LSE CASP and ordinary
+acquire/release loads, which do not use the reservation monitor. A
 binary built to hide an x86 instruction inside another instruction's operand
 bytes can still pass.
 
@@ -241,14 +251,18 @@ User-mode Linux guest (`UmlSession` in
 [consonance-client](../../consonance/client/README.md)) as an ordinary user on
 any Linux host, with no KVM. The profile is verified at start, its kernel
 replaces `runner.options.kernel`, and each session runs in the search thread. The profile
-identity and a digest of the complete host identity, including the physical
-processor and CPU-info lines UML imports at boot, join the
+identity, the loaded Harmony executable identity, and a digest of the complete
+host identity, including the physical processor and CPU-info lines UML imports
+at boot, join the
 execution identity and the workload identity, and the campaign stream and
 snapshot checkpoint get UML formats of their own, so a UML run never reuses
 VM state. A profile changed after workload admission is rejected before guest
-boot. The staged initramfs is checked against the requested image, then the
-sealed bytes are checked again before boot, so the identity names the image the
-session actually runs. The UML identity hashes kernel arguments with their
+boot. Saved searches and command runs also bind the profile loaded for guest
+execution to the recording's verified profile identity and require its
+executable digest to match the saved kernel. The staged initramfs is checked
+against the requested image, then the sealed bytes are checked
+again before boot, so the identity names the image the session actually runs.
+The UML identity hashes kernel arguments with their
 lengths, preserving the boundaries used at boot when a live session or cache
 entry is reused. Search admits one processor from the selected coordinator
 placement for the whole campaign.
@@ -419,7 +433,8 @@ resulting state as a durable root. A root binds the prepared boot identity to a
 cache extent containing pages and device/service sidecars, plus the standing
 fault windows still active at its snapshot moment. Import validates that
 identity and the extent; root bytes also contribute to the workload identity.
-All workers start from the imported root, and later action prefixes/checkpoints
+The CLI verifies and loads the saved root once before starting a search, then
+passes those bytes to every worker. Later action prefixes/checkpoints
 are relative to it. A continuation retains inherited standing windows, including
 an unfired event kill armed before the root, while it adds its new action windows.
 Commands and interactive input are diagnostic evidence, not

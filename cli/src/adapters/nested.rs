@@ -19,6 +19,54 @@ fn verified_replay_stream(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn verified_replay_source(path: &Path, source: &Manifest) -> Result<Vec<u8>> {
+    if source.status != "complete" {
+        return Err("nested replay requires a completed saved campaign".into());
+    }
+    let recorded_wall_budget = serde_json::json!(source.config.search.wall_seconds);
+    if source.payload["campaign_seed"].as_u64() != Some(source.config.search.seed)
+        || source.payload["execution_budget"].as_u64() != Some(source.config.search.executions)
+        || source.payload.get("wall_budget_seconds") != Some(&recorded_wall_budget)
+    {
+        return Err("nested replay configuration disagrees with the recorded campaign".into());
+    }
+    verified_replay_stream(path, source)
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn saved_replay_inputs(path: &Path, source: &Manifest) -> Result<(Vec<u8>, Vec<u8>)> {
+    let read = |name: &str| -> Result<Vec<u8>> {
+        let bytes = fs::read(path.join("artifacts").join(name))?;
+        let expected = source
+            .artifacts
+            .get(name)
+            .ok_or_else(|| format!("saved nested run has no {name} digest"))?;
+        if crate::runtime::digest(&bytes) != *expected {
+            return Err(format!("recorded nested {name} changed during load").into());
+        }
+        Ok(bytes)
+    };
+    Ok((read("kernel")?, read("initramfs")?))
+}
+
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn inherit_replay_stream(
+    source_path: &Path,
+    source: &Manifest,
+    out: &Path,
+    stream: &[u8],
+) -> Result<Manifest> {
+    use std::io::Write;
+    let child = source.inherit(source_path, out, "replay")?;
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out.join("stream.jsonl"))?
+        .write_all(stream)?;
+    Ok(child)
+}
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn verified_report(
     path: &Path,
@@ -163,15 +211,12 @@ fn execute(mut request: Request) -> Result<u8> {
             let path = crate::runs::locate(&s.run)?;
             let m = Manifest::read(&path)?;
             m.verify(&path)?;
-            let stream = verified_replay_stream(&path, &m)?;
+            let stream = verified_replay_source(&path, &m)?;
             Ok((path, m, stream))
         })
         .transpose()?;
-    let (kernel, initramfs) = if let Some((path, _, _)) = &original {
-        (
-            fs::read(path.join("artifacts/kernel"))?,
-            fs::read(path.join("artifacts/initramfs"))?,
-        )
+    let (kernel, initramfs) = if let Some((path, source, _)) = &original {
+        saved_replay_inputs(path, source)?
     } else {
         let runtime = crate::runners::consonance(&request.config.runner)?;
         if runtime.kernel.is_none() {
@@ -200,8 +245,8 @@ fn execute(mut request: Request) -> Result<u8> {
         return Ok(0);
     }
     let out = request.destination.create()?;
-    let mut m = if let Some((path, m, _)) = &original {
-        m.inherit(path, &out, "replay")?
+    let mut m = if let Some((path, m, stream)) = &original {
+        inherit_replay_stream(path, m, &out, stream)?
     } else {
         Manifest::new(request.config, "search")?
     };
@@ -248,6 +293,179 @@ fn execute(mut request: Request) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replay_child_retains_the_verified_stream_for_another_replay() {
+        let source = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let grandchild = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.search.executions = 1;
+        config.search.wall_seconds = Some(180);
+        let stream = b"recorded nested campaign";
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest.status = "complete".into();
+        manifest.payload = serde_json::json!({
+            "stream_sha256": crate::runtime::digest(stream),
+            "campaign_seed": 0,
+            "execution_budget": 1,
+            "wall_budget_seconds": 180
+        });
+        manifest.store(source.path(), "kernel", b"kernel").unwrap();
+        manifest
+            .store(source.path(), "initramfs", b"initramfs")
+            .unwrap();
+        manifest.save(source.path()).unwrap();
+        fs::write(source.path().join("stream.jsonl"), stream).unwrap();
+
+        let source_manifest = Manifest::read(source.path()).unwrap();
+        source_manifest.verify(source.path()).unwrap();
+        let first = verified_replay_source(source.path(), &source_manifest).unwrap();
+        fs::write(source.path().join("stream.jsonl"), b"changed campaign").unwrap();
+        let mut child_manifest =
+            inherit_replay_stream(source.path(), &source_manifest, child.path(), &first).unwrap();
+        child_manifest.payload = source_manifest.payload.clone();
+        child_manifest.status = "complete".into();
+        child_manifest.save(child.path()).unwrap();
+
+        let saved_child = Manifest::read(child.path()).unwrap();
+        saved_child.verify(child.path()).unwrap();
+        let second = verified_replay_source(child.path(), &saved_child).unwrap();
+        let grandchild_manifest =
+            inherit_replay_stream(child.path(), &saved_child, grandchild.path(), &second).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(grandchild_manifest.mode, "replay");
+        assert_eq!(
+            fs::read(grandchild.path().join("stream.jsonl")).unwrap(),
+            stream
+        );
+    }
+
+    #[test]
+    fn failed_replay_with_a_produced_report_is_not_a_replay_source() {
+        let source = tempfile::tempdir().unwrap();
+        let grandchild = source.path().join("grandchild");
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.search.executions = 1;
+        config.search.wall_seconds = Some(180);
+        let stream = b"recorded nested campaign";
+        let mut replay = Manifest::new(config, "replay").unwrap();
+        replay.status = "failed".into();
+        replay.error = Some("nested replay report diverged from saved campaign".into());
+        replay.payload = serde_json::json!({
+            "stream_sha256": crate::runtime::digest(stream),
+            "executions_completed": 1,
+            "campaign_seed": 0,
+            "execution_budget": 1,
+            "wall_budget_seconds": 180
+        });
+        replay.store(source.path(), "kernel", b"kernel").unwrap();
+        replay
+            .store(source.path(), "initramfs", b"initramfs")
+            .unwrap();
+        replay.save(source.path()).unwrap();
+        fs::write(source.path().join("stream.jsonl"), stream).unwrap();
+
+        for status in ["failed", "running"] {
+            replay.status = status.into();
+            replay.save(source.path()).unwrap();
+            let saved = Manifest::read(source.path()).unwrap();
+            saved.verify(source.path()).unwrap();
+            assert!(verified_replay_source(source.path(), &saved).is_err());
+            assert!(!grandchild.exists());
+        }
+
+        replay.status = "complete".into();
+        replay.error = None;
+        replay.save(source.path()).unwrap();
+        let saved = Manifest::read(source.path()).unwrap();
+        assert_eq!(
+            verified_replay_source(source.path(), &saved).unwrap(),
+            stream
+        );
+    }
+
+    #[test]
+    fn replay_rejects_config_that_disagrees_with_the_recorded_campaign() {
+        let source = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        config.search.seed = 0;
+        config.search.executions = 1;
+        config.search.wall_seconds = Some(180);
+        let stream = b"recorded nested campaign";
+        let mut replay = Manifest::new(config, "replay").unwrap();
+        replay.status = "complete".into();
+        replay.payload = serde_json::json!({
+            "stream_sha256": crate::runtime::digest(stream),
+            "campaign_seed": 0,
+            "execution_budget": 1,
+            "wall_budget_seconds": 180
+        });
+        replay.store(source.path(), "kernel", b"kernel").unwrap();
+        replay
+            .store(source.path(), "initramfs", b"initramfs")
+            .unwrap();
+        replay.save(source.path()).unwrap();
+        fs::write(source.path().join("stream.jsonl"), stream).unwrap();
+
+        let valid = Manifest::read(source.path()).unwrap();
+        valid.verify(source.path()).unwrap();
+        assert_eq!(
+            verified_replay_source(source.path(), &valid).unwrap(),
+            stream
+        );
+
+        for (seed, executions, wall_seconds) in
+            [(1, 1, Some(180)), (0, 2, Some(180)), (0, 1, Some(200))]
+        {
+            replay.config.search = crate::config::Search {
+                seed,
+                executions,
+                wall_seconds,
+            };
+            replay.save(source.path()).unwrap();
+            let forged = Manifest::read(source.path()).unwrap();
+            forged.verify(source.path()).unwrap();
+            assert!(verified_replay_source(source.path(), &forged).is_err());
+        }
+    }
+
+    #[test]
+    fn nested_replay_refuses_a_temporary_source_artifact_swap() {
+        let source = tempfile::tempdir().unwrap();
+        let child = tempfile::tempdir().unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        let mut manifest = Manifest::new(config, "search").unwrap();
+        manifest
+            .store(source.path(), "kernel", b"kernel A")
+            .unwrap();
+        manifest
+            .store(source.path(), "initramfs", b"initramfs A")
+            .unwrap();
+        manifest.verify(source.path()).unwrap();
+
+        for (name, original, changed) in [
+            ("kernel", b"kernel A".as_slice(), b"kernel B".as_slice()),
+            (
+                "initramfs",
+                b"initramfs A".as_slice(),
+                b"initramfs B".as_slice(),
+            ),
+        ] {
+            fs::write(source.path().join("artifacts").join(name), changed).unwrap();
+            let loaded = saved_replay_inputs(source.path(), &manifest);
+            fs::write(source.path().join("artifacts").join(name), original).unwrap();
+            let inherited = manifest
+                .inherit(source.path(), child.path(), "replay")
+                .unwrap();
+            assert_eq!(inherited.artifacts[name], crate::runtime::digest(original));
+            assert!(loaded.is_err());
+        }
+    }
 
     #[test]
     fn saved_stream_substitution_fails_before_replay() {

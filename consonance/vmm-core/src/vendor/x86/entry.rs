@@ -124,6 +124,7 @@ pub fn long_mode_entry(
         xsave: Vec::new(),
         xsave_restore_bv: None,
         nested_state: None,
+        host_core_class: None,
     }
 }
 

@@ -55,6 +55,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Check outer host nested VMX or SVM before building
+        id: host
         env:
           REQUIRED_NESTED_VENDOR: ${{ inputs.nested_vendor || 'auto' }}
           HISTORY_RUN: ${{ inputs.nested_history_run }}
@@ -70,6 +71,14 @@ jobs:
           /tmp/nested-kvm-check | tee nested-host-evidence/host-kvm.txt
           if [[ "$REQUIRED_NESTED_VENDOR" != auto ]]; then
             grep -Fq "vendor=$REQUIRED_NESTED_VENDOR " nested-host-evidence/host-kvm.txt
+          fi
+          if grep -Fq 'vendor=vmx ' nested-host-evidence/host-kvm.txt; then
+            echo 'vendor=vmx' >>"$GITHUB_OUTPUT"
+          elif grep -Fq 'vendor=svm ' nested-host-evidence/host-kvm.txt; then
+            echo 'vendor=svm' >>"$GITHUB_OUTPUT"
+          else
+            echo 'nested KVM vendor was not recognized' >&2
+            exit 1
           fi
           sudo dmesg >nested-host-evidence/host-dmesg-before.txt
           if [[ -n "$HISTORY_RUN" && -d /sys/module/kvm_intel ]]; then
@@ -302,6 +311,7 @@ jobs:
           taskset -c "$cpu" target/x86_64-unknown-linux-musl/release/nested-driver | tee nested-host-evidence/inner-direct.log
       - name: Inner Consonance runs L2 through OCI
         env:
+          NESTED_VENDOR: ${{ steps.host.outputs.vendor }}
           NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
           NESTED_OCI_INITRAMFS: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz
           NESTED_DRIVER_IMAGE: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/nested-driver.oci
@@ -313,12 +323,14 @@ jobs:
             --test live inner_consonance_runs_inner_guest -- --ignored --exact --test-threads=1 --nocapture \
             2>&1 | tee nested-host-evidence/inner-l1-oci.log
           grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' nested-host-evidence/inner-l1-oci.log
-          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
-            --test live inner_operation_api_smoke -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee nested-host-evidence/inner-operation-smoke.log
-          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
-            --test sdk_operations outer_operation_sdk_smoke -- --ignored --exact --test-threads=1 --nocapture \
-            2>&1 | tee nested-host-evidence/sdk-operation-smoke.log
+          if [[ "$NESTED_VENDOR" == vmx ]]; then
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
+              --test live inner_operation_api_smoke -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee nested-host-evidence/inner-operation-smoke.log
+            timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release -p nested-driver \
+              --test sdk_operations outer_operation_sdk_smoke -- --ignored --exact --test-threads=1 --nocapture \
+              2>&1 | tee nested-host-evidence/sdk-operation-smoke.log
+          fi
       - name: Outer nested state repeated and cold restore qualification
         env:
           NESTED_HOST_KERNEL: ${{ github.workspace }}/consonance/harmony-linux/build/x86_64/bzImage-nested-host
@@ -348,6 +360,7 @@ jobs:
           grep -Fq 'NESTED_MATRIX restore_attempt=1' nested-host-evidence/nested-restore-omission.log
           ! grep -Fq 'NESTED_MATRIX restore=1 pass' nested-host-evidence/nested-restore-omission.log
       - name: Bounded standard Dissonance search and recorded replay
+        if: steps.host.outputs.vendor == 'vmx'
         run: |
           set -euo pipefail
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
@@ -386,7 +399,15 @@ jobs:
           printf '%s\n' "$replay_result" >nested-host-evidence/replay-exit-code.txt
           test "$search_result" -eq 0
           test "$replay_result" -eq 0
-      - name: Verify search and replay evidence
+          set +e
+          timeout -k 10 360 taskset -c "$cpu" target-cli/release/harmony debug replay nested-host-evidence/replay --out nested-host-evidence/replay-again \
+            2>&1 | tee nested-host-evidence/replay-again.log
+          replay_again_result=${PIPESTATUS[0]}
+          set -e
+          printf '%s\n' "$replay_again_result" >nested-host-evidence/replay-again-exit-code.txt
+          test "$replay_again_result" -eq 0
+      - name: Verify search and chained replay evidence
+        if: steps.host.outputs.vendor == 'vmx'
         run: |
           python3 - <<'PY'
           import json
@@ -394,6 +415,7 @@ jobs:
           evidence = Path("nested-host-evidence")
           search = json.loads((evidence / "search/report.json").read_text())
           replay = json.loads((evidence / "replay/report.json").read_text())
+          replay_again = json.loads((evidence / "replay-again/report.json").read_text())
           assert search["execution_budget"] == 100
           assert 0 < search["executions_completed"] <= 100
           assert search["execution_work"] > 0
@@ -402,6 +424,9 @@ jobs:
           assert search["stream_sha256"] == replay["stream_sha256"]
           observed = search["archive"]["evidence"]
           assert observed == replay["archive"]["evidence"]
+          for field in ("executions_completed", "execution_work", "stream_sha256"):
+              assert replay[field] == replay_again[field]
+          assert observed == replay_again["archive"]["evidence"]
           assert not observed["failures"]
           assert 0 < observed["pairs"] < (1 << 36)
           summary = {
@@ -414,7 +439,26 @@ jobs:
               "pair_mask": hex(observed["pairs"]),
               "stream_sha256": search["stream_sha256"],
               "replay_matches": True,
+              "replay_chain_matches": True,
               "failures": observed["failures"],
+          }
+          (evidence / "qualification.json").write_text(json.dumps(summary, indent=2) + "\n")
+          print(json.dumps(summary, indent=2))
+          PY
+      - name: Record SVM nested-state qualification scope
+        if: steps.host.outputs.vendor == 'svm'
+        run: |
+          set -euo pipefail
+          grep -Fq 'NESTED_MATRIX cold_import=pass creations=1 imports=0' nested-host-evidence/nested-restore.log
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          evidence = Path("nested-host-evidence")
+          summary = {
+              "tested_commit": (evidence / "source-commit.txt").read_text().strip(),
+              "vendor": "svm",
+              "nested_state_matrix": "passed",
+              "sdk_search": "intel_vmx_only",
           }
           (evidence / "qualification.json").write_text(json.dumps(summary, indent=2) + "\n")
           print(json.dumps(summary, indent=2))

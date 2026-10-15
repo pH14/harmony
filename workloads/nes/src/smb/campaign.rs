@@ -205,6 +205,33 @@ mod tests {
         SmbGame::loopback_for_tests(rom)
     }
 
+    #[cfg(all(
+        feature = "consonance",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64"),
+        not(miri)
+    ))]
+    #[test]
+    fn consonance_policy_binds_the_session_identity_before_guest_replay() {
+        let kernel = b"kernel";
+        let initramfs = b"initramfs";
+        let game = SmbGame::new_consonance(&synthetic_nrom(), kernel, initramfs).unwrap();
+        let expected = machine::consonance::identity(kernel, initramfs).unwrap();
+        assert!(game.emulator_identity().starts_with(&expected));
+
+        let run = SmbCampaignRun {
+            vocabulary: SmbButtonVocabulary::default(),
+            terminal: None,
+        };
+        let mut policies = game.policies(&run);
+        assert!(game.resolve_recorded(&policies).is_ok());
+        policies.insert(
+            super::EMULATOR_BACKEND_FIELD.to_owned(),
+            "another loaded executable".to_owned(),
+        );
+        assert!(game.resolve_recorded(&policies).is_err());
+    }
+
     fn run_smb_campaign(
         rom: &[u8],
         config: &SmbCampaignConfig,

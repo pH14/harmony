@@ -30,6 +30,10 @@ const HV_REG_FPSR: u32 = 33;
 const HV_REG_CPSR: u32 = 34;
 
 const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
+const HV_SYS_REG_ACTLR_EL1: u16 = 0xc081;
+const HV_PAUTH_KEY_SYSREGS: [u16; 10] = [
+    0xc108, 0xc109, 0xc10a, 0xc10b, 0xc110, 0xc111, 0xc112, 0xc113, 0xc118, 0xc119,
+];
 const HV_SYS_REG_CONTEXTIDR_EL1: u16 = 0xc681;
 const HV_SYS_REG_AMAIR_EL1: u16 = 0xc518;
 const HV_SYS_REG_PAR_EL1: u16 = 0xc3a0;
@@ -443,6 +447,15 @@ pub struct HvfBackend {
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
     host_id_regs: std::collections::BTreeMap<u16, u64>,
+    state_poisoned: bool,
+    #[cfg(test)]
+    fail_flush_after_staging: bool,
+    #[cfg(test)]
+    fail_policy_after_first_write: bool,
+    #[cfg(test)]
+    fail_fault_after_pstate: bool,
+    #[cfg(test)]
+    fail_run_after_guest: bool,
 }
 
 struct FlushStub {
@@ -508,9 +521,53 @@ impl HvfBackend {
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
             host_id_regs: std::collections::BTreeMap::new(),
+            state_poisoned: false,
+            #[cfg(test)]
+            fail_flush_after_staging: false,
+            #[cfg(test)]
+            fail_policy_after_first_write: false,
+            #[cfg(test)]
+            fail_fault_after_pstate: false,
+            #[cfg(test)]
+            fail_run_after_guest: false,
         };
+        let missing_actlr = || BackendError::Capability {
+            cap: "HVF ACTLR_EL1 read/write for deterministic snapshots",
+        };
+        backend
+            .sysreg(HV_SYS_REG_ACTLR_EL1)
+            .map_err(|_| missing_actlr())?;
+        backend
+            .set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)
+            .map_err(|_| missing_actlr())?;
+        if backend
+            .sysreg(HV_SYS_REG_ACTLR_EL1)
+            .map_err(|_| missing_actlr())?
+            != 0
+        {
+            return Err(missing_actlr());
+        }
+        let missing_pauth_keys = || BackendError::Capability {
+            cap: "HVF pointer-authentication key read/write for deterministic snapshots",
+        };
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            backend.sysreg(reg).map_err(|_| missing_pauth_keys())?;
+            backend
+                .set_sysreg(reg, 0)
+                .map_err(|_| missing_pauth_keys())?;
+            if backend.sysreg(reg).map_err(|_| missing_pauth_keys())? != 0 {
+                return Err(missing_pauth_keys());
+            }
+        }
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
+    }
+
+    fn ensure_healthy(&self) -> Result<()> {
+        if self.state_poisoned {
+            return Err(BackendError::Internal("backend state mutation failed"));
+        }
+        Ok(())
     }
 
     fn ensure_flush_stub(&mut self) -> Result<u64> {
@@ -564,6 +621,10 @@ impl HvfBackend {
         hv("hv_vcpu_set_pending_interrupt", unsafe {
             hv_vcpu_set_pending_interrupt(self.vcpu, HV_INTERRUPT_TYPE_IRQ, false)
         })?;
+        #[cfg(test)]
+        if self.fail_flush_after_staging {
+            return Err(BackendError::Internal("injected HVF flush failure"));
+        }
         for _ in 0..2 {
             // SAFETY: the vCPU is live and this call runs on its owning thread.
             hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
@@ -575,6 +636,7 @@ impl HvfBackend {
             }
             if raw.reason == HV_EXIT_REASON_EXCEPTION
                 && exit_ec(raw.exception.syndrome) == ESR_EC_HVC64
+                && self.reg(HV_REG_PC)? == gpa + (TLB_FLUSH_STUB.len() * 4) as u64
             {
                 return Ok(());
             }
@@ -630,6 +692,7 @@ impl HvfBackend {
     }
 
     fn ensure_runnable(&self) -> Result<()> {
+        self.ensure_healthy()?;
         if !self.configured {
             return Err(BackendError::NotConfigured);
         }
@@ -715,6 +778,10 @@ impl HvfBackend {
                     )
                 })?;
                 continue;
+            }
+            #[cfg(test)]
+            if self.fail_run_after_guest {
+                return Err(BackendError::Internal("injected post-run HVF failure"));
             }
             match raw.reason {
                 HV_EXIT_REASON_CANCELED => {
@@ -854,6 +921,8 @@ impl Backend for HvfBackend {
     type A = Arm64;
 
     fn set_policy(&mut self, policy: &Arm64Policy) -> Result<()> {
+        self.ensure_healthy()?;
+        let mut writes = Vec::new();
         for (&encoding, &value) in &policy.id_regs.regs {
             if let Some(measured) = hvf_implicit_identity_value(encoding) {
                 if value != measured {
@@ -877,14 +946,28 @@ impl Backend for HvfBackend {
                     host,
                 });
             }
-            self.set_sysreg(reg, value)?;
+            writes.push((reg, value));
         }
+        self.state_poisoned = true;
+        self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            self.set_sysreg(reg, 0)?;
+        }
+        for (reg, value) in writes {
+            self.set_sysreg(reg, value)?;
+            #[cfg(test)]
+            if self.fail_policy_after_first_write {
+                return Err(BackendError::Internal("injected HVF policy failure"));
+            }
+        }
+        self.state_poisoned = false;
         let _ = &policy.sysreg_traps;
         self.configured = true;
         Ok(())
     }
 
     unsafe fn map_memory(&mut self, gpa: Gpa, host: &mut [u8]) -> Result<()> {
+        self.ensure_healthy()?;
         if host.is_empty() {
             return Err(BackendError::Memory("zero-length memory region"));
         }
@@ -934,6 +1017,7 @@ impl Backend for HvfBackend {
     }
 
     fn drain_dirty_pages(&mut self) -> Result<Vec<u64>> {
+        self.ensure_healthy()?;
         for (start, len) in contiguous_runs(&self.writable) {
             // SAFETY: every recorded page lies inside a region this backend
             // mapped with `hv_vm_map`, and the call only removes the guest's
@@ -955,7 +1039,13 @@ impl Backend for HvfBackend {
             return Err(BackendError::Internal("HVF run canceled by host"));
         }
         self.ensure_runnable()?;
-        self.enter_guest()
+        match self.enter_guest() {
+            Ok(exit) => Ok(exit),
+            Err(error) => {
+                self.state_poisoned = true;
+                Err(error)
+            }
+        }
     }
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
@@ -978,6 +1068,7 @@ impl Backend for HvfBackend {
     }
 
     fn set_pending_irq(&mut self, id: Option<GicIntId>) -> Result<()> {
+        self.ensure_healthy()?;
         self.pending_irq = id;
         Ok(())
     }
@@ -987,6 +1078,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_read(&mut self, value: u64) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::MmioLoad {
                 reg,
@@ -1026,6 +1118,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_fault(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         match self.pending {
             Pending::SysregRead { .. } | Pending::SysregWrite => {
                 let exception = undefined_exception(
@@ -1034,12 +1127,20 @@ impl Backend for HvfBackend {
                     self.sysreg(HV_SYS_REG_SCTLR_EL1)?,
                     self.sysreg(HV_SYS_REG_VBAR_EL1)?,
                 )?;
+                self.state_poisoned = true;
                 self.set_sysreg(HV_SYS_REG_ELR_EL1, exception.elr_el1)?;
                 self.set_sysreg(HV_SYS_REG_SPSR_EL1, exception.spsr_el1)?;
                 self.set_sysreg(HV_SYS_REG_ESR_EL1, exception.esr_el1)?;
                 self.set_reg(HV_REG_CPSR, exception.pstate)?;
+                #[cfg(test)]
+                if self.fail_fault_after_pstate {
+                    return Err(BackendError::Internal(
+                        "injected HVF fault completion failure",
+                    ));
+                }
                 self.set_reg(HV_REG_PC, exception.pc)?;
                 self.pending = Pending::None;
+                self.state_poisoned = false;
                 Ok(())
             }
             _ => Err(BackendError::BadCompletion),
@@ -1047,6 +1148,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_ok(&mut self) -> Result<()> {
+        self.ensure_healthy()?;
         if self.pending == Pending::SysregWrite {
             self.pending = Pending::None;
             Ok(())
@@ -1056,6 +1158,7 @@ impl Backend for HvfBackend {
     }
 
     fn complete_hypercall(&mut self, _ret: u64) -> Result<()> {
+        self.ensure_healthy()?;
         Err(BackendError::NoPendingRead)
     }
 
@@ -1064,10 +1167,15 @@ impl Backend for HvfBackend {
     }
 
     fn retire_pending_completion(&mut self) -> Result<()> {
-        Ok(())
+        self.ensure_healthy()
+    }
+
+    fn prepare_snapshot(&mut self) -> Result<()> {
+        self.ensure_healthy()
     }
 
     fn read_irq_mask(&mut self) -> Result<Option<bool>> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
@@ -1075,8 +1183,21 @@ impl Backend for HvfBackend {
     }
 
     fn save(&mut self) -> Result<Arm64VcpuState> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
+        }
+        if self.sysreg(HV_SYS_REG_ACTLR_EL1)? != 0 {
+            return Err(BackendError::Unsupported {
+                what: "save HVF with noncanonical ACTLR_EL1",
+            });
+        }
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            if self.sysreg(reg)? != 0 {
+                return Err(BackendError::Unsupported {
+                    what: "save HVF with noncanonical pointer-authentication key",
+                });
+            }
         }
         let mut state = Arm64VcpuState::default();
         for (reg, slot) in state.core.x.iter_mut().enumerate() {
@@ -1175,6 +1296,7 @@ impl Backend for HvfBackend {
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         validate_restore_vcpu_state(state)?;
         if state.core.pstate >> 32 != 0 {
             return Err(BackendError::InvalidState);
@@ -1183,11 +1305,17 @@ impl Backend for HvfBackend {
     }
 
     fn restore(&mut self, state: &Arm64VcpuState) -> Result<()> {
+        self.ensure_healthy()?;
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
         self.validate_restore_state(state)?;
+        self.state_poisoned = true;
         self.flush_guest_translations()?;
+        self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
+        for reg in HV_PAUTH_KEY_SYSREGS {
+            self.set_sysreg(reg, 0)?;
+        }
         for (reg, value) in state.core.x.iter().copied().enumerate() {
             self.set_reg(reg as u32, value)?;
         }
@@ -1272,6 +1400,7 @@ impl Backend for HvfBackend {
         })?;
         self.pending_irq = None;
         self.accepted_irq = None;
+        self.state_poisoned = false;
         Ok(())
     }
 
@@ -1351,6 +1480,228 @@ mod tests {
         assert_eq!(TLB_FLUSH_STUB[2], barrier(0b1011, 4));
         assert_eq!(TLB_FLUSH_STUB[3], barrier(0b1111, 6));
         assert_eq!(TLB_FLUSH_STUB[4], 0xd400_0002);
+    }
+
+    #[test]
+    #[ignore = "live HVF guest-entry failure boundary; run on Apple silicon"]
+    fn failed_guest_run_retires_uncounted_progress() {
+        #[repr(C, align(16384))]
+        struct TestPage([u8; 16384]);
+
+        let mut page = Box::new(TestPage([0; 16384]));
+        for (index, word) in [0xd282_4680u32, 0xd400_0002u32].iter().enumerate() {
+            page.0[index * 4..index * 4 + 4].copy_from_slice(&word.to_le_bytes());
+        }
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        // SAFETY: Box pins the aligned page, which remains live until after backend drop.
+        unsafe { backend.map_memory(Gpa(0x4000_0000), &mut page.0) }.unwrap();
+        backend.invalidate_instruction_cache(page.0.as_ptr() as usize, page.0.len());
+        let sctlr = backend.sysreg(HV_SYS_REG_SCTLR_EL1).unwrap();
+        backend
+            .set_sysreg(HV_SYS_REG_SCTLR_EL1, sctlr & !SCTLR_M)
+            .unwrap();
+        backend
+            .set_reg(HV_REG_CPSR, PSTATE_DAIF | PSTATE_MODE_EL1H)
+            .unwrap();
+        backend.set_reg(HV_REG_PC, 0x4000_0000).unwrap();
+        let before = backend.save().unwrap();
+        backend
+            .cancel_run
+            .store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("HVF run canceled by host"))
+        ));
+        assert!(backend.save().is_ok());
+        backend
+            .cancel_run
+            .store(false, std::sync::atomic::Ordering::Release);
+        backend.fail_run_after_guest = true;
+        assert!(matches!(
+            backend.run(),
+            Err(BackendError::Internal("injected post-run HVF failure"))
+        ));
+        assert_eq!(backend.reg(0).unwrap(), 0x1234);
+        assert_eq!(backend.reg(HV_REG_PC).unwrap(), 0x4000_0008);
+        assert_eq!(backend.exit_counts(), ExitCounts::default());
+        for result in [
+            backend.prepare_snapshot(),
+            backend.save().map(|_| ()),
+            backend.read_irq_mask().map(|_| ()),
+            backend.run().map(|_| ()),
+            backend.restore(&before),
+        ] {
+            assert!(matches!(
+                result,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "live HVF flush-origin boundary; run on Apple silicon"]
+    fn restore_rejects_hvc_from_guest_exception_vector() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut target = backend.save().unwrap();
+        target.core.pc = 0x1000;
+        let stub_gpa = backend.ensure_flush_stub().unwrap();
+        let stub_page = backend.flush_stub.as_ref().unwrap().page;
+        // SAFETY: the owned flush allocation is a live 16 KiB page; both word
+        // offsets lie within it, and the vCPU is stopped while it is changed.
+        unsafe {
+            stub_page.add(16).cast::<u32>().write(0);
+            stub_page.add(0x200).cast::<u32>().write(0xd400_0002);
+            sys_icache_invalidate(stub_page.cast(), HV_PAGE_SIZE);
+        }
+        backend.set_sysreg(HV_SYS_REG_VBAR_EL1, stub_gpa).unwrap();
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Internal(
+                "HVF translation flush stub did not reach its hypercall"
+            ))
+        ));
+        assert_eq!(backend.reg(HV_REG_PC).unwrap(), stub_gpa + 0x204);
+        assert!(backend.state_poisoned);
+    }
+
+    #[test]
+    #[ignore = "live HVF failed-restore boundary; run on Apple silicon"]
+    fn failed_translation_flush_retires_mutated_vcpu() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let mut target = backend.save().unwrap();
+        target.core.pc = 0x1000;
+        validate_restore_vcpu_state(&target).unwrap();
+        let mut invalid = target;
+        invalid.vtimer.masked = false;
+        assert!(matches!(
+            backend.restore(&invalid),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(backend.save().is_ok());
+        backend.fail_flush_after_staging = true;
+        assert!(matches!(
+            backend.restore(&target),
+            Err(BackendError::Internal("injected HVF flush failure"))
+        ));
+        assert_ne!(backend.reg(HV_REG_PC).unwrap(), target.core.pc);
+        for result in [
+            backend.prepare_snapshot(),
+            backend.save().map(|_| ()),
+            backend.read_irq_mask().map(|_| ()),
+            backend.run().map(|_| ()),
+            backend.restore(&target),
+        ] {
+            assert!(matches!(
+                result,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ));
+        }
+    }
+
+    #[test]
+    #[ignore = "live HVF fault-completion boundary; run on Apple silicon"]
+    fn failed_fault_completion_retires_partly_changed_vcpu() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.set_reg(HV_REG_PC, 0x1004).unwrap();
+        backend.set_reg(HV_REG_CPSR, PSTATE_MODE_EL0T).unwrap();
+        backend.set_sysreg(HV_SYS_REG_VBAR_EL1, 0x8000).unwrap();
+        let original_pstate = backend.reg(HV_REG_CPSR).unwrap();
+        backend.pending = Pending::SysregRead { reg: 0 };
+        backend.fail_fault_after_pstate = true;
+        assert!(matches!(
+            backend.complete_fault(),
+            Err(BackendError::Internal(
+                "injected HVF fault completion failure"
+            ))
+        ));
+        assert_eq!(
+            backend.sysreg(HV_SYS_REG_SPSR_EL1).unwrap(),
+            original_pstate
+        );
+        let changed_pstate = backend.reg(HV_REG_CPSR).unwrap();
+        assert_ne!(changed_pstate, original_pstate);
+        backend.fail_fault_after_pstate = false;
+        assert!(matches!(
+            backend.complete_fault(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert_eq!(
+            backend.sysreg(HV_SYS_REG_SPSR_EL1).unwrap(),
+            original_pstate
+        );
+        assert!(matches!(
+            backend.prepare_snapshot(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+    }
+
+    #[test]
+    #[ignore = "live HVF policy boundary; run on Apple silicon"]
+    fn rejected_policy_preserves_live_identity() {
+        let mut backend = HvfBackend::new().unwrap();
+        let initial = Arm64Policy {
+            id_regs: crate::arch::arm64::IdRegModel {
+                regs: [(0xc030, 0)].into_iter().collect(),
+            },
+            ..Arm64Policy::default()
+        };
+        backend.set_policy(&initial).unwrap();
+        assert_eq!(backend.sysreg(0xc030).unwrap(), 0);
+        let rejected = Arm64Policy {
+            id_regs: crate::arch::arm64::IdRegModel {
+                regs: [(0xc030, 0x20), (0xc038, 0xf << 4)].into_iter().collect(),
+            },
+            ..Arm64Policy::default()
+        };
+        assert!(matches!(
+            backend.set_policy(&rejected),
+            Err(BackendError::IdRegisterAboveHost {
+                encoding: 0xc038,
+                ..
+            })
+        ));
+        assert_eq!(backend.sysreg(0xc030).unwrap(), 0);
+        assert!(backend.save().is_ok());
+    }
+
+    #[test]
+    #[ignore = "live HVF policy boundary; run on Apple silicon"]
+    fn failed_policy_write_retires_mutated_vcpu() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let saved = backend.save().unwrap();
+        backend.fail_policy_after_first_write = true;
+        let policy = Arm64Policy {
+            id_regs: crate::arch::arm64::IdRegModel {
+                regs: [(0xc030, 0x20)].into_iter().collect(),
+            },
+            ..Arm64Policy::default()
+        };
+        assert!(matches!(
+            backend.set_policy(&policy),
+            Err(BackendError::Internal("injected HVF policy failure"))
+        ));
+        assert_eq!(backend.sysreg(0xc030).unwrap(), 0x20);
+        for result in [
+            backend.prepare_snapshot(),
+            backend.save().map(|_| ()),
+            backend.run().map(|_| ()),
+            backend.restore(&saved),
+            backend.set_policy(&policy),
+        ] {
+            assert!(matches!(
+                result,
+                Err(BackendError::Internal("backend state mutation failed"))
+            ));
+        }
     }
 
     #[test]
