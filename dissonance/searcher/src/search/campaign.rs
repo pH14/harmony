@@ -1392,21 +1392,25 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     }
 
     fn suffix_limit(&self, parent_id: u64, parent_index: usize) -> u8 {
-        self.suffix_limit_excluding(parent_id, parent_index, None)
+        self.suffix_limit_excluding(parent_id, parent_index, &BTreeMap::new())
     }
 
     fn suffix_limit_excluding(
         &self,
         parent_id: u64,
         parent_index: usize,
-        excluded: Option<(u64, u8)>,
+        excluded: &BTreeMap<(u64, u8), u32>,
     ) -> u8 {
         let limit = self.archive.suffix_limit(parent_index);
         if self
             .suffix_jobs_in_flight
             .range((parent_id, limit)..=(parent_id, u8::MAX))
             .any(|(&(held_parent, held_limit), &count)| {
-                count > u32::from(excluded == Some((held_parent, held_limit)))
+                count
+                    > excluded
+                        .get(&(held_parent, held_limit))
+                        .copied()
+                        .unwrap_or(0)
             })
         {
             1
@@ -4991,26 +4995,30 @@ where
                 if duration_checkpoint_before != skip.duration_checkpoint_before {
                     return Err("replayed skip duration state diverged before expansion".into());
                 }
-                let expected_skip_limit = if replay_admissions > 0 && spliced.is_none() {
-                    let next_slot = replay_admissions
-                        .saturating_add(replay_window_depth)
-                        .saturating_sub(1);
-                    let excluded = replay_job_snapshots
-                        .contains_key(&next_slot)
-                        .then(|| {
-                            replay_job_parents
-                                .get(next_slot)
-                                .copied()
-                                .zip(replay_job_suffix_limits.get(next_slot).copied().flatten())
-                        })
-                        .flatten();
-                    Some(core.suffix_limit_excluding(skip.parent_id, parent_index, excluded))
-                } else {
-                    None
-                };
                 let suffix_limit = replay_suffix_limit(spliced.is_none(), skip.suffix_limit)?;
-                if expected_skip_limit.is_some_and(|expected| suffix_limit != Some(expected)) {
-                    return Err("replayed skip suffix limit diverged at selection".into());
+                if spliced.is_none() {
+                    let mut not_yet_selected = BTreeMap::<(u64, u8), u32>::new();
+                    for (&slot, _) in
+                        replay_job_snapshots.range(usize::try_from(skip.reservation)?..)
+                    {
+                        if let Some(limit) = replay_job_suffix_limits[slot] {
+                            let entry = not_yet_selected
+                                .entry((replay_job_parents[slot], limit))
+                                .or_default();
+                            *entry = entry
+                                .checked_add(1)
+                                .ok_or("suffix reservation count overflow")?;
+                        }
+                    }
+                    if suffix_limit
+                        != Some(core.suffix_limit_excluding(
+                            skip.parent_id,
+                            parent_index,
+                            &not_yet_selected,
+                        ))
+                    {
+                        return Err("replayed skip suffix limit diverged at selection".into());
+                    }
                 }
                 let mut suffix = match (spliced, duration_draw) {
                     (Some(tail), _) => tail,
@@ -8349,5 +8357,75 @@ mod tests {
             .expect("ordinary outcome");
         }
         assert_ne!(energy.splice_weights(4), before);
+    }
+    #[test]
+    fn replay_rejects_a_forged_initial_archive_skip_suffix_limit() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut base = three_worker_config();
+        base.execution_budget = 20;
+        base.window = 3;
+        let mut source_stream = Vec::new();
+        let (source, _) = run_campaign_checkpointed(
+            &workload,
+            &base,
+            &CampaignOrigin::Genesis,
+            &mut source_stream,
+            None,
+        )
+        .unwrap();
+        let source_archive = source.archive;
+        let origin = CampaignOrigin::Archive {
+            path: "source.archive".to_owned(),
+            file_sha256: format!(
+                "{:x}",
+                Sha256::digest(serde_json::to_vec(&source_archive).unwrap())
+            ),
+            report: Box::new(source_archive.clone()),
+            checkpoint: None,
+        };
+        let config = CampaignConfig {
+            campaign_seed: 196,
+            workers: 3,
+            execution_budget: 8,
+            host: "test".to_owned(),
+            wall_budget: None,
+            stop_rollout_on_objective: true,
+            stop_campaign_on_objective: false,
+            archive_entry_limit: 16,
+            window: 3,
+            memory_budget_mib: None,
+            materialize_final_artifacts: true,
+            run: (),
+            mixture: DrawMixture::AlphabetOnly,
+            retention: RetentionPolicy::Unprobed,
+            objective_witness_path: None,
+        };
+        let mut stream = Vec::new();
+        run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None).unwrap();
+        replay_campaign_checkpointed(&workload, &stream, Some(&source_archive), None).unwrap();
+        let mut records = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(records[1]["event"], "skip");
+        assert_eq!(records[1]["reservation"], 1);
+        assert_eq!(records[1]["suffix_limit"], 1);
+        assert_eq!(records[2]["event"], "job");
+        records[1]["suffix_limit"] = serde_json::json!(2);
+        let forged = records
+            .iter()
+            .map(serde_json::to_string)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+            .join("\n");
+        let error =
+            replay_campaign_checkpointed(&workload, forged.as_bytes(), Some(&source_archive), None)
+                .expect_err("replay certified a skip limit live selection did not record")
+                .to_string();
+        assert!(error.contains("skip suffix limit"), "{error}");
     }
 }

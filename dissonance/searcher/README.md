@@ -520,11 +520,9 @@ repeat the same test.
 Replay rebuilds the parent's length and the limits held by earlier in-flight
 reservations before accepting each recorded job limit. It cuts the redrawn
 suffix to the recorded limit. It rejects a drawn job whose limit is missing or
-outside 1 to 64, and a spliced or continued job that records a limit. Replay
-also checks drawn skip limits after the first admission against the in-flight
-reservations at their selection point. Prefill skips only check shape and range:
-the stream does not identify which window reservations were already in flight
-before its first admission.
+outside 1 to 64, and a spliced or continued job that records a limit. Replay also checks each drawn skip limit against the in-flight reservations at
+its selection point, including skips before the first admission. Reservations
+prefilled later in the window are excluded from that earlier selection state.
 
 Continuation replay carries a better state at one position to the positions
 reached from it. A position is a place paired with an identity, the `Position`
