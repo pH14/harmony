@@ -7,13 +7,21 @@ use std::{
     marker::PhantomData,
 };
 
+#[cfg(all(not(miri), target_os = "linux"))]
+use std::os::fd::FromRawFd;
 #[cfg(not(miri))]
 use std::{
     ffi::CString,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, Read, Write},
-    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    path::{Path, PathBuf},
+    os::fd::AsRawFd,
+    path::Path,
+};
+#[cfg(all(not(miri), target_os = "macos"))]
+use std::{
+    fs::OpenOptions,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -206,32 +214,24 @@ impl CoreApi {
 #[cfg(not(miri))]
 struct Library {
     handle: usize,
+    _private: PrivateCore,
 }
 
 #[cfg(not(miri))]
 impl Library {
     fn open_private(source: &Path, expected_sha256: &str) -> Result<Self, MachineError> {
-        let (temporary, sha256) = private_copy(source)?;
-        if sha256 != expected_sha256 {
-            let _ = std::fs::remove_file(&temporary);
+        let mut private = private_copy(source)?;
+        if private.sha256 != expected_sha256 {
             return Err(MachineError::Backend(
                 "QuickNES core SHA-256 does not match the supplied identity".to_owned(),
             ));
         }
-        let path = match CString::new(temporary.as_os_str().as_bytes()) {
-            Ok(path) => path,
-            Err(_) => {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(MachineError::Backend(
-                    "QuickNES core path contains NUL".to_owned(),
-                ));
-            }
-        };
-        // SAFETY: `path` is a live NUL-terminated pathname. RTLD_LOCAL keeps
-        // this private image's exported globals out of the process namespace.
+        let path = private.loader_path();
+        // SAFETY: `path` names the still-open descriptor of the hashed private
+        // image. RTLD_LOCAL keeps its exports out of the process namespace.
         let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
         let open_error = (handle.is_null()).then(dl_error);
-        let unlink_result = std::fs::remove_file(&temporary);
+        let unlink_result = private.unlink();
         if let Some(error) = open_error {
             return Err(MachineError::Backend(format!(
                 "could not load private QuickNES core: {error}"
@@ -246,6 +246,7 @@ impl Library {
         }
         Ok(Self {
             handle: handle as usize,
+            _private: private,
         })
     }
 
@@ -290,7 +291,97 @@ fn dl_error() -> String {
 }
 
 #[cfg(not(miri))]
-fn private_copy(source: &Path) -> Result<(PathBuf, String), MachineError> {
+struct PrivateCore {
+    file: File,
+    sha256: String,
+    #[cfg(target_os = "macos")]
+    path: Option<PathBuf>,
+}
+
+#[cfg(not(miri))]
+impl PrivateCore {
+    fn loader_path(&self) -> CString {
+        #[cfg(target_os = "linux")]
+        let path = format!("/proc/self/fd/{}", self.file.as_raw_fd());
+        #[cfg(target_os = "macos")]
+        let path = format!("/dev/fd/{}", self.file.as_raw_fd());
+        CString::new(path).expect("descriptor path contains no NUL")
+    }
+
+    fn unlink(&mut self) -> io::Result<()> {
+        #[cfg(target_os = "macos")]
+        if let Some(path) = self.path.take() {
+            return std::fs::remove_file(path);
+        }
+        #[cfg(target_os = "linux")]
+        {}
+        Ok(())
+    }
+}
+
+#[cfg(all(not(miri), target_os = "macos"))]
+impl Drop for PrivateCore {
+    fn drop(&mut self) {
+        let _ = self.unlink();
+    }
+}
+
+#[cfg(not(miri))]
+fn copy_and_hash(source: &Path, destination: &mut File) -> Result<String, MachineError> {
+    let mut source_file = File::open(source)
+        .map_err(|error| MachineError::Backend(format!("could not open QuickNES core: {error}")))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let length = source_file.read(&mut buffer).map_err(|error| {
+            MachineError::Backend(format!("could not copy QuickNES core: {error}"))
+        })?;
+        if length == 0 {
+            break;
+        }
+        destination.write_all(&buffer[..length]).map_err(|error| {
+            MachineError::Backend(format!("could not copy QuickNES core: {error}"))
+        })?;
+        hasher.update(&buffer[..length]);
+    }
+    destination
+        .flush()
+        .map_err(|error| MachineError::Backend(format!("could not copy QuickNES core: {error}")))?;
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(all(not(miri), target_os = "linux"))]
+fn private_copy(source: &Path) -> Result<PrivateCore, MachineError> {
+    // SAFETY: memfd_create returns a new descriptor owned by this process.
+    let fd = unsafe {
+        libc::memfd_create(
+            c"harmony-quicknes".as_ptr(),
+            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
+        )
+    };
+    if fd < 0 {
+        return Err(MachineError::Backend(format!(
+            "could not create private QuickNES core image: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    // SAFETY: the descriptor is fresh and ownership transfers to File.
+    let mut file = unsafe { File::from_raw_fd(fd) };
+    let sha256 = copy_and_hash(source, &mut file)?;
+    let seals = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
+    // SAFETY: the descriptor remains owned by `file`, and the seal flags are
+    // valid for a memfd created with MFD_ALLOW_SEALING.
+    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } < 0 {
+        return Err(MachineError::Backend(format!(
+            "could not seal private QuickNES core image: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(PrivateCore { file, sha256 })
+}
+
+#[cfg(all(not(miri), target_os = "macos"))]
+fn private_copy(source: &Path) -> Result<PrivateCore, MachineError> {
     static NEXT_COPY: AtomicU64 = AtomicU64::new(0);
     let extension = source
         .extension()
@@ -304,41 +395,31 @@ fn private_copy(source: &Path) -> Result<(PathBuf, String), MachineError> {
             std::process::id()
         ));
         match OpenOptions::new()
+            .read(true)
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&path)
         {
-            Ok(mut destination) => {
-                let mut source_file = match File::open(source) {
-                    Ok(file) => file,
+            Ok(mut file) => {
+                let sha256 = match copy_and_hash(source, &mut file) {
+                    Ok(sha256) => sha256,
                     Err(error) => {
                         let _ = std::fs::remove_file(&path);
-                        return Err(MachineError::Backend(format!(
-                            "could not open QuickNES core: {error}"
-                        )));
+                        return Err(error);
                     }
                 };
-                let mut hasher = Sha256::new();
-                let mut buffer = [0_u8; 64 * 1024];
-                let copied = (|| -> io::Result<()> {
-                    loop {
-                        let length = source_file.read(&mut buffer)?;
-                        if length == 0 {
-                            break;
-                        }
-                        destination.write_all(&buffer[..length])?;
-                        hasher.update(&buffer[..length]);
-                    }
-                    destination.flush()
-                })();
-                if let Err(error) = copied {
+                if let Err(error) = file.set_permissions(std::fs::Permissions::from_mode(0o400)) {
                     let _ = std::fs::remove_file(&path);
                     return Err(MachineError::Backend(format!(
-                        "could not copy QuickNES core: {error}"
+                        "could not protect private QuickNES core image: {error}"
                     )));
                 }
-                return Ok((path, format!("{:x}", hasher.finalize())));
+                return Ok(PrivateCore {
+                    file,
+                    sha256,
+                    path: Some(path),
+                });
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 last_error = Some(error);
@@ -1684,14 +1765,141 @@ mod tests {
         );
     }
 
-    #[cfg(all(unix, not(miri)))]
+    #[cfg(all(target_os = "macos", not(miri)))]
     #[test]
     fn private_core_copy_is_accessible_only_to_its_owner() {
         use std::os::unix::fs::PermissionsExt;
-        let (path, _) = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
-        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-        std::fs::remove_file(path).unwrap();
+        let private = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
+        let mode = std::fs::metadata(private.path.as_ref().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o077, 0);
+    }
+
+    #[cfg(all(target_os = "linux", not(miri)))]
+    #[test]
+    fn private_core_copy_is_sealed() {
+        use std::os::fd::AsRawFd;
+        let private = super::private_copy(std::path::Path::new("/dev/null")).unwrap();
+        // SAFETY: the descriptor remains owned by `private`, and F_GET_SEALS
+        // accepts no additional argument.
+        let seals = unsafe { libc::fcntl(private.file.as_raw_fd(), libc::F_GET_SEALS) };
+        assert_eq!(
+            seals,
+            libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL
+        );
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn private_core_loader_uses_hashed_image_after_path_replacement() {
+        use std::{ffi::c_void, fs, process::Command};
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-private-loader-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.c");
+        let original = directory.join("original.dylib");
+        let alternate = directory.join("alternate.dylib");
+        for (path, value) in [(&original, 13), (&alternate, 27)] {
+            fs::write(
+                &source,
+                format!("int quicknes_image_marker(void) {{ return {value}; }}\n"),
+            )
+            .unwrap();
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg("-o")
+                    .arg(path)
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let mut private = super::private_copy(&original).unwrap();
+        #[cfg(target_os = "macos")]
+        fs::rename(&alternate, private.path.as_ref().unwrap()).unwrap();
+        #[cfg(target_os = "linux")]
+        fs::rename(&alternate, &original).unwrap();
+        let path = private.loader_path();
+        // SAFETY: the descriptor path is NUL-terminated and remains live until
+        // dlclose; the library built above exports the tested function.
+        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        assert!(!handle.is_null(), "{}", super::dl_error());
+        // SAFETY: `handle` is a successful dlopen result, and the static symbol
+        // name is NUL-terminated; the fixture declares the exact function ABI.
+        let symbol = unsafe { libc::dlsym(handle, c"quicknes_image_marker".as_ptr()) };
+        assert!(!symbol.is_null(), "{}", super::dl_error());
+        // SAFETY: the fixture exports quicknes_image_marker with this ABI.
+        let marker = unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> i32>(symbol) };
+        assert_eq!(marker(), 13);
+        // SAFETY: the successful handle is closed exactly once.
+        unsafe { libc::dlclose(handle) };
+        private.unlink().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(all(unix, not(miri)))]
+    #[test]
+    fn two_live_private_cores_never_share_a_loader_descriptor_path() {
+        use sha2::{Digest, Sha256};
+        use std::{ffi::c_void, fs, process::Command};
+
+        let directory = std::env::temp_dir().join(format!(
+            "quicknes-two-private-cores-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let source = directory.join("source.c");
+        let mut libraries = Vec::new();
+        for value in [13, 27] {
+            let path = directory.join(format!("core-{value}.dylib"));
+            fs::write(
+                &source,
+                format!(
+                    "int quicknes_image_marker(void) {{ return {value}; }}\nvoid retro_get_system_info(void) {{}}\n"
+                ),
+            )
+            .unwrap();
+            let mut compiler = Command::new("cc");
+            #[cfg(target_os = "macos")]
+            compiler.arg("-dynamiclib");
+            #[cfg(target_os = "linux")]
+            compiler.args(["-shared", "-fPIC"]);
+            assert!(
+                compiler
+                    .arg("-o")
+                    .arg(&path)
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            let digest = format!("{:x}", Sha256::digest(fs::read(&path).unwrap()));
+            libraries.push(super::Library::open_private(&path, &digest).unwrap());
+        }
+        assert_ne!(libraries[0].handle, libraries[1].handle);
+        for (library, expected) in libraries.iter().zip([13, 27]) {
+            let symbol = library.symbol(b"quicknes_image_marker\0").unwrap();
+            // SAFETY: the fixture declares quicknes_image_marker with this ABI,
+            // and `library` keeps its image loaded until the call completes.
+            let marker =
+                unsafe { std::mem::transmute::<*mut c_void, extern "C" fn() -> i32>(symbol) };
+            assert_eq!(marker(), expected);
+        }
+        drop(libraries);
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]
