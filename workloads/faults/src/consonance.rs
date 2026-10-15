@@ -522,7 +522,7 @@ impl FaultTarget {
         worker: Option<WorkerLauncher>,
     ) -> Result<Self, String> {
         let config = Arc::new(Config {
-            key: Sha256::digest(identity(kernel, initramfs, config)).into(),
+            key: Sha256::digest(identity(kernel, initramfs, config)?).into(),
             kernel: kernel.to_vec(),
             initramfs: initramfs.to_vec(),
             session: config.session_config(),
@@ -1355,16 +1355,15 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
         )
 }
 
-#[must_use]
-pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
-    let base = base_identity(kernel, initramfs, config);
-    match &config.root {
+pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
+    let base = base_identity(kernel, initramfs, config)?;
+    Ok(match &config.root {
         Some(root) => format!("{base};root={:x}", Sha256::digest(root.as_slice())),
         None => base,
-    }
+    })
 }
 
-fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> String {
+fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
     if let Some(guest) = config.uml() {
         let arguments = UmlGuest::kernel_arguments(&config.knobs);
         let mut arguments_digest = Sha256::new();
@@ -1374,7 +1373,7 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Strin
             arguments_digest.update((argument.len() as u64).to_le_bytes());
             arguments_digest.update(argument.as_bytes());
         }
-        return format!(
+        return Ok(format!(
             "faults-uml-v2;{};executable={:x};initramfs={:x};memory_mib={};arguments-sha256={:x};\
              seed={SEED};setup_budget={SETUP_BUDGET};tag={IDENTITY_TAG};\
              action=standing-fault-delta-v4;snapshot=uml-checkpoint-v2",
@@ -1383,13 +1382,13 @@ fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Strin
             Sha256::digest(initramfs),
             config.ram_mib,
             arguments_digest.finalize(),
-        );
+        ));
     }
-    format!(
+    Ok(format!(
         "faults-consonance-whole-vm-v2;session={};\
          action=standing-fault-delta-v4;snapshot=portable-prefix-to-vm-snapshot-v2",
-        identity_with_config(kernel, initramfs, &config.session_config()),
-    )
+        identity_with_config(kernel, initramfs, &config.session_config())?,
+    ))
 }
 
 pub fn from_paths(

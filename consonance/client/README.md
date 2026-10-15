@@ -21,15 +21,17 @@ Sessions release completed host trace segments after successful branch/replay
 operations, keeping their evidence storage bounded by the active segment.
 Callers that archive normalized exit traces use the control server's trace API.
 
-The image identity always includes kernel, initramfs, RAM size, seed, setup run
-budget, command line, and guest contract. Sessions booted with setup payloads
-also bind their ordered, length-delimited payload bytes; the empty list keeps
-the ordinary session identity. `identity_with_config_and_payloads` computes
-the same identity before boot. A nonempty `identity_tag` adds a
-workload domain; it does not replace those setup inputs. Sparse snapshot pages
-are relative to setup RAM, so a session checks this identity before importing
-pages from another session. Tagged snapshots made with the earlier identity
-calculation do not match the new domain.
+The image identity always includes the loaded Harmony executable, kernel,
+initramfs, RAM size, seed, setup run budget, command line, and guest contract.
+Sessions booted with setup payloads also bind their ordered, length-delimited
+payload bytes; the empty list keeps the ordinary session identity.
+`identity_with_config_and_payloads` computes the same identity before boot and
+returns an error if the loaded executable cannot be identified. A nonempty
+`identity_tag` adds a workload domain; it does not replace those setup inputs.
+Sparse snapshot pages are relative to setup RAM, so a session checks this
+identity before importing pages from another session. Cache extents carry the
+same identity. Snapshots made with the earlier image identity calculation do
+not match the new domain.
 
 `SessionConfig::with_nested_host()` selects the named nested-host contract on
 Linux x86, using VMX or SVM according to host KVM support. The choice travels through worker configuration and changes image

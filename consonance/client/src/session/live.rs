@@ -56,23 +56,24 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
-    #[must_use]
-    pub fn identity(kernel: &[u8], initramfs: &[u8]) -> String {
+    pub fn identity(kernel: &[u8], initramfs: &[u8]) -> Result<String, String> {
         super::identity(kernel, initramfs)
     }
 
-    #[must_use]
-    pub fn identity_with_config(kernel: &[u8], initramfs: &[u8], config: &SessionConfig) -> String {
+    pub fn identity_with_config(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+    ) -> Result<String, String> {
         super::identity_with_config(kernel, initramfs, config)
     }
 
-    #[must_use]
     pub fn identity_with_config_and_payloads(
         kernel: &[u8],
         initramfs: &[u8],
         config: &SessionConfig,
         setup_payloads: &[Vec<u8>],
-    ) -> String {
+    ) -> Result<String, String> {
         super::identity_with_config_and_payloads(kernel, initramfs, config, setup_payloads)
     }
 
@@ -100,7 +101,7 @@ impl Session {
             initramfs,
             &config,
             &setup_payloads,
-        );
+        )?;
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
@@ -902,7 +903,8 @@ mod tests {
             b"",
             &config,
             setup_payloads.as_deref().unwrap_or(&[]),
-        );
+        )
+        .unwrap();
         let boot_config = config.clone();
         let boot_image = image.to_vec();
         let boot = move || -> Result<Vmm<Box<dyn Backend<A = HostArch>>>, VmmError> {
@@ -943,6 +945,35 @@ mod tests {
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
         }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn sparse_import_rejects_another_loaded_executable_before_mutation() {
+        use vmm_core::vendor::arm64::image_loader;
+
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let source = mock_arm_session(config.clone(), &image);
+        let sparse = source.setup_sparse_snapshot().unwrap();
+        let mut matched = mock_arm_session(config.clone(), &image);
+        matched.import_sparse_snapshot(&sparse).unwrap();
+
+        let mut foreign = mock_arm_session(config.clone(), &image);
+        foreign.image_identity = image_identity_with_loaded_executable(
+            &image,
+            b"",
+            &config,
+            &[],
+            "another-loaded-executable",
+        );
+        assert_eq!(source.setup, foreign.setup);
+        assert_ne!(source.image_identity(), foreign.image_identity());
+        let before_hash = foreign.state_hash().unwrap();
+        let before_store = foreign.store_bytes();
+        assert!(foreign.import_sparse_snapshot(&sparse).is_err());
+        assert_eq!(foreign.store_bytes(), before_store);
+        assert_eq!(foreign.state_hash().unwrap(), before_hash);
     }
 
     #[cfg(target_arch = "aarch64")]
