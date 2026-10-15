@@ -21,10 +21,12 @@ caller owns the staging directory and removes it when the prepared image is no
 longer needed.
 Outer archives and layers are copied into anonymous staging files before
 admission and extraction. Member validation, decompression, and tar extraction
-read the held file descriptor, so replacing a source archive or staging
-pathname after validation cannot change the bytes extracted into the guest
-image. The archive remains streamed through files and child standard input
-rather than buffered in process memory.
+read the held file descriptor through a 64 KiB chunk verifier. Each copied
+chunk has a recorded SHA-256; every consumer checks a chunk into a private
+buffer before using it. Replacing a source pathname or changing the held file
+after validation either preserves those bytes or fails admission. The archive
+remains disk-streamed; memory use is one chunk buffer per reader plus 32 bytes
+of digests per chunk rather than the whole layer.
 For OCI layouts, the selected manifest and config are parsed from the same
 bytes whose descriptor size and SHA-256 are checked. Each layer's descriptor is
 checked against its anonymous archive copy before that copy is validated and
