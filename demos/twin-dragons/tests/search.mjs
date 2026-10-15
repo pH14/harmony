@@ -78,9 +78,9 @@ function shuffledRun(reverse) {
     const jobs = [];
     for (let job; (job = search.plan()); ) jobs.push(job);
     if (!jobs.length) break;
-    const outcomes = jobs.map((job) => worker.run(job));
+    const outcomes = jobs.map((job) => [worker.run(job), worker.note()]);
     if (reverse) outcomes.reverse();
-    for (const outcome of outcomes) search.admit(outcome);
+    for (const [outcome, note] of outcomes) search.admit(outcome, note);
   }
   const stream = search.take_stream().split("\n").slice(1).join("\n"),
     batch = JSON.parse(search.take_batch()),
