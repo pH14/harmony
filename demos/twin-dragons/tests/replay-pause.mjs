@@ -47,12 +47,13 @@ try {
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'The automatic preview leaves the search running');
   await growing(page, await paths(page));
 
-  await page.waitForFunction(() => window.tdRetained?.has(Number(document.querySelector('#map').dataset.map)), null, {timeout: 60000});
-  const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
   for (let attempt = 0; ; attempt++) {
-    const point = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24);
-    await page.mouse.click(point.x, point.y);
-    const opened = await page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 5000}).then(() => true, () => false);
+    await page.waitForFunction(() => window.tdRetained?.has(Number(document.querySelector('#map').dataset.map)), null, {timeout: 60000});
+    const o = await page.evaluate(() => window.tdRetained.get(Number(document.querySelector('#map').dataset.map)));
+    const opened = await showOnMap(page, o.level, Math.floor((o.x + 8) / 32) * 32 + 16, Math.floor(o.y / 32) * 32 + 24)
+      .then((point) => page.mouse.click(point.x, point.y))
+      .then(() => page.waitForFunction(() => !document.querySelector('#inspector').hidden, null, {timeout: 5000}))
+      .then(() => true, () => false);
     if (opened) break;
     assert.ok(attempt < 2, 'Clicking a retained cell on the live map opens the inspector');
   }
