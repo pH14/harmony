@@ -3160,6 +3160,7 @@ where
 
             bootstrapped.send(())?;
             drop(bootstrapped);
+            pool.wait_ready(config.workers)?;
             #[allow(clippy::disallowed_methods)]
             let search_started = std::time::Instant::now();
             telemetry_started = search_started;
@@ -5711,6 +5712,7 @@ mod tests {
         most: std::sync::atomic::AtomicUsize,
         objective_after_work: std::sync::atomic::AtomicU64,
         action_hook: Mutex<Option<Arc<TestActionHook>>>,
+        selections: std::sync::atomic::AtomicUsize,
     }
 
     #[derive(Default)]
@@ -5832,6 +5834,11 @@ mod tests {
             mutation_seed: u64,
             _previous: Option<&Self::Action>,
         ) -> Result<Vec<Self::Action>, Box<dyn Error>> {
+            if let Some(targets) = &self.targets {
+                targets
+                    .selections
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             let long = mutation_seed >> 32 & 1 == 1;
             let length = 1 + usize::from(long);
             Ok(vec![
@@ -8580,6 +8587,74 @@ mod tests {
             let error = run_placed(placement).expect_err("refused placement");
             assert!(error.contains("refused"), "{error}");
         }
+    }
+
+    #[test]
+    fn startup_failures_are_ordered_before_campaign_selection() {
+        let mut config = three_worker_config();
+        config.workers = 2;
+        config.window = 2;
+        config.execution_budget = 2;
+        let targets = Arc::new(LiveTargets::default());
+        let (one_failed_sender, one_failed_receiver) = mpsc::channel();
+        let (release_zero_sender, release_zero_receiver) = mpsc::channel();
+        let release_zero_receiver = Mutex::new(release_zero_receiver);
+        let placement = ThreadPlacement::new(move |thread| match thread {
+            PlacedThread::Worker(0) => {
+                release_zero_receiver
+                    .lock()
+                    .unwrap()
+                    .recv()
+                    .map_err(|error| error.to_string())?;
+                Err("worker zero refused startup".to_owned())
+            }
+            PlacedThread::Worker(1) => {
+                one_failed_sender.send(()).unwrap();
+                Err("worker one refused startup".to_owned())
+            }
+            PlacedThread::Coordinator => Ok(()),
+            _ => unreachable!(),
+        });
+        let (error, stream) = std::thread::scope(|scope| {
+            let targets_for_run = Arc::clone(&targets);
+            let run = scope.spawn(|| {
+                let mut stream = Vec::new();
+                let error = run_campaign_checkpointed_with_options(
+                    &TestWorkload {
+                        bootstrap_objective: false,
+                        targets: Some(targets_for_run),
+                    },
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        placement: Some(placement),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .expect_err("both workers refuse startup")
+                .to_string();
+                (error, stream)
+            });
+            let one_started = one_failed_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .is_ok();
+            release_zero_sender.send(()).unwrap();
+            let outcome = run.join().unwrap();
+            assert!(one_started, "worker one never attempted startup");
+            outcome
+        });
+        assert_eq!(
+            error,
+            "campaign worker 0 failed to start: worker zero refused startup"
+        );
+        assert_eq!(
+            targets.selections.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "selection ran before startup failures were resolved"
+        );
+        assert_eq!(job_lines(&stream).len(), 0);
     }
 
     fn three_worker_config() -> CampaignConfig<TestWorkload> {

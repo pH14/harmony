@@ -96,6 +96,7 @@ impl<Key, Job> Drop for WorkerExit<'_, Key, Job> {
 pub(crate) struct WorkerPool<Key: Ord, Job, Output> {
     jobs: Option<Arc<SharedJobs<Key, Job>>>,
     reply_receiver: mpsc::Receiver<WorkerReply<Output>>,
+    startup_receiver: mpsc::Receiver<(u32, Result<(), String>)>,
 }
 
 impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
@@ -134,6 +135,37 @@ impl<Key: Ord, Job, Output> WorkerPool<Key, Job, Output> {
         }
     }
 
+    pub(crate) fn wait_ready(&self, workers: u32) -> Result<(), String> {
+        let mut statuses = std::iter::repeat_with(|| None)
+            .take(workers as usize)
+            .collect::<Vec<Option<Result<(), String>>>>();
+        for _ in 0..workers {
+            let Ok((worker, status)) = self.startup_receiver.recv() else {
+                break;
+            };
+            let slot = statuses
+                .get_mut(worker as usize)
+                .ok_or("campaign worker startup reported an unknown identifier")?;
+            if slot.replace(status).is_some() {
+                return Err("campaign worker startup reported one identifier twice".to_owned());
+            }
+        }
+        for (worker, status) in statuses.into_iter().enumerate() {
+            match status {
+                Some(Ok(())) => {}
+                Some(Err(error)) => {
+                    return Err(format!("campaign worker {worker} failed to start: {error}"));
+                }
+                None => {
+                    return Err(format!(
+                        "campaign worker {worker} exited before reporting startup"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn receive(&self) -> Result<WorkerReply<Output>, WorkerPoolError> {
         self.reply_receiver
             .recv()
@@ -170,10 +202,12 @@ where
 {
     thread::scope(|scope| {
         let (reply_sender, reply_receiver) = mpsc::channel::<WorkerReply<Output>>();
+        let (startup_sender, startup_receiver) = mpsc::channel();
         let jobs = Arc::new(SharedJobs::<Key, Job>::new(workers as usize));
         let mut handles = Vec::with_capacity(workers as usize);
         for worker in 0..workers {
             let reply_sender = reply_sender.clone();
+            let startup_sender = startup_sender.clone();
             let jobs = Arc::clone(&jobs);
             let initialize = &initialize;
             let execute = &execute;
@@ -183,16 +217,24 @@ where
                 let schedstat_before = thread_schedstat();
                 let booted = now();
                 let mut telemetry = WorkerTelemetry::default();
-                let mut state = match initialize(worker) {
-                    Ok(state) => state,
-                    Err(error) => {
-                        let _ = reply_sender.send(WorkerReply {
-                            worker,
-                            outcome: Err(error.clone()),
-                        });
+                let initialized =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| initialize(worker)));
+                let mut state = match initialized {
+                    Ok(Ok(state)) => {
+                        let _ = startup_sender.send((worker, Ok(())));
+                        state
+                    }
+                    Ok(Err(error)) => {
+                        let _ = startup_sender.send((worker, Err(error.clone())));
+                        return Err(error);
+                    }
+                    Err(_) => {
+                        let error = "worker panicked during startup".to_owned();
+                        let _ = startup_sender.send((worker, Err(error.clone())));
                         return Err(error);
                     }
                 };
+                drop(startup_sender);
                 telemetry.boot_ns = nanos_since(booted);
                 loop {
                     let waiting = now();
@@ -220,9 +262,11 @@ where
             }));
         }
         drop(reply_sender);
+        drop(startup_sender);
         let mut pool = WorkerPool {
             jobs: Some(jobs),
             reply_receiver,
+            startup_receiver,
         };
         let result = coordinate(&mut pool);
         drop(pool);
@@ -323,9 +367,11 @@ mod tests {
     #[test]
     fn try_receive_distinguishes_ready_empty_and_disconnected() {
         let (sender, receiver) = mpsc::channel();
+        let (_startup_sender, startup_receiver) = mpsc::channel();
         let pool = WorkerPool::<u8, (), u64> {
             jobs: None,
             reply_receiver: receiver,
+            startup_receiver,
         };
         assert!(
             pool.try_receive()
@@ -444,5 +490,45 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.to_string(), "late boot failed");
+    }
+
+    #[test]
+    fn startup_panic_has_a_worker_key_and_does_not_hold_the_barrier() {
+        let error = with_worker_pool(
+            2,
+            |worker| -> Result<(), String> {
+                if worker == 0 {
+                    panic!("injected startup panic");
+                }
+                Ok(())
+            },
+            |(), (): ()| Ok::<_, String>(()),
+            |()| TargetCounters::new(),
+            |pool: &mut WorkerPool<u8, (), ()>| -> Result<(), Box<dyn std::error::Error>> {
+                pool.wait_ready(2)?;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "campaign worker 0 failed to start: worker panicked during startup"
+        );
+    }
+
+    #[test]
+    fn startup_barrier_reports_a_worker_that_never_sent_status() {
+        let (_reply_sender, reply_receiver) = mpsc::channel();
+        let (startup_sender, startup_receiver) = mpsc::channel();
+        drop(startup_sender);
+        let pool = WorkerPool::<u8, (), ()> {
+            jobs: None,
+            reply_receiver,
+            startup_receiver,
+        };
+        assert_eq!(
+            pool.wait_ready(1).unwrap_err(),
+            "campaign worker 0 exited before reporting startup"
+        );
     }
 }
