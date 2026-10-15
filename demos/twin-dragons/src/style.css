@@ -241,6 +241,9 @@ h2 {
   touch-action: pan-y;
   cursor: default;
 }
+.area-map[data-tall="true"] {
+  touch-action: none;
+}
 .vertical-game #map,
 .vertical-game .area-map {
   width: auto;

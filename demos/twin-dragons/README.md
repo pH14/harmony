@@ -250,6 +250,9 @@ faster than a small one. Following pauses
 for 3 seconds after the mouse moves over the map and for 2.5 seconds after a
 touch, so a pointer left resting on the map does not stop it. A drag, pinch or edge pan holds the camera where the
 visitor left it, and following resumes 10 seconds after the last movement.
+On a touch screen a one-finger drag on a zoomed view pans it sideways, and up
+and down as well when the level is taller than the view; on a level that fits,
+a vertical swipe scrolls the page.
 Selecting a cell stops following. Hovering the map shows chevrons at its left
 and right edges; moving the mouse onto one and resting there pans that way, so a
 layout change that leaves a still pointer over an edge does not pan, and a tap on a touch screen

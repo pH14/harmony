@@ -2060,6 +2060,7 @@ function updateRoomChrome(c) {
   const key = `${pan.left},${pan.right},${above},${below}`;
   if (part.dataset.chrome === key) return;
   part.dataset.chrome = key;
+  c.dataset.tall = pan.up || pan.down;
   part.dataset.panLeft = pan.left;
   part.dataset.panRight = pan.right;
   part.dataset.panUp = above;
@@ -2302,7 +2303,7 @@ function bindMap(c) {
       room = roomView(id, c);
     if (!pinch && pointerStart?.canvas === c && e.buttons && room.zoom > 1) {
       const dx = e.clientX - pointerStart.x,
-        dy = e.pointerType === "touch" ? 0 : e.clientY - pointerStart.y;
+        dy = e.pointerType === "touch" && c.dataset.tall !== "true" ? 0 : e.clientY - pointerStart.y;
       if (Math.hypot(dx, dy) > 4 && !dragged) {
         dragged = true;
         moveCameraByHand();
