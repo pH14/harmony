@@ -8,11 +8,12 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ImageError {
@@ -428,11 +429,10 @@ fn read_verified_blob(layout: &Path, descriptor: &OciDescriptor) -> Result<Vec<u
 }
 
 fn verify_pinned_archive(
-    pinned: &std::fs::File,
+    pinned: &PinnedArchive,
     descriptor: &OciDescriptor,
 ) -> Result<(), ImageError> {
-    let mut file = pinned.try_clone()?;
-    file.seek(SeekFrom::Start(0))?;
+    let mut file = pinned.reader()?;
     let mut hasher = Sha256::new();
     let mut size = 0u64;
     let mut buffer = [0u8; 64 * 1024];
@@ -899,6 +899,7 @@ impl Member {
 struct ArchiveReader {
     reader: Box<dyn Read>,
     child: Option<std::process::Child>,
+    feeder: Option<std::thread::JoinHandle<std::io::Result<()>>>,
 }
 
 impl Read for ArchiveReader {
@@ -912,14 +913,22 @@ impl ArchiveReader {
         let Some(mut child) = self.child.take() else {
             return Ok(());
         };
+        let fed = self.feeder.take().map(|feeder| {
+            feeder
+                .join()
+                .map_err(|_| {
+                    ImageError::Io(std::io::Error::other("archive input feeder panicked"))
+                })?
+                .map_err(ImageError::from)
+        });
         let status = child.wait()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(ImageError::Tar(format!(
+        if !status.success() {
+            return Err(ImageError::Tar(format!(
                 "archive decompressor exited with {status}"
-            )))
+            )));
         }
+        fed.transpose()?;
+        Ok(())
     }
 }
 
@@ -931,20 +940,23 @@ impl Drop for ArchiveReader {
         self.reader = Box::new(std::io::empty());
         let _ = child.kill();
         let _ = child.wait();
+        if let Some(feeder) = self.feeder.take() {
+            let _ = feeder.join();
+        }
     }
 }
 
-fn open_archive(mut file: std::fs::File) -> Result<ArchiveReader, ImageError> {
-    file.seek(SeekFrom::Start(0))?;
+fn open_archive<R: Read + Send + 'static>(mut input: R) -> Result<ArchiveReader, ImageError> {
     let mut magic = Vec::with_capacity(6);
-    file.by_ref().take(6).read_to_end(&mut magic)?;
-    file.seek(SeekFrom::Start(0))?;
+    input.by_ref().take(6).read_to_end(&mut magic)?;
+    let whole = std::io::Cursor::new(magic.clone()).chain(input);
     if magic.starts_with(&[0x1f, 0x8b]) {
         return Ok(ArchiveReader {
             reader: Box::new(flate2::bufread::MultiGzDecoder::new(
-                std::io::BufReader::new(file),
+                std::io::BufReader::new(whole),
             )),
             child: None,
+            feeder: None,
         });
     }
     let tool = if magic.starts_with(&[0x28, 0xb5, 0x2f, 0xfd]) {
@@ -955,24 +967,35 @@ fn open_archive(mut file: std::fs::File) -> Result<ArchiveReader, ImageError> {
         "bzip2"
     } else {
         return Ok(ArchiveReader {
-            reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, file)),
+            reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, whole)),
             child: None,
+            feeder: None,
         });
     };
     let mut child = archive_tool(tool)
         .arg("-dc")
-        .stdin(Stdio::from(file))
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|err| ImageError::Tar(format!("{tool} is needed to read this layer: {err}")))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| ImageError::Tar(format!("{tool} produced no input pipe for this layer")))?;
     let stdout = child
         .stdout
         .take()
         .ok_or_else(|| ImageError::Tar(format!("{tool} produced no output for this layer")))?;
+    let feeder = std::thread::spawn(move || {
+        let mut whole = whole;
+        let mut stdin = stdin;
+        std::io::copy(&mut whole, &mut stdin).map(|_| ())
+    });
     Ok(ArchiveReader {
         reader: Box::new(std::io::BufReader::with_capacity(64 * 1024, stdout)),
         child: Some(child),
+        feeder: Some(feeder),
     })
 }
 
@@ -993,8 +1016,8 @@ fn read_members(archive: &Path) -> Result<Vec<Member>, ImageError> {
     read_members_file(std::fs::File::open(archive)?)
 }
 
-fn read_members_file(file: std::fs::File) -> Result<Vec<Member>, ImageError> {
-    let mut stream = open_archive(file)?;
+fn read_members_file<R: Read + Send + 'static>(reader: R) -> Result<Vec<Member>, ImageError> {
+    let mut stream = open_archive(reader)?;
     let mut members: Vec<Member> = Vec::new();
     let mut long_name: Option<Vec<u8>> = None;
     let mut long_link: Option<Vec<u8>> = None;
@@ -1509,7 +1532,7 @@ fn check_pax_timestamp(value: &[u8]) -> Result<(), ImageError> {
 fn extract_checked(archive: &Path, dest: &Path) -> Result<(), ImageError> {
     check_portable_staging_root(dest)?;
     let pinned = pin_archive(archive, dest.parent().unwrap_or(dest))?;
-    let members = read_members_file(pinned.try_clone()?)?;
+    let members = read_members_file(pinned.reader()?)?;
     check_members(&members)?;
     check_portable_names(&members, &mut BTreeMap::new())?;
     check_hardlinks(&members)?;
@@ -1530,11 +1553,103 @@ fn check_portable_staging_root(path: &Path) -> Result<(), ImageError> {
     Ok(())
 }
 
-fn pin_archive(archive: &Path, staging: &Path) -> Result<std::fs::File, ImageError> {
+const ARCHIVE_CHUNK: usize = 64 * 1024;
+
+struct PinnedArchive {
+    file: std::fs::File,
+    size: u64,
+    chunks: Arc<Vec<[u8; 32]>>,
+}
+
+impl PinnedArchive {
+    fn reader(&self) -> Result<VerifiedArchiveReader, ImageError> {
+        Ok(VerifiedArchiveReader {
+            file: self.file.try_clone()?,
+            size: self.size,
+            chunks: Arc::clone(&self.chunks),
+            position: 0,
+            buffered_at: None,
+            buffer: Vec::new(),
+        })
+    }
+}
+
+struct VerifiedArchiveReader {
+    file: std::fs::File,
+    size: u64,
+    chunks: Arc<Vec<[u8; 32]>>,
+    position: u64,
+    buffered_at: Option<u64>,
+    buffer: Vec<u8>,
+}
+
+impl Read for VerifiedArchiveReader {
+    fn read(&mut self, output: &mut [u8]) -> std::io::Result<usize> {
+        if output.is_empty() {
+            return Ok(0);
+        }
+        if self.file.metadata()?.len() != self.size {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "pinned archive size changed",
+            ));
+        }
+        if self.position == self.size {
+            return Ok(0);
+        }
+        let chunk = self.position / ARCHIVE_CHUNK as u64;
+        let start = chunk * ARCHIVE_CHUNK as u64;
+        if self.buffered_at != Some(start) {
+            let length = (self.size - start).min(ARCHIVE_CHUNK as u64) as usize;
+            self.buffer.resize(length, 0);
+            self.file.seek(SeekFrom::Start(start))?;
+            self.file.read_exact(&mut self.buffer)?;
+            let digest: [u8; 32] = Sha256::digest(&self.buffer).into();
+            if digest != self.chunks[chunk as usize] {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "pinned archive content changed",
+                ));
+            }
+            self.buffered_at = Some(start);
+        }
+        let at = (self.position - start) as usize;
+        let length = output.len().min(self.buffer.len() - at);
+        output[..length].copy_from_slice(&self.buffer[at..at + length]);
+        self.position += length as u64;
+        Ok(length)
+    }
+}
+
+fn pin_archive(archive: &Path, staging: &Path) -> Result<PinnedArchive, ImageError> {
     let mut source = std::fs::File::open(archive)?;
-    let mut pinned = tempfile::tempfile_in(staging)?;
-    std::io::copy(&mut source, &mut pinned)?;
-    Ok(pinned)
+    let mut file = tempfile::tempfile_in(staging)?;
+    let mut buffer = [0u8; ARCHIVE_CHUNK];
+    let mut chunks = Vec::new();
+    let mut size = 0u64;
+    loop {
+        let mut length = 0;
+        while length < ARCHIVE_CHUNK {
+            let read = source.read(&mut buffer[length..])?;
+            if read == 0 {
+                break;
+            }
+            length += read;
+        }
+        if length == 0 {
+            break;
+        }
+        file.write_all(&buffer[..length])?;
+        chunks.push(Sha256::digest(&buffer[..length]).into());
+        size = size
+            .checked_add(length as u64)
+            .ok_or_else(|| ImageError::Io(std::io::Error::other("pinned archive size overflow")))?;
+    }
+    Ok(PinnedArchive {
+        file,
+        size,
+        chunks: Arc::new(chunks),
+    })
 }
 
 fn writable_layer_mode(mode: u32) -> u32 {
@@ -1695,8 +1810,8 @@ fn resolve_under(
     Ok(Some(cursor))
 }
 
-fn untar(tarball: &std::fs::File, dest: &Path) -> Result<(), ImageError> {
-    let mut archive = open_archive(tarball.try_clone()?)?;
+fn untar(tarball: &PinnedArchive, dest: &Path) -> Result<(), ImageError> {
+    let mut archive = open_archive(tarball.reader()?)?;
     let mut stderr = tempfile::tempfile_in(dest.parent().unwrap_or(dest))?;
     let mut child = archive_tool("sh")
         .arg("-c")
@@ -1755,7 +1870,7 @@ fn apply_layer_tracked(
     if let Some(descriptor) = descriptor {
         verify_pinned_archive(&pinned, descriptor)?;
     }
-    let members = read_members_file(pinned.try_clone()?)?;
+    let members = read_members_file(pinned.reader()?)?;
     check_members(&members)?;
     check_layer_portable_names(&members, portable_names)?;
     check_hardlinks(&members)?;
@@ -2296,6 +2411,74 @@ mod tests {
         );
         assert!(bin.join("stdin").exists());
         assert!(!bin.join("swapped").exists());
+    }
+
+    #[test]
+    fn pinned_archive_detects_in_place_change_after_descriptor_and_member_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let original = tar_layer(dir.path(), "original", &[("marker", b"ORIGINAL")]);
+        let replacement = tar_layer(dir.path(), "replacement", &[("marker", b"SPOOFED!")]);
+        let original_bytes = std::fs::read(&original).unwrap();
+        let replacement_bytes = std::fs::read(replacement).unwrap();
+        assert_eq!(original_bytes.len(), replacement_bytes.len());
+        let descriptor = OciDescriptor {
+            digest: format!("sha256:{:x}", Sha256::digest(&original_bytes)),
+            size: original_bytes.len() as u64,
+        };
+        let pinned = pin_archive(&original, dir.path()).unwrap();
+        verify_pinned_archive(&pinned, &descriptor).unwrap();
+        read_members_file(pinned.reader().unwrap()).unwrap();
+        let mut retained = pinned.file.try_clone().unwrap();
+        retained.seek(SeekFrom::Start(0)).unwrap();
+        retained.write_all(&replacement_bytes).unwrap();
+        assert!(matches!(
+            read_members_file(pinned.reader().unwrap()),
+            Err(ImageError::Io(error)) if error.kind() == std::io::ErrorKind::InvalidData
+        ));
+        let dest = dir.path().join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        assert!(untar(&pinned, &dest).is_err());
+        assert_eq!(std::fs::read_dir(dest).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn pinned_archive_checks_boundary_partial_chunk_and_length_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let original: Vec<u8> = (0..ARCHIVE_CHUNK * 2 + 17)
+            .map(|at| (at % 251) as u8)
+            .collect();
+        let source = dir.path().join("source.bin");
+        std::fs::write(&source, &original).unwrap();
+        let pinned = pin_archive(&source, dir.path()).unwrap();
+        let mut accepted = Vec::new();
+        pinned.reader().unwrap().read_to_end(&mut accepted).unwrap();
+        assert_eq!(accepted, original);
+        let mut retained = pinned.file.try_clone().unwrap();
+        for at in [ARCHIVE_CHUNK - 1, ARCHIVE_CHUNK, original.len() - 1] {
+            retained.seek(SeekFrom::Start(at as u64)).unwrap();
+            retained.write_all(&[original[at] ^ 1]).unwrap();
+            assert_eq!(
+                pinned
+                    .reader()
+                    .unwrap()
+                    .read_to_end(&mut Vec::new())
+                    .unwrap_err()
+                    .kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            retained.seek(SeekFrom::Start(at as u64)).unwrap();
+            retained.write_all(&[original[at]]).unwrap();
+        }
+        pinned.file.set_len(original.len() as u64 - 1).unwrap();
+        assert_eq!(
+            pinned.reader().unwrap().read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        pinned.file.set_len(original.len() as u64 + 1).unwrap();
+        assert_eq!(
+            pinned.reader().unwrap().read(&mut [0]).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
     }
 
     #[test]
@@ -6524,6 +6707,7 @@ mod acceptance_regressions {
         drop(ArchiveReader {
             reader: Box::new(reader),
             child: Some(child),
+            feeder: None,
         });
         let exists = Command::new("kill")
             .args(["-0", &pid.to_string()])
@@ -6542,6 +6726,7 @@ mod reader_regressions {
         let mut reader = ArchiveReader {
             reader: Box::new(std::io::Cursor::new(b"hello")),
             child: None,
+            feeder: None,
         };
         let mut bytes = [0; 8];
         assert_eq!(reader.read(&mut bytes).unwrap(), 5);
