@@ -69,15 +69,16 @@ guest TASK_SIZE remains in the console for diagnosis.
   bytes are passed at launch, and the kernel refuses a child whose initial
   values differ. Earlier profiles are refused. The arm64 kernel imports its
   hardware-capability flags from this auxiliary vector. A guest program that
-  executes `rdrand` or `rdseed` gets host
-  randomness, and one that reads the APIC ID from `cpuid` (leaf 1 EBX bits
+  executes `rdrand` or `rdseed` gets host randomness. `rdpid` returns a host CPU
+  identity, and `lsl` can read the host CPU number from the GDT segment limit.
+  A program that reads the APIC ID from `cpuid` (leaf 1 EBX bits
   31:24, or the x2APIC ID in leaves 0xB and 0x1F) gets the ID of the host
   CPU it happens to run on; workloads must not use them. Fault-workload image
-  preparation, search and command runs refuse scanned hardware entropy
-  instructions for UML, including reviewed call sites. The current x86
-  Bookworm language and historical images contain such sites and are refused
+  preparation, search and command runs refuse scanned hardware entropy and
+  CPU-identity instructions for UML, including reviewed call sites. The current
+  x86 Bookworm language and historical images contain such sites and are refused
   for UML until built without them. This does not trap an instruction supplied
-  by dynamic code or hidden from the executable-section scan.
+  by dynamic code or hidden from the executable-load scan.
 - Host stops and continues of stub processes no longer raise guest
   interrupts. A stub that dies without the kernel killing it panics the
   guest.

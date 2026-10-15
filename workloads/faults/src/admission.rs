@@ -240,7 +240,7 @@ impl ImageReport {
                     .filter(|site| {
                         matches!(
                             site.instruction.as_str(),
-                            "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS" | "RDPID"
+                            "RDRAND" | "RDSEED" | "RNDR" | "RNDRRS" | "RDPID" | "LSL"
                         )
                     })
                     .map(|site| {
@@ -812,6 +812,7 @@ fn scan_code(
                 Mnemonic::Rdrand => "RDRAND",
                 Mnemonic::Rdseed => "RDSEED",
                 Mnemonic::Rdpid => "RDPID",
+                Mnemonic::Lsl => "LSL",
                 _ => continue,
             };
             sites.push((instruction.ip(), name));
@@ -1201,6 +1202,48 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("RDPID")
+        );
+    }
+
+    #[test]
+    fn uml_rejects_reviewed_lsl_because_the_host_cpu_id_varies() {
+        assert_eq!(
+            scan_code(
+                object::Architecture::X86_64,
+                0x2000,
+                &[0x48, 0x0f, 0x03, 0xc1]
+            )
+            .unwrap(),
+            [(0x2000, "LSL")]
+        );
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc/harmony")).unwrap();
+        let bytes = elf(&[0xb9, 0x7b, 0, 0, 0, 0x48, 0x0f, 0x03, 0xc1, 0xc3], 5, 6);
+        fs::write(root.path().join("node"), &bytes).unwrap();
+        let unreviewed = inspect_root(root.path()).unwrap();
+        assert!(
+            unreviewed
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("LSL"))
+        );
+        assert_eq!(unreviewed.executables[0].sites[0].instruction, "LSL");
+        fs::write(
+            root.path().join(ALLOWLIST_PATH),
+            format!(
+                "{:x} 0x1005 LSL native host CPU id\n",
+                Sha256::digest(&bytes)
+            ),
+        )
+        .unwrap();
+        let reviewed = inspect_root(root.path()).unwrap();
+        assert!(reviewed.require_for(ExecutionMode::Vm).is_ok());
+        assert!(
+            reviewed
+                .require_for(ExecutionMode::Uml)
+                .unwrap_err()
+                .to_string()
+                .contains("LSL")
         );
     }
 
