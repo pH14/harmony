@@ -4,6 +4,11 @@ The instruction scanners reject unsupported instructions in shipped guest
 executables. Their planted negative controls must continue to fail. The N6
 entropy scanner reads executable ELF load segments, because section headers can
 mislabel code without changing the bytes or permissions the guest loader maps.
+It checks the complete 4 KiB page-rounded file mapping of each executable load,
+including bytes before the declared start and after `p_filesz`, and requires the
+load's file offset and virtual address to agree within a page. Linux can leave
+the file-backed tail executable even when `p_memsz` exceeds `p_filesz` on a
+read-only executable load.
 On x86 it decodes contained allocated sections from their starts and scans the
 gaps between them, so headers or padding cannot shift an instruction boundary
 or create a false hit across a section boundary. Arm64 is checked as aligned
@@ -16,6 +21,8 @@ when it is exhausted. A branch-reachable instruction crossing an executable
 section or gap boundary is rejected, where decoding each range separately
 could hide an entropy opcode. An unbranched executable prelude does not redefine
 a section's decoder start.
+Indirect or computed transfers and returns into another instruction's operand
+bytes remain outside this static scanner's guarantee.
 Its hidden-section negative control clears the `.text` executable flag while
 leaving `PT_LOAD` executable and must still be rejected.
 

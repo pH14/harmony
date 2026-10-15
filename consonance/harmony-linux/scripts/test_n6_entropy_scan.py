@@ -3,6 +3,7 @@
 import importlib.util
 import platform
 import struct
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,8 +19,10 @@ SPEC.loader.exec_module(scan)
 def elf(machine, text, safe, text_flags):
     names = b"\0.text\0.safe\0.shstrtab\0"
     code = text + safe
-    code_offset = 384
-    data = bytearray(code_offset + len(code) + len(names))
+    code_offset = 8192
+    code_address = 0x1000
+    names_offset = code_offset + 4096
+    data = bytearray(names_offset + len(names))
     ident = b"\x7fELF\x02\x01\x01" + bytes(9)
     struct.pack_into(
         scan.ELF_HEADER,
@@ -29,7 +32,7 @@ def elf(machine, text, safe, text_flags):
         2,
         machine,
         1,
-        0x1000,
+        code_address,
         64,
         128,
         0,
@@ -47,14 +50,14 @@ def elf(machine, text, safe, text_flags):
         scan.PT_LOAD,
         scan.PF_X | 4,
         code_offset,
-        0x1000,
-        0x1000,
+        code_address,
+        code_address,
         len(code),
         len(code),
         1,
     )
     section = "<IIQQQQIIQQ"
-    struct.pack_into(section, data, 192, 1, 1, text_flags, 0x1000, code_offset, len(text), 0, 0, 1, 0)
+    struct.pack_into(section, data, 192, 1, 1, text_flags, code_address, code_offset, len(text), 0, 0, 1, 0)
     struct.pack_into(
         section,
         data,
@@ -62,7 +65,7 @@ def elf(machine, text, safe, text_flags):
         7,
         1,
         6,
-        0x1000 + len(text),
+        code_address + len(text),
         code_offset + len(text),
         len(safe),
         0,
@@ -78,7 +81,7 @@ def elf(machine, text, safe, text_flags):
         3,
         0,
         0,
-        code_offset + len(code),
+        names_offset,
         len(names),
         0,
         0,
@@ -86,7 +89,51 @@ def elf(machine, text, safe, text_flags):
         0,
     )
     data[code_offset : code_offset + len(code)] = code
-    data[code_offset + len(code) :] = names
+    data[names_offset : names_offset + len(names)] = names
+    return data
+
+
+def executable_tail_elf():
+    data = elf(scan.EM_X86_64, b"\xe9\x00\x00\x00\x00", b"", 6)
+    for offset, value in (
+        (24, 0x401000),
+        (80, 0x401000),
+        (88, 0x401000),
+        (112, 0x1000),
+        (192 + 16, 0x401000),
+    ):
+        struct.pack_into("<Q", data, offset, value)
+    data[8192 : 8192 + 20] = (
+        b"\xe9\x00\x00\x00\x00"
+        b"\x0f\xc7\xf0"
+        b"\xbf\x2a\x00\x00\x00"
+        b"\xb8\x3c\x00\x00\x00"
+        b"\x0f\x05"
+    )
+    return data
+
+
+def executable_head_elf():
+    data = executable_tail_elf()
+    for offset, value in (
+        (24, 0x401005),
+        (72, 8197),
+        (80, 0x401005),
+        (88, 0x401005),
+        (96, 17),
+        (104, 17),
+        (192 + 16, 0x401005),
+        (192 + 24, 8197),
+        (192 + 32, 17),
+    ):
+        struct.pack_into("<Q", data, offset, value)
+    data[8192 : 8192 + 22] = (
+        b"\x0f\xc7\xf0\xeb\x05"
+        b"\xe9\xf6\xff\xff\xff"
+        b"\xbf\x2a\x00\x00\x00"
+        b"\xb8\x3c\x00\x00\x00"
+        b"\x0f\x05"
+    )
     return data
 
 
@@ -96,6 +143,46 @@ class EntropyScanTests(unittest.TestCase):
             path = Path(temporary) / "guest"
             path.write_bytes(data)
             return scan.scan(path)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "requires x86-64 Linux and GNU objdump",
+    )
+    def test_x86_executable_file_page_tail_is_scanned(self):
+        for memory_size in (5, 20):
+            with self.subTest(memory_size=memory_size):
+                with tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "guest"
+                    data = executable_tail_elf()
+                    struct.pack_into("<Q", data, 104, memory_size)
+                    path.write_bytes(data)
+                    path.chmod(0o755)
+                    self.assertEqual(subprocess.run([path], check=False).returncode, 42)
+                    self.assertEqual(
+                        scan.scan(path),
+                        [("<exec-segment 0>", 0, "RDRAND")],
+                    )
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "requires x86-64 Linux and GNU objdump",
+    )
+    def test_x86_executable_file_page_head_is_scanned(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "guest"
+            path.write_bytes(executable_head_elf())
+            path.chmod(0o755)
+            self.assertEqual(subprocess.run([path], check=False).returncode, 42)
+            self.assertEqual(
+                scan.scan(path),
+                [("<exec-segment 0>", 0, "RDRAND")],
+            )
+
+    def test_x86_executable_load_page_positions_must_match(self):
+        data = executable_tail_elf()
+        struct.pack_into("<Q", data, 72, 8193)
+        with self.assertRaisesRegex(ValueError, "page offset mismatch"):
+            self.check(data)
 
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_x86_section_flag_cannot_hide_loaded_rdrand(self):
@@ -175,33 +262,33 @@ class EntropyScanTests(unittest.TestCase):
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_mapped_section_start_recovers_instruction_after_segment_prelude(self):
         data = elf(scan.EM_X86_64, b"\x0f\xc7\xf0", b"\xc3", 2)
-        data[383] = 0xe8
+        data[8191] = 0xe8
         for offset, value in (
-            (24, 0x400180),
-            (72, 383),
-            (80, 0x40017f),
-            (88, 0x40017f),
+            (24, 0x401000),
+            (72, 8191),
+            (80, 0x400fff),
+            (88, 0x400fff),
             (96, 5),
             (104, 5),
-            (192 + 16, 0x400180),
-            (256 + 16, 0x400183),
+            (192 + 16, 0x401000),
+            (256 + 16, 0x401003),
         ):
             struct.pack_into("<Q", data, offset, value)
-        self.assertEqual(scan.x86_hits([("segment", 0x40017f, data[383:388])]), [])
+        self.assertEqual(scan.x86_hits([("segment", 0x400fff, data[8191:8196])]), [])
         self.assertEqual(self.check(data), [(".text", 0, "RDRAND")])
 
     @unittest.skipUnless(platform.system() == "Linux", "requires GNU objdump")
     def test_segment_prelude_does_not_invent_entropy_inside_a_section(self):
         data = elf(scan.EM_X86_64, b"\xb8\x90\x0f\xc7\xf0\xc3", b"", 6)
-        data[383] = 0x3c
+        data[8191] = 0x3c
         for offset, value in (
-            (24, 0x400180),
-            (72, 383),
-            (80, 0x40017f),
-            (88, 0x40017f),
+            (24, 0x401000),
+            (72, 8191),
+            (80, 0x400fff),
+            (88, 0x400fff),
             (96, 7),
             (104, 7),
-            (192 + 16, 0x400180),
+            (192 + 16, 0x401000),
         ):
             struct.pack_into("<Q", data, offset, value)
         self.assertEqual(self.check(data), [])
