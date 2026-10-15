@@ -344,6 +344,7 @@ pub fn search_consonance(
     validate_output(options)?;
     let initramfs = prepared.initramfs(platform_initramfs);
     let prepared_identity = prepared.identity_hex();
+    let game = SmbGame::new_consonance(rom, kernel, &initramfs)?;
     record_identity(
         rom,
         ExecutionIdentity {
@@ -351,7 +352,7 @@ pub fn search_consonance(
             isa: std::env::consts::ARCH.into(),
             core_contract: format!(
                 "{};prepared-execution={prepared_identity}",
-                machine::consonance::identity(kernel, &initramfs),
+                game.emulator_identity(),
             ),
             artifacts: [
                 ("kernel".into(), format!("{:x}", Sha256::digest(kernel))),
@@ -372,13 +373,7 @@ pub fn search_consonance(
         },
         options,
     )?;
-    search(
-        SmbGame::new_consonance(rom, kernel, &initramfs),
-        smb_run(),
-        "consonance",
-        options,
-        start,
-    )
+    search(game, smb_run(), "consonance", options, start)
 }
 
 pub fn replay_native(
@@ -417,7 +412,7 @@ pub fn replay_consonance(
 ) -> Result<serde_json::Value, Box<dyn Error>> {
     RomKind::identify(rom)?;
     replay_witness(
-        &SmbGame::new_consonance(rom, kernel, initramfs),
+        &SmbGame::new_consonance(rom, kernel, initramfs)?,
         &smb_run(),
         &serde_json::from_value(input)?,
     )
@@ -439,7 +434,7 @@ pub fn search_saved_guest(
     validate_output(options)?;
     RomKind::identify(rom)?;
     search(
-        SmbGame::new_consonance(rom, kernel, initramfs),
+        SmbGame::new_consonance(rom, kernel, initramfs)?,
         smb_run(),
         "consonance",
         options,

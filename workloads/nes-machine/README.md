@@ -91,7 +91,10 @@ belong to the adapters in `nes-workload`.
 
 Setup and each action allow 2 seconds of virtual time on x86-64 and 20 seconds
 on arm64. These architecture-specific budgets are passed through the client
-session configuration and included in the execution identity.
+session configuration and included in the execution identity. The NES adapter's
+outer execution identity derives from that exact session configuration and its
+ordered setup payloads. It therefore includes the loaded Harmony executable
+used by the session and fails closed when that executable cannot be identified.
 
 Native snapshots preserve their existing serialized emulator format. Consonance
 snapshots use the explicit `consonance-whole-vm-v2` shape owned by
