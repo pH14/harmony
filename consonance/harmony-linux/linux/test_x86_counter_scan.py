@@ -188,6 +188,80 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_kernel_physical_entry_in_reviewed_data_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "data-entry.s"
+            assembly.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n'
+                'ret\n.fill 15,1,0xcc\n'
+                '.section .data,"aw"\n.byte 0x0f,0x31,0xc3\n'
+            )
+            linker = root / "physical-entry.ld"
+            linker.write_text(
+                "PHDRS { text PT_LOAD FLAGS(5); data PT_LOAD FLAGS(6); }\n"
+                "SECTIONS { . = 0xffffffff81000000; "
+                ".text : AT(0x01000000) { *(.text) } :text "
+                ". = 0xffffffff82600000; "
+                ".data : AT(0x02600000) { *(.data) } :data }\n"
+            )
+            obj = root / "data-entry.o"
+            elf = root / "data-entry.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "0x02600000", "-o",
+                str(elf), str(obj))
+            data = elf.read_bytes()
+            self.assertEqual(struct.unpack_from("<Q", data, 24)[0], 0x02600000)
+            program_offset = struct.unpack_from("<Q", data, 32)[0]
+            program_size = struct.unpack_from("<H", data, 54)[0]
+            self.assertEqual(
+                [struct.unpack_from("<Q", data, program_offset + index * program_size + 24)[0]
+                 for index in range(2)],
+                [0x01000000, 0x02600000],
+            )
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("kernel physical entry is not executable code", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
+    def test_kernel_physical_entry_restarts_mid_instruction(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "mid-entry.s"
+            assembly.write_text(
+                '.section .text,"ax"\n.global _start\n_start:\n'
+                '.byte 0xb8,0x0f,0x31,0x00,0x00\nret\n.fill 15,1,0xcc\n'
+            )
+            linker = root / "mid-entry.ld"
+            linker.write_text(
+                "PHDRS { text PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0xffffffff81000000; "
+                ".text : AT(0x01000000) { *(.text) } :text }\n"
+            )
+            obj = root / "mid-entry.o"
+            elf = root / "mid-entry.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "0x01000001", "-o",
+                str(elf), str(obj))
+            data = elf.read_bytes()
+            self.assertEqual(struct.unpack_from("<Q", data, 24)[0], 0x01000001)
+            result = subprocess.run(
+                ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("entry-restart counter instruction rdtsc", result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_executable_segment_with_hidden_code_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
