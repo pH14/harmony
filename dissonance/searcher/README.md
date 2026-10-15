@@ -759,6 +759,14 @@ reply. A reservation follows an admission and never a caller's request, so a
 caller that plans any number of jobs and runs them in any order writes the same
 stream as the pool for the same seed and window.
 
+`run_campaign_watched` runs the same pool with a `CampaignWatch`. Its `run`
+hook wraps each job on the worker thread and returns a note with the outcome.
+Its `admitted` hook receives that note and the coordinator on the coordinator
+thread after each admission, and `start` runs once after the coordinator
+starts. `watch_admissions` makes the coordinator keep each admission's
+decisions, and `take_admissions` drains them, so a watcher reads retained ids
+without parsing the stream.
+
 The crate builds for `wasm32-unknown-unknown`. On wasm32 the telemetry clock
 reads zero and progress lines carry `unix_time` 0, because `std::time::Instant`
 and `SystemTime` panic there. A wall budget never stops a wasm32 campaign.

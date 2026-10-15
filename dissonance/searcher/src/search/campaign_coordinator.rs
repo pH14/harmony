@@ -11,18 +11,18 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    CONSECUTIVE_SKIP_LIMIT, CampaignConfig, CampaignCounters, CampaignEndRecord,
-    CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
-    CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord, CampaignSkipRecord,
-    CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, CompletedJob,
-    CoordinatorCore, JobSpecRecord, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob,
-    SelectedJob, StreamWriter, Workload, archive_entry_limit_is_valid, bootstrap_campaign,
-    build_report, continuation_arrival, continuation_attempt, derive_selection_seed,
-    execution_work_delta, finish_record, initial_draw_state, memory_is_within_reserve,
-    mixture_weights, planned_finish, profile_elapsed, profile_now, progress_checkpoint_due,
-    progress_record, record_compaction_elapsed, record_mixture_outcome, resolve_origin,
-    restore_search_checkpoint, retained_archive_indexes, stop_reservations_after_objective,
-    stream_header, write_live_progress, write_search_checkpoint,
+    CONSECUTIVE_SKIP_LIMIT, CampaignAdmissionDecision, CampaignConfig, CampaignCounters,
+    CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
+    CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
+    CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
+    CampaignTypes, CompletedJob, CoordinatorCore, JobSpecRecord, LONGEST_SPLICE_TAIL,
+    LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
+    archive_entry_limit_is_valid, bootstrap_campaign, build_report, continuation_arrival,
+    continuation_attempt, derive_selection_seed, execution_work_delta, finish_record,
+    initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish, profile_elapsed,
+    profile_now, progress_checkpoint_due, progress_record, record_compaction_elapsed,
+    record_mixture_outcome, resolve_origin, restore_search_checkpoint, retained_archive_indexes,
+    stop_reservations_after_objective, stream_header, write_live_progress, write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -56,6 +56,12 @@ pub struct JobOutcome<G: CampaignTypes + ?Sized> {
     pub result: CampaignJobResult<G>,
     pub execution_work: u64,
     pub result_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CampaignAdmission {
+    pub reservation: usize,
+    pub decisions: Vec<CampaignAdmissionDecision>,
 }
 
 pub fn run_job<G: Workload>(
@@ -116,6 +122,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     coordinator_schedstat: Option<(u64, u64)>,
     telemetry_started: Moment,
     wall_started: Option<Moment>,
+    admissions: Option<Vec<CampaignAdmission>>,
 }
 
 impl<'a, G: Workload> CampaignCoordinator<'a, G>
@@ -294,6 +301,7 @@ where
             coordinator_schedstat: thread_schedstat(),
             telemetry_started,
             wall_started: config.wall_budget.map(|_| telemetry_started),
+            admissions: None,
         };
         for job in in_flight {
             let index = coordinator
@@ -413,6 +421,17 @@ where
             return Err("campaign reorder window ended with an admission gap".into());
         }
         Ok(())
+    }
+
+    pub fn watch_admissions(&mut self) {
+        self.admissions.get_or_insert_with(Vec::new);
+    }
+
+    pub fn take_admissions(&mut self) -> Vec<CampaignAdmission> {
+        self.admissions
+            .as_mut()
+            .map(std::mem::take)
+            .unwrap_or_default()
     }
 
     #[must_use]
@@ -668,6 +687,7 @@ where
             coordinator_schedstat,
             telemetry_started,
             completed,
+            admissions,
             ..
         } = self;
         let admission = &mut telemetry.admission;
@@ -801,6 +821,12 @@ where
         coordinator_profile.bookkeeping_ns = coordinator_profile
             .bookkeeping_ns
             .saturating_add(profile_elapsed(bookkeeping_started));
+        if let Some(admissions) = admissions.as_mut() {
+            admissions.push(CampaignAdmission {
+                reservation,
+                decisions: decisions.clone(),
+            });
+        }
         let stream_started = profile_now();
         writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
             continuation_energy: pending_job.continuation_energy,

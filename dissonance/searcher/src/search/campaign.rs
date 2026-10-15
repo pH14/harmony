@@ -47,7 +47,37 @@ use crate::search::telemetry::{
 #[path = "campaign_coordinator.rs"]
 mod coordinator;
 
-pub use coordinator::{CampaignCoordinator, JobOutcome, JobSpec, run_job};
+pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
+
+pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
+
+pub trait CampaignWatch<G: Workload>: Sync {
+    type Note: Send;
+
+    fn run(
+        &self,
+        job: &JobSpec<G>,
+        run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, Self::Note>;
+
+    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>);
+
+    fn start(&self, _campaign: &mut CampaignCoordinator<'_, G>) {}
+}
+
+impl<G: Workload> CampaignWatch<G> for () {
+    type Note = ();
+
+    fn run(
+        &self,
+        _job: &JobSpec<G>,
+        run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, ()> {
+        Ok((run()?, ()))
+    }
+
+    fn admitted(&self, _note: (), _campaign: &mut CampaignCoordinator<'_, G>) {}
+}
 
 pub type CampaignOutcome<G> = (
     CampaignModeReport<<G as CampaignTypes>::Action, <G as CampaignTypes>::ArchiveReport>,
@@ -2889,6 +2919,21 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
+    run_campaign_watched(workload, config, origin, stream, progress, options, &())
+}
+
+pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    watch: &W,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
     let placement = options.placement.clone();
     let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
@@ -2908,7 +2953,9 @@ where
             workload.new_target()
         },
         |target, job: JobSpec<G>| {
-            run_job(workload, config, target, &job).map_err(|error| error.to_string())
+            watch
+                .run(&job, || run_job(workload, config, target, &job))
+                .map_err(|error| error.to_string())
         },
         |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
@@ -2921,6 +2968,7 @@ where
                 progress.map(|sink| -> &mut dyn Write { sink }),
                 options,
             )?);
+            watch.start(campaign);
             bootstrapped.send(())?;
             drop(bootstrapped);
             loop {
@@ -2936,7 +2984,7 @@ where
                 let mut ready_reply = Some(reply);
                 while let Some(reply) = ready_reply {
                     let physical_worker = reply.worker;
-                    let outcome = reply.outcome.map_err(|error| -> Box<dyn Error> {
+                    let (outcome, note) = reply.outcome.map_err(|error| -> Box<dyn Error> {
                         format!("campaign worker {physical_worker} failed: {error}").into()
                     })?;
                     if physical_worker >= config.workers {
@@ -2945,6 +2993,7 @@ where
                         );
                     }
                     campaign.admit(outcome)?;
+                    watch.admitted(note, campaign);
                     ready_reply = pool.try_receive()?;
                 }
             }
