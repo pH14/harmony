@@ -1919,7 +1919,7 @@ where
         answer: &channel::Answer,
     ) -> Result<(), channel::ChannelError> {
         if let Some(sdk) = &self.sdk {
-            let mut projected = sdk.env.clone();
+            let mut projected = sdk.env.checked_clone()?;
             projected.record_question(moment, question, answer.clone());
             projected.snapshot_state_with_binding_reserve()?;
             if let Some(SdkStop::CoverageDecision { ready, .. }) = &sdk.pending_stop {
@@ -2043,7 +2043,7 @@ where
                     .sdk
                     .as_ref()
                     .expect("pending request requires SDK channel");
-                let mut env = sdk.env.clone();
+                let mut env = sdk.env.checked_clone()?;
                 env.record_question(moment, &question, answer.clone());
                 let mut thresholds = sdk.coverage_thresholds.clone();
                 let CoverageOutcome::Answered(coverage) = sdk::decide_coverage(
@@ -3217,6 +3217,104 @@ mod tests {
         fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
             Box::new(self.clone())
         }
+    }
+
+    struct MutatingCloneService(std::sync::Arc<std::sync::atomic::AtomicU8>);
+
+    impl channel::ServiceHandler for MutatingCloneService {
+        fn identity(&self) -> &[u8] {
+            b"vmm-mutating-clone-service"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &channel::Question,
+        ) -> Result<channel::ServiceResponse, channel::ChannelError> {
+            panic!("guest service decisions require an explicit answer")
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, channel::ChannelError> {
+            Ok(vec![self.0.load(std::sync::atomic::Ordering::SeqCst)])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), channel::ChannelError> {
+            let [value] = state else {
+                return Err(channel::ChannelError::Malformed);
+            };
+            self.0.store(*value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
+            let _ = self.0.compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Box::new(Self(std::sync::Arc::clone(&self.0)))
+        }
+    }
+
+    fn mutating_clone_vmm() -> (
+        Vmm<MockBackend>,
+        std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let config = ServiceConfig {
+            identity: b"vmm-mutating-clone-service".to_vec(),
+            configuration: Vec::new(),
+        };
+        vmm.enable_sdk(
+            channel::RecordedEnv::new(
+                7,
+                Box::new(MutatingCloneService(std::sync::Arc::clone(&state))),
+            ),
+            &config,
+        );
+        (vmm, state)
+    }
+
+    #[test]
+    fn service_answer_preflight_rejects_a_clone_that_changes_the_live_handler() {
+        let (vmm, state) = mutating_clone_vmm();
+        let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        assert_eq!(
+            vmm.sdk_snapshot_after_answer(4, &question, &channel::Answer::Nominal),
+            Err(channel::ChannelError::Poisoned)
+        );
+        assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(vmm.sdk.as_ref().unwrap().env.is_poisoned());
+    }
+
+    #[test]
+    fn coverage_answer_rejects_a_clone_that_changes_the_live_handler() {
+        let (mut vmm, state) = mutating_clone_vmm();
+        let question = channel::Question::with_request_id(
+            11,
+            channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        vmm.sdk.as_mut().unwrap().pending_stop = Some(SdkStop::CoverageDecision {
+            moment: 4,
+            seq: 12,
+            question,
+            ready: 2,
+        });
+        assert!(
+            vmm.resolve_service_answer(channel::Answer::Data(7_u64.to_le_bytes().to_vec()))
+                .is_err()
+        );
+        assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(vmm.sdk.as_ref().unwrap().env.is_poisoned());
+        assert!(vmm.pending_service_question().is_some());
     }
 
     fn enable_nominal(vmm: &mut Vmm<MockBackend>, seed: u64) {

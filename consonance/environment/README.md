@@ -17,7 +17,10 @@ candidate handler only after a valid answer. Before and after each handler respo
 captures the live handler's identity, configuration, and state. If a shallow
 clone changes that live state during an answer, external request, or error,
 the channel and its transaction clones become poisoned. They reject later
-requests and cannot produce a snapshot or state hash. Handler implementations
+requests and cannot produce a snapshot or state hash. Public environment clones
+and internal handler clones compare both copies with the live state before use;
+guest-facing SDK and VMM transactions reject a poisoned clone before accepting
+a decision or answer. Handler implementations
 must expose all mutable replay state through `snapshot_state` and keep it from
 changing outside the channel. Capturing and restoring handler state is fallible, so failed
 capture cannot produce a usable snapshot or state hash. A handler's identity

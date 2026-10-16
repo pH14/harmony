@@ -357,6 +357,29 @@ pub struct HandlerSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HandlerFingerprint([u8; 32]);
 
+fn capture_handler_fingerprint(
+    handler: &dyn ServiceHandler,
+) -> Result<HandlerFingerprint, ChannelError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"consonance-handler-fingerprint-v1\0");
+    for bytes in [handler.identity(), handler.configuration()] {
+        hasher.update(
+            u64::try_from(bytes.len())
+                .map_err(|_| ChannelError::TooLarge)?
+                .to_le_bytes(),
+        );
+        hasher.update(bytes);
+    }
+    let state = handler.snapshot_state()?;
+    hasher.update(
+        u64::try_from(state.len())
+            .map_err(|_| ChannelError::TooLarge)?
+            .to_le_bytes(),
+    );
+    hasher.update(&state);
+    Ok(HandlerFingerprint(hasher.finalize().into()))
+}
+
 fn check_handler_contract(
     handler: &dyn ServiceHandler,
     identity: &[u8],
@@ -615,7 +638,7 @@ impl RecordedState {
             &self.handler.configuration,
         )?;
         let before = HandlerSnapshot::capture(&environment.handler)?;
-        let mut handler = environment.handler.clone();
+        let mut handler = environment.checked_handler_clone()?;
         let restored = (|| {
             handler.restore_state(&self.handler.state)?;
             check_handler_contract(
@@ -703,6 +726,7 @@ where
     H: ServiceHandler + Clone,
 {
     fn clone(&self) -> Self {
+        let handler = self.clone_handler();
         Self {
             stream_state: self.stream_state,
             overrides: self.overrides.clone(),
@@ -710,7 +734,7 @@ where
             payloads: self.payloads.clone(),
             payload_cursor: self.payload_cursor,
             coverage_schedule: self.coverage_schedule.clone(),
-            handler: self.handler.clone(),
+            handler,
             poisoned: Arc::clone(&self.poisoned),
         }
     }
@@ -732,6 +756,43 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
 }
 
 impl<H: ServiceHandler> RecordedEnv<H> {
+    fn clone_handler(&self) -> H
+    where
+        H: Clone,
+    {
+        let before = self.handler_fingerprint();
+        let handler = self.handler.clone();
+        let candidate = capture_handler_fingerprint(&handler);
+        let after = self.handler_fingerprint();
+        if !matches!(
+            (&before, &candidate, &after),
+            (Ok(before), Ok(candidate), Ok(after)) if before == candidate && before == after
+        ) {
+            self.poisoned.store(true, Ordering::Release);
+        }
+        handler
+    }
+
+    fn checked_handler_clone(&self) -> Result<H, ChannelError>
+    where
+        H: Clone,
+    {
+        self.ensure_healthy()?;
+        let handler = self.clone_handler();
+        self.ensure_healthy()?;
+        Ok(handler)
+    }
+
+    pub fn checked_clone(&self) -> Result<Self, ChannelError>
+    where
+        H: Clone,
+    {
+        self.ensure_healthy()?;
+        let candidate = self.clone();
+        self.ensure_healthy()?;
+        Ok(candidate)
+    }
+
     pub fn request_bindings(&self) -> impl Iterator<Item = ((Moment, u16, u64), [u8; 32])> + '_ {
         self.overrides.iter().filter_map(|(key, record)| {
             record
@@ -765,7 +826,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     {
         self.ensure_healthy()?;
         let before = HandlerSnapshot::capture(&self.handler)?;
-        let mut candidate = self.handler.clone();
+        let mut candidate = self.checked_handler_clone()?;
         candidate.reseed(seed);
         self.verify_handler_unchanged(&before)?;
         let after = HandlerSnapshot::capture(&candidate)?;
@@ -930,7 +991,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             return Ok(response);
         }
         let before = HandlerSnapshot::capture(&self.handler)?;
-        let mut candidate = self.handler.clone();
+        let mut candidate = self.checked_handler_clone()?;
         let response = candidate.respond(self.moment, question);
         self.verify_handler_unchanged(&before)?;
         let response = response?;
@@ -980,25 +1041,9 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn handler_fingerprint(&self) -> Result<HandlerFingerprint, ChannelError> {
         self.ensure_healthy()?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"consonance-handler-fingerprint-v1\0");
-        for bytes in [self.handler.identity(), self.handler.configuration()] {
-            hasher.update(
-                u64::try_from(bytes.len())
-                    .map_err(|_| ChannelError::TooLarge)?
-                    .to_le_bytes(),
-            );
-            hasher.update(bytes);
-        }
-        let state = self.handler.snapshot_state()?;
-        hasher.update(
-            u64::try_from(state.len())
-                .map_err(|_| ChannelError::TooLarge)?
-                .to_le_bytes(),
-        );
-        hasher.update(&state);
+        let fingerprint = capture_handler_fingerprint(&self.handler)?;
         self.ensure_healthy()?;
-        Ok(HandlerFingerprint(hasher.finalize().into()))
+        Ok(fingerprint)
     }
 
     pub fn verify_handler_fingerprint_unchanged(
@@ -2256,6 +2301,7 @@ mod tests {
         state: std::sync::Arc<std::sync::atomic::AtomicU8>,
         response: SharedResponse,
         reseed_changes_state: bool,
+        clone_changes_state: bool,
     }
 
     impl SharedStateHandler {
@@ -2264,6 +2310,7 @@ mod tests {
                 state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(value)),
                 response,
                 reseed_changes_state: false,
+                clone_changes_state: false,
             }
         }
     }
@@ -2315,8 +2362,97 @@ mod tests {
         }
 
         fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            if self.clone_changes_state {
+                self.state.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             Box::new(self.clone())
         }
+    }
+
+    struct DivergingCloneHandler(u8);
+
+    impl ServiceHandler for DivergingCloneHandler {
+        fn identity(&self) -> &[u8] {
+            b"diverging-clone-handler"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(&mut self, _: Moment, _: &Question) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Data(vec![self.0])))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [value] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.0 = *value;
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(Self(self.0 + 1))
+        }
+    }
+
+    #[test]
+    fn deciding_with_a_divergent_handler_clone_poisoned() {
+        let mut env = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        assert!(env.snapshot_state().is_ok());
+        assert_eq!(
+            env.decide(&Question::new(7, vec![]).unwrap()),
+            Err(ChannelError::Poisoned)
+        );
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn reseeding_with_a_divergent_handler_clone_poisoned() {
+        let mut env = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        assert!(env.snapshot_state().is_ok());
+        assert_eq!(env.reseed(2), Err(ChannelError::Poisoned));
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn restoring_with_a_divergent_handler_clone_poisoned() {
+        let source = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        let snapshot = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        assert_eq!(
+            snapshot.restore_into(&mut target),
+            Err(ChannelError::Poisoned)
+        );
+        assert_eq!(target.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn cloning_a_recorded_environment_poisoned_if_it_changes_the_live_handler() {
+        let mut handler = SharedStateHandler::new(0, SharedResponse::External);
+        handler.clone_changes_state = true;
+        let env = RecordedEnv::new(1, Box::new(handler) as Box<dyn ServiceHandler>);
+        assert!(env.snapshot_state().is_ok());
+        let cloned = env.clone();
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+        assert_eq!(cloned.snapshot_state(), Err(ChannelError::Poisoned));
     }
 
     #[test]
