@@ -354,9 +354,10 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
-UML terminal classification waits for the host console collector to finish, so
-the final kernel output cannot race the panic decision. Crash diagnostics report
-the settled ordinary exit status whether the bridge closure or process exit was
+UML terminal settlement waits for the host process to exit and the console
+collector to finish before reporting the diagnostic tail. The kernel-owned exit
+status decides a panic; console text does not. Crash diagnostics report the
+settled ordinary exit status whether the bridge closure or process exit was
 seen first. A signaled host exit abandons the session instead of producing a
 guest crash or shutdown.
 

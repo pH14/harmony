@@ -94,7 +94,8 @@ same tuple before packaging or uploading. The artifact jobs also load the
 approved bundle and refuse self-consistent kernel, config and fixture edits
 through the production verifier. They bind the CLI recording to the reviewed
 kernel and run the guest panic, reserved exit-status and host-clone failure
-regressions; x86-64 also checks native FS and GS bases across restores. A
+regressions; x86-64 also replays the loaded-code witness against the approved
+bundle and checks native FS and GS bases across restores. A
 failed profile comparison retains both generated configs and profiles for
 diagnosis. Two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
