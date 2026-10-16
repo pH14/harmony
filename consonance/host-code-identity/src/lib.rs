@@ -7,7 +7,9 @@ pub struct LoaderEpoch([u64; 2]);
 mod sealed_static;
 
 #[cfg(target_os = "linux")]
-pub use sealed_static::sealed_static_executable_identity;
+pub use sealed_static::{
+    SealedStaticExecutableGuard as StrictExecutableGuard, sealed_static_executable_identity,
+};
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -731,7 +733,7 @@ mod macos {
 
     use crate::LoaderEpoch;
 
-    pub use strict::strict_macos_executable_identity;
+    pub use strict::{StrictMacosExecutableGuard, strict_macos_executable_identity};
 
     static IMAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
     static CALLBACKS_ACTIVE: AtomicU64 = AtomicU64::new(0);
@@ -1312,6 +1314,27 @@ mod macos {
 
 #[cfg(target_os = "macos")]
 pub use macos::{
-    loaded_executable_identity, loader_epoch, mapped_executable_sha256,
-    strict_macos_executable_identity,
+    StrictMacosExecutableGuard as StrictExecutableGuard, loaded_executable_identity, loader_epoch,
+    mapped_executable_sha256, strict_macos_executable_identity,
 };
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[derive(Clone, Copy, Debug)]
+pub struct StrictExecutableGuard;
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+impl StrictExecutableGuard {
+    pub fn capture() -> std::io::Result<(String, Self)> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "strict host admission is unavailable on this platform",
+        ))
+    }
+
+    pub fn check(self) -> std::io::Result<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "strict host admission is unavailable on this platform",
+        ))
+    }
+}

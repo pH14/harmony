@@ -9,7 +9,7 @@ use std::ptr;
 
 use sha2::{Digest, Sha256};
 
-use super::{copy_mapped, dyld_metadata, generation, generation_is_stable, refused};
+use super::{Generation, copy_mapped, dyld_metadata, generation, generation_is_stable, refused};
 
 type CfRef = *const c_void;
 
@@ -35,6 +35,15 @@ const OS_ONLY_LIBRARY_CONSTRAINT: [u8; 84] = [
     0x74, 0x65, 0x67, 0x6f, 0x72, 0x79, 0x02, 0x01, 0x01, 0x30, 0x09, 0x0c, 0x04, 0x76, 0x65, 0x72,
     0x73, 0x02, 0x01, 0x01,
 ];
+
+#[derive(Clone, Copy, Debug)]
+pub struct StrictMacosExecutableGuard {
+    status: u32,
+    cdhash: [u8; 20],
+    cache_uuid: [u8; 16],
+    epoch: u64,
+    images: u32,
+}
 
 struct OwnedCf(CfRef);
 
@@ -279,7 +288,7 @@ fn image_is_allowed(
     Ok(())
 }
 
-fn strict_shared_cache_uuid() -> io::Result<[u8; 16]> {
+fn strict_shared_cache_uuid() -> io::Result<([u8; 16], Generation)> {
     let start = generation()?;
     let dyld = dyld_metadata()?;
     if dyld.cache_uuid == [0; 16] {
@@ -326,33 +335,62 @@ fn strict_shared_cache_uuid() -> io::Result<[u8; 16]> {
             "macOS loaded images changed during strict admission",
         ));
     }
-    Ok(dyld.cache_uuid)
+    Ok((dyld.cache_uuid, start))
+}
+
+impl StrictMacosExecutableGuard {
+    pub fn capture() -> io::Result<(String, Self)> {
+        let (start_status, loaded_cdhash) = kernel_code_state()?;
+        let file = File::open(std::env::current_exe()?)?;
+        let static_cdhash = strict_static_cdhash(&file)?;
+        if loaded_cdhash != static_cdhash {
+            return Err(refused(
+                "macOS validated file differs from the loaded executable",
+            ));
+        }
+        let (cache_uuid, generation) = strict_shared_cache_uuid()?;
+        let (finish_status, finish_cdhash) = kernel_code_state()?;
+        if start_status != finish_status || loaded_cdhash != finish_cdhash {
+            return Err(refused(
+                "macOS loaded executable identity changed during admission",
+            ));
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"harmony-macos-strict-host-v1\0");
+        digest.update(loaded_cdhash);
+        digest.update(cache_uuid);
+        Ok((
+            format!("macos-strict-host-sha256-v1:{:x}", digest.finalize()),
+            Self {
+                status: start_status,
+                cdhash: loaded_cdhash,
+                cache_uuid,
+                epoch: generation.epoch,
+                images: generation.images,
+            },
+        ))
+    }
+
+    pub fn check(self) -> io::Result<()> {
+        let (start_status, start_cdhash) = kernel_code_state()?;
+        let (cache_uuid, generation) = strict_shared_cache_uuid()?;
+        let (finish_status, finish_cdhash) = kernel_code_state()?;
+        if start_status != finish_status
+            || start_cdhash != finish_cdhash
+            || start_status != self.status
+            || start_cdhash != self.cdhash
+            || cache_uuid != self.cache_uuid
+            || generation.epoch != self.epoch
+            || generation.images != self.images
+        {
+            return Err(refused("macOS loaded executable changed after admission"));
+        }
+        Ok(())
+    }
 }
 
 pub fn strict_macos_executable_identity() -> io::Result<String> {
-    let (start_status, loaded_cdhash) = kernel_code_state()?;
-    let file = File::open(std::env::current_exe()?)?;
-    let static_cdhash = strict_static_cdhash(&file)?;
-    if loaded_cdhash != static_cdhash {
-        return Err(refused(
-            "macOS validated file differs from the loaded executable",
-        ));
-    }
-    let cache_uuid = strict_shared_cache_uuid()?;
-    let (finish_status, finish_cdhash) = kernel_code_state()?;
-    if start_status != finish_status || loaded_cdhash != finish_cdhash {
-        return Err(refused(
-            "macOS loaded executable identity changed during admission",
-        ));
-    }
-    let mut digest = Sha256::new();
-    digest.update(b"harmony-macos-strict-host-v1\0");
-    digest.update(loaded_cdhash);
-    digest.update(cache_uuid);
-    Ok(format!(
-        "macos-strict-host-sha256-v1:{:x}",
-        digest.finalize()
-    ))
+    Ok(StrictMacosExecutableGuard::capture()?.0)
 }
 
 #[cfg(test)]
@@ -447,7 +485,11 @@ mod tests {
             let data = unsafe {
                 std::ptr::read_volatile((&raw const STRICT_DATA_PROBE).cast::<u8>().add(26))
             };
-            if let Some(handshake) = std::env::var_os("HARMONY_STRICT_MACOS_REPLACE_HANDSHAKE") {
+            let handshake = std::env::var_os("HARMONY_STRICT_MACOS_REPLACE_HANDSHAKE");
+            let runtime_guard = handshake
+                .as_ref()
+                .map(|_| StrictMacosExecutableGuard::capture().unwrap().1);
+            if let Some(handshake) = handshake {
                 let directory = std::path::Path::new(&handshake);
                 fs::write(directory.join("ready"), b"").unwrap();
                 for _ in 0..500 {
@@ -457,6 +499,9 @@ mod tests {
                     std::thread::sleep(std::time::Duration::from_millis(10));
                 }
                 assert!(directory.join("go").exists());
+            }
+            if let Some(runtime_guard) = runtime_guard {
+                println!("loaded_guard={}", runtime_guard.check().is_ok());
             }
             match strict_macos_executable_identity() {
                 Ok(identity) => {
@@ -572,6 +617,7 @@ mod tests {
         fs::write(handshake.join("go"), b"").unwrap();
         let status = child.wait_with_output().unwrap();
         let replaced = probe_output(&status);
+        assert!(replaced.contains("loaded_guard=true"), "{replaced}");
         assert!(replaced.contains("strict_rejected="), "{replaced}");
     }
 

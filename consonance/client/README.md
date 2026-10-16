@@ -34,16 +34,21 @@ from a write-sealed memfd. Admission rejects a program interpreter, dependent
 libraries, writable executable segments, unsupported executable mappings, and
 ambient loader overrides. It binds the sealed executable to the kernel-loaded
 mapping and measures the complete executable-map census, including the vDSO,
-each time the guard is checked. An ordinary GNU executable and a dynamic
-library whose constructor clears its loader variable are refused.
+each time the guard is checked. The full sealed-file digest is measured at
+admission and reused only while the file identity and seals remain stable;
+each recheck still compares every live executable byte with that file. An
+ordinary GNU executable and a dynamic library whose constructor clears its
+loader variable are refused.
 
 On macOS, admission requires the kernel-loaded main executable's CDHash to
 match a strictly validated signed image with hardened runtime, the Hypervisor
 entitlement, and the exact OS-only library constraint. Its loaded-image census
 must stay within the permitted OS cache. In-process sessions, UML sessions,
 session workers, cache operations, and service exchanges recheck strict host
-identity at their operation boundaries. A changed or unavailable identity
-fails the session before a result is accepted.
+identity at their operation boundaries. The macOS recheck uses kernel-loaded
+signing state and CDHash, dyld generation, and the shared-cache census;
+path-based worker launch repeats full static signature validation. A changed
+or unavailable identity fails the session before a result is accepted.
 
 Cache publication checks strict host identity after the index callback. If it
 changed, the index revokes the committed entry and any descendants before the

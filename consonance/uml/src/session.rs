@@ -158,7 +158,7 @@ pub struct Session {
 
 #[derive(Clone, Copy)]
 enum HostGuard {
-    Strict([u8; 32]),
+    Strict(host_code_identity::StrictExecutableGuard),
     #[cfg(test)]
     TestFixture,
 }
@@ -166,27 +166,17 @@ enum HostGuard {
 fn capture_host_guard() -> Result<HostGuard, SessionError> {
     #[cfg(target_os = "linux")]
     host_code_identity::reject_loader_overrides()?;
-    #[cfg(target_os = "linux")]
-    let identity = host_code_identity::sealed_static_executable_identity()?;
-    #[cfg(target_os = "macos")]
-    let identity = host_code_identity::strict_macos_executable_identity()?;
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    return Err(SessionError::Protocol(
-        "strict host admission is unavailable on this platform".into(),
-    ));
     Ok(HostGuard::Strict(
-        Sha256::digest(identity.as_bytes()).into(),
+        host_code_identity::StrictExecutableGuard::capture()?.1,
     ))
 }
 
 fn check_host_guard(expected: HostGuard) -> Result<(), SessionError> {
     match expected {
-        HostGuard::Strict(identity) => {
-            if !matches!(capture_host_guard()?, HostGuard::Strict(actual) if actual == identity) {
-                return Err(SessionError::Protocol(
-                    "host executable changed after UML session admission".into(),
-                ));
-            }
+        HostGuard::Strict(admitted) => {
+            #[cfg(target_os = "linux")]
+            host_code_identity::reject_loader_overrides()?;
+            admitted.check()?;
         }
         #[cfg(test)]
         HostGuard::TestFixture => {}

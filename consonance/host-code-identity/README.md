@@ -17,9 +17,12 @@ four required seals. A normal on-disk binary, dynamic loader, shared library,
 JIT, or manually created executable mapping fails closed. It is an admission
 measurement of the current process, not an attestation against arbitrary
 injected code or a guarantee about maps added after measurement. Callers must
-control launch and recheck at relevant operation boundaries. Existing Session
-and Recording callers still use their current identity until separately moved
-to this stricter launch boundary.
+control launch and recheck at relevant operation boundaries. The strict guard
+retains the admission-time full-file digest only while the same device, inode,
+length, and immutable seals remain. Each recheck still compares every live
+executable byte with the sealed file, measures the vDSO, and repeats the
+executable-map census. Public Session and Recording APIs require this strict
+host boundary.
 
 On Linux, `mapped_executable_sha256` reads the bytes currently mapped with
 execute permission in its own process through `/proc/self/mem`. It includes the
@@ -115,8 +118,10 @@ shared-cache UUID in a separate versioned domain. The OS-only library
 constraint is the kernel-enforced admission rule; the cache census verifies
 the mapped result. Hardened runtime and the exact entitlement set prevent
 library-validation, JIT, or writable-executable exceptions. Recheck the
-strict identity and `loader_epoch` at operation boundaries where loaded host
-code matters.
+kernel signing status, loaded CDHash, dyld generation, and shared-cache census
+at operation boundaries where loaded host code matters. The runtime guard
+does not reopen or revalidate the path on each operation; admission and each
+path-based worker launch perform the full static signature and policy check.
 
 The `LibraryConstraints` field is an internal Security.framework signing-info
 key, and the cache-range query is a dyld-private symbol. This implementation

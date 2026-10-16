@@ -37,6 +37,15 @@ struct AdmittedMaps {
     vsyscall: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct SealedStaticExecutableGuard {
+    identity: [u8; 32],
+    file_digest: [u8; 32],
+    device: u64,
+    inode: u64,
+    file_len: u64,
+}
+
 fn denied(message: &'static str) -> io::Error {
     io::Error::new(ErrorKind::PermissionDenied, message)
 }
@@ -386,7 +395,9 @@ fn file_seals(file: &File) -> io::Result<i32> {
     Ok(seals)
 }
 
-pub fn sealed_static_executable_identity() -> io::Result<String> {
+fn measure(
+    admitted: Option<&SealedStaticExecutableGuard>,
+) -> io::Result<SealedStaticExecutableGuard> {
     let path = fs::read_link("/proc/self/exe")?;
     let path = path
         .to_str()
@@ -402,8 +413,17 @@ pub fn sealed_static_executable_identity() -> io::Result<String> {
     if !metadata.is_file() {
         return Err(denied("sealed executable is not a regular file"));
     }
+    if let Some(admitted) = admitted
+        && (metadata.dev(), metadata.ino(), metadata.len())
+            != (admitted.device, admitted.inode, admitted.file_len)
+    {
+        return Err(denied("sealed executable changed after admission"));
+    }
     let segment = executable_segment(&file, metadata.len(), page_size()?)?;
-    let file_digest = hash_file(&file, metadata.len())?;
+    let file_digest = match admitted {
+        Some(admitted) => admitted.file_digest,
+        None => hash_file(&file, metadata.len())?,
+    };
     let maps_before = admit_maps(
         &fs::read_to_string("/proc/self/maps")?,
         path,
@@ -435,11 +455,43 @@ pub fn sealed_static_executable_identity() -> io::Result<String> {
             "executable mappings changed during identity measurement",
         ));
     }
-    Ok(format!("{IDENTITY_PREFIX}{:x}", digest.finalize()))
+    Ok(SealedStaticExecutableGuard {
+        identity: digest.finalize().into(),
+        file_digest,
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        file_len: metadata.len(),
+    })
+}
+
+impl SealedStaticExecutableGuard {
+    pub fn capture() -> io::Result<(String, Self)> {
+        let admitted = measure(None)?;
+        let mut text = String::from(IDENTITY_PREFIX);
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        for byte in admitted.identity {
+            text.push(char::from(HEX[usize::from(byte >> 4)]));
+            text.push(char::from(HEX[usize::from(byte & 15)]));
+        }
+        Ok((text, admitted))
+    }
+
+    pub fn check(self) -> io::Result<()> {
+        if measure(Some(&self))?.identity != self.identity {
+            return Err(denied("sealed executable changed after admission"));
+        }
+        Ok(())
+    }
+}
+
+pub fn sealed_static_executable_identity() -> io::Result<String> {
+    Ok(SealedStaticExecutableGuard::capture()?.0)
 }
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_env = "musl")]
+    use std::fs::OpenOptions;
     use std::io::Write;
 
     use super::*;
@@ -546,6 +598,53 @@ mod tests {
         );
         first[0x2100] ^= 1;
         assert_eq!(first, second);
+    }
+
+    #[cfg(target_env = "musl")]
+    #[inline(never)]
+    fn live_code_probe() -> u8 {
+        std::hint::black_box(73)
+    }
+
+    #[cfg(target_env = "musl")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn cached_guard_rejects_changed_live_code() {
+        const CHILD_ENV: &str = "HARMONY_CACHED_GUARD_LIVE_CODE_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("/proc/self/exe")
+                .args([
+                    "--exact",
+                    "sealed_static::tests::cached_guard_rejects_changed_live_code",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.contains("running 1 test")
+                    && stdout.contains("1 passed"),
+                "{}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (_, guard) = SealedStaticExecutableGuard::capture().unwrap();
+        let address = std::hint::black_box(live_code_probe as *const () as usize) as u64;
+        let memory = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/proc/self/mem")
+            .unwrap();
+        let mut original = [0_u8];
+        memory.read_exact_at(&mut original, address).unwrap();
+        memory.write_all_at(&[original[0] ^ 1], address).unwrap();
+        assert!(guard.check().is_err());
+        memory.write_all_at(&original, address).unwrap();
+        guard.check().unwrap();
     }
 
     #[test]
