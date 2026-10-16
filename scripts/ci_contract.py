@@ -590,6 +590,7 @@ HARMONY_HOST_COMPATIBILITY = Workflow(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("macOS Arm64", "pr", 15, select="rust_checks"),
         Job("Linux Arm64", "pr", 15, select="rust_checks"),
+        Job("Linux Arm64 Dissonance", "pr", 15, select="rust_checks"),
         Job("Linux Arm64 Qualification", "pr", 15, select="rust_checks"),
     ),
 )

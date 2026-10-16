@@ -362,7 +362,7 @@ class HostCompatibilityTests(unittest.TestCase):
     def test_host_jobs_are_selected_and_bounded_on_every_pull_request(self):
         self.assertEqual(
             [job.name for job in self.workflow.jobs if not job.selects],
-            ["macOS Arm64", "Linux Arm64", "Linux Arm64 Qualification"],
+            ["macOS Arm64", "Linux Arm64", "Linux Arm64 Dissonance", "Linux Arm64 Qualification"],
         )
         for job in self.workflow.jobs:
             with self.subTest(job=job.name):
@@ -382,6 +382,7 @@ class HostCompatibilityTests(unittest.TestCase):
             {
                 "macOS Arm64": "macos-14",
                 "Linux Arm64": "ubuntu-24.04-arm",
+                "Linux Arm64 Dissonance": "ubuntu-24.04-arm",
                 "Linux Arm64 Qualification": "ubuntu-24.04-arm",
             },
         )
@@ -398,6 +399,11 @@ class HostCompatibilityTests(unittest.TestCase):
             with self.subTest(job=key):
                 self.assertIn("cargo nextest run --workspace", commands[key])
                 self.assertIn("scripts/check-portable-tests.sh", commands[key])
+        self.assertNotIn("--manifest-path dissonance/Cargo.toml", commands["linux-arm64"])
+        self.assertIn("--manifest-path dissonance/Cargo.toml", commands["linux-arm64-dissonance"])
+        self.assertNotIn("cargo nextest run --workspace", commands["linux-arm64-dissonance"])
+        self.assertIn("scripts/check-portable-tests.sh", commands["linux-arm64-dissonance"])
+        self.assertEqual(self.data["env"]["DISSONANCE_PORTABLE_TEST_FLOOR"], 300)
         self.assertNotIn("qualify-host-sha256.py", commands["linux-arm64"])
         self.assertNotIn("cargo nextest run --workspace", commands["linux-arm64-qualification"])
         for key in ("macos-arm64", "linux-arm64-qualification"):
@@ -408,11 +414,16 @@ class HostCompatibilityTests(unittest.TestCase):
             step["with"] for step in self.hosts["linux-arm64"]["steps"]
             if step.get("uses") == "Swatinem/rust-cache@v2"
         )
+        dissonance_cache = next(
+            step["with"] for step in self.hosts["linux-arm64-dissonance"]["steps"]
+            if step.get("uses") == "Swatinem/rust-cache@v2"
+        )
         qualification_cache = next(
             step["with"] for step in self.hosts["linux-arm64-qualification"]["steps"]
             if step.get("uses") == "Swatinem/rust-cache@v2"
         )
-        self.assertNotEqual(portable_cache["shared-key"], qualification_cache["shared-key"])
+        self.assertEqual(len({cache["shared-key"] for cache in (
+            portable_cache, dissonance_cache, qualification_cache)}), 3)
         self.assertEqual(
             {key: value for key, value in portable_cache.items() if key != "shared-key"},
             {key: value for key, value in qualification_cache.items() if key != "shared-key"},

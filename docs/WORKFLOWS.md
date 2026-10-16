@@ -53,13 +53,15 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
-`Checks / Harmony Host Compatibility` selects both Linux Arm64 jobs through
-`rust_checks`. `Linux Arm64` compiles the backend and enforces the portable-test
-floor; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks. Each
-retains the 15-minute pull-request limit, giving qualification its own job
-budget. The two Linux Arm64 jobs use separate Rust build caches so each can
-save its own build artifacts on main. The macOS Arm64 job continues to run
-both groups of checks in one job.
+`Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
+`rust_checks`. `Linux Arm64` compiles the backend and runs the portable
+Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
+Dissonance tests; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks.
+Each suite enforces its own portable-test floor. Splitting the Dissonance suite
+keeps the full Arm test coverage within separate 15-minute pull-request jobs.
+The jobs use separate Rust build caches so each can save its own build artifacts
+on main. The macOS Arm64 job continues to run both portable suites and the
+qualification checks in one job.
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
