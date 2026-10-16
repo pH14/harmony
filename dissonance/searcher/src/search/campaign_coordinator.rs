@@ -784,13 +784,14 @@ where
             .index_of_id(pending_job.parent_id)
             .ok_or("completed job parent is no longer resident")?;
         let isolated_continuation = pending_job.selector.path == SelectorPath::Continuation;
+        let retained_ids = retained_archive_indexes(core, &decisions);
         if isolated_continuation {
             core.archive.record_isolated_continuation(parent_index);
         } else {
+            let yielded = core.archive.yielded(&retained_ids);
             core.archive
-                .record_selection(parent_index, &pending_job.selector);
+                .record_selection(parent_index, &pending_job.selector, yielded);
         }
-        let retained_ids = retained_archive_indexes(core, &decisions);
         let new_cell_descendant = retained_ids
             .iter()
             .any(|id| core.archive.opened_new_cell(*id));
@@ -1181,7 +1182,8 @@ where
                     duration_checkpoint_before,
                     suffix_limit,
                 }))?;
-                core.archive.record_selection(parent_index, &selector);
+                core.archive
+                    .record_selection(parent_index, &selector, false);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);

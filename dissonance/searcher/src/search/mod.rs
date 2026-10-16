@@ -11,6 +11,7 @@ pub mod empirical_steps;
 mod executable_identity;
 pub mod parallel;
 pub mod rand;
+mod raw_ucb;
 pub mod rollout;
 pub mod telemetry;
 mod weighted_set;

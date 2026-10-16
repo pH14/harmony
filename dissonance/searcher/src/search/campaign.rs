@@ -1419,6 +1419,42 @@ fn verify_selector_preference<K: ArchiveKey>(draw: &SelectorDraw) -> Result<(), 
     Ok(())
 }
 
+type ReplayTierDraws<G> =
+    BTreeMap<usize, (<<G as CampaignTypes>::Key as ArchiveKey>::Progress, u8)>;
+
+fn settle_replay_tier_draws<G: Workload + ?Sized>(
+    core: &mut CoordinatorCore<G>,
+    pending: &mut VecDeque<usize>,
+    settled: &mut ReplayTierDraws<G>,
+    before: Option<usize>,
+) -> Result<(), Box<dyn Error>> {
+    while let Some(slot) = pending
+        .front()
+        .copied()
+        .filter(|slot| before.is_none_or(|before| *slot < before))
+    {
+        pending.pop_front();
+        settled.insert(slot, core.archive.tier_draw()?);
+    }
+    Ok(())
+}
+
+fn verify_replay_tier_draw<K: ArchiveKey>(
+    draw: &SelectorDraw,
+    parent: K,
+    expected: Option<(K::Progress, u8)>,
+) -> Result<(), Box<dyn Error>> {
+    match (draw.tier_rank, expected) {
+        (None, None) => Ok(()),
+        (Some(rank), Some((progress, expected_rank)))
+            if rank == expected_rank && parent.progress() == progress =>
+        {
+            Ok(())
+        }
+        _ => Err("recorded tier draw differs from the rebuilt tier selection".into()),
+    }
+}
+
 #[must_use]
 pub fn derive_selection_seed(campaign_seed: u64) -> u64 {
     let digest = Sha256::digest(campaign_seed.to_le_bytes());
@@ -4182,6 +4218,8 @@ where
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
     let mut replay_job_tier_limits = BTreeMap::<usize, usize>::new();
+    let mut replay_tier_pending = VecDeque::<usize>::new();
+    let mut replay_tier_draws = ReplayTierDraws::<G>::new();
     let mut replay_selections = BTreeMap::<usize, (u64, u64)>::new();
     let mut replay_planned_clock = 0_u64;
     let mut last_admitted = None::<(u64, usize)>;
@@ -4195,6 +4233,9 @@ where
         let (energy, continuation) =
             continuation_attempt(&mut core, header.campaign_seed, u64::try_from(job_slot)?);
         let actual_continuation = continuation.is_some();
+        if !actual_continuation {
+            replay_tier_pending.push_back(job_slot);
+        }
         replay_continuation_energy.insert(job_slot, energy);
         if let Some(continuation) = continuation {
             replay_continuations.insert(job_slot, continuation);
@@ -4402,8 +4443,21 @@ where
                 }
                 verify_selector_annotation(&skip.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&skip.selector, observed_progress_tiers.len())?;
+                settle_replay_tier_draws(
+                    &mut core,
+                    &mut replay_tier_pending,
+                    &mut replay_tier_draws,
+                    Some(usize::try_from(skip.reservation)?),
+                )?;
+                let skip_tier = core.archive.tier_draw()?;
+                verify_replay_tier_draw(
+                    &skip.selector,
+                    core.archive.entries[parent_index].key,
+                    Some(skip_tier),
+                )?;
                 verify_selector_preference::<G::Key>(&skip.selector)?;
-                core.archive.record_selection(parent_index, &skip.selector);
+                core.archive
+                    .record_selection(parent_index, &skip.selector, false);
                 core.archive.maintain_memory_budget()?;
                 core.archive.prepare_selection();
                 counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
@@ -4435,6 +4489,13 @@ where
                 }
                 let replay_job_slot = usize::try_from(job.reservation)?;
                 replay_skips.admit(job.reservation);
+                settle_replay_tier_draws(
+                    &mut core,
+                    &mut replay_tier_pending,
+                    &mut replay_tier_draws,
+                    None,
+                )?;
+                let job_tier = replay_tier_draws.remove(&replay_job_slot);
                 let selector_tier_limit = replay_job_tier_limits
                     .remove(&replay_job_slot)
                     .ok_or("recorded job has no rebuilt selection tier bound")?;
@@ -4469,6 +4530,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
+                let parent_key = core.archive.entries[parent_index].key;
                 let ((snapshot, replay, snapshot_id), parent_milestones) = {
                     let entry = core
                         .archive
@@ -4699,6 +4761,7 @@ where
                 verify_selector_annotation(&job.selector, header.archive_entry_limit)?;
                 verify_selector_observed_tiers(&job.selector, selector_tier_limit)?;
                 verify_selector_preference::<G::Key>(&job.selector)?;
+                verify_replay_tier_draw(&job.selector, parent_key, job_tier)?;
                 if job.selector.path == SelectorPath::Continuation {
                     core.archive.record_isolated_continuation(parent_index);
                     let new_cell_descendant = retained_archive_indexes(&core, &decisions)
@@ -4719,8 +4782,10 @@ where
                     );
                     core.archive.add_continuation_execution_work(execution_work);
                 } else {
-                    core.archive.record_selection(parent_index, &job.selector);
                     let retained_ids = retained_archive_indexes(&core, &decisions);
+                    let yielded = core.archive.yielded(&retained_ids);
+                    core.archive
+                        .record_selection(parent_index, &job.selector, yielded);
                     core.archive
                         .record_selection_outcome(parent_index, !retained_ids.is_empty());
                 }
@@ -4790,6 +4855,9 @@ where
                         u64::try_from(next_slot)?,
                     );
                     let actual_continuation = continuation.is_some();
+                    if !actual_continuation {
+                        replay_tier_pending.push_back(next_slot);
+                    }
                     replay_continuation_energy.insert(next_slot, energy);
                     if let Some(continuation) = continuation {
                         replay_continuations.insert(next_slot, continuation);
@@ -8801,36 +8869,42 @@ mod tests {
             source: source_archive.clone(),
             checkpoint: None,
         };
-        let config = CampaignConfig {
-            campaign_seed: 196,
-            workers: 3,
-            execution_budget: 8,
-            host: "test".to_owned(),
-            wall_budget: None,
-            stop_rollout_on_objective: true,
-            stop_campaign_on_objective: false,
-            archive_entry_limit: 16,
-            window: 3,
-            memory_budget_mib: None,
-            materialize_final_artifacts: true,
-            run: (),
-            mixture: DrawMixture::AlphabetOnly,
-            retention: RetentionPolicy::Unprobed,
-            objective_witness_path: None,
-        };
-        let mut stream = Vec::new();
-        run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None).unwrap();
-        replay_campaign_checkpointed(&workload, &stream, Some(&source_archive), None).unwrap();
-        let mut records = std::str::from_utf8(&stream)
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(records[1]["event"], "skip");
-        assert_eq!(records[1]["reservation"], 1);
-        assert_eq!(records[1]["suffix_limit"], 1);
-        assert_eq!(records[2]["event"], "job");
-        records[1]["suffix_limit"] = serde_json::json!(2);
+        let (mut records, skip) = (0..256)
+            .find_map(|campaign_seed| {
+                let config = CampaignConfig {
+                    campaign_seed,
+                    workers: 3,
+                    execution_budget: 8,
+                    host: "test".to_owned(),
+                    wall_budget: None,
+                    stop_rollout_on_objective: true,
+                    stop_campaign_on_objective: false,
+                    archive_entry_limit: 16,
+                    window: 3,
+                    memory_budget_mib: None,
+                    materialize_final_artifacts: true,
+                    run: (),
+                    mixture: DrawMixture::AlphabetOnly,
+                    retention: RetentionPolicy::Unprobed,
+                    objective_witness_path: None,
+                };
+                let mut stream = Vec::new();
+                run_campaign_checkpointed(&workload, &config, &origin, &mut stream, None).unwrap();
+                replay_campaign_checkpointed(&workload, &stream, Some(&source_archive), None)
+                    .unwrap();
+                let records = std::str::from_utf8(&stream)
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+                    .collect::<Vec<_>>();
+                let first_job = records.iter().position(|record| record["event"] == "job")?;
+                let skip = records[..first_job]
+                    .iter()
+                    .position(|record| record["event"] == "skip" && record["suffix_limit"] == 1)?;
+                Some((records, skip))
+            })
+            .expect("a campaign with a one-action skip in its initial window");
+        records[skip]["suffix_limit"] = serde_json::json!(2);
         let forged = records
             .iter()
             .map(serde_json::to_string)

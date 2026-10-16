@@ -9,7 +9,7 @@ mod twin_dragons;
 
 use nes_games::arcade::snapshot_digest;
 use searcher::search::{
-    archive::{Archive, ArchiveCandidate, ArchiveKey},
+    archive::{Archive, ArchiveCandidate, ArchiveKey, SelectorDraw},
     rand::RomuDuoJrRand,
 };
 use serde::{Deserialize, Serialize};
@@ -233,6 +233,7 @@ pub struct Explorer {
 
 struct Job {
     parent: usize,
+    selection: SelectorDraw,
     actions: Vec<Action>,
     frame: u32,
 }
@@ -365,7 +366,6 @@ impl Explorer {
                 .archive
                 .select_parent(&mut self.rng)
                 .map_err(js_error)?;
-            self.archive.record_selection(parent, &selection);
             let prefix = self.history(parent)?;
             let start: u32 = prefix.iter().map(|a| u32::from(a.frames)).sum();
             let mut frame = start;
@@ -390,6 +390,7 @@ impl Explorer {
             );
             self.pending.push_back(Job {
                 parent,
+                selection,
                 actions,
                 frame: start,
             });
@@ -434,6 +435,7 @@ impl Explorer {
         let mut current_parent = job.parent;
         let mut suffix = Vec::new();
         let mut productive = false;
+        let mut retained = Vec::new();
         let mut ended = false;
         let mut taken: Vec<(Vec<Action>, &[u8])> = job.actions[..planned]
             .iter()
@@ -484,6 +486,7 @@ impl Explorer {
             }
             productive |= self.archive.live_entry_count() > retained_before;
             if let Some(id) = id {
+                retained.push(id);
                 current_parent = id;
                 suffix.clear();
             }
@@ -501,6 +504,9 @@ impl Explorer {
         if !ended && transition.is_empty() && steps.len() / stride != job.actions.len() {
             return Err(js_error("rollout result ended early"));
         }
+        let yielded = self.archive.yielded(&retained);
+        self.archive
+            .record_selection(job.parent, &job.selection, yielded);
         self.archive
             .record_selection_outcome(job.parent, productive);
         self.enforce_snapshot_budget();
@@ -674,15 +680,15 @@ mod tests {
         let choices: Vec<_> = (0..32)
             .map(|_| {
                 let (id, draw) = archive.select_parent(&mut rng).unwrap();
-                archive.record_selection(id, &draw);
+                archive.record_selection(id, &draw, false);
                 id
             })
             .collect();
         assert_eq!(
             choices,
             [
-                2, 1, 2, 2, 1, 2, 2, 1, 1, 2, 2, 1, 2, 2, 2, 1, 2, 1, 0, 2, 2, 0, 2, 0, 2, 2, 0, 2,
-                2, 1, 1, 0
+                2, 1, 0, 2, 1, 0, 2, 2, 1, 1, 0, 0, 2, 2, 2, 2, 1, 1, 1, 1, 0, 0, 0, 0, 2, 2, 2, 2,
+                2, 2, 2, 2
             ]
         );
     }
