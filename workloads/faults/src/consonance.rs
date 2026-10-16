@@ -1696,6 +1696,10 @@ pub fn from_paths(
 mod tests {
     use super::*;
     use crate::target::FaultOperation;
+    use consonance_client::cache::{
+        LocalIndex,
+        extent::{extent_len, read_extent, write_extent},
+    };
 
     #[test]
     fn uml_launch_carries_the_admitted_profile_identity() {
@@ -1859,14 +1863,25 @@ mod tests {
 
         fn publish_snapshot(
             &self,
-            _: &dyn CacheIndex,
-            _: Namespace,
-            _: &[u8],
-            _: Option<(SnapId, &Lease)>,
-            _: SnapId,
-            _: u64,
+            index: &dyn CacheIndex,
+            namespace: Namespace,
+            key: &[u8],
+            parent: Option<(SnapId, &Lease)>,
+            target: SnapId,
+            cost: u64,
         ) -> Result<Lease, Box<dyn Error>> {
-            unreachable!()
+            let target_commitment = *self.snapshots.get(&target.0).ok_or("unknown snapshot")?;
+            let sidecar = target.0.to_le_bytes();
+            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
+            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            Ok(index.publish(
+                namespace,
+                key,
+                parent.map(|(_, lease)| lease),
+                extent,
+                target_commitment,
+                cost,
+            )?)
         }
 
         fn import_cached(
@@ -1971,6 +1986,84 @@ mod tests {
             abandoned: false,
             telemetry: LiveTelemetry::default(),
         }
+    }
+
+    fn publishing_live(
+        index: &Arc<LocalIndex>,
+        namespace: Namespace,
+        target: SnapId,
+        commitment: [u8; 32],
+    ) -> Live {
+        let mut live = timed_out_live();
+        live.session = Box::new(TimedOutRestore {
+            hash: Some(commitment),
+            events: BTreeMap::new(),
+            current: target.0,
+            run_hashes: None,
+            snapshots: BTreeMap::from([(target.0, commitment)]),
+            moment: 0,
+            next_snap: target.0,
+        });
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: Arc::clone(index) as Arc<dyn CacheIndex>,
+                namespace,
+            }),
+        );
+        live
+    }
+
+    #[test]
+    fn divergent_publication_fails_before_sealing_a_campaign_link() {
+        use std::num::NonZeroU16;
+
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::new(&[b"fault-campaign"]);
+        let actions = [FaultOperation::Wait(NonZeroU16::MIN).into()];
+        let mut first = publishing_live(&index, namespace, SnapId(2), [0x11; 32]);
+        let mut second = publishing_live(&index, namespace, SnapId(3), [0x22; 32]);
+        assert_eq!(
+            first.seal_link(&actions, SnapId(2), 10, 0).unwrap().snap,
+            SnapId(2)
+        );
+        let error = second.seal_link(&actions, SnapId(3), 10, 0).unwrap_err();
+        assert!(error.contains("publish snapshot: snapshot cache key"));
+        assert!(error.contains(&format!("{namespace:?}")));
+        assert!(error.contains(&format!("{:?}", actions_key(&actions))));
+        assert_eq!(second.chain.links(), 1);
+        assert_eq!(index.stats().entries, 1);
+        assert_eq!(index.stats().duplicates, 0);
+        assert_eq!(second.session.state_hash().unwrap(), [0x22; 32]);
+    }
+
+    #[test]
+    fn equal_publication_with_distinct_extents_seals_a_campaign_link() {
+        use std::num::NonZeroU16;
+
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::new(&[b"fault-campaign"]);
+        let actions = [FaultOperation::Wait(NonZeroU16::MIN).into()];
+        let mut first = publishing_live(&index, namespace, SnapId(2), [0x11; 32]);
+        let mut second = publishing_live(&index, namespace, SnapId(3), [0x11; 32]);
+        first.seal_link(&actions, SnapId(2), 10, 0).unwrap();
+        assert_eq!(
+            second.seal_link(&actions, SnapId(3), 10, 0).unwrap().snap,
+            SnapId(3)
+        );
+        assert_eq!(second.chain.links(), 2);
+        assert_eq!(index.stats().entries, 1);
+        assert_eq!(index.stats().duplicates, 1);
+        let held = index.lookup(namespace, &actions_key(&actions)).unwrap();
+        let extents = index.chain(&held).unwrap();
+        assert_eq!(
+            read_extent(extents[0].bytes()).unwrap().sidecar,
+            &2u64.to_le_bytes()
+        );
+        index.release(held);
     }
 
     #[derive(Debug)]
