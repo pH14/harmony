@@ -88,6 +88,7 @@ jobs:
           set -euo pipefail
           nix run .#uml-images -- --output "$RUNNER_TEMP/uml-first"
           nix run .#uml-images -- --output "$RUNNER_TEMP/uml-second"
+          sha256sum "$RUNNER_TEMP"/uml-{first,second}/{config,linux,initramfs.cpio.gz,profile.json}
           for name in linux config initramfs.cpio.gz profile.json; do
             cmp "$RUNNER_TEMP/uml-first/$name" "$RUNNER_TEMP/uml-second/$name"
           done
@@ -96,6 +97,18 @@ jobs:
               "consonance/uml/reviewed-profiles/${{ matrix.architecture }}.json"
           done
           sha256sum "$RUNNER_TEMP"/uml-first/*
+      - name: Preserve profile mismatch evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uml-profile-mismatch-${{ github.sha }}-${{ matrix.architecture }}
+          path: |
+            ${{ runner.temp }}/uml-first/config
+            ${{ runner.temp }}/uml-first/profile.json
+            ${{ runner.temp }}/uml-second/config
+            ${{ runner.temp }}/uml-second/profile.json
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
