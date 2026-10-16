@@ -122,10 +122,12 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           shared-key: consonance-uml-qualify-${{ matrix.architecture }}
       - name: Build the qualification binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: |
           set -euo pipefail
-          cargo build --release --locked -p uml --bin harmony-uml-qualify
-          install -m 0755 target/release/harmony-uml-qualify "$RUNNER_TEMP/uml-first/"
+          cargo build --release --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p uml --bin harmony-uml-qualify
+          install -m 0755 target/${{ matrix.architecture }}-unknown-linux-musl/release/harmony-uml-qualify "$RUNNER_TEMP/uml-first/"
       - name: Admit the approved bundle and refuse self-consistent mutations
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first

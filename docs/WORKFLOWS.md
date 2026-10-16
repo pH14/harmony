@@ -133,12 +133,14 @@ qualification, and release runtime qualification jobs use that runner only for
 their Linux Cargo test steps. This test-only cleanup does not change production
 identity admission or Miri execution.
 
-`UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
-sequence as the runner's ordinary UID, natively and under Docker's default
-seccomp profile with every capability dropped. A failing suite does not stop
-the others, and the job fails if any suite fails. The qualifier denies ptrace
-and KVM ioctls to itself and every guest, and fails when the host is root or
-has effective capabilities.
+`UML Qualification — <Target>` runs three suites of the static-musl
+`harmony-uml-qualify` in sequence as the runner's ordinary UID. The qualifier
+copies itself into a fully sealed executable memfd before using the public
+Recording and Session APIs, both natively and under Docker's default seccomp
+profile with every capability dropped. A failing suite does not stop the
+others, and the job fails if any suite fails. The qualifier denies ptrace and
+KVM ioctls to itself and every guest, and fails when the host is root or has
+effective capabilities.
 
 - `launch` runs repeated boots, a hanging guest, the console limit, child
   cleanup, a refused seccomp filter and guest init exits.

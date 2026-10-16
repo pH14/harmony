@@ -22,6 +22,18 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
+    def test_uml_qualifier_artifact_is_static_musl_on_both_architectures(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        build = next(step for step in jobs["artifacts"]["steps"]
+                     if step.get("name") == "Build the qualification binary")
+        self.assertEqual(build["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"],
+                         "musl-gcc")
+        self.assertIn("--target ${{ matrix.architecture }}-unknown-linux-musl", build["run"])
+        self.assertIn("target/${{ matrix.architecture }}-unknown-linux-musl/release/harmony-uml-qualify",
+                      build["run"])
+
     def test_uml_launcher_refuses_dynamic_loaded_code_once(self):
         import yaml
 
