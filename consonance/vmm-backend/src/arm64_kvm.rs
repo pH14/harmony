@@ -2560,6 +2560,8 @@ mod tests {
             let mut target = FakeKvm::new();
             target.vcpu_init().unwrap();
             let before = save_vcpu(&target).unwrap();
+            let before_attrs = target.vgic_attrs.clone();
+            target.calls.clear();
             assert!(
                 matches!(
                     restore_vcpu(&mut target, &invalid),
@@ -2572,6 +2574,8 @@ mod tests {
                 before,
                 "restore mutated {name}"
             );
+            assert!(target.calls.is_empty(), "restore wrote {name}");
+            assert_eq!(target.vgic_attrs, before_attrs, "restore wrote {name}");
         }
     }
 
