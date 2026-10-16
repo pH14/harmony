@@ -39,6 +39,7 @@ const PLAYER_MINI: usize = 0x044f;
 const GAME_STATE: usize = 0x0498;
 const SCROLL_X: usize = 0x04a2;
 const SCROLL_Y: usize = 0x04a6;
+const SCROLL_Y_SUBPIXEL: usize = 0x04a8;
 const PAUSED: usize = 0x05b5;
 const DEATH: u8 = 0x01;
 const LEVEL_DONE_POLL_FRAMES: u32 = 15;
@@ -52,6 +53,7 @@ pub struct FamidashGameplayState {
     pub y: i32,
     pub scroll_x: i32,
     pub camera_y: i32,
+    pub camera_subpixel: u8,
     pub velocity_y: i16,
     pub gamemode: u8,
     pub gravity: bool,
@@ -852,6 +854,7 @@ pub fn decode_state(wram: &[u8]) -> Result<FamidashMechanicalState, MachineError
             y: camera_y + i32::from(byte(wram, PLAYER_Y + 1)?),
             scroll_x,
             camera_y,
+            camera_subpixel: byte(wram, SCROLL_Y_SUBPIXEL)?,
             velocity_y: i16::from_le_bytes(word(wram, PLAYER_VELOCITY_Y)?.to_le_bytes()),
             gamemode: byte(wram, GAMEMODE)?,
             gravity: byte(wram, PLAYER_GRAVITY)? != 0,

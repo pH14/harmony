@@ -18,13 +18,14 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "famidash_level_band_256_cell_32x16_mode_motion_earliest_v3";
+    "famidash_level_band_512_cell_32x16_mode_motion_camera_subpixel_eighths_earliest_v4";
 pub const REPLACEMENT_IDENTIFIER: &str = "earliest_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_tap_1_4_or_hold_6_40_v1";
 
 const CELL_WIDTH: i32 = 32;
 const CELL_HEIGHT: i32 = 16;
-const PROGRESS_BAND: i32 = 256;
+const PROGRESS_BAND: i32 = 512;
+const CAMERA_PHASE_WIDTH: u8 = 32;
 
 pub type FamidashArchive =
     Archive<ButtonChord, FamidashArchiveKey, FamidashMilestones, FamidashSnapshot>;
@@ -39,12 +40,13 @@ pub struct FamidashArchiveKey {
     pub mini: bool,
     pub dual: bool,
     pub motion: u8,
+    pub camera_phase: u8,
 }
 
 impl ArchiveKey for FamidashArchiveKey {
     type Place = (u8, i32, i32, u8, bool, bool, bool);
     type Progress = (u8, i32);
-    type Identity = u8;
+    type Identity = (u8, u8);
 
     fn place(self) -> Self::Place {
         (
@@ -63,7 +65,7 @@ impl ArchiveKey for FamidashArchiveKey {
     }
 
     fn identity(self) -> Self::Identity {
-        self.motion
+        (self.motion, self.camera_phase)
     }
 
     fn capacity() -> usize {
@@ -108,6 +110,7 @@ pub fn archive_key(state: FamidashMechanicalState) -> Option<FamidashArchiveKey>
         mini: gameplay.mini,
         dual: gameplay.dual,
         motion: gameplay.vertical_motion(),
+        camera_phase: gameplay.camera_subpixel / CAMERA_PHASE_WIDTH,
     })
 }
 
@@ -258,9 +261,9 @@ mod tests {
     }
 
     #[test]
-    fn progress_bands_are_256_pixels_of_distance() {
-        assert_eq!(archive_key(state(255, 897, 0)).unwrap().progress(), (0, 0));
-        assert_eq!(archive_key(state(256, 897, 0)).unwrap().progress(), (0, 1));
+    fn progress_bands_are_512_pixels_of_distance() {
+        assert_eq!(archive_key(state(511, 897, 0)).unwrap().progress(), (0, 0));
+        assert_eq!(archive_key(state(512, 897, 0)).unwrap().progress(), (0, 1));
         assert_eq!(
             archive_key(state(-160, 897, 0)).unwrap().progress(),
             (0, -1)
@@ -277,7 +280,24 @@ mod tests {
             [state(500, 850, 0), rising, falling].map(|state| archive_key(state).unwrap());
         assert_eq!(rest.place(), up.place());
         assert_eq!(up.place(), down.place());
-        assert_eq!([rest.identity(), up.identity(), down.identity()], [0, 1, 2]);
+        assert_eq!(
+            [rest.identity(), up.identity(), down.identity()],
+            [(0, 0), (1, 0), (2, 0)]
+        );
+    }
+
+    #[test]
+    fn camera_subpixel_eighths_are_distinct_identities() {
+        let at = |subpixel| {
+            let mut state = state(8_448, 751, 0);
+            state.gameplay.as_mut().unwrap().camera_subpixel = subpixel;
+            archive_key(state).unwrap()
+        };
+        let [low, high, next] = [0x60, 0x7f, 0xb4].map(at);
+        assert_eq!(low.place(), next.place());
+        assert_eq!(low.identity(), high.identity());
+        assert_ne!(high.identity(), next.identity());
+        assert_eq!([low.identity(), next.identity()], [(0, 3), (0, 5)]);
     }
 
     #[test]

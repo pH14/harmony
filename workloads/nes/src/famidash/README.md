@@ -39,6 +39,7 @@ Addresses come from the debug symbols of the 1.2.8 build.
 | `$044D`, `$044F` | Flipped gravity and mini size |
 | `$04A2` | Horizontal scroll, signed 32-bit |
 | `$04A6`, `$04A7` | Vertical scroll: fine row 0 to 239, then nametable row |
+| `$04A8` | Vertical scroll sub-pixel |
 
 World x is the scroll plus the player's screen x. World y is the nametable row
 times 240 plus the fine row plus the player's screen y. Level percent is the
@@ -68,15 +69,33 @@ are part of the recorded input, so replays and films follow the same path.
 The action's observation list ends with the arrival in the next level.
 
 The archive key is the level, world x and y, game mode, gravity, size, dual
-mode and the sign of the vertical velocity. The place is the level and the
-32 × 16-pixel cell with the mode fields, progress is the level and the
-256-pixel band of world x, and the identity is the vertical motion. Each place
-keeps one entry, the one furthest left. The level scrolls at a fixed speed, so
-x is also time, and a later arrival in the same cell has had fewer frames to
-line up the next jump. Many later arrivals are already doomed whatever the
-player presses. The milestones are the levels cleared, the percent of the
-level being played, the finished game and a death. The progress watermark
-orders levels cleared, then percent, then world x.
+mode, the sign of the vertical velocity and the camera's vertical sub-pixel
+`$04A8` in eighths. The place is the level and the 32 × 16-pixel cell with the
+mode fields, progress is the level and the 512-pixel band of world x, and the
+identity is the vertical motion with the camera eighth. Each identity at a
+place keeps one entry, the one furthest left. The level scrolls at a fixed
+speed, so x is also time, and a later arrival in the same cell has had fewer
+frames to line up the next jump. Many later arrivals are already doomed
+whatever the player presses.
+
+The camera sub-pixel changes only while the camera scrolls vertically, and
+world y leaves it out. Collision uses the camera's whole pixel, and the game
+drops the sub-pixel when the camera reaches the top of the level, which moves
+the player by that fraction. Two states in the same cell can therefore reach a
+wall or the top of the screen one frame apart. On one Clubstep route a resting
+cube passes the looping shaft near x 8,450 only when the sub-pixel is 0x56 to
+0x9A, and the value is set about 2,400 pixels earlier. Each camera eighth
+keeps its own entry, so a later arrival with another value is kept.
+
+Each progress band is one search tier. In Clubstep's shaft, from x 8,450 to
+8,960, the stalled runs held only doomed states on the flipped-gravity route.
+That route kept reaching new cells, so its tiers never went dry. The route that
+passes leaves it near x 7,690 as a UFO in normal gravity. With 512-pixel bands
+that branch is one or two tiers below the shaft and still gets draws.
+
+The milestones are the levels cleared, the percent of the level being played,
+the finished game and a death. The progress watermark orders levels cleared,
+then percent, then world x.
 
 ## Running
 
@@ -92,7 +111,7 @@ EOF
 cargo run --release --manifest-path workloads/nes/Cargo.toml --bin nes-eval -- request.json OUT
 ```
 
-Seeds 1 to 5 clear Stereo Madness in 6,800 to 9,000 executions, about 2
+Seeds 1 to 5 clear Stereo Madness in 7,700 to 10,600 executions, 1.4 to 3.7
 seconds on 8 workers, and each victory witness replays. `nes-film` accepts
 `--game famidash` with `--level` for a run started at another level, and
 renders the witness.
