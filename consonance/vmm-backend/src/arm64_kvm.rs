@@ -38,7 +38,17 @@ const GICR_SGI_BASE: u64 = 0x1_0000;
 const GICD_CTLR: u64 = 0x0000;
 pub(crate) const GICD_IIDR: u64 = 0x0008;
 const GICD_TYPER2: u64 = 0x000c;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
 const GICD_IIDR_REVISION_MASK: u32 = 0xf << 12;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
 const GICD_IIDR_PINNED_REVISION: u32 = 2;
 const GICD_CTLR_REPRESENTED: u64 = 1 << 1;
 const GICD_CTLR_FIXED: u64 = (1 << 4) | (1 << 6);
@@ -91,6 +101,11 @@ const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 const ICC_CTLR_GUEST_WRITABLE: u64 = 0b11;
 const ICC_CTLR_PRIBITS_SHIFT: u32 = 8;
 
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
 pub(crate) fn pinned_vgic_iidr(native: u32) -> u32 {
     (native & !GICD_IIDR_REVISION_MASK) | (GICD_IIDR_PINNED_REVISION << 12)
 }
