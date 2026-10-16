@@ -5324,6 +5324,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
     fn oversized_live_handler_allows_replay_recovery() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
