@@ -31,6 +31,32 @@ class StructureTests(unittest.TestCase):
                 if "scripts/test-loaded-code-identity.py" in step.get("run", "")]
         self.assertEqual(runs, [("launcher", "python3 scripts/test-loaded-code-identity.py")])
 
+    def test_reviewed_uml_live_cases_use_sealed_musl_tests(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        artifacts = jobs["artifacts"]
+        steps = {step.get("name"): step for step in artifacts["steps"]}
+        panic = steps["Report a reviewed kernel panic through the public UML client"]
+        for architecture in ("X86_64", "AARCH64"):
+            self.assertEqual(
+                panic["env"][f"CARGO_TARGET_{architecture}_UNKNOWN_LINUX_MUSL_RUNNER"],
+                "${{ github.workspace }}/scripts/linux-sealed-test-runner.py",
+            )
+        self.assertIn("--target ${{ matrix.architecture }}-unknown-linux-musl", panic["run"])
+        self.assertIn("reviewed_kernel_panic_is_a_public_client_crash", panic["run"])
+        fsgsbase = steps["Check native FS and GS bases across reused and fresh restores"]
+        self.assertEqual(fsgsbase["if"], "matrix.architecture == 'x86_64'")
+        self.assertEqual(
+            fsgsbase["env"]["CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER"],
+            "${{ github.workspace }}/scripts/linux-sealed-test-runner.py",
+        )
+        self.assertIn("--target x86_64-unknown-linux-musl", fsgsbase["run"])
+        self.assertIn("direct_fs_gs_bases_survive_reused_and_fresh_restore", fsgsbase["run"])
+        for step in (panic, fsgsbase):
+            self.assertIn("grep -Fxq 'running 1 test'", step["run"])
+            self.assertIn("grep -Eq 'test result: ok\\. 1 passed;'", step["run"])
+
     def test_linux_strict_host_exercises_public_apis_from_sealed_musl(self):
         import yaml
 
@@ -51,11 +77,25 @@ class StructureTests(unittest.TestCase):
         commands = step["run"]
         for expected in (
             "-p consonance-client --features in-process,uml --lib",
+            "-p host-code-identity --lib",
             "-p uml --lib",
-            "session::tests::sealed_host_admits_public_session_identity -- --exact",
-            "session::worker::tests::sealed_host_reexecs_a_public_worker -- --exact",
-            "session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown -- --exact",
+            "grep -Fxq 'running 1 test'",
+            "grep -Eq 'test result: ok\\. 1 passed;'",
+            "client_test session::tests::sealed_host_admits_public_session_identity",
+            "client_test session::worker::tests::sealed_host_reexecs_a_public_worker",
+            "client_test session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown",
+            "client_test session::uml::tests::host_signal_abandons_instead_of_reporting_guest_shutdown",
+            "client_test session::uml::tests::host_clone_status_abandons_instead_of_reporting_guest_shutdown",
+            "client_test session::uml::tests::capture_timeout_abandons_with_a_typed_watchdog_error",
+            "client_test session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error",
+            "client_test session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session",
+            "client_test session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session",
+            "client_test session::worker::tests::worker_launcher_refuses_a_child_without_image_hello",
+            "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
+            "client_test image_identity::sealed_guard_tests::changed_live_code_revokes_a_published_lease",
+            "sealed_static::tests::cached_guard_rejects_changed_live_code -- --exact",
             "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
+            "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, commands)
@@ -86,11 +126,82 @@ class StructureTests(unittest.TestCase):
             "--features consonance-host --bin harmony-consonance-host",
             "scripts/test-consonance-host-package.py",
             "--platform linux",
+            "target/debug/harmony check --offline --json",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, commands)
+        self.assertIn("Check the paired CLI on Arm64",
+                      [step.get("name") for step in job["steps"]])
         fixture = (ROOT / "scripts/test-consonance-host-package.py").read_text()
         self.assertIn('package="faults"', fixture)
+
+    def test_linux_cli_consumers_restore_a_paired_strict_host(self):
+        import yaml
+
+        builder = (ROOT / "scripts/build-consonance-cli-pair.sh").read_text()
+        self.assertIn("--manifest-path \"$manifest\"", builder)
+        self.assertIn("--target x86_64-unknown-linux-musl", builder)
+        self.assertIn("--features consonance-host --bin harmony-consonance-host", builder)
+        self.assertIn('source="$target/x86_64-unknown-linux-musl/release/$binary"', builder)
+
+        def workflow(path):
+            return yaml.safe_load((ROOT / path).read_text())["jobs"]
+
+        def commands(job):
+            return "\n".join(str(step.get("run", "")) for step in job["steps"])
+
+        oci = workflow(ci_contract.HARMONY_OCI_CHECKS.path)
+        package = oci["postgresql-cli-package"]
+        self.assertIn("PostgreSQL CLI Package", [job.name for job in ci_contract.HARMONY_OCI_CHECKS.jobs])
+        self.assertEqual(package["timeout-minutes"], 45)
+        self.assertIn("scripts/build-consonance-cli-pair.sh paired-cli", commands(package))
+        self.assertIn("scripts/test-consonance-host-package.py", commands(package))
+        self.assertIn("postgresql-cli-package", oci["postgresql"]["needs"])
+        self.assertIn("postgresql-cli-package-${{ github.run_id }}",
+                      str(oci["postgresql"]["steps"]))
+        self.assertIn("chmod +x target/release/harmony target/release/harmony-consonance-host",
+                      commands(oci["postgresql"]))
+        self.assertNotIn("cargo build", commands(oci["postgresql"]))
+        self.assertIn("scripts/build-consonance-cli-pair.sh target/release",
+                      commands(oci["nested-runtime"]))
+
+        languages = workflow(ci_contract.HARMONY_LANGUAGES_CHECKS.path)
+        self.assertIn("Language CLI Tools", [job.name for job in ci_contract.HARMONY_LANGUAGES_CHECKS.jobs])
+        self.assertEqual(languages["tools"]["timeout-minutes"], 45)
+        self.assertIn("scripts/build-consonance-cli-pair.sh paired-cli", commands(languages["tools"]))
+        for consumer in ("check", "uml-command"):
+            with self.subTest(consumer=consumer):
+                job = languages[consumer]
+                self.assertIn("tools", job["needs"])
+                downloads = [step.get("with", {}).get("name") for step in job["steps"]
+                             if step.get("uses", "").startswith("actions/download-artifact")]
+                self.assertIn("language-cli-tools", downloads)
+                self.assertIn("chmod +x target/release/harmony target/release/harmony-consonance-host",
+                              commands(job))
+                self.assertNotIn("cargo build", commands(job))
+
+        for registered, artifact, consumer in (
+            (ci_contract.HARMONY_HISTORICAL_BENCHMARKS, "historical-tools", "search"),
+            (ci_contract.HARMONY_UML_CAMPAIGN, "uml-campaign-tools", "search"),
+        ):
+            with self.subTest(workflow=registered.name):
+                jobs = workflow(registered.path)
+                self.assertIn("scripts/build-consonance-cli-pair.sh tools", commands(jobs["tools"]))
+                uploads = [step.get("with", {}).get("path") for step in jobs["tools"]["steps"]
+                           if step.get("uses", "").startswith("actions/upload-artifact")]
+                self.assertIn("tools", uploads)
+                downloads = [step.get("with", {}).get("name") for step in jobs[consumer]["steps"]
+                             if step.get("uses", "").startswith("actions/download-artifact")]
+                self.assertTrue(any(artifact in name for name in downloads))
+                self.assertIn("chmod +x tools/harmony tools/harmony-consonance-host",
+                              commands(jobs[consumer]))
+
+        nested = workflow(ci_contract.CONSONANCE_NESTED_HOST.path)["nested-host"]
+        nested_commands = commands(nested)
+        self.assertIn('"$history/source/Cargo.toml"', nested_commands)
+        self.assertIn("archived source predates the paired Consonance host", nested_commands)
+        self.assertIn("scripts/build-consonance-cli-pair.sh target-cli/release", nested_commands)
+        self.assertIn("nested-host-evidence/harmony-consonance-host", nested_commands)
 
     def test_release_guest_archive_carries_verified_runtime_pair(self):
         import yaml
@@ -503,7 +614,7 @@ class HostCompatibilityTests(unittest.TestCase):
         for key in ("macos-arm64", "linux-arm64-qualification"):
             with self.subTest(job=key):
                 self.assertIn("scripts/qualify-host-sha256.py --check", commands[key])
-                self.assertIn("check --offline --json", commands[key])
+                self.assertNotIn("check --offline --json", commands[key])
         portable_cache = next(
             step["with"] for step in self.hosts["linux-arm64"]["steps"]
             if step.get("uses") == "Swatinem/rust-cache@v2"
@@ -537,6 +648,7 @@ class HostCompatibilityTests(unittest.TestCase):
             "--library-constraint scripts/macos-os-only-library-constraint.coderequirement",
             "scripts/test-consonance-host-package.py",
             "--platform macos",
+            "target/debug/harmony check --offline --json",
         ):
             with self.subTest(required=required):
                 self.assertIn(required, commands)

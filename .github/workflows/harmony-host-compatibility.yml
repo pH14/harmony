@@ -101,22 +101,6 @@ jobs:
           python3 consonance/vmm-core/qualification/qualify-restore.py --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
-      - name: Start the assembled CLI on this host
-        run: |
-          set -euo pipefail
-          cargo run -q -p harmony-cli -- --help
-          # Preflight exits non-zero on a host that cannot run a guest, and
-          # a hosted runner has no nested hypervisor. This job checks that the CLI
-          # runs and identifies the host, so the readiness verdict is reported.
-          status=0
-          cargo run -q -p harmony-cli -- check --offline --json >check.json || status=$?
-          cat check.json
-          test "$(jq -r .os check.json)" = macos
-          test "$(jq -r .architecture check.json)" = aarch64
-          jq -e 'has("ready") and has("blockers")' check.json >/dev/null
-          jq -r '"backend: \(.backend); ready: \(.ready)"' check.json
-          echo "check exit: ${status}"
-
   macos-consonance-host-package:
     name: macOS Consonance Host Package
     needs: scope
@@ -150,6 +134,17 @@ jobs:
             --frontend target/debug/harmony \
             --host target/debug/harmony-consonance-host \
             --platform macos
+      - name: Report strict host readiness on macOS
+        run: |
+          set -euo pipefail
+          status=0
+          target/debug/harmony check --offline --json >check.json || status=$?
+          cat check.json
+          test "$(jq -r .os check.json)" = macos
+          test "$(jq -r .architecture check.json)" = aarch64
+          jq -e 'has("ready") and has("blockers")' check.json >/dev/null
+          jq -r '"backend: \(.backend); ready: \(.ready)"' check.json
+          echo "check exit: ${status}"
 
   linux-arm64:
     name: Linux Arm64
@@ -247,18 +242,3 @@ jobs:
           python3 consonance/vmm-core/qualification/qualify-restore.py --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
-      - name: Start the assembled CLI on this host
-        run: |
-          set -euo pipefail
-          cargo run -q -p harmony-cli -- --help
-          # Preflight exits non-zero on a host that cannot run a guest, and
-          # a hosted runner has no usable /dev/kvm. This job checks that the CLI
-          # runs and identifies the host, so the readiness verdict is reported.
-          status=0
-          cargo run -q -p harmony-cli -- check --offline --json >check.json || status=$?
-          cat check.json
-          test "$(jq -r .os check.json)" = linux
-          test "$(jq -r .architecture check.json)" = aarch64
-          jq -e 'has("ready") and has("blockers")' check.json >/dev/null
-          jq -r '"backend: \(.backend); ready: \(.ready)"' check.json
-          echo "check exit: ${status}"

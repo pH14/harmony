@@ -62,6 +62,49 @@ jobs:
       - name: Prepare the exact runtime
         uses: ./.github/actions/exact-platform-runtime
 
+  postgresql-cli-package:
+    name: PostgreSQL CLI Package
+    needs: scope
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.rust_checks == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - name: Determine whether this check is applicable
+        id: scope
+        uses: ./.github/actions/ci-scope
+        with:
+          kind: harmony_oci
+      - name: Install pinned toolchain and musl linker
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-oci-postgresql-cli-package
+      - name: Build and verify the paired CLI
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          bash scripts/build-consonance-cli-pair.sh paired-cli
+          python3 scripts/test-consonance-host-package.py \
+            --frontend paired-cli/harmony \
+            --host paired-cli/harmony-consonance-host --platform linux
+      - uses: actions/upload-artifact@v4
+        if: steps.scope.outputs.enabled == 'true'
+        with:
+          name: postgresql-cli-package-${{ github.run_id }}
+          path: paired-cli
+          if-no-files-found: error
+          retention-days: 1
+
   container-execution:
     name: Container Execution
     needs: [scope, exact-runtime-artifacts]
@@ -124,8 +167,8 @@ jobs:
 
   postgresql:
     name: PostgreSQL
-    needs: [scope, exact-runtime-artifacts]
-    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.rust_checks == 'true' }}
+    needs: [scope, exact-runtime-artifacts, postgresql-cli-package]
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'push') && needs.scope.outputs.rust_checks == 'true' && needs.postgresql-cli-package.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -196,9 +239,15 @@ jobs:
           test -s oci-images/pgcic-14.3.oci
           test -s oci-images/MANIFEST.sha256
           (cd oci-images && sha256sum -c MANIFEST.sha256)
-      - name: Build the CLI
+      - name: Restore the paired CLI
         if: steps.scope.outputs.enabled == 'true'
-        run: cargo build --locked --release -p harmony-cli
+        uses: actions/download-artifact@v4
+        with:
+          name: postgresql-cli-package-${{ github.run_id }}
+          path: target/release
+      - name: Restore executable permissions
+        if: steps.scope.outputs.enabled == 'true'
+        run: chmod +x target/release/harmony target/release/harmony-consonance-host
       - name: Search PostgreSQL faults through Consonance
         if: steps.scope.outputs.enabled == 'true'
         run: |
@@ -331,8 +380,8 @@ jobs:
           test -d "$layout"
           test -s "$layout/index.json"
           test -s "$layout/oci-layout"
-      - name: Build the CLI
-        run: cargo build --locked --release -p harmony-cli 2>&1 | tee nested-runtime-report/cli-build.log
+      - name: Build the paired CLI
+        run: bash scripts/build-consonance-cli-pair.sh target/release 2>&1 | tee nested-runtime-report/cli-build.log
       - name: Grant nested KVM access
         run: |
           set -euo pipefail

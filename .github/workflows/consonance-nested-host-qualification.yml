@@ -115,9 +115,9 @@ jobs:
         run: |
           sudo apt-get update
           if [[ "$INPUTS_CACHED" == true ]]; then
-            sudo apt-get install -y --no-install-recommends cpio busybox-static
+            sudo apt-get install -y --no-install-recommends cpio busybox-static musl-tools
           else
-            sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static dwarves
+            sudo apt-get install -y --no-install-recommends build-essential flex bison bc libelf-dev libssl-dev cpio xz-utils busybox-static dwarves musl-tools
           fi
           rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
           rustup default "$HARMONY_RUST_TOOLCHAIN"
@@ -167,12 +167,21 @@ jobs:
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           git fetch --depth 1 origin "$commit"
           git archive "$commit" | tar -x -C "$history/source"
+          python3 - "$history/source/cli/Cargo.toml" <<'PY'
+          import sys
+          import tomllib
+
+          with open(sys.argv[1], 'rb') as manifest:
+              features = tomllib.load(manifest).get('features', {})
+          if 'consonance-host' not in features:
+              raise SystemExit('archived source predates the paired Consonance host and cannot be reproduced under strict admission')
+          PY
           mv "$inputs/nested-driver.oci" "$history/nested-driver.oci"
           printf '%s\n' "$commit" >"$history/rebuilt-source-commit.txt"
-          CARGO_TARGET_DIR="$PWD/target" cargo build --locked --release \
-            --manifest-path "$history/source/Cargo.toml" -p harmony-cli
-          cp target/release/harmony "$history/harmony"
-          sha256sum "$history/harmony" "$history/nested-driver.oci/index.json" \
+          bash scripts/build-consonance-cli-pair.sh \
+            "$history" "$history/source/Cargo.toml" "$PWD/target"
+          sha256sum "$history/harmony" "$history/harmony-consonance-host" \
+            "$history/nested-driver.oci/index.json" \
             "$history/nested-driver.oci/oci-layout" "$history/nested-driver.oci"/blobs/sha256/* \
             "$inputs/bzImage-nested-host" "$inputs/initramfs-oci.cpio.gz" \
             >"$history/provenance.sha256"
@@ -264,7 +273,7 @@ jobs:
         run: |
           set -euo pipefail
           others=$(python3 -c 'import os; cpus = sorted(os.sched_getaffinity(0)); print(",".join(map(str, cpus[1:] or cpus)))')
-          setsid nohup bash -c 'taskset -c "$1" cargo build --locked --release -p harmony-cli --target-dir target-cli \
+          setsid nohup bash -c 'taskset -c "$1" bash scripts/build-consonance-cli-pair.sh target-cli/release Cargo.toml target-cli \
             >nested-host-evidence/harmony-cli-build.log 2>&1; echo $? >"$2"' _ "$others" "$RUNNER_TEMP/harmony-cli-build.status" \
             </dev/null >/dev/null 2>&1 &
       - name: Refresh hardware access after runner setup
@@ -371,7 +380,8 @@ jobs:
             exit 1
           fi
           cp target-cli/release/harmony nested-host-evidence/harmony
-          sha256sum target-cli/release/harmony \
+          cp target-cli/release/harmony-consonance-host nested-host-evidence/harmony-consonance-host
+          sha256sum target-cli/release/harmony target-cli/release/harmony-consonance-host \
             consonance/harmony-linux/build/x86_64/bzImage-nested-host \
             consonance/harmony-linux/build/x86_64/initramfs-oci.cpio.gz \
             consonance/harmony-linux/build/x86_64/nested-driver.oci/index.json \

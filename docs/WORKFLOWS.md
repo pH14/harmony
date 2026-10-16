@@ -65,21 +65,24 @@ separate 15-minute pull-request jobs. Both package jobs prove that a
 disk-backed host is refused, the paired frontend enters the sealed host, and
 native QuickNES remains on the frontend. The package fixture uses the Faults
 runner on both Linux architectures. A separate x86-64 musl job runs the public
-Session, worker reexec, UML session and Recording tests through
+Session, worker reexec and failure recovery, UML shutdown, timeout, branch and
+handler tests, live-code revocation, Recording, and terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
-fully sealed executable memfd before execution. The musl positive tests fail
-if strict host admission is unavailable, so a missing runner cannot produce a
-green skip.
+fully sealed executable memfd before execution. All 15 exact tests require
+one test to start and pass. The musl positive tests fail if strict host
+admission is unavailable, so a missing runner cannot produce a green skip.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
-host admission, paired frontend routing, and native QuickNES routing. It runs
-on pull requests so a broken macOS package is caught before release.
+host admission, paired frontend routing, native QuickNES routing, and CLI
+readiness. It runs on pull requests so a broken macOS package is caught before
+release. The Arm64 Linux package job likewise checks readiness with the musl
+host beside its frontend.
 
 `Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
 `rust_checks`. `Linux Arm64` compiles the backend and runs the portable
 Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
-Dissonance tests; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks.
+Dissonance tests; `Linux Arm64 Qualification` runs the SHA-256 checks.
 Each suite enforces its own portable-test floor. Splitting the Dissonance suite
 keeps the full Arm test coverage within separate 15-minute pull-request jobs.
 The jobs use separate Rust build caches so each can save its own build artifacts
@@ -181,7 +184,9 @@ Every job declares a trigger class.
   `merge_group`. Artifact-build prerequisites are the exceptions, each capped
   at 45 minutes for a cold build: `UML Artifacts — <Architecture>` builds the UML kernels,
   `Exact Runtime Artifacts` builds the exact guest runtime,
-  `Language Guest Runtime` builds the guest for the language checks, and
+  `Language Guest Runtime` builds the guest for the language checks,
+  `PostgreSQL CLI Package` and `Language CLI Tools` build the paired native
+  frontend and static Consonance host once for their consumers, and
   `Language Image — <Language>` builds each language workload image. Their
   consumers keep the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` registers
   each prerequisite; it does not permit full searches on pull requests.
@@ -212,9 +217,17 @@ budgets are registered separately and apply only to the named prerequisite.
 `Language Guest Runtime` builds the exact guest runtime when no cached copy
 exists. Each `Language Image — <Language>` job builds one language layer from
 source when its cache misses, then composes the current shared runtime onto it.
-Both have a 45-minute artifact budget. Each `Check — <Language>` job keeps the
-15-minute bound. A language layer's cache key is the hash of its own recipe
+`Language CLI Tools` builds and verifies the native frontend and static host
+once for all language and UML command consumers; the 15-minute jobs only
+restore the pair. The scoped `PostgreSQL CLI Package` does the same before the
+15-minute PostgreSQL search. These artifact jobs each have a 45-minute cold
+build budget. A language layer's cache key is the hash of its own recipe
 inputs. Weekly runs and `rebuild_images` dispatches rebuild every layer.
+
+Scheduled OCI, historical-bug, UML campaign, and nested-host workflows also
+build or restore both executables together. A nested historical rebuild uses
+the archived source for both binaries; an archive predating the strict host
+fails explicitly rather than replaying with a different or dynamic host.
 
 ## Change selection
 
