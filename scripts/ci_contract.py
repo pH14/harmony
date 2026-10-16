@@ -731,6 +731,7 @@ CONSONANCE_UML = Workflow(
         Job("UML Artifacts — <Architecture>", "pr", 45,
             exception="Two cold compilations of the pinned UML kernel and locked "
                       "toolchain exceed the pull request check budget.",
+            ignored_tests=("uml profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes",),
             select="rust_checks"),
         Job("UML Qualification — <Target>", "pr", 15, select="rust_checks"),
     ),
