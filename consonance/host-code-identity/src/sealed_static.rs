@@ -444,15 +444,15 @@ mod tests {
 
     use super::*;
 
-    fn put16(bytes: &mut [u8], offset: usize, value: u16) {
+    fn write_u16_le(bytes: &mut [u8], offset: usize, value: u16) {
         bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn put32(bytes: &mut [u8], offset: usize, value: u32) {
+    fn write_u32_le(bytes: &mut [u8], offset: usize, value: u32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 
-    fn put64(bytes: &mut [u8], offset: usize, value: u64) {
+    fn write_u64_le(bytes: &mut [u8], offset: usize, value: u64) {
         bytes[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
     }
 
@@ -460,8 +460,8 @@ mod tests {
         let mut bytes = vec![0u8; 0x4000];
         bytes[..4].copy_from_slice(b"\x7fELF");
         bytes[4..7].copy_from_slice(&[2, 1, 1]);
-        put16(&mut bytes, 16, 3);
-        put16(
+        write_u16_le(&mut bytes, 16, 3);
+        write_u16_le(
             &mut bytes,
             18,
             if cfg!(target_arch = "aarch64") {
@@ -470,29 +470,29 @@ mod tests {
                 62
             },
         );
-        put32(&mut bytes, 20, 1);
-        put64(&mut bytes, 32, 64);
-        put16(&mut bytes, 52, 64);
-        put16(&mut bytes, 54, 56);
-        put16(&mut bytes, 56, if interpreter { 4 } else { 3 });
-        put32(&mut bytes, 64, 1);
-        put32(&mut bytes, 68, 5);
-        put64(&mut bytes, 72, 0x1000);
-        put64(&mut bytes, 80, 0x1000);
-        put64(&mut bytes, 96, 0x1000);
-        put64(&mut bytes, 104, 0x1000);
-        put32(&mut bytes, 120, 1);
-        put32(&mut bytes, 124, 6);
-        put64(&mut bytes, 128, 0x2000);
-        put64(&mut bytes, 136, 0x2000);
-        put64(&mut bytes, 152, 0x1000);
-        put64(&mut bytes, 160, 0x1000);
-        put32(&mut bytes, 176, 2);
-        put64(&mut bytes, 184, 0x2800);
-        put64(&mut bytes, 208, 32);
-        put64(&mut bytes, 0x2800, if needed { 1 } else { 0 });
+        write_u32_le(&mut bytes, 20, 1);
+        write_u64_le(&mut bytes, 32, 64);
+        write_u16_le(&mut bytes, 52, 64);
+        write_u16_le(&mut bytes, 54, 56);
+        write_u16_le(&mut bytes, 56, if interpreter { 4 } else { 3 });
+        write_u32_le(&mut bytes, 64, 1);
+        write_u32_le(&mut bytes, 68, 5);
+        write_u64_le(&mut bytes, 72, 0x1000);
+        write_u64_le(&mut bytes, 80, 0x1000);
+        write_u64_le(&mut bytes, 96, 0x1000);
+        write_u64_le(&mut bytes, 104, 0x1000);
+        write_u32_le(&mut bytes, 120, 1);
+        write_u32_le(&mut bytes, 124, 6);
+        write_u64_le(&mut bytes, 128, 0x2000);
+        write_u64_le(&mut bytes, 136, 0x2000);
+        write_u64_le(&mut bytes, 152, 0x1000);
+        write_u64_le(&mut bytes, 160, 0x1000);
+        write_u32_le(&mut bytes, 176, 2);
+        write_u64_le(&mut bytes, 184, 0x2800);
+        write_u64_le(&mut bytes, 208, 32);
+        write_u64_le(&mut bytes, 0x2800, if needed { 1 } else { 0 });
         if interpreter {
-            put32(&mut bytes, 232, 3);
+            write_u32_le(&mut bytes, 232, 3);
         }
         bytes
     }
@@ -527,7 +527,7 @@ mod tests {
         assert!(parsed(&elf(true, false)).is_err());
         assert!(parsed(&elf(false, true)).is_err());
         let mut bytes = elf(false, false);
-        put32(&mut bytes, 68, 7);
+        write_u32_le(&mut bytes, 68, 7);
         assert!(parsed(&bytes).is_err());
     }
 
