@@ -520,6 +520,11 @@ first guest entry. Restore checks reserved bits, writes both halves, and
 requires exact readback. The ignored
 `guest_gicr_bases_survive_reused_and_fresh_restore` test compares guest MMIO
 readback after uninterrupted execution, an in-place restore, and a cold restore.
+On GICv4.1 hosts with direct SGIs, `GICD_CTLR.nASSGIreq` can hold guest-writable
+state. The record represents only distributor Group-1 enable, so capture refuses
+bit 8 and any other distributor-control bits outside the fixed and represented
+set. Imported records with unrepresented bits are rejected before device
+mutation. A fake-KVM regression exercises the fail-closed boundary.
 The single-vCPU machine supports SPI routing only to affinity zero. The
 userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
 write inside its in-kernel VGIC, so capture reads both 32-bit KVM device-attribute

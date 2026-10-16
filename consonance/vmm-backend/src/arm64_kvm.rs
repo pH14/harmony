@@ -36,6 +36,8 @@ pub(crate) const KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
 pub(crate) const KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const GICD_CTLR: u64 = 0x0000;
+const GICD_CTLR_REPRESENTED: u64 = 1 << 1;
+const GICD_CTLR_FIXED: u64 = (1 << 4) | (1 << 6);
 const GIC_IGROUPR: u64 = 0x0080;
 const GIC_ISENABLER: u64 = 0x0100;
 const GIC_ICENABLER: u64 = 0x0180;
@@ -766,9 +768,14 @@ fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
         timer_intid: HARMONY_TIMER_INTID,
         ..Arm64GicState::default()
     };
-    s.gicd_ctlr =
-        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b10)
-            .map_err(|_| BackendError::InvalidState)?;
+    let distributor_control = k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)?;
+    if distributor_control & !(GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED) != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with untracked GICD_CTLR bits",
+        });
+    }
+    s.gicd_ctlr = u32::try_from(distributor_control & GICD_CTLR_REPRESENTED)
+        .map_err(|_| BackendError::InvalidState)?;
     s.gicr_propbaser = read_vgic_redist_u64(k, GICR_PROPBASER)?;
     s.gicr_pendbaser = read_vgic_redist_u64(k, GICR_PENDBASER)?;
     s.ctlr = vgic_cpu_sysreg(k, ICC_CTLR_EL1)?;
@@ -860,7 +867,7 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.impl_spis != HARMONY_GIC_IMPL_SPIS
         || s.timer_hz != HARMONY_TIMER_HZ
         || s.timer_intid != HARMONY_TIMER_INTID
-        || s.gicd_ctlr & !0b10 != 0
+        || u64::from(s.gicd_ctlr) & !GICD_CTLR_REPRESENTED != 0
         || s.gicr_propbaser & GICR_PROPBASER_RESERVED != 0
         || s.gicr_pendbaser & GICR_PENDBASER_RESERVED != 0
         || s.cntv_ctl != 0
@@ -2480,6 +2487,53 @@ mod tests {
                 validate_vgic_state(&invalid),
                 Err(BackendError::InvalidState)
             ));
+        }
+    }
+
+    #[test]
+    fn vgic_distributor_control_rejects_untracked_bits_before_snapshot_or_restore() {
+        let mut source = FakeKvm::new();
+        for untracked in [1u64 << 8, 1, 1 << 31] {
+            source
+                .set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                    GICD_CTLR,
+                    false,
+                    GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED | untracked,
+                )
+                .unwrap();
+            assert!(matches!(
+                save_vgic(&source),
+                Err(BackendError::Unsupported {
+                    what: "save vGIC with untracked GICD_CTLR bits"
+                })
+            ));
+        }
+
+        source
+            .set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                GICD_CTLR,
+                false,
+                GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED,
+            )
+            .unwrap();
+        let saved = save_vgic(&source).unwrap();
+        for untracked in [1 << 8, 1] {
+            let invalid = Arm64GicState {
+                gicd_ctlr: saved.gicd_ctlr | untracked,
+                ..saved
+            };
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+            let mut target = FakeKvm::new();
+            assert!(matches!(
+                restore_vgic(&mut target, &invalid),
+                Err(BackendError::InvalidState)
+            ));
+            assert!(target.calls.is_empty());
         }
     }
 
