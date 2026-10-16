@@ -160,6 +160,16 @@ class ContentStateTests(unittest.TestCase):
         self.assertNotIn("truncated", state)
 
 
+class CiPolicyTests(unittest.TestCase):
+    def test_extended_pr_check_budget_reaches_semantic_judge(self) -> None:
+        policy = LINTS._ci_policy()
+        self.assertEqual(policy["version"], 2)
+        self.assertEqual(policy["extended_check_budgets"], [
+            {"workflow": path, "job": name, "minutes": minutes}
+            for (path, name), minutes in ci_contract.PR_EXTENDED_CHECK_BUDGETS.items()
+        ])
+
+
 class ContentWindowTests(RequiresApiKey):
     def setUp(self):
         super().setUp()

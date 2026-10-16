@@ -194,9 +194,8 @@ Every job declares a trigger class.
   frontend and static Consonance host once for their consumers, and
   `Language Image — <Language>` builds each language workload image. Their
   consumers keep the 15-minute budget. The separate `C Investigation` job has
-  a 35-minute exception for its bounded branch and search continuation check:
-  two GitHub runs reached successive search phases but exhausted six- and
-  twelve-minute step limits after the sealed-host identity checks were added.
+  a 35-minute exception for its bounded branch and search continuation under
+  sealed-host identity checks.
   `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
   named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
