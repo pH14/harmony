@@ -12340,6 +12340,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn full_and_sparse_import_poisoned_when_factory_aliases_live_service() {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::{Arc, Mutex};
