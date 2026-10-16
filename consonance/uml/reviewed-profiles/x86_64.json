@@ -2,11 +2,11 @@
   "architecture": "x86_64",
   "config": {
     "name": "config",
-    "sha256": "b8ee9a55c61cb30bd6061a5066f2ce82c9369817b296e1789fbfbeda2c5da002"
+    "sha256": "79d41d786ac0217a4f022abe2e6ec966621bd8c35f8d37b92cfe6f34b6fdf99a"
   },
   "executable": {
     "name": "linux",
-    "sha256": "ffc19add3023459511eed11e064f75c086a928b5ed2117e6842482ca89bd7a49"
+    "sha256": "113aa3c6ebb8d9ad0d86c6fe6775fb7a8e7d00eb1299d1deafaa62bdbfd5e401"
   },
   "host_libraries": [],
   "kernel_version": "6.18.35",
