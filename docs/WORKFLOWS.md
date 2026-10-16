@@ -53,6 +53,22 @@ what owns it, and the linter rejects them.
 | `Release / Harmony` | `release.yml` | push (version tags) |
 | `Maintenance / Repository` | `repository-maintenance.yml` | schedule, workflow_dispatch |
 
+The release CLI archive contains both `harmony` and `harmony-consonance-host`.
+Linux builds the Consonance host as a static musl executable; the frontend
+copies and seals it before execution. macOS signs the separate host with the
+Hypervisor entitlement, hardened runtime, and an operating-system-only library
+constraint. Each release build tests the paired launch before it packages the
+two executables together, so the frontend can hand Consonance commands to the
+admitted host.
+`Checks / Harmony` builds both Linux executables and proves that a disk-backed
+host is refused, the paired frontend enters the sealed host, and native
+QuickNES remains on the frontend.
+`Checks / Harmony Host Compatibility` has a separate macOS-14 package job
+that builds the frontend and Consonance host, signs the host with the release
+entitlement and operating-system-only library constraint, then checks signed
+host admission, paired frontend routing, and native QuickNES routing. It runs
+on pull requests so a broken macOS package is caught before release.
+
 `Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
 `rust_checks`. `Linux Arm64` compiles the backend and runs the portable
 Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
@@ -61,7 +77,7 @@ Each suite enforces its own portable-test floor. Splitting the Dissonance suite
 keeps the full Arm test coverage within separate 15-minute pull-request jobs.
 The jobs use separate Rust build caches so each can save its own build artifacts
 on main. The macOS Arm64 job continues to run both portable suites and the
-qualification checks in one job.
+qualification checks in one job; the signed-package check has its own cache.
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
@@ -79,13 +95,11 @@ gh workflow run consonance-analysis.yml --ref <branch> -f job=miri-whole-crate -
 `Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
 arm64. Artifact and qualification checks run on both architectures. `UML Launcher`
 lints and tests `uml` and `host-code-identity` on x86-64, then runs
-`scripts/test-loaded-code-identity.py` on Linux. That public regression checks
-an ordinary `$ORIGIN` linked library A/B change, a constructor-cleared preload,
-replay refusal, and admission refusal for anonymous executable memory. Without
-`--profile`, it checks host loaded-code identity without booting a guest and
-confirms that a self-consistent synthetic UML profile is rejected. Pass
-`--profile <approved-values-profile>` to also verify divergent UML entropy and
-event hashes locally. `UML Artifacts —
+`scripts/test-loaded-code-identity.py` on Linux. That public regression builds
+ordinary `$ORIGIN` linked library A/B variants, a constructor-cleared preload,
+an anonymous executable mapping, and read-only library variants. Each must be
+refused by the strict public Session identity before it can record or replay a
+guest. The witness needs no guest profile. `UML Artifacts —
 <Architecture>` builds the profile twice from the locked Nix toolchain and
 fails unless every artifact is byte-identical and both profile manifests
 match the source-reviewed architecture-specific tuple embedded in the
@@ -94,8 +108,7 @@ same tuple before packaging or uploading. The artifact jobs also load the
 approved bundle and refuse self-consistent kernel, config and fixture edits
 through the production verifier. They bind the CLI recording to the reviewed
 kernel and run the guest panic, reserved exit-status and host-clone failure
-regressions; x86-64 also replays the loaded-code witness against the approved
-bundle and checks native FS and GS bases across restores. A
+regressions; x86-64 also checks native FS and GS bases across restores. A
 failed profile comparison retains both generated configs and profiles for
 diagnosis. Two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
