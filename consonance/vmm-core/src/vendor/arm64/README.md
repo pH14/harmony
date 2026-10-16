@@ -88,7 +88,9 @@ architectural comparator in the parent module compares vCPU and canonical GIC
 fields independently of snapshot hashes. Context ID, auxiliary memory
 attributes, translation results, cache selection, and auxiliary fault status
 registers survive capture and restore and affect both full and component
-identities. VM-state version 8 carries these fields explicitly.
+identities. The guest-writable `MDCCINT_EL1` interrupt controls also survive
+capture and restore and enter architectural comparison, text output, and both
+state hashes. Arm VM-state version 11 carries that debug field explicitly.
 
 The runtime arm64 contract extends the fixed CPU baseline and host ASID width
 with the three SMCCC workaround firmware levels observed by the backend after

@@ -162,6 +162,32 @@ fn guest_system_registers_survive_reused_and_fresh_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_mdccint_survives_fresh_restore() {
+    let program = [
+        0xd2a8_0000,
+        0xd2a1_2001,
+        0xd510_0200,
+        0xd280_0020,
+        0xf900_0020,
+        0xd530_0200,
+        0xf900_0020,
+        0x1400_0000,
+    ];
+    let mut source = Guest::new(live_backend(), &program);
+    assert_eq!(source.next_store(), 1);
+    let saved = source.save();
+    assert_eq!(saved.debug.mdccint_el1, 1 << 30);
+    assert_eq!(source.next_store(), 1 << 30);
+    drop(source);
+
+    let mut restored = Guest::new(live_backend(), &program);
+    restored.restore(&saved);
+    assert_eq!(restored.next_store(), 1 << 30);
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn guest_gic_cpu_interface_survives_fresh_restore() {
     for (name, msr, mrs, value) in [
         ("BPR0", 0xd518_c860, 0xd538_c860, 7),
