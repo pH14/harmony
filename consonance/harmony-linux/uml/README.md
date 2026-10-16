@@ -25,12 +25,15 @@ sequence of guest events.
 
 The launcher still creates a private, randomly named host tempdir for each
 boot. Both owned UML kernels omit that path from their normal startup console
-messages, because the captured console becomes replay evidence. Launch
+messages so repeated boots on one host have comparable diagnostic logs. Launch
 qualification compares the complete console bytes across repeated boots of
-one profile. The arm64 kernel also omits the host stack and stub addresses
-from its startup message; Docker may refuse UML's attempt to disable host ASLR,
-so those private addresses change between otherwise identical boots. The
-guest TASK_SIZE remains in the console for diagnosis.
+one profile under unchanged host settings. Raw boot logs are retained for
+diagnosis; replay compares bridge events and, for commands, application
+output. Early host messages can still reflect inherited core-file limits or
+whether the work directory is on tmpfs. The arm64 kernel also omits the host
+stack and stub addresses from its startup message; Docker may refuse UML's
+attempt to disable host ASLR, so those private addresses change between boots.
+The guest TASK_SIZE remains in the console for diagnosis.
 
 - Virtual time starts at zero and moves only by the cost model. Each guest
   system call costs `CONFIG_HARMONY_UML_SYSCALL_VNS` (100,000 ns) before it
