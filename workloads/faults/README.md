@@ -376,18 +376,27 @@ campaign streams, archive reports, and progress records. This lets the tagged
 job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
-Each campaign job's recorded result digest now binds its logical result to a
-tagged endpoint certificate. KVM jobs that finish with a healthy target certify
-the current worker session's whole-state hash once after execution, including
-RAM and device state. If that session is missing, foreign, abandoned, or cannot
-be hashed, the campaign or replay fails instead of booting a replacement to
-produce a misleading digest. The whole-state hash scans guest RAM once per job,
-so it adds work proportional to configured RAM and job count. A failed KVM job
-records an explicit whole-state-unavailable tag: its action observations and
-failure result remain checked, but the stream makes no claim about its final
-whole state. UML also records a distinct whole-state-unavailable tag because
-that backend does not provide a whole-state hash. The KVM and UML campaign
-stream formats are versioned separately for this certificate change.
+Each campaign job's recorded result digest binds its logical result to a tagged
+final endpoint certificate. Every runnable candidate snapshot also carries a
+certificate captured before the next action, so an intermediate endpoint
+cannot diverge and later converge undetected. Restoring a KVM source snapshot
+checks its recorded certificate before using its logical observation. KVM
+certificates hash the current worker session's whole state, including RAM and
+device state. Candidate capture and final certification fail if that session is
+missing, foreign, abandoned, or unhashable; restore may rebuild the prefix in a
+new session but rejects an unhashable or mismatched endpoint. A failed KVM job
+records an explicit final whole-state-unavailable tag:
+its action observations and failure result remain checked, but the stream makes
+no claim about its final whole state. A whole-state hash scans guest RAM for
+each runnable candidate and each restored KVM snapshot. A healthy job whose
+last action is runnable reuses that candidate's hash as its final certificate;
+zero-action and terminal jobs hash their final endpoint separately. Thus
+certification cost grows with configured RAM and the number of actions and
+jobs. UML records a distinct whole-state-unavailable tag for its candidates
+and final endpoints because that backend does not provide a whole-state hash;
+its restored candidate snapshots therefore have no physical-state check. The
+KVM and UML campaign stream and snapshot checkpoint formats are versioned
+separately for these certificates.
 
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose

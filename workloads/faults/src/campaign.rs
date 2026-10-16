@@ -46,13 +46,15 @@ use crate::{
     assertion::Assertions,
     bundle::FaultVocabulary,
     consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
-    target::{FaultAction, FaultObservations, FaultOperation, FaultSnapshot},
+    target::{
+        FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
+    },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v6";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v3";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v1";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v7";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v6";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v4";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v2";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -144,22 +146,46 @@ pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
 type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
-#[derive(Clone, Copy, Serialize)]
-enum EndpointCertificate {
-    KvmWholeState([u8; 32]),
-    KvmUnavailableAfterFailure,
-    UmlWholeStateUnavailable,
-}
-
 fn endpoint_result_sha256(
     result: &FaultCampaignJobResult,
-    endpoint: EndpointCertificate,
+    endpoint: FaultEndpointCertificate,
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&(
         "fault-campaign-result-endpoint-v1",
         postcard_result_sha256(result)?,
         endpoint,
     ))
+}
+
+fn kvm_result_endpoint(
+    result: &FaultCampaignJobResult,
+    actions: &[FaultAction],
+    observation: &FaultObservations,
+    fresh_hash: impl FnOnce() -> Result<[u8; 32], String>,
+) -> Result<FaultEndpointCertificate, Box<dyn Error>> {
+    if let Some(last) = result.actions.last()
+        && matches!(last.outcome.disposition, ExecutionDisposition::Runnable)
+    {
+        let candidate = last
+            .candidate
+            .as_ref()
+            .ok_or("a runnable final action lacks its candidate certificate")?;
+        if !candidate.viable
+            || candidate.snapshot.failed
+            || candidate.snapshot.actions != actions
+            || &candidate.snapshot.observation != observation
+            || candidate.key != archive_key(observation)
+        {
+            return Err("the final candidate does not describe the job endpoint".into());
+        }
+        return match candidate.snapshot.endpoint {
+            Some(FaultEndpointCertificate::KvmWholeState(hash)) => {
+                Ok(FaultEndpointCertificate::KvmWholeState(hash))
+            }
+            _ => Err("the runnable final candidate lacks a KVM whole-state certificate".into()),
+        };
+    }
+    Ok(FaultEndpointCertificate::KvmWholeState(fresh_hash()?))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -292,7 +318,7 @@ fn execute_job(
             objective_reached,
             disposition: raw_outcome.disposition,
         };
-        let candidate = match target.snapshot() {
+        let candidate = match target.snapshot()? {
             Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
                 Some(CampaignCandidate {
                     key: archive_key(target.observation()),
@@ -385,11 +411,13 @@ impl Reporting for FaultWorkload {
         target: &Self::Target,
     ) -> Result<String, Box<dyn Error>> {
         let endpoint = if self.config.uml().is_some() {
-            EndpointCertificate::UmlWholeStateUnavailable
+            FaultEndpointCertificate::UmlWholeStateUnavailable
         } else if target.failed() {
-            EndpointCertificate::KvmUnavailableAfterFailure
+            FaultEndpointCertificate::KvmUnavailableAfterFailure
         } else {
-            EndpointCertificate::KvmWholeState(target.state_hash_current()?)
+            kvm_result_endpoint(result, target.actions(), target.observation(), || {
+                target.state_hash_current()
+            })?
         };
         endpoint_result_sha256(result, endpoint)
     }
@@ -694,7 +722,7 @@ impl TargetExecution for FaultWorkload {
 
     fn snapshot(&self, target: &mut FaultTarget) -> Result<FaultSnapshot, Box<dyn Error>> {
         target
-            .snapshot()
+            .snapshot()?
             .ok_or_else(|| "the fault endpoint has no successor to snapshot".into())
     }
 
@@ -957,19 +985,97 @@ mod tests {
             actions: Vec::new(),
         };
         let first =
-            endpoint_result_sha256(&result, EndpointCertificate::KvmWholeState([1; 32])).unwrap();
-        let second =
-            endpoint_result_sha256(&result, EndpointCertificate::KvmWholeState([2; 32])).unwrap();
-        let failed =
-            endpoint_result_sha256(&result, EndpointCertificate::KvmUnavailableAfterFailure)
+            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([1; 32]))
                 .unwrap();
+        let second =
+            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([2; 32]))
+                .unwrap();
+        let failed = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmUnavailableAfterFailure,
+        )
+        .unwrap();
         let uml =
-            endpoint_result_sha256(&result, EndpointCertificate::UmlWholeStateUnavailable).unwrap();
+            endpoint_result_sha256(&result, FaultEndpointCertificate::UmlWholeStateUnavailable)
+                .unwrap();
         assert_ne!(first, second);
         assert_ne!(first, failed);
         assert_ne!(first, uml);
         assert_ne!(failed, uml);
         assert_ne!(first, postcard_result_sha256(&result).unwrap());
+    }
+
+    #[test]
+    fn final_runnable_candidate_reuses_the_same_kvm_hash_as_a_fresh_endpoint() {
+        let action = FaultAction::new(
+            FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+            std::num::NonZeroU16::new(1).unwrap(),
+        );
+        let snapshot = FaultSnapshot {
+            actions: vec![action],
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            ..FaultSnapshot::default()
+        };
+        let result = FaultCampaignJobResult {
+            preparation_failure: None,
+            actions: vec![FaultCampaignActionResult {
+                action,
+                observations: vec![FaultObservations::default()],
+                milestones: FaultMilestones::default(),
+                outcome: Outcome {
+                    objective_reached: false,
+                    disposition: ExecutionDisposition::Runnable,
+                },
+                candidate: Some(CampaignCandidate {
+                    key: archive_key(&FaultObservations::default()),
+                    viable: true,
+                    snapshot,
+                }),
+            }],
+        };
+        let mut fresh_calls = 0;
+        let reused = kvm_result_endpoint(&result, &[action], &FaultObservations::default(), || {
+            fresh_calls += 1;
+            Ok([99; 32])
+        })
+        .unwrap();
+        assert_eq!(fresh_calls, 0);
+        let fresh = kvm_result_endpoint(
+            &FaultCampaignJobResult {
+                preparation_failure: None,
+                actions: Vec::new(),
+            },
+            &[action],
+            &FaultObservations::default(),
+            || {
+                fresh_calls += 1;
+                Ok([17; 32])
+            },
+        )
+        .unwrap();
+        assert_eq!(fresh_calls, 1);
+        assert_eq!(reused, fresh);
+        assert_eq!(
+            endpoint_result_sha256(&result, reused).unwrap(),
+            endpoint_result_sha256(&result, fresh).unwrap()
+        );
+        let mut malformed = result.clone();
+        malformed.actions[0]
+            .candidate
+            .as_mut()
+            .unwrap()
+            .snapshot
+            .endpoint = None;
+        assert!(
+            kvm_result_endpoint(&malformed, &[action], &FaultObservations::default(), || Ok(
+                [17; 32]
+            ))
+            .is_err()
+        );
+        assert!(
+            kvm_result_endpoint(&result, &[], &FaultObservations::default(), || Ok([17; 32]))
+                .is_err()
+        );
     }
 
     #[test]

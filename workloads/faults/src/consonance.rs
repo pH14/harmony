@@ -34,8 +34,8 @@ use sha2::{Digest, Sha256};
 
 use crate::chain::{Chain, Hit, Point, Shared};
 use crate::target::{
-    ActionWindows, FaultAction, FaultObservations, FaultSnapshot, FaultStop, actions_key,
-    decode_sdk_events, standing_windows,
+    ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
+    FaultStop, actions_key, decode_sdk_events, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -792,14 +792,32 @@ impl FaultTarget {
     }
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
+        let expected = match (self.config.uml.is_some(), snapshot.endpoint) {
+            (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => Some(hash),
+            (true, Some(FaultEndpointCertificate::UmlWholeStateUnavailable)) => None,
+            _ => return Err("the fault snapshot lacks a certificate for its backend".into()),
+        };
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
-                    Ok(None)
+                    if let Some(expected) = expected {
+                        let actual = live.session.state_hash().map_err(|error| {
+                            format!("restored fault endpoint state hash: {error}")
+                        })?;
+                        if actual != expected {
+                            return Err(
+                                "restored fault endpoint differs from its snapshot certificate"
+                                    .into(),
+                            );
+                        }
+                    }
+                    Ok(())
                 }
-                Err(observation) => Ok(Some(observation)),
+                Err(_) => {
+                    Err("restored fault endpoint stopped before its snapshot certificate".into())
+                }
             }
         });
         self.finish_restore(snapshot, rebuilt)
@@ -808,12 +826,12 @@ impl FaultTarget {
     fn finish_restore(
         &mut self,
         snapshot: &FaultSnapshot,
-        rebuilt: Result<Option<FaultObservations>, String>,
+        rebuilt: Result<(), String>,
     ) -> Result<(), Box<dyn Error>> {
         self.action_observations.clear();
         self.watchdog_cutoffs = 0;
-        let rebuilt = match rebuilt {
-            Ok(rebuilt) => rebuilt,
+        match rebuilt {
+            Ok(()) => {}
             Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
                 self.actions.clear();
                 self.observation = FaultObservations::default();
@@ -826,34 +844,30 @@ impl FaultTarget {
                 return Ok(());
             }
             Err(error) => return Err(error.into()),
-        };
+        }
         self.actions.clone_from(&snapshot.actions);
-        self.observation = match rebuilt {
-            None => snapshot.observation.clone(),
-            Some(observation) => {
-                eprintln!(
-                    "fault prefix {:?} first stopped at {:?} and stopped at {:?} when rebuilt",
-                    snapshot.actions, snapshot.observation.stop, observation.stop
-                );
-                FaultObservations {
-                    stop: FaultStop::Unexpected,
-                    ..observation
-                }
-            }
-        };
+        self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         self.watchdog_cutoffs = 0;
         Ok(())
     }
 
-    #[must_use]
-    pub fn snapshot(&self) -> Option<FaultSnapshot> {
-        (!self.failed && self.observation.stop.is_continuable()).then(|| FaultSnapshot {
+    pub fn snapshot(&self) -> Result<Option<FaultSnapshot>, String> {
+        if self.failed || !self.observation.stop.is_continuable() {
+            return Ok(None);
+        }
+        let endpoint = if self.config.uml.is_some() {
+            FaultEndpointCertificate::UmlWholeStateUnavailable
+        } else {
+            FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?)
+        };
+        Ok(Some(FaultSnapshot {
             actions: self.actions.clone(),
             observation: self.observation.clone(),
             failed: false,
-        })
+            endpoint: Some(endpoint),
+        }))
     }
 
     pub fn apply(&mut self, action: FaultAction) {
@@ -1641,7 +1655,9 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct TimedOutRestore;
+    struct TimedOutRestore {
+        hash: Option<[u8; 32]>,
+    }
 
     impl SearchSession for TimedOutRestore {
         fn setup_handle(&self) -> (SnapId, u64) {
@@ -1649,7 +1665,7 @@ mod tests {
         }
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
-            unreachable!()
+            self.hash.ok_or_else(|| "state hash unavailable".into())
         }
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1690,7 +1706,11 @@ mod tests {
         }
 
         fn replay_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
-            Err(SessionError::Hung(WALL_LIMIT).into())
+            if self.hash.is_some() {
+                Ok(())
+            } else {
+                Err(SessionError::Hung(WALL_LIMIT).into())
+            }
         }
 
         fn drop_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
@@ -1705,11 +1725,17 @@ mod tests {
             _: Vec<(u64, environment::channel::Effect)>,
             _: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
-            Err(SessionError::Hung(WALL_LIMIT).into())
+            if self.hash.is_some() {
+                Ok(())
+            } else {
+                Err(SessionError::Hung(WALL_LIMIT).into())
+            }
         }
 
         fn run_until(&mut self, _: u64) -> Result<StopReason, Box<dyn Error>> {
-            unreachable!()
+            Ok(StopReason::Quiescent {
+                vtime: control_proto::Moment(0),
+            })
         }
 
         fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
@@ -1719,7 +1745,7 @@ mod tests {
         fn sdk_events(
             &mut self,
         ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
-            unreachable!()
+            Ok(Vec::new())
         }
 
         fn abandoned(&self) -> bool {
@@ -1731,7 +1757,7 @@ mod tests {
         Live {
             key: [0; 32],
             holder: 0,
-            session: Box::new(TimedOutRestore),
+            session: Box::new(TimedOutRestore { hash: None }),
             base_identity: [0; 32],
             setup: SnapId(1),
             windows: ActionWindows { root_seal: 0 },
@@ -1905,6 +1931,69 @@ mod tests {
         assert_ne!(first.answer.0, future.encode());
     }
 
+    fn hashed_live(hash: [u8; 32]) -> Live {
+        let mut live = timed_out_live();
+        live.session = Box::new(TimedOutRestore { hash: Some(hash) });
+        live
+    }
+
+    #[test]
+    fn runnable_snapshot_identifies_the_current_kvm_endpoint() {
+        let target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        let first = postcard::to_allocvec(&target.snapshot().unwrap().unwrap()).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([23; 32])));
+        let second = postcard::to_allocvec(&target.snapshot().unwrap().unwrap()).unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        assert_ne!(
+            first, second,
+            "a runnable snapshot omitted its live endpoint"
+        );
+        assert!(target.snapshot().unwrap_err().contains("unavailable"));
+    }
+
+    #[test]
+    fn restoring_a_certified_snapshot_rejects_a_changed_kvm_endpoint() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        let snapshot = target.snapshot().unwrap().unwrap();
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
+        );
+        target.restore(&snapshot).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([23; 32])));
+        let error = target.restore(&snapshot).unwrap_err().to_string();
+        assert!(
+            error.contains("differs from its snapshot certificate"),
+            "{error}"
+        );
+        let missing = FaultSnapshot {
+            endpoint: None,
+            ..snapshot
+        };
+        let error = target.restore(&missing).unwrap_err().to_string();
+        assert!(error.contains("lacks a certificate"), "{error}");
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn restore_rejects_a_prefix_that_stops_before_its_certified_endpoint() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: vec![FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            ..FaultSnapshot::default()
+        };
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        let error = target.restore(&snapshot).unwrap_err().to_string();
+        assert!(
+            error.contains("stopped before its snapshot certificate"),
+            "{error}"
+        );
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
     #[test]
     fn current_job_state_hash_never_boots_a_missing_or_foreign_session() {
         let target = unbooted_target();
@@ -1965,6 +2054,7 @@ mod tests {
             actions: Vec::new(),
             observation: FaultObservations::default(),
             failed: false,
+            endpoint: None,
         };
         target.finish_restore(&snapshot, Err(error)).unwrap();
         assert_eq!(target.watchdog_cutoffs(), 1);
@@ -2008,6 +2098,7 @@ mod tests {
                 ..FaultObservations::default()
             },
             failed: false,
+            endpoint: None,
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
@@ -2016,7 +2107,7 @@ mod tests {
             .unwrap();
         assert!(target.failed());
         assert!(!target.found_bug());
-        assert!(target.snapshot().is_none());
+        assert!(target.snapshot().unwrap().is_none());
         assert!(target.actions.is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
         target.apply(FaultOperation::Kill(0, std::num::NonZeroU16::new(50).unwrap()).into());
@@ -2025,11 +2116,11 @@ mod tests {
         assert!(target.last_action_observations()[0].watchdog_cutoff);
         assert!(!target.last_action_observations()[0].is_bug());
         assert_eq!(target.last_action_observations()[0].ticks, 0);
-        target.finish_restore(&snapshot, Ok(None)).unwrap();
+        target.finish_restore(&snapshot, Ok(())).unwrap();
         assert!(!target.failed());
         assert_eq!(target.watchdog_cutoffs(), 0);
         assert_eq!(target.observation(), &snapshot.observation);
-        assert_eq!(target.snapshot().unwrap().actions, snapshot.actions);
+        assert_eq!(target.actions(), snapshot.actions);
         assert!(!target.last_action_observations()[0].watchdog_cutoff);
     }
 
@@ -2039,6 +2130,7 @@ mod tests {
             actions: Vec::new(),
             observation: FaultObservations::default(),
             failed: false,
+            endpoint: None,
         };
         for phase in ["run", "snapshot"] {
             for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
@@ -2070,6 +2162,7 @@ mod tests {
             actions: Vec::new(),
             observation: FaultObservations::default(),
             failed: false,
+            endpoint: None,
         };
         let error = target
             .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))
