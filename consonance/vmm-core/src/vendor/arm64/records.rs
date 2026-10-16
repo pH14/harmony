@@ -136,6 +136,8 @@ pub(crate) fn gic_from_backend(s: &Arm64GicState) -> gicv3::GicState {
         timer_hz: s.timer_hz,
         timer_intid: s.timer_intid,
         gicd_ctlr: s.gicd_ctlr,
+        gicr_propbaser: s.gicr_propbaser,
+        gicr_pendbaser: s.gicr_pendbaser,
         group: s.group,
         enable: s.enable,
         pending: s.pending,
@@ -164,6 +166,8 @@ pub(crate) fn gic_to_backend(s: &gicv3::GicState) -> Arm64GicState {
         timer_hz: s.timer_hz,
         timer_intid: s.timer_intid,
         gicd_ctlr: s.gicd_ctlr,
+        gicr_propbaser: s.gicr_propbaser,
+        gicr_pendbaser: s.gicr_pendbaser,
         group: s.group,
         enable: s.enable,
         pending: s.pending,
@@ -216,7 +220,7 @@ pub(crate) fn fill_vcpu_state(out: &mut Arm64VmState, s: &Arm64VcpuState) {
 }
 
 const DEVICE_BLOB_MAGIC: u32 = 0x3156_4441;
-const DEVICE_BLOB_VERSION: u16 = 16;
+const DEVICE_BLOB_VERSION: u16 = 17;
 const DOORBELL_BLOB_LEN: usize = 4 * 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -271,6 +275,8 @@ pub(crate) fn encode_gic_state(out: &mut Vec<u8>, s: &gicv3::GicState) {
     out.extend_from_slice(&s.timer_hz.to_le_bytes());
     put_u32(out, s.timer_intid);
     put_u32(out, s.gicd_ctlr);
+    out.extend_from_slice(&s.gicr_propbaser.to_le_bytes());
+    out.extend_from_slice(&s.gicr_pendbaser.to_le_bytes());
     for file in [&s.group, &s.enable, &s.pending, &s.active, &s.line_level] {
         for w in file {
             put_u32(out, *w);
@@ -302,6 +308,8 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
     let timer_hz = c.u64()?;
     let timer_intid = c.u32()?;
     let gicd_ctlr = c.u32()?;
+    let gicr_propbaser = c.u64()?;
+    let gicr_pendbaser = c.u64()?;
     let mut files = [[0u32; 32]; 5];
     for file in &mut files {
         for w in file.iter_mut() {
@@ -349,6 +357,8 @@ fn decode_gic_state(c: &mut Cursor<'_>) -> Result<gicv3::GicState, SnapshotError
         timer_hz,
         timer_intid,
         gicd_ctlr,
+        gicr_propbaser,
+        gicr_pendbaser,
         group,
         enable,
         pending,
@@ -619,6 +629,8 @@ mod tests {
         gic.write_cntv_cval(125);
         gic.write_cntv_ctl(gicv3::CNTV_CTL_ENABLE);
         let mut gic_state = gic.snapshot();
+        gic_state.gicr_propbaser = 0x0001_0000_1234_5180;
+        gic_state.gicr_pendbaser = 0x0002_0000_1234_0580;
         gic_state.bpr0 = 7;
         gic_state.bpr1 = 6;
         gic_state.ctlr = 0x8402;

@@ -511,6 +511,15 @@ ARM KVM host and in the userspace model.
 The ignored `guest_gic_spi_trigger_survives_fresh_restore` ARM KVM test compares
 guest readback of that baseline and of a programmed edge after uninterrupted
 execution and cold restore.
+KVM also retains guest writes to the redistributor `GICR_PROPBASER` and
+`GICR_PENDBASER` even when no ITS is present. ARM GIC state version 8 records
+both 64-bit values, and ARM device blobs include them in replay identity. KVM
+canonicalizes an initially zero `GICR_PROPBASER` to `0x180` when userspace
+writes it, so backend creation writes both fresh redistributor bases before
+first guest entry. Restore checks reserved bits, writes both halves, and
+requires exact readback. The ignored
+`guest_gicr_bases_survive_reused_and_fresh_restore` test compares guest MMIO
+readback after uninterrupted execution, an in-place restore, and a cold restore.
 The single-vCPU machine supports SPI routing only to affinity zero. The
 userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
 write inside its in-kernel VGIC, so capture reads both 32-bit KVM device-attribute

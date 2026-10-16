@@ -99,7 +99,7 @@ replay-compatible. Snapshot restore requires the same runtime contract.
 The same hash is an unconditional state-hash chunk and diagnostic component,
 including when full snapshot hashing is disabled.
 
-Device blobs use the current version 16 format and retain unread serial input
+Device blobs use the current version 17 format and retain unread serial input
 in FIFO order. Presence fields describe the
 optional GIC, doorbell, and pvclock records; pvclock records preserve the page
 GPA, registration capability, and pending-versus-armed handshake state.
@@ -108,6 +108,8 @@ both group enables, and active-priority registers alongside distributor and
 redistributor state. It also includes per-INTID trigger configuration, so a
 guest-programmed SPI edge/level choice survives snapshot restore and enters
 architectural comparison and state identity.
+It also retains both guest-writable redistributor base registers and compares
+their full 64-bit values in architectural identity.
 The record omits SPI routing because the only supported single-vCPU route is
 zero: KVM rejects capture of any nonzero `GICD_IROUTER` value, and restore
 clears all routes to zero. Consequently there is no additional device-blob

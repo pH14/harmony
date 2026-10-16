@@ -256,6 +256,64 @@ fn guest_gic_spi_trigger_survives_fresh_restore() {
 #[test]
 #[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
 #[ignore = "live ARM KVM; registered in HOST_TESTS"]
+fn guest_gicr_bases_survive_reused_and_fresh_restore() {
+    let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
+    for (name, offset) in [("PROPBASER", 0x70), ("PENDBASER", 0x78)] {
+        let program = [
+            movz(1, 0x080a, 16),
+            movk(1, offset, 0),
+            movz(4, 0x0900, 16),
+            movz(0, 0x1234, 16),
+            movk(0, 0x11, 32),
+            0xf900_0020,
+            0xf940_0020,
+            0xf900_0080,
+            0xf940_0020,
+            0xf900_0080,
+            movz(0, 0x5678, 16),
+            movk(0, 0x22, 32),
+            0xf900_0020,
+            0xf940_0020,
+            0xf900_0080,
+            0x1400_0000,
+        ];
+        let mut source = Guest::new(live_backend(), &program);
+        let first = source.next_store();
+        let cut = source.save();
+        let saved_base = if name == "PROPBASER" {
+            cut.gic.as_ref().unwrap().gicr_propbaser
+        } else {
+            cut.gic.as_ref().unwrap().gicr_pendbaser
+        };
+        assert_eq!(saved_base, first);
+        let uninterrupted = source.next_store();
+        let detour = source.next_store();
+        assert_ne!(detour, first);
+        source.restore(&cut);
+        let mut reused_state = source.save();
+        reused_state.vtimer.counter = cut.vtimer.counter;
+        assert_eq!(reused_state, cut);
+        let reused = source.next_store();
+
+        let mut fresh = Guest::new(live_backend(), &program);
+        fresh.restore(&cut);
+        let mut fresh_state = fresh.save();
+        fresh_state.vtimer.counter = cut.vtimer.counter;
+        assert_eq!(fresh_state, cut);
+        let cold = fresh.next_store();
+        eprintln!(
+            "GICR_{name} saved={saved_base:#x} uninterrupted={uninterrupted:#x} detour={detour:#x} reused={reused:#x} fresh={cold:#x}"
+        );
+        assert_eq!(uninterrupted, first);
+        assert_eq!(reused, first);
+        assert_eq!(cold, first);
+    }
+}
+
+#[test]
+#[cfg(all(target_os = "linux", target_arch = "aarch64", not(miri)))]
+#[ignore = "live ARM KVM; registered in HOST_TESTS"]
 fn guest_nonzero_spi_route_rejects_capture_and_zero_route_restores() {
     let movz = |r: u32, imm: u32, shift: u32| 0xd280_0000 | ((shift / 16) << 21) | (imm << 5) | r;
     let movk = |r: u32, imm: u32, shift: u32| 0xf280_0000 | ((shift / 16) << 21) | (imm << 5) | r;

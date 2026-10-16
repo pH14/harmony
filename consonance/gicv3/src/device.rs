@@ -664,6 +664,8 @@ impl Gicv3 {
             timer_hz: self.timer_hz,
             timer_intid: self.timer_intid,
             gicd_ctlr: self.gicd_ctlr,
+            gicr_propbaser: 0,
+            gicr_pendbaser: 0,
             group: self.group,
             enable: self.enable,
             pending: self.pending,
@@ -694,7 +696,10 @@ impl Gicv3 {
             timer_hz: state.timer_hz,
             timer_intid: state.timer_intid,
         })?;
-        if state.gicd_ctlr & !GICD_CTLR_WRITE_MASK != 0 {
+        if state.gicd_ctlr & !GICD_CTLR_WRITE_MASK != 0
+            || state.gicr_propbaser != 0
+            || state.gicr_pendbaser != 0
+        {
             return Err(GicError::InvalidState);
         }
         if state.cntv_ctl & !(CNTV_CTL_ENABLE | CNTV_CTL_IMASK) != 0 {
@@ -879,6 +884,18 @@ mod tests {
             Gicv3::restore(&invalid, 0),
             Err(GicError::InvalidState)
         ));
+        for field in [0, 1] {
+            let mut invalid = g.snapshot();
+            if field == 0 {
+                invalid.gicr_propbaser = 0x1234_5180;
+            } else {
+                invalid.gicr_pendbaser = 0x1234_0580;
+            }
+            assert!(matches!(
+                Gicv3::restore(&invalid, 0),
+                Err(GicError::InvalidState)
+            ));
+        }
 
         let ctlr = g.mmio_read(GicFrame::Redist, GICR_CTLR, 0).unwrap();
         let typer = g.mmio_read(GicFrame::Redist, GICR_TYPER_LO, 0).unwrap();
