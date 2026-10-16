@@ -40,8 +40,15 @@ restoration metadata that their existing job-result identity also excludes.
 Before an archive checkpoint restores any state, live import and replay check
 each checkpoint entry's ID and snapshot against that source-bound digest.
 Duplicate or unknown checkpoint IDs, and source entries without a bound digest,
-are rejected. Older archive reports without snapshot identities remain usable for
-whole-tree import without a checkpoint, but cannot authorize checkpoint restore.
+are rejected. Whole-tree import also compares every present source-entry digest,
+including genesis, with its newly reconstructed logical snapshot identity before
+admitting that entry or inheriting source evidence. A source entry that had a
+digest but no longer reconstructs to a runnable endpoint fails import. Older
+archive reports without snapshot identities remain usable for whole-tree import
+without a checkpoint, but cannot authorize checkpoint restore or certify a
+source endpoint across imports. Their actions are reconstructed under the current
+executor; the source progress watermark remains inherited historical evidence
+bound to the source file bytes, not evidence produced by that reconstruction.
 Snapshot-root origins use their separate checkpoint contract.
 For a workload with endpoint certificates, whole-tree import reconstructs each
 action between a parent and its imported candidate, including candidates loaded

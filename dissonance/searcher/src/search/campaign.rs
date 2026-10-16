@@ -1688,7 +1688,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     .collect()
             })
             .unwrap_or_default();
-        workload.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(workload, run, target)?;
@@ -1700,6 +1699,15 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
+                if let Some(expected) = entry.snapshot_identity_sha256.as_deref() {
+                    let genesis = self.archive.entries[genesis_id]
+                        .snapshot
+                        .as_deref()
+                        .ok_or("whole-tree import genesis snapshot was released early")?;
+                    if workload.snapshot_identity_sha256(genesis)? != expected {
+                        return Err("imported genesis differs from its source entry digest".into());
+                    }
+                }
                 imported.push(Some(genesis_id));
                 continue;
             }
@@ -1816,10 +1824,20 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 reconstructed
             };
             let Some(snapshot) = snapshot else {
+                if entry.snapshot_identity_sha256.is_some() {
+                    return Err(
+                        "imported endpoint with a source entry digest did not reconstruct".into(),
+                    );
+                }
                 counts.terminal = counts.terminal.saturating_add(1);
                 imported.push(None);
                 continue;
             };
+            if let Some(expected) = entry.snapshot_identity_sha256.as_deref()
+                && workload.snapshot_identity_sha256(&snapshot)? != expected
+            {
+                return Err("imported endpoint differs from its source entry digest".into());
+            }
             workload.merge_import_evidence(&mut self.evidence, milestones, &prefix);
             let key = workload.current_key(target)?;
             let inserted_before = self.archive.entries.len();
@@ -1858,6 +1876,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         self.archive
             .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
+        workload.merge_origin_evidence(&mut self.evidence, source);
         Ok(counts)
     }
 
@@ -8110,6 +8129,59 @@ mod tests {
         })();
         CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
         result.unwrap();
+    }
+
+    #[test]
+    fn whole_tree_import_rejects_mismatched_source_snapshot_without_checkpoint() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let source = TestArchiveReport {
+            entries: vec![
+                ArchiveEntryReport {
+                    id: 0,
+                    parent_id: None,
+                    created_execution: 0,
+                    input: Input::default(),
+                    key: TestKey(0),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&0).unwrap()),
+                    selector: None,
+                },
+                ArchiveEntryReport {
+                    id: 1,
+                    parent_id: Some(0),
+                    created_execution: 1,
+                    input: Input {
+                        actions: vec![TestAction::new(1, 1), TestAction::new(2, 1)],
+                    },
+                    key: TestKey(3),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&3).unwrap()),
+                    selector: None,
+                },
+            ],
+            marker: 9,
+        };
+        for (entry, conflicting_value) in [(1, 4), (0, 1)] {
+            let mut conflicting = source.clone();
+            conflicting.entries[entry].snapshot_identity_sha256 = Some(
+                workload
+                    .snapshot_identity_sha256(&conflicting_value)
+                    .unwrap(),
+            );
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let error = core
+                .import_tree(&workload, &(), &mut target, &conflicting, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("source entry digest"), "{error}");
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            assert_eq!(core.evidence, 0);
+        }
     }
 
     #[test]
