@@ -252,6 +252,31 @@ class StructureTests(unittest.TestCase):
         self.assertIn("scripts/build-consonance-cli-pair.sh target-cli/release", nested_commands)
         self.assertIn("nested-host-evidence/harmony-consonance-host", nested_commands)
 
+    def test_c_investigation_has_its_own_bounded_job(self):
+        import yaml
+
+        workflow = ci_contract.HARMONY_LANGUAGES_CHECKS
+        jobs = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]
+        registered = next(job for job in workflow.jobs if job.name == "C Investigation")
+        investigation = jobs["c-investigation"]
+        self.assertEqual((registered.trigger, registered.timeout_minutes,
+                          registered.select), ("pr", 35, "harmony_languages"))
+        self.assertTrue(registered.exception)
+        self.assertEqual(ci_contract.PR_EXTENDED_CHECK_BUDGETS,
+                         {(workflow.path, "C Investigation"): 35})
+        self.assertEqual(investigation["timeout-minutes"], registered.timeout_minutes)
+        self.assertEqual(jobs["check"]["timeout-minutes"], 15)
+        self.assertNotIn("cli/tests/investigation.sh", str(jobs["check"]["steps"]))
+        self.assertEqual(investigation["needs"], ["scope", "guest", "images", "tools"])
+        downloads = [step["with"]["name"] for step in investigation["steps"]
+                     if step.get("uses", "").startswith("actions/download-artifact")]
+        self.assertEqual(downloads,
+                         ["language-image-c", "language-guest-runtime", "language-cli-tools"])
+        commands = "\n".join(step.get("run", "") for step in investigation["steps"])
+        self.assertIn("docker load --input language-image/c.tar", commands)
+        self.assertIn("timeout -k 10 1800 bash cli/tests/investigation.sh", commands)
+        self.assertNotIn("scripts/historical-search.sh", commands)
+
     def test_release_guest_archive_carries_verified_runtime_pair(self):
         import yaml
 
