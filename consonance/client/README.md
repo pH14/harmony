@@ -81,6 +81,13 @@ A package that answers its own opaque service requests installs a resolver with
 carries the package's `ServiceConfig` into the branch so the control server
 builds that handler. The handler is built before the live VM changes, so an
 uninstalled configuration fails the branch and leaves the session untouched.
+An unrecorded custom answer now surfaces as `StopReason::Decision`. The package
+passes an encoded answer to `Session::run` with a `Resolution`; the control
+server records it before guest delivery. `SearchSession::run_resolving` carries
+the same operation through worker and User-mode Linux sessions for fault search.
+`branch_with_service` also accepts an optional recorded coverage schedule, so
+an action's quantum is selected from input bytes at each SDK coverage exchange
+without writing one answer per callback.
 
 The same call carries the host-plane effects the run after the branch applies,
 each against the virtual moment it lands at, so a package stages a machine-level

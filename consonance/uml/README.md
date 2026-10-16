@@ -76,10 +76,16 @@
   stops with `ExitReason::EventCut`. A cut at zero stops the guest before its
   first request and records no events.
 - `Session` holds the bridge socket on the caller's thread instead. Its
-  services answer the same SDK requests as the KVM backend through
-  `environment::sdk`: entropy, events, assertion violations, standing-service
-  questions answered by a `ServiceHandler`, payload pulls and coverage.
-  `branch` installs a seed, handler and payloads after checking that reseeding
+  services answer SDK requests through `environment::sdk`: entropy, events,
+  assertion violations, recorded standing-service answers, payload pulls and
+  coverage. An unrecorded custom service or coverage quantum pauses the socket
+  before a guest reply. `resolve_and_run` accepts a matching answer, records it
+  against the held question, and then sends the guest response. Invalid
+  resolutions leave the held request and services state unchanged. A recorded
+  coverage schedule supplies a branch's window quantum without per-callback
+  decisions.
+  `branch` installs a seed, handler, payloads, and optional coverage schedule
+  after checking that reseeding
   with both the branch seed and the decode seed zero keeps the handler identity
   and configuration unchanged. It also rejects a decode-seed probe that changes
   the original handler. A rejected branch leaves independent live services

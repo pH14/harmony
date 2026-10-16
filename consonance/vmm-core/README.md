@@ -42,6 +42,12 @@ rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+Custom service and coverage-quantum requests stop as decisions before guest
+response bytes are written. A coverage stop retains the thread, observation,
+ready count, and doorbell sequence in the SDK snapshot and whole-state hash.
+`Run { resolve }` binds the answer to the request payload, then completes the
+original coverage exchange. Invalid quantum answers leave the pending stop and
+coverage threshold unchanged.
 If a backend completion chains a later SDK decision into the same guest step
 after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.

@@ -19,10 +19,13 @@ use consonance_client::{
         WorkerSession, identity_with_config,
     },
 };
-use control_proto::{SnapId, StopReason};
+use control_proto::{Resolution, SnapId, StopReason};
 use environment::{
     Moment,
-    channel::{Answer as ChannelAnswer, ChannelError, Question, ServiceHandler, ServiceResponse},
+    channel::{
+        Answer as ChannelAnswer, ChannelError, CoverageSchedule, Question, ServiceHandler,
+        ServiceResponse,
+    },
     input_spec::{ServiceConfig, ServiceFactory, nominal_factory},
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
@@ -331,16 +334,35 @@ fn branch_config(
         identity: SERVICE_IDENTITY.to_vec(),
         configuration: encode_configuration(
             &encode_windows(&standing)?,
-            &actions
-                .iter()
-                .enumerate()
-                .map(|(index, action)| {
-                    let (start, end) = windows.window(actions, index)?;
-                    Ok((start, end, action.coverage_quantum))
-                })
-                .collect::<Result<Vec<_>, String>>()?,
+            &coverage_windows(windows, actions)?,
         )?,
     })
+}
+
+fn coverage_windows(
+    windows: ActionWindows,
+    actions: &[FaultAction],
+) -> Result<Vec<CoverageWindow>, String> {
+    actions
+        .iter()
+        .enumerate()
+        .map(|(index, action)| {
+            let (start, end) = windows.window(actions, index)?;
+            Ok((start, end, action.coverage_quantum))
+        })
+        .collect()
+}
+
+fn branch_coverage_schedule(
+    windows: ActionWindows,
+    actions: &[FaultAction],
+) -> Result<CoverageSchedule, String> {
+    let rows = coverage_windows(windows, actions)?
+        .into_iter()
+        .map(|(start, end, quantum)| (start, end, u64::from(quantum.get())))
+        .collect();
+    CoverageSchedule::new(environment::channel::DEFAULT_COVERAGE_QUANTUM, rows)
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug)]
@@ -660,16 +682,26 @@ impl FaultTarget {
                 .map_err(|e| e.to_string())?;
             let service =
                 debug_configuration(&standing.configuration, message).map_err(|e| e.to_string())?;
+            let mut handler =
+                DebugHandler::decode(&service.configuration).map_err(|error| error.to_string())?;
             live.session
-                .branch_with_service(snapshot, service, Vec::new(), Vec::new())
+                .branch_with_service(
+                    snapshot,
+                    service,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(branch_coverage_schedule(live.windows, &self.actions)?),
+                )
                 .map_err(|e| e.to_string())?;
             live.session
                 .drop_snapshot(snapshot)
                 .map_err(|e| e.to_string())?;
-            let stop = live
-                .session
-                .run_until(at.checked_add(10_000_000).ok_or("debug clock overflow")?)
-                .map_err(|e| e.to_string())?;
+            let stop = run_with_service_decisions(
+                live.session.as_mut(),
+                at.checked_add(10_000_000).ok_or("debug clock overflow")?,
+                &mut handler,
+            )
+            .map_err(|error| error.to_string())?;
             let observation = live.observe(FaultStop::from_stop_reason(&stop))?;
             let events = live.session.sdk_events().map_err(|e| e.to_string())?;
             let mut progress = DebugProgress {
@@ -883,6 +915,45 @@ fn stop_moment(stop: &StopReason) -> u64 {
         | StopReason::SnapshotPoint { vtime }
         | StopReason::Assertion { vtime, .. } => vtime.0,
     }
+}
+
+fn resolution_for_stop(
+    stop: &StopReason,
+    handler: &mut dyn ServiceHandler,
+) -> Result<Resolution, Box<dyn Error>> {
+    let StopReason::Decision { vtime, id, ctx } = stop else {
+        return Err("a service resolution requires a decision stop".into());
+    };
+    let (service, payload) = ctx
+        .split_first_chunk::<2>()
+        .ok_or("service decision context is missing its service id")?;
+    let service = u16::from_le_bytes(*service);
+    let question = Question::with_request_id(id.0, service, payload.to_vec())?;
+    let answer = match handler.respond(vtime.0, &question)? {
+        ServiceResponse::Answered(answer) => answer,
+        ServiceResponse::External => {
+            return Err(format!("service {service} did not answer the explicit decision").into());
+        }
+    };
+    Ok(Resolution {
+        vtime: *vtime,
+        service,
+        id: *id,
+        answer: control_proto::Answer(answer.encode()),
+    })
+}
+
+fn run_with_service_decisions(
+    session: &mut dyn SearchSession,
+    deadline: u64,
+    handler: &mut dyn ServiceHandler,
+) -> Result<StopReason, Box<dyn Error>> {
+    let mut stop = session.run_until(deadline)?;
+    while matches!(stop, StopReason::Decision { .. }) {
+        let resolution = resolution_for_stop(&stop, handler)?;
+        stop = session.run_resolving(deadline, resolution)?;
+    }
+    Ok(stop)
 }
 
 fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
@@ -1235,10 +1306,16 @@ impl Live {
     fn branch(&mut self, parent: Point, actions: &[FaultAction]) -> Result<(), String> {
         let config = branch_config(self.windows, &self.inherited, actions)
             .map_err(|error| format!("branch configuration: {error}"))?;
+        let coverage_schedule = branch_coverage_schedule(self.windows, actions)
+            .map_err(|error| format!("branch coverage schedule: {error}"))?;
         let branch_started = started();
-        let result = self
-            .session
-            .branch_with_service(parent.snap, config, Vec::new(), Vec::new());
+        let result = self.session.branch_with_service(
+            parent.snap,
+            config,
+            Vec::new(),
+            Vec::new(),
+            Some(coverage_schedule),
+        );
         self.telemetry.branches.since(branch_started);
         result.map_err(|error| self.abandon("branch", error.as_ref()))
     }
@@ -1253,7 +1330,11 @@ impl Live {
         let (_, deadline) = self.windows.window(actions, index)?;
         self.horizons_run = self.horizons_run.saturating_add(1);
         let run_started = started();
-        let stop = match self.session.run_until(deadline) {
+        let config = branch_config(self.windows, &self.inherited, actions)
+            .map_err(|error| format!("decision handler configuration: {error}"))?;
+        let mut handler = StandingHandler::from_configuration(&config.configuration)
+            .map_err(|error| format!("decision handler: {error}"))?;
+        let stop = match run_with_service_decisions(self.session.as_mut(), deadline, &mut handler) {
             Ok(stop) => stop,
             Err(error) => return Err(self.abandon("run", error.as_ref())),
         };
@@ -1597,6 +1678,7 @@ mod tests {
             _: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
+            _: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
             Err(SessionError::Hung(WALL_LIMIT).into())
         }
@@ -1797,6 +1879,7 @@ mod tests {
         ];
         let windows = ActionWindows { root_seal: 1_000 };
         let configuration = branch_config(windows, &[], &actions).unwrap();
+        let schedule = branch_coverage_schedule(windows, &actions).unwrap();
         let mut handler =
             StandingHandler::from_configuration(&configuration.configuration).unwrap();
         let question = Question::with_request_id(
@@ -1811,11 +1894,43 @@ mod tests {
             (20_001_000, 8),
             (50_001_000, environment::channel::DEFAULT_COVERAGE_QUANTUM),
         ] {
+            assert_eq!(schedule.quantum_at(moment), expected);
             assert_eq!(
                 handler.respond(moment, &question).unwrap(),
                 ServiceResponse::Answered(ChannelAnswer::Data(expected.to_le_bytes().to_vec()))
             );
         }
+        let mut ctx = environment::channel::SERVICE_COVERAGE_QUANTUM
+            .to_le_bytes()
+            .to_vec();
+        ctx.extend_from_slice(&1_u64.to_le_bytes());
+        let stop = StopReason::Decision {
+            vtime: control_proto::Moment(1_000),
+            id: control_proto::DecisionId(7),
+            ctx,
+        };
+        assert_eq!(
+            resolution_for_stop(&stop, &mut handler).unwrap(),
+            Resolution {
+                vtime: control_proto::Moment(1_000),
+                service: environment::channel::SERVICE_COVERAGE_QUANTUM,
+                id: control_proto::DecisionId(7),
+                answer: control_proto::Answer(
+                    ChannelAnswer::Data(64_u64.to_le_bytes().to_vec()).encode()
+                ),
+            }
+        );
+        assert!(
+            resolution_for_stop(
+                &StopReason::Decision {
+                    vtime: control_proto::Moment(1_000),
+                    id: control_proto::DecisionId(7),
+                    ctx: vec![1],
+                },
+                &mut handler,
+            )
+            .is_err()
+        );
         let (standing, mut gap) = decode_configuration(&configuration.configuration).unwrap();
         gap[1].0 += 1;
         let gap = encode_configuration(standing, &gap).unwrap();

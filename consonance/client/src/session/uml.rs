@@ -6,9 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use control_proto::{CrashInfo, CrashKind, EventRef, Moment, SnapId, StopReason};
+use control_proto::{
+    CrashInfo, CrashKind, DecisionId, EventRef, Moment, Resolution, SnapId, StopReason,
+};
 use environment::{
-    channel::Effect,
+    channel::{CoverageSchedule, Effect},
     input_spec::{ServiceConfig, ServiceFactory},
 };
 use sha2::{Digest, Sha256};
@@ -177,6 +179,7 @@ impl UmlSession {
             config.seed,
             handler(&factory, &ServiceConfig::default())?,
             Vec::new(),
+            None,
         )?;
         let moment = match session.run_to_snapshot_point(config.setup_budget) {
             Ok(Stop::SnapshotPoint(moment)) => moment,
@@ -308,6 +311,40 @@ impl UmlSession {
                 detail: format!("{terminal_reason:?}\n{detail}").into_bytes(),
             },
         })
+    }
+
+    fn finish_run(
+        &mut self,
+        result: Result<Stop, uml::SessionError>,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let latest = self.session.as_ref().map_or(0, uml::Session::moment);
+        match result {
+            Ok(Stop::Deadline(moment)) => Ok(StopReason::Deadline {
+                vtime: Moment(moment),
+            }),
+            Ok(Stop::Decision { moment, question }) => {
+                let mut ctx = question.service().to_le_bytes().to_vec();
+                ctx.extend(question.payload());
+                Ok(StopReason::Decision {
+                    vtime: Moment(moment),
+                    id: DecisionId(question.request_id()),
+                    ctx,
+                })
+            }
+            Ok(Stop::Violation { moment, id, data }) => Ok(StopReason::Assertion {
+                vtime: Moment(moment),
+                ev: EventRef { id, data },
+            }),
+            Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
+                vtime: Moment(moment),
+            }),
+            Ok(Stop::Closed) => self.crash(latest),
+            Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
+                "the guest stopped at {stop:?}"
+            )))),
+            Err(error @ uml::SessionError::BadResolution(_)) => Err(error.into()),
+            Err(error) => Err(self.abandon(error)),
+        }
     }
 
     fn abandon(&mut self, error: uml::SessionError) -> Box<dyn Error> {
@@ -550,6 +587,7 @@ impl SearchSession for UmlSession {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
         if !effects.is_empty() {
             return Err(SessionError::Control(
@@ -560,30 +598,29 @@ impl SearchSession for UmlSession {
         let handler = handler(&self.factory, &config)?;
         self.restore(snapshot)?;
         let seed = self.seed;
-        self.live()?.branch(seed, handler, payloads)?;
+        self.live()?
+            .branch(seed, handler, payloads, coverage_schedule)?;
         Ok(())
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         let result = self.live()?.run_until(deadline);
-        let latest = self.session.as_ref().map_or(0, uml::Session::moment);
-        match result {
-            Ok(Stop::Deadline(moment)) => Ok(StopReason::Deadline {
-                vtime: Moment(moment),
-            }),
-            Ok(Stop::Violation { moment, id, data }) => Ok(StopReason::Assertion {
-                vtime: Moment(moment),
-                ev: EventRef { id, data },
-            }),
-            Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
-                vtime: Moment(moment),
-            }),
-            Ok(Stop::Closed) => self.crash(latest),
-            Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
-                "the guest stopped at {stop:?}"
-            )))),
-            Err(error) => Err(self.abandon(error)),
-        }
+        self.finish_run(result)
+    }
+
+    fn run_resolving(
+        &mut self,
+        deadline: u64,
+        resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let result = self.live()?.resolve_and_run(
+            deadline,
+            resolution.vtime.0,
+            resolution.service,
+            resolution.id.0,
+            &resolution.answer.0,
+        );
+        self.finish_run(result)
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {

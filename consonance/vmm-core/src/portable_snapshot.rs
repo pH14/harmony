@@ -552,6 +552,21 @@ fn encode_pending_stop(out: &mut Vec<u8>, stop: Option<&SdkStop>) {
             put_vec_len(out, question.payload().len());
             out.extend_from_slice(question.payload());
         }
+        Some(SdkStop::CoverageDecision {
+            moment,
+            seq,
+            question,
+            ready,
+        }) => {
+            out.push(4);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.extend_from_slice(&question.service().to_le_bytes());
+            out.extend_from_slice(&question.request_id().to_le_bytes());
+            put_vec_len(out, question.payload().len());
+            out.extend_from_slice(question.payload());
+            out.extend_from_slice(&ready.to_le_bytes());
+        }
     }
 }
 
@@ -577,6 +592,29 @@ fn decode_pending_stop(
                 moment,
                 seq,
                 question,
+            })
+        }
+        4 => {
+            let moment = input.u64()?;
+            let seq = input.u32()?;
+            let service = input.u16()?;
+            let request = input.u64()?;
+            let payload = input.bytes()?;
+            let ready = input.u32()?;
+            if service != channel::SERVICE_COVERAGE_QUANTUM
+                || u32::try_from(request).is_err()
+                || payload.len() != 8
+                || ready == 0
+            {
+                return Err(PortableSnapshotError::Malformed("SDK coverage decision"));
+            }
+            let question = channel::Question::with_request_id(request, service, payload)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK coverage decision"))?;
+            Some(SdkStop::CoverageDecision {
+                moment,
+                seq,
+                question,
+                ready,
             })
         }
         _ => return Err(PortableSnapshotError::Malformed("SDK pending stop")),
@@ -2263,6 +2301,17 @@ mod tests {
                 seq: 42,
                 question: channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap(),
             }),
+            Some(SdkStop::CoverageDecision {
+                moment: 31,
+                seq: 42,
+                question: channel::Question::with_request_id(
+                    7,
+                    channel::SERVICE_COVERAGE_QUANTUM,
+                    1_u64.to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+                ready: 2,
+            }),
         ];
         for stop in stops {
             let (memory, vm_state, mut sdk, policy) = fixture();
@@ -2319,7 +2368,7 @@ mod tests {
                 assert!(decode_pending_stop(&mut SliceReader::new(&bytes[..end])).is_err());
             }
         }
-        assert!(decode_pending_stop(&mut SliceReader::new(&[4])).is_err());
+        assert!(decode_pending_stop(&mut SliceReader::new(&[5])).is_err());
         let mut bytes = vec![3];
         bytes.extend_from_slice(&[0; 22]);
         bytes.extend_from_slice(&u64::MAX.to_le_bytes());

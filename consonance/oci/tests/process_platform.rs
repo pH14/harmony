@@ -10,7 +10,7 @@ mod platform {
         catalog::StateCatalog,
         session::{PortableSnapshot, Session, SessionConfig},
     };
-    use control_proto::{Moment, StopReason};
+    use control_proto::{Moment, Resolution, StopConditions, StopMask, StopReason};
     use environment::{
         channel::{Answer, ChannelError, Question, ServiceHandler, ServiceResponse},
         input_spec::{ServiceConfig, ServiceFactory},
@@ -195,8 +195,35 @@ mod platform {
         })
     }
 
-    fn run_until(session: &mut Session, deadline: u64) -> Result<()> {
-        match session.run_until(deadline)? {
+    fn run_until(
+        session: &mut Session,
+        deadline: u64,
+        service: &mut StandingService,
+    ) -> Result<()> {
+        let mut stop = session.run_until(deadline)?;
+        while let StopReason::Decision { vtime, id, ctx } = &stop {
+            let (namespace, payload) = ctx
+                .split_first_chunk::<2>()
+                .ok_or("process service decision omitted its namespace")?;
+            let namespace = u16::from_le_bytes(*namespace);
+            let question = Question::with_request_id(id.0, namespace, payload.to_vec())?;
+            let ServiceResponse::Answered(answer) = service.respond(vtime.0, &question)? else {
+                return Err("process service left a decision unanswered".into());
+            };
+            stop = session.run(
+                StopConditions {
+                    deadline: Some(Moment(deadline)),
+                    on: StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+                },
+                Some(Resolution {
+                    vtime: *vtime,
+                    service: namespace,
+                    id: *id,
+                    answer: control_proto::Answer(answer.encode()),
+                }),
+            )?;
+        }
+        match stop {
             StopReason::Deadline { vtime } if vtime >= Moment(deadline) => Ok(()),
             other => Err(format!("process smoke stopped before deadline: {other:?}").into()),
         }
@@ -279,13 +306,16 @@ mod platform {
             },
             Vec::new(),
             Vec::new(),
+            None,
         )?;
 
         let checkpoint_at = session
             .setup_at()
             .checked_add(400_000_000)
             .ok_or("checkpoint deadline overflow")?;
-        run_until(&mut session, checkpoint_at)?;
+        let mut service = StandingService { poll: 0 };
+        run_until(&mut session, checkpoint_at, &mut service)?;
+        let checkpoint_service = service.clone();
         let (checkpoint_id, checkpoint_time) = session.snapshot()?;
         let checkpoint = portable_snapshot(&mut session, checkpoint_id, checkpoint_time)?;
         session.drop_snapshot(checkpoint_id)?;
@@ -293,12 +323,13 @@ mod platform {
         let continuation_at = checkpoint_time
             .checked_add(400_000_000)
             .ok_or("continuation deadline overflow")?;
-        run_until(&mut session, continuation_at)?;
+        run_until(&mut session, continuation_at, &mut service)?;
         let expected = capture(&mut session)?;
         assert_process_evidence(&expected)?;
 
         session.restore(&checkpoint)?;
-        run_until(&mut session, continuation_at)?;
+        service = checkpoint_service;
+        run_until(&mut session, continuation_at, &mut service)?;
         assert_eq!(capture(&mut session)?, expected);
         assert!(started.elapsed() <= Duration::from_secs(90));
         Ok(())
