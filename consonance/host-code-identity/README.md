@@ -3,9 +3,10 @@
 On Linux, `mapped_executable_sha256` reads the bytes currently mapped with
 execute permission in its own process through `/proc/self/mem`. It includes the
 main program, dynamic loader, dependent libraries, and the vDSO. The digest
-uses mapping permissions, file offsets, lengths, names, and mapped bytes;
-absolute addresses are excluded so ordinary address randomization does not
-change it. Repeated records retain multiple mappings of the same bytes.
+uses mapping permissions, file offsets, lengths, mapping kinds, and mapped
+bytes; file paths and absolute addresses are excluded so ordinary pathname
+replacement and address randomization do not change the identity of unchanged
+loaded code. Repeated records retain multiple mappings of the same bytes.
 
 Admission refuses anonymous or memfd executable memory, writable executable
 memory, unrecognized special executable mappings, unreadable bytes, and changes
