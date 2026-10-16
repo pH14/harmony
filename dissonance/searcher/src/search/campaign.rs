@@ -6,7 +6,7 @@ use std::{
     fmt::Debug,
     io::{BufReader, Read, Write},
     num::{NonZeroU64, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex, mpsc},
     time::{Duration, Instant},
 };
@@ -4267,6 +4267,13 @@ fn search_checkpoint_policy_changes(
         return Err(format!("search checkpoint policies differ: {}", fixed.join(", ")).into());
     }
     Ok(changes)
+}
+
+pub fn search_checkpoint_evidence<G: Workload>(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut reader = CheckpointReader::open(path)?;
+    let _: CoreCheckpoint<G> = reader.next()?;
+    let _: Archive<G::Action, G::Key, G::Milestones, G::Snapshot> = reader.next()?;
+    reader.next()
 }
 
 #[allow(clippy::too_many_arguments)]

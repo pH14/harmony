@@ -17,6 +17,7 @@ use crate::{
         CHANGE_ONE_CONTROL_IDENTIFIER, CHORD_DRAW_FIELD, ChordVocabulary,
         NES_PRESSABLE_BUTTON_MASKS, SHORT_HOLD_FRAMES,
     },
+    evidence::{NesCampaignEvidence, NesEvidence},
     nes_backend::{NesBackend, SnapshotState},
     search::archive::RetentionPolicy,
     search::campaign::{
@@ -283,15 +284,7 @@ pub struct SmbCampaignRun {
     pub terminal: Option<SmbTerminalPredicate>,
 }
 
-#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
-pub struct SmbCampaignEvidence {
-    aggregate: SmbMilestones,
-    watermark: SmbProgressWatermark,
-    first_reached: SmbMilestoneTimes,
-    first_inputs: SmbMilestoneInputs,
-    champion_input: SmbInput,
-    champion_milestones: SmbMilestones,
-}
+pub type SmbCampaignEvidence<M = QuickNesMachine, P = Vec<u8>> = NesCampaignEvidence<SmbGame<M, P>>;
 
 pub type SmbCampaignOrigin<M = QuickNesMachine, P = Vec<u8>> = CampaignOrigin<SmbGame<M, P>>;
 pub type SmbCampaignCheckpoint<P = Vec<u8>> = CampaignCheckpoint<SmbSnapshot<P>>;
@@ -492,9 +485,57 @@ where
     type Progress = SmbProgressWatermark;
     type Snapshot = SmbSnapshot<P>;
     type Observations = SmbObservations;
-    type Evidence = SmbCampaignEvidence;
+    type Evidence = SmbCampaignEvidence<M, P>;
     type ArchiveReport = SmbArchiveReport;
     type Run = SmbCampaignRun;
+}
+
+impl<M, P> NesEvidence for SmbGame<M, P>
+where
+    M: SmbMachineKind<P>,
+    P: SnapshotState,
+{
+    type MilestoneTimes = SmbMilestoneTimes;
+    type MilestoneInputs = SmbMilestoneInputs;
+    type ChampionKey = (bool, bool, bool, u16);
+    type Extras = ();
+
+    fn milestone_rank(milestones: SmbMilestones) -> impl Ord {
+        milestone_key(milestones)
+    }
+    fn merge_watermark(watermark: &mut SmbProgressWatermark, observations: &[SmbObservations]) {
+        merge_progress_watermark(watermark, observations);
+    }
+    fn champion_key(
+        _observations: &[SmbObservations],
+        milestones: SmbMilestones,
+    ) -> Option<(bool, bool, bool, u16)> {
+        Some(milestone_key(milestones)).filter(|key| *key > milestone_key(SmbMilestones::default()))
+    }
+    fn imported_champion_key(milestones: SmbMilestones) -> Option<(bool, bool, bool, u16)> {
+        Some(milestone_key(milestones))
+    }
+    fn record_first_reached(
+        times: &mut SmbMilestoneTimes,
+        inputs: &mut SmbMilestoneInputs,
+        _extras: &(),
+        milestones: SmbMilestones,
+        sequence: u64,
+        input: &SmbInput,
+    ) {
+        update_first_inputs(times, inputs, milestones, sequence, input);
+    }
+    fn first_reached_count(times: &SmbMilestoneTimes) -> usize {
+        [
+            times.progress_into_1_1,
+            times.flag_1_1,
+            times.level_1_2,
+            times.onward,
+        ]
+        .into_iter()
+        .flatten()
+        .count()
+    }
 }
 
 impl<M, P> Reporting for SmbGame<M, P>
@@ -503,10 +544,13 @@ where
     P: SnapshotState,
 {
     fn evidence_checkpoint(evidence: &Self::Evidence) -> Result<Vec<u8>, Box<dyn Error>> {
-        Ok(serde_json::to_vec(evidence)?)
+        evidence.checkpoint()
     }
     fn evidence_from_checkpoint(bytes: &[u8]) -> Result<Self::Evidence, Box<dyn Error>> {
-        Ok(serde_json::from_slice(bytes)?)
+        NesCampaignEvidence::from_checkpoint(bytes)
+    }
+    fn checkpoint_marks(evidence: &Self::Evidence) -> usize {
+        evidence.checkpoint_marks()
     }
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
@@ -543,7 +587,7 @@ where
 
     fn archive_report(
         &self,
-        evidence: &SmbCampaignEvidence,
+        evidence: &SmbCampaignEvidence<M, P>,
         state: crate::search::campaign::ArchiveReportState<Self>,
     ) -> SmbArchiveReport {
         SmbArchiveReport {
@@ -703,18 +747,22 @@ where
     fn merge_milestones(&self, into: &mut SmbMilestones, from: SmbMilestones) {
         merge_milestones(into, from);
     }
-    fn aggregate_milestones(evidence: &SmbCampaignEvidence) -> SmbMilestones {
+    fn aggregate_milestones(evidence: &SmbCampaignEvidence<M, P>) -> SmbMilestones {
         evidence.aggregate
     }
-    fn aggregate_progress(evidence: &SmbCampaignEvidence) -> SmbProgressWatermark {
+    fn aggregate_progress(evidence: &SmbCampaignEvidence<M, P>) -> SmbProgressWatermark {
         evidence.watermark
     }
-    fn merge_origin_evidence(&self, evidence: &mut SmbCampaignEvidence, source: &SmbArchiveReport) {
-        evidence.watermark = evidence.watermark.max(source.progress_watermark);
+    fn merge_origin_evidence(
+        &self,
+        evidence: &mut SmbCampaignEvidence<M, P>,
+        source: &SmbArchiveReport,
+    ) {
+        evidence.merge_origin(source.progress_watermark);
     }
     fn merge_snapshot_root_evidence(
         &self,
-        evidence: &mut SmbCampaignEvidence,
+        evidence: &mut SmbCampaignEvidence<M, P>,
         target: &SmbTarget<M, P>,
     ) -> Result<(), Box<dyn Error>> {
         let state = smb_mechanical_state_from_wram(&target.wram());
@@ -727,26 +775,15 @@ where
     }
     fn merge_import_evidence(
         &self,
-        evidence: &mut SmbCampaignEvidence,
+        evidence: &mut SmbCampaignEvidence<M, P>,
         milestones: SmbMilestones,
         input: &SmbInput,
     ) {
-        merge_milestones(&mut evidence.aggregate, milestones);
-        update_first_inputs(
-            &mut evidence.first_reached,
-            &mut evidence.first_inputs,
-            milestones,
-            0,
-            input,
-        );
-        if milestone_key(milestones) > milestone_key(evidence.champion_milestones) {
-            evidence.champion_milestones = milestones;
-            evidence.champion_input = input.clone();
-        }
+        evidence.merge_import(self, milestones, input);
     }
     fn merge_action_evidence<F>(
         &self,
-        evidence: &mut SmbCampaignEvidence,
+        evidence: &mut SmbCampaignEvidence<M, P>,
         action: &SmbCampaignActionResult<M, P>,
         sequence: u64,
         input: F,
@@ -754,30 +791,7 @@ where
     where
         F: FnOnce() -> Result<SmbInput, Box<dyn Error>>,
     {
-        merge_progress_watermark(&mut evidence.watermark, &action.observations);
-        merge_milestones(&mut evidence.aggregate, action.milestones);
-        let first_input_needed = (action.milestones.max_1_1_scroll_bucket > 0
-            && evidence.first_inputs.progress_into_1_1.is_none())
-            || (action.milestones.reached_1_1_flag && evidence.first_inputs.flag_1_1.is_none())
-            || (action.milestones.reached_1_2 && evidence.first_inputs.level_1_2.is_none())
-            || (action.milestones.reached_onward && evidence.first_inputs.onward.is_none());
-        let champion =
-            milestone_key(action.milestones) > milestone_key(evidence.champion_milestones);
-        if first_input_needed || champion {
-            let input = input()?;
-            update_first_inputs(
-                &mut evidence.first_reached,
-                &mut evidence.first_inputs,
-                action.milestones,
-                sequence,
-                &input,
-            );
-            if champion {
-                evidence.champion_milestones = action.milestones;
-                evidence.champion_input = input;
-            }
-        }
-        Ok(())
+        evidence.merge_action(self, action, sequence, false, input, |_, _| Ok(()))
     }
     fn source_entries<'a>(
         &self,
@@ -954,7 +968,9 @@ mod tests {
         SmbSnapshotCheckpoint, SmbSnapshotCheckpointEntry, SmbTerminalPredicate,
         derive_selection_seed,
     };
-    use crate::search::campaign::{Evaluation, InputPolicy, TargetExecution, default_window};
+    use crate::search::campaign::{
+        Evaluation, InputPolicy, Reporting, TargetExecution, default_window,
+    };
     use crate::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawTables};
     use crate::{
         chord::CHANGE_ONE_CONTROL_IDENTIFIER,
@@ -1214,6 +1230,7 @@ mod tests {
         ] {
             let mut evidence = super::SmbCampaignEvidence {
                 champion_milestones: reigning,
+                champion_key: Some(super::milestone_key(reigning)),
                 ..super::SmbCampaignEvidence::default()
             };
             let calls = Cell::new(0);
@@ -1227,6 +1244,45 @@ mod tests {
             assert_eq!(calls.get(), 1);
             assert_eq!(evidence.champion_milestones, reigning);
         }
+    }
+
+    #[test]
+    fn checkpoint_marks_count_each_first_reached_milestone() {
+        let rom = synthetic_nrom();
+        let game = test_game(&rom);
+        let mut evidence = super::SmbCampaignEvidence::default();
+        let mut milestones = SmbMilestones::default();
+        let steps: [fn(&mut SmbMilestones); 4] = [
+            |m| m.max_1_1_scroll_bucket = 1,
+            |m| m.reached_1_1_flag = true,
+            |m| m.reached_1_2 = true,
+            |m| m.reached_onward = true,
+        ];
+        assert_eq!(<SmbGame as Reporting>::checkpoint_marks(&evidence), 0);
+        for (sequence, step) in (1..).zip(steps) {
+            step(&mut milestones);
+            for repeat in [sequence, sequence + 100] {
+                game.merge_action_evidence(
+                    &mut evidence,
+                    &evidence_action(milestones),
+                    repeat,
+                    || {
+                        Ok(SmbInput {
+                            actions: vec![ButtonChord::new(0x01, 4)],
+                        })
+                    },
+                )
+                .expect("merge action evidence");
+                assert_eq!(
+                    <SmbGame as Reporting>::checkpoint_marks(&evidence),
+                    sequence as usize
+                );
+            }
+        }
+        let bytes = <SmbGame as Reporting>::evidence_checkpoint(&evidence).expect("encode");
+        let restored = <SmbGame as Reporting>::evidence_from_checkpoint(&bytes).expect("decode");
+        assert_eq!(<SmbGame as Reporting>::checkpoint_marks(&restored), 4);
+        assert_eq!(restored.first_reached, evidence.first_reached);
     }
 
     #[test]
@@ -2298,30 +2354,5 @@ mod tests {
             replay_smb_campaign(&rom, &with, None).expect("sidecar run replays byte-exact");
         assert_eq!(replayed.stream_sha256, observed.stream_sha256);
         assert_eq!(replayed.archive, observed.archive);
-    }
-}
-
-#[cfg(test)]
-mod evidence_checkpoint_tests {
-    use super::*;
-    #[test]
-    fn evidence_round_trip_preserves_all_serialized_fields_and_rejects_truncation() {
-        let mut evidence = SmbCampaignEvidence::default();
-        evidence.aggregate.reached_1_2 = true;
-        evidence.first_reached.level_1_2 = Some(23);
-        evidence.champion_input.actions.push(ButtonChord {
-            buttons: 1,
-            hold_frames: 2,
-        });
-        evidence.champion_milestones = evidence.aggregate;
-        let bytes = <SmbGame as Reporting>::evidence_checkpoint(&evidence).unwrap();
-        let restored = <SmbGame as Reporting>::evidence_from_checkpoint(&bytes).unwrap();
-        assert_eq!(
-            serde_json::to_value(&evidence).unwrap(),
-            serde_json::to_value(&restored).unwrap()
-        );
-        assert!(
-            <SmbGame as Reporting>::evidence_from_checkpoint(&bytes[..bytes.len() - 1]).is_err()
-        );
     }
 }
