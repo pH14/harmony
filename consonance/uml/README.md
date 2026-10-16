@@ -124,7 +124,7 @@
   settlement probes the current process state and refuses host limits and
   signaled host exits after process cleanup; callers cannot supply an earlier
   exit reason. A host signal such as SIGKILL is an infrastructure failure, not
-  a guest shutdown or crash, and the client abandons the session (#708). A
+  a guest shutdown or crash, and the client abandons the session. A
   guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
@@ -233,6 +233,12 @@
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.
+
+  A kernel panic exits with reserved status 86 and is reported as
+  `ExitReason::GuestPanic`. The client classifies that kernel-owned status as
+  a panic crash; console text cannot claim one. The kernel rejects guest
+  `/proc/exitcode` writes selecting 86 or 87, including low-byte aliases.
+  Host signals and fatal UML traps remain control failures.
 
 The parent-death signal follows the thread that spawned the guest, so a guest
 must be started from a thread that outlives it.

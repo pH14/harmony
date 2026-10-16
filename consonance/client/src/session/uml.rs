@@ -380,7 +380,7 @@ impl UmlSession {
             .as_ref()
             .map(uml::Session::console_tail)
             .unwrap_or_default();
-        let kind = if detail.contains("Kernel panic") {
+        let kind = if terminal_reason == uml::ExitReason::GuestPanic {
             CrashKind::Panic
         } else {
             CrashKind::Shutdown

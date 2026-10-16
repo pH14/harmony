@@ -36,6 +36,7 @@ const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
+const GUEST_PANIC_STATUS: i32 = 86;
 const HOST_CLONE_FAILURE_STATUS: i32 = 87;
 
 #[cfg(test)]
@@ -129,6 +130,7 @@ pub struct Launch {
 pub enum ExitReason {
     Exited(i32),
     Signaled(i32),
+    GuestPanic,
     HostFailure,
     WallLimit,
     ConsoleLimit,
@@ -782,7 +784,10 @@ impl Guest {
             reason
         } else if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
             ExitReason::ConsoleLimit
-        } else if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
+        } else if matches!(
+            reason,
+            ExitReason::Exited(_) | ExitReason::Signaled(_) | ExitReason::GuestPanic
+        ) {
             match self.bridge_state.load(Ordering::Acquire) {
                 bridge::CUT => ExitReason::EventCut,
                 bridge::FAILED => ExitReason::BridgeFailure,
@@ -831,6 +836,7 @@ fn now() -> Instant {
 
 fn exit_reason(status: ExitStatus) -> ExitReason {
     match (status.code(), status.signal()) {
+        (Some(GUEST_PANIC_STATUS), _) => ExitReason::GuestPanic,
         (Some(HOST_CLONE_FAILURE_STATUS), _) => ExitReason::HostFailure,
         (Some(code), _) => ExitReason::Exited(code),
         (None, Some(signal)) => ExitReason::Signaled(signal),
@@ -929,7 +935,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_clone_status_is_reserved_from_guest_exit_statuses() {
+    fn kernel_statuses_are_distinct_from_guest_exit_statuses() {
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(GUEST_PANIC_STATUS << 8)),
+            ExitReason::GuestPanic
+        );
         assert_eq!(
             exit_reason(ExitStatus::from_raw(HOST_CLONE_FAILURE_STATUS << 8)),
             ExitReason::HostFailure
