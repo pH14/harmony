@@ -82,7 +82,7 @@ class RuntimeArtifactTests(unittest.TestCase):
         for profile in ("N6_TRAPS_OFF", "TASK_PARK_PROFILE", "NESTED_HOST_PROFILE"):
             with self.subTest(profile=profile):
                 environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
-                for name in ("N6_TRAPS_OFF", "TASK_PARK_PROFILE", "NESTED_HOST_PROFILE"):
+                for name in ("N6_TRAPS_OFF", "TASK_PARK_PROFILE", "NESTED_HOST_PROFILE", "ARM64_KERNEL_PROFILE"):
                     environment.pop(name, None)
                 environment[profile] = "1"
                 result = subprocess.run(["bash", str(Path(__file__).with_name("build-platform-runtime.sh"))],
@@ -90,6 +90,30 @@ class RuntimeArtifactTests(unittest.TestCase):
 
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("canonical platform runtime rejects profile kernels", result.stderr)
+
+    def test_canonical_build_rejects_arm_profile_before_stale_image_can_be_sealed(self):
+        (self.root / "Image").write_text("older default arm kernel")
+        (self.root / "initramfs-oci.cpio.gz").write_text("new base")
+        RUNTIME.seal(self.repo, self.root, "aarch64")
+        self.assertEqual(RUNTIME.verify(self.repo, self.root, "aarch64")["scope"], "exact-input")
+        original_manifest = (self.root / "runtime-manifest.json").read_bytes()
+
+        tools = Path(self.temp.name) / "tools"
+        tools.mkdir()
+        uname = tools / "uname"
+        uname.write_text('#!/bin/sh\ncase "$1" in -m) echo aarch64;; -s) echo Darwin;; esac\n')
+        uname.chmod(0o755)
+        environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
+        for name in ("N6_TRAPS_OFF", "TASK_PARK_PROFILE", "NESTED_HOST_PROFILE"):
+            environment.pop(name, None)
+        environment["ARM64_KERNEL_PROFILE"] = "n6-traps-off"
+        result = subprocess.run(["bash", str(Path(__file__).with_name("build-platform-runtime.sh"))],
+                                env=environment, capture_output=True, text=True, timeout=10)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("canonical platform runtime rejects profile kernels", result.stderr)
+        self.assertEqual((self.root / "Image").read_text(), "older default arm kernel")
+        self.assertEqual((self.root / "runtime-manifest.json").read_bytes(), original_manifest)
 
 
 if __name__ == "__main__":
