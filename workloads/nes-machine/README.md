@@ -100,6 +100,9 @@ whole-search throughput measurements.
 
 The libretro FFI is Unix-specific. The pure machine types and test loopback
 allow the boundary and its bounds checks to run without a shared object.
+The Linux musl build includes the NES Consonance adapter but refuses native
+QuickNES before loading a core: its loader-generation guard requires the glibc
+ABI. A separate GNU frontend remains the native QuickNES execution host.
 
 The consonance adapter delegates boot, setup, branch, replay, run, read, SDK
 catalog, and sparse snapshot operations to `consonance-client::Session`. Its
