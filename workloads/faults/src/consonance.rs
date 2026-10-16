@@ -1256,13 +1256,14 @@ impl Live {
         self.drop_snapshots(dropped)?;
         let mut last = self.chain.point(at);
         for index in start..actions.len() {
-            self.branch(last, &actions[..=index])?;
+            let prefix = &actions[..=index];
+            self.branch(last, prefix)?;
             let (observation, sealed) =
-                self.run_action(actions, index, last.moment, RunKind::Rebuild)?;
+                self.run_action(prefix, index, last.moment, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            last = self.seal_link(&actions[..=index], snap, moment, last.moment)?;
+            last = self.seal_link(prefix, snap, moment, last.moment)?;
         }
         Ok(Ok(last))
     }
@@ -1722,6 +1723,162 @@ mod tests {
             abandoned: false,
             telemetry: LiveTelemetry::default(),
         }
+    }
+
+    #[derive(Debug)]
+    struct BoundaryDecisionSession {
+        resolutions: Arc<std::sync::Mutex<Vec<(ServiceConfig, Resolution)>>>,
+        branch: Option<ServiceConfig>,
+        deadline: u64,
+        next_snapshot: u64,
+    }
+
+    impl SearchSession for BoundaryDecisionSession {
+        fn setup_handle(&self) -> (SnapId, u64) {
+            (SnapId(1), 0)
+        }
+
+        fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+            Ok([0; 32])
+        }
+
+        fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+
+        fn telemetry_counters(&self) -> Vec<(String, u64)> {
+            Vec::new()
+        }
+
+        fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
+            None
+        }
+
+        fn store_bytes(&self) -> Option<u64> {
+            None
+        }
+
+        fn publish_snapshot(
+            &self,
+            _: &dyn CacheIndex,
+            _: Namespace,
+            _: &[u8],
+            _: Option<(SnapId, &Lease)>,
+            _: SnapId,
+            _: u64,
+        ) -> Result<Lease, Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn import_cached(
+            &mut self,
+            _: &dyn CacheIndex,
+            _: &Lease,
+            _: SnapId,
+        ) -> Result<(SnapId, u64), Box<dyn Error>> {
+            unreachable!()
+        }
+
+        fn replay_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+
+        fn drop_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+            Ok(())
+        }
+
+        fn branch_with_service(
+            &mut self,
+            _: SnapId,
+            config: ServiceConfig,
+            _: Vec<Vec<u8>>,
+            _: Vec<(u64, environment::channel::Effect)>,
+            _: Option<CoverageSchedule>,
+        ) -> Result<(), Box<dyn Error>> {
+            self.branch = Some(config);
+            Ok(())
+        }
+
+        fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+            self.deadline = deadline;
+            Ok(StopReason::Decision {
+                vtime: control_proto::Moment(deadline),
+                id: control_proto::DecisionId(7),
+                ctx: STANDING_NAMESPACE.to_le_bytes().to_vec(),
+            })
+        }
+
+        fn run_resolving(
+            &mut self,
+            deadline: u64,
+            resolution: Resolution,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            assert_eq!(resolution.vtime, control_proto::Moment(deadline));
+            self.resolutions
+                .lock()
+                .unwrap()
+                .push((self.branch.clone().unwrap(), resolution));
+            Ok(StopReason::Deadline {
+                vtime: control_proto::Moment(deadline),
+            })
+        }
+
+        fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+            self.next_snapshot += 1;
+            Ok((SnapId(self.next_snapshot), self.deadline))
+        }
+
+        fn sdk_events(
+            &mut self,
+        ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
+            Ok(Vec::new())
+        }
+
+        fn abandoned(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn rebuilding_a_prefix_resolves_only_its_installed_service_windows() {
+        use std::num::NonZeroU16;
+
+        let tick = NonZeroU16::MIN;
+        let actions = [
+            FaultOperation::Wait(tick).into(),
+            FaultOperation::Kill(3, tick).into(),
+        ];
+        let resolutions = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut live = timed_out_live();
+        live.session = Box::new(BoundaryDecisionSession {
+            resolutions: Arc::clone(&resolutions),
+            branch: None,
+            deadline: 0,
+            next_snapshot: 1,
+        });
+        assert!(live.ensure_prefix(&actions).unwrap().is_ok());
+        let resolutions = resolutions.lock().unwrap();
+        assert_eq!(resolutions.len(), 2);
+        let (installed, first) = &resolutions[0];
+        assert_eq!(first.vtime.0, crate::target::SUPERVISOR_TICK_NANOS);
+        let question = Question::with_request_id(7, STANDING_NAMESPACE, Vec::new()).unwrap();
+        let expected = StandingHandler::from_configuration(&installed.configuration)
+            .unwrap()
+            .respond(first.vtime.0, &question)
+            .unwrap();
+        let ServiceResponse::Answered(expected) = expected else {
+            panic!("the installed standing service must answer");
+        };
+        assert_eq!(first.answer.0, expected.encode());
+        let future = branch_config(live.windows, &[], &actions).unwrap();
+        let future = StandingHandler::from_configuration(&future.configuration)
+            .unwrap()
+            .respond(first.vtime.0, &question)
+            .unwrap();
+        let ServiceResponse::Answered(future) = future else {
+            panic!("the future standing service must answer");
+        };
+        assert_ne!(first.answer.0, future.encode());
     }
 
     #[test]
