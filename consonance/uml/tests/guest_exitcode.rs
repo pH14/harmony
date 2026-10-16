@@ -24,8 +24,11 @@ fn guest_cannot_choose_host_reserved_exit_statuses() -> Result<(), Box<dyn Error
     let exit = Guest::spawn(&launch, &profile)?.wait()?;
     let console = String::from_utf8_lossy(&exit.console);
     for value in ["86", "87", "342", "-169"] {
+        let expected = format!("HARMONY_UML EXITCODE REJECTED value={value}");
         assert!(
-            console.contains(&format!("HARMONY_UML EXITCODE REJECTED value={value}\n")),
+            console
+                .lines()
+                .any(|line| line.trim_end_matches('\r') == expected),
             "{value} was not rejected: {console}"
         );
     }
