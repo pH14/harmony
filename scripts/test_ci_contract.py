@@ -22,6 +22,27 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
+    def test_release_guest_archive_carries_verified_runtime_pair(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ci_contract.RELEASE.path).read_text())["jobs"]
+        self.assertTrue(any("cargo build --locked --release -p harmony-cli" in step.get("run", "")
+                            for step in jobs["cli"]["steps"]))
+        steps = jobs["guest"]["steps"]
+        names = [step.get("name") for step in steps]
+        verify_inputs = names.index("Verify exact platform inputs")
+        package = names.index("Package the runtime and checksum")
+        verify_archive = names.index("Verify packaged runtime pair")
+        upload = next(index for index, step in enumerate(steps)
+                      if step.get("uses", "").startswith("actions/upload-artifact"))
+        self.assertLess(verify_inputs, package)
+        self.assertLess(package, verify_archive)
+        self.assertLess(verify_archive, upload)
+        self.assertIn('"$isa/runtime-manifest.json"', steps[package]["run"])
+        for check in ('manifest["version"]', 'manifest["architecture"]',
+                      'manifest["source_digest"]', 'manifest["files"][name]'):
+            self.assertIn(check, steps[verify_archive]["run"])
+
     def test_exact_runtime_consumers_wait_for_its_build(self):
         import yaml
 
