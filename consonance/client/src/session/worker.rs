@@ -637,8 +637,12 @@ pub struct WorkerLauncher {
 impl WorkerLauncher {
     pub fn current_exe(args: Vec<OsString>) -> io::Result<Self> {
         let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
+        #[cfg(all(feature = "strict-host", target_os = "linux"))]
+        let program = PathBuf::from("/proc/self/exe");
+        #[cfg(not(all(feature = "strict-host", target_os = "linux")))]
+        let program = std::env::current_exe()?;
         let launcher = Self {
-            program: std::env::current_exe()?,
+            program,
             args,
             expected_image: crate::image_identity::loaded_executable_identity_self()?,
             expected_main: crate::image_identity::loaded_executable_identity_for_child(

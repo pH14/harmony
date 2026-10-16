@@ -8,6 +8,9 @@ description = "User-mode Linux profile verification and process launcher"
 [lints]
 workspace = true
 
+[features]
+strict-host = []
+
 [dependencies]
 blake3 = "1"
 environment = { path = "../environment", version = "0.1.0" }

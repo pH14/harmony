@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -53,7 +53,12 @@ pub enum ReplayRefused {
 }
 
 fn loaded_executable_identity_self() -> std::io::Result<String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", feature = "strict-host"))]
+    {
+        host_code_identity::reject_loader_overrides()?;
+        host_code_identity::sealed_static_executable_identity()
+    }
+    #[cfg(all(target_os = "linux", not(feature = "strict-host")))]
     {
         use sha2::{Digest, Sha256};
         use std::io::Read as _;
@@ -85,7 +90,7 @@ fn loaded_executable_identity_self() -> std::io::Result<String> {
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
 fn reject_mismatched_executable_mapping(
     code_address: usize,
     executable: &std::fs::File,
@@ -103,7 +108,7 @@ fn reject_mismatched_executable_mapping(
     reject_code_outside_executable_segments(code_address, auxv, executable)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64, u64, u64)> {
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
@@ -154,7 +159,7 @@ fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64,
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 #[derive(Clone, Copy)]
 struct KernelAuxv {
     phdr: usize,
@@ -163,7 +168,7 @@ struct KernelAuxv {
     entry: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
 fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
     let word = std::mem::size_of::<usize>();
     let record = word * 2;
@@ -206,7 +211,7 @@ fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 #[derive(Clone, Copy)]
 struct LoadSegment {
     flags: u32,
@@ -216,7 +221,7 @@ struct LoadSegment {
     memsz: u64,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 fn reject_code_outside_executable_segments(
     code_address: usize,
     auxv: KernelAuxv,
@@ -305,9 +310,9 @@ impl Recording {
         launch: &Launch,
         events: &[Event],
     ) -> Result<Self, ReplayRefused> {
-        let host = launch.host_identity()?;
         let executable = loaded_executable_identity_self()
             .map_err(|error| ReplayRefused::HostExecutable(error.to_string()))?;
+        let host = launch.host_identity()?;
         Self::new_with_host(profile, &host, &executable, launch, events)
     }
 
@@ -336,12 +341,12 @@ impl Recording {
     }
 
     pub fn check(&self, profile: &VerifiedProfile) -> Result<(), ReplayRefused> {
+        let executable = loaded_executable_identity_self()
+            .map_err(|error| ReplayRefused::HostExecutable(error.to_string()))?;
         #[cfg(target_os = "linux")]
         let host = HostIdentity::for_processor(self.host.processor)?;
         #[cfg(not(target_os = "linux"))]
         let host = HostIdentity::current()?;
-        let executable = loaded_executable_identity_self()
-            .map_err(|error| ReplayRefused::HostExecutable(error.to_string()))?;
         self.check_with_host(profile, &host, &executable)
     }
 
@@ -638,6 +643,7 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "linux")]
+    #[cfg(not(feature = "strict-host"))]
     #[cfg_attr(miri, ignore)]
     fn public_recording_uses_the_current_host_instead_of_a_supplied_identity() {
         let overrides = host_code_identity::loader_override_names();
@@ -680,6 +686,23 @@ mod tests {
             crate::Guest::start(std::process::Command::new("true"), work, &replay),
             Err(LaunchError::HostIdentity { .. })
         ));
+    }
+
+    #[test]
+    #[cfg(all(feature = "strict-host", target_os = "linux", target_env = "gnu"))]
+    #[cfg_attr(miri, ignore)]
+    fn public_recording_methods_refuse_an_unsealed_gnu_host() {
+        let profile = profile("a");
+        let mut launch = Launch::new(PathBuf::from("/work"));
+        launch.bridge = Some(Bridge::new(41));
+        fn refused<T>(result: Result<T, ReplayRefused>) {
+            assert!(matches!(result, Err(ReplayRefused::HostExecutable(_))));
+        }
+        refused(Recording::new(&profile, &launch, &[]));
+        let recording =
+            Recording::new_with_host(&profile, &host("test"), EXECUTABLE, &launch, &[]).unwrap();
+        refused(recording.check(&profile));
+        refused(recording.launch(PathBuf::from("/replay")));
     }
 
     #[test]
