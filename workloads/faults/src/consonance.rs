@@ -1836,6 +1836,7 @@ mod tests {
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
         run_hashes: Option<Vec<[u8; 32]>>,
+        run_hung: bool,
         snapshots: BTreeMap<u64, [u8; 32]>,
         moment: u64,
         next_snap: u64,
@@ -1931,6 +1932,9 @@ mod tests {
         }
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+            if self.run_hung {
+                return Err(SessionError::Hung(WALL_LIMIT).into());
+            }
             if let Some(hashes) = &mut self.run_hashes {
                 if hashes.is_empty() {
                     return Err("scripted run has no state hash".into());
@@ -1972,6 +1976,7 @@ mod tests {
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: None,
+                run_hung: false,
                 snapshots: BTreeMap::new(),
                 moment: 0,
                 next_snap: 1,
@@ -2005,6 +2010,7 @@ mod tests {
             events: BTreeMap::new(),
             current: target.0,
             run_hashes: None,
+            run_hung: false,
             snapshots: BTreeMap::from([(target.0, commitment)]),
             moment: 0,
             next_snap: target.0,
@@ -2242,6 +2248,7 @@ mod tests {
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
+            run_hung: false,
             snapshots: BTreeMap::new(),
             moment: 0,
             next_snap: 1,
@@ -2359,6 +2366,7 @@ mod tests {
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
             current: 1,
             run_hashes: None,
+            run_hung: false,
             snapshots: BTreeMap::new(),
             moment: 0,
             next_snap: 2,
@@ -2384,6 +2392,7 @@ mod tests {
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![first_hash, [17; 32]]),
+                run_hung: false,
                 snapshots: BTreeMap::from([(1, [17; 32])]),
                 moment: 0,
                 next_snap: 1,
@@ -2457,6 +2466,7 @@ mod tests {
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
+            run_hung: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -2480,6 +2490,7 @@ mod tests {
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[23; 32], [17; 32]]),
+            run_hung: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -2533,6 +2544,45 @@ mod tests {
     }
 
     #[test]
+    fn campaign_job_replayed_action_cutoff_is_a_preparation_failure() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            prefix_certificates: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+        };
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: None,
+            run_hung: true,
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let result = crate::campaign::execute_job(
+            &mut target,
+            &snapshot,
+            &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
+            &[Some([17; 32])],
+            crate::archive::FaultMilestones::default(),
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(result.actions.is_empty());
+        let observations = result.preparation_failure.unwrap();
+        assert_eq!(observations.len(), 1);
+        assert!(observations[0].watchdog_cutoff);
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
     fn campaign_job_replay_non_watchdog_failure_remains_fatal() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
@@ -2548,6 +2598,7 @@ mod tests {
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(Vec::new()),
+            run_hung: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -2579,6 +2630,7 @@ mod tests {
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
+            run_hung: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -2610,6 +2662,7 @@ mod tests {
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
+            run_hung: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -2630,6 +2683,7 @@ mod tests {
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![[23; 32], [17; 32]]),
+                run_hung: false,
                 snapshots: BTreeMap::from([(1, [17; 32])]),
                 moment: 0,
                 next_snap: 1,
