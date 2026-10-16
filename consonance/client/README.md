@@ -193,6 +193,9 @@ without that target-pages digest. For UML checkpoints, the commitment binds
 the cache identity to the checkpoint digest, which covers logical memory and
 bridge/service state. The cache compares commitments while holding its index
 lock, before returning a duplicate lease.
+On a divergent publication, the cache error carries the namespace, key,
+and both logical target commitments so the conflicting executions can be
+identified without accepting either as a duplicate.
 
 Eviction takes, among entries with no lease and no children, the one with the
 lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost

@@ -1915,7 +1915,7 @@ mod tests {
             .unwrap_err();
         assert!(matches!(
             error.downcast_ref::<crate::cache::CacheError>(),
-            Some(crate::cache::CacheError::DivergentDuplicate)
+            Some(crate::cache::CacheError::DivergentDuplicate { .. })
         ));
         assert_eq!(index.stats().entries, 1);
         assert_eq!(index.stats().duplicates, 0);
