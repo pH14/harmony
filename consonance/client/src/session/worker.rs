@@ -1489,19 +1489,33 @@ mod tests {
         ) -> Result<Vec<u8>, Box<dyn Error>> {
             let fill = self.state(target)?;
             let policy = ServiceConfig::default().encode();
+            #[cfg(target_arch = "x86_64")]
+            let vm_state = {
+                let mut state = vm_state::VmState::default();
+                state.xsave.0 = vec![0; 576];
+                vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
+                state.regs.rax = u64::from(fill);
+                state.encode()?
+            };
+            #[cfg(target_arch = "aarch64")]
+            let vm_state = {
+                let mut state = vm_state::Arm64VmState::default();
+                state.regs.x[0] = u64::from(fill);
+                state.encode()?
+            };
             let mut sidecar = Vec::new();
             sidecar.extend_from_slice(b"HMSESS01");
             sidecar.extend_from_slice(&[0; 32]);
             sidecar.extend_from_slice(b"HMSSNAP1");
             sidecar.extend_from_slice(&9u16.to_le_bytes());
             sidecar.extend_from_slice(&4u16.to_le_bytes());
-            for len in [1, 0, policy.len() as u64, 1, 0] {
+            for len in [vm_state.len() as u64, 0, policy.len() as u64, 1, 0] {
                 sidecar.extend_from_slice(&len.to_le_bytes());
             }
             sidecar.extend_from_slice(&[0; 4 * 8]);
             sidecar.extend_from_slice(&[0; 32]);
             sidecar.extend_from_slice(&[fill; 32]);
-            sidecar.push(0);
+            sidecar.extend_from_slice(&vm_state);
             sidecar.extend_from_slice(&policy);
             sidecar.push(0);
             let mut out = vec![0; extent_len(1, 0, sidecar.len()).unwrap()];

@@ -310,20 +310,30 @@ pub fn compare_portable_execution_state(
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 pub fn logical_x86_sparse_sidecar(bytes: &[u8]) -> Result<Vec<u8>, PortableSnapshotError> {
     let sidecar = decode_sparse_sidecar(bytes)?;
-    let mut state = vm_state::VmState::decode(&sidecar.vm_state)
+    let state = vm_state::VmState::decode(&sidecar.vm_state)
         .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+    let vm_state = logical_x86_vm_state(state)?;
+    encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state)
+}
+
+fn logical_x86_vm_state(mut state: vm_state::VmState) -> Result<Vec<u8>, PortableSnapshotError> {
     state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&state.xsave.0, state.xsave_restore_bv)
             .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse XSAVE state"))?;
-    let vm_state = state
+    state
         .encode()
-        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))
+}
+
+fn encode_sparse_sidecar_with_vm_state(
+    sidecar: &SparsePortableSidecar,
+    vm_state: &[u8],
+) -> Result<Vec<u8>, PortableSnapshotError> {
     encode_sparse_sidecar_with_target_pages(
         &SparsePortableSidecarRef {
-            vm_state: &vm_state,
+            vm_state,
             sdk: sidecar.sdk.as_ref(),
             policy: &sidecar.policy,
             at: sidecar.at,
@@ -462,9 +472,20 @@ pub fn sparse_delta_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], Portab
             "sparse delta sidecar lacks target pages digest",
         ));
     }
+    let vm_state = match vm_state::VmState::decode(&decoded.vm_state) {
+        Ok(state) => logical_x86_vm_state(state)?,
+        Err(vm_state::VmStateError::UnsupportedArch(vm_state::ARCH_AARCH64)) => {
+            let state = vm_state::Arm64VmState::decode(&decoded.vm_state)
+                .map_err(|_| PortableSnapshotError::Malformed("invalid Arm64 sparse CPU state"))?;
+            vm_state::SnapshotRecords::encode_for_hash(&state)
+                .map_err(|_| PortableSnapshotError::Malformed("invalid Arm64 sparse CPU state"))?
+        }
+        Err(_) => return Err(PortableSnapshotError::Malformed("invalid sparse CPU state")),
+    };
+    let logical_sidecar = encode_sparse_sidecar_with_vm_state(&decoded, &vm_state)?;
     let mut digest = Sha256::new();
-    digest.update(b"consonance-sparse-delta-target-commitment-v1\0");
-    digest.update(sidecar);
+    digest.update(b"consonance-sparse-delta-target-commitment-v2\0");
+    digest.update(&logical_sidecar);
     Ok(digest.finalize().into())
 }
 
@@ -911,6 +932,54 @@ mod tests {
         .unwrap()
     }
 
+    fn arm64_sidecar(state: &vm_state::Arm64VmState) -> Vec<u8> {
+        encode_sparse_sidecar_with_target_pages(
+            &SparsePortableSidecarRef {
+                vm_state: &state.encode().unwrap(),
+                sdk: None,
+                policy: &ServiceConfig::default(),
+                at: 23,
+                sdk_events: 0,
+                trace_events: 17,
+                trace_schedules: 5,
+                tainted: false,
+                base_ram_digest: [0xa5; 32],
+                state_blob_suffix: b"state-suffix",
+                control_state: b"control-state",
+            },
+            Some([0x3c; 32]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sparse_target_commitment_deduplicates_equal_logical_arm_counter() {
+        let mut state = vm_state::Arm64VmState::default();
+        state.vtimer.counter = 10;
+        let first = arm64_sidecar(&state);
+        let first_commitment = sparse_delta_target_commitment(&first).unwrap();
+        state.vtimer.counter = 20;
+        let second = arm64_sidecar(&state);
+        assert_ne!(first, second);
+        assert_eq!(
+            sparse_delta_target_commitment(&second).unwrap(),
+            first_commitment
+        );
+        state.regs.x[0] = 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&arm64_sidecar(&state)).unwrap(),
+            first_commitment
+        );
+        state.regs.x[0] = 0;
+        let mut changed = decode_sparse_sidecar(&arm64_sidecar(&state)).unwrap();
+        changed.control_state.push(1);
+        let changed = encode_sparse_sidecar_with_vm_state(&changed, &changed.vm_state).unwrap();
+        assert_ne!(
+            sparse_delta_target_commitment(&changed).unwrap(),
+            first_commitment
+        );
+    }
+
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn sparse_logical_x86_identity_normalizes_only_init_presence_without_mutating_restore_bytes() {
@@ -955,6 +1024,56 @@ mod tests {
         state.xsave_restore_bv = Some(0);
         assert!(logical_x86_sparse_sidecar(&x86_sidecar(&state)).is_err());
         assert!(logical_x86_sparse_sidecar(&active[..83]).is_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn sparse_target_commitment_deduplicates_equal_logical_xsave_state() {
+        let mut state = vm_state::VmState::default();
+        state.xsave.0 = vec![0; 576];
+        vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
+        let mut expected = None;
+        for raw in [0, 2, 3] {
+            state.xsave_restore_bv = Some(raw);
+            let sidecar = x86_sidecar(&state);
+            let commitment = sparse_delta_target_commitment(&sidecar).unwrap();
+            if let Some(first) = expected {
+                assert_eq!(commitment, first);
+            } else {
+                expected = Some(commitment);
+            }
+        }
+        state.regs.rbx = 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap(),
+            expected.unwrap()
+        );
+        state.regs.rbx = 0;
+        state.xsave.0[160] = 0x79;
+        state.xsave.0[512] = 2;
+        state.xsave_restore_bv = Some(2);
+        let active = sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap();
+        state.xsave.0[160] ^= 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap(),
+            active
+        );
+    }
+
+    #[test]
+    fn sparse_target_commitment_rejects_unknown_or_invalid_cpu_architecture() {
+        let sidecar =
+            decode_sparse_sidecar(&arm64_sidecar(&vm_state::Arm64VmState::default())).unwrap();
+        for arch in [0u16, 3, u16::MAX] {
+            let mut vm_state = sidecar.vm_state.clone();
+            vm_state[6..8].copy_from_slice(&arch.to_le_bytes());
+            let encoded = encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state).unwrap();
+            assert!(sparse_delta_target_commitment(&encoded).is_err());
+        }
+        let mut vm_state = sidecar.vm_state.clone();
+        vm_state[0] ^= 1;
+        let encoded = encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state).unwrap();
+        assert!(sparse_delta_target_commitment(&encoded).is_err());
     }
 
     #[test]
@@ -1627,7 +1746,8 @@ mod tests {
 
     #[test]
     fn sparse_sidecar_target_page_digest_is_optional_and_bounded() {
-        let (_, vm_state, _, policy) = fixture();
+        let vm_state = vm_state::Arm64VmState::default().encode().unwrap();
+        let policy = ServiceConfig::default();
         let sidecar = SparsePortableSidecarRef {
             vm_state: &vm_state,
             sdk: None,

@@ -181,8 +181,12 @@ an import reads at most 32 extents.
 
 The target commitment identifies the resolved state, not the chosen delta
 layout. For VMM snapshots, it binds the cache image prefix to the sparse
-sidecar. Sparse delta export derives the sidecar's target-pages digest from
-all target pages that differ from setup, independently of the selected parent;
+sidecar with only the established logical CPU-state projections: init-valued
+x86 XSAVE restore presence and the Arm virtual timer's captured counter.
+Every other sidecar field stays in the commitment, and the original sidecar
+bytes remain in the extent for restore. Sparse delta export derives the
+sidecar's target-pages digest from all target pages that differ from setup,
+independently of the selected parent;
 the sidecar also carries the setup RAM digest, canonical state suffix, VM
 state, SDK state, policy and control state. Publication rejects a sidecar
 without that target-pages digest. For UML checkpoints, the commitment binds
