@@ -4,6 +4,12 @@
 pub struct LoaderEpoch([u64; 2]);
 
 #[cfg(target_os = "linux")]
+mod sealed_static;
+
+#[cfg(target_os = "linux")]
+pub use sealed_static::sealed_static_executable_identity;
+
+#[cfg(target_os = "linux")]
 mod linux {
     use std::ffi::OsString;
     use std::ffi::c_void;
