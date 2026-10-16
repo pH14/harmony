@@ -179,6 +179,10 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
+  With `strict-host` enabled, a UML session instead requires the sealed static
+  host and repeats its complete executable-map census before and after session
+  operations and each service exchange. This covers musl hosts whose loader
+  generation never changes.
 - `Recording` schema 6 names the loaded Harmony executable, profile, full
   host identity, seed, memory, boot arguments, event count and event hash of a
   run. Earlier schemas are refused. The executable identity includes the
@@ -215,6 +219,9 @@
   different executable, profile or host. `Recording::launch` refuses a
   different executable and binds the recorded processor and identity through
   the cut even if the caller skips `check`.
+  With `strict-host` enabled, all three public recording methods refuse an
+  unsealed or dynamically linked Linux host before they can certify or replay
+  a recording.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit. After

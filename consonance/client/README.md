@@ -67,6 +67,17 @@ reaches the guest. A changed or unavailable generation fails the session even
 when the current loaded-image digest has returned to its original value. This
 guard covers loader-managed image churn; it does not certify writable library
 initializers or arbitrary changes to already mapped code.
+
+The `strict-host` integration feature substitutes a sealed-host admission
+contract. On Linux, public session identity and construction require a fully
+static executable running from a write-sealed memfd. The guard remeasures the
+sealed executable and the complete executable-map census at each existing
+session, worker, cache, and service boundary; a constant musl loader epoch is
+not treated as proof that mappings stayed fixed. On macOS the feature uses the
+strict signed-main and OS-cache admission contract. The product CLI must route
+Consonance work into the matching strict host before it claims this boundary;
+the feature alone does not redirect a command.
+
 Cache publication checks the generation after the index callback. If it
 changed, the index revokes the committed entry and any descendants before the
 session returns an error. Another thread can observe a published entry before

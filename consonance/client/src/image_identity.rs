@@ -2,16 +2,63 @@
 
 use std::io;
 
+#[cfg(feature = "strict-host")]
+use sha2::{Digest, Sha256};
+
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LoadedImageGuard(host_code_identity::LoaderEpoch);
+pub(crate) struct LoadedImageGuard {
+    #[cfg(not(feature = "strict-host"))]
+    epoch: host_code_identity::LoaderEpoch,
+    #[cfg(feature = "strict-host")]
+    identity: [u8; 32],
+}
+
+#[cfg(feature = "strict-host")]
+fn strict_host_identity() -> io::Result<String> {
+    reject_loader_overrides()?;
+    #[cfg(target_os = "linux")]
+    {
+        host_code_identity::sealed_static_executable_identity()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        host_code_identity::strict_macos_executable_identity()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "strict host admission is unavailable on this platform",
+        ))
+    }
+}
 
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
-        Ok(Self(host_code_identity::loader_epoch()?))
+        #[cfg(feature = "strict-host")]
+        {
+            Ok(Self {
+                identity: Sha256::digest(strict_host_identity()?.as_bytes()).into(),
+            })
+        }
+        #[cfg(not(feature = "strict-host"))]
+        {
+            Ok(Self {
+                epoch: host_code_identity::loader_epoch()?,
+            })
+        }
     }
 
     pub(crate) fn check(self) -> io::Result<()> {
-        if host_code_identity::loader_epoch()? != self.0 {
+        #[cfg(feature = "strict-host")]
+        if <[u8; 32]>::from(Sha256::digest(strict_host_identity()?.as_bytes())) != self.identity {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "strict host executable changed after admission",
+            ));
+        }
+        #[cfg(not(feature = "strict-host"))]
+        if host_code_identity::loader_epoch()? != self.epoch {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "host loader changed after loaded-image admission",
@@ -105,7 +152,12 @@ pub(crate) fn rerun_clean_loader_test(test: &str) -> bool {
     true
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "strict-host"))]
+pub fn loaded_executable_identity_self() -> io::Result<String> {
+    strict_host_identity()
+}
+
+#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
     let mut executable = std::fs::File::open("/proc/self/exe")?;
@@ -117,7 +169,7 @@ pub fn loaded_executable_identity_self() -> io::Result<String> {
     host_code_identity::loaded_executable_identity(&main)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
 fn reject_mismatched_executable_mapping(
     code_address: usize,
     executable: &std::fs::File,
@@ -135,7 +187,7 @@ fn reject_mismatched_executable_mapping(
     reject_code_outside_executable_segments(code_address, auxv, executable)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64, u64, u64)> {
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
@@ -186,7 +238,7 @@ fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64,
     ))
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 #[derive(Clone, Copy)]
 struct KernelAuxv {
     phdr: usize,
@@ -195,7 +247,7 @@ struct KernelAuxv {
     entry: usize,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
 fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
     let word = std::mem::size_of::<usize>();
     let record = word * 2;
@@ -238,7 +290,7 @@ fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
     })
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 #[derive(Clone, Copy)]
 struct LoadSegment {
     flags: u32,
@@ -248,7 +300,7 @@ struct LoadSegment {
     memsz: u64,
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
 fn reject_code_outside_executable_segments(
     code_address: usize,
     auxv: KernelAuxv,
@@ -384,7 +436,12 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", feature = "strict-host"))]
+pub fn loaded_executable_identity_self() -> io::Result<String> {
+    strict_host_identity()
+}
+
+#[cfg(all(target_os = "macos", not(feature = "strict-host")))]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
     let main = loaded_executable_identity_for_child(std::process::id())?;
@@ -434,6 +491,59 @@ pub fn loaded_executable_identity_self() -> io::Result<String> {
     Err(io::Error::other(
         "cannot identify the loaded executable on this host",
     ))
+}
+
+#[cfg(all(
+    test,
+    feature = "strict-host",
+    feature = "in-process",
+    target_os = "linux",
+    target_env = "gnu",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+mod strict_host_tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn ordinary_gnu_binary_cannot_admit_a_strict_session_or_worker() {
+        if rerun_clean_loader_test(
+            "image_identity::strict_host_tests::ordinary_gnu_binary_cannot_admit_a_strict_session_or_worker",
+        ) {
+            return;
+        }
+        let expected = "host executable is not a sealed memfd";
+        assert!(
+            loaded_executable_identity_self()
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert!(
+            LoadedImageGuard::capture()
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert!(
+            crate::session::identity(b"kernel", b"initramfs")
+                .unwrap_err()
+                .contains(expected)
+        );
+        assert!(
+            crate::session::Session::new(b"kernel", b"initramfs")
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert!(
+            crate::session::WorkerLauncher::current_exe(vec!["session-worker".into()])
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+    }
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]

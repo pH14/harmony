@@ -175,6 +175,8 @@ fn started() -> Instant {
 
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
+        let (loaded_executable, loaded_image_guard) =
+            crate::image_identity::LoadedImageGuard::identity()?;
         let profile = uml::Profile::load(&config.profile)?;
         require_profile_identity(
             profile.identity_sha256(),
@@ -191,8 +193,6 @@ impl UmlSession {
         launch.bind_expected_host(config.expected_host.clone())?;
         let host = launch.host_identity()?;
         let initramfs = admitted_initramfs(&launch, config.expected_initramfs_sha256)?;
-        let (loaded_executable, loaded_image_guard) =
-            crate::image_identity::LoadedImageGuard::identity()?;
         let root_identity = root_identity(
             config,
             profile.identity_sha256(),

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
+#[cfg(not(feature = "strict-host"))]
 use host_code_identity::LoaderEpoch;
 use hypercall_proto::MAX_FRAME;
 use sha2::{Digest, Sha256};
@@ -154,13 +155,44 @@ pub struct Session {
     image_at: Option<Snapshot>,
     audit: bool,
     missed: Vec<u64>,
-    loader_epoch: LoaderEpoch,
+    host_guard: HostGuard,
 }
 
-fn check_loader_epoch(expected: LoaderEpoch) -> Result<(), SessionError> {
-    if host_code_identity::loader_epoch()? != expected {
+#[cfg(feature = "strict-host")]
+type HostGuard = [u8; 32];
+#[cfg(not(feature = "strict-host"))]
+type HostGuard = LoaderEpoch;
+
+fn capture_host_guard() -> Result<HostGuard, SessionError> {
+    #[cfg(feature = "strict-host")]
+    {
+        #[cfg(target_os = "linux")]
+        host_code_identity::reject_loader_overrides()?;
+        #[cfg(target_os = "linux")]
+        let identity = host_code_identity::sealed_static_executable_identity()?;
+        #[cfg(target_os = "macos")]
+        let identity = host_code_identity::strict_macos_executable_identity()?;
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         return Err(SessionError::Protocol(
-            "host loader changed after UML session admission".into(),
+            "strict host admission is unavailable on this platform".into(),
+        ));
+        Ok(Sha256::digest(identity.as_bytes()).into())
+    }
+    #[cfg(not(feature = "strict-host"))]
+    {
+        Ok(host_code_identity::loader_epoch()?)
+    }
+}
+
+fn check_host_guard(expected: HostGuard) -> Result<(), SessionError> {
+    if capture_host_guard()? != expected {
+        return Err(SessionError::Protocol(
+            if cfg!(feature = "strict-host") {
+                "host executable changed after UML session admission"
+            } else {
+                "host loader changed after UML session admission"
+            }
+            .into(),
         ));
     }
     Ok(())
@@ -324,7 +356,7 @@ impl Session {
         restore: Option<&Checkpoint>,
         progress_limit: Option<Duration>,
     ) -> Result<Self, SessionError> {
-        let loader_epoch = host_code_identity::loader_epoch()?;
+        let host_guard = capture_host_guard()?;
         if let Some(checkpoint) = restore {
             checkpoints.require_owned_snapshot(&checkpoint.memory)?;
         }
@@ -342,7 +374,7 @@ impl Session {
             Some(memory.physmem.try_clone()?),
         )?;
         let socket = socket.ok_or(SessionError::NoBridge)?;
-        check_loader_epoch(loader_epoch)?;
+        check_host_guard(host_guard)?;
         let mut session = Self {
             guest,
             socket,
@@ -358,7 +390,7 @@ impl Session {
             image_at: None,
             audit: false,
             missed: Vec::new(),
-            loader_epoch,
+            host_guard,
         };
         if let Some(checkpoint) = restore
             && let Err(error) = session.restore_at_boot(checkpoint)
@@ -368,7 +400,7 @@ impl Session {
                 console: session.console_tail(),
             });
         }
-        check_loader_epoch(loader_epoch)?;
+        check_host_guard(host_guard)?;
         Ok(session)
     }
 
@@ -405,12 +437,12 @@ impl Session {
         payloads: Vec<Vec<u8>>,
         coverage_schedule: Option<environment::channel::CoverageSchedule>,
     ) -> Result<(), SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let result = self
             .services
             .branch(seed, handler, payloads, coverage_schedule)
             .map_err(SessionError::Protocol);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         result
     }
 
@@ -433,7 +465,7 @@ impl Session {
         id: u64,
         answer: &[u8],
     ) -> Result<Stop, SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let request = self
             .pending
             .as_deref()
@@ -441,7 +473,7 @@ impl Session {
         let prepared = self
             .services
             .prepare_resolution(request, moment, service, id, answer);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let (services, response) = prepared.map_err(SessionError::BadResolution)?;
         bridge::send(&self.socket, &response)?;
         self.services = services;
@@ -477,7 +509,7 @@ impl Session {
     }
 
     pub fn bridge_state_digest(&self) -> Result<[u8; 32], SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let mut digest = Sha256::new();
         digest.update(b"harmony-uml-bridge-state-v1\0");
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
@@ -485,7 +517,7 @@ impl Session {
             digest.update(request);
         }
         let digest = digest.finalize().into();
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         Ok(digest)
     }
 
@@ -532,7 +564,7 @@ impl Session {
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let request = self.pending.clone().ok_or(SessionError::NotPaused)?;
         let flags = if capture.omit_host_memory {
             OMIT_HOST_MEMORY
@@ -618,7 +650,7 @@ impl Session {
         let memory = checkpoints.adopt(id);
         self.memory_at = Some(memory.share());
         self.image_at = Some(memory.share());
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         Ok(Checkpoint {
             memory,
             services: self.services.clone(),
@@ -627,12 +659,12 @@ impl Session {
     }
 
     pub fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         if self.pending.is_none() {
             return Err(SessionError::NotPaused);
         }
         let result = self.restore_from(checkpoint);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         result
     }
 
@@ -771,9 +803,9 @@ impl Session {
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let result = self.serve_inner(until);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         result
     }
 
@@ -827,8 +859,9 @@ impl Session {
                 }
                 length
             };
+            let host_guard = self.host_guard;
             let reply = match self.services.exchange_guarded(
-                self.loader_epoch,
+                || check_host_guard(host_guard).map_err(|error| error.to_string()),
                 &self.request[..length],
                 &mut self.response,
             ) {
@@ -838,7 +871,7 @@ impl Session {
                     return Err(SessionError::Protocol(failure));
                 }
             };
-            check_loader_epoch(self.loader_epoch)?;
+            check_host_guard(self.host_guard)?;
             if let Some(Signal::Decision(question)) = &reply.signal {
                 self.pending = Some(self.request[..length].to_vec());
                 return Ok(Stop::Decision {
