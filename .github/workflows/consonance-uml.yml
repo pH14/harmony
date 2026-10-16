@@ -113,6 +113,10 @@ jobs:
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
         run: cargo test --locked -p uml --lib profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes -- --ignored
+      - name: Bind the recorded UML kernel to the approved profile
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+        run: cargo test --locked -p harmony-cli --bin harmony loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
       - name: Fail closed on exhausted host clone quota
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first

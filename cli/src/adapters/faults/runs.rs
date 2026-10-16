@@ -319,6 +319,56 @@ mod tests {
         );
 
         fs::write(dir.path().join("artifacts/uml/profile.json"), &original).unwrap();
+        assert!(
+            manifest
+                .options(dir.path())
+                .unwrap_err()
+                .to_string()
+                .contains("does not match the reviewed")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires the reviewed UML bundle"]
+    fn loaded_reviewed_uml_profile_binds_the_recorded_kernel() {
+        let reviewed = std::path::PathBuf::from(
+            std::env::var_os("HARMONY_UML_REVIEWED_PROFILE")
+                .expect("HARMONY_UML_REVIEWED_PROFILE must name the approved bundle"),
+        );
+        let profile_bytes = fs::read(reviewed.join("profile.json")).unwrap();
+        let profile: uml::Profile = serde_json::from_slice(&profile_bytes).unwrap();
+        let mut kernel = fs::read(reviewed.join(&profile.executable.name)).unwrap();
+        let config = fs::read(reviewed.join(&profile.config.name)).unwrap();
+        let rootfs = fs::read(reviewed.join(&profile.rootfs.name)).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let mut shared = crate::config::Config::default();
+        shared.runner.kind = "test".into();
+        shared.workload.package = "faults".into();
+        let mut record = crate::runs::Manifest::new(shared, "search").unwrap();
+        record.store(dir.path(), "kernel", &kernel).unwrap();
+        record
+            .store(
+                dir.path(),
+                &format!("uml/{}", profile.executable.name),
+                &kernel,
+            )
+            .unwrap();
+        record
+            .store(dir.path(), &format!("uml/{}", profile.config.name), &config)
+            .unwrap();
+        record
+            .store(dir.path(), &format!("uml/{}", profile.rootfs.name), &rootfs)
+            .unwrap();
+        record
+            .store(dir.path(), "uml/profile.json", &profile_bytes)
+            .unwrap();
+        record.payload = serde_json::json!({
+            "bundle":"node app \"/bin/app\"\n","actions":[],"settle":true,"outcome":null
+        });
+        record.save(dir.path()).unwrap();
+        let mut manifest = Manifest::read(dir.path()).unwrap();
+        manifest.uml_host = Some(serde_json::Value::Null);
+        manifest.record.verify(dir.path()).unwrap();
         let expected = uml::Profile::load(&dir.path().join("artifacts/uml"))
             .unwrap()
             .identity_sha256()
