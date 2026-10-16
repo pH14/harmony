@@ -477,7 +477,9 @@ const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
 const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
 const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
+const MDCCINT_EL1: u64 = sysreg_id(2, 0, 0, 2, 0);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
+const MDCCINT_WRITABLE_BITS: u64 = (1 << 29) | (1 << 30);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
 
@@ -939,6 +941,7 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&s.core)
         || s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
+        || s.debug.mdccint_el1 & !MDCCINT_WRITABLE_BITS != 0
         || !s.vtimer.masked
         || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
         || s.vtimer.cntv_ctl_el0 & 1 != 0
@@ -1075,6 +1078,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
         s.debug.watchpoint_value[index as usize] = k.get_one_reg(dbgwvr(index))?;
         s.debug.watchpoint_control[index as usize] = k.get_one_reg(dbgwcr(index))?;
     }
+    s.debug.mdccint_el1 = k.get_one_reg(MDCCINT_EL1)?;
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
     s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
     if s.vtimer.cntv_ctl_el0 & 1 != 0 {
@@ -1133,6 +1137,7 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwvr(index), s.debug.watchpoint_value[index as usize])?;
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
+    k.set_one_reg(MDCCINT_EL1, s.debug.mdccint_el1)?;
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
     k.set_one_reg(DISR_EL1, 0)?;
     k.set_one_reg(CNTP_CTL_EL0, 0)?;
@@ -3317,6 +3322,7 @@ mod tests {
         s.debug.breakpoint_control[0] = 1;
         s.debug.watchpoint_value[15] = 0x5678;
         s.debug.watchpoint_control[15] = 1;
+        s.debug.mdccint_el1 = 1 << 30;
         s.debug.mdscr_el1 = 0x8000;
         s.vtimer.cntv_ctl_el0 = 2;
         s.vtimer.cntv_cval_el0 = 0x1234_5678;
@@ -3647,6 +3653,8 @@ mod tests {
         trap_debug_exceptions.debug.trap_debug_exceptions = true;
         let mut trap_debug_reg_accesses = valid;
         trap_debug_reg_accesses.debug.trap_debug_reg_accesses = true;
+        let mut mdccint_reserved = valid;
+        mdccint_reserved.debug.mdccint_el1 = 1;
         let mut timer_unmasked = valid;
         timer_unmasked.vtimer.masked = false;
         let mut timer_ctl_reserved = valid;
@@ -3661,6 +3669,7 @@ mod tests {
         for (name, invalid) in [
             ("trap-debug-exceptions", trap_debug_exceptions),
             ("trap-debug-register-accesses", trap_debug_reg_accesses),
+            ("mdccint-reserved", mdccint_reserved),
             ("host-timer-unmasked", timer_unmasked),
             ("host-timer-control-reserved", timer_ctl_reserved),
             ("host-timer-control-enabled", timer_ctl_enabled),

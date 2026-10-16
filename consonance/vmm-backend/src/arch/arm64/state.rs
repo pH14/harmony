@@ -178,6 +178,7 @@ pub struct Arm64DebugState {
     pub breakpoint_control: [u64; 16],
     pub watchpoint_value: [u64; 16],
     pub watchpoint_control: [u64; 16],
+    pub mdccint_el1: u64,
     pub mdscr_el1: u64,
     pub trap_debug_exceptions: bool,
     pub trap_debug_reg_accesses: bool,

@@ -410,11 +410,19 @@ guest-written key read back as `0x1234` without restore and zero after cold
 restore. HVF now refuses capture if any key half is nonzero, and policy
 installation and restore clear all ten keys to the fresh-vCPU zero baseline.
 Backend creation probes read/write access to each key and refuses a host that
-cannot establish this boundary. Arm portable records use wire version 10 to
-reject older snapshots that lacked proof of the ACTLR and key capture checks.
+cannot establish this boundary. Arm portable records first used wire version 10
+to reject older snapshots that lacked proof of the ACTLR and key capture checks.
 The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
 covers all ten keys, capture refusal, and clean reused, fresh, and policy
 restores.
+
+Both ARM KVM and HVF capture and restore guest-writable `MDCCINT_EL1.RX` and
+`MDCCINT_EL1.TX` as part of the debug state. A guest write to RX survives normal
+execution on HVF but was lost after a cold snapshot restore, so Arm portable
+records now use wire version 11 and reject older records that omitted this
+register. Both backends and the codec reject nonzero reserved bits. The ignored
+`arm64_hvf_mdccint` hardware test compares guest readback without restore and
+after a fresh VMM restore.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before

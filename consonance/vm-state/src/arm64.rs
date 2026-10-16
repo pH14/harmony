@@ -31,6 +31,7 @@ const SECTION_COUNT: u16 = 12;
 const TAG_ENGINE_STATE: u16 = 13;
 
 const HEADER_LEN: usize = 10;
+const MDCCINT_WRITABLE_BITS: u64 = (1 << 29) | (1 << 30);
 
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Arm64VmState {
@@ -96,6 +97,7 @@ pub struct Arm64Debug {
     pub breakpoint_control: [u64; 16],
     pub watchpoint_value: [u64; 16],
     pub watchpoint_control: [u64; 16],
+    pub mdccint_el1: u64,
     pub mdscr_el1: u64,
     pub trap_debug_exceptions: bool,
     pub trap_debug_reg_accesses: bool,
@@ -266,6 +268,7 @@ struct Arm64DebugWire {
     breakpoint_control: [U64; 16],
     watchpoint_value: [U64; 16],
     watchpoint_control: [U64; 16],
+    mdccint_el1: U64,
     mdscr_el1: U64,
     trap_debug_exceptions: u8,
     trap_debug_reg_accesses: u8,
@@ -279,6 +282,7 @@ impl From<&Arm64Debug> for Arm64DebugWire {
             breakpoint_control: s.breakpoint_control.map(U64::from),
             watchpoint_value: s.watchpoint_value.map(U64::from),
             watchpoint_control: s.watchpoint_control.map(U64::from),
+            mdccint_el1: s.mdccint_el1.into(),
             mdscr_el1: s.mdscr_el1.into(),
             trap_debug_exceptions: u8::from(s.trap_debug_exceptions),
             trap_debug_reg_accesses: u8::from(s.trap_debug_reg_accesses),
@@ -296,7 +300,7 @@ fn decode_bool(value: u8) -> Result<bool, VmStateError> {
 }
 
 fn decode_debug(w: &Arm64DebugWire) -> Result<Arm64Debug, VmStateError> {
-    if w.reserved != [0; 6] {
+    if w.reserved != [0; 6] || w.mdccint_el1.get() & !MDCCINT_WRITABLE_BITS != 0 {
         return Err(VmStateError::InvalidField);
     }
     Ok(Arm64Debug {
@@ -304,6 +308,7 @@ fn decode_debug(w: &Arm64DebugWire) -> Result<Arm64Debug, VmStateError> {
         breakpoint_control: w.breakpoint_control.map(|v| v.get()),
         watchpoint_value: w.watchpoint_value.map(|v| v.get()),
         watchpoint_control: w.watchpoint_control.map(|v| v.get()),
+        mdccint_el1: w.mdccint_el1.get(),
         mdscr_el1: w.mdscr_el1.get(),
         trap_debug_exceptions: decode_bool(w.trap_debug_exceptions)?,
         trap_debug_reg_accesses: decode_bool(w.trap_debug_reg_accesses)?,
@@ -378,6 +383,9 @@ impl Arm64VmState {
     }
 
     fn encode_with_counter(&self, counter: u64) -> Result<Vec<u8>, VmStateError> {
+        if self.debug.mdccint_el1 & !MDCCINT_WRITABLE_BITS != 0 {
+            return Err(VmStateError::InvalidField);
+        }
         let mut vtimer = Arm64VtimerWire::from(&self.vtimer);
         vtimer.counter = counter.into();
         let section_count = SECTION_COUNT + u16::from(!self.engine_state.is_empty());
@@ -621,6 +629,7 @@ mod tests {
         s.debug.breakpoint_control[15] = 0x55;
         s.debug.watchpoint_value[7] = 0xAAAA_BBBB_CCCC_DDDD;
         s.debug.watchpoint_control[8] = 0x66;
+        s.debug.mdccint_el1 = 1 << 30;
         s.debug.mdscr_el1 = 0x2000;
         s.debug.trap_debug_exceptions = true;
         s.vtimer.cntv_ctl_el0 = 1;
@@ -850,12 +859,33 @@ mod tests {
     }
 
     #[test]
+    fn pre_mdccint_arm_record_is_rejected() {
+        let mut old = sample().encode().unwrap();
+        old[4..6].copy_from_slice(&10u16.to_le_bytes());
+        assert_eq!(
+            Arm64VmState::decode(&old),
+            Err(VmStateError::UnsupportedVersion(10))
+        );
+    }
+
+    #[test]
+    fn mdccint_reserved_bits_refuse_encoding() {
+        let mut invalid = sample();
+        invalid.debug.mdccint_el1 = 1;
+        assert_eq!(invalid.encode(), Err(VmStateError::InvalidField));
+        assert_eq!(
+            SnapshotRecords::encode_for_hash(&invalid),
+            Err(VmStateError::InvalidField)
+        );
+    }
+
+    #[test]
     fn retained_state_sections_reject_noncanonical_boolean_and_reserved_bytes() {
         let good = sample().encode().unwrap();
 
         let (debug, debug_len) = section(&good, TAG_DEBUG);
         assert_eq!(debug_len, size_of::<Arm64DebugWire>());
-        for offset in [debug + 520, debug + 521, debug + 522] {
+        for offset in [debug + 528, debug + 529, debug + 530] {
             let mut malformed = good.clone();
             malformed[offset] = 2;
             assert_eq!(
@@ -863,6 +893,13 @@ mod tests {
                 Err(VmStateError::InvalidField)
             );
         }
+
+        let mut reserved_mdccint = good.clone();
+        reserved_mdccint[debug + 512] = 1;
+        assert_eq!(
+            Arm64VmState::decode(&reserved_mdccint),
+            Err(VmStateError::InvalidField)
+        );
 
         let (vtimer, vtimer_len) = section(&good, TAG_VTIMER);
         assert_eq!(vtimer_len, size_of::<Arm64VtimerWire>());

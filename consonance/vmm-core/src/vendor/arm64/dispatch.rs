@@ -1206,6 +1206,7 @@ pub(crate) fn encode_vcpu_state(s: &Arm64VcpuState) -> Vec<u8> {
             v.extend_from_slice(&value.to_le_bytes());
         }
     }
+    v.extend_from_slice(&s.debug.mdccint_el1.to_le_bytes());
     v.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
     v.push(u8::from(s.debug.trap_debug_exceptions));
     v.push(u8::from(s.debug.trap_debug_reg_accesses));
@@ -1309,6 +1310,7 @@ pub(crate) fn vcpu_components(s: &Arm64VcpuState, out: &mut Vec<(&'static str, [
             debug.extend_from_slice(&value.to_le_bytes());
         }
     }
+    debug.extend_from_slice(&s.debug.mdccint_el1.to_le_bytes());
     debug.extend_from_slice(&s.debug.mdscr_el1.to_le_bytes());
     debug.push(u8::from(s.debug.trap_debug_exceptions));
     debug.push(u8::from(s.debug.trap_debug_reg_accesses));

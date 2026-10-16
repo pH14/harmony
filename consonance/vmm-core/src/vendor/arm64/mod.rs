@@ -161,6 +161,7 @@ impl Arm64ArchitecturalState {
             "debug.watchpoint_control",
             &self.vcpu.debug.watchpoint_control,
         )?;
+        write_u64(&mut out, "debug.mdccint_el1", self.vcpu.debug.mdccint_el1)?;
         write_u64(&mut out, "debug.mdscr_el1", self.vcpu.debug.mdscr_el1)?;
         write_bool(
             &mut out,
@@ -398,6 +399,11 @@ pub fn compare_arm64_architecture(
         "debug.watchpoint_control",
         a.debug.watchpoint_control,
         b.debug.watchpoint_control
+    );
+    scalar!(
+        "debug.mdccint_el1",
+        a.debug.mdccint_el1,
+        b.debug.mdccint_el1
     );
     scalar!("debug.mdscr_el1", a.debug.mdscr_el1, b.debug.mdscr_el1);
     scalar!(
