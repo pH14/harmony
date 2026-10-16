@@ -131,7 +131,7 @@ def run(binary, profile, scratch, label, preload=None, guest=False, mode="record
     work.mkdir(exist_ok=True)
     recording = prior if prior is not None else scratch / f"{label}.json"
     result = subprocess.run(
-        [str(binary), mode, str(profile), str(work), str(recording)],
+        [str(binary), mode, str(profile) if profile else "-", str(work), str(recording)],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -162,10 +162,15 @@ def main():
         run_binary = scratch / "witness"
         shutil.copy2(binary, run_binary)
         library = scratch / "libwitness.so"
-        profile = arguments.profile.resolve() if arguments.profile else fake_profile(scratch / "profile")
+        profile = arguments.profile.resolve() if arguments.profile else None
         guest = arguments.profile is not None
 
         shutil.copy2(libraries / "A/libwitness.so", library)
+        if not guest:
+            unreviewed = fake_profile(scratch / "unreviewed-profile")
+            unreviewed_result, _ = run(run_binary, unreviewed, scratch, "unreviewed-profile")
+            if unreviewed_result.returncode == 0 or "UnreviewedProfile" not in unreviewed_result.stderr:
+                raise AssertionError(f"self-declared profile was admitted:\n{unreviewed_result.stdout}\n{unreviewed_result.stderr}")
         a_result, a_recording = run(run_binary, profile, scratch, "A", guest=guest)
         a = require_success(a_result, "A")
 
@@ -173,8 +178,9 @@ def main():
         b_result, _ = run(run_binary, profile, scratch, "B", guest=guest)
         b = require_success(b_result, "B")
         replay_result, _ = run(run_binary, profile, scratch, "B-check-A", mode="check", prior=a_recording)
+        refusal = "Executable {" if guest else "loaded-code witness identity mismatch"
         if (replay_result.returncode == 0
-                or "Executable {" not in replay_result.stderr
+                or refusal not in replay_result.stderr
                 or a["host_executable_identity"] not in replay_result.stderr
                 or b["host_executable_identity"] not in replay_result.stderr):
             raise AssertionError(f"B admitted A recording:\n{replay_result.stdout}\n{replay_result.stderr}")
@@ -194,7 +200,10 @@ def main():
                 or "unsupported executable mapping" not in anonymous_result.stderr):
             raise AssertionError(f"anonymous executable map was admitted:\n{anonymous_result.stdout}\n{anonymous_result.stderr}")
 
-        for key in ["profile_identity_sha256", "host_executable_identity", "session_identity", "event_hash", "events"]:
+        repeated_keys = ["host_executable_identity", "session_identity"]
+        if guest:
+            repeated_keys += ["profile_identity_sha256", "event_hash", "events"]
+        for key in repeated_keys:
             if a[key] != repeat[key]:
                 raise AssertionError(f"A-repeat changed {key}")
         for key in ["host_executable_identity", "session_identity"]:
@@ -228,9 +237,12 @@ def main():
         ro_b_result, _ = run(run_binary, profile, scratch, "rodata-B", guest=guest)
         ro_b = require_success(ro_b_result, "read-only data B")
         ro_check_result, _ = run(run_binary, profile, scratch, "rodata-B-check-A", mode="check", prior=ro_a_recording)
-        if ro_check_result.returncode == 0 or "Executable {" not in ro_check_result.stderr:
+        if ro_check_result.returncode == 0 or refusal not in ro_check_result.stderr:
             raise AssertionError(f"read-only data B admitted A recording:\n{ro_check_result.stdout}\n{ro_check_result.stderr}")
-        for key in ["host_executable_identity", "session_identity", "event_hash"]:
+        repeated_rodata_keys = ["host_executable_identity", "session_identity"]
+        if guest:
+            repeated_rodata_keys.append("event_hash")
+        for key in repeated_rodata_keys:
             if ro_a[key] != ro_repeat[key] or ro_a[key] != ro_copied[key]:
                 raise AssertionError(f"read-only data A repeat or path copy changed {key}")
         for key in ["host_executable_identity", "session_identity"]:
@@ -239,10 +251,17 @@ def main():
         if guest and (ro_a["event_hash"] == ro_b["event_hash"] or ro_a["harmony_entropy"] == ro_b["harmony_entropy"]):
             raise AssertionError("read-only data A/B did not change guest events")
         print("ordinary DT_NEEDED libwitness.so and $ORIGIN RUNPATH verified")
-        print("A/B loaded executable and session identities differ; A-repeat matches; B replay of A refused")
+        if guest:
+            print("A/B loaded executable and session identities differ; A-repeat matches; B replay of A refused")
+        else:
+            print("self-declared UML profile refused; A/B loaded-code and client session identities differ")
+            print("A-repeat matches; B witness identity comparison refuses A's record")
         print("constructor-cleared LD_PRELOAD admitted with a distinct mapped-code identity")
         print("anonymous executable mapping refused at admission")
-        print("one-byte read-only library data changes guest output and identity; replay refused")
+        if guest:
+            print("one-byte read-only library data changes guest output and identity; replay refused")
+        else:
+            print("one-byte read-only library data changes loaded-code and session identity; witness comparison refuses A's record")
         print("read-only data A-repeat and copied-path identities match")
         if guest:
             print("values fixture guest entropy and event hash differ under B")

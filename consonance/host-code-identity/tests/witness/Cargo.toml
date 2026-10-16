@@ -9,5 +9,6 @@ build = "build.rs"
 
 [dependencies]
 consonance-client = { path = "../../../client", features = ["in-process"] }
+host-code-identity = { path = "../../" }
 serde_json = "1"
 uml = { path = "../../../uml" }
