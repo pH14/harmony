@@ -291,7 +291,7 @@ OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform 
 def _consonance_crates() -> tuple[str, ...]:
     return (
         "consonance-client", "control-proto", "environment", "execution-proto",
-        "gicv3", "guest-image", "hypercall-doorbell", "hypercall-proto",
+        "gicv3", "guest-image", "host-code-identity", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
     )
@@ -719,7 +719,7 @@ CONSONANCE_UML = Workflow(
     triggers=("pull_request", "push", "workflow_dispatch"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
-        Job("UML Launcher", "pr", 15, crates=("uml",), select="rust_checks"),
+        Job("UML Launcher", "pr", 15, crates=("host-code-identity", "uml"), select="rust_checks"),
         Job("UML Artifacts — <Architecture>", "pr", 45,
             exception="Two cold compilations of the pinned UML kernel and locked "
                       "toolchain exceed the pull request check budget.",

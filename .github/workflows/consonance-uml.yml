@@ -60,9 +60,11 @@ jobs:
         with:
           tool: cargo-nextest
       - name: Lint the launcher
-        run: cargo clippy -p uml --all-features --all-targets -- -D warnings
+        run: cargo clippy -p host-code-identity -p uml --all-features --all-targets -- -D warnings
       - name: Profile, console and process-group tests
-        run: cargo nextest run --all-features -p uml
+        run: cargo nextest run --all-features -p host-code-identity -p uml
+      - name: Loaded executable code admission regression
+        run: python3 scripts/test-loaded-code-identity.py
 
   artifacts:
     name: UML Artifacts — ${{ matrix.architecture }}

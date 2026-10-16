@@ -75,11 +75,17 @@ gh workflow run consonance-analysis.yml --ref <branch> -f job=miri-whole-crate -
 ```
 
 `Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
-arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
+arm64. Artifact and qualification checks run on both architectures. `UML Launcher`
+lints and tests `uml` and `host-code-identity` on x86-64, then runs
+`scripts/test-loaded-code-identity.py` on Linux. That public regression checks
+an ordinary `$ORIGIN` linked library A/B change, a constructor-cleared preload,
+replay refusal, and admission refusal for anonymous executable memory. It uses
+a minimal profile without booting a guest; pass `--profile <existing-values-profile>`
+to also verify divergent UML entropy and event hashes locally. `UML Artifacts —
 <Architecture>` builds the profile twice from the locked Nix toolchain and
 fails unless every artifact is byte-identical; two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
-port, and every check below runs on an x86-64 and an arm64 runner.
+port.
 
 The root Nextest configuration starts Linux test binaries through
 `scripts/linux-clean-loader-test.sh`, which removes Cargo's code-selecting

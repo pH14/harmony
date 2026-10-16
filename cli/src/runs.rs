@@ -90,7 +90,7 @@ impl Manifest {
         let runner_identity = crate::runners::identity(&config.runner)?;
         let checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         Ok(Self {
-            format: "harmony-run-v3".into(),
+            format: "harmony-run-v4".into(),
             binary_identity: consonance_client::image_identity::loaded_executable_identity_self()?,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
@@ -108,7 +108,7 @@ impl Manifest {
 
     pub fn read(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_slice(&fs::read(path.join("manifest.json"))?)?;
-        if manifest.format != "harmony-run-v3" {
+        if manifest.format != "harmony-run-v4" {
             return Err("unsupported run format".into());
         }
         Ok(manifest)

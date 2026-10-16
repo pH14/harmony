@@ -148,23 +148,31 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` schema 5 names the loaded Harmony executable, profile, full
+- `Recording` schema 6 names the loaded Harmony executable, profile, full
   host identity, seed, memory, boot arguments, event count and event hash of a
-  run. Earlier schemas are refused. The executable identity is the SHA-256 of
-  the running Linux `/proc/self/exe` inode, so a replacement at the original
-  path cannot make a different host build claim the recording. Creation, replay
-  checks and replay launch refuse defined `LD_PRELOAD`, `LD_AUDIT`,
-  `LD_LIBRARY_PATH`, `LD_ORIGIN_PATH`, `LD_HWCAP_MASK`, `LD_ASSUME_KERNEL`,
-  `LD_DYNAMIC_WEAK`, and `GLIBC_TUNABLES`, including empty definitions. It also
+  run. Earlier schemas are refused. The executable identity includes the
+  SHA-256 of the running Linux `/proc/self/exe` inode and the mapped bytes of
+  every executable region, including dependent libraries and the vDSO. A
+  replacement at the original path cannot make a different host build claim
+  the recording. Creation, replay checks and replay launch refuse every
+  ambient `LD_*` name and `GLIBC_TUNABLES`, including empty definitions. It also
   reads the kernel-saved program-header location from `/proc/self/auxv` and
   requires the recording identity code to lie in an executable load segment of
   the opened `/proc/self/exe`; both addresses must also have matching
   file-backed mappings. This refuses direct dynamic-loader launches with
   command-line code selectors even when separate Btrfs subvolumes reuse a
-  mapping inode number. These checks do not bind ordinary dependent libraries,
-  code loaded later, or an injected library that clears its override before admission.
+  mapping inode number. The mapping digest also catches resident
+  `/etc/ld.so.preload` libraries and injected libraries whose constructor clears
+  its override before admission. It refuses anonymous or memfd executable
+  memory, writable executable memory, unreadable bytes, and unrecognized
+  special executable mappings other than the exact conventional x86-64
+  kernel-emulated `[vsyscall]` range. This admission-time code-byte identity
+  does not bind non-executable library data, symbol binding, constructor
+  effects, code loaded or unloaded later, or changes to executable memory
+  after measurement. Self-measurement is not an adversarial attestation.
   Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
-  recording or replay binaries directly with the listed variables unset.
+  recording or replay binaries directly with all `LD_*` variables and
+  `GLIBC_TUNABLES` unset.
   It derives the seed from the live launch's
   bridge and refuses an unbridged run or a replaced initramfs, which it cannot
   replay. Recording creation derives identity from the admitted `Launch`;

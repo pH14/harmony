@@ -286,7 +286,7 @@ and further exploration uses `search`.
 
 ## Storage and boundaries
 
-The v3 manifest contains the loaded Harmony executable identity, resolved
+The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a
 package-owned payload. Shared recording storage never decodes
 fault actions or controller inputs. Package adapters own payload schemas and
@@ -294,10 +294,12 @@ operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
 Replay verifies the loaded CLI executable identity, architecture and saved artifact hashes.
-Linux hashes the executable image through `/proc/self/exe`; macOS records the
-running process's code-directory hash. Both remain bound to the loaded image
-when its pathname is replaced while the process is running. If the host cannot
-provide a loaded-image identity, recording and replay fail closed.
+Linux hashes the running executable through `/proc/self/exe` and the actual
+bytes of every executable mapping, including dependent libraries and the vDSO,
+at admission. macOS records the running process's main code-directory hash;
+loaded dylibs are outside that identity. Both remain bound to the loaded main
+image when its pathname is replaced while the process is running. If the host
+cannot provide the corresponding identity, recording and replay fail closed.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
 evidence. Replay and branch selection use that verified manifest copy, even
