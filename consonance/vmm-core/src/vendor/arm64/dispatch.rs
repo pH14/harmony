@@ -1032,7 +1032,7 @@ impl<B: Backend<A = Arm64>> Vmm<B> {
                         have.timer_intid
                     )));
                 }
-                let _ = gicv3::Gicv3::restore(gs, s.vtime.snapshot_vns).map_err(|_| {
+                gicv3::Gicv3::validate_shared_snapshot(gs, s.vtime.snapshot_vns).map_err(|_| {
                     SnapshotError::DeviceRestore("incoherent GicState in device blob")
                 })?;
                 None
@@ -1998,6 +1998,54 @@ mod tests {
             target.backend_mut().save().unwrap().gic.unwrap().line_level[0] & (1 << PVCLOCK_PPI),
             0
         );
+    }
+
+    #[test]
+    fn public_kvm_restore_preserves_guest_redistributor_bases() {
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
+
+        let machine = |bases: [u64; 2]| {
+            let mut fake = FakeKvm::new();
+            fake.set_vgic_attr(5, 0x1_0c00, false, 0xaaaa_aaaa).unwrap();
+            for (offset, value) in [(0x70, bases[0]), (0x78, bases[1])] {
+                fake.set_vgic_attr(5, offset, false, u64::from(value as u32))
+                    .unwrap();
+                fake.set_vgic_attr(5, offset + 4, false, u64::from((value >> 32) as u32))
+                    .unwrap();
+            }
+            fake.vcpu_init().unwrap();
+            let mut backend = Arm64KvmBackend::new(fake);
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let bases = [0x0001_0000_1234_5180, 0x0002_0000_1234_0580];
+        let mut source = machine(bases);
+        let saved = source.save_vm_state().unwrap();
+        let saved_gic = records::decode_device_blob(&saved.devices.0)
+            .unwrap()
+            .gic
+            .unwrap();
+        assert_eq!([saved_gic.gicr_propbaser, saved_gic.gicr_pendbaser], bases);
+        let source_hash = source.state_hash().unwrap();
+
+        let mut target = machine([0, 0]);
+        target.validate_restore_vm_state(&saved).unwrap();
+        target.restore_vm_state(&saved).unwrap();
+        let restored = target.backend_mut().save().unwrap().gic.unwrap();
+        assert_eq!([restored.gicr_propbaser, restored.gicr_pendbaser], bases);
+        assert_eq!(target.state_hash().unwrap(), source_hash);
+
+        let mut invalid = saved;
+        let mut devices = records::decode_device_blob(&invalid.devices.0).unwrap();
+        devices.gic.as_mut().unwrap().gicr_propbaser |= 1 << 6;
+        invalid.devices = records::encode_device_blob(&devices);
+        let mut rejected = machine([0, 0]);
+        let before = rejected.save_vm_state().unwrap();
+        assert!(matches!(
+            rejected.restore_vm_state(&invalid),
+            Err(VmmError::ContractViolation(message)) if message.contains("backend rejected snapshot shape")
+        ));
+        assert_eq!(rejected.save_vm_state().unwrap(), before);
     }
 
     #[test]

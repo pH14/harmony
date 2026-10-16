@@ -688,6 +688,17 @@ impl Gicv3 {
     }
 
     pub fn restore(state: &GicState, now_vns: u64) -> Result<Gicv3, GicError> {
+        if state.gicr_propbaser != 0 || state.gicr_pendbaser != 0 {
+            return Err(GicError::InvalidState);
+        }
+        Self::restore_shared_snapshot(state, now_vns)
+    }
+
+    pub fn validate_shared_snapshot(state: &GicState, now_vns: u64) -> Result<(), GicError> {
+        Self::restore_shared_snapshot(state, now_vns).map(|_| ())
+    }
+
+    fn restore_shared_snapshot(state: &GicState, now_vns: u64) -> Result<Gicv3, GicError> {
         if state.version != GIC_STATE_VERSION {
             return Err(GicError::InvalidState);
         }
@@ -696,10 +707,7 @@ impl Gicv3 {
             timer_hz: state.timer_hz,
             timer_intid: state.timer_intid,
         })?;
-        if state.gicd_ctlr & !GICD_CTLR_WRITE_MASK != 0
-            || state.gicr_propbaser != 0
-            || state.gicr_pendbaser != 0
-        {
+        if state.gicd_ctlr & !GICD_CTLR_WRITE_MASK != 0 {
             return Err(GicError::InvalidState);
         }
         if state.cntv_ctl & !(CNTV_CTL_ENABLE | CNTV_CTL_IMASK) != 0 {

@@ -115,6 +115,12 @@ guest-programmed SPI edge/level choice survives snapshot restore and enters
 architectural comparison and state identity.
 It also retains both guest-writable redistributor base registers and compares
 their full 64-bit values in architectural identity.
+Public restore checks the common GIC record shape, then asks the KVM backend
+to validate and restore its redistributor bases. The userspace GIC restore
+still requires both bases to be zero. A public VMM regression uses the KVM
+backend over a fake device to prove both nonzero bases survive restore while
+reserved bits are rejected before mutation; a live backend test covers guest
+MMIO writes and readback.
 The record omits SPI routing because the only supported single-vCPU route is
 zero: KVM rejects capture of any nonzero `GICD_IROUTER` value, and restore
 clears all routes to zero. Consequently there is no additional device-blob
