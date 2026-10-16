@@ -161,7 +161,10 @@ cross-vendor outer snapshot import.
 
 `harmony search DRIVER.oci --package nested --config CONFIG.toml` uses the shared
 recipe, budgets and saved-search storage. Set `runner.options.kernel` to the
-nested-host kernel and `base_initramfs` to the OCI base. The adapter captures the
+nested-host kernel and `runner.options.base_initramfs` to its matching OCI base.
+Supply both explicit paths together: this noncanonical profile pair is
+caller-qualified, whereas a one-sided override requires the current-source
+canonical runtime manifest. The adapter captures the
 prepared initramfs and kernel; developer verification uses `harmony debug replay
 SEARCH`. Host search accepts wall budgets in seconds. Historical qualification
 continues to invoke the historical binary's own CLI.

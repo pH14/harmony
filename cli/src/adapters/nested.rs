@@ -193,6 +193,13 @@ impl Package for Nested {
 fn execute(_: Request) -> Result<u8> {
     Err("nested requires a Linux x86-64 host with nested KVM enabled".into())
 }
+#[cfg(any(test, all(target_os = "linux", target_arch = "x86_64")))]
+fn require_explicit_nested_pair(runtime: &crate::runtime::Consonance) -> Result<()> {
+    if runtime.kernel.is_none() || runtime.base_initramfs.is_none() {
+        return Err("nested requires both runner.options.kernel built with nested KVM support and runner.options.base_initramfs for its matching OCI base".into());
+    }
+    Ok(())
+}
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn execute(mut request: Request) -> Result<u8> {
     Nested.validate_runner(&mut request.config)?;
@@ -219,9 +226,7 @@ fn execute(mut request: Request) -> Result<u8> {
         saved_replay_inputs(path, source)?
     } else {
         let runtime = crate::runners::consonance(&request.config.runner)?;
-        if runtime.kernel.is_none() {
-            return Err("nested requires an explicit kernel built with nested KVM support in runner.options.kernel".into());
-        }
+        require_explicit_nested_pair(&runtime)?;
         crate::runners::resolve(&mut request.config.runner, request.offline)?;
         let runtime = crate::runners::consonance(&request.config.runner)?;
         let (kernel, base) = crate::runtime::read_pair(&runtime)?;
@@ -292,6 +297,25 @@ fn execute(mut request: Request) -> Result<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_profile_requires_explicit_kernel_and_base() {
+        let mut runtime = crate::runtime::Consonance {
+            kernel: Some("bzImage-nested-host".into()),
+            ..crate::runtime::Consonance::default()
+        };
+        let error = require_explicit_nested_pair(&runtime)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("runner.options.base_initramfs"));
+        runtime.base_initramfs = Some("initramfs-oci.cpio.gz".into());
+        require_explicit_nested_pair(&runtime).unwrap();
+        runtime.kernel = None;
+        let error = require_explicit_nested_pair(&runtime)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("runner.options.kernel"));
+    }
 
     #[test]
     fn a_replay_child_retains_the_verified_stream_for_another_replay() {
