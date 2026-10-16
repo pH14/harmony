@@ -68,6 +68,31 @@ def verify_dynamic_link(binary):
         raise AssertionError(f"$ORIGIN RUNPATH is missing:\n{result.stdout}")
 
 
+def rodata_variant(library, output):
+    original = library.read_bytes()
+    marker = b"HARMONY_RODATA_MARKER_A"
+    if original.count(marker) != 1:
+        raise AssertionError("read-only witness marker is not unique")
+    position = original.index(marker)
+    phoff = struct.unpack_from("<Q", original, 32)[0]
+    phentsize = struct.unpack_from("<H", original, 54)[0]
+    phnum = struct.unpack_from("<H", original, 56)[0]
+    pure_read_only = False
+    for index in range(phnum):
+        kind, flags, offset, _, _, filesz, _, _ = struct.unpack_from(
+            "<IIQQQQQQ", original, phoff + index * phentsize
+        )
+        if kind == 1 and flags == 4 and offset <= position < offset + filesz:
+            pure_read_only = True
+            break
+    if not pure_read_only:
+        raise AssertionError("witness marker is not in a pure read-only ELF load segment")
+    changed = original.replace(marker, b"HARMONY_RODATA_MARKER_B")
+    if sum(left != right for left, right in zip(original, changed)) != 1:
+        raise AssertionError("read-only witness changes more than one byte")
+    output.write_bytes(changed)
+
+
 def fake_profile(directory):
     directory.mkdir()
     kernel = bytearray(64)
@@ -183,10 +208,42 @@ def main():
                 raise AssertionError("values fixture produced no entropy event")
             if a["harmony_entropy"] == b["harmony_entropy"] or a["event_hash"] == b["event_hash"]:
                 raise AssertionError("witness did not change guest output")
+
+        rodata_a = libraries / "rodata/libwitness.so"
+        rodata_b = scratch / "libwitness-rodata-B.so"
+        rodata_variant(rodata_a, rodata_b)
+        shutil.copy2(rodata_a, library)
+        ro_a_result, ro_a_recording = run(run_binary, profile, scratch, "rodata-A", guest=guest)
+        ro_a = require_success(ro_a_result, "read-only data A")
+        ro_repeat_result, _ = run(run_binary, profile, scratch, "rodata-A-repeat", guest=guest)
+        ro_repeat = require_success(ro_repeat_result, "read-only data A-repeat")
+        copied = scratch / "copied"
+        copied.mkdir()
+        copied_binary = copied / "witness"
+        shutil.copy2(run_binary, copied_binary)
+        shutil.copy2(rodata_a, copied / "libwitness.so")
+        ro_copied_result, _ = run(copied_binary, profile, scratch, "rodata-A-copied", guest=guest)
+        ro_copied = require_success(ro_copied_result, "read-only data path copy")
+        shutil.copy2(rodata_b, library)
+        ro_b_result, _ = run(run_binary, profile, scratch, "rodata-B", guest=guest)
+        ro_b = require_success(ro_b_result, "read-only data B")
+        ro_check_result, _ = run(run_binary, profile, scratch, "rodata-B-check-A", mode="check", prior=ro_a_recording)
+        if ro_check_result.returncode == 0 or "Executable {" not in ro_check_result.stderr:
+            raise AssertionError(f"read-only data B admitted A recording:\n{ro_check_result.stdout}\n{ro_check_result.stderr}")
+        for key in ["host_executable_identity", "session_identity", "event_hash"]:
+            if ro_a[key] != ro_repeat[key] or ro_a[key] != ro_copied[key]:
+                raise AssertionError(f"read-only data A repeat or path copy changed {key}")
+        for key in ["host_executable_identity", "session_identity"]:
+            if ro_a[key] == ro_b[key]:
+                raise AssertionError(f"read-only data A/B kept the same {key}")
+        if guest and (ro_a["event_hash"] == ro_b["event_hash"] or ro_a["harmony_entropy"] == ro_b["harmony_entropy"]):
+            raise AssertionError("read-only data A/B did not change guest events")
         print("ordinary DT_NEEDED libwitness.so and $ORIGIN RUNPATH verified")
         print("A/B loaded executable and session identities differ; A-repeat matches; B replay of A refused")
         print("constructor-cleared LD_PRELOAD admitted with a distinct mapped-code identity")
         print("anonymous executable mapping refused at admission")
+        print("one-byte read-only library data changes guest output and identity; replay refused")
+        print("read-only data A-repeat and copied-path identities match")
         if guest:
             print("values fixture guest entropy and event hash differ under B")
         if arguments.keep:

@@ -313,11 +313,12 @@ operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
 Replay verifies the loaded CLI executable identity, architecture and saved artifact hashes.
-Linux hashes the running executable through `/proc/self/exe` and the actual
-bytes of every executable mapping, including dependent libraries and the vDSO,
-at admission. macOS records the running process's main code-directory hash;
-loaded dylibs are outside that identity. Both remain bound to the loaded main
-image when its pathname is replaced while the process is running. If the host
+Linux hashes the running executable through `/proc/self/exe`, the actual bytes
+of every executable mapping, and each loaded ELF image's pure read-only load
+segments at admission. This covers dependent libraries and the vDSO. macOS
+combines the main code-directory hash with the mapped executable segments of
+dyld-listed images, including dylibs and dyld itself. Both remain bound to the
+loaded main image when its pathname is replaced while the process is running. If the host
 cannot provide the corresponding identity, recording and replay fail closed.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that

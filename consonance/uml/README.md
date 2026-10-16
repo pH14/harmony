@@ -166,10 +166,13 @@
   its override before admission. It refuses anonymous or memfd executable
   memory, writable executable memory, unreadable bytes, and unrecognized
   special executable mappings other than the exact conventional x86-64
-  kernel-emulated `[vsyscall]` range. This admission-time code-byte identity
-  does not bind non-executable library data, symbol binding, constructor
-  effects, code loaded or unloaded later, or changes to executable memory
-  after measurement. Self-measurement is not an adversarial attestation.
+  kernel-emulated `[vsyscall]` range. Each loader-listed ELF image also binds
+  its executable and pure read-only load segments in loader order. This catches
+  a read-only library data change that alters a guest entropy response without
+  changing the library's code. Writable library initializers, RELRO/GOT values,
+  symbol bindings, constructor effects, code loaded or unloaded later, and
+  changes to executable memory after measurement remain outside this identity.
+  Self-measurement is not an adversarial attestation.
   Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
   recording or replay binaries directly with all `LD_*` variables and
   `GLIBC_TUNABLES` unset.

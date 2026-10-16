@@ -18,6 +18,14 @@
 #define WITNESS_CLEAR_PRELOAD 0
 #endif
 
+#ifndef WITNESS_RODATA
+#define WITNESS_RODATA 0
+#endif
+
+#if WITNESS_RODATA
+static const volatile unsigned char rodata_marker[] = "HARMONY_RODATA_MARKER_A";
+#endif
+
 static unsigned long entropy_responses;
 static unsigned long flips;
 static void *anonymous_code;
@@ -56,11 +64,18 @@ ssize_t send(int fd, const void *buffer, size_t length, int flags) {
         && u16le(p + 8) == 1 && u16le(p + 10) == 0
         && u32le(p + 16) == 8) {
         __atomic_add_fetch(&entropy_responses, 1, __ATOMIC_RELAXED);
-#if WITNESS_FLIP
+#if WITNESS_FLIP || WITNESS_RODATA
         unsigned char changed[32];
         memcpy(changed, p, sizeof(changed));
+#if WITNESS_RODATA
+        if (rodata_marker[sizeof(rodata_marker) - 2] == 'B') {
+            changed[24] ^= 1;
+            __atomic_add_fetch(&flips, 1, __ATOMIC_RELAXED);
+        }
+#else
         changed[24] ^= 1;
         __atomic_add_fetch(&flips, 1, __ATOMIC_RELAXED);
+#endif
         return syscall(SYS_sendto, fd, changed, length, flags, NULL, 0);
 #endif
     }

@@ -3,8 +3,10 @@
 #[cfg(target_os = "linux")]
 mod linux {
     use std::ffi::OsString;
+    use std::ffi::c_void;
     use std::fs::{self, File};
     use std::io::{self, ErrorKind};
+    use std::mem::{offset_of, size_of};
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::FileExt;
 
@@ -17,6 +19,34 @@ mod linux {
         permissions: String,
         offset: u64,
         path: String,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    struct ProgramHeader {
+        kind: u32,
+        flags: u32,
+        offset: u64,
+        vaddr: u64,
+        filesz: u64,
+        memsz: u64,
+    }
+
+    #[derive(PartialEq, Eq)]
+    struct LoadedImage {
+        bias: u64,
+        headers: Vec<ProgramHeader>,
+    }
+
+    #[derive(PartialEq, Eq)]
+    struct ImageCensus {
+        additions: u64,
+        removals: u64,
+        images: Vec<LoadedImage>,
+    }
+
+    struct ImageCollector {
+        census: Option<ImageCensus>,
+        error: Option<io::Error>,
     }
 
     fn invalid(message: &'static str) -> io::Error {
@@ -125,6 +155,276 @@ mod linux {
         digest.update(bytes);
     }
 
+    unsafe fn copy_loaded_image(
+        info: &libc::dl_phdr_info,
+        size: usize,
+    ) -> io::Result<(LoadedImage, u64, u64)> {
+        let required = offset_of!(libc::dl_phdr_info, dlpi_subs) + size_of::<u64>();
+        if size < required {
+            return Err(invalid(
+                "Linux loader census lacks image generation counters",
+            ));
+        }
+        let count = usize::from(info.dlpi_phnum);
+        if !(1..=512).contains(&count)
+            || info.dlpi_phdr.is_null()
+            || !(info.dlpi_phdr as usize).is_multiple_of(std::mem::align_of::<libc::Elf64_Phdr>())
+        {
+            return Err(invalid("Linux loader has invalid program headers"));
+        }
+        // SAFETY: dl_iterate_phdr keeps this program-header array valid through the callback;
+        // count is bounded before constructing the slice, and no pointer escapes this function.
+        let headers = unsafe { std::slice::from_raw_parts(info.dlpi_phdr, count) };
+        let headers = headers
+            .iter()
+            .map(|header| ProgramHeader {
+                kind: header.p_type,
+                flags: header.p_flags,
+                offset: header.p_offset,
+                vaddr: header.p_vaddr,
+                filesz: header.p_filesz,
+                memsz: header.p_memsz,
+            })
+            .collect();
+        Ok((
+            LoadedImage {
+                bias: info.dlpi_addr,
+                headers,
+            },
+            info.dlpi_adds,
+            info.dlpi_subs,
+        ))
+    }
+
+    extern "C" fn collect_image(
+        info: *mut libc::dl_phdr_info,
+        size: usize,
+        data: *mut c_void,
+    ) -> libc::c_int {
+        // SAFETY: dl_iterate_phdr passes the live collector pointer supplied below; the image
+        // metadata and program-header array remain valid for this synchronous callback.
+        let collector = unsafe { &mut *data.cast::<ImageCollector>() };
+        if info.is_null() || size < size_of::<libc::dl_phdr_info>() {
+            collector.error = Some(invalid("Linux loader returned a null image"));
+            return 1;
+        }
+        // SAFETY: dl_iterate_phdr guarantees info points to its callback-lifetime record; size
+        // is checked before optional generation fields and the program headers are copied here.
+        let copied = unsafe { copy_loaded_image(&*info, size) };
+        match copied {
+            Ok((image, additions, removals)) => {
+                let census = collector.census.get_or_insert_with(|| ImageCensus {
+                    additions,
+                    removals,
+                    images: Vec::new(),
+                });
+                if census.additions != additions || census.removals != removals {
+                    collector.error =
+                        Some(invalid("Linux loader generation changed during census"));
+                    return 1;
+                }
+                census.images.push(image);
+                0
+            }
+            Err(error) => {
+                collector.error = Some(error);
+                1
+            }
+        }
+    }
+
+    fn loaded_images() -> io::Result<ImageCensus> {
+        let mut collector = ImageCollector {
+            census: None,
+            error: None,
+        };
+        // SAFETY: the callback copies only bounded metadata while the loader owns each record;
+        // collector remains live and uniquely borrowed until this synchronous call returns.
+        let result = unsafe {
+            libc::dl_iterate_phdr(Some(collect_image), (&raw mut collector).cast::<c_void>())
+        };
+        if let Some(error) = collector.error {
+            return Err(error);
+        }
+        if result != 0 {
+            return Err(invalid("Linux loader census stopped unexpectedly"));
+        }
+        collector
+            .census
+            .filter(|census| !census.images.is_empty())
+            .ok_or_else(|| invalid("Linux loader has no mapped images"))
+    }
+
+    fn mapped_range(image: &LoadedImage, header: ProgramHeader) -> io::Result<(u64, u64)> {
+        let start = image
+            .bias
+            .checked_add(header.vaddr)
+            .ok_or_else(|| invalid("Linux loaded segment address overflow"))?;
+        let end = start
+            .checked_add(header.memsz)
+            .ok_or_else(|| invalid("Linux loaded segment length overflow"))?;
+        Ok((start, end))
+    }
+
+    fn read_only_coverage(maps: &str, start: u64, end: u64) -> io::Result<Vec<String>> {
+        let mut covered = start;
+        let mut records = Vec::new();
+        for line in maps.lines() {
+            if covered == end {
+                break;
+            }
+            let mut remaining = line;
+            let range =
+                take_field(&mut remaining).ok_or_else(|| invalid("malformed process mapping"))?;
+            let (begin, finish) = range
+                .split_once('-')
+                .ok_or_else(|| invalid("malformed process mapping range"))?;
+            let begin = u64::from_str_radix(begin, 16)
+                .map_err(|_| invalid("malformed process mapping range"))?;
+            let finish = u64::from_str_radix(finish, 16)
+                .map_err(|_| invalid("malformed process mapping range"))?;
+            if finish <= covered {
+                continue;
+            }
+            if begin > covered {
+                return Err(invalid("Linux read-only segment has an unmapped gap"));
+            }
+            let permissions = take_field(&mut remaining)
+                .ok_or_else(|| invalid("malformed process mapping permissions"))?;
+            if permissions != "r--p" {
+                return Err(invalid("Linux read-only segment is writable or unreadable"));
+            }
+            records.push(line.to_owned());
+            covered = finish.min(end);
+        }
+        if covered != end {
+            return Err(invalid("Linux read-only segment is not fully mapped"));
+        }
+        Ok(records)
+    }
+
+    fn read_only_records(maps: &str, census: &ImageCensus) -> io::Result<Vec<Vec<String>>> {
+        let mut records = Vec::new();
+        for image in &census.images {
+            for header in image
+                .headers
+                .iter()
+                .filter(|header| header.kind == 1 && header.flags & 7 == 4)
+            {
+                let (start, end) = mapped_range(image, *header)?;
+                records.push(read_only_coverage(maps, start, end)?);
+            }
+        }
+        Ok(records)
+    }
+
+    fn reject_text_relocations(memory: &File, image: &LoadedImage) -> io::Result<()> {
+        for header in image.headers.iter().filter(|header| header.kind == 2) {
+            if header.filesz == 0 || header.filesz > 1024 * 1024 || header.filesz % 16 != 0 {
+                return Err(invalid("Linux loaded image has an invalid dynamic table"));
+            }
+            let (address, _) = mapped_range(image, *header)?;
+            let mut bytes = vec![0; header.filesz as usize];
+            memory.read_exact_at(&mut bytes, address)?;
+            let mut terminated = false;
+            for entry in bytes.chunks_exact(16) {
+                let tag = i64::from_ne_bytes(entry[..8].try_into().unwrap());
+                let value = u64::from_ne_bytes(entry[8..].try_into().unwrap());
+                if tag == 0 {
+                    terminated = true;
+                    break;
+                }
+                if tag == 22 || (tag == 30 && value & 4 != 0) {
+                    return Err(invalid("Linux loaded image uses text relocations"));
+                }
+            }
+            if !terminated {
+                return Err(invalid(
+                    "Linux loaded image has an unterminated dynamic table",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn image_digest(memory: &File, maps: &str, image: &LoadedImage) -> io::Result<[u8; 32]> {
+        reject_text_relocations(memory, image)?;
+        let mut loads = image
+            .headers
+            .iter()
+            .copied()
+            .filter(|header| header.kind == 1)
+            .collect::<Vec<_>>();
+        if loads.is_empty() {
+            return Err(invalid("Linux loader image has no load segments"));
+        }
+        loads.sort_unstable_by_key(|header| header.vaddr);
+        let mut previous_end = None;
+        for header in &loads {
+            if header.filesz > header.memsz {
+                return Err(invalid("Linux loader image has an invalid load segment"));
+            }
+            let (start, end) = mapped_range(image, *header)?;
+            if previous_end.is_some_and(|previous_end| start < previous_end) {
+                return Err(invalid("Linux loader image has overlapping load segments"));
+            }
+            previous_end = Some(end);
+            if header.flags & 3 == 3 {
+                return Err(invalid(
+                    "Linux loader image declares writable executable code",
+                ));
+            }
+        }
+        let selected = loads
+            .into_iter()
+            .filter(|header| header.flags & 1 != 0 || header.flags & 7 == 4)
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            return Err(invalid(
+                "Linux loader image has no code or pure read-only data",
+            ));
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"harmony-linux-elf-image-code-ro-v1\0");
+        digest.update((selected.len() as u64).to_le_bytes());
+        for header in selected {
+            let (start, end) = mapped_range(image, header)?;
+            if header.flags & 7 == 4 {
+                read_only_coverage(maps, start, end)?;
+            }
+            digest.update(header.flags.to_le_bytes());
+            digest.update(header.offset.to_le_bytes());
+            digest.update(header.vaddr.to_le_bytes());
+            digest.update(header.filesz.to_le_bytes());
+            digest.update(header.memsz.to_le_bytes());
+            let mut address = start;
+            let mut block = [0_u8; 65536];
+            while address < end {
+                let length = usize::try_from((end - address).min(block.len() as u64))
+                    .map_err(|_| invalid("Linux loaded segment is too large"))?;
+                memory.read_exact_at(&mut block[..length], address)?;
+                digest.update(&block[..length]);
+                address += length as u64;
+            }
+        }
+        Ok(digest.finalize().into())
+    }
+
+    fn finish_mapping_digest(mut mappings: Vec<[u8; 32]>, images: Vec<[u8; 32]>) -> [u8; 32] {
+        mappings.sort_unstable();
+        let mut digest = Sha256::new();
+        digest.update(b"harmony-linux-executable-maps-elf-ro-v3\0");
+        digest.update((mappings.len() as u64).to_le_bytes());
+        for mapping in mappings {
+            digest.update(mapping);
+        }
+        digest.update((images.len() as u64).to_le_bytes());
+        for image in images {
+            digest.update(image);
+        }
+        digest.finalize().into()
+    }
+
     fn mapping_digest(memory: &File, map: &ExecutableMap) -> io::Result<[u8; 32]> {
         let mut digest = Sha256::new();
         digest.update(b"harmony-linux-executable-map-v2\0");
@@ -158,43 +458,130 @@ mod linux {
     }
 
     pub fn mapped_executable_sha256() -> io::Result<[u8; 32]> {
-        let before = executable_maps(&fs::read_to_string("/proc/self/maps")?)?;
+        let before_maps = fs::read_to_string("/proc/self/maps")?;
+        let before = executable_maps(&before_maps)?;
+        let before_images = loaded_images()?;
+        let before_read_only = read_only_records(&before_maps, &before_images)?;
         let memory = File::open("/proc/self/mem")?;
-        let mut mappings = before
+        let mappings = before
             .iter()
             .map(|map| mapping_digest(&memory, map))
             .collect::<io::Result<Vec<_>>>()?;
-        let after = executable_maps(&fs::read_to_string("/proc/self/maps")?)?;
-        if before != after {
-            return Err(invalid(
-                "executable mappings changed during identity admission",
-            ));
+        let images = before_images
+            .images
+            .iter()
+            .map(|image| image_digest(&memory, &before_maps, image))
+            .collect::<io::Result<Vec<_>>>()?;
+        let after_images = loaded_images()?;
+        let after_maps = fs::read_to_string("/proc/self/maps")?;
+        let after = executable_maps(&after_maps)?;
+        let after_read_only = read_only_records(&after_maps, &after_images)?;
+        if before != after || before_images != after_images || before_read_only != after_read_only {
+            return Err(invalid("loaded mappings changed during identity admission"));
         }
-        mappings.sort_unstable();
-        let mut digest = Sha256::new();
-        digest.update(b"harmony-linux-executable-maps-v2\0");
-        digest.update((mappings.len() as u64).to_le_bytes());
-        for mapping in mappings {
-            digest.update(mapping);
-        }
-        Ok(digest.finalize().into())
+        Ok(finish_mapping_digest(mappings, images))
     }
 
     pub fn loaded_executable_identity(main_executable_identity: &str) -> io::Result<String> {
         let mappings = mapped_executable_sha256()?;
         let mut digest = Sha256::new();
-        digest.update(b"harmony-linux-loaded-executable-v2\0");
+        digest.update(b"harmony-linux-loaded-executable-v3\0");
         update_field(&mut digest, main_executable_identity.as_bytes());
         digest.update(mappings);
         Ok(format!(
-            "linux-exe-execmaps-sha256-v3:{:x}",
+            "linux-exe-execmaps-elf-ro-sha256-v4:{:x}",
             digest.finalize()
         ))
     }
 
     #[cfg(test)]
     mod tests {
-        use super::executable_maps;
+        use super::{
+            ImageCollector, collect_image, copy_loaded_image, executable_maps,
+            finish_mapping_digest, mapped_range, read_only_coverage,
+        };
+
+        #[test]
+        fn copied_loader_headers_and_generation_are_owned() {
+            let headers = [libc::Elf64_Phdr {
+                p_type: 1,
+                p_flags: 4,
+                p_offset: 0x20000,
+                p_vaddr: 0x20000,
+                p_paddr: 0,
+                p_filesz: 7,
+                p_memsz: 8,
+                p_align: 4096,
+            }];
+            // SAFETY: libc::dl_phdr_info is a C record of integer and pointer fields; zero is
+            // valid for every field before the tested fields are assigned live stack pointers.
+            let mut info: libc::dl_phdr_info = unsafe { std::mem::zeroed() };
+            info.dlpi_addr = 0x100000;
+            info.dlpi_phdr = headers.as_ptr();
+            info.dlpi_phnum = 1;
+            info.dlpi_adds = 13;
+            info.dlpi_subs = 5;
+            // SAFETY: info points to one live, initialized program header for the entire call.
+            let (image, additions, removals) =
+                unsafe { copy_loaded_image(&info, std::mem::size_of_val(&info)) }.unwrap();
+            assert_eq!((additions, removals), (13, 5));
+            assert_eq!(image.headers.len(), 1);
+            assert_eq!(image.headers[0].offset, 0x20000);
+            assert_eq!(
+                mapped_range(&image, image.headers[0]).unwrap(),
+                (0x120000, 0x120008)
+            );
+            let mut collector = ImageCollector {
+                census: None,
+                error: None,
+            };
+            assert_eq!(
+                collect_image(
+                    &raw mut info,
+                    std::mem::size_of_val(&info),
+                    (&raw mut collector).cast(),
+                ),
+                0
+            );
+            assert_eq!(
+                collector.census.unwrap().images[0].headers[0].offset,
+                0x20000
+            );
+            let mut truncated = ImageCollector {
+                census: None,
+                error: None,
+            };
+            assert_eq!(
+                collect_image(&raw mut info, 1, (&raw mut truncated).cast()),
+                1
+            );
+            assert!(truncated.error.is_some());
+            // SAFETY: the record and its one-element header array remain live during the call.
+            assert!(unsafe { copy_loaded_image(&info, 1) }.is_err());
+            info.dlpi_phnum = 0;
+            // SAFETY: the header pointer remains live but the zero count is rejected before use.
+            assert!(unsafe { copy_loaded_image(&info, std::mem::size_of_val(&info)) }.is_err());
+        }
+
+        #[test]
+        fn read_only_segment_requires_complete_nonwritable_coverage() {
+            let maps =
+                "120000-120004 r--p 00000000 08:01 9 /x\n120004-120008 r--p 00000004 08:01 9 /x\n";
+            assert!(read_only_coverage(maps, 0x120000, 0x120008).is_ok());
+            assert!(read_only_coverage(maps, 0x120000, 0x120009).is_err());
+            assert!(read_only_coverage(&maps.replace("r--p", "rw-p"), 0x120000, 0x120008).is_err());
+        }
+
+        #[test]
+        fn loader_image_order_binds_data_to_its_code_role() {
+            let executable = vec![[9; 32]];
+            let first = [1; 32];
+            let second = [2; 32];
+            assert_ne!(
+                finish_mapping_digest(executable.clone(), vec![first, second]),
+                finish_mapping_digest(executable, vec![second, first]),
+            );
+        }
 
         #[test]
         fn mapped_pathnames_keep_internal_and_trailing_whitespace() {
