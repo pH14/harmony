@@ -545,7 +545,7 @@ def scan_symbol_restarts(data, programs, sections, tag, path, entry):
                                 f"direct branch into loaded non-code in {tag}:{source}:{mode} "
                                 f"from 0x{site:x} to 0x{target:x}"
                             )
-                        if tag == "vmlinux":
+                        if tag in ("vmlinux", "decompressor"):
                             raise ValueError(
                                 f"direct branch outside loaded executable sections in {tag}:{source}:{mode} "
                                 f"from 0x{site:x} to 0x{target:x}"
