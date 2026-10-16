@@ -411,6 +411,7 @@ mod tests {
 
     const CHILD_ENV: &str = "HARMONY_STRICT_MACOS_TEST_CHILD";
     const CHILD_TEST: &str = "macos::strict::tests::signed_executable_admission";
+    const HV_UNSUPPORTED: u32 = 0xfae9_400f;
 
     fn sign(path: &std::path::Path, runtime: bool, constraint: bool, extra: bool) {
         let directory = path.parent().unwrap();
@@ -507,9 +508,13 @@ mod tests {
                 Ok(identity) => {
                     // SAFETY: null selects default VM options; a successful create owns one
                     // process-local VM that this test destroys before returning.
-                    assert_eq!(unsafe { hv_vm_create(ptr::null()) }, 0);
-                    // SAFETY: the preceding successful create established the VM being destroyed.
-                    assert_eq!(unsafe { hv_vm_destroy() }, 0);
+                    let vm_status = unsafe { hv_vm_create(ptr::null()) };
+                    if vm_status == 0 {
+                        // SAFETY: the preceding successful create established the VM being destroyed.
+                        assert_eq!(unsafe { hv_vm_destroy() }, 0);
+                    } else {
+                        assert_eq!(vm_status as u32, HV_UNSUPPORTED);
+                    }
                     println!("strict_identity={identity} data={data}");
                 }
                 Err(error) => println!("strict_rejected={error} data={data}"),
