@@ -356,6 +356,8 @@ Consonance commands. The paired host reparses the original command and its
 configuration; the frontend's runner choice cannot authorize a later changed
 recipe. Saved Consonance recordings retain this strict host identity. Native
 QuickNES recordings retain their native loaded-image identity.
+Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
+Consonance execution and produces an explicit error.
 
 The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a

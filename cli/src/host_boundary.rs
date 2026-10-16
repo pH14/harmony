@@ -176,16 +176,30 @@ fn sealed_host(path: &std::path::Path) -> io::Result<File> {
         ));
     }
     let flags = MemfdFlags::ALLOW_SEALING | MemfdFlags::CLOEXEC | MemfdFlags::EXEC;
-    let descriptor = memfd_create("harmony-consonance-host", flags).or_else(|error| {
-        if error == rustix::io::Errno::INVAL {
-            memfd_create(
-                "harmony-consonance-host",
-                MemfdFlags::ALLOW_SEALING | MemfdFlags::CLOEXEC,
-            )
-        } else {
-            Err(error)
-        }
-    })?;
+    let descriptor = memfd_create("harmony-consonance-host", flags)
+        .or_else(|error| {
+            if error == rustix::io::Errno::INVAL {
+                memfd_create(
+                    "harmony-consonance-host",
+                    MemfdFlags::ALLOW_SEALING | MemfdFlags::CLOEXEC,
+                )
+            } else {
+                Err(error)
+            }
+        })
+        .map_err(|error| {
+            if error == rustix::io::Errno::ACCESS
+                && std::fs::read_to_string("/proc/sys/vm/memfd_noexec")
+                    .is_ok_and(|setting| setting.trim() == "2")
+            {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Consonance requires executable memfd support; vm.memfd_noexec=2 forbids it",
+                )
+            } else {
+                error.into()
+            }
+        })?;
     let mut image = File::from(descriptor);
     let copied = io::copy(&mut source, &mut image)?;
     if copied != before || source.metadata()?.len() != before {
