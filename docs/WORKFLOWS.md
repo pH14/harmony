@@ -60,9 +60,16 @@ Hypervisor entitlement, hardened runtime, and an operating-system-only library
 constraint. Each release build tests the paired launch before it packages the
 two executables together, so the frontend can hand Consonance commands to the
 admitted host.
-`Checks / Harmony` builds both Linux executables and proves that a disk-backed
-host is refused, the paired frontend enters the sealed host, and native
-QuickNES remains on the frontend.
+`Checks / Harmony` builds both Linux executables on x86-64 and Arm64 in
+separate 15-minute pull-request jobs. Both package jobs prove that a
+disk-backed host is refused, the paired frontend enters the sealed host, and
+native QuickNES remains on the frontend. The package fixture uses the Faults
+runner on both Linux architectures. A separate x86-64 musl job runs the public
+Session, worker reexec, UML session and Recording tests through
+`scripts/linux-sealed-test-runner.py`, which copies each test binary into a
+fully sealed executable memfd before execution. The musl positive tests fail
+if strict host admission is unavailable, so a missing runner cannot produce a
+green skip.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
