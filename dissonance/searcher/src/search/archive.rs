@@ -62,6 +62,11 @@ pub type Position<K> = (<K as ArchiveKey>::Place, <K as ArchiveKey>::Identity);
 
 pub type Edge<K> = (Position<K>, Position<K>);
 
+type ReplayCertificates = Vec<Option<[u8; 32]>>;
+type ReplayPath<A> = (Vec<A>, ReplayCertificates);
+pub(crate) type JobOriginParts<A, S> = (Arc<S>, Vec<A>, ReplayCertificates);
+pub(crate) type PinnedJobOriginParts<A, S> = (Arc<S>, Vec<A>, ReplayCertificates, u64);
+
 #[must_use]
 pub fn cell_of<K: ArchiveKey>(key: K) -> Cell<K> {
     (key.progress(), key.place())
@@ -852,7 +857,7 @@ impl<A: Clone + Ord> InputIndex<A> {
         ancestor: usize,
         mut node: usize,
         distance: usize,
-    ) -> Option<(Vec<A>, Vec<Option<[u8; 32]>>)> {
+    ) -> Option<ReplayPath<A>> {
         let mut reversed = Vec::with_capacity(distance);
         let mut certificates = Vec::with_capacity(distance);
         for _ in 0..distance {
@@ -1721,7 +1726,7 @@ where
     pub(crate) fn pin_job_origin(
         &mut self,
         id: usize,
-    ) -> Result<(Arc<S>, Vec<A>, Vec<Option<[u8; 32]>>, u64), &'static str> {
+    ) -> Result<PinnedJobOriginParts<A, S>, &'static str> {
         let (snapshot, replay, certificates) = self.job_origin(id)?;
         let snapshot_id = if self.snapshot_selectable[id] {
             self.entries[id].id
@@ -1754,10 +1759,7 @@ where
         }
     }
 
-    pub(crate) fn job_origin(
-        &self,
-        id: usize,
-    ) -> Result<(Arc<S>, Vec<A>, Vec<Option<[u8; 32]>>), &'static str> {
+    pub(crate) fn job_origin(&self, id: usize) -> Result<JobOriginParts<A, S>, &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.snapshot_selectable[id] {
             let snapshot = entry
