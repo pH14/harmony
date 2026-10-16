@@ -25,3 +25,25 @@ changed later. A second map-list read catches ordinary concurrent map changes
 but cannot make a process snapshot atomic against adversarial mutation.
 Constructors run before admission, and a process that can interpose the map or
 memory reads can spoof this self-measurement; it is not an attestation boundary.
+
+On macOS, `mapped_executable_sha256` measures every image reported by dyld,
+including the main program, system shared-cache images, and dynamically loaded
+libraries. It also measures dyld itself, which is outside dyld's ordinary image
+list. Each image contributes its Mach-O UUID, executable segment layout, and
+the bytes currently mapped across every executable segment, including mapped
+tails beyond file bytes. The shared cache UUID is included as well; the cache
+file is not reopened. Paths and absolute load addresses are excluded so an
+unchanged mapped image keeps its identity when a pathname is replaced.
+Consonance combines this digest with the main program's
+code-directory hash, while its worker launch check continues to compare main
+program code-directory hashes across processes before the worker reports its
+full loaded-image identity.
+
+macOS admission rejects malformed Mach-O images, declared writable executable segments,
+unreadable mappings, and dyld image-list changes observed while measuring. It
+uses kernel-mediated reads so an image unloading during a census returns an
+error rather than dereferencing a stale pointer. This binds dyld-managed Mach-O
+images at admission; it does not cover anonymous executable mappings, data
+segments, symbol bindings, constructor effects, or images loaded, unloaded, or
+modified after admission. Callback and image-count checks cannot make a process
+snapshot atomic against adversarial mutation.
