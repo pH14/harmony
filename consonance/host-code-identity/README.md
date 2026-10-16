@@ -93,3 +93,36 @@ snapshot atomic against adversarial mutation.
 On macOS, `loader_epoch` uses dyld's add/remove callback generation plus the
 current image count. As on Linux, the epoch is a separate operation guard; it
 does not change the admission-time loaded-image digest.
+
+On macOS, `strict_macos_executable_identity` is a separate identity for a
+hardened, signed host with the Hypervisor entitlement and an embedded library
+constraint admitting only Apple platform libraries. It obtains the running
+process's code-signing status and CDHash from the kernel, opens the executable
+through a held file descriptor, strictly validates that file's signature, and
+requires its signed CDHash to equal the kernel-loaded CDHash. It requires the
+sole entitlement to be `com.apple.security.hypervisor = true`. It reads the
+signed library-constraint slot and accepts only the exact version-one
+`validation-category = 1` encoding. Missing, differently encoded, or
+unavailable constraint information fails closed. A replacement executable at
+the same pathname therefore cannot substitute its policy or identity for the
+code already loaded by the kernel.
+
+The strict census requires the main Mach-O image, dyld, and all other dyld
+images to be in their expected roles. Dyld and every library must have their
+headers inside the mapped Apple shared-cache range and carry the shared-cache
+image flag. The identity binds the kernel-loaded executable CDHash and dyld
+shared-cache UUID in a separate versioned domain. The OS-only library
+constraint is the kernel-enforced admission rule; the cache census verifies
+the mapped result. Hardened runtime and the exact entitlement set prevent
+library-validation, JIT, or writable-executable exceptions. Recheck the
+strict identity and `loader_epoch` at operation boundaries where loaded host
+code matters.
+
+The `LibraryConstraints` field is an internal Security.framework signing-info
+key, and the cache-range query is a dyld-private symbol. This implementation
+accepts the observed macOS encoding exactly and refuses admission if those
+interfaces change or disappear. It does not attest against a compromised
+kernel or code that can subvert its own in-process checks. A separately mapped
+executable page that dyld does not report remains outside this image census;
+the hardened runtime without executable-memory exceptions is required to
+prevent such code from entering this process.
