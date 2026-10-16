@@ -174,11 +174,16 @@ latest virtual time and the pending answer.
 nix run .#uml-images -- --output "$PWD/uml-output"
 ```
 
-The flake supplies gcc 13 and static glibc, the pinned kernel source for the
+The flake supplies gcc 13, static glibc and dwarves/pahole, the pinned kernel source for the
 host architecture, musl, and a copy of the repository. `nix-build.sh` runs `build-uml.sh` in a fresh
 temporary directory and copies four files to the output: `linux`, `config`,
 `initramfs.cpio.gz`, and `profile.json`. Two builds from the same commit are
-byte-identical; CI checks this on every pull request.
+byte-identical; CI checks this on every pull request. The kernel records the
+available pahole version in `config` even without BTF debug information, so
+the Nix build supplies it rather than inheriting the host program. UML does
+not build Rust kernel code, yet Kconfig records the installed rustc version;
+the Nix build binds that optional probe to a fixed failing command so both
+Rust version fields remain zero on every host.
 
 `build-uml.sh` also runs outside Nix on a Linux host with a C toolchain and the
 static C library, after `make -C consonance/harmony-linux fetch` on x86-64 or
