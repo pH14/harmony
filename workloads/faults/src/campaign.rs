@@ -45,15 +45,17 @@ use crate::{
     },
     assertion::Assertions,
     bundle::FaultVocabulary,
-    consonance::{FaultConfig, FaultTarget, identity, snapshot_memory_charge},
+    consonance::{
+        FaultConfig, FaultTarget, identity, replay_endpoint_certificate, snapshot_memory_charge,
+    },
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v7";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v8";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v6";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v4";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v5";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v2";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -279,20 +281,25 @@ fn outcome(target: &FaultTarget) -> Outcome {
 }
 
 #[allow(clippy::too_many_arguments)]
-fn execute_job(
+pub(crate) fn execute_job(
     target: &mut FaultTarget,
     origin_snapshot: &FaultSnapshot,
     replay: &[FaultAction],
+    replay_certificates: &[Option<[u8; 32]>],
     parent_milestones: FaultMilestones,
     suffix: &[FaultAction],
     stop_rollout_on_objective: bool,
 ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
+    if replay.len() != replay_certificates.len() {
+        return Err("fault replay certificate count does not match its action path".into());
+    }
     target.restore(origin_snapshot)?;
-    for action in replay {
+    for (action, certificate) in replay.iter().zip(replay_certificates) {
         if outcome(target).disposition.is_terminal() {
-            break;
+            return Err("fault replay stopped before its archived parent endpoint".into());
         }
         target.apply_replayed(*action);
+        target.verify_replayed_endpoint(*certificate)?;
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -726,6 +733,62 @@ impl TargetExecution for FaultWorkload {
             .ok_or_else(|| "the fault endpoint has no successor to snapshot".into())
     }
 
+    fn candidate_replay_certificate(
+        &self,
+        snapshot: &FaultSnapshot,
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        if snapshot.failed || !snapshot.observation.stop.is_continuable() {
+            return Err("fault replay candidate is not a runnable endpoint".into());
+        }
+        match (self.config.uml().is_some(), snapshot.endpoint) {
+            (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => Ok(Some(
+                replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?,
+            )),
+            (true, Some(FaultEndpointCertificate::UmlWholeStateUnavailable)) => Ok(None),
+            _ => Err("fault replay candidate lacks a certificate for its backend".into()),
+        }
+    }
+
+    fn current_replay_certificate(
+        &self,
+        target: &FaultTarget,
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        if target.failed() || !target.observation().stop.is_continuable() {
+            return Err("fault replay action did not reach a runnable endpoint".into());
+        }
+        if self.config.uml().is_some() {
+            return Ok(None);
+        }
+        Ok(Some(replay_endpoint_certificate(
+            target.state_hash_current()?,
+            target.observation(),
+            target.failed(),
+        )?))
+    }
+
+    fn execute_job_certified(
+        &self,
+        _run: &FaultCampaignRun,
+        target: &mut FaultTarget,
+        origin_snapshot: &FaultSnapshot,
+        replay: &[FaultAction],
+        replay_certificates: &[Option<[u8; 32]>],
+        parent_milestones: FaultMilestones,
+        suffix: &[FaultAction],
+        _retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
+    ) -> Result<FaultCampaignJobResult, Box<dyn Error>> {
+        execute_job(
+            target,
+            origin_snapshot,
+            replay,
+            replay_certificates,
+            parent_milestones,
+            suffix,
+            stop_rollout_on_objective,
+        )
+    }
+
     fn execute_job(
         &self,
         _run: &FaultCampaignRun,
@@ -741,6 +804,7 @@ impl TargetExecution for FaultWorkload {
             target,
             origin_snapshot,
             replay,
+            &vec![None; replay.len()],
             parent_milestones,
             suffix,
             stop_rollout_on_objective,

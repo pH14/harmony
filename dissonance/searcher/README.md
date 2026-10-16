@@ -43,6 +43,12 @@ Duplicate or unknown checkpoint IDs, and source entries without a bound digest,
 are rejected. Older archive reports without snapshot identities remain usable for
 whole-tree import without a checkpoint, but cannot authorize checkpoint restore.
 Snapshot-root origins use their separate checkpoint contract.
+For a workload with endpoint certificates, whole-tree import reconstructs each
+action between a parent and its imported candidate, including candidates loaded
+from source snapshots. It compares a checkpointed endpoint with the rebuilt
+endpoint before binding any certificates to the archive path. A later snapshot
+eviction can therefore replay the imported path with the same checks as a live
+campaign.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
@@ -163,6 +169,15 @@ archive's resident bytes are not checked against the whole budget during the
 campaign.
 
 Prefix-tree compaction remaps a single surviving child in its existing map.
+The same prefix nodes can hold optional workload endpoint certificates. A
+retained candidate binds the certificate for each action since its parent,
+including intermediate actions that were not themselves retained. A job
+origin returns the replay actions and certificates from the same node walk,
+and in-flight checkpoints preserve both vectors. Shared prefixes reject a
+conflicting binding; compaction and snapshot eviction keep nodes on any
+selectable entry's path. Workloads without endpoint certificates leave these
+certificate slots absent, while workloads that require them reject missing values during
+replay.
 Branching maps are rebuilt so compaction still releases their unused storage;
 missing children follow the same rebuilding path. This preserves node order,
 parent links, owners, and serialized state while avoiding a map allocation and
