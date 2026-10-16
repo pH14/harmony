@@ -726,3 +726,32 @@ next quantum. The next threshold is part of the SDK snapshot. A thread whose
 count restarts at the first threshold gets a fresh entry, because Linux reuses
 thread IDs. A zero, malformed or overflowing quantum leaves the environment and
 every threshold unchanged.
+
+## ARM executable RAM restore qualification
+
+`tests/arm64_executable_restore.rs` promotes the public-VMM experiment in
+[issue #633](https://github.com/pH14/harmony/issues/633) into a registered Linux
+ARM hardware test. It compares guest-authored PL011 bytes for cold A/B,
+uninterrupted B, capture-only B, fresh-restored B, and a warmed reused VM
+alternating A/B executable page contents. A separate RAM-only restoration
+control avoids CPU restoration as a cache-maintenance confounder. Every
+transition checks that only executable page 0 differs, that full restored RAM
+matches, and that the guest RAM allocation stays in place. The guest loops back
+to the same instruction address; no RAM remapping is requested. A portable
+negative control rejects stale, missing and extra observation bytes.
+
+Run on a Linux ARM host with accessible KVM, pinning each qualified core class:
+
+```sh
+taskset -c 0 cargo test --locked -p vmm-core --test arm64_executable_restore live::executable_ram_restores_match_guest_continuations -- --ignored --exact --nocapture
+```
+
+Require exactly one passed test. An unavailable KVM device fails the requested
+hardware test; an empty test selection on another platform is not qualification.
+Record source revision, kernel, CPU/core placement and output with the result.
+The earlier public-path experiment passed on Linux 6.18.43-current-arm64 on
+Cortex-A720 and Cortex-A520 cores; those negative observations do not establish
+cache coherence on other hosts or kernels. ARM KVM still inherits the default
+instruction-cache hook, and #633 remains an investigation without a confirmed
+stale-instruction witness. This fixture does not qualify cross-host restore,
+arbitrary code mutation, or continuously enforced executable admission.
