@@ -2054,7 +2054,15 @@ fn import_root(
     let index = LocalIndex::new(usize::MAX);
     let mut extent = index.extent(snapshot.len())?;
     extent.bytes_mut().copy_from_slice(snapshot);
-    let lease = index.publish(Namespace::new(&[&identity]), b"root", None, extent, 1)?;
+    let target_commitment = Sha256::digest(extent.bytes_mut()).into();
+    let lease = index.publish(
+        Namespace::new(&[&identity]),
+        b"root",
+        None,
+        extent,
+        target_commitment,
+        1,
+    )?;
     let (setup, moment) = session.import_root(&index, &lease)?;
     if standing.iter().any(|window| !window.contains(moment)) {
         return Err("branch root standing window is inactive at its snapshot moment".into());

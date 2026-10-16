@@ -36,6 +36,15 @@ fn cache_sidecar(identity: [u8; 32], raw: &[u8]) -> Result<Vec<u8>, Box<dyn Erro
     Ok(sidecar)
 }
 
+fn target_commitment(identity: [u8; 32], target: &Checkpoint) -> Result<[u8; 32], Box<dyn Error>> {
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-cache-uml-target-v1\0");
+    digest.update(CACHE_SIDECAR_MAGIC);
+    digest.update(identity);
+    digest.update(target.digest()?);
+    Ok(digest.finalize().into())
+}
+
 fn checked_cache_sidecar(identity: [u8; 32], sidecar: &[u8]) -> Result<&[u8], Box<dyn Error>> {
     if sidecar.len() < CACHE_SIDECAR_MAGIC.len() + identity.len()
         || sidecar[..CACHE_SIDECAR_MAGIC.len()] != CACHE_SIDECAR_MAGIC
@@ -429,6 +438,7 @@ impl SearchSession for UmlSession {
             .snapshots
             .get(&target)
             .ok_or_else(|| SessionError::Control("unknown root snapshot".into()))?;
+        let target_commitment = target_commitment(self.root_identity, target)?;
         let sidecar = cache_sidecar(self.root_identity, &target.sidecar()?)?;
         let extent = self
             .checkpoints
@@ -439,7 +449,7 @@ impl SearchSession for UmlSession {
                 write_extent(extent.bytes_mut(), pages, &[], &sidecar)?;
                 Ok(extent)
             })??;
-        Ok(index.publish(namespace, b"root", None, extent, 1)?)
+        Ok(index.publish(namespace, b"root", None, extent, target_commitment, 1)?)
     }
 
     fn import_root(
@@ -518,6 +528,7 @@ impl SearchSession for UmlSession {
         let setup = checkpoint(self.setup.0)?;
         let parent_checkpoint = parent.map(|(id, _)| checkpoint(id)).transpose()?;
         let target_checkpoint = checkpoint(target)?;
+        let target_commitment = target_commitment(self.cache_domain, target_checkpoint)?;
         let sidecar = cache_sidecar(self.cache_domain, &target_checkpoint.sidecar()?)?;
         let extent = self.checkpoints.delta(
             setup,
@@ -533,7 +544,14 @@ impl SearchSession for UmlSession {
                 Ok(extent)
             },
         )??;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
+        Ok(index.publish(
+            namespace,
+            key,
+            parent.map(|(_, lease)| lease),
+            extent,
+            target_commitment,
+            cost,
+        )?)
     }
 
     fn import_cached(
@@ -871,7 +889,7 @@ mod tests {
         let mut extent = index.extent(len).unwrap();
         write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
         index
-            .publish(Namespace::new(&[b"test"]), key, None, extent, 1)
+            .publish(Namespace::new(&[b"test"]), key, None, extent, [0; 32], 1)
             .unwrap()
     }
 

@@ -78,6 +78,8 @@ pub enum CacheError {
     ForeignExtent,
     #[error("malformed snapshot cache extent: {0}")]
     Malformed(&'static str),
+    #[error("snapshot cache key already names a different target state")]
+    DivergentDuplicate,
     #[error("snapshot cache segment: {0}")]
     Segment(#[from] std::io::Error),
 }
@@ -131,6 +133,7 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
         key: &[u8],
         parent: Option<&Lease>,
         extent: WritableExtent,
+        target_commitment: [u8; 32],
         cost: u64,
     ) -> Result<Lease, CacheError>;
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
@@ -147,6 +150,7 @@ struct Entry {
     parent: Option<u64>,
     depth: u32,
     extent: CommittedExtent,
+    target_commitment: [u8; 32],
     cost: u64,
     leases: u32,
     children: u32,
@@ -361,6 +365,7 @@ impl CacheIndex for LocalIndex {
         key: &[u8],
         parent: Option<&Lease>,
         extent: WritableExtent,
+        target_commitment: [u8; 32],
         cost: u64,
     ) -> Result<Lease, CacheError> {
         let mut state = self.state();
@@ -370,6 +375,9 @@ impl CacheIndex for LocalIndex {
         let committed = extent.commit();
         if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
             state.segments.free_committed(committed);
+            if state.entries[&id].target_commitment != target_commitment {
+                return Err(CacheError::DivergentDuplicate);
+            }
             state.stats.duplicates += 1;
             return state.lease(id);
         }
@@ -404,6 +412,7 @@ impl CacheIndex for LocalIndex {
             parent: parent.map(|lease| lease.entry),
             depth,
             extent: committed,
+            target_commitment,
             cost,
             leases: 1,
             children: 0,
@@ -529,13 +538,15 @@ mod tests {
         let len = extent_len(rows.len(), reverted.len(), key.len()).unwrap();
         let mut extent = index.extent(len)?;
         write_extent(extent.bytes_mut(), &rows, reverted, key)?;
-        index.publish(namespace, key, parent, extent, 1)
+        let target_commitment = Sha256::digest(extent.bytes_mut()).into();
+        index.publish(namespace, key, parent, extent, target_commitment, 1)
     }
 
     fn put_empty(index: &LocalIndex, key: &[u8], cost: u64) -> Result<Lease, CacheError> {
         let mut extent = index.extent(extent_len(0, 0, key.len()).unwrap())?;
         write_extent(extent.bytes_mut(), &[], &[], key).unwrap();
-        index.publish(ns("a"), key, None, extent, cost)
+        let target_commitment = Sha256::digest(extent.bytes_mut()).into();
+        index.publish(ns("a"), key, None, extent, target_commitment, cost)
     }
 
     fn put_costing(index: &LocalIndex, key: &[u8], cost: u64) {
@@ -643,7 +654,7 @@ mod tests {
             let mut extent = a.extent(extent_len(0, 0, 0).unwrap()).unwrap();
             write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
             assert!(matches!(
-                b.publish(space, key, None, extent, 1),
+                b.publish(space, key, None, extent, [0; 32], 1),
                 Err(CacheError::ForeignExtent)
             ));
             assert_eq!(a.stats().charged, 0);
@@ -658,12 +669,50 @@ mod tests {
         let space = ns("a");
         let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
         let charged = index.stats().charged;
-        let second = put(&index, space, b"k", None, &[(0, 2)], &[]).unwrap();
+        let second = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
         assert_eq!(first, second);
         assert_eq!(resolved(&index, &second).0, vec![(0, 1)]);
         let stats = index.stats();
         assert_eq!((stats.entries, stats.duplicates), (1, 1));
         assert!(stats.charged >= charged);
+    }
+
+    #[test]
+    fn a_divergent_duplicate_key_must_not_return_the_first_lease() {
+        let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
+        let space = ns("a");
+        let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
+        let result = put(&index, space, b"k", None, &[(0, 2)], &[]);
+        assert!(matches!(result, Err(CacheError::DivergentDuplicate)));
+        assert_eq!(resolved(&index, &first).0, vec![(0, 1)]);
+        assert_eq!(index.stats().entries, 1);
+        assert_eq!(index.stats().duplicates, 0);
+    }
+
+    #[test]
+    fn equal_target_with_different_parent_delta_keeps_the_first_lease() {
+        let index = LocalIndex::new(1 << 20);
+        let space = ns("a");
+        let parent = put(&index, space, b"a", None, &[(0, 1)], &[]).unwrap();
+        let target_commitment = [7; 32];
+        let publish = |parent: Option<&Lease>, pages: &[(u64, u8)]| {
+            let owned: Vec<_> = pages
+                .iter()
+                .map(|&(gfn, fill)| (gfn, [fill; 32], [fill; PAGE]))
+                .collect();
+            let rows: Vec<HashedPage<'_>> = owned
+                .iter()
+                .map(|(gfn, hash, data)| (*gfn, hash, data))
+                .collect();
+            let mut extent = index.extent(extent_len(rows.len(), 0, 0).unwrap()).unwrap();
+            write_extent(extent.bytes_mut(), &rows, &[], &[]).unwrap();
+            index.publish(space, b"ab", parent, extent, target_commitment, 1)
+        };
+        let anchor = publish(None, &[(0, 1), (1, 2)]).unwrap();
+        let duplicate = publish(Some(&parent), &[(1, 2)]).unwrap();
+        assert_eq!(anchor, duplicate);
+        assert_eq!(resolved(&index, &duplicate).0, vec![(0, 1), (1, 2)]);
+        assert_eq!(index.stats().duplicates, 1);
     }
 
     #[test]

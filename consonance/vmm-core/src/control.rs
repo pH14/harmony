@@ -7126,6 +7126,48 @@ mod tests {
     }
 
     #[test]
+    fn sparse_delta_sidecar_commits_target_independent_of_parent_layout() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        let setup_page = image[4096..8192].to_vec();
+        image[4096..8192].fill(0xa5);
+        image[3 * 4096..4 * 4096].fill(0x5a);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        image[4096..8192].copy_from_slice(&setup_page);
+        image[2 * 4096..3 * 4096].fill(0x77);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let anchor = source.export_sparse_delta(setup, None, target).unwrap();
+        let anchor_pages = anchor.pages.iter().map(|page| page.0).collect::<Vec<_>>();
+        let anchor_sidecar = anchor.sidecar;
+        let delta = source
+            .export_sparse_delta(setup, Some(parent), target)
+            .unwrap();
+        let delta_pages = delta.pages.iter().map(|page| page.0).collect::<Vec<_>>();
+        assert_eq!(anchor_pages, vec![2, 3]);
+        assert_eq!(delta_pages, vec![2]);
+        assert_eq!(delta.reverted, vec![1]);
+        assert_eq!(anchor_sidecar, delta.sidecar);
+        assert_eq!(
+            crate::portable_snapshot::sparse_delta_target_commitment(&anchor_sidecar).unwrap(),
+            crate::portable_snapshot::sparse_delta_target_commitment(&delta.sidecar).unwrap()
+        );
+    }
+
+    #[test]
     #[cfg_attr(
         miri,
         ignore = "the replay half materializes a snapshot-store mapping, while sparse export/import validation is exercised by Miri-safe unit tests"

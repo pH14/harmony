@@ -172,6 +172,8 @@ be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
 most 32 past the setup snapshot. Every sealed prefix is published to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+Publishing an action prefix already cached with a different target state fails
+before the fault controller seals a link to the cached lease.
 A prefix that the chain does not hold is imported from the longest cached
 prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
