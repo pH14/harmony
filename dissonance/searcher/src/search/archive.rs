@@ -141,7 +141,8 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str =
+    "tier_progress_cascade_pace_rank_floor_yield_cell_recent_count_decay_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -164,6 +165,15 @@ fn count_decay(draws: u64) -> u64 {
         .saturating_pow(COUNT_DECAY_EXPONENT)
         .max(1);
     (COUNT_DECAY_SCALE / divisor).max(1)
+}
+
+#[must_use]
+fn rank_floor(floor_weight: u64, rank: usize) -> u64 {
+    floor_weight
+        / u64::try_from(rank)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1)
+            .saturating_pow(COUNT_DECAY_EXPONENT)
 }
 
 #[must_use]
@@ -2875,6 +2885,7 @@ where
                 floor_weight
             } else {
                 tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                    .max(rank_floor(floor_weight, rank))
             }
         });
         let index = draw_weighted(rand, weights)?;
@@ -3711,7 +3722,7 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        TIER_RANK_SHIFT, TierCells, WeightedSet, tier_weight,
+        TIER_RANK_SHIFT, TierCells, WeightedSet, rank_floor, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -4906,7 +4917,10 @@ mod tests {
             }
             let tiers = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
             let weights = (0..tiers.len())
-                .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)))
+                .map(|rank| {
+                    tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                        .max(rank_floor(tier_weight(0), rank))
+                })
                 .collect::<Vec<_>>();
             for seed in 0..32 {
                 let mut reference = RomuDuoJrRand::with_seed(seed);
@@ -8444,7 +8458,7 @@ mod tests {
         runs.wins = 64;
         runs.dry = 0;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0009, 4096);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] > counts[1] * 3, "{counts:?}");
     }
 
     fn roughly_equal(left: u64, right: u64) -> bool {
@@ -8540,7 +8554,7 @@ mod tests {
             archive.record_selection(1, &next);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] > counts[1] * 3, "{counts:?}");
     }
 
     #[test]
@@ -8572,7 +8586,7 @@ mod tests {
             archive.record_selection(2, &middle);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
-        assert!(counts[1] > counts[2] * 5, "{counts:?}");
+        assert!(counts[1] > counts[2] * 3, "{counts:?}");
     }
 
     #[test]
@@ -8593,7 +8607,7 @@ mod tests {
         runs.dry = 0;
         archive.tier_runs_mut((1, 9)).yields = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] > counts[1] * 3, "{counts:?}");
         archive.tier_runs_mut((1, 9)).cells = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
@@ -8669,7 +8683,7 @@ mod tests {
             archive.record_selection(0, &draw);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000f, 4096);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] > counts[1] * 3, "{counts:?}");
         for _ in 0..1024 {
             archive.record_selection(0, &draw);
         }
@@ -8705,7 +8719,7 @@ mod tests {
     #[test]
     fn a_tier_that_keeps_winning_at_its_usual_gap_keeps_its_weight() {
         let counts = top_tier_with_a_busy_rank_below(4096, 255, 64);
-        assert!(counts[0] > counts[1] * 5, "{counts:?}");
+        assert!(counts[0] > counts[1] * 3, "{counts:?}");
     }
 
     #[test]

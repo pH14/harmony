@@ -425,14 +425,15 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
 the leading tier takes most of the draws, and no tier holding an entry takes
-zero. Every workload uses this ratio, so a workload's progress value must not
-fall along the route to its goal: states on that route would rank below a tier
-that leads nowhere and receive almost no draws. The
+zero. A rank floor described below keeps deep ranks from vanishing under this
+ratio. Every workload uses these weights, so a workload's progress value must
+not fall along the route to its goal: states on that route would rank below a
+tier that leads nowhere and receive only the rank floor's share. The
 replay verifier bounds a recorded rank by completed progress levels in
 previously admitted archive entries when that selection was reserved. The
 bound includes historical levels that may no longer be selectable, so it
@@ -483,7 +484,14 @@ to the weight of the rank below, the same rule is applied to that rank against
 the rank below it, and so on down. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
 fall back past several stalled tiers at once, which matters when the states
-that decide a later death lie several tiers back. Within the tier each cell
+that decide a later death lie several tiers back. Every rank below that block
+then weighs at least the block's per-rank weight divided by `(k + 1)^2`,
+where `k` is the rank's index from the top and 2 is the exponent the cell
+weights use. With no fall, the leading tier keeps at least `6 / pi^2`, about
+61%, of tier draws, and rank `k` keeps a share that shrinks polynomially with
+`k` instead of by a factor of eight per rank. A live
+branch many ranks under a dead end therefore keeps drawing without any rank
+having to fall first. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
