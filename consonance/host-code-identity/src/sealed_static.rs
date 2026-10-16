@@ -490,8 +490,6 @@ pub fn sealed_static_executable_identity() -> io::Result<String> {
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_env = "musl")]
-    use std::fs::OpenOptions;
     use std::io::Write;
 
     use super::*;
@@ -601,21 +599,15 @@ mod tests {
     }
 
     #[cfg(target_env = "musl")]
-    #[inline(never)]
-    fn live_code_probe() -> u8 {
-        std::hint::black_box(73)
-    }
-
-    #[cfg(target_env = "musl")]
     #[test]
     #[cfg_attr(miri, ignore)]
-    fn cached_guard_rejects_changed_live_code() {
-        const CHILD_ENV: &str = "HARMONY_CACHED_GUARD_LIVE_CODE_CHILD";
+    fn cached_guard_rejects_unexpected_executable_mapping() {
+        const CHILD_ENV: &str = "HARMONY_CACHED_GUARD_EXTRA_RX_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
             let output = std::process::Command::new("/proc/self/exe")
                 .args([
                     "--exact",
-                    "sealed_static::tests::cached_guard_rejects_changed_live_code",
+                    "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping",
                     "--nocapture",
                 ])
                 .env(CHILD_ENV, "1")
@@ -633,17 +625,12 @@ mod tests {
             return;
         }
         let (_, guard) = SealedStaticExecutableGuard::capture().unwrap();
-        let address = std::hint::black_box(live_code_probe as *const () as usize) as u64;
-        let memory = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/proc/self/mem")
+        let mapping = memmap2::MmapMut::map_anon(4096)
+            .unwrap()
+            .make_exec()
             .unwrap();
-        let mut original = [0_u8];
-        memory.read_exact_at(&mut original, address).unwrap();
-        memory.write_all_at(&[original[0] ^ 1], address).unwrap();
         assert!(guard.check().is_err());
-        memory.write_all_at(&original, address).unwrap();
+        drop(mapping);
         guard.check().unwrap();
     }
 

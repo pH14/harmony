@@ -557,28 +557,20 @@ mod strict_host_tests {
     not(miri)
 ))]
 mod sealed_guard_tests {
-    use std::fs::OpenOptions;
-    use std::os::unix::fs::FileExt;
-
     use super::*;
     use crate::cache::{
         CacheIndex, LocalIndex, Namespace,
         extent::{extent_len, write_extent},
     };
 
-    #[inline(never)]
-    fn live_code_probe() -> u8 {
-        std::hint::black_box(83)
-    }
-
     #[test]
-    fn changed_live_code_revokes_a_published_lease() {
-        const CHILD_ENV: &str = "HARMONY_CHANGED_LIVE_CODE_PUBLISH_CHILD";
+    fn unexpected_executable_mapping_revokes_a_published_lease() {
+        const CHILD_ENV: &str = "HARMONY_EXTRA_RX_PUBLISH_CHILD";
         if std::env::var_os(CHILD_ENV).is_none() {
             let output = std::process::Command::new("/proc/self/exe")
                 .args([
                     "--exact",
-                    "image_identity::sealed_guard_tests::changed_live_code_revokes_a_published_lease",
+                    "image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
                     "--nocapture",
                 ])
                 .env(CHILD_ENV, "1")
@@ -605,19 +597,14 @@ mod sealed_guard_tests {
             .unwrap();
         assert_eq!(index.stats().entries, 1);
 
-        let address = std::hint::black_box(live_code_probe as *const () as usize) as u64;
-        let memory = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/proc/self/mem")
+        let mapping = memmap2::MmapMut::map_anon(4096)
+            .unwrap()
+            .make_exec()
             .unwrap();
-        let mut original = [0_u8];
-        memory.read_exact_at(&mut original, address).unwrap();
-        memory.write_all_at(&[original[0] ^ 1], address).unwrap();
         assert!(guard.check_published(&index, lease).is_err());
         assert!(index.lookup(namespace, b"snapshot").is_none());
         assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
-        memory.write_all_at(&original, address).unwrap();
+        drop(mapping);
         guard.check().unwrap();
     }
 }

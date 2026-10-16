@@ -12,6 +12,7 @@ sha2 = "0.10"
 libc = "0.2"
 
 [dev-dependencies]
+memmap2 = "0.9"
 tempfile = "3"
 
 [lints]

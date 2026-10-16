@@ -206,6 +206,7 @@ dependencies = [
  "host-code-identity",
  "hypercall-proto",
  "libc",
+ "memmap2",
  "serde",
  "serde_json",
  "sha2",
@@ -497,6 +498,7 @@ name = "host-code-identity"
 version = "0.1.0"
 dependencies = [
  "libc",
+ "memmap2",
  "sha2",
  "tempfile",
 ]
