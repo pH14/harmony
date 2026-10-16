@@ -792,6 +792,9 @@ impl FaultTarget {
     }
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
+        if snapshot.failed || !snapshot.observation.stop.is_continuable() {
+            return Err("the fault snapshot is not a runnable endpoint".into());
+        }
         let expected = match (self.config.uml.is_some(), snapshot.endpoint) {
             (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => Some(hash),
             (true, Some(FaultEndpointCertificate::UmlWholeStateUnavailable)) => None,
@@ -799,6 +802,21 @@ impl FaultTarget {
         };
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
+            let previous_moment = if snapshot.actions.is_empty() {
+                None
+            } else {
+                let prefix = &snapshot.actions[..snapshot.actions.len() - 1];
+                let at = live.chain.local(prefix);
+                let previous = if live.chain.depth(at) == prefix.len() {
+                    live.chain.point(at)
+                } else {
+                    live.ensure_prefix(prefix)?.map_err(
+                        |_| "restored fault prefix stopped before its snapshot certificate",
+                    )?
+                };
+                live.replay(previous.snap)?;
+                Some(live.observe(FaultStop::Deadline)?.moment)
+            };
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
@@ -812,6 +830,18 @@ impl FaultTarget {
                                     .into(),
                             );
                         }
+                    }
+                    let mut actual = live.observe(FaultStop::Deadline)?;
+                    if let Some(previous_moment) = previous_moment {
+                        actual.parks.retain(|park| park.moment > previous_moment);
+                        actual
+                            .park_reads
+                            .retain(|read| read.moment > previous_moment);
+                    }
+                    if actual != snapshot.observation {
+                        return Err(
+                            "restored fault endpoint observation differs from its snapshot".into(),
+                        );
                     }
                     Ok(())
                 }
@@ -1657,6 +1687,8 @@ mod tests {
     #[derive(Debug)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
+        events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
+        current: u64,
     }
 
     impl SearchSession for TimedOutRestore {
@@ -1705,8 +1737,9 @@ mod tests {
             unreachable!()
         }
 
-        fn replay_snapshot(&mut self, _: SnapId) -> Result<(), Box<dyn Error>> {
+        fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
             if self.hash.is_some() {
+                self.current = snapshot.0;
                 Ok(())
             } else {
                 Err(SessionError::Hung(WALL_LIMIT).into())
@@ -1745,7 +1778,7 @@ mod tests {
         fn sdk_events(
             &mut self,
         ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
-            Ok(Vec::new())
+            Ok(self.events.get(&self.current).cloned().unwrap_or_default())
         }
 
         fn abandoned(&self) -> bool {
@@ -1757,7 +1790,11 @@ mod tests {
         Live {
             key: [0; 32],
             holder: 0,
-            session: Box::new(TimedOutRestore { hash: None }),
+            session: Box::new(TimedOutRestore {
+                hash: None,
+                events: BTreeMap::new(),
+                current: 1,
+            }),
             base_identity: [0; 32],
             setup: SnapId(1),
             windows: ActionWindows { root_seal: 0 },
@@ -1933,7 +1970,11 @@ mod tests {
 
     fn hashed_live(hash: [u8; 32]) -> Live {
         let mut live = timed_out_live();
-        live.session = Box::new(TimedOutRestore { hash: Some(hash) });
+        live.session = Box::new(TimedOutRestore {
+            hash: Some(hash),
+            events: BTreeMap::new(),
+            current: 1,
+        });
         live
     }
 
@@ -1974,6 +2015,79 @@ mod tests {
         };
         let error = target.restore(&missing).unwrap_err().to_string();
         assert!(error.contains("lacks a certificate"), "{error}");
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn restoring_a_certified_snapshot_rejects_forged_logical_evidence() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        let snapshot = target.snapshot().unwrap().unwrap();
+
+        let mut forged = snapshot.clone();
+        forged.observation.stop = FaultStop::Assertion { point: 7 };
+        assert!(target.restore(&forged).is_err());
+
+        forged.observation = snapshot.observation.clone();
+        forged.observation.ticks = 1;
+        assert!(target.restore(&forged).is_err());
+
+        forged.observation = snapshot.observation.clone();
+        forged.observation.parks.push(crate::target::ParkLanding {
+            moment: 1,
+            site: 2,
+            edges: 3,
+        });
+        assert!(target.restore(&forged).is_err());
+
+        forged.observation = snapshot.observation;
+        forged.failed = true;
+        assert!(target.restore(&forged).is_err());
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn restoring_a_certified_action_preserves_its_local_park_reports() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
+        let first = (10, 0, br#"{"harmony_park":{"site":1,"edges":2}}"#.to_vec());
+        let second = (20, 0, br#"{"harmony_park":{"site":3,"edges":4}}"#.to_vec());
+        let read = (
+            30,
+            0,
+            br#"{"harmony_park_read":{"site":5,"edges":6}}"#.to_vec(),
+        );
+        let events = vec![first.clone(), second, read];
+        let mut expected = FaultObservations::new(
+            30,
+            &decode_sdk_events(&events).unwrap(),
+            FaultStop::Deadline,
+        );
+        expected.parks.retain(|park| park.moment > 10);
+        expected.park_reads.retain(|read| read.moment > 10);
+        let snapshot = FaultSnapshot {
+            actions: vec![action],
+            observation: expected,
+            failed: false,
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+        };
+        let mut target = unbooted_target();
+        let mut live = hashed_live([17; 32]);
+        live.chain.push(
+            &[action],
+            Point {
+                snap: SnapId(2),
+                moment: 1_000_000,
+            },
+            None,
+        );
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            events: BTreeMap::from([(1, vec![first]), (2, events)]),
+            current: 1,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        target.restore(&snapshot).unwrap();
+        assert_eq!(target.observation(), &snapshot.observation);
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
