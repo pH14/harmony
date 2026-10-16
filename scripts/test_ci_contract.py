@@ -57,6 +57,23 @@ class StructureTests(unittest.TestCase):
                       'manifest["source_digest"]', 'manifest["files"][name]'):
             self.assertIn(check, steps[verify_archive]["run"])
 
+    def test_release_cli_archive_signs_and_packages_strict_host(self):
+        import yaml
+
+        steps = yaml.safe_load((ROOT / ci_contract.RELEASE.path).read_text())["jobs"]["cli"]["steps"]
+        commands = "\n".join(str(step.get("run", "")) for step in steps)
+        for required in (
+            "--no-default-features --features consonance-host --bin harmony-consonance-host",
+            "--options runtime",
+            "--entitlements consonance/vmm-backend/hvf.entitlements.plist",
+            "--library-constraint scripts/macos-os-only-library-constraint.coderequirement",
+            "harmony harmony-consonance-host",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, commands)
+        signed = next(step for step in steps if step.get("name") == "Build and constrain signed Consonance host")
+        self.assertEqual(signed["if"], "runner.os == 'macOS'")
+
     def test_exact_runtime_consumers_wait_for_its_build(self):
         import yaml
 
@@ -376,7 +393,13 @@ class HostCompatibilityTests(unittest.TestCase):
     def test_host_jobs_are_selected_and_bounded_on_every_pull_request(self):
         self.assertEqual(
             [job.name for job in self.workflow.jobs if not job.selects],
-            ["macOS Arm64", "Linux Arm64", "Linux Arm64 Dissonance", "Linux Arm64 Qualification"],
+            [
+                "macOS Arm64",
+                "macOS Consonance Host Package",
+                "Linux Arm64",
+                "Linux Arm64 Dissonance",
+                "Linux Arm64 Qualification",
+            ],
         )
         for job in self.workflow.jobs:
             with self.subTest(job=job.name):
@@ -395,6 +418,7 @@ class HostCompatibilityTests(unittest.TestCase):
             runners,
             {
                 "macOS Arm64": "macos-14",
+                "macOS Consonance Host Package": "macos-14",
                 "Linux Arm64": "ubuntu-24.04-arm",
                 "Linux Arm64 Dissonance": "ubuntu-24.04-arm",
                 "Linux Arm64 Qualification": "ubuntu-24.04-arm",
@@ -442,6 +466,24 @@ class HostCompatibilityTests(unittest.TestCase):
             {key: value for key, value in portable_cache.items() if key != "shared-key"},
             {key: value for key, value in qualification_cache.items() if key != "shared-key"},
         )
+
+    def test_macos_package_job_builds_and_signs_the_strict_host(self):
+        commands = "\n".join(
+            str(step.get("run", ""))
+            for step in self.hosts["macos-consonance-host-package"]["steps"]
+        )
+        for required in (
+            "--bin harmony",
+            "--no-default-features",
+            "--features consonance-host --bin harmony-consonance-host",
+            "--options runtime",
+            "--entitlements consonance/vmm-backend/hvf.entitlements.plist",
+            "--library-constraint scripts/macos-os-only-library-constraint.coderequirement",
+            "scripts/test-consonance-host-package.py",
+            "--platform macos",
+        ):
+            with self.subTest(required=required):
+                self.assertIn(required, commands)
 
     def test_a_host_job_claims_no_live_hypervisor(self):
         text = (ROOT / self.workflow.path).read_text()
