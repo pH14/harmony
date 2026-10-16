@@ -78,8 +78,15 @@ pub enum CacheError {
     ForeignExtent,
     #[error("malformed snapshot cache extent: {0}")]
     Malformed(&'static str),
-    #[error("snapshot cache key already names a different target state")]
-    DivergentDuplicate,
+    #[error(
+        "snapshot cache key {key:?} in namespace {namespace:?} names target {existing_commitment:?}, not {published_commitment:?}"
+    )]
+    DivergentDuplicate {
+        namespace: Namespace,
+        key: Vec<u8>,
+        existing_commitment: [u8; 32],
+        published_commitment: [u8; 32],
+    },
     #[error("snapshot cache segment: {0}")]
     Segment(#[from] std::io::Error),
 }
@@ -375,8 +382,14 @@ impl CacheIndex for LocalIndex {
         let committed = extent.commit();
         if let Some(&id) = state.keys.get(&namespace).and_then(|keys| keys.get(key)) {
             state.segments.free_committed(committed);
-            if state.entries[&id].target_commitment != target_commitment {
-                return Err(CacheError::DivergentDuplicate);
+            let existing_commitment = state.entries[&id].target_commitment;
+            if existing_commitment != target_commitment {
+                return Err(CacheError::DivergentDuplicate {
+                    namespace,
+                    key: key.to_vec(),
+                    existing_commitment,
+                    published_commitment: target_commitment,
+                });
             }
             state.stats.duplicates += 1;
             return state.lease(id);
@@ -682,8 +695,24 @@ mod tests {
         let index = LocalIndex::with_segment_bytes(1 << 20, 4 * PAGE);
         let space = ns("a");
         let first = put(&index, space, b"k", None, &[(0, 1)], &[]).unwrap();
-        let result = put(&index, space, b"k", None, &[(0, 2)], &[]);
-        assert!(matches!(result, Err(CacheError::DivergentDuplicate)));
+        let existing_commitment = index.state().entries[&first.entry].target_commitment;
+        let page = [2; PAGE];
+        let mut extent = index.extent(extent_len(1, 0, 1).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[(0, &[2; 32], &page)], &[], b"k").unwrap();
+        let published_commitment = Sha256::digest(extent.bytes_mut()).into();
+        let result = index.publish(space, b"k", None, extent, published_commitment, 1);
+        assert!(matches!(
+            result,
+            Err(CacheError::DivergentDuplicate {
+                namespace,
+                key,
+                existing_commitment: existing,
+                published_commitment: published,
+            }) if namespace == space
+                && key == b"k"
+                && existing == existing_commitment
+                && published == published_commitment
+        ));
         assert_eq!(resolved(&index, &first).0, vec![(0, 1)]);
         assert_eq!(index.stats().entries, 1);
         assert_eq!(index.stats().duplicates, 0);
