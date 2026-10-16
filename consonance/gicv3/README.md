@@ -28,6 +28,9 @@ enables, and active-priority registers needed by KVM's in-kernel controller.
 It carries the KVM redistributor property and pending base registers so their
 guest-visible readback enters snapshots and identity. The userspace model
 reports zero for both and rejects a nonzero value on restore.
+`validate_shared_snapshot` checks the record shape without applying that
+userspace-only rule; the KVM backend validates its redistributor base bits
+before restoring the in-kernel device.
 The userspace controller's current Group-1 arbitration uses its own PMR and
 active INTID state; these additional CPU-interface fields remain zero on HVF.
 `input_unmasked` checks the individual input's distributor, redistributor,
