@@ -84,14 +84,16 @@ canonical kernel-proper instruction starts. It requires direct branches to
 target those starts and checks the physical entry separately. Setup's loaded
 file bytes and the decompressor's executable sections are raw-scanned for the
 same encodings.
-Counter-shaped kernel operand bytes and the compressed payload while mapped
-executable remain computed-entry limits ([#657](https://github.com/pH14/harmony/issues/657)).
+Counter-shaped kernel operand and reviewed-data bytes, along with the compressed
+payload while mapped executable, remain computed-entry limits
+([#657](https://github.com/pH14/harmony/issues/657)).
 The scan checks that the known
 linker-defined code sections present in each image are marked executable before
 relying on section-based disassembly. It rejects unknown or duplicate allocated
 data sections and scans opcode bytes in loaded file ranges outside reviewed
-sections. Kernel and decompressor reviewed data are exempt from raw-byte scanning
-because ordinary tables contain the same byte sequences by chance. Setup
+sections. Kernel reviewed data and the decompressor's compressed payload are
+exempt from raw-byte scanning because ordinary tables and compressed bytes can
+contain the same sequences by chance. Setup
 raw-scans every file-backed PT_LOAD byte across its mixed 16-/32-bit execution.
 The decompressor raw-scans every executable section because its 32-bit startup
 calls helpers in `.text` before switching modes; `.text` is also disassembled

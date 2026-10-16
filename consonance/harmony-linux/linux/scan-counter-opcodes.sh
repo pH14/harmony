@@ -401,11 +401,18 @@ EOF
             # (`0f c7 0f`, modrm reg 1) shares the opcode bytes and must pass.
             printf '.section .text,"ax"\n.byte 0x0f,0xc7,0xf0\n.byte 0xc3\n' \
                 | as -o "$d/rng.elf" - 2>/dev/null && rng_ok=1
+            printf '.section .text,"ax"\n.byte 0x0f,0xc7,0x0f,0xc7,0xf8\n.byte 0xc3\n' \
+                | as -o "$d/overlap.elf" - 2>/dev/null && overlap_ok=1
             printf '.section .text,"ax"\n.byte 0x0f,0xc7,0x0f\n.byte 0xc3\n' \
                 | as -o "$d/cmpxchg.elf" - 2>/dev/null && cx_ok=1
-            if [ "${rng_ok:-0}" = 1 ] && [ "${cx_ok:-0}" = 1 ]; then
+            if [ "${rng_ok:-0}" = 1 ] && [ "${overlap_ok:-0}" = 1 ] \
+                && [ "${cx_ok:-0}" = 1 ]; then
                 if raw_byte_scan_one "$d/rng.elf" rng >/dev/null 2>&1; then
                     echo "FAIL: self-test — raw-byte scan MISSED a planted 0f c7 /6 (rdrand)" >&2
+                    exit 1
+                fi
+                if raw_byte_scan_one "$d/overlap.elf" overlap >/dev/null 2>&1; then
+                    echo "FAIL: self-test — a benign 0f c7 /1 hid an overlapping rdseed" >&2
                     exit 1
                 fi
                 if ! raw_byte_scan_one "$d/cmpxchg.elf" cmpxchg >/dev/null 2>&1; then
