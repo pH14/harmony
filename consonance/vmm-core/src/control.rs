@@ -1104,6 +1104,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 {
                     return Ok(Err(ControlError::Unsupported));
                 }
+                if let Some(error) = self.poison_pending_decision_schedule() {
+                    return Ok(Err(error));
+                }
                 if let Some(resolution) = resolve {
                     let Some((at, question)) = self
                         .vmm
@@ -1263,6 +1266,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .and_then(|v| v.effective_vns())
             .unwrap_or(0);
         self.validate_host_fault(&decoded, at.0, floor)?;
+        if at.0 == floor
+            && self
+                .vmm
+                .as_ref()
+                .and_then(Vmm::pending_service_question)
+                .is_some()
+        {
+            return Err(ControlError::ScheduleUnsatisfiable {
+                moment: at.0,
+                vtime: floor,
+            });
+        }
         let mut projected = self.project_pending_recorded(&self.recorded);
         projected.record_effect(at.0, decoded.clone());
         if projected
@@ -2046,6 +2061,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Some(error)
     }
 
+    fn poison_pending_decision_schedule(&mut self) -> Option<ControlError> {
+        let vns = self.vmm.as_ref().and_then(|vmm| {
+            vmm.pending_service_question()
+                .map(|_| vmm.effective_vns().unwrap_or(0))
+        })?;
+        self.poison_crossed_schedule(vns)
+    }
+
     fn run_inner(
         &mut self,
         until: &control_proto::StopConditions,
@@ -2054,6 +2077,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(err.reply()));
         }
         loop {
+            if let Some(error) = self.poison_pending_decision_schedule() {
+                return Ok(Err(error));
+            }
             if let Some((moment, question)) = self
                 .vmm
                 .as_ref()
@@ -9775,6 +9801,229 @@ mod tests {
             Err(ControlError::ScheduleUnsatisfiable { moment: 1, .. })
         ));
         server.vmm.as_mut().unwrap().map_doorbell_pages().unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn same_moment_perturb_after_decision_is_rejected_and_replay_stays_equal() {
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0u8; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let payload_offset = frame[..len]
+            .windows(b"choose".len())
+            .position(|bytes| bytes == b"choose")
+            .unwrap();
+        let exits = vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x0ca1,
+                size: 4,
+                write: Some(len as u32),
+            }),
+            Exit::Common(CommonExit::Idle),
+        ];
+        let make_vm = move || {
+            let mut backend = MockBackend::with_exits(exits.clone());
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vm = Vmm::new(backend, GuestRam::new(BIG_RAM).unwrap());
+            vm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
+            vm.wire_snapshot_hashing();
+            Ok(vm)
+        };
+        let mut vm = make_vm().unwrap();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[0xe000..0xe000 + len].copy_from_slice(&frame[..len]);
+        vm.restore_guest_memory(&ram).unwrap();
+        let mut server = ControlServer::new(vm, Box::new(make_vm));
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        let expected_config = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |config| {
+            if config != &expected_config {
+                return Err(ChannelError::Malformed);
+            }
+            Ok(Box::new(ExternalService(0)))
+        }));
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let before = snap(&mut server);
+        let moment = server.vmm().unwrap().effective_vns().unwrap();
+        let run = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert!(matches!(
+            server.handle(&run).unwrap(),
+            Ok(Reply::Stop(StopReason::Decision { vtime: Moment(at), .. })) if at == moment
+        ));
+        let pending = snap(&mut server);
+        let stopped_response = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        let effect = EnvHostEffect::XorMemory {
+            gpa: 0xe000 + payload_offset as u64,
+            bytes: vec![1],
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(effect.encode()),
+                    at: Moment(moment),
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert!(server.schedule.is_empty());
+        assert_eq!(server.schedule_poisoned, None);
+        assert_eq!(
+            server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            stopped_response
+        );
+        let answered = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: Some(Resolution {
+                    vtime: Moment(moment),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(environment::channel::Answer::Nominal.encode()),
+                }),
+            })
+            .unwrap();
+        assert!(matches!(
+            answered,
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
+        let live_response = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        let recorded = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(recorded)) => recorded,
+            other => panic!("recorded environment: {other:?}"),
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: before,
+                    env: recorded,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&run).unwrap(),
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
+        let replay_response = server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap();
+        assert_eq!(replay_response, live_response);
+
+        let mut plan = EnvSpec::seeded(9);
+        plan.set_config(config);
+        plan.record_effect(moment, effect);
+        let branch = Request::Branch {
+            snap: pending,
+            env: Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: plan.encode(),
+            },
+        };
+        assert_eq!(server.handle(&branch).unwrap(), Ok(Reply::Unit));
+        let response_before_resolution = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        let resolve = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: Some(Resolution {
+                vtime: Moment(moment),
+                service: 19,
+                id: control_proto::DecisionId(77),
+                answer: Answer(environment::channel::Answer::Nominal.encode()),
+            }),
+        };
+        assert_eq!(
+            server.handle(&resolve).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            response_before_resolution
+        );
+        assert!(server.recorded.answers().is_empty());
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
+
+        assert_eq!(server.handle(&branch).unwrap(), Ok(Reply::Unit));
+        assert_eq!(
+            server.handle(&run).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+
+        assert_eq!(server.handle(&branch).unwrap(), Ok(Reply::Unit));
+        server.schedule.clear();
+        server.reseed_schedule.insert(moment, 123);
+        let response_before_resolution = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        assert_eq!(
+            server.handle(&resolve).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            response_before_resolution
+        );
+        assert!(server.recorded.answers().is_empty());
     }
 
     #[test]
