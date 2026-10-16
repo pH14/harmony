@@ -237,6 +237,7 @@ impl Services {
             .map_err(|error| format!("payload tape: {error}"))?;
         env.set_coverage_schedule(coverage_schedule);
         self.env = env;
+        self.entropy = SeededEntropy::new(seed);
         Ok(())
     }
 
@@ -625,6 +626,57 @@ mod branch_isolation_tests {
     use environment::channel::{
         Answer, ChannelError, MAX_CHANNEL_BYTES, Question, ServiceResponse,
     };
+    use hypercall_proto::encode_request;
+
+    #[test]
+    fn branch_restarts_host_bridge_entropy_only_after_preflight() {
+        fn draw(services: &mut Services) -> Vec<u8> {
+            let mut request = [0_u8; MAX_FRAME];
+            let length =
+                encode_request(ServiceId::Entropy, 1, 7, &8_u32.to_le_bytes(), &mut request)
+                    .unwrap();
+            let mut response = [0_u8; MAX_FRAME];
+            let reply = services
+                .answer(1, &request[..length], &mut response)
+                .unwrap();
+            let (header, bytes) = decode(&response[..reply.length]).unwrap();
+            assert_eq!(header.status, Status::Ok as u16);
+            bytes.to_vec()
+        }
+
+        let mut services = Services::new(5);
+        let first = draw(&mut services);
+        let checkpoint = services.clone();
+
+        let mut rejected = checkpoint.clone();
+        assert!(
+            rejected
+                .branch(
+                    7,
+                    Box::new(NominalHandler),
+                    vec![vec![0; MAX_CHANNEL_BYTES + 1]],
+                    None,
+                )
+                .is_err()
+        );
+        let mut unchanged = checkpoint.clone();
+        assert_eq!(draw(&mut rejected), draw(&mut unchanged));
+
+        let mut seed_five = checkpoint.clone();
+        seed_five
+            .branch(5, Box::new(NominalHandler), Vec::new(), None)
+            .unwrap();
+        assert_eq!(draw(&mut seed_five), first);
+
+        let mut seed_seven = checkpoint;
+        seed_seven
+            .branch(7, Box::new(NominalHandler), Vec::new(), None)
+            .unwrap();
+        let mut expected = Services::new(7);
+        let seven = draw(&mut seed_seven);
+        assert_eq!(seven, draw(&mut expected));
+        assert_ne!(seven, first);
+    }
 
     #[derive(Clone)]
     struct SharedReseedHandler {

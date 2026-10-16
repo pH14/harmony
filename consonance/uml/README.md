@@ -84,13 +84,16 @@
   resolutions leave the held request and services state unchanged. A recorded
   coverage schedule supplies a branch's window quantum without per-callback
   decisions.
-  `branch` installs a seed, handler, payloads, and optional coverage schedule
-  after checking that reseeding
-  with both the branch seed and the decode seed zero keeps the handler identity
-  and configuration unchanged. It also rejects a decode-seed probe that changes
-  the original handler. A rejected branch leaves independent live services
-  untouched; if a shallow handler clone changes the live service state, the
-  service channel is poisoned so it cannot export a misleading checkpoint.
+  `branch` checks that reseeding with both the branch seed and the decode seed
+  zero keeps the handler identity and configuration unchanged, then installs
+  the handler, payloads, optional coverage schedule, and a fresh host-bridge
+  entropy stream from the branch seed. The guest kernel's `getrandom` stream
+  starts from the boot seed and remains part of checkpointed guest state; a
+  branch does not reseed it. A plain restore retains the captured host-bridge
+  entropy position. A decode-seed probe that changes the original handler is
+  rejected. A rejected branch leaves independent live services untouched; if
+  a shallow handler clone changes the live service state, the service channel
+  is poisoned so it cannot export a misleading checkpoint.
   `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays
