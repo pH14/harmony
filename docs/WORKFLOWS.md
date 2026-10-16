@@ -128,10 +128,12 @@ port.
 The root Nextest configuration starts Linux test binaries through
 `scripts/linux-clean-loader-test.sh`, which removes Cargo's code-selecting
 loader variables before the test begins. The Fault Injection, NES Adapter,
-Container Execution, Nested Host Qualification, extended guest runtime
-qualification, and release runtime qualification jobs use that runner only for
-their Linux Cargo test steps. This test-only cleanup does not change production
-identity admission or Miri execution.
+and Nested Host Qualification jobs use that runner for their Linux Cargo test
+steps. Container Execution, extended guest runtime qualification, and release
+runtime qualification instead build static-musl OCI tests and launch them
+through `scripts/linux-sealed-test-runner.py`; their public Session calls
+require a fully sealed executable host. These test runners do not change
+production identity admission or Miri execution.
 
 `UML Qualification — <Target>` runs three suites of the static-musl
 `harmony-uml-qualify` in sequence as the runner's ordinary UID. The qualifier
