@@ -844,6 +844,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn production_loader_refuses_self_consistent_unreviewed_bundle() {
         let directory = tempfile::tempdir().unwrap();
         write_profile(directory.path(), |_| {});
@@ -891,6 +892,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn reviewed_profile_rejects_self_consistent_artifact_and_metadata_edits() {
         let directory = tempfile::tempdir().unwrap();
         let reviewed = write_profile(directory.path(), |_| {});
