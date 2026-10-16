@@ -71,12 +71,14 @@ after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
-An x86 SDK doorbell does not advance virtual time, so an effect added at the
+An x86 SDK doorbell does not advance virtual time. An effect added at the
 moment of an already surfaced decision would run after its live answer but
-before that request when replayed from an earlier snapshot. `Perturb` rejects
-that same-moment input without changing the pending decision. A restored
-pending decision with an effect or reseed already due rejects `Run` before
-recording an answer or writing response bytes.
+before that request when replayed from an earlier snapshot. At a deferred raw
+doorbell, the effect would run before its response live but after the response
+in an unsplit run. `Perturb` rejects either same-moment input without changing
+the pending request. A restored pending decision or raw doorbell with an effect
+or reseed already due rejects `Run` before consuming the request or writing
+response bytes.
 If a backend step or scheduled-input application fails after `Run` begins,
 control retires the live VM. A failed step can already have advanced virtual
 time or changed guest state, so the session cannot mint a reproducer or accept

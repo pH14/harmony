@@ -1134,7 +1134,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 {
                     return Ok(Err(ControlError::Unsupported));
                 }
-                if let Some(error) = self.poison_pending_decision_schedule() {
+                if let Some(error) = self.poison_pending_sdk_stop_schedule() {
                     return Ok(Err(error));
                 }
                 if let Some(resolution) = resolve {
@@ -1303,7 +1303,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             && self
                 .vmm
                 .as_ref()
-                .and_then(Vmm::pending_service_question)
+                .and_then(Vmm::pending_sdk_stop_moment)
                 .is_some()
         {
             return Err(ControlError::ScheduleUnsatisfiable {
@@ -2098,9 +2098,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Some(error)
     }
 
-    fn poison_pending_decision_schedule(&mut self) -> Option<ControlError> {
+    fn poison_pending_sdk_stop_schedule(&mut self) -> Option<ControlError> {
         let vns = self.vmm.as_ref().and_then(|vmm| {
-            vmm.pending_service_question()
+            vmm.pending_sdk_stop_moment()
                 .map(|_| vmm.effective_vns().unwrap_or(0))
         })?;
         self.poison_crossed_schedule(vns)
@@ -2114,7 +2114,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(err.reply()));
         }
         loop {
-            if let Some(error) = self.poison_pending_decision_schedule() {
+            if let Some(error) = self.poison_pending_sdk_stop_schedule() {
                 return Ok(Err(error));
             }
             if let Some((moment, question)) = self
@@ -9821,6 +9821,7 @@ mod tests {
                 size: 4,
                 write: Some(frame.len() as u32),
             }),
+            Exit::Common(CommonExit::Idle),
         ]);
         backend
             .set_policy(&X86Policy {
@@ -10850,6 +10851,143 @@ mod tests {
             response_before_resolution
         );
         assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn same_moment_perturb_after_deferred_doorbell_is_rejected_and_replay_stays_equal() {
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Entropy,
+            1,
+            12,
+            &8_u32.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        let moment = 10_000;
+        let split = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(moment)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        let unsplit = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert_eq!(
+            server.handle(&split).unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(moment),
+            }))
+        );
+        assert!(matches!(
+            server.vmm_mut().unwrap().take_sdk_stop(),
+            Some(crate::vmm::SdkStop::DeferredDoorbell { moment: at, .. }) if at == moment
+        ));
+        let pending = snap(&mut server);
+        let effect = EnvHostEffect::WriteMemory {
+            gpa: 0xf000,
+            bytes: vec![0xa5],
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(effect.encode()),
+                    at: Moment(moment),
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert!(server.schedule.is_empty());
+        assert_eq!(server.schedule_poisoned, None);
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert!(server.handle(&unsplit).unwrap().is_ok());
+        let live_response = server.vmm().unwrap().guest_memory()[0xf000..0xf020].to_vec();
+        let (header, _) = hypercall_proto::decode(&live_response).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+        let mut replay = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        assert!(replay.handle(&unsplit).unwrap().is_ok());
+        assert_eq!(
+            &replay.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            live_response
+        );
+
+        let mut plan = EnvSpec::seeded(9);
+        plan.record_effect(moment, effect.clone());
+        let with_effect = Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: plan.encode(),
+        };
+        let mut replay_with_effect = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        replay_with_effect.schedule.insert(moment, effect);
+        assert!(replay_with_effect.handle(&unsplit).unwrap().is_ok());
+        assert_eq!(
+            replay_with_effect.vmm().unwrap().guest_memory()[0xf000],
+            0xa5
+        );
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: with_effect
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            server.handle(&unsplit).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert!(matches!(
+            server.vmm_mut().unwrap().take_sdk_stop(),
+            Some(crate::vmm::SdkStop::DeferredDoorbell { moment: at, .. }) if at == moment
+        ));
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: EnvSpec::seeded(9).encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        server.reseed_schedule.insert(moment, 37);
+        assert_eq!(
+            server.handle(&unsplit).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
     }
 
     #[test]
