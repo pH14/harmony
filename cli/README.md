@@ -125,13 +125,19 @@ and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
 New release assets become available when their release is published.
-For KVM and HVF, discovery selects the first directory containing both the
-architecture's kernel and `initramfs-oci.cpio.gz`; it never combines partial
-directories. A single artifact override takes its counterpart from the same
-resolved directory and fails if that file is absent. Supplying both paths
-explicitly permits a custom layout, for which the caller must provide a
-qualified kernel and base initramfs pair. Capturing their hashes for replay
-identity does not qualify an older kernel for the current boot command line.
+Automatic discovery selects the first directory containing a current-source
+`runtime-manifest.json`, the architecture's kernel, and
+`initramfs-oci.cpio.gz`, with both file hashes matching the manifest. It skips
+stale, incomplete, or changed local bundles and applies the same check to
+cached and downloaded bundles before use. UML also checks an automatically
+selected base initramfs this way. An older cached release without a manifest
+must be removed and fetched again. For KVM and HVF, a single artifact override
+takes its counterpart from the same resolved directory and requires the same
+manifest check. Supplying both paths explicitly permits a custom layout, for
+which the caller must provide a qualified kernel and base initramfs pair.
+An explicit UML base initramfs is likewise the caller's choice. Capturing
+artifact hashes for replay identity does not qualify an older kernel for the
+current boot command line.
 
 NES defaults to the QuickNES runner:
 

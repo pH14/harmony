@@ -28,7 +28,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - run: cargo build --release -p harmony-cli
+      - run: cargo build --locked --release -p harmony-cli
         env:
           HARMONY_RELEASE_VERSION: ${{ github.ref_name }}
       - run: tar -C target/release -czf harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz harmony
@@ -91,8 +91,39 @@ jobs:
           isa=${{ matrix.isa }}
           kernel=bzImage
           if [[ "$isa" == aarch64 ]]; then kernel=Image; fi
-          tar -C consonance/harmony-linux/build -czf harmony-guest-${{ github.ref_name }}-$isa.tar.gz "$isa/$kernel" "$isa/initramfs-oci.cpio.gz"
-          sha256sum harmony-guest-*.tar.gz > harmony-guest-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz.sha256
+          asset="harmony-guest-${{ github.ref_name }}-$isa.tar.gz"
+          tar -C consonance/harmony-linux/build -czf "$asset" "$isa/$kernel" "$isa/initramfs-oci.cpio.gz" "$isa/runtime-manifest.json"
+          sha256sum "$asset" > "$asset.sha256"
+      - name: Verify packaged runtime pair
+        env:
+          GUEST_ISA: ${{ matrix.isa }}
+          HARMONY_RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import tarfile
+
+          isa = os.environ["GUEST_ISA"]
+          kernel = "Image" if isa == "aarch64" else "bzImage"
+          asset = f'harmony-guest-{os.environ["HARMONY_RELEASE_VERSION"]}-{isa}.tar.gz'
+          required = {f"{isa}/{kernel}", f"{isa}/initramfs-oci.cpio.gz", f"{isa}/runtime-manifest.json"}
+          with tarfile.open(asset, "r:gz") as archive:
+              members = {member.name for member in archive.getmembers() if member.isfile()}
+              assert members == required, (members, required)
+              manifest = json.load(archive.extractfile(f"{isa}/runtime-manifest.json"))
+              assert manifest["version"] == 1 and manifest["architecture"] == isa
+              source = subprocess.check_output([
+                  "python3", "consonance/harmony-linux/scripts/runtime-artifacts.py",
+                  "source-key", "--architecture", isa,
+              ], text=True).strip()
+              assert manifest["source_digest"] == source
+              for name in (kernel, "initramfs-oci.cpio.gz"):
+                  actual = hashlib.sha256(archive.extractfile(f"{isa}/{name}").read()).hexdigest()
+                  assert manifest["files"][name] == actual, name
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: guest-${{ matrix.isa }}
