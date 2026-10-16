@@ -912,10 +912,7 @@ mod tests {
         let current = identity_with_session(kernel, initramfs, "admitted-session-A");
         assert!(current.starts_with("consonance-whole-vm-v3;"));
         assert!(current.contains(&format!("kernel-sha256={:x}", Sha256::digest(kernel))));
-        assert!(current.contains(&format!(
-            "initramfs-sha256={:x}",
-            Sha256::digest(initramfs)
-        )));
+        assert!(current.contains(&format!("initramfs-sha256={:x}", Sha256::digest(initramfs))));
         assert!(current.ends_with(";session=admitted-session-A"));
         assert_ne!(
             identity_with_session(kernel, initramfs, "loaded-executable-A"),
