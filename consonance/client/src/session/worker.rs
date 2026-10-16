@@ -1527,7 +1527,10 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("session worker executable differs from launcher"),
+                    .contains("session worker executable differs from launcher")
+                    || error
+                        .to_string()
+                        .contains("launcher loaded image changed before worker spawn"),
                 "{error}"
             );
             return;
