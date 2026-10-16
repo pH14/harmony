@@ -113,6 +113,11 @@ jobs:
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
         run: cargo test --locked -p uml --lib profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes -- --ignored
+      - name: Check native FS and GS bases across reused and fresh restores
+        if: matrix.architecture == 'x86_64'
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+        run: cargo test --locked -p uml --test fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore -- --ignored --nocapture
       - uses: actions/upload-artifact@v4
         with:
           name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}
