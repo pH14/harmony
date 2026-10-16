@@ -878,9 +878,14 @@ impl FaultTarget {
                 let mut previous_moment = live.observe(FaultStop::Deadline)?.moment;
                 for index in 0..snapshot.actions.len() - 1 {
                     let prefix = &snapshot.actions[..=index];
-                    let point = live.ensure_prefix(prefix)?.map_err(
-                        |_| "restored fault prefix stopped before its snapshot certificate",
-                    )?;
+                    let at = live.chain.local(prefix);
+                    let point = if live.chain.depth(at) == prefix.len() {
+                        live.chain.point(at)
+                    } else {
+                        live.ensure_prefix(prefix)?.map_err(
+                            |_| "restored fault prefix stopped before its snapshot certificate",
+                        )?
+                    };
                     live.replay(point.snap)?;
                     let hash = live
                         .session
@@ -2495,6 +2500,101 @@ mod tests {
         assert!(
             error.contains("differs from its archived endpoint certificate"),
             "{error}"
+        );
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn campaign_job_replay_cutoff_is_a_preparation_failure() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            prefix_certificates: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+        };
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        let result = crate::campaign::execute_job(
+            &mut target,
+            &snapshot,
+            &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
+            &[Some([17; 32])],
+            crate::archive::FaultMilestones::default(),
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(result.actions.is_empty());
+        let observations = result.preparation_failure.unwrap();
+        assert_eq!(observations.len(), 1);
+        assert!(observations[0].watchdog_cutoff);
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn campaign_job_replay_non_watchdog_failure_remains_fatal() {
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            actions: Vec::new(),
+            prefix_certificates: Vec::new(),
+            observation: FaultObservations::default(),
+            failed: false,
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+        };
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(Vec::new()),
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let error = crate::campaign::execute_job(
+            &mut target,
+            &snapshot,
+            &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
+            &[Some([17; 32])],
+            crate::archive::FaultMilestones::default(),
+            &[],
+            false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("replayed fault prefix stopped"), "{error}");
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn restoring_a_cached_certified_path_does_not_rebuild_it() {
+        let first = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
+        let second = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
+        let mut target = unbooted_target();
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(vec![[17; 32], [17; 32]]),
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        target.apply(first);
+        target.apply(second);
+        let snapshot = target.snapshot().unwrap().unwrap();
+        assert_eq!(snapshot.actions, vec![first, second]);
+        let links = LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links());
+        assert_eq!(links, 3);
+        target.restore(&snapshot).unwrap();
+        assert_eq!(target.observation(), &snapshot.observation);
+        assert_eq!(
+            LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links()),
+            links
         );
         LIVE.with(|slot| slot.borrow_mut().take());
     }
