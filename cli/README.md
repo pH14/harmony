@@ -271,7 +271,9 @@ selector. Point-filtered logs show the console captured at that boundary.
 
 The `nested` package preserves the nested VM search supported by the runtime.
 Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
-`runner.options.kernel` pointing to a kernel built with nested KVM support.
+both `runner.options.kernel` pointing to a kernel built with nested KVM support
+and `runner.options.base_initramfs` pointing to its matching OCI base. This
+noncanonical profile pair is caller-qualified and must be supplied together.
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
