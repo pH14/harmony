@@ -15,6 +15,11 @@
   independently of the caller's `profile.json`; rewriting both an artifact
   and its self-declared digest cannot admit a different owned kernel.
   Workload initramfs overrides have a separate image-admission boundary.
+  The x86 qualification check uses a test-only initramfs override with the
+  reviewed kernel to execute direct `WRFSBASE` and `WRGSBASE`, then compares
+  guest-visible FS and GS bases after reused and fresh checkpoint restores.
+  It requires a host that exposes FSGSBASE and leaves the reviewed fixture
+  rootfs unchanged.
   `VerifiedProfile::identity_sha256` hashes the parsed profile. On Linux it
   copies and re-hashes those three files into sealed
   memory-backed descriptors before returning. The executable and rootfs
