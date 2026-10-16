@@ -414,7 +414,7 @@ mod tests {
     use super::*;
     use crate::profile::{Artifact, Profile, VirtualTimeCosts};
 
-    const EXECUTABLE: &str = "linux-exe-execmaps-sha256-v2:base";
+    const EXECUTABLE: &str = "linux-exe-execmaps-sha256-v3:base";
 
     #[test]
     #[cfg(target_os = "linux")]
@@ -553,7 +553,7 @@ mod tests {
             recording.check_with_host(
                 &profile("a"),
                 &host("model=1"),
-                "linux-exe-execmaps-sha256-v2:changed"
+                "linux-exe-execmaps-sha256-v3:changed"
             ),
             Err(ReplayRefused::Executable { .. })
         ));

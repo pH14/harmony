@@ -127,9 +127,14 @@ mod linux {
 
     fn mapping_digest(memory: &File, map: &ExecutableMap) -> io::Result<[u8; 32]> {
         let mut digest = Sha256::new();
-        digest.update(b"harmony-linux-executable-map-v1\0");
+        digest.update(b"harmony-linux-executable-map-v2\0");
         update_field(&mut digest, map.permissions.as_bytes());
-        update_field(&mut digest, map.path.as_bytes());
+        let kind: &[u8] = match map.path.as_str() {
+            "[vdso]" => b"vdso",
+            "[vsyscall]" => b"vsyscall",
+            _ => b"file",
+        };
+        update_field(&mut digest, kind);
         digest.update(map.offset.to_le_bytes());
         digest.update((map.end - map.start).to_le_bytes());
         if map.path == "[vsyscall]" {
@@ -167,7 +172,7 @@ mod linux {
         }
         mappings.sort_unstable();
         let mut digest = Sha256::new();
-        digest.update(b"harmony-linux-executable-maps-v1\0");
+        digest.update(b"harmony-linux-executable-maps-v2\0");
         digest.update((mappings.len() as u64).to_le_bytes());
         for mapping in mappings {
             digest.update(mapping);
@@ -182,7 +187,7 @@ mod linux {
         update_field(&mut digest, main_executable_identity.as_bytes());
         digest.update(mappings);
         Ok(format!(
-            "linux-exe-execmaps-sha256-v2:{:x}",
+            "linux-exe-execmaps-sha256-v3:{:x}",
             digest.finalize()
         ))
     }
