@@ -254,6 +254,7 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
     "linux-aarch64": (
+        "vmm-core::arm64_executable_restore live::executable_ram_restores_match_guest_continuations",
         ARM64_BASELINE_TEST,
         "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
@@ -346,6 +347,7 @@ CONSONANCE_CHECKS = Workflow(
         Job("Snapshot and Restore", "pr", 15,
             crates=("snapshot-store", "unison"),
             test_targets=("vmm-core:snapshot_branch", "vmm-core:event_loop",
+                          "vmm-core:arm64_executable_restore",
                           "vmm-core:x86_kvm_pcide_preflight"),
             ignored_tests=("vmm-backend::kvm_smoke save_restore_round_trips_on_real_kvm",
                            "vmm-backend::kvm_smoke sysenter_restore_rejects_values_kvm_cannot_preserve",
