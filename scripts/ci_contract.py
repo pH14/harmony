@@ -733,6 +733,8 @@ CONSONANCE_UML = Workflow(
                       "toolchain exceed the pull request check budget.",
             ignored_tests=(
                 "uml profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes",
+                "harmony-cli::bin/harmony adapters::faults::runs::tests::loaded_reviewed_uml_profile_binds_the_recorded_kernel",
+                "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
                 "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
             ),
             select="rust_checks"),

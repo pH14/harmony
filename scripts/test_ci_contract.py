@@ -443,12 +443,12 @@ class HostCompatibilityTests(unittest.TestCase):
 
 
 class IgnoredTestRegistryTests(unittest.TestCase):
-    PATTERN = re.compile(r"[a-z][\w-]*(?:::[\w-]+)? (?:\*|\w+(?:::\w+)*)")
+    PATTERN = re.compile(r"[a-z][\w-]*(?:::(?:[\w-]+|bin/[\w-]+))? (?:\*|\w+(?:::\w+)*)")
 
     def test_every_pattern_names_a_binary_and_a_test(self):
         for pattern, runners in ci_contract.ignored_test_runners().items():
             with self.subTest(pattern=pattern):
-                self.assertRegex(pattern, self.PATTERN)
+                self.assertIsNotNone(self.PATTERN.fullmatch(pattern))
                 self.assertEqual(len(runners), len(set(runners)))
 
     def test_host_tests_are_keyed_by_a_machine(self):
