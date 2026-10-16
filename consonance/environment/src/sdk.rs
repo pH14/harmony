@@ -114,7 +114,7 @@ pub fn decide_service<H: ServiceHandler + Clone>(
     payload: &[u8],
 ) -> Result<ServiceOutcome, Status> {
     let question = service_question(payload)?;
-    let mut candidate = env.clone();
+    let mut candidate = env.checked_clone().map_err(|_| Status::Internal)?;
     candidate.set_moment(moment);
     let outcome = match candidate
         .decide_recorded(&question)
@@ -182,7 +182,7 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
     if ready == 0 || (observed != SDK_COVERAGE_QUANTUM && observed != expected) {
         return Err(Status::BadRequest);
     }
-    let mut candidate = env.clone();
+    let mut candidate = env.checked_clone().map_err(|_| Status::Internal)?;
     candidate.set_moment(moment);
     let question = Question::with_request_id(
         u64::from(thread),
@@ -243,6 +243,10 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
 mod tests {
     use super::*;
     use crate::channel::{ChannelError, CoverageSchedule, NominalHandler, RecordedState};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    };
 
     #[derive(Clone)]
     struct UnrecordedHandler(&'static [u8]);
@@ -277,6 +281,80 @@ mod tests {
         }
     }
 
+    struct MutatingClone(Arc<AtomicU8>);
+
+    impl ServiceHandler for MutatingClone {
+        fn identity(&self) -> &[u8] {
+            b"mutating-clone"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(&mut self, _: Moment, _: &Question) -> Result<ServiceResponse, ChannelError> {
+            panic!("an unrecorded custom service must wait for an explicit answer")
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0.load(Ordering::SeqCst)])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [value] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.0.store(*value, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::new(Self(Arc::clone(&self.0)))
+        }
+    }
+
+    fn mutating_clone_environment() -> (RecordedEnv<Box<dyn ServiceHandler>>, Arc<AtomicU8>) {
+        let state = Arc::new(AtomicU8::new(0));
+        let env = RecordedEnv::new(
+            7,
+            Box::new(MutatingClone(Arc::clone(&state))) as Box<dyn ServiceHandler>,
+        );
+        (env, state)
+    }
+
+    struct DivergingClone(u8);
+
+    impl ServiceHandler for DivergingClone {
+        fn identity(&self) -> &[u8] {
+            b"diverging-clone"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(&mut self, _: Moment, _: &Question) -> Result<ServiceResponse, ChannelError> {
+            panic!("an unrecorded custom service must wait for an explicit answer")
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [value] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.0 = *value;
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(Self(self.0 + 1))
+        }
+    }
+
     #[test]
     fn unrecorded_custom_service_waits_for_explicit_input() {
         let mut env = RecordedEnv::new(7, UnrecordedHandler(b"unrecorded-handler"));
@@ -299,6 +377,44 @@ mod tests {
             decide_service(&mut env, 4, &changed),
             Err(Status::BadRequest)
         );
+    }
+
+    #[test]
+    fn external_service_request_poisoned_if_cloning_changes_live_handler() {
+        let (mut env, state) = mutating_clone_environment();
+        assert!(env.snapshot_state().is_ok());
+        let mut request = 9_u16.to_le_bytes().to_vec();
+        request.extend(7_u64.to_le_bytes());
+        assert!(matches!(
+            decide_service(&mut env, 4, &request),
+            Err(Status::Internal)
+        ));
+        assert_eq!(state.load(Ordering::SeqCst), 1);
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn external_service_request_poisoned_if_the_clone_has_different_handler_state() {
+        let mut env = RecordedEnv::new(7, Box::new(DivergingClone(0)) as Box<dyn ServiceHandler>);
+        assert!(env.snapshot_state().is_ok());
+        let mut request = 9_u16.to_le_bytes().to_vec();
+        request.extend(7_u64.to_le_bytes());
+        assert_eq!(decide_service(&mut env, 4, &request), Err(Status::Internal));
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn external_coverage_request_poisoned_if_cloning_changes_live_handler() {
+        let (mut env, state) = mutating_clone_environment();
+        let mut thresholds = BTreeMap::new();
+        assert!(env.snapshot_state().is_ok());
+        assert_eq!(
+            decide_coverage(&mut env, &mut thresholds, 4, 11, 1, 2),
+            Err(Status::Internal)
+        );
+        assert_eq!(state.load(Ordering::SeqCst), 1);
+        assert!(thresholds.is_empty());
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
     }
 
     #[test]

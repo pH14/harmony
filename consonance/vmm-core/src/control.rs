@@ -2884,6 +2884,60 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct ArmedCloneService {
+        state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl environment::channel::ServiceHandler for ArmedCloneService {
+        fn identity(&self) -> &[u8] {
+            b"test-armed-clone-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            use std::sync::atomic::Ordering;
+            Ok(vec![
+                self.state.load(Ordering::SeqCst),
+                u8::from(self.armed.load(Ordering::SeqCst)),
+            ])
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            use std::sync::atomic::Ordering;
+            let [value, armed] = state else {
+                return Err(environment::channel::ChannelError::Malformed);
+            };
+            self.state.store(*value, Ordering::SeqCst);
+            self.armed.store(*armed != 0, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            use std::sync::atomic::Ordering;
+            if self.armed.load(Ordering::SeqCst) {
+                self.state.fetch_add(1, Ordering::SeqCst);
+            }
+            Box::new(self.clone())
+        }
+    }
+
+    #[derive(Clone)]
     struct MaxStateExternalService(Vec<u8>);
     impl environment::channel::ServiceHandler for MaxStateExternalService {
         fn identity(&self) -> &[u8] {
@@ -2916,6 +2970,96 @@ mod tests {
         fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
             Box::new(self.clone())
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "mock VMM setup uses guest memory mappings unavailable under Miri"
+    )]
+    fn resolving_a_public_service_decision_rejects_a_clone_that_changes_the_live_handler() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+        let mut server = payload_server();
+        hello(&mut server);
+        let state = Arc::new(AtomicU8::new(0));
+        let armed = Arc::new(AtomicBool::new(false));
+        let handler = ArmedCloneService {
+            state: Arc::clone(&state),
+            armed: Arc::clone(&armed),
+        };
+        let config = ServiceConfig {
+            identity: b"test-armed-clone-v1".to_vec(),
+            configuration: vec![],
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(handler)),
+            &config,
+        );
+
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let until = StopConditions {
+            deadline: Some(Moment(at)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision {
+                vtime: Moment(at),
+                id: control_proto::DecisionId(77),
+                ctx: [19_u16.to_le_bytes().as_slice(), b"choose"].concat(),
+            }))
+        );
+
+        armed.store(true, Ordering::SeqCst);
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(environment::channel::Answer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(state.load(Ordering::SeqCst), 1);
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
+        assert!(matches!(
+            server.vmm().unwrap().sdk_snapshot(),
+            Err(ChannelError::Poisoned)
+        ));
     }
 
     #[test]
