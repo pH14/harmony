@@ -7,9 +7,16 @@
 
 - `Profile::load` reads `profile.json`, checks the schema, the SECCOMP
   userspace mode, the host architecture and the empty host library list, then
-  re-hashes the executable, config and rootfs and checks that the executable
-  has no ELF interpreter. `VerifiedProfile::identity_sha256` hashes the parsed
-  profile. On Linux it copies and re-hashes those three files into sealed
+  re-hashes the executable, config and fixture rootfs and checks that the
+  executable has no ELF interpreter. It also requires the entire parsed
+  profile to match the architecture's source-reviewed manifest in
+  `reviewed-profiles`. This manifest pins the kernel, config and fixture
+  rootfs digests, kernel version, patch-series digest and virtual-time costs
+  independently of the caller's `profile.json`; rewriting both an artifact
+  and its self-declared digest cannot admit a different owned kernel.
+  Workload initramfs overrides have a separate image-admission boundary.
+  `VerifiedProfile::identity_sha256` hashes the parsed profile. On Linux it
+  copies and re-hashes those three files into sealed
   memory-backed descriptors before returning. The executable and rootfs
   descriptors remain open through child spawn, so later path changes cannot
   substitute different bytes for the verified profile. The child receives the

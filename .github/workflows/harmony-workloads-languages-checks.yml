@@ -176,7 +176,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
       - name: Build the pinned UML profile
-        run: nix run .#uml-images -- --output "$RUNNER_TEMP/uml"
+        run: |
+          nix run .#uml-images -- --output "$RUNNER_TEMP/uml"
+          cmp "$RUNNER_TEMP/uml/profile.json" consonance/uml/reviewed-profiles/x86_64.json
       - uses: actions/upload-artifact@v4
         with:
           name: language-uml-profile

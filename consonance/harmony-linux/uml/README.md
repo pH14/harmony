@@ -170,6 +170,13 @@ host architecture. It extracts a source tree of its own under
 `config-fragment` merged last (and `config-fragment-arm64` after it on arm64),
 and asserts the symbols the profile depends on.
 
+`consonance/uml/reviewed-profiles` contains the reviewed manifest for each
+architecture. The launcher admits only the matching tuple, and CI checks
+both independent Nix builds against it. Release packaging makes the same
+comparison before publishing. A deliberate kernel, patch, config or fixture
+change must update the corresponding manifest with reviewed build evidence;
+an arbitrary locally built profile is not admitted by a production launcher.
+
 ## Profile contents
 
 - `linux` is statically linked, so the profile has no host library closure.

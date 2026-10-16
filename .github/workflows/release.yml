@@ -148,6 +148,8 @@ jobs:
       - name: Build and package the pinned UML profile
         run: |
           nix run .#uml-images -- --output "$RUNNER_TEMP/profile/${{ matrix.isa }}"
+          cmp "$RUNNER_TEMP/profile/${{ matrix.isa }}/profile.json" \
+            "consonance/uml/reviewed-profiles/${{ matrix.isa }}.json"
           tar -C "$RUNNER_TEMP/profile" -czf harmony-uml-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
           sha256sum harmony-uml-*.tar.gz > harmony-uml-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz.sha256
       - uses: actions/upload-artifact@v4
