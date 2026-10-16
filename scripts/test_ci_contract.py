@@ -78,6 +78,9 @@ class StructureTests(unittest.TestCase):
         spec.loader.exec_module(runtime)
         return set(runtime.INPUTS)
 
+    def test_platform_runtime_key_excludes_workload_sources(self):
+        self.assertFalse(any(path.startswith("workloads/") for path in self.runtime_inputs()))
+
     def workspace_root(self, crate):
         for directory in (crate, *crate.parents):
             manifest = directory / "Cargo.toml"
