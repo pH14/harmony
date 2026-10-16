@@ -136,12 +136,13 @@
   restores one in place, or starts a fresh process that restores one at boot.
   At restore, the console collector drains output already written by the
   paused guest and clears its diagnostic tail before the new branch runs. This
-  keeps text from a discarded branch out of later crash classification and
-  diagnostics. Its cumulative byte count still enforces the host output limit.
+  keeps text from a discarded branch out of later diagnostics. Its cumulative
+  byte count still enforces the host output limit.
   After a terminal guest stop, the client waits for the host process to exit,
-  finishes process cleanup, and joins the console collector before using the
-  tail to classify a kernel panic. A closed bridge whose process does not exit
-  within the progress limit fails instead of guessing from partial output.
+  finishes process cleanup, and joins the console collector before recording
+  the diagnostic tail. The kernel-owned exit status classifies a panic. A closed
+  bridge whose process does not exit within the progress limit fails instead
+  of guessing from partial output.
   The host owns the guest's physical memory file and an image file, both
   memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
   session's `Checkpoints` page store plus the services state at the capture.
