@@ -494,7 +494,8 @@ impl SearchSession for UmlSession {
                 Ok(extent)
             })??;
         self.loaded_image_guard.check()?;
-        Ok(index.publish(namespace, b"root", None, extent, target_commitment, 1)?)
+        let lease = index.publish(namespace, b"root", None, extent, target_commitment, 1)?;
+        Ok(self.loaded_image_guard.check_published(index, lease)?)
     }
 
     fn import_root(
@@ -596,14 +597,15 @@ impl SearchSession for UmlSession {
             },
         )??;
         self.loaded_image_guard.check()?;
-        Ok(index.publish(
+        let lease = index.publish(
             namespace,
             key,
             parent.map(|(_, lease)| lease),
             extent,
             target_commitment,
             cost,
-        )?)
+        )?;
+        Ok(self.loaded_image_guard.check_published(index, lease)?)
     }
 
     fn import_cached(

@@ -324,14 +324,15 @@ impl Session {
         )?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
         self.loaded_image_guard.check()?;
-        Ok(index.publish(
+        let lease = index.publish(
             namespace,
             key,
             parent.map(|(_, lease)| lease),
             extent,
             target_commitment,
             cost,
-        )?)
+        )?;
+        Ok(self.loaded_image_guard.check_published(index, lease)?)
     }
 
     pub(super) fn write_delta<T>(

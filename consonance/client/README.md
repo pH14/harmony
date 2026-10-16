@@ -67,6 +67,11 @@ reaches the guest. A changed or unavailable generation fails the session even
 when the current loaded-image digest has returned to its original value. This
 guard covers loader-managed image churn; it does not certify writable library
 initializers or arbitrary changes to already mapped code.
+Cache publication checks the generation after the index callback. If it
+changed, the index revokes the committed entry and any descendants before the
+session returns an error. Another thread can observe a published entry before
+that check completes, so this guard is not an atomic cross-thread publication
+fence; each consuming session checks its own generation before using the cache.
 `Session::image_identity()` returns the identifier admitted at construction;
 artifact and guest-operation boundaries perform the live generation checks.
 
@@ -181,6 +186,7 @@ the same local number. `CacheIndex` is the interface workers use:
 | `publish(namespace, key, parent, extent, target_commitment, cost)` | a lease on the committed entry; an equal-target duplicate keeps the first entry and frees the new extent, while a divergent duplicate fails without returning a lease |
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
+| `revoke(lease)` | removes the entry and descendants, invalidating any held leases after a failed post-publication guard |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
 | `forget_store(holder)` | removes a finished worker's store from the budget |
 

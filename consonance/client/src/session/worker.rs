@@ -750,10 +750,17 @@ fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
     })
 }
 
+struct WorkerConnection {
+    stream: UnixStream,
+    process: Option<Child>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
+}
+
 #[derive(Debug)]
 pub struct WorkerSession {
     stream: UnixStream,
     process: Option<Child>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: (SnapId, u64),
     seed: u64,
     failed: Cell<bool>,
@@ -776,8 +783,11 @@ impl WorkerSession {
             ))
         })?;
         Self::connect(
-            stream,
-            Some(process),
+            WorkerConnection {
+                stream,
+                process: Some(process),
+                loaded_image_guard: launcher.loaded_image_guard,
+            },
             kernel,
             initramfs,
             config,
@@ -787,17 +797,23 @@ impl WorkerSession {
     }
 
     fn connect(
-        stream: UnixStream,
-        process: Option<Child>,
+        connection: WorkerConnection,
         kernel: &[u8],
         initramfs: &[u8],
         config: &SessionConfig,
         setup_payloads: &[Vec<u8>],
         service: &str,
     ) -> Result<Self, Box<dyn Error>> {
+        let WorkerConnection {
+            stream,
+            process,
+            loaded_image_guard,
+        } = connection;
+        loaded_image_guard.check()?;
         let mut session = Self {
             stream,
             process,
+            loaded_image_guard,
             setup: (SnapId(0), 0),
             seed: config.seed,
             failed: Cell::new(false),
@@ -817,6 +833,7 @@ impl WorkerSession {
         let mut input = In(&reply);
         session.setup = input.snap()?;
         input.finish()?;
+        session.check_loaded_image()?;
         Ok(session)
     }
 
@@ -825,10 +842,19 @@ impl WorkerSession {
         self.process.as_ref().map(Child::id)
     }
 
-    fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn check_loaded_image(&self) -> Result<(), Box<dyn Error>> {
         if self.failed.get() {
             return Err(SessionError::Abandoned.into());
         }
+        if let Err(error) = self.loaded_image_guard.check() {
+            self.failed.set(true);
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+        self.check_loaded_image()?;
         let reply = send(&self.stream, &request.0, fds).and_then(|()| recv(&self.stream));
         let body = match reply {
             Ok((body, _)) => body,
@@ -837,6 +863,7 @@ impl WorkerSession {
                 return Err(SessionError::Control(format!("session worker: {error}")).into());
             }
         };
+        self.check_loaded_image()?;
         let mut input = In(&body);
         match input.u8()? {
             OK => Ok(input.0.to_vec()),
@@ -945,6 +972,7 @@ impl SearchSession for WorkerSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.check_loaded_image()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let reply = self.call(
             Out::op(EXPORT)
@@ -960,14 +988,22 @@ impl SearchSession for WorkerSession {
         let reply = self.call(Out::op(WRITE_EXTENT).len(offset).len(len), &[fd])?;
         In(&reply).finish()?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
-        Ok(index.publish(
+        self.check_loaded_image()?;
+        let lease = index.publish(
             namespace,
             key,
             parent.map(|(_, lease)| lease),
             extent,
             target_commitment,
             cost,
-        )?)
+        )?;
+        match self.loaded_image_guard.check_published(index, lease) {
+            Ok(lease) => Ok(lease),
+            Err(error) => {
+                self.failed.set(true);
+                Err(error.into())
+            }
+        }
     }
 
     fn import_cached(
@@ -1341,15 +1377,85 @@ fn serve_inherited_with_open(open: &mut Open<'_>) -> Result<(), Box<dyn Error>> 
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
     use std::{collections::BTreeMap, sync::Arc};
 
     use control_proto::Moment;
 
     use super::*;
     use crate::cache::{
-        LocalIndex,
+        CacheError, CacheStats, LocalIndex, WritableExtent,
         extent::{extent_len, read_extent, resolve, write_extent},
     };
+
+    #[derive(Debug)]
+    struct TransientIndex {
+        inner: LocalIndex,
+        library: CString,
+    }
+
+    impl CacheIndex for TransientIndex {
+        fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease> {
+            self.inner.lookup(namespace, key)
+        }
+
+        fn extent(&self, len: usize) -> Result<WritableExtent, CacheError> {
+            self.inner.extent(len)
+        }
+
+        fn publish(
+            &self,
+            namespace: Namespace,
+            key: &[u8],
+            parent: Option<&Lease>,
+            extent: WritableExtent,
+            target_commitment: [u8; 32],
+            cost: u64,
+        ) -> Result<Lease, CacheError> {
+            let lease =
+                self.inner
+                    .publish(namespace, key, parent, extent, target_commitment, cost)?;
+            // SAFETY: the path is NUL terminated and names the compiled test library.
+            let handle = unsafe { libc::dlopen(self.library.as_ptr(), libc::RTLD_NOW) };
+            assert!(!handle.is_null());
+            // SAFETY: the symbol name is NUL terminated and the library remains loaded.
+            let symbol = unsafe { libc::dlsym(handle, c"harmony_loader_witness".as_ptr()) };
+            assert!(!symbol.is_null());
+            // SAFETY: the compiled fixture exports this exact C signature.
+            let call: unsafe extern "C" fn() -> libc::c_int =
+                unsafe { std::mem::transmute(symbol) };
+            // SAFETY: the function and library remain live through this call.
+            assert_eq!(unsafe { call() }, 17);
+            // SAFETY: handle came from the successful dlopen and is closed exactly once.
+            assert_eq!(unsafe { libc::dlclose(handle) }, 0);
+            Ok(lease)
+        }
+
+        fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {
+            self.inner.chain(lease)
+        }
+
+        fn release(&self, lease: Lease) {
+            self.inner.release(lease);
+        }
+
+        fn revoke(&self, lease: Lease) {
+            self.inner.revoke(lease);
+        }
+
+        fn report_store(&self, holder: u64, bytes: u64) -> bool {
+            self.inner.report_store(holder, bytes)
+        }
+
+        fn forget_store(&self, holder: u64) {
+            self.inner.forget_store(holder);
+        }
+
+        fn stats(&self) -> CacheStats {
+            self.inner.stats()
+        }
+    }
 
     const HANG: u64 = u64::MAX;
 
@@ -1634,8 +1740,19 @@ mod tests {
             )
             .unwrap()
         });
-        let session =
-            WorkerSession::connect(parent, None, &[start], b"i", &config(), &[], "fake").unwrap();
+        let session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
+            },
+            &[start],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
         (session, server)
     }
 
@@ -1949,6 +2066,95 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn transient_parent_loader_churn_revokes_a_committed_worker_extent() {
+        const CHILD_ENV: &str = "HARMONY_TRANSIENT_INDEX_TEST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session::worker::tests::transient_parent_loader_churn_revokes_a_committed_worker_extent",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+                "stdout: {}\nstderr: {}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("helper.c");
+        let library = directory.path().join(if cfg!(target_os = "macos") {
+            "helper.dylib"
+        } else {
+            "helper.so"
+        });
+        std::fs::write(&source, "int harmony_loader_witness(void) { return 17; }\n").unwrap();
+        let mut compiler = std::process::Command::new("cc");
+        if cfg!(target_os = "macos") {
+            compiler.arg("-dynamiclib");
+        } else {
+            compiler.args(["-shared", "-fPIC"]);
+        }
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&library)
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let index = TransientIndex {
+            inner: LocalIndex::new(1 << 20),
+            library: CString::new(library.as_os_str().as_bytes()).unwrap(),
+        };
+        let guard = crate::image_identity::LoadedImageGuard::capture().unwrap();
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            serve(&child, &mut Fake::open, guard).map_err(|error| error.to_string())
+        });
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: guard,
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let (snap, _) = session.snapshot().unwrap();
+        let epoch = host_code_identity::loader_epoch().unwrap();
+        let error = session
+            .publish_snapshot(&index, namespace(), b"key", None, snap, 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("host loader changed"), "{error}");
+        assert_ne!(host_code_identity::loader_epoch().unwrap(), epoch);
+        assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
+        assert!(index.lookup(namespace(), b"key").is_none());
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        drop(session);
+        let _ = server.join().unwrap();
+    }
+
+    #[test]
     fn a_worker_that_dies_before_acknowledging_a_write_publishes_nothing() {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
@@ -1962,8 +2168,19 @@ mod tests {
                 send(&child, &reply, &[]).unwrap();
             }
         });
-        let mut session =
-            WorkerSession::connect(parent, None, &[3], b"i", &config(), &[], "fake").unwrap();
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
         let index = LocalIndex::new(1 << 20);
         let (snap, _) = session.snapshot().unwrap();
         let error = session
