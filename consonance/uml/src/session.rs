@@ -508,7 +508,11 @@ impl Session {
         let waited = now();
         let reason = loop {
             match self.guest.stopped()? {
-                Some(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_))) => break reason,
+                Some(
+                    reason @ (ExitReason::Exited(_)
+                    | ExitReason::Signaled(_)
+                    | ExitReason::GuestPanic),
+                ) => break reason,
                 Some(reason) => return Err(SessionError::Stopped(reason)),
                 None if waited.elapsed() >= limit => return Err(SessionError::Hung(limit)),
                 None => std::thread::sleep(POLL),
@@ -522,7 +526,7 @@ impl Session {
             )));
         }
         match exit.reason {
-            ExitReason::Exited(_) => Ok(exit.reason),
+            ExitReason::Exited(_) | ExitReason::GuestPanic => Ok(exit.reason),
             reason => Err(SessionError::Stopped(reason)),
         }
     }
