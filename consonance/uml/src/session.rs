@@ -7,7 +7,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
-use environment::channel::{Question, ServiceHandler};
+use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
 use hypercall_proto::MAX_FRAME;
 use sha2::{Digest, Sha256};
@@ -434,6 +434,21 @@ impl Session {
 
     pub fn paused(&self) -> bool {
         self.pending.is_some()
+    }
+
+    pub fn service_handler_fingerprint(&self) -> Result<HandlerFingerprint, SessionError> {
+        self.services
+            .handler_fingerprint()
+            .map_err(|error| SessionError::Protocol(format!("service handler: {error}")))
+    }
+
+    pub fn verify_service_handler_unchanged(
+        &self,
+        before: &HandlerFingerprint,
+    ) -> Result<(), SessionError> {
+        self.services
+            .verify_handler_unchanged(before)
+            .map_err(|error| SessionError::Protocol(format!("service handler: {error}")))
     }
 
     pub fn state_hash(&self) -> Result<[u8; 32], SessionError> {

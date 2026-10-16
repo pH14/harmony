@@ -9,8 +9,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use environment::channel::{
-    Answer, CoverageSchedule, HandlerSnapshot, NominalHandler, Question, RecordedEnv,
-    ServiceHandler,
+    Answer, ChannelError, CoverageSchedule, HandlerFingerprint, HandlerSnapshot, NominalHandler,
+    Question, RecordedEnv, ServiceHandler,
 };
 use environment::sdk::{self, EventClass, ServiceOutcome};
 #[cfg(target_os = "linux")]
@@ -179,6 +179,17 @@ pub(crate) struct Services {
 }
 
 impl Services {
+    pub(crate) fn handler_fingerprint(&self) -> Result<HandlerFingerprint, ChannelError> {
+        self.env.handler_fingerprint()
+    }
+
+    pub(crate) fn verify_handler_unchanged(
+        &self,
+        before: &HandlerFingerprint,
+    ) -> Result<(), ChannelError> {
+        self.env.verify_handler_fingerprint_unchanged(before)
+    }
+
     pub(crate) fn new(seed: u64) -> Self {
         Self {
             entropy: SeededEntropy::new(seed),

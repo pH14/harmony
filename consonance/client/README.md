@@ -287,7 +287,10 @@ and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
 or inject interrupts. If handler or payload validation rejects a branch after
 its checkpoint has been restored, the client abandons the guest so a caller
-cannot continue from the rewound state after receiving an error. `store_bytes`
+cannot continue from the rewound state after receiving an error. The client
+also checks the active service handler around branch factory calls and cached
+imports, abandoning the guest if a factory, clone, reseed, or restore changes
+the live handler through shared state. `store_bytes`
 is the allocated size of every held checkpoint, and telemetry reports the
 count and host time of captures, restores, fresh restores and imports.
 
