@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 
@@ -65,6 +67,29 @@ class RuntimeArtifactTests(unittest.TestCase):
         (self.root / "Image").unlink()
         with self.assertRaises(ValueError):
             RUNTIME.verify(self.repo, self.root, "aarch64")
+
+    def test_canonical_build_rejects_profile_before_stale_default_can_be_sealed(self):
+        (self.root / "bzImage").write_text("older default kernel")
+        (self.root / "initramfs-oci.cpio.gz").write_text("new base")
+        RUNTIME.seal(self.repo, self.root, "x86_64")
+        self.assertEqual(RUNTIME.verify(self.repo, self.root, "x86_64")["scope"], "exact-input")
+
+        tools = Path(self.temp.name) / "tools"
+        tools.mkdir()
+        uname = tools / "uname"
+        uname.write_text('#!/bin/sh\ncase "$1" in -m) echo x86_64;; -s) echo Darwin;; esac\n')
+        uname.chmod(0o755)
+        for profile in ("N6_TRAPS_OFF", "TASK_PARK_PROFILE", "NESTED_HOST_PROFILE"):
+            with self.subTest(profile=profile):
+                environment = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}")
+                for name in ("N6_TRAPS_OFF", "TASK_PARK_PROFILE", "NESTED_HOST_PROFILE"):
+                    environment.pop(name, None)
+                environment[profile] = "1"
+                result = subprocess.run(["bash", str(Path(__file__).with_name("build-platform-runtime.sh"))],
+                                        env=environment, capture_output=True, text=True, timeout=10)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("canonical platform runtime rejects profile kernels", result.stderr)
 
 
 if __name__ == "__main__":
