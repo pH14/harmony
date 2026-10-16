@@ -848,7 +848,10 @@ mod tests {
     fn production_loader_refuses_self_consistent_unreviewed_bundle() {
         let directory = tempfile::tempdir().unwrap();
         write_profile(directory.path(), |_| {});
-        assert!(Profile::load(directory.path()).is_err());
+        assert!(matches!(
+            Profile::load(directory.path()),
+            Err(ProfileError::UnreviewedProfile(_))
+        ));
     }
 
     #[test]
