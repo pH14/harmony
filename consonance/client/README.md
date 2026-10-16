@@ -285,9 +285,11 @@ recheck the same admitted processor and host identity. A publish exports the
 checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
-or inject interrupts. `store_bytes` is the allocated size of every held
-checkpoint, and telemetry reports the count and host time of captures,
-restores, fresh restores and imports.
+or inject interrupts. If handler or payload validation rejects a branch after
+its checkpoint has been restored, the client abandons the guest so a caller
+cannot continue from the rewound state after receiving an error. `store_bytes`
+is the allocated size of every held checkpoint, and telemetry reports the
+count and host time of captures, restores, fresh restores and imports.
 
 `SearchSession` is the set of calls a search worker makes, implemented by
 `Session`, `WorkerSession` and `UmlSession`.

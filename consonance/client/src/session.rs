@@ -510,7 +510,7 @@ pub enum SessionError {
     Stop(StopReason),
     #[error("guest made no virtual-time progress for more than {0:?} of host time")]
     Hung(Duration),
-    #[error("session was abandoned after a guest hang and cannot run again")]
+    #[error("session was abandoned and cannot run again")]
     Abandoned,
     #[error("backend cannot provide cancellation and virtual-time progress for a host-time bound")]
     Unboundable,
