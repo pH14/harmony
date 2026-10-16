@@ -23,7 +23,7 @@ async function archive(workers) {
     };
   }, TOUR_KEY);
   await page.goto(`${url}/?level=0&workers=${workers}&pace=0`);
-  await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 1500, null, { timeout: 120000 });
+  await page.waitForFunction(() => Number(document.querySelector("#attempts")?.textContent.replaceAll(",", "") ?? 0) >= 1500, null, { timeout: 120000 });
   await page.locator("#pause").click();
   assert.equal(await page.locator("#workers").textContent(), String(workers));
   const states = [];

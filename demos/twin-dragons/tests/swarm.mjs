@@ -102,7 +102,7 @@ try {
     await page.waitForSelector("#attempts", { state: "attached" });
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");
     assert.deepEqual(await page.locator("#visualization button").allTextContents(), ["Movement", "Heatmap"]);
-    await page.waitForFunction(() => Number(document.querySelector("#attempts").textContent.replaceAll(",", "")) >= 1000);
+    await page.waitForFunction(() => Number(document.querySelector("#attempts")?.textContent.replaceAll(",", "") ?? 0) >= 1000);
     await setView(page,'movement');
     await page.waitForFunction(() => [...document.querySelectorAll(".area-map")].some((c) => Number(c.dataset.swarmCount) > 0));
     assert.equal(await page.locator("#visualization").getAttribute("data-value"), "movement");

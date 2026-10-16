@@ -277,7 +277,7 @@ try {
   await page.waitForFunction(
     () =>
       Number(
-        document.querySelector("#attempts").textContent.replaceAll(",", ""),
+        document.querySelector("#attempts")?.textContent.replaceAll(",", "") ?? 0,
       ) >= 50,
   );
   assert.equal(
