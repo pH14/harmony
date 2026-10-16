@@ -58,6 +58,10 @@ guest TASK_SIZE remains in the console for diagnosis.
   `cntvct_el0` and `cntvctss_el0` on arm64, each returning nanoseconds.
   `cntfrq_el0` returns 1 GHz. The arm64 vDSO has no clock functions, so C
   library clock calls are system calls and follow virtual time.
+- On x86-64, each stub records its native FS and GS bases when a guest stop
+  reaches the UML kernel. This also records bases changed directly by
+  `WRFSBASE` or `WRGSBASE` on hosts that permit FSGSBASE, so checkpoints and
+  guest `arch_prctl` reads use the same bases as native guest instructions.
 - `/proc/cpuinfo` no longer shows the host `uname` line. The CPU flags and
   model still come from the host and `cpuid` runs natively, so the recording
   names both. The launcher captures the host CPU-info lines the owned kernel
@@ -140,6 +144,10 @@ buffer, the environment pointer and the descriptors stay those of the running
 process. The kernel acknowledges the restore and waits for the answer that was
 pending at the capture.
 
+On x86-64, a rebuilt stub restores the saved native FS and GS bases before
+guest execution resumes. The bases are sampled at guest stops, before the
+kernel processes a syscall or checkpoint.
+
 The host stores the image and the physical memory of every checkpoint as
 pages in one `snapshot-store` store, each checkpoint a delta on its parent.
 
@@ -218,7 +226,9 @@ an arbitrary locally built profile is not admitted by a production launcher.
   emulation, host child signals, the fixed memory layout, checkpoints, and
   the initial FPU state for every new program, as x86 Linux does; UML
   otherwise copies the vector registers of a stub process, which hold
-  leftovers of host strings such as the command line.
+  leftovers of host strings such as the command line. The x86 series also
+  records native FS and GS bases at guest stops so direct FSGSBASE writes are
+  preserved across checkpoints.
   `linux/patches/um-arm64/` ports the same series to the arm64 RFC. Its
   counter emulation also answers the frequency register, and the stub waits
   for the kernel without the RFC's counter-bounded spin, because its own
