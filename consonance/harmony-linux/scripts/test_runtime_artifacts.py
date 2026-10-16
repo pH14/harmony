@@ -93,22 +93,6 @@ class RuntimeArtifactTests(unittest.TestCase):
                 self.assertNotEqual(RUNTIME.source_digest(self.repo), old_key)
                 self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "host-only")
 
-    def test_workload_boot_command_line_change_invalidates_old_pair(self):
-        (self.root / "bzImage").write_text("artifact")
-        for source in ("workloads/faults/src/consonance.rs", "workloads/nes-machine/src/consonance.rs"):
-            for architecture in ("x86_64", "aarch64"):
-                with self.subTest(source=source, architecture=architecture):
-                    path = self.repo / source
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    path.write_text('const CMDLINE: &str = "rdinit=/init";')
-                    old_key = RUNTIME.source_digest(self.repo)
-                    RUNTIME.seal(self.repo, self.root, architecture)
-                    self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "exact-input")
-
-                    path.write_text('const CMDLINE: &str = "rdinit=/new-init";')
-                    self.assertNotEqual(RUNTIME.source_digest(self.repo), old_key)
-                    self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "host-only")
-
     def test_cli_rebuild_watches_every_runtime_source_input(self):
         build_script = (Path(__file__).resolve().parents[3] / "cli/build.rs").read_text()
         for source in RUNTIME.INPUTS:

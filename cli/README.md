@@ -139,8 +139,9 @@ Selected artifact bytes are checked again when loaded, so a concurrent rebuild
 cannot replace a qualified kernel or base before execution. An explicit UML
 base initramfs is likewise the caller's choice. Capturing
 artifact hashes for replay identity does not qualify an older kernel for the
-current boot command line. The source key includes the CLI and host-workload
-sources that supply and assemble the default x86 and Arm kernel command lines.
+current boot command line. The platform source key includes the CLI sources
+that supply and assemble the default x86 and Arm kernel command lines.
+Workload command lines belong to each workload's execution and cache identity.
 
 NES defaults to the QuickNES runner:
 
