@@ -113,6 +113,10 @@ jobs:
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
         run: cargo test --locked -p uml --lib profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes -- --ignored
+      - name: Fail closed on exhausted host clone quota
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+        run: cargo test --locked -p uml --test host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result -- --ignored --nocapture
       - name: Check native FS and GS bases across reused and fresh restores
         if: matrix.architecture == 'x86_64'
         env:

@@ -36,6 +36,7 @@ const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
+const HOST_CLONE_FAILURE_STATUS: i32 = 87;
 
 #[cfg(test)]
 static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
@@ -128,6 +129,7 @@ pub struct Launch {
 pub enum ExitReason {
     Exited(i32),
     Signaled(i32),
+    HostFailure,
     WallLimit,
     ConsoleLimit,
     Killed,
@@ -693,6 +695,10 @@ impl Guest {
 
     pub fn wait(mut self) -> io::Result<Exit> {
         let reason = loop {
+            let stopped = self.stopped()?;
+            if stopped == Some(ExitReason::HostFailure) {
+                break ExitReason::HostFailure;
+            }
             if self.over_limit.load(Ordering::Acquire) {
                 break ExitReason::ConsoleLimit;
             }
@@ -701,7 +707,7 @@ impl Guest {
                 bridge::FAILED => break ExitReason::BridgeFailure,
                 _ => {}
             }
-            if let Some(reason) = self.stopped()? {
+            if let Some(reason) = stopped {
                 break reason;
             }
             std::thread::sleep(POLL);
@@ -710,10 +716,14 @@ impl Guest {
     }
 
     pub(crate) fn stopped(&mut self) -> io::Result<Option<ExitReason>> {
+        let status = self.child.try_wait()?;
+        if status.is_some_and(|status| exit_reason(status) == ExitReason::HostFailure) {
+            return Ok(Some(ExitReason::HostFailure));
+        }
         if self.over_limit.load(Ordering::Acquire) {
             return Ok(Some(ExitReason::ConsoleLimit));
         }
-        if let Some(status) = self.child.try_wait()? {
+        if let Some(status) = status {
             return Ok(Some(exit_reason(status)));
         }
         if self.started.elapsed() >= self.wall_limit {
@@ -730,7 +740,12 @@ impl Guest {
         self.finished = true;
         let wall = self.started.elapsed();
         kill_group(self.pid);
-        self.child.wait()?;
+        let status = self.child.wait()?;
+        let reason = if exit_reason(status) == ExitReason::HostFailure {
+            ExitReason::HostFailure
+        } else {
+            reason
+        };
         let leftovers = sweep(self.pid);
         #[cfg(test)]
         if reason == ExitReason::EventCut
@@ -763,7 +778,9 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
-        let reason = if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
+        let reason = if reason == ExitReason::HostFailure {
+            reason
+        } else if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
             ExitReason::ConsoleLimit
         } else if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
             match self.bridge_state.load(Ordering::Acquire) {
@@ -814,6 +831,7 @@ fn now() -> Instant {
 
 fn exit_reason(status: ExitStatus) -> ExitReason {
     match (status.code(), status.signal()) {
+        (Some(HOST_CLONE_FAILURE_STATUS), _) => ExitReason::HostFailure,
         (Some(code), _) => ExitReason::Exited(code),
         (None, Some(signal)) => ExitReason::Signaled(signal),
         (None, None) => ExitReason::Signaled(0),
@@ -909,6 +927,19 @@ fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_clone_status_is_reserved_from_guest_exit_statuses() {
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(HOST_CLONE_FAILURE_STATUS << 8)),
+            ExitReason::HostFailure
+        );
+        assert_eq!(exit_reason(ExitStatus::from_raw(0)), ExitReason::Exited(0));
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(7 << 8)),
+            ExitReason::Exited(7)
+        );
+    }
 
     #[cfg(target_os = "linux")]
     fn deny_fixed_layout(command: &mut Command, deny_zero: bool) {
@@ -1716,6 +1747,18 @@ mod tests {
         assert_eq!(exit.console_bytes, 20);
         assert!(exit.leftovers.is_empty());
         assert!(exit.work_removed);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn console_text_cannot_claim_host_clone_failure() {
+        let parent = tempfile::tempdir().unwrap();
+        let launch = launch(parent.path());
+        let exit = shell(&launch, "echo Harmony UML host clone failed; exit 0")
+            .wait()
+            .unwrap();
+        assert_eq!(exit.reason, ExitReason::Exited(0));
     }
 
     #[test]

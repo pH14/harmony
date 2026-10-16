@@ -793,6 +793,9 @@ impl Session {
                 let length = match self.receive() {
                     Ok(0) => return Ok(due.unwrap_or(Stop::Closed)),
                     Ok(length) => length,
+                    Err(error @ SessionError::Stopped(ExitReason::HostFailure)) => {
+                        return Err(error);
+                    }
                     Err(SessionError::Stopped(_)) => return Ok(due.unwrap_or(Stop::Closed)),
                     Err(error) => return Err(error),
                 };
