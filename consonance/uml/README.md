@@ -225,7 +225,10 @@ The parent-death signal follows the thread that spawned the guest, so a guest
 must be started from a thread that outlives it.
 
 `harmony-uml-qualify` is the qualification binary described in
-`consonance/harmony-linux/uml/README.md`.
+`consonance/harmony-linux/uml/README.md`. Qualification CI builds it as a
+static-musl executable. Its suites reexec from a fully sealed memfd before
+using public Recording and Session admission, both natively and inside the
+Docker qualification container.
 
 The crate's `unsafe` blocks are host system calls: sequenced-packet sockets,
 descriptor passing, `memfd_create`, fixed mappings and process-group signals.
