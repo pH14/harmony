@@ -150,8 +150,9 @@ the same resolution. Each branch also records a compact schedule of coverage
 quantums from its action windows. The SDK selects that quantum directly, so a
 small quantum does not create one answer-tape entry per callback.
 When reconstructing an earlier prefix, the resolver uses that prefix's installed
-service configuration, including for a request that lands at its final virtual
-moment. Later actions cannot supply an answer to an earlier prefix.
+service configuration for requests before its deadline. A request at or beyond
+the deadline remains pending at the action snapshot. The next action's branch
+installs its service configuration before resolving that request.
 
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's

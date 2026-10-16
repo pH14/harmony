@@ -48,6 +48,11 @@ ready count, and doorbell sequence in the SDK snapshot and whole-state hash.
 `Run { resolve }` binds the answer to the request payload, then completes the
 original coverage exchange. Invalid quantum answers leave the pending stop and
 coverage threshold unchanged.
+If an SDK request reaches a `Run` deadline during a chained guest step, control
+retains custom service and coverage requests as pending decisions and reports the
+deadline first. The pending request and its unanswered response page survive a
+snapshot and branch; the branch's service plan supplies the answer on a later
+`Run`.
 If a backend completion chains a later SDK decision into the same guest step
 after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.

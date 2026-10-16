@@ -343,6 +343,7 @@ where
     checkpoint_hash_preimage_armed: bool,
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
+    run_deadline_vns: Option<u64>,
     pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
@@ -417,6 +418,7 @@ where
             checkpoint_hash_preimage_armed: false,
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
+            run_deadline_vns: None,
             last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
@@ -1107,6 +1109,17 @@ where
     }
 
     pub fn step(&mut self) -> Result<Step, VmmError> {
+        self.step_until(None)
+    }
+
+    pub(crate) fn step_until(&mut self, deadline_vns: Option<u64>) -> Result<Step, VmmError> {
+        self.run_deadline_vns = deadline_vns;
+        let result = self.step_inner();
+        self.run_deadline_vns = None;
+        result
+    }
+
+    fn step_inner(&mut self) -> Result<Step, VmmError> {
         self.last_step_control_idle_landing_vns = None;
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
@@ -2205,6 +2218,9 @@ where
             );
             return (n, None);
         }
+        let at_run_deadline = self
+            .run_deadline_vns
+            .is_some_and(|deadline| moment >= deadline);
         if header.service == ServiceId::Pvclock as u16 {
             if !self.pvclock_available() {
                 let n = encode_error(
@@ -2394,6 +2410,22 @@ where
                     None,
                 );
             };
+            if at_run_deadline {
+                return match sdk::service_question(payload) {
+                    Ok(question) => (
+                        0,
+                        Some(SdkStop::Decision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                        }),
+                    ),
+                    Err(status) => (
+                        encode_error(header.service, header.opcode, header.seq, status, resp),
+                        None,
+                    ),
+                };
+            }
             return match sdk::decide_service(&mut sdk.env, moment, payload) {
                 Ok(ServiceOutcome::Answered(bytes)) => (
                     encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &bytes, resp)
@@ -2435,6 +2467,29 @@ where
                     return (n, None);
                 }
             };
+            if at_run_deadline {
+                let sdk = self.sdk.as_ref().expect("SDK presence checked above");
+                return match sdk::coverage_question(
+                    &sdk.coverage_thresholds,
+                    thread,
+                    observed,
+                    ready,
+                ) {
+                    Ok(question) => (
+                        0,
+                        Some(SdkStop::CoverageDecision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                            ready,
+                        }),
+                    ),
+                    Err(status) => (
+                        encode_error(header.service, header.opcode, header.seq, status, resp),
+                        None,
+                    ),
+                };
+            }
             match self.decide_coverage(moment, thread, observed, ready) {
                 Ok(CoverageOutcome::Answered(coverage)) => {
                     let n = encode_response(

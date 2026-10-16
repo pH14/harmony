@@ -167,6 +167,27 @@ pub fn coverage_request(payload: &[u8]) -> Result<(u32, u64, u32), Status> {
     Ok((thread, u64::from_le_bytes(observed), ready))
 }
 
+pub fn coverage_question(
+    thresholds: &BTreeMap<u32, u64>,
+    thread: u32,
+    observed: u64,
+    ready: u32,
+) -> Result<Question, Status> {
+    let expected = thresholds
+        .get(&thread)
+        .copied()
+        .unwrap_or(SDK_COVERAGE_QUANTUM);
+    if ready == 0 || (observed != SDK_COVERAGE_QUANTUM && observed != expected) {
+        return Err(Status::BadRequest);
+    }
+    Question::with_request_id(
+        u64::from(thread),
+        SERVICE_COVERAGE_QUANTUM,
+        observed.to_le_bytes().to_vec(),
+    )
+    .map_err(|_| Status::BadRequest)
+}
+
 pub fn decide_coverage<H: ServiceHandler + Clone>(
     env: &mut RecordedEnv<H>,
     thresholds: &mut BTreeMap<u32, u64>,
@@ -175,13 +196,7 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
     observed: u64,
     ready: u32,
 ) -> Result<CoverageOutcome, Status> {
-    let expected = thresholds
-        .get(&thread)
-        .copied()
-        .unwrap_or(SDK_COVERAGE_QUANTUM);
-    if ready == 0 || (observed != SDK_COVERAGE_QUANTUM && observed != expected) {
-        return Err(Status::BadRequest);
-    }
+    let quantum_question = coverage_question(thresholds, thread, observed, ready)?;
     let mut candidate = env.checked_clone().map_err(|_| Status::Internal)?;
     candidate.set_moment(moment);
     let question = Question::with_request_id(
@@ -199,12 +214,6 @@ pub fn decide_coverage<H: ServiceHandler + Clone>(
     if selected >= ready {
         return Err(Status::Internal);
     }
-    let quantum_question = Question::with_request_id(
-        u64::from(thread),
-        SERVICE_COVERAGE_QUANTUM,
-        observed.to_le_bytes().to_vec(),
-    )
-    .map_err(|_| Status::BadRequest)?;
     let quantum_answer = match candidate.recorded_override(&quantum_question) {
         Ok(Some(answer)) => ServiceResponse::Answered(answer),
         Ok(None) => match candidate.coverage_schedule() {

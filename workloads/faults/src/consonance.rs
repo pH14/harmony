@@ -1052,6 +1052,11 @@ fn run_with_service_decisions(
 ) -> Result<StopReason, Box<dyn Error>> {
     let mut stop = session.run_until(deadline)?;
     while matches!(stop, StopReason::Decision { .. }) {
+        if stop_moment(&stop) >= deadline {
+            return Ok(StopReason::Deadline {
+                vtime: control_proto::Moment(stop_moment(&stop)),
+            });
+        }
         let resolution = resolution_for_stop(&stop, handler)?;
         stop = session.run_resolving(deadline, resolution)?;
     }
@@ -1875,6 +1880,7 @@ mod tests {
         resolutions: Arc<std::sync::Mutex<Vec<(ServiceConfig, Resolution)>>>,
         branch: Option<ServiceConfig>,
         deadline: u64,
+        pending_moment: Option<u64>,
         next_snapshot: u64,
     }
 
@@ -1946,8 +1952,9 @@ mod tests {
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
             self.deadline = deadline;
+            let moment = *self.pending_moment.get_or_insert(deadline);
             Ok(StopReason::Decision {
-                vtime: control_proto::Moment(deadline),
+                vtime: control_proto::Moment(moment),
                 id: control_proto::DecisionId(7),
                 ctx: STANDING_NAMESPACE.to_le_bytes().to_vec(),
             })
@@ -1958,7 +1965,8 @@ mod tests {
             deadline: u64,
             resolution: Resolution,
         ) -> Result<StopReason, Box<dyn Error>> {
-            assert_eq!(resolution.vtime, control_proto::Moment(deadline));
+            assert!(resolution.vtime.0 < deadline);
+            self.pending_moment = None;
             self.resolutions
                 .lock()
                 .unwrap()
@@ -1985,7 +1993,7 @@ mod tests {
     }
 
     #[test]
-    fn rebuilding_a_prefix_resolves_only_its_installed_service_windows() {
+    fn a_boundary_decision_waits_for_the_next_action_service_windows() {
         use std::num::NonZeroU16;
 
         let tick = NonZeroU16::MIN;
@@ -1999,13 +2007,18 @@ mod tests {
             resolutions: Arc::clone(&resolutions),
             branch: None,
             deadline: 0,
+            pending_moment: None,
             next_snapshot: 1,
         });
         assert!(live.ensure_prefix(&actions).unwrap().is_ok());
         let resolutions = resolutions.lock().unwrap();
-        assert_eq!(resolutions.len(), 2);
+        assert_eq!(resolutions.len(), 1);
         let (installed, first) = &resolutions[0];
         assert_eq!(first.vtime.0, crate::target::SUPERVISOR_TICK_NANOS);
+        assert_eq!(
+            installed,
+            &branch_config(live.windows, &[], &actions).unwrap()
+        );
         let question = Question::with_request_id(7, STANDING_NAMESPACE, Vec::new()).unwrap();
         let expected = StandingHandler::from_configuration(&installed.configuration)
             .unwrap()
@@ -2015,15 +2028,15 @@ mod tests {
             panic!("the installed standing service must answer");
         };
         assert_eq!(first.answer.0, expected.encode());
-        let future = branch_config(live.windows, &[], &actions).unwrap();
-        let future = StandingHandler::from_configuration(&future.configuration)
+        let previous = branch_config(live.windows, &[], &actions[..1]).unwrap();
+        let previous = StandingHandler::from_configuration(&previous.configuration)
             .unwrap()
             .respond(first.vtime.0, &question)
             .unwrap();
-        let ServiceResponse::Answered(future) = future else {
-            panic!("the future standing service must answer");
+        let ServiceResponse::Answered(previous) = previous else {
+            panic!("the previous standing service must answer");
         };
-        assert_ne!(first.answer.0, future.encode());
+        assert_ne!(first.answer.0, previous.encode());
     }
 
     fn hashed_live(hash: [u8; 32]) -> Live {
