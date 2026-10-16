@@ -584,6 +584,15 @@ class JobContractTests(unittest.TestCase):
         whole = ci_contract.Job("Guest Memory", "pr", 15, ignored_tests=("vmm-backend::kvm_smoke *",))
         self.assertFalse(self.check(step, job=whole))
 
+    def test_an_ignored_cli_binary_uses_the_named_bin_target(self):
+        job = ci_contract.Job("Guest Memory", "pr", 15,
+                              ignored_tests=("harmony-cli::bin/harmony reviewed_bundle",))
+        body = "    timeout-minutes: 15\n    steps:\n      - run: cargo test -p harmony-cli --bin {} reviewed_bundle -- --ignored\n"
+        self.assertFalse(self.check(body.format("harmony"), job=job))
+        self.assertEqual(self.check(body.format("other"), job=job), ["ci-ignored-tests"])
+        without_bin = "    timeout-minutes: 15\n    steps:\n      - run: cargo test -p harmony-cli reviewed_bundle -- --ignored\n"
+        self.assertEqual(self.check(without_bin, job=job), ["ci-ignored-tests"])
+
     def test_a_job_runs_the_ignored_tests_it_registers(self):
         job = ci_contract.Job("Guest Memory", "pr", 15,
                               ignored_tests=("vmm-backend::kvm_smoke serviced_mmio",))

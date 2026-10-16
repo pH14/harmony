@@ -1076,14 +1076,21 @@ def check_job_ignored_tests(rel_path: str, job_id: str, job: dict, registered) -
     violations = []
     for pattern in registered.ignored_tests:
         binary_id, test = pattern.split(" ", 1)
-        names = [binary_id.split("::")[-1]]
+        binary = binary_id.split("::")[-1]
+        if binary.startswith("bin/"):
+            executable = binary.removeprefix("bin/")
+            names = [] if re.search(r"(?<!\S)--bin\s+" + re.escape(executable) + r"(?![\w-])",
+                                     commands) else [f"--bin {executable}"]
+        else:
+            names = [] if _names_word(commands, binary) else [binary]
         if test != "*":
-            names.append(test.split("::")[-1])
-        missing = [name for name in names if not _names_word(commands, name)]
-        if missing:
+            name = test.split("::")[-1]
+            if not _names_word(commands, name):
+                names.append(name)
+        if names:
             violations.append(Violation("ci-ignored-tests", rel_path, 0,
                 f"job '{job_id}' registers '{pattern}' but its steps never name "
-                f"{', '.join(missing)}"))
+                f"{', '.join(names)}"))
     return violations
 
 
