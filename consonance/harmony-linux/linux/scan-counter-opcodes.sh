@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Static scan of the built x86 guest kernel for raw counter and hardware-RNG
+# Static scan of the built x86 guest kernel for counter and hardware-RNG
 # instructions: rdtsc `0f 31`, rdtscp `0f 01 f9`, rdrand `0f c7 /6` and rdseed
 # `0f c7 /7`.
 #
@@ -8,16 +8,19 @@
 # executed by the guest kernel reads host state that replay cannot reproduce.
 # The Harmony kernel routes rdtsc() and rdtsc_ordered() through
 # RDMSR(IA32_TSC), which Consonance answers from virtual time, and reports
-# RDRAND and RDSEED as unavailable. The image therefore carries none of these
-# instructions, and any occurrence fails the build. User-mode reads are trapped
-# separately through CR4.TSD.
+# RDRAND and RDSEED as unavailable. The scan rejects decoded instructions in
+# kernel-proper code and raw encodings in setup and decompressor executable
+# sections. Kernel operand bytes may contain the same encodings; computed entry
+# into them remains tracked in #657. User-mode reads are trapped separately
+# through CR4.TSD.
 #
 # bzImage contains three executable artifacts, and all three run: the real-mode
 # setup code, the decompressor, and the kernel proper. The kernel proper is a
 # 64-bit ELF and is scanned by disassembly. Setup and the decompressor execute
 # in multiple decoder modes, including 32-bit helpers in the decompressor's
 # `.text`. Their executable sections are searched for raw opcode bytes; the
-# decompressor's `.text` is also disassembled in both 64-bit modes.
+# decompressor's `.text` is also disassembled in both 64-bit modes. Computed
+# entry into the compressed payload while mapped executable remains in #657.
 #
 # CONFIG_MODULES is off, so the built image is all the kernel code that can run.
 #
@@ -443,7 +446,7 @@ FOUND=$(all_sites)
 RNG_FOUND=$(all_sites '^(rdrand|rdseed)$')
 failed=0
 if [ -n "$FOUND" ]; then
-    echo "FAIL: raw counter instruction(s) (rdtsc/rdtscp) in the kernel:" >&2
+    echo "FAIL: decoded counter instruction(s) (rdtsc/rdtscp) in the kernel:" >&2
     printf '%s\n' "$FOUND" | sed 's/^/  /' >&2
     echo "  Read the counter through rdtsc() or rdtsc_ordered(), which use RDMSR(IA32_TSC)" >&2
     echo "  in the Harmony kernel, or through the Harmony clock page." >&2
@@ -463,4 +466,4 @@ if [ "$failed" -ne 0 ]; then
     exit 1
 fi
 
-echo "ok: counter-opcode scan — no rdtsc, rdtscp, rdrand or rdseed in the kernel proper, setup or decompressor"
+echo "ok: counter-opcode scan — kernel canonical/physical-entry/direct-target checks and raw setup/decompressor executable-section scans passed; computed-entry limits remain (#657)"
