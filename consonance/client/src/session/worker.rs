@@ -631,22 +631,28 @@ pub struct WorkerLauncher {
     args: Vec<OsString>,
     expected_image: String,
     expected_main: String,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
 }
 
 impl WorkerLauncher {
     pub fn current_exe(args: Vec<OsString>) -> io::Result<Self> {
-        Ok(Self {
+        let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
+        let launcher = Self {
             program: std::env::current_exe()?,
             args,
             expected_image: crate::image_identity::loaded_executable_identity_self()?,
             expected_main: crate::image_identity::loaded_executable_identity_for_child(
                 std::process::id(),
             )?,
-        })
+            loaded_image_guard,
+        };
+        loaded_image_guard.check()?;
+        Ok(launcher)
     }
 
     #[allow(clippy::disallowed_methods)]
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
+        self.loaded_image_guard.check()?;
         crate::image_identity::reject_loader_overrides()?;
         if crate::image_identity::loaded_executable_identity_self()? != self.expected_image {
             return Err(io::Error::other(
@@ -698,6 +704,7 @@ impl WorkerLauncher {
             }
             Ok(())
         });
+        let check = check.and_then(|()| self.loaded_image_guard.check());
         let check = check.and(parent.set_read_timeout(None));
         if let Err(error) = check {
             let _ = process.kill();
@@ -1275,17 +1282,24 @@ fn status(result: Result<Out, Box<dyn Error>>) -> Vec<u8> {
     }
 }
 
-fn serve(stream: &UnixStream, open: &mut Open<'_>) -> Result<(), Box<dyn Error>> {
+fn serve(
+    stream: &UnixStream,
+    open: &mut Open<'_>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
+) -> Result<(), Box<dyn Error>> {
     let mut served = Served::default();
     loop {
+        loaded_image_guard.check()?;
         let (body, fds) = match recv(stream) {
             Ok(frame) => frame,
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error.into()),
         };
         let reply = status(served.handle(&body, &fds, open));
+        loaded_image_guard.check()?;
         drop(fds);
         send(stream, &reply, &[])?;
+        loaded_image_guard.check()?;
     }
 }
 
@@ -1317,11 +1331,12 @@ pub fn serve_inherited(
 fn serve_inherited_with_open(open: &mut Open<'_>) -> Result<(), Box<dyn Error>> {
     crate::image_identity::reject_loader_overrides()?;
     let stream = inherited_stream()?;
-    let identity = crate::image_identity::loaded_executable_identity_self()?;
+    let (identity, loaded_image_guard) = crate::image_identity::LoadedImageGuard::identity()?;
     let mut hello = Out::default();
     hello.bytes(IMAGE_HELLO).bytes(identity.as_bytes());
+    loaded_image_guard.check()?;
     send(&stream, &hello.0, &[])?;
-    serve(&stream, open)
+    serve(&stream, open, loaded_image_guard)
 }
 
 #[cfg(test)]
@@ -1567,6 +1582,7 @@ mod tests {
                     args: vec!["--version".into()],
                     expected_image: String::new(),
                     expected_main: String::new(),
+                    loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
                 }
                 .spawn()
                 .unwrap_err()
@@ -1610,7 +1626,14 @@ mod tests {
 
     fn threaded(start: u8) -> (WorkerSession, std::thread::JoinHandle<()>) {
         let (parent, child) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || serve(&child, &mut Fake::open).unwrap());
+        let server = std::thread::spawn(move || {
+            serve(
+                &child,
+                &mut Fake::open,
+                crate::image_identity::LoadedImageGuard::capture().unwrap(),
+            )
+            .unwrap()
+        });
         let session =
             WorkerSession::connect(parent, None, &[start], b"i", &config(), &[], "fake").unwrap();
         (session, server)

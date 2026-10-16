@@ -84,6 +84,12 @@
   resolutions leave the held request and services state unchanged. A recorded
   coverage schedule supplies a branch's window quantum without per-callback
   decisions.
+  It records the host process loader generation before starting the guest,
+  checks it across session operations, and checks again after every service
+  decision immediately before sending the guest reply. A handler that loads
+  and unloads a library during one decision fails the run even if the set of
+  loaded images is the same afterward. The client also holds its admission
+  generation across fresh UML processes and checkpoint publication.
   `branch` checks that reseeding with both the branch seed and the decode seed
   zero keeps the handler identity and configuration unchanged, then installs
   the handler, payloads, optional coverage schedule, and a fresh host-bridge

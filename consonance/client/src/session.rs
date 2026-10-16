@@ -868,15 +868,19 @@ fn image_identity_with_config_and_payloads(
     config: &SessionConfig,
     setup_payloads: &[Vec<u8>],
 ) -> Result<[u8; 32], String> {
-    let loaded_identity = crate::image_identity::loaded_executable_identity_self()
+    let (loaded_identity, loaded_image_guard) = crate::image_identity::LoadedImageGuard::identity()
         .map_err(|error| format!("cannot identify loaded Harmony executable: {error}"))?;
-    Ok(image_identity_with_loaded_executable(
+    let identity = image_identity_with_loaded_executable(
         kernel,
         initramfs,
         config,
         setup_payloads,
         &loaded_identity,
-    ))
+    );
+    loaded_image_guard
+        .check()
+        .map_err(|error| format!("host loader changed during image identity: {error}"))?;
+    Ok(identity)
 }
 
 fn image_identity_with_loaded_executable(

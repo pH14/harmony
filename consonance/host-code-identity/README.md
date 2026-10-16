@@ -40,6 +40,13 @@ adversarial mutation.
 Constructors run before admission, and a process that can interpose the map or
 memory reads can spoof this self-measurement; it is not an attestation boundary.
 
+`loader_epoch` separately exposes the Linux loader's cumulative addition and
+removal counters. A client can capture it before loaded-image admission and
+compare it at operation boundaries to reject a library that was loaded and
+unloaded between image digests. On glibc, the counters include loads in a
+separate `dlmopen` namespace. They do not detect writable-data changes or code
+writes to mappings that never leave the loader's image list.
+
 On macOS, `mapped_executable_sha256` measures every image reported by dyld,
 including the main program, system shared-cache images, and dynamically loaded
 libraries. It also measures dyld itself, which is outside dyld's ordinary image
@@ -61,3 +68,7 @@ images at admission; it does not cover anonymous executable mappings, data
 segments, symbol bindings, constructor effects, or images loaded, unloaded, or
 modified after admission. Callback and image-count checks cannot make a process
 snapshot atomic against adversarial mutation.
+
+On macOS, `loader_epoch` uses dyld's add/remove callback generation plus the
+current image count. As on Linux, the epoch is a separate operation guard; it
+does not change the admission-time loaded-image digest.

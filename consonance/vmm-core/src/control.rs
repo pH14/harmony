@@ -35,7 +35,7 @@ use crate::portable_snapshot::{
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{HostOperationGuard, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 #[cfg(all(target_os = "linux", any(test, not(miri))))]
 fn host_minor_faults_with(getrusage: impl FnOnce(*mut libc::rusage) -> i32) -> Option<u64> {
@@ -205,6 +205,7 @@ pub fn server_caps() -> Caps {
 pub struct ControlServer<B: Backend<A: Vendor>> {
     vmm: Option<Vmm<B>>,
     factory: VmmFactory<B>,
+    host_operation_guard: Option<HostOperationGuard>,
     service_factory: ServiceFactory,
     remap_factory: Option<RemapVmmFactory<B>>,
     restore_mode: RestoreMode,
@@ -373,6 +374,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         ControlServer {
             vmm: Some(vmm),
             factory,
+            host_operation_guard: None,
             service_factory: nominal_factory(),
             remap_factory: None,
             restore_mode: RestoreMode::Memcpy,
@@ -405,6 +407,26 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     pub fn set_service_factory(&mut self, factory: ServiceFactory) {
         self.service_factory = factory;
+    }
+
+    pub fn set_host_operation_guard(&mut self, guard: HostOperationGuard) {
+        if let Some(vmm) = self.vmm.as_mut() {
+            vmm.set_host_operation_guard(Arc::clone(&guard));
+        }
+        self.host_operation_guard = Some(guard);
+    }
+
+    fn check_host_operation_guard(&self) -> Result<(), ServeError> {
+        if let Some(guard) = &self.host_operation_guard {
+            guard().map_err(VmmError::ContractViolation)?;
+        }
+        Ok(())
+    }
+
+    fn attach_host_operation_guard(&self, vmm: &mut Vmm<B>) {
+        if let Some(guard) = &self.host_operation_guard {
+            vmm.set_host_operation_guard(Arc::clone(guard));
+        }
     }
 
     pub fn recorded_env(&self) -> &EnvSpec {
@@ -1075,6 +1097,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     #[allow(clippy::result_large_err)]
     pub fn handle(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
+        self.check_host_operation_guard()?;
+        let result = self.handle_inner(req);
+        self.check_host_operation_guard()?;
+        result
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn handle_inner(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
         if !self.hello_done && !matches!(req, Request::Hello(_)) {
             return Ok(Err(ControlError::Unsupported));
         }
@@ -1574,7 +1604,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    fn install_recovery_boot(&mut self, fresh: Vmm<B>) {
+    fn install_recovery_boot(&mut self, mut fresh: Vmm<B>) {
+        self.attach_host_operation_guard(&mut fresh);
         self.vmm = Some(fresh);
         self.derive_parent = None;
         self.set_current_image(None);
@@ -1856,12 +1887,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .as_mut()
                     .expect("use_remap checked is_some");
                 let mut fresh = factory(mapping)?;
+                self.attach_host_operation_guard(&mut fresh);
                 let result = fresh
                     .restore_vm_state(&vm_state)
                     .and_then(|()| fresh.prepare_snapshot());
                 (fresh, result)
             } else {
                 let mut fresh = (self.factory)()?;
+                self.attach_host_operation_guard(&mut fresh);
                 let result = fresh.restore_snapshot(mapping.as_slice(), &vm_state);
                 (fresh, result)
             }
@@ -1872,6 +1905,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 if use_remap {
                     drop(fresh);
                     fresh = (self.factory)()?;
+                    self.attach_host_operation_guard(&mut fresh);
                 }
                 self.install_recovery_boot(fresh);
                 return Ok(Err(ControlError::RestoreFailed));
@@ -2435,6 +2469,7 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 mod tests {
 
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
@@ -2513,9 +2548,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::host_minor_faults_with;
     use super::{
-        ControlServer, ServeError, page_console, page_sdk_events, reseed_marker_requires_arrival,
-        restore_defers_materialization, restore_error_is_precommit, server_caps,
-        sparse_page_order_error,
+        ControlServer, RestoreMode, ServeError, page_console, page_sdk_events,
+        reseed_marker_requires_arrival, restore_defers_materialization, restore_error_is_precommit,
+        server_caps, sparse_page_order_error,
     };
     use crate::control_state::ScheduleFailure;
     use crate::portable_snapshot::PortableSnapshotError;
@@ -2608,6 +2643,36 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn host_operation_guard_follows_fresh_restore_vmm() {
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = Arc::clone(&changed);
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        server.set_host_operation_guard(Arc::new(move || {
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("host loader changed".into())
+            } else {
+                Ok(())
+            }
+        }));
+        server.set_restore_mode(RestoreMode::Memcpy);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        changed.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            server.vmm_mut().unwrap().service_doorbell(0),
+            Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
+        ));
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv),
+            Err(ServeError::Vmm(VmmError::ContractViolation(reason))) if reason == "host loader changed"
+        ));
     }
 
     #[test]
