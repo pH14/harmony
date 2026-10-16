@@ -28,7 +28,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
     io::Error::other(message.into())
 }
 
-fn auxv_hwcap2() -> io::Result<u64> {
+fn read_auxv_capabilities() -> io::Result<u64> {
     let bytes = fs::read("/proc/self/auxv")?;
     for entry in bytes.chunks_exact(16) {
         let kind = u64::from_ne_bytes(entry[..8].try_into().unwrap());
@@ -152,7 +152,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         env::var_os("HARMONY_UML_REVIEWED_PROFILE")
             .ok_or_else(|| invalid("HARMONY_UML_REVIEWED_PROFILE is required"))?,
     );
-    let hwcap2 = auxv_hwcap2()?;
+    let hwcap2 = read_auxv_capabilities()?;
     if hwcap2 & HWCAP2_FSGSBASE == 0 {
         return Err(invalid(format!(
             "FSGSBASE qualification requires AT_HWCAP2 bit 1; found {hwcap2:#x}"
