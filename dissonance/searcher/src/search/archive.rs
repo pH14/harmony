@@ -136,7 +136,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_age_yield_cell_recent_count_decay_v3";
+pub const SELECTOR_IDENTIFIER: &str = "tier_progress_fallen_age_yield_cell_recent_count_decay_v4";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -247,6 +247,8 @@ pub struct TierRuns {
     pub last_yield: u64,
     #[serde(default)]
     pub draws: u64,
+    #[serde(default)]
+    pub age: u64,
     #[serde(default)]
     pub yields: u64,
     #[serde(default)]
@@ -2500,7 +2502,7 @@ where
         let carried_win = carried_in && (replacement_preferences != 0 || improved_preference);
         if new_cell || carried_win {
             let fresh = self.tier_runs(key.progress()).yields == 0;
-            let reach = self.tier_reach(key.progress());
+            let reach = self.tier_age(key.progress());
             let runs = self.tier_runs_mut(key.progress());
             runs.yields = runs.yields.saturating_add(1);
             if novel_cell {
@@ -2701,19 +2703,46 @@ where
             .or_default()
     }
 
-    fn tier_draws(&self, progress: K::Progress) -> u64 {
+    fn tier_age(&self, progress: K::Progress) -> u64 {
         self.selector_accounting
             .tier_runs
             .get(&format!("{progress:?}"))
-            .map_or(0, |runs| runs.draws)
+            .map_or(0, |runs| runs.age)
     }
 
-    fn tier_reach(&self, progress: K::Progress) -> u64 {
-        self.tiers
-            .range(progress..)
-            .fold(0_u64, |reach, (above, _)| {
-                reach.saturating_add(self.tier_draws(*above))
-            })
+    fn tier_floor(&self) -> (usize, u32) {
+        let mut ranked = self.tiers.keys().rev().copied().peekable();
+        let mut floor = 0_usize;
+        let mut halvings = 0;
+        while let Some(progress) = ranked.next() {
+            halvings = self.tier_halvings(progress, ranked.peek().copied());
+            if halvings < TIER_RANK_SHIFT || ranked.peek().is_none() {
+                break;
+            }
+            floor += 1;
+        }
+        (floor, halvings)
+    }
+
+    fn age_tiers(&mut self, progress: K::Progress) {
+        let (floor, _) = self.tier_floor();
+        let Some(rank) = self.tiers.keys().rev().position(|tier| *tier == progress) else {
+            return;
+        };
+        let aged: Vec<_> = self
+            .tiers
+            .keys()
+            .rev()
+            .copied()
+            .enumerate()
+            .skip(rank)
+            .take_while(|(below, _)| *below <= floor.max(rank + 1))
+            .map(|(_, tier)| tier)
+            .collect();
+        for tier in aged {
+            let runs = self.tier_runs_mut(tier);
+            runs.age = runs.age.saturating_add(1);
+        }
     }
 
     fn restart_tier_run(&mut self, progress: K::Progress) {
@@ -2722,7 +2751,7 @@ where
             .range(..progress)
             .next_back()
             .map(|(below, _)| (format!("{below:?}"), self.tier_runs(*below)));
-        let reach = self.tier_reach(progress);
+        let reach = self.tier_age(progress);
         let runs = self.tier_runs_mut(progress);
         runs.run_start = reach;
         runs.last_yield = reach;
@@ -2733,7 +2762,7 @@ where
         runs.next_cells = next_runs.cells;
     }
 
-    fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>, reach: u64) -> u32 {
+    fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>) -> u32 {
         let Some(next) = next else {
             return 0;
         };
@@ -2741,8 +2770,8 @@ where
         let cells = self.tiers.get(&progress).map_or(1, |tier| {
             u64::try_from(tier.places.len().max(1)).unwrap_or(u64::MAX)
         });
-        let current = reach.saturating_sub(runs.run_start);
-        let dry = reach.saturating_sub(runs.last_yield);
+        let current = runs.age.saturating_sub(runs.run_start);
+        let dry = runs.age.saturating_sub(runs.last_yield);
         let counts = self.tier_runs(next);
         let (next_draws, next_cells) = if format!("{next:?}") == runs.next_tier {
             (
@@ -2769,18 +2798,7 @@ where
 
     fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
         let tiers = self.tiers.len();
-        let mut ranked = self.tiers.keys().rev().copied().peekable();
-        let mut floor = 0_usize;
-        let mut halvings = 0;
-        let mut reach = 0_u64;
-        while let Some(progress) = ranked.next() {
-            reach = reach.saturating_add(self.tier_draws(progress));
-            halvings = self.tier_halvings(progress, ranked.peek().copied(), reach);
-            if halvings < TIER_RANK_SHIFT || ranked.peek().is_none() {
-                break;
-            }
-            floor += 1;
-        }
+        let (floor, halvings) = self.tier_floor();
         let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
         let weights = (0..tiers).map(|rank| {
             if rank <= floor {
@@ -3213,6 +3231,7 @@ where
         self.selected[id] = self.selected[id].saturating_add(1);
         self.referenced[id] = true;
         let key = self.entries[id].key;
+        self.age_tiers(key.progress());
         let runs = self.tier_runs_mut(key.progress());
         runs.draws = runs.draws.saturating_add(1);
         let state = self.cells.entry(cell_of(key)).or_default();
@@ -8267,7 +8286,7 @@ mod tests {
                 archive.record_selection(id, &draw);
             }
         }
-        let reach = archive.tier_reach((2, 1));
+        let reach = archive.tier_age((2, 1));
         let runs = archive.tier_runs_mut((2, 1));
         runs.wins = 64;
         runs.last_yield = reach;
@@ -8351,7 +8370,7 @@ mod tests {
         for _ in 0..64 {
             archive.record_selection(0, &top);
         }
-        let reach = archive.tier_reach((2, 1));
+        let reach = archive.tier_age((2, 1));
         let runs = archive.tier_runs_mut((2, 1));
         runs.wins = 32;
         runs.last_yield = reach;
@@ -8387,7 +8406,7 @@ mod tests {
         for _ in 0..64 {
             archive.record_selection(1, &top);
         }
-        let reach = archive.tier_reach((3, 1));
+        let reach = archive.tier_age((3, 1));
         let runs = archive.tier_runs_mut((3, 1));
         runs.wins = 32;
         runs.last_yield = reach;
@@ -8418,7 +8437,7 @@ mod tests {
                 archive.record_selection(id, &draw);
             }
         }
-        let reach = archive.tier_reach((2, 1));
+        let reach = archive.tier_age((2, 1));
         let runs = archive.tier_runs_mut((2, 1));
         runs.wins = 8;
         runs.last_yield = reach;
@@ -8521,7 +8540,7 @@ mod tests {
         for _ in 0..top_draws {
             archive.record_selection(0, &draw);
         }
-        let reach = archive.tier_reach((2, 1));
+        let reach = archive.tier_age((2, 1));
         let runs = archive.tier_runs_mut((2, 1));
         runs.wins = wins;
         runs.last_yield = reach - dry;
@@ -8584,7 +8603,7 @@ mod tests {
             if since_win[minor] == gap {
                 since_win[minor] = 0;
                 let new_cell = archive.tier_runs(progress).yields.is_multiple_of(4);
-                let reach = archive.tier_reach(progress);
+                let reach = archive.tier_age(progress);
                 let runs = archive.tier_runs_mut(progress);
                 runs.yields += 1;
                 runs.cells += u64::from(new_cell);
@@ -8675,7 +8694,7 @@ mod tests {
             .expect("retain deeper entry");
         assert_eq!(
             archive.tier_runs((2, 1)).run_start,
-            archive.tier_reach((2, 1))
+            archive.tier_age((2, 1))
         );
     }
 

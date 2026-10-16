@@ -399,7 +399,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_age_yield_cell_recent_count_decay_v3`, and the stream header names
+One selector exists, `tier_progress_fallen_age_yield_cell_recent_count_decay_v4`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
@@ -418,9 +418,12 @@ compiled portfolio; otherwise selector accounting would silently ignore it.
 The leading tier gives up weight while it makes no progress. A tier makes
 progress when a parent drawn from it opens a cell at a deeper progress value;
 a new cell beside its parent at the same progress value is not progress. A
-tier's run starts when it appears or makes progress. Its run counts every draw
-taken by that tier or by a tier ranked above it, so a tier that receives
-almost no draws while the weight sits above it still ages. When the run
+tier's run starts when it appears or makes progress. A tier's age counts its
+own draws, the draws of the rank directly above it, and the draws of any
+higher rank while every rank between them has fallen to its full halvings.
+The run is the age since the run began. A tier that receives almost no draws
+while the weight falls through the ranks above it still ages, and a leading
+tier that keeps yielding ages only the rank directly below it. When the run
 passes twice the tier's cell count, the leading tier's weight halves, and it
 halves again each time the run doubles, down to the weight of the rank
 below. The halvings apply only while the rank below
@@ -435,17 +438,17 @@ cell that comes back after its entries were dropped, or a lower tier reaching
 a place a higher tier already holds, yields nothing. The rank below counts
 only its new cells in the comparison, so a lower tier that keeps refilling
 stock at the same places does not take weight from a leading tier that keeps
-opening ground. With `Td` the draws at or above the leading tier in the run,
-`Ty` its yields in the run, `Tq` the draws at or above it since its last
+opening ground. With `Td` the leading tier's age in the run,
+`Ty` its yields in the run, `Tq` its age since its last
 yield, and `Nd` and `Ny` the rank below's own draws and new cells over the
 same span, the halvings apply while
 `(Ny + 1) * (Td + 1) > (Ty + 1) * (Nd + 1)`, `Tq > Nd`, or
 `Tq * (Ty + 1) > 8 * Td`. The second condition
 makes a leading tier that stops yielding lose its weight even when the rank
-below yields nothing: `Tq` grows with every draw at or above the tier and `Nd`
+below yields nothing: `Tq` grows with every draw that ages the tier and `Nd`
 grows only with the rank below's smaller share, and a tier's yields are
-finite. The first condition compares the tier's yields per draw spent at or
-above it with the rank below's new cells per draw of its own, so a tier deep
+finite. The first condition compares the tier's yields per draw of its age
+with the rank below's new cells per draw of its own, so a tier deep
 in the stack that farms while the ranks above it hold most of the weight loses
 to a rank below that still opens cells. The
 third condition sets how soon the fall starts: a tier that still wins now and
@@ -494,8 +497,8 @@ the cells at the edge of explored ground keep drawing while they keep opening
 new ground instead of settling to an equal share with every cell behind them.
 `SelectorAccounting` reports `cell_selections`, `productive_selections`,
 `cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
-`tier_runs` keyed by each tier's progress value with the draws at or above
-the tier when its run began as `run_start` and at its last yield as
+`tier_runs` keyed by each tier's progress value with its age as `age`, its
+age when its run began as `run_start` and at its last yield as
 `last_yield`, its own total draws and yields, its yields in the current run as
 `wins`, its new cells as `cells`, and the rank below's name, draws and new
 cells when the run began, and the draws each
