@@ -245,11 +245,19 @@ mod park_target_serde {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum FaultEndpointCertificate {
+    KvmWholeState([u8; 32]),
+    KvmUnavailableAfterFailure,
+    UmlWholeStateUnavailable,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
     pub actions: Vec<FaultAction>,
     pub observation: FaultObservations,
     pub failed: bool,
+    pub endpoint: Option<FaultEndpointCertificate>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

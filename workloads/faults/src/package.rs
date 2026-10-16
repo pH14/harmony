@@ -505,6 +505,7 @@ mod live {
                 }
                 let snapshot = target
                     .snapshot()
+                    .map_err(|error| format!("certify branch endpoint: {error}"))?
                     .ok_or("cannot search from a terminal point; rewind further")?;
                 let snapshots = SnapshotCheckpoint {
                     format: game.checkpoint_format().into(),
