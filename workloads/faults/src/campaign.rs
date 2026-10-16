@@ -49,9 +49,9 @@ use crate::{
     target::{FaultAction, FaultObservations, FaultOperation, FaultSnapshot},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v4";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v5";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v1";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v2";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v1";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -909,8 +909,69 @@ pub fn run_fault_campaign_with_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assertion::AssertionSet;
     use crate::consonance::{DEFAULT_RAM_MIB, GuestBackend};
     use searcher::search::draw_tables::{DEFAULT_DRAW_TABLE_PARAMETERS, DrawVersionSchedule};
+    use searcher::search::{
+        archive::{SelectorDraw, SelectorPath},
+        campaign::{CampaignJobRecord, CampaignStreamRecord},
+    };
+
+    #[test]
+    fn campaign_job_record_round_trips_assertion_digest() {
+        #[derive(Serialize)]
+        struct NativeAssertionSet {
+            count: u32,
+            digest: u128,
+        }
+
+        for digest in [0, (1_u128 << 127) | 7] {
+            let key = FaultArchiveKey {
+                sometimes: AssertionSet { count: 1, digest },
+                ..FaultArchiveKey::default()
+            };
+            assert_eq!(
+                postcard::to_allocvec(&key.sometimes).unwrap(),
+                postcard::to_allocvec(&NativeAssertionSet { count: 1, digest }).unwrap()
+            );
+            let record = CampaignStreamRecord::<(), FaultArchiveKey>::Job(CampaignJobRecord {
+                sequence: 1,
+                reservation: 0,
+                parent_id: 0,
+                continuation_energy: None,
+                mutation_seed: 1,
+                execution_work: 1,
+                result_sha256: "result".to_owned(),
+                decisions: Vec::new(),
+                mixture_weight: 0,
+                splice_weight: 0,
+                splice: None,
+                selector: SelectorDraw {
+                    path: SelectorPath::Tiers,
+                    tier_rank: Some(0),
+                    best_preference: None,
+                },
+                draw_checkpoint_before: None,
+                draw_checkpoint_after: None,
+                duration_draw: Some(DurationDraw {
+                    context: key,
+                    max_duration: NonZeroU64::MIN,
+                    duration: NonZeroU64::MIN,
+                }),
+                duration_admission_sequence_at_draw: None,
+                duration_remaining_work: None,
+                duration_checkpoint_at_draw: None,
+                duration_checkpoint_before: None,
+                duration_checkpoint_after: None,
+                suffix_limit: None,
+            });
+            let line = serde_json::to_string(&record).unwrap();
+            assert!(line.contains(&format!("\"digest\":\"{digest}\"")));
+            let decoded: CampaignStreamRecord<(), FaultArchiveKey> =
+                serde_json::from_str(&line).unwrap();
+            assert_eq!(decoded, record);
+        }
+    }
 
     fn config(knobs: &[&str]) -> FaultConfig {
         FaultConfig {

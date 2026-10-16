@@ -371,6 +371,10 @@ and whether hooks, workload, checks, or event faults have progressed. Site
 identities and workload-specific concepts do not enter the duration policy.
 Choices and feedback state are recorded in the campaign stream; input replay
 executes the recorded durations directly.
+The archive key's 128-bit assertion digest is a decimal string in JSON
+campaign streams, archive reports, and progress records. This lets the tagged
+job and skip records decode. The binary campaign result hash and checkpoints
+retain the native 128-bit encoding.
 
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose

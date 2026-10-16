@@ -141,7 +141,36 @@ impl Assertions {
 )]
 pub struct AssertionSet {
     pub count: u32,
+    #[serde(with = "digest_serde")]
     pub digest: u128,
+}
+
+mod digest_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(digest: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&digest.to_string())
+        } else {
+            digest.serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            String::deserialize(deserializer)?
+                .parse()
+                .map_err(serde::de::Error::custom)
+        } else {
+            u128::deserialize(deserializer)
+        }
+    }
 }
 
 impl AssertionSet {
