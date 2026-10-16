@@ -85,7 +85,12 @@ replay refusal, and admission refusal for anonymous executable memory. It uses
 a minimal profile without booting a guest; pass `--profile <existing-values-profile>`
 to also verify divergent UML entropy and event hashes locally. `UML Artifacts —
 <Architecture>` builds the profile twice from the locked Nix toolchain and
-fails unless every artifact is byte-identical; two cold builds have a
+fails unless every artifact is byte-identical and both profile manifests
+match the source-reviewed architecture-specific tuple embedded in the
+launcher. The release, language and UML campaign profile jobs check that
+same tuple before packaging or uploading. The artifact jobs also load the
+approved bundle and refuse self-consistent kernel, config and fixture edits
+through the production verifier. Two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
 port.
 

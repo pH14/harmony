@@ -107,7 +107,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
       - name: Build the profile from the locked toolchain
-        run: nix run .#uml-images -- --output "$RUNNER_TEMP/uml"
+        run: |
+          nix run .#uml-images -- --output "$RUNNER_TEMP/uml"
+          cmp "$RUNNER_TEMP/uml/profile.json" consonance/uml/reviewed-profiles/x86_64.json
       - name: Install stable toolchain
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
