@@ -89,6 +89,7 @@ jobs:
           nix run .#uml-images -- --output "$RUNNER_TEMP/uml-first"
           nix run .#uml-images -- --output "$RUNNER_TEMP/uml-second"
           sha256sum "$RUNNER_TEMP"/uml-{first,second}/{config,linux,initramfs.cpio.gz,profile.json}
+          grep -E '^CONFIG_(PAHOLE_VERSION|RUSTC_VERSION|RUSTC_LLVM_VERSION)=' "$RUNNER_TEMP/uml-first/config"
           for name in linux config initramfs.cpio.gz profile.json; do
             cmp "$RUNNER_TEMP/uml-first/$name" "$RUNNER_TEMP/uml-second/$name"
           done
