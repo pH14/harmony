@@ -91,23 +91,12 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
         .parent()
         .and_then(Path::parent)
         .map(|p| p.join("share/harmony/guest").join(isa));
-    for directory in [Some(local), installed, Some(guest.clone())]
+    let directories = [Some(local), installed, Some(guest.clone())]
         .into_iter()
         .flatten()
-    {
-        if c.kernel.is_none() && c.backend != Backend::Uml {
-            c.kernel = ["bzImage", "Image"]
-                .iter()
-                .map(|name| directory.join(name))
-                .find(|p| p.is_file());
-        }
-        if c.base_initramfs.is_none() {
-            let p = directory.join("initramfs-oci.cpio.gz");
-            if p.is_file() {
-                c.base_initramfs = Some(p);
-            }
-        }
-    }
+        .collect::<Vec<_>>();
+    let kernel_name = if isa == "aarch64" { "Image" } else { "bzImage" };
+    select_existing_runtime(c, &directories, kernel_name)?;
     if c.base_initramfs.is_none() || (c.backend != Backend::Uml && c.kernel.is_none()) {
         let directory = acquire("guest", isa, offline)?;
         c.base_initramfs
@@ -136,6 +125,71 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
             .map_err(|e| format!("runtime artifact {}: {e}", path.display()))?;
     }
     Ok(())
+}
+
+fn select_existing_runtime(
+    c: &mut Consonance,
+    directories: &[PathBuf],
+    kernel_name: &str,
+) -> Result<()> {
+    if c.backend == Backend::Uml {
+        if c.base_initramfs.is_none() {
+            c.base_initramfs = directories
+                .iter()
+                .map(|directory| directory.join("initramfs-oci.cpio.gz"))
+                .find(|path| path.is_file());
+        }
+        return Ok(());
+    }
+    match (&c.kernel, &c.base_initramfs) {
+        (Some(_), Some(_)) => return Ok(()),
+        (Some(kernel), None) => {
+            let base = kernel
+                .parent()
+                .ok_or("kernel override has no parent directory")?
+                .join("initramfs-oci.cpio.gz");
+            if !paired_files(kernel, &base) {
+                return Err("kernel override needs an adjacent initramfs-oci.cpio.gz or an explicit base_initramfs".into());
+            }
+            c.base_initramfs = Some(base);
+            return Ok(());
+        }
+        (None, Some(base)) => {
+            let kernel = base
+                .parent()
+                .ok_or("base_initramfs override has no parent directory")?
+                .join(kernel_name);
+            if !paired_files(&kernel, base) {
+                return Err(format!(
+                    "base_initramfs override needs an adjacent {kernel_name} or an explicit kernel"
+                )
+                .into());
+            }
+            c.kernel = Some(kernel);
+            return Ok(());
+        }
+        (None, None) => {}
+    }
+    for directory in directories {
+        let kernel = directory.join(kernel_name);
+        let base = directory.join("initramfs-oci.cpio.gz");
+        if paired_files(&kernel, &base) {
+            c.kernel = Some(kernel);
+            c.base_initramfs = Some(base);
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn paired_files(kernel: &Path, base: &Path) -> bool {
+    if !kernel.is_file() || !base.is_file() {
+        return false;
+    }
+    match (fs::canonicalize(kernel), fs::canonicalize(base)) {
+        (Ok(kernel), Ok(base)) => kernel.parent() == base.parent(),
+        _ => false,
+    }
 }
 
 pub fn acquire(kind: &str, isa: &str, offline: bool) -> Result<PathBuf> {
@@ -228,6 +282,84 @@ fn fetch(url: &str, path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn discovered_runtime_uses_complete_pair_from_one_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let partial = root.path().join("partial");
+        let complete = root.path().join("complete");
+        for directory in [&old, &partial, &complete] {
+            fs::create_dir(directory).unwrap();
+        }
+        fs::write(old.join("bzImage"), b"old kernel").unwrap();
+        fs::write(partial.join("initramfs-oci.cpio.gz"), b"new base").unwrap();
+        fs::write(complete.join("bzImage"), b"new kernel").unwrap();
+        fs::write(complete.join("initramfs-oci.cpio.gz"), b"new base").unwrap();
+        let mut config = Consonance {
+            backend: Backend::Kvm,
+            ..Consonance::default()
+        };
+
+        select_existing_runtime(&mut config, &[old, partial, complete.clone()], "bzImage").unwrap();
+
+        assert_eq!(config.kernel, Some(complete.join("bzImage")));
+        assert_eq!(
+            config.base_initramfs,
+            Some(complete.join("initramfs-oci.cpio.gz"))
+        );
+    }
+
+    #[test]
+    fn partial_explicit_runtime_uses_its_sibling_artifact() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let current = root.path().join("current");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&current).unwrap();
+        let old_kernel = old.join("bzImage");
+        fs::write(&old_kernel, b"old kernel").unwrap();
+        let old_base = old.join("initramfs-oci.cpio.gz");
+        fs::write(&old_base, b"old base").unwrap();
+        fs::write(current.join("bzImage"), b"new kernel").unwrap();
+        fs::write(current.join("initramfs-oci.cpio.gz"), b"new base").unwrap();
+        let mut explicit_kernel = Consonance {
+            backend: Backend::Kvm,
+            kernel: Some(old_kernel.clone()),
+            ..Consonance::default()
+        };
+        let mut explicit_base = Consonance {
+            backend: Backend::Kvm,
+            base_initramfs: Some(old_base.clone()),
+            ..Consonance::default()
+        };
+
+        let candidates = [current];
+        select_existing_runtime(&mut explicit_kernel, &candidates, "bzImage").unwrap();
+        select_existing_runtime(&mut explicit_base, &candidates, "bzImage").unwrap();
+
+        assert_eq!(explicit_kernel.base_initramfs, Some(old_base));
+        assert_eq!(explicit_base.kernel, Some(old_kernel));
+    }
+
+    #[test]
+    fn partial_explicit_runtime_without_sibling_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("old");
+        let current = root.path().join("current");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&current).unwrap();
+        fs::write(old.join("bzImage"), b"old kernel").unwrap();
+        fs::write(current.join("bzImage"), b"new kernel").unwrap();
+        fs::write(current.join("initramfs-oci.cpio.gz"), b"new base").unwrap();
+        let mut config = Consonance {
+            backend: Backend::Kvm,
+            kernel: Some(old.join("bzImage")),
+            ..Consonance::default()
+        };
+
+        assert!(select_existing_runtime(&mut config, &[current], "bzImage").is_err());
+        assert!(config.base_initramfs.is_none());
+    }
     #[test]
     fn selection_uses_input_and_actual_host_capabilities() {
         let mut c = Consonance::default();
