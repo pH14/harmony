@@ -93,7 +93,10 @@ identities. VM-state version 8 carries these fields explicitly.
 The runtime arm64 contract extends the fixed CPU baseline and host ASID width
 with the three SMCCC workaround firmware levels observed by the backend after
 the guest CPU policy is installed and the backend's PSCI implementation
-profile. It also includes KVM's immutable GIC CPU-interface capability fields.
+profile. It also includes KVM's immutable GIC CPU-interface capability fields
+and the full post-configuration `GICD_IIDR` and `GICD_TYPER2` values. KVM pins
+the IIDR revision before VGIC initialization; the remaining distributor
+identity distinguishes hosts with different guest-visible capabilities.
 HVF and KVM answer some PSCI HVCs differently, so their profiles are not
 replay-compatible. Snapshot restore requires the same runtime contract.
 The same hash is an unconditional state-hash chunk and diagnostic component,

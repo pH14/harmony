@@ -82,13 +82,15 @@ pub fn contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
 
 pub fn runtime_contract_hash(caps: Arm64Caps) -> [u8; 32] {
     let mut h = Sha256::new();
-    h.update(b"harmony-arm64-runtime-contract-v3\0");
+    h.update(b"harmony-arm64-runtime-contract-v4\0");
     h.update(contract_hash(caps.asid_bits));
     for level in caps.smccc_workaround_levels {
         h.update(level.to_le_bytes());
     }
     h.update([caps.psci_profile as u8]);
     h.update(caps.gic_ctlr_fixed_bits.to_le_bytes());
+    h.update(caps.gicd_iidr.to_le_bytes());
+    h.update(caps.gicd_typer2.to_le_bytes());
     h.finalize().into()
 }
 
@@ -140,6 +142,23 @@ mod tests {
         let baseline = runtime_contract_hash(caps);
         assert_eq!(baseline, runtime_contract_hash(caps));
         caps.gic_ctlr_fixed_bits ^= 1 << 8;
+        assert_ne!(baseline, runtime_contract_hash(caps));
+    }
+
+    #[test]
+    fn kvm_gic_distributor_identity_changes_runtime_contract() {
+        use vmm_backend::Backend;
+
+        let mut caps = vmm_backend::MockArm64Backend::new().capabilities().arch;
+        caps.psci_profile = vmm_backend::Arm64PsciProfile::KvmPsci10;
+        caps.in_kernel_gic = true;
+        caps.gic_ctlr_fixed_bits = 0x8400;
+        caps.gicd_iidr = 0x4b00_243b;
+        let baseline = runtime_contract_hash(caps);
+        caps.gicd_iidr = 0x4b00_343b;
+        assert_ne!(baseline, runtime_contract_hash(caps));
+        caps.gicd_iidr = 0x4b00_243b;
+        caps.gicd_typer2 = 1 << 8;
         assert_ne!(baseline, runtime_contract_hash(caps));
     }
 
