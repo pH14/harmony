@@ -36,6 +36,10 @@ pub(crate) const KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
 pub(crate) const KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const GICD_CTLR: u64 = 0x0000;
+pub(crate) const GICD_IIDR: u64 = 0x0008;
+const GICD_TYPER2: u64 = 0x000c;
+const GICD_IIDR_REVISION_MASK: u32 = 0xf << 12;
+const GICD_IIDR_PINNED_REVISION: u32 = 2;
 const GICD_CTLR_REPRESENTED: u64 = 1 << 1;
 const GICD_CTLR_FIXED: u64 = (1 << 4) | (1 << 6);
 const GIC_IGROUPR: u64 = 0x0080;
@@ -80,6 +84,10 @@ const ICC_IGRPEN0_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 6);
 const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 const ICC_CTLR_GUEST_WRITABLE: u64 = 0b11;
 const ICC_CTLR_PRIBITS_SHIFT: u32 = 8;
+
+pub(crate) fn pinned_vgic_iidr(native: u32) -> u32 {
+    (native & !GICD_IIDR_REVISION_MASK) | (GICD_IIDR_PINNED_REVISION << 12)
+}
 
 fn vgic_apr_count(ctlr: u64) -> Result<usize> {
     match ((ctlr >> ICC_CTLR_PRIBITS_SHIFT) & 0b111) + 1 {
@@ -1230,6 +1238,8 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     mmio_owed: bool,
     smccc_workaround_levels: [u64; 3],
     gic_ctlr_fixed_bits: u64,
+    gicd_iidr: u32,
+    gicd_typer2: u32,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -1254,6 +1264,8 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             mmio_owed: false,
             smccc_workaround_levels: [u64::MAX; 3],
             gic_ctlr_fixed_bits: 0,
+            gicd_iidr: 0,
+            gicd_typer2: 0,
         }
     }
 
@@ -1447,6 +1459,18 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.gic_ctlr_fixed_bits =
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
+        self.gicd_iidr = u32::try_from(self.kvm.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_IIDR,
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
+        self.gicd_typer2 = u32::try_from(self.kvm.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_TYPER2,
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
         self.kvm.set_one_reg(DISR_EL1, 0)?;
         self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
@@ -1722,6 +1746,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 smccc_workaround_levels: self.smccc_workaround_levels,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
                 gic_ctlr_fixed_bits: self.gic_ctlr_fixed_bits,
+                gicd_iidr: self.gicd_iidr,
+                gicd_typer2: self.gicd_typer2,
             },
         }
     }
@@ -1782,6 +1808,10 @@ impl FakeKvm {
         fake.vgic_attrs.insert(
             (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true),
             0x8400,
+        );
+        fake.vgic_attrs.insert(
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_IIDR, false),
+            pinned_vgic_iidr(0x4b00_343b) as u64,
         );
         fake
     }
@@ -2488,6 +2518,32 @@ mod tests {
                 Err(BackendError::InvalidState)
             ));
         }
+    }
+
+    #[test]
+    fn vgic_iidr_revision_pin_preserves_other_identity_bits() {
+        assert_eq!(pinned_vgic_iidr(0x4b00_343b), 0x4b00_243b);
+        assert_eq!(pinned_vgic_iidr(0xabcd_f123), 0xabcd_2123);
+    }
+
+    #[test]
+    fn capabilities_record_full_vgic_distributor_identity() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_IIDR,
+            false,
+            0x4b00_243b,
+        )
+        .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_TYPER2, false, 1 << 8)
+            .unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let caps = backend.capabilities().arch;
+        assert_eq!(caps.gicd_iidr, 0x4b00_243b);
+        assert_eq!(caps.gicd_typer2, 1 << 8);
     }
 
     #[test]

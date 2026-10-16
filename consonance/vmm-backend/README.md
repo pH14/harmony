@@ -520,6 +520,14 @@ first guest entry. Restore checks reserved bits, writes both halves, and
 requires exact readback. The ignored
 `guest_gicr_bases_survive_reused_and_fresh_restore` test compares guest MMIO
 readback after uninterrupted execution, an in-place restore, and a cold restore.
+ARM KVM selects VGIC `GICD_IIDR` implementation revision 2 before configuring
+the device and requires exact readback. KVM revisions 2 and 3 return different
+guest-visible `GICR_CTLR` values on the same host, so accepting the host's
+default revision would make guest behavior depend on its kernel version. The
+full configured `GICD_IIDR` and `GICD_TYPER2` values enter backend capabilities
+and the runtime contract; the latter includes any host-dependent
+`nASSGIcap` bit. A bounded msr1 guest probe read `GICR_CTLR=0` under revision
+2 and `0x6` under revision 3 while `ICC_CTLR_EL1` remained `0x8400`.
 On GICv4.1 hosts with direct SGIs, `GICD_CTLR.nASSGIreq` can hold guest-writable
 state. The record represents only distributor Group-1 enable, so capture refuses
 bit 8 and any other distributor-control bits outside the fixed and represented
