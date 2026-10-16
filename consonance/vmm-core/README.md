@@ -28,6 +28,15 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+
+The composition layer can inject a host-operation guard into `ControlServer`.
+The server checks it before and after each control request, including before
+the request's reply is encoded, and attaches it to every fresh or recovery VM.
+The VMM checks the same guard before servicing a doorbell and immediately
+before writing any service answer to guest memory. Consonance uses this hook
+to reject host loader changes without making the execution core depend on a
+particular process-loader implementation.
+
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
 refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
 so that tape alone cannot replay the continuation from genesis. This includes

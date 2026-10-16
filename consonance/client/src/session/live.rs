@@ -52,6 +52,7 @@ pub(super) fn vmm_target_commitment(
 
 pub struct Session {
     client: Server,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: SnapId,
     setup_at: u64,
     image_identity: [u8; 32],
@@ -115,18 +116,21 @@ impl Session {
         setup_payloads: Vec<Vec<u8>>,
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
+        let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
         let image_identity = super::image_identity_with_config_and_payloads(
             kernel,
             initramfs,
             &config,
             &setup_payloads,
         )?;
+        loaded_image_guard.check()?;
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
             config,
             setup_payloads,
             image_identity,
+            loaded_image_guard,
         )
     }
 
@@ -136,7 +140,9 @@ impl Session {
         config: SessionConfig,
         setup_payloads: Vec<Vec<u8>>,
         image_identity: [u8; 32],
+        loaded_image_guard: crate::image_identity::LoadedImageGuard,
     ) -> Result<Self, Box<dyn Error>> {
+        loaded_image_guard.check()?;
         let ram = config.ram_bytes;
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
@@ -176,6 +182,7 @@ impl Session {
         };
 
         let live = boot(kernel, initramfs).map_err(SessionError::Control)?;
+        loaded_image_guard.check()?;
         let factory_kernel = kernel.to_vec();
         let factory_initramfs = initramfs.to_vec();
         let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> = Box::new(move || {
@@ -183,6 +190,11 @@ impl Session {
                 .map_err(vmm_core::vmm::VmmError::ContractViolation)
         });
         let mut server = ControlServer::new(live, factory);
+        server.set_host_operation_guard(Arc::new(move || {
+            loaded_image_guard
+                .check()
+                .map_err(|error| error.to_string())
+        }));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
             .map_err(|error| SessionError::Control(error.to_string()))?;
@@ -204,8 +216,10 @@ impl Session {
             )
             .into());
         }
+        loaded_image_guard.check()?;
         Ok(Self {
             client,
+            loaded_image_guard,
             setup: setup.id,
             setup_at: setup.at,
             image_identity,
@@ -248,6 +262,7 @@ impl Session {
         snapshot: SnapId,
         export_base: Option<&SparseSnapshot>,
     ) -> Result<SparseSnapshot, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         self.snapshot_times
             .get(&snapshot)
             .ok_or_else(|| SessionError::Portable("snapshot handle is not held".into()))?;
@@ -256,7 +271,7 @@ impl Session {
             .transport()
             .export_sparse_snapshot(self.setup, snapshot)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
-        SparseSnapshot::from_parts(
+        let result = SparseSnapshot::from_parts(
             self.setup.0,
             self.image_identity,
             sparse.pages,
@@ -264,13 +279,16 @@ impl Session {
             export_base,
         )
         .map_err(SessionError::Portable)
-        .map_err(Into::into)
+        .map_err(Into::into);
+        self.loaded_image_guard.check()?;
+        result
     }
 
     pub fn import_sparse_snapshot(
         &mut self,
         snapshot: &SparseSnapshot,
     ) -> Result<SnapId, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if snapshot.base != self.setup.0 || snapshot.image_identity != self.image_identity {
             return Err(SessionError::Portable("snapshot identity differs".into()).into());
         }
@@ -284,6 +302,7 @@ impl Session {
             )
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         self.snapshot_times.insert(receipt.id, receipt.at.0);
+        self.loaded_image_guard.check()?;
         Ok(receipt.id)
     }
 
@@ -304,6 +323,7 @@ impl Session {
             WritableExtent::bytes_mut,
         )?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
+        self.loaded_image_guard.check()?;
         Ok(index.publish(
             namespace,
             key,
@@ -321,6 +341,7 @@ impl Session {
         allocate: impl FnOnce(usize) -> Result<T, Box<dyn Error>>,
         bytes: impl FnOnce(&mut T) -> &mut [u8],
     ) -> Result<T, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let delta = self
             .client
             .transport()
@@ -339,6 +360,7 @@ impl Session {
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
         let mut out = allocate(len)?;
         write_extent(bytes(&mut out), &delta.pages, &delta.reverted, &sidecar)?;
+        self.loaded_image_guard.check()?;
         Ok(out)
     }
 
@@ -372,6 +394,7 @@ impl Session {
         extents: &[&[u8]],
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let mut deltas = extents
             .iter()
             .map(|extent| read_extent(extent))
@@ -386,6 +409,7 @@ impl Session {
             .import_sparse_delta(self.setup, near, &resolved.pages, resolved.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
         self.snapshot_times.insert(receipt.id, receipt.at.0);
+        self.loaded_image_guard.check()?;
         Ok((receipt.id, receipt.at.0))
     }
 
@@ -692,6 +716,7 @@ impl Session {
     }
 
     fn export_snapshot(&self, target: SnapId, at: u64) -> Result<PortableSnapshot, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let sparse = self
             .client
             .transport()
@@ -702,6 +727,7 @@ impl Session {
             .into_iter()
             .map(|(gfn, page)| (gfn, page.as_ref().to_vec()))
             .collect();
+        self.loaded_image_guard.check()?;
         Ok(PortableSnapshot {
             setup: self.setup.0,
             image_identity: self.image_identity,
@@ -712,6 +738,7 @@ impl Session {
     }
 
     fn import_snapshot(&mut self, snapshot: &PortableSnapshot) -> Result<SnapId, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let pages = snapshot
             .validated_pages(self.setup.0, self.image_identity, self.setup_at)
             .map_err(SessionError::Portable)?;
@@ -720,6 +747,7 @@ impl Session {
             .transport_mut()
             .import_sparse_snapshot_parts(self.setup, &pages, &snapshot.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
+        self.loaded_image_guard.check()?;
         if receipt.at.0 != snapshot.at {
             let error = Err(SessionError::Portable("portable V-time differs".into()).into());
             return self.cleanup_handles([receipt.id], error);
@@ -972,6 +1000,7 @@ mod tests {
         let setup = snapshot_handle(&mut client, "setup snapshot").unwrap();
         Session {
             client,
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
             setup: setup.id,
             setup_at: setup.at,
             image_identity,

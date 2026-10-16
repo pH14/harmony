@@ -110,6 +110,7 @@ struct Counters {
 
 pub struct UmlSession {
     session: Option<uml::Session>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
     profile: VerifiedProfile,
     launch: Launch,
     host: uml::HostIdentity,
@@ -174,7 +175,8 @@ impl UmlSession {
             )
             .into());
         }
-        let loaded_executable = crate::image_identity::loaded_executable_identity_self()?;
+        let (loaded_executable, loaded_image_guard) =
+            crate::image_identity::LoadedImageGuard::identity()?;
         let root_identity = root_identity(config, &profile, &host, &initramfs, &loaded_executable);
         let checkpoints = Checkpoints::new();
         let mut session = uml::Session::spawn(
@@ -209,6 +211,7 @@ impl UmlSession {
         };
         let mut this = Self {
             session: Some(session),
+            loaded_image_guard,
             profile,
             launch,
             host,
@@ -235,10 +238,12 @@ impl UmlSession {
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
         cache_domain.update(setup_checkpoint.digest()?);
         this.cache_domain = cache_domain.finalize().into();
+        this.loaded_image_guard.check()?;
         Ok(this)
     }
 
     fn live(&mut self) -> Result<&mut uml::Session, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
         }
@@ -275,6 +280,7 @@ impl UmlSession {
     }
 
     fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let begun = started();
         let checkpoint = self
             .live()?
@@ -285,10 +291,12 @@ impl UmlSession {
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
+        self.loaded_image_guard.check()?;
         Ok((id, at))
     }
 
     fn restore(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
         }
@@ -308,6 +316,7 @@ impl UmlSession {
                 .restore(checkpoint)
                 .map_err(|error| self.abandon(error))?;
             self.counters.restores.since(begun);
+            self.loaded_image_guard.check()?;
             return Ok(());
         }
         self.session = None;
@@ -321,6 +330,7 @@ impl UmlSession {
         .map_err(|error| self.abandon(error))?;
         self.session = Some(session);
         self.counters.fresh_restores.since(begun);
+        self.loaded_image_guard.check()?;
         Ok(())
     }
 
@@ -354,7 +364,7 @@ impl UmlSession {
         result: Result<Stop, uml::SessionError>,
     ) -> Result<StopReason, Box<dyn Error>> {
         let latest = self.session.as_ref().map_or(0, uml::Session::moment);
-        match result {
+        let outcome = match result {
             Ok(Stop::Deadline(moment)) => Ok(StopReason::Deadline {
                 vtime: Moment(moment),
             }),
@@ -380,7 +390,9 @@ impl UmlSession {
             )))),
             Err(error @ uml::SessionError::BadResolution(_)) => Err(error.into()),
             Err(error) => Err(self.abandon(error)),
-        }
+        };
+        self.loaded_image_guard.check()?;
+        outcome
     }
 
     fn abandon(&mut self, error: uml::SessionError) -> Box<dyn Error> {
@@ -438,6 +450,7 @@ impl SearchSession for UmlSession {
     }
 
     fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let state = self.live()?.bridge_state_digest()?;
         let setup = self
             .snapshots
@@ -448,10 +461,13 @@ impl SearchSession for UmlSession {
         digest.update(b"harmony-uml-cache-identity-v2\0");
         digest.update(setup);
         digest.update(state);
-        Ok(digest.finalize().into())
+        let identity = digest.finalize().into();
+        self.loaded_image_guard.check()?;
+        Ok(identity)
     }
 
     fn root_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         Ok(self.root_identity)
     }
 
@@ -461,6 +477,7 @@ impl SearchSession for UmlSession {
         namespace: Namespace,
         target: SnapId,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let target = self
             .snapshots
             .get(&target)
@@ -476,6 +493,7 @@ impl SearchSession for UmlSession {
                 write_extent(extent.bytes_mut(), pages, &[], &sidecar)?;
                 Ok(extent)
             })??;
+        self.loaded_image_guard.check()?;
         Ok(index.publish(namespace, b"root", None, extent, target_commitment, 1)?)
     }
 
@@ -484,6 +502,7 @@ impl SearchSession for UmlSession {
         index: &dyn CacheIndex,
         lease: &Lease,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let chain = index.chain(lease)?;
         if chain.len() != 1 {
             return Err("root snapshot must have exactly one extent".into());
@@ -506,6 +525,7 @@ impl SearchSession for UmlSession {
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
+        self.loaded_image_guard.check()?;
         Ok((id, at))
     }
 
@@ -549,6 +569,7 @@ impl SearchSession for UmlSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let checkpoint = |id: SnapId| -> Result<&Checkpoint, Box<dyn Error>> {
             self.snapshots
@@ -574,6 +595,7 @@ impl SearchSession for UmlSession {
                 Ok(extent)
             },
         )??;
+        self.loaded_image_guard.check()?;
         Ok(index.publish(
             namespace,
             key,
@@ -590,6 +612,7 @@ impl SearchSession for UmlSession {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let begun = started();
         let chain = index.chain(lease)?;
         let mut deltas = chain
@@ -620,6 +643,7 @@ impl SearchSession for UmlSession {
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
         self.counters.imports.since(begun);
+        self.loaded_image_guard.check()?;
         Ok((id, at))
     }
 
@@ -628,6 +652,7 @@ impl SearchSession for UmlSession {
     }
 
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         self.snapshots.remove(&snapshot);
         Ok(())
     }
@@ -640,6 +665,7 @@ impl SearchSession for UmlSession {
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if !effects.is_empty() {
             return Err(SessionError::Control(
                 "User-mode Linux cannot apply host memory writes or interrupts".into(),
@@ -655,6 +681,7 @@ impl SearchSession for UmlSession {
         self.live()?
             .branch(seed, handler, payloads, coverage_schedule)
             .map_err(|error| self.abandon(error))?;
+        self.loaded_image_guard.check()?;
         Ok(())
     }
 
@@ -683,6 +710,7 @@ impl SearchSession for UmlSession {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         Ok(self
             .session
             .as_ref()
@@ -771,6 +799,7 @@ mod tests {
     fn unbooted_session() -> UmlSession {
         UmlSession {
             session: None,
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
             profile: profile(),
             launch: Launch::new(PathBuf::new()),
             host: host(),

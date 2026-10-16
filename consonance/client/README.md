@@ -50,12 +50,26 @@ executable mappings. The exact conventional x86-64 kernel-emulated `[vsyscall]`
 mapping is represented by its shape and kernel release. This captures resident
 `/etc/ld.so.preload` libraries and injected libraries whose constructor clears
 `LD_PRELOAD` before admission. Writable library initializers, RELRO/GOT values,
-symbol bindings, constructor effects, later loads or unloads, and changes to
-executable memory after measurement remain outside the Linux identity. On
+symbol bindings, constructor effects, and changes to executable memory after
+measurement remain outside the Linux identity. On
 macOS, the loaded identity combines the main code-directory hash with the
 mapped executable segments of dyld-listed images, including dylibs and dyld
 itself. macOS library data remains outside that identity. This self-measurement
 is not an adversarial attestation.
+
+A loaded-image digest by itself cannot remember a library that was loaded,
+called, and unloaded before the next digest. In-process sessions, UML sessions,
+and session workers capture the process loader's cumulative generation before
+image admission and require it to stay unchanged across operations. Linux uses
+the loader's addition and removal counters; macOS uses dyld image callbacks.
+The check occurs again after a service handler runs and before its answer
+reaches the guest. A changed or unavailable generation fails the session even
+when the current loaded-image digest has returned to its original value. This
+guard covers loader-managed image churn; it does not certify writable library
+initializers or arbitrary changes to already mapped code.
+`Session::image_identity()` returns the identifier admitted at construction;
+artifact and guest-operation boundaries perform the live generation checks.
+
 A nonempty `identity_tag` adds a workload domain; it does not replace those
 setup inputs.
 

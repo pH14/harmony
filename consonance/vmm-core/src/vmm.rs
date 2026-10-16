@@ -22,6 +22,8 @@ use environment::{
 
 pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
 
+pub type HostOperationGuard = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalReason {
     DebugExit { code: u8 },
@@ -352,6 +354,7 @@ where
     pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
+    host_operation_guard: Option<HostOperationGuard>,
 }
 
 enum RestoreValidation {
@@ -427,7 +430,19 @@ where
             last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
+            host_operation_guard: None,
         }
+    }
+
+    pub fn set_host_operation_guard(&mut self, guard: HostOperationGuard) {
+        self.host_operation_guard = Some(guard);
+    }
+
+    fn check_host_operation_guard(&self) -> Result<(), VmmError> {
+        if let Some(guard) = &self.host_operation_guard {
+            guard().map_err(VmmError::ContractViolation)?;
+        }
+        Ok(())
     }
 
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
@@ -2164,6 +2179,7 @@ where
     }
 
     pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
+        self.check_host_operation_guard()?;
         let moment = self.effective_vns().unwrap_or(0);
         let req = if req_len as usize > HC_PAGE {
             Vec::new()
@@ -2262,6 +2278,7 @@ where
     }
 
     fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
+        self.check_host_operation_guard()?;
         let Some(dst) = self.guest_slice_mut(RESP_GPA as u64, resp.len()) else {
             return Err(VmmError::ContractViolation(format!(
                 "doorbell response page {RESP_GPA:#x}+{} is not backed",
@@ -3932,6 +3949,28 @@ mod tests {
             vmm.drain_dirty_pages().unwrap(),
             Some(vec![(RESP_GPA as u64) / 4096])
         );
+    }
+
+    #[test]
+    fn host_operation_guard_refuses_doorbell_reply_before_guest_memory_write() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = std::sync::Arc::clone(&changed);
+        vmm.set_host_operation_guard(std::sync::Arc::new(move || {
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("host loader changed".into())
+            } else {
+                Ok(())
+            }
+        }));
+        vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
+        changed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 16].to_vec();
+        assert!(matches!(
+            vmm.write_doorbell_response(&[0xCD; 16]),
+            Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
+        ));
+        assert_eq!(&vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 16], before);
     }
 
     #[test]

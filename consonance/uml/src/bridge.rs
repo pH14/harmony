@@ -308,6 +308,26 @@ impl Services {
         Ok((candidate, response))
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    pub(crate) fn exchange_guarded(
+        &mut self,
+        expected: host_code_identity::LoaderEpoch,
+        request: &[u8],
+        response: &mut [u8],
+    ) -> Result<Reply, String> {
+        let check = || -> Result<(), String> {
+            let actual = host_code_identity::loader_epoch().map_err(|error| error.to_string())?;
+            if actual != expected {
+                return Err("host loader changed after UML session admission".into());
+            }
+            Ok(())
+        };
+        check()?;
+        let result = self.exchange(request, response);
+        check()?;
+        result
+    }
+
     fn answer(
         &mut self,
         moment: u64,
@@ -1168,5 +1188,151 @@ mod tests {
         let log = thread.join().unwrap();
         assert_eq!(state.load(Ordering::Acquire), FAILED);
         assert!(log.failure.unwrap().contains("from 9 to 8"));
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod loader_epoch_tests {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    use std::process::Command;
+
+    use environment::channel::{Answer, ChannelError, Question, ServiceResponse};
+    use hypercall_proto::{ServiceId, encode_request};
+
+    use super::*;
+
+    #[derive(Clone)]
+    struct TransientHandler(CString);
+
+    impl TransientHandler {
+        fn churn(&self) -> Result<libc::c_int, ChannelError> {
+            // SAFETY: the NUL-terminated path names the test dylib and remains live for dlopen.
+            let handle =
+                unsafe { libc::dlopen(self.0.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+            if handle.is_null() {
+                return Err(ChannelError::Malformed);
+            }
+            // SAFETY: the NUL-terminated symbol names the no-argument C function in this dylib.
+            let symbol = unsafe { libc::dlsym(handle, c"harmony_loader_witness".as_ptr()) };
+            if symbol.is_null() {
+                // SAFETY: handle came from this successful dlopen and has not been closed.
+                unsafe { libc::dlclose(handle) };
+                return Err(ChannelError::Malformed);
+            }
+            // SAFETY: the compiled fixture exports this exact C signature at the named symbol.
+            let call: unsafe extern "C" fn() -> libc::c_int =
+                unsafe { std::mem::transmute(symbol) };
+            // SAFETY: the function is live until the handle is closed below.
+            let answer = unsafe { call() };
+            // SAFETY: handle came from this successful dlopen and is closed once after the call.
+            if unsafe { libc::dlclose(handle) } != 0 {
+                return Err(ChannelError::Malformed);
+            }
+            Ok(answer)
+        }
+    }
+
+    impl ServiceHandler for TransientHandler {
+        fn identity(&self) -> &[u8] {
+            b"transient-loader-witness"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _moment: u64,
+            _question: &Question,
+        ) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Data(vec![
+                self.churn()? as u8
+            ])))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(ChannelError::Malformed)
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            assert_eq!(self.churn().unwrap(), 17);
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn transient_service_clone_rejects_exchange_without_loaded_identity_change() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("helper.c");
+        let library = directory.path().join(if cfg!(target_os = "macos") {
+            "helper.dylib"
+        } else {
+            "helper.so"
+        });
+        std::fs::write(&source, "int harmony_loader_witness(void) { return 17; }\n").unwrap();
+        let mut compiler = Command::new("cc");
+        if cfg!(target_os = "macos") {
+            compiler.arg("-dynamiclib");
+        } else {
+            compiler.args(["-shared", "-fPIC"]);
+        }
+        assert!(
+            compiler
+                .arg("-o")
+                .arg(&library)
+                .arg(&source)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let handler = TransientHandler(CString::new(library.as_os_str().as_bytes()).unwrap());
+        let mut services = Services::new(7);
+        services
+            .branch(7, Box::new(handler), Vec::new(), None)
+            .unwrap();
+        let mut request = vec![0_u8; STAMP_LEN + MAX_FRAME];
+        request[..STAMP_LEN].copy_from_slice(&1_u64.to_le_bytes());
+        let mut payload = Vec::from(100_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u64.to_le_bytes());
+        let length =
+            encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+        request.truncate(STAMP_LEN + length);
+        let mut response = vec![0_u8; MAX_FRAME];
+        let loaded_before = host_code_identity::loaded_executable_identity("test-main").unwrap();
+        let epoch = host_code_identity::loader_epoch().unwrap();
+        let reply = services.exchange(&request, &mut response).unwrap();
+        assert_eq!(reply.length, 0);
+        assert!(matches!(reply.signal, Some(Signal::Decision(_))));
+        assert_eq!(
+            host_code_identity::loaded_executable_identity("test-main").unwrap(),
+            loaded_before
+        );
+        assert_ne!(host_code_identity::loader_epoch().unwrap(), epoch);
+
+        payload[2..10].copy_from_slice(&2_u64.to_le_bytes());
+        let length =
+            encode_request(ServiceId::Sdk, 3, 2, &payload, &mut request[STAMP_LEN..]).unwrap();
+        request.truncate(STAMP_LEN + length);
+        let guard = host_code_identity::loader_epoch().unwrap();
+        assert!(matches!(
+            services.exchange_guarded(guard, &request, &mut response),
+            Err(message) if message.contains("host loader changed")
+        ));
+        assert_eq!(
+            host_code_identity::loaded_executable_identity("test-main").unwrap(),
+            loaded_before
+        );
+        assert_ne!(host_code_identity::loader_epoch().unwrap(), guard);
     }
 }

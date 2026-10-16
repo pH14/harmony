@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
+use host_code_identity::LoaderEpoch;
 use hypercall_proto::MAX_FRAME;
 use sha2::{Digest, Sha256};
 use snapshot_store::{PAGE_SIZE, PageHash};
@@ -153,6 +154,16 @@ pub struct Session {
     image_at: Option<Snapshot>,
     audit: bool,
     missed: Vec<u64>,
+    loader_epoch: LoaderEpoch,
+}
+
+fn check_loader_epoch(expected: LoaderEpoch) -> Result<(), SessionError> {
+    if host_code_identity::loader_epoch()? != expected {
+        return Err(SessionError::Protocol(
+            "host loader changed after UML session admission".into(),
+        ));
+    }
+    Ok(())
 }
 
 impl Checkpoint {
@@ -313,6 +324,7 @@ impl Session {
         restore: Option<&Checkpoint>,
         progress_limit: Option<Duration>,
     ) -> Result<Self, SessionError> {
+        let loader_epoch = host_code_identity::loader_epoch()?;
         if let Some(checkpoint) = restore {
             checkpoints.require_owned_snapshot(&checkpoint.memory)?;
         }
@@ -330,6 +342,7 @@ impl Session {
             Some(memory.physmem.try_clone()?),
         )?;
         let socket = socket.ok_or(SessionError::NoBridge)?;
+        check_loader_epoch(loader_epoch)?;
         let mut session = Self {
             guest,
             socket,
@@ -345,6 +358,7 @@ impl Session {
             image_at: None,
             audit: false,
             missed: Vec::new(),
+            loader_epoch,
         };
         if let Some(checkpoint) = restore
             && let Err(error) = session.restore_at_boot(checkpoint)
@@ -354,6 +368,7 @@ impl Session {
                 console: session.console_tail(),
             });
         }
+        check_loader_epoch(loader_epoch)?;
         Ok(session)
     }
 
@@ -390,9 +405,13 @@ impl Session {
         payloads: Vec<Vec<u8>>,
         coverage_schedule: Option<environment::channel::CoverageSchedule>,
     ) -> Result<(), SessionError> {
-        self.services
+        check_loader_epoch(self.loader_epoch)?;
+        let result = self
+            .services
             .branch(seed, handler, payloads, coverage_schedule)
-            .map_err(SessionError::Protocol)
+            .map_err(SessionError::Protocol);
+        check_loader_epoch(self.loader_epoch)?;
+        result
     }
 
     pub fn run_to(&mut self, events: usize) -> Result<Stop, SessionError> {
@@ -414,6 +433,7 @@ impl Session {
         id: u64,
         answer: &[u8],
     ) -> Result<Stop, SessionError> {
+        check_loader_epoch(self.loader_epoch)?;
         let request = self
             .pending
             .as_deref()
@@ -422,6 +442,7 @@ impl Session {
             .services
             .prepare_resolution(request, moment, service, id, answer)
             .map_err(SessionError::BadResolution)?;
+        check_loader_epoch(self.loader_epoch)?;
         bridge::send(&self.socket, &response)?;
         self.services = services;
         self.pending = None;
@@ -456,13 +477,16 @@ impl Session {
     }
 
     pub fn bridge_state_digest(&self) -> Result<[u8; 32], SessionError> {
+        check_loader_epoch(self.loader_epoch)?;
         let mut digest = Sha256::new();
         digest.update(b"harmony-uml-bridge-state-v1\0");
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
         if let Some(request) = &self.pending {
             digest.update(request);
         }
-        Ok(digest.finalize().into())
+        let digest = digest.finalize().into();
+        check_loader_epoch(self.loader_epoch)?;
+        Ok(digest)
     }
 
     pub fn run(mut self) -> Result<Exit, SessionError> {
@@ -504,6 +528,7 @@ impl Session {
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
+        check_loader_epoch(self.loader_epoch)?;
         let request = self.pending.clone().ok_or(SessionError::NotPaused)?;
         let flags = if capture.omit_host_memory {
             OMIT_HOST_MEMORY
@@ -589,6 +614,7 @@ impl Session {
         let memory = checkpoints.adopt(id);
         self.memory_at = Some(memory.share());
         self.image_at = Some(memory.share());
+        check_loader_epoch(self.loader_epoch)?;
         Ok(Checkpoint {
             memory,
             services: self.services.clone(),
@@ -597,10 +623,13 @@ impl Session {
     }
 
     pub fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
+        check_loader_epoch(self.loader_epoch)?;
         if self.pending.is_none() {
             return Err(SessionError::NotPaused);
         }
-        self.restore_from(checkpoint)
+        let result = self.restore_from(checkpoint);
+        check_loader_epoch(self.loader_epoch)?;
+        result
     }
 
     fn restore_from(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
@@ -738,6 +767,13 @@ impl Session {
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
+        check_loader_epoch(self.loader_epoch)?;
+        let result = self.serve_inner(until);
+        check_loader_epoch(self.loader_epoch)?;
+        result
+    }
+
+    fn serve_inner(&mut self, until: Until) -> Result<Stop, SessionError> {
         if let Some(moment) = self.pending.as_deref().and_then(stamp)
             && matches!(
                 until,
@@ -784,16 +820,18 @@ impl Session {
                 }
                 length
             };
-            let reply = match self
-                .services
-                .exchange(&self.request[..length], &mut self.response)
-            {
+            let reply = match self.services.exchange_guarded(
+                self.loader_epoch,
+                &self.request[..length],
+                &mut self.response,
+            ) {
                 Ok(reply) => reply,
                 Err(failure) => {
                     self.failure = Some(failure.clone());
                     return Err(SessionError::Protocol(failure));
                 }
             };
+            check_loader_epoch(self.loader_epoch)?;
             if let Some(Signal::Decision(question)) = &reply.signal {
                 self.pending = Some(self.request[..length].to_vec());
                 return Ok(Stop::Decision {
