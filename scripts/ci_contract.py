@@ -784,7 +784,10 @@ TWIN_DRAGONS_BROWSER_CHECKS = Workflow(
     name="Checks / Dissonance Workloads / Twin Dragons Browser",
     owner="Dissonance Workloads",
     triggers=("pull_request", "push", "workflow_dispatch"),
-    jobs=(Job("Twin Dragons Browser", "pr", 15, crates=("twin-dragons-browser",)),),
+    jobs=(
+        Job("Twin Dragons Build", "pr", 15, crates=("twin-dragons-browser",)),
+        Job("Twin Dragons Browser — <Suite>", "pr", 15),
+    ),
 )
 
 WORKFLOWS = (

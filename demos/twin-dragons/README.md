@@ -735,8 +735,10 @@ A snapshot taken with audio on differs from one taken with audio off in the APU
 block, so snapshot digests are comparable only between cores in the same audio
 mode.
 
-`Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds and tests the
-static app, then uploads `twin-dragons-browser-dist` and browser evidence. No
+`Checks / Dissonance Workloads / Twin Dragons Browser` rebuilds the static app
+once and uploads `twin-dragons-browser-dist`. Two browser jobs then run
+`npm run test:browser:games` and `npm run test:browser:interface` against that
+build and upload their evidence. `npm run test:browser` runs both. No
 generated assets or ROM are checked in.
 
 ## Credits
