@@ -83,12 +83,27 @@ fn configure(mut c: Config, offline: bool) -> Result<Config> {
 }
 
 fn capture_runtime(manifest: &mut Manifest, path: &Path, artifacts: &Artifacts) -> Result<()> {
-    manifest.store(path, "kernel", &artifacts.kernel)?;
-    manifest.store(path, "initramfs", &artifacts.initramfs)?;
-    if let Some(profile) = manifest.config.uml_profile.clone() {
-        crate::runs::store_tree(&mut manifest.record, path, &profile, "uml")?;
-    }
+    store_runtime_artifacts(
+        &mut manifest.record,
+        path,
+        artifacts,
+        manifest.config.uml_profile.as_deref(),
+    )?;
     manifest.save(path)
+}
+
+fn store_runtime_artifacts(
+    record: &mut crate::runs::Manifest,
+    path: &Path,
+    artifacts: &Artifacts,
+    uml_profile: Option<&Path>,
+) -> Result<()> {
+    record.store(path, "kernel", &artifacts.kernel)?;
+    record.store(path, "initramfs", &artifacts.initramfs)?;
+    if let Some(profile) = uml_profile {
+        crate::runs::store_tree(record, path, profile, "uml")?;
+    }
+    Ok(())
 }
 
 fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
@@ -476,21 +491,19 @@ mod tests {
             initramfs: b"prepared initramfs".to_vec(),
         };
         fs::write(&source, b"later kernel").unwrap();
-        let config = Config {
-            backend: Backend::Kvm,
-            kernel: Some(source),
-            ..Config::default()
-        };
-        let mut manifest = Manifest::new(config, "run", None, true).unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        let mut record = crate::runs::Manifest::new(config, "run").unwrap();
 
-        capture_runtime(&mut manifest, directory.path(), &artifacts).unwrap();
+        store_runtime_artifacts(&mut record, directory.path(), &artifacts, None).unwrap();
+        record.save(directory.path()).unwrap();
 
         assert_eq!(
             fs::read(directory.path().join("artifacts/kernel")).unwrap(),
             artifacts.kernel
         );
         assert_eq!(
-            manifest.artifacts["kernel"],
+            record.artifacts["kernel"],
             crate::runtime::digest(&artifacts.kernel)
         );
     }
