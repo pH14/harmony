@@ -179,10 +179,12 @@ pub(crate) struct Services {
 }
 
 impl Services {
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn handler_fingerprint(&self) -> Result<HandlerFingerprint, ChannelError> {
         self.env.handler_fingerprint()
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn verify_handler_unchanged(
         &self,
         before: &HandlerFingerprint,
