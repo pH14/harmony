@@ -255,6 +255,7 @@ pub enum FaultEndpointCertificate {
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
     pub actions: Vec<FaultAction>,
+    pub prefix_certificates: Vec<Option<[u8; 32]>>,
     pub observation: FaultObservations,
     pub failed: bool,
     pub endpoint: Option<FaultEndpointCertificate>,
@@ -930,6 +931,7 @@ mod tests {
                     },
                     NonZeroU16::new(256).unwrap(),
                 )],
+                prefix_certificates: vec![Some([17; 32])],
                 ..FaultSnapshot::default()
             };
             let bytes = postcard::to_allocvec(&snapshot).unwrap();

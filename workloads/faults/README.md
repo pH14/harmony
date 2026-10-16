@@ -378,31 +378,37 @@ job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
 Each campaign job's recorded result digest binds its logical result to a tagged
-final endpoint certificate. Every runnable candidate snapshot also carries a
-certificate captured before the next action, so an intermediate endpoint
-cannot diverge and later converge undetected. When a candidate is retained,
-its action prefix binds every action's KVM whole-state hash and action-local
-observation in a domain-separated digest in the archive, including
-actions whose own candidates were rejected or deduplicated. Jobs restored from
-an older keyframe compare each replayed KVM endpoint and observation with that bound digest
-before taking the next action. A missing or conflicting KVM certificate stops
-the campaign. Restoring a KVM source snapshot checks its recorded certificate
-before using its logical observation. Importing a KVM tree rebuilds each
-imported action, including paths with source snapshots, and compares each
-checkpointed endpoint before admitting it. Restoring either backend also
+final endpoint certificate. Every runnable KVM snapshot carries an action-aligned
+certificate for each prefix in its portable history. Each runnable KVM action
+captures its whole-state hash and action-local observation before the next
+action. Restoring a KVM snapshot visits each prefix, including cached prefixes,
+and checks its certificate before continuing. This also covers a resident
+keyframe whose first action diverges and later reconverges at its final
+endpoint. When a candidate is retained, the archive binds the certificates for
+its action suffix, including actions whose own candidates were rejected or
+deduplicated. Jobs restored from an older keyframe compare each replayed KVM
+endpoint and observation with that archive certificate before the next action.
+Missing, malformed, or conflicting KVM certificates stop the campaign.
+Restoring a KVM source snapshot checks its recorded prefix certificates before
+using its logical observation. Importing a KVM tree rebuilds each imported
+action, including paths with source snapshots, and compares each checkpointed
+endpoint before admitting it. A source entry digest covers the snapshot's
+prefix certificates when present. Reconstructed certificates without a
+source-bound digest describe the current executor; they do not establish the
+source run's intermediate states. Restoring either backend also
 reconstructs the SDK observation from the restored session,
 including the current action's park and read reports, and rejects a failed,
 terminal, or inconsistent saved observation. KVM
 certificates hash the current worker session's whole state, including RAM and
-device state. Candidate capture and final certification fail if that session is
+device state. Action and candidate capture and final certification fail if that session is
 missing, foreign, abandoned, or unhashable; restore may rebuild the prefix in a
 new session but rejects an unhashable or mismatched endpoint. A failed KVM job
 records an explicit final whole-state-unavailable tag:
 its action observations and failure result remain checked, but the stream makes
-no claim about its final whole state. A whole-state hash scans guest RAM for
-each runnable candidate, each restored KVM snapshot, and each action replayed
-from an evicted KVM parent. The replay cost occurs only when rebuilding such
-an evicted path, but can be material for 1 GiB guests. A healthy job whose
+no claim about its final whole state. A whole-state hash scans guest RAM after
+each runnable action, for each candidate snapshot, at every restored KVM
+prefix, and for each action replayed from an evicted KVM parent. This extra
+work can be material for 1 GiB guests. A healthy job whose
 last action is runnable reuses that candidate's hash as its final certificate;
 zero-action and terminal jobs hash their final endpoint separately. Thus
 certification cost grows with configured RAM and the number of actions and

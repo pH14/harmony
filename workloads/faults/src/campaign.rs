@@ -47,16 +47,17 @@ use crate::{
     bundle::FaultVocabulary,
     consonance::{
         FaultConfig, FaultTarget, identity, replay_endpoint_certificate, snapshot_memory_charge,
+        validate_snapshot_prefix_certificates,
     },
     target::{
         FaultAction, FaultEndpointCertificate, FaultObservations, FaultOperation, FaultSnapshot,
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v8";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v6";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v5";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v2";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v9";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v7";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v6";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v3";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -172,6 +173,7 @@ fn kvm_result_endpoint(
             .candidate
             .as_ref()
             .ok_or("a runnable final action lacks its candidate certificate")?;
+        validate_snapshot_prefix_certificates(&candidate.snapshot, false)?;
         if !candidate.viable
             || candidate.snapshot.failed
             || candidate.snapshot.actions != actions
@@ -433,6 +435,7 @@ impl Reporting for FaultWorkload {
         &self,
         snapshot: &Self::Snapshot,
     ) -> Result<String, Box<dyn Error>> {
+        validate_snapshot_prefix_certificates(snapshot, self.config.uml().is_some())?;
         postcard_value_sha256(snapshot)
     }
 
@@ -740,6 +743,7 @@ impl TargetExecution for FaultWorkload {
         if snapshot.failed || !snapshot.observation.stop.is_continuable() {
             return Err("fault replay candidate is not a runnable endpoint".into());
         }
+        validate_snapshot_prefix_certificates(snapshot, self.config.uml().is_some())?;
         match (self.config.uml().is_some(), snapshot.endpoint) {
             (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => Ok(Some(
                 replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?,
@@ -1077,6 +1081,10 @@ mod tests {
         );
         let snapshot = FaultSnapshot {
             actions: vec![action],
+            prefix_certificates: vec![Some(
+                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
+                    .unwrap(),
+            )],
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             ..FaultSnapshot::default()
         };
@@ -1140,6 +1148,41 @@ mod tests {
             kvm_result_endpoint(&result, &[], &FaultObservations::default(), || Ok([17; 32]))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn snapshot_identity_binds_prefix_certificates_and_rejects_missing_ones() {
+        let action = FaultAction::new(
+            FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+            std::num::NonZeroU16::new(1).unwrap(),
+        );
+        let observation = FaultObservations::default();
+        let endpoint_hash = [17; 32];
+        let final_certificate =
+            replay_endpoint_certificate(endpoint_hash, &observation, false).unwrap();
+        let snapshot = FaultSnapshot {
+            actions: vec![action, action],
+            prefix_certificates: vec![Some([11; 32]), Some(final_certificate)],
+            observation,
+            failed: false,
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
+        };
+        let game = game();
+        let identity = game.snapshot_identity_sha256(&snapshot).unwrap();
+
+        let mut changed = snapshot.clone();
+        changed.prefix_certificates[0] = Some([23; 32]);
+        assert_ne!(game.snapshot_identity_sha256(&changed).unwrap(), identity);
+
+        let mut missing = snapshot.clone();
+        missing.prefix_certificates.pop();
+        assert!(game.snapshot_identity_sha256(&missing).is_err());
+        missing.prefix_certificates.push(None);
+        assert!(game.snapshot_identity_sha256(&missing).is_err());
+
+        let mut wrong_final = snapshot;
+        wrong_final.prefix_certificates[1] = Some([23; 32]);
+        assert!(game.snapshot_identity_sha256(&wrong_final).is_err());
     }
 
     #[test]
