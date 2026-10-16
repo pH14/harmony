@@ -116,6 +116,8 @@ jobs:
       - name: Bind the recorded UML kernel to the approved profile
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: cargo test --locked -p harmony-cli --bin harmony loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
       - name: Fail closed on exhausted host clone quota
         env:
