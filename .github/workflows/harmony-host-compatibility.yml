@@ -140,7 +140,7 @@ jobs:
           cargo build --locked -p harmony-cli --no-default-features \
             --features consonance-host --bin harmony-consonance-host
           codesign --force --sign - --identifier org.harmony.consonance-host \
-            --options runtime \
+            --options runtime,hard,kill \
             --entitlements consonance/vmm-backend/hvf.entitlements.plist \
             --library-constraint scripts/macos-os-only-library-constraint.coderequirement \
             target/debug/harmony-consonance-host

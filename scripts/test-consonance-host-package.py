@@ -3,6 +3,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -45,6 +46,11 @@ def check_pair(frontend, host, platform):
             verification = run("codesign", "--verify", "--strict", str(packaged_host))
             if verification.returncode:
                 raise AssertionError(f"packaged macOS host signature is invalid: {verification.stderr}")
+            signature = run("codesign", "-dvv", str(packaged_host))
+            flags = re.search(r"flags=0x([0-9a-fA-F]+)", signature.stderr)
+            required_flags = 0x100 | 0x200 | 0x10000
+            if signature.returncode or flags is None or int(flags.group(1), 16) & required_flags != required_flags:
+                raise AssertionError("packaged macOS host lacks hard, kill or runtime code-signing flags")
             version = run(str(packaged_host), "--version")
             if version.returncode != 0 or "harmony" not in version.stdout:
                 raise AssertionError(f"signed macOS host was refused: {version}")
