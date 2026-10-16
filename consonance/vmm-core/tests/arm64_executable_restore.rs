@@ -40,6 +40,69 @@ mod live {
     use vmm_core::vendor::arm64::{bringup, image_loader};
     use vmm_core::vmm::{Step, Vmm};
 
+    use rustix::thread::{CpuSet, sched_getaffinity, sched_getcpu, sched_setaffinity};
+
+    struct PinnedCpu {
+        previous: CpuSet,
+        cpu: usize,
+    }
+
+    impl PinnedCpu {
+        fn current() -> Self {
+            let previous = sched_getaffinity(None).expect("read qualification thread affinity");
+            let cpu = sched_getcpu();
+            assert!(cpu < CpuSet::MAX_CPU && previous.is_set(cpu));
+            let mut selected = CpuSet::new();
+            selected.set(cpu);
+            sched_setaffinity(None, &selected).expect("pin qualification thread");
+            let guard = Self { previous, cpu };
+            assert_eq!(sched_getaffinity(None).unwrap(), selected);
+            guard.verify();
+            let root = format!("/sys/devices/system/cpu/cpu{cpu}/regs/identification");
+            let read = |name| {
+                std::fs::read_to_string(format!("{root}/{name}"))
+                    .map(|value| value.trim().to_owned())
+                    .unwrap_or_else(|_| "unavailable".into())
+            };
+            println!(
+                "ARM_EXECUTABLE_CACHE cpu={cpu} midr_el1={} host_id_aa64mmfr2_el1={} stage2_fwb=unmeasured host_ctr_el0=unmeasured",
+                read("midr_el1"),
+                read("id_aa64mmfr2_el1")
+            );
+            guard
+        }
+
+        fn verify(&self) {
+            assert_eq!(sched_getcpu(), self.cpu, "qualification thread migrated");
+        }
+    }
+
+    impl Drop for PinnedCpu {
+        fn drop(&mut self) {
+            if let Err(error) = sched_setaffinity(None, &self.previous) {
+                eprintln!("failed to restore qualification thread affinity: {error}");
+                assert!(
+                    std::thread::panicking(),
+                    "could not restore thread affinity"
+                );
+            }
+        }
+    }
+
+    const INSTRUCTION_CACHE: u64 = 1 << 12;
+
+    fn assert_instruction_cache(machine: &mut Machine) {
+        let state = machine
+            .vcpu_record()
+            .expect("read guest instruction-cache control");
+        assert_ne!(state.sysregs.sctlr_el1 & INSTRUCTION_CACHE, 0);
+        assert_eq!(state.sysregs.sctlr_el1 & 1, 0);
+        println!(
+            "ARM_EXECUTABLE_CACHE guest_sctlr_el1={:#x} instruction_cache=enabled stage1_mmu=disabled",
+            state.sysregs.sctlr_el1
+        );
+    }
+
     type Machine = Vmm<Arm64KvmBackend<LiveKvm>>;
     const ROUNDS: usize = 16;
     const A: u8 = b'A';
@@ -59,13 +122,22 @@ mod live {
         let backend = Arm64KvmBackend::new(
             LiveKvm::new().expect("qualification requires accessible ARM KVM"),
         );
-        bringup::boot(
+        let mut machine = bringup::boot(
             backend,
             &image_loader::wrap_image(&code, 0, 0xA),
             "console=ttyAMA0",
             1 << 20,
         )
-        .expect("boot ARM executable restore witness")
+        .expect("boot ARM executable restore witness");
+        let mut initial = machine
+            .save_vm_state()
+            .expect("capture entry cache control");
+        initial.sysregs.sctlr_el1 |= INSTRUCTION_CACHE;
+        machine
+            .restore_vm_state(&initial)
+            .expect("enable guest instruction cache before entry");
+        assert_instruction_cache(&mut machine);
+        machine
     }
 
     fn step(machine: &mut Machine, expected: u8) {
@@ -87,6 +159,7 @@ mod live {
     #[test]
     #[ignore = "live ARM KVM; registered in HOST_TESTS"]
     fn executable_ram_restores_match_guest_continuations() {
+        let pinned = PinnedCpu::current();
         let mut cold_a = boot(A);
         step(&mut cold_a, A);
         let mut uninterrupted = boot(B);
@@ -116,6 +189,7 @@ mod live {
         for _ in 0..ROUNDS {
             step(&mut reused, A);
         }
+        assert_instruction_cache(&mut reused);
         let address = reused.guest_memory().as_ptr();
         for round in 0..ROUNDS {
             let (expected, image) = if round % 2 == 0 {
@@ -126,6 +200,7 @@ mod live {
             reused
                 .restore_vm_state(&initial)
                 .expect("reused state restore");
+            pinned.verify();
             restore_memory(&mut reused, image);
             assert_eq!(reused.guest_memory().as_ptr(), address);
             step(&mut reused, expected);
@@ -135,15 +210,20 @@ mod live {
         for _ in 0..ROUNDS {
             step(&mut direct, A);
         }
+        assert_instruction_cache(&mut direct);
         for round in 0..ROUNDS {
             let (expected, image) = if round % 2 == 0 {
                 (B, &ram_b)
             } else {
                 (A, &ram_a)
             };
+            pinned.verify();
             restore_memory(&mut direct, image);
             step(&mut direct, expected);
         }
+        pinned.verify();
+        assert_instruction_cache(&mut reused);
+        assert_instruction_cache(&mut direct);
         println!(
             "ARM_EXECUTABLE_RESTORE cold=pass capture_only=pass fresh=pass reused={ROUNDS} memory_only={ROUNDS} stale=0"
         );
