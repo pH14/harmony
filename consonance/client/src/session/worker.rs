@@ -25,6 +25,7 @@ use environment::{
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
 
+use super::live::vmm_target_commitment;
 use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec};
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
@@ -947,11 +948,19 @@ impl SearchSession for WorkerSession {
         let mut input = In(&reply);
         let len = input.len()?;
         input.finish()?;
-        let extent = index.extent(len)?;
+        let mut extent = index.extent(len)?;
         let SharedRange { fd, offset, len } = extent.shared_range();
         let reply = self.call(Out::op(WRITE_EXTENT).len(offset).len(len), &[fd])?;
         In(&reply).finish()?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
+        let target_commitment = vmm_target_commitment(&mut extent)?;
+        Ok(index.publish(
+            namespace,
+            key,
+            parent.map(|(_, lease)| lease),
+            extent,
+            target_commitment,
+            cost,
+        )?)
     }
 
     fn import_cached(
@@ -1479,8 +1488,24 @@ mod tests {
             target: SnapId,
         ) -> Result<Vec<u8>, Box<dyn Error>> {
             let fill = self.state(target)?;
-            let mut out = vec![0; extent_len(1, 0, 1).unwrap()];
-            write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &[fill])?;
+            let policy = ServiceConfig::default().encode();
+            let mut sidecar = Vec::new();
+            sidecar.extend_from_slice(b"HMSESS01");
+            sidecar.extend_from_slice(&[0; 32]);
+            sidecar.extend_from_slice(b"HMSSNAP1");
+            sidecar.extend_from_slice(&9u16.to_le_bytes());
+            sidecar.extend_from_slice(&4u16.to_le_bytes());
+            for len in [1, 0, policy.len() as u64, 1, 0] {
+                sidecar.extend_from_slice(&len.to_le_bytes());
+            }
+            sidecar.extend_from_slice(&[0; 4 * 8]);
+            sidecar.extend_from_slice(&[0; 32]);
+            sidecar.extend_from_slice(&[fill; 32]);
+            sidecar.push(0);
+            sidecar.extend_from_slice(&policy);
+            sidecar.push(0);
+            let mut out = vec![0; extent_len(1, 0, sidecar.len()).unwrap()];
+            write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &sidecar)?;
             Ok(out)
         }
 
@@ -1856,6 +1881,31 @@ mod tests {
         assert_eq!(second.state_hash().unwrap(), [4; 32]);
         index.release(lease);
         assert_eq!(index.stats().entries, 1);
+        drop((first, second));
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+    }
+
+    #[test]
+    fn worker_publication_rejects_a_divergent_duplicate_target() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut first, first_server) = threaded(3);
+        let (mut second, second_server) = threaded(4);
+        let (first_snap, _) = first.snapshot().unwrap();
+        let (second_snap, _) = second.snapshot().unwrap();
+        let first_lease = first
+            .publish_snapshot(&index, namespace(), b"key", None, first_snap, 1)
+            .unwrap();
+        let error = second
+            .publish_snapshot(&index, namespace(), b"key", None, second_snap, 1)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::cache::CacheError>(),
+            Some(crate::cache::CacheError::DivergentDuplicate)
+        ));
+        assert_eq!(index.stats().entries, 1);
+        assert_eq!(index.stats().duplicates, 0);
+        index.release(first_lease);
         drop((first, second));
         first_server.join().unwrap();
         second_server.join().unwrap();

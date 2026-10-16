@@ -455,6 +455,19 @@ pub(crate) fn decode_sparse_sidecar(
     })
 }
 
+pub fn sparse_delta_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], PortableSnapshotError> {
+    let decoded = decode_sparse_sidecar(sidecar)?;
+    if decoded.target_pages_digest.is_none() {
+        return Err(PortableSnapshotError::Malformed(
+            "sparse delta sidecar lacks target pages digest",
+        ));
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-sparse-delta-target-commitment-v1\0");
+    digest.update(sidecar);
+    Ok(digest.finalize().into())
+}
+
 fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
     let mut out = Vec::new();
     let recorded = sdk.recorded.encode();
@@ -1629,11 +1642,18 @@ mod tests {
             control_state: &[],
         };
         let without = encode_sparse_sidecar(&sidecar).unwrap();
+        assert!(matches!(
+            sparse_delta_target_commitment(&without),
+            Err(PortableSnapshotError::Malformed(
+                "sparse delta sidecar lacks target pages digest"
+            ))
+        ));
         assert_eq!(
             decode_sparse_sidecar(&without).unwrap().target_pages_digest,
             None
         );
         let with = encode_sparse_sidecar_with_target_pages(&sidecar, Some([0x3c; 32])).unwrap();
+        assert_ne!(sparse_delta_target_commitment(&with).unwrap(), [0; 32]);
         assert_eq!(with.len(), without.len() + 32);
         assert_eq!(
             decode_sparse_sidecar(&with).unwrap().target_pages_digest,

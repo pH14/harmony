@@ -164,7 +164,7 @@ the same local number. `CacheIndex` is the interface workers use:
 |---|---|
 | `lookup(namespace, key)` | a lease on the longest cached prefix |
 | `extent(len)` | a writable region, after evicting entries to fit the budget |
-| `publish(namespace, key, parent, extent, cost)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
+| `publish(namespace, key, parent, extent, target_commitment, cost)` | a lease on the committed entry; an equal-target duplicate keeps the first entry and frees the new extent, while a divergent duplicate fails without returning a lease |
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
@@ -178,6 +178,17 @@ that returned to the setup content, and the sparse sidecar, with a SHA-256
 checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
+
+The target commitment identifies the resolved state, not the chosen delta
+layout. For VMM snapshots, it binds the cache image prefix to the sparse
+sidecar. Sparse delta export derives the sidecar's target-pages digest from
+all target pages that differ from setup, independently of the selected parent;
+the sidecar also carries the setup RAM digest, canonical state suffix, VM
+state, SDK state, policy and control state. Publication rejects a sidecar
+without that target-pages digest. For UML checkpoints, the commitment binds
+the cache identity to the checkpoint digest, which covers logical memory and
+bridge/service state. The cache compares commitments while holding its index
+lock, before returning a duplicate lease.
 
 Eviction takes, among entries with no lease and no children, the one with the
 lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost

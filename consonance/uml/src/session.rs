@@ -1105,6 +1105,49 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_digest_names_logical_target_across_parent_delta_layouts() {
+        let checkpoints = Checkpoints::new();
+        let setup = checkpoint(snapshot(&checkpoints, None, &[]), 7, Some(120));
+        let parent = checkpoint(
+            snapshot(&checkpoints, Some(&setup.memory), &[(1, 1)]),
+            7,
+            Some(120),
+        );
+        let through_parent = checkpoint(
+            snapshot(&checkpoints, Some(&parent.memory), &[(2, 2)]),
+            7,
+            Some(120),
+        );
+        let direct = checkpoint(
+            snapshot(&checkpoints, Some(&setup.memory), &[(1, 1), (2, 2)]),
+            7,
+            Some(120),
+        );
+        let anchor = checkpoints
+            .delta(&setup, None, &through_parent, |pages, _| {
+                pages.iter().map(|page| page.0).collect::<Vec<_>>()
+            })
+            .unwrap();
+        let child = checkpoints
+            .delta(&setup, Some(&parent), &through_parent, |pages, _| {
+                pages.iter().map(|page| page.0).collect::<Vec<_>>()
+            })
+            .unwrap();
+        assert_eq!(anchor, vec![1, 2]);
+        assert_eq!(child, vec![2]);
+        assert_eq!(through_parent.digest().unwrap(), direct.digest().unwrap());
+        let divergent = checkpoint(
+            snapshot(&checkpoints, Some(&direct.memory), &[(1, 3)]),
+            7,
+            Some(120),
+        );
+        assert_ne!(
+            through_parent.digest().unwrap(),
+            divergent.digest().unwrap()
+        );
+    }
+
+    #[test]
     fn sidecar_rejects_a_corrupted_snapshot_image_length() {
         let checkpoints = Checkpoints::new();
         let target = checkpoint(snapshot(&checkpoints, None, &[(0, 1)]), 5, Some(120));

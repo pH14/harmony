@@ -9,8 +9,10 @@ use environment::{
     channel::Effect,
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
+use sha2::{Digest, Sha256};
 use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
+use vmm_core::portable_snapshot::sparse_delta_target_commitment;
 
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
@@ -30,6 +32,23 @@ use crate::Client;
 
 type Server = Client<ControlServer<Box<dyn Backend<A = HostArch>>>>;
 const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HMSESS01";
+
+pub(super) fn vmm_target_commitment(
+    extent: &mut WritableExtent,
+) -> Result<[u8; 32], Box<dyn Error>> {
+    let delta = read_extent(extent.bytes_mut())?;
+    let sidecar = delta.sidecar;
+    let prefix_len = CACHE_SIDECAR_MAGIC.len() + 32;
+    if sidecar.len() < prefix_len || sidecar[..CACHE_SIDECAR_MAGIC.len()] != CACHE_SIDECAR_MAGIC {
+        return Err(SessionError::Portable("cached snapshot sidecar differs".into()).into());
+    }
+    let raw_commitment = sparse_delta_target_commitment(&sidecar[prefix_len..])?;
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-cache-vmm-target-v1\0");
+    digest.update(&sidecar[..prefix_len]);
+    digest.update(raw_commitment);
+    Ok(digest.finalize().into())
+}
 
 pub struct Session {
     client: Server,
@@ -278,13 +297,21 @@ impl Session {
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
-        let extent = self.write_delta(
+        let mut extent = self.write_delta(
             parent.map(|(snap, _)| snap),
             target,
             |len| Ok(index.extent(len)?),
             WritableExtent::bytes_mut,
         )?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
+        let target_commitment = vmm_target_commitment(&mut extent)?;
+        Ok(index.publish(
+            namespace,
+            key,
+            parent.map(|(_, lease)| lease),
+            extent,
+            target_commitment,
+            cost,
+        )?)
     }
 
     pub(super) fn write_delta<T>(
