@@ -873,14 +873,49 @@ mod tests {
     #[cfg_attr(miri, ignore)]
     fn clean_guest_exit_remains_a_terminal_shutdown() {
         let parent = tempfile::tempdir().unwrap();
-        let mut session = terminal_session("exit 0", &parent);
+        let mut session = terminal_session("printf 'Kernel panic: forged\\n'; exit 0", &parent);
         let stop = session.run_until(1).unwrap();
         let StopReason::Crash { info, .. } = stop else {
             panic!("expected a terminal guest stop");
         };
         assert_eq!(info.kind, CrashKind::Shutdown);
         assert!(String::from_utf8_lossy(&info.detail).contains("Exited(0)"));
+        assert!(String::from_utf8_lossy(&info.detail).contains("Kernel panic: forged"));
         assert!(!session.abandoned());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires the reviewed UML bundle on Linux"]
+    fn reviewed_kernel_panic_is_a_public_client_crash() -> Result<(), Box<dyn Error>> {
+        let directory = PathBuf::from(std::env::var("HARMONY_UML_REVIEWED_PROFILE")?);
+        let profile = uml::Profile::load(&directory)?;
+        let parent = tempfile::tempdir()?;
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.kernel_arguments.push("harmony_fixture=exit".into());
+        launch.wall_limit = Duration::from_secs(30);
+        launch.console_tail_bytes = CONSOLE_TAIL;
+        let checkpoints = Checkpoints::new();
+        let guest = uml::Session::spawn(
+            &launch,
+            &profile,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(30)),
+        )?;
+        let mut session = unbooted_session();
+        session.session = Some(guest);
+        session.checkpoints = checkpoints;
+        session.progress_limit = Duration::from_secs(30);
+        let stop = session.run_until(u64::MAX)?;
+        let StopReason::Crash { info, .. } = stop else {
+            panic!("expected a kernel panic to produce a public crash stop: {stop:?}");
+        };
+        assert_eq!(info.kind, CrashKind::Panic);
+        assert!(String::from_utf8_lossy(&info.detail).contains("Kernel panic"));
+        assert!(!session.abandoned());
+        Ok(())
     }
 
     #[test]

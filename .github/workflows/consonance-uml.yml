@@ -119,6 +119,18 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: cargo test --locked -p harmony-cli --bin harmony loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
+      - name: Report a reviewed kernel panic through the public UML client
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+        run: cargo test --locked -p consonance-client --features uml --lib reviewed_kernel_panic_is_a_public_client_crash -- --ignored --nocapture
+      - name: Reject guest writes to host-reserved UML exit statuses
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+        run: cargo test --locked -p uml --test guest_exitcode guest_cannot_choose_host_reserved_exit_statuses -- --ignored --nocapture
       - name: Fail closed on exhausted host clone quota
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
