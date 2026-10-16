@@ -617,7 +617,8 @@ impl SearchSession for UmlSession {
         self.restore(snapshot)?;
         let seed = self.seed;
         self.live()?
-            .branch(seed, handler, payloads, coverage_schedule)?;
+            .branch(seed, handler, payloads, coverage_schedule)
+            .map_err(|error| self.abandon(error))?;
         Ok(())
     }
 
@@ -780,7 +781,7 @@ mod tests {
             let mut socket = unsafe { std::fs::File::from_raw_fd(3) };
             socket.write_all(&100_u64.to_le_bytes()).unwrap();
             let mut control = [0_u8; 16];
-            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            socket.read_exact(&mut control).unwrap();
             assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
             std::thread::sleep(Duration::from_secs(30));
             return;
@@ -830,7 +831,7 @@ mod tests {
             memory.set_len(4 * 4096).unwrap();
             socket.write_all(&100_u64.to_le_bytes()).unwrap();
             let mut control = [0_u8; 16];
-            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            socket.read_exact(&mut control).unwrap();
             assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
             let ack = |command: u32, result: i64| {
                 let mut frame = [0_u8; 16];
@@ -881,6 +882,120 @@ mod tests {
             Some(SessionError::Hung(got)) if *got == limit
         ));
         assert!(session.abandoned());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn rejected_service_branch_cannot_leave_a_usable_rewound_uml_session() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        if std::env::var_os("HARMONY_UML_FAILED_BRANCH_CHILD").is_some() {
+            // SAFETY: the UML launcher passes distinct owned bridge and memory descriptors.
+            let (mut socket, memory) =
+                unsafe { (std::fs::File::from_raw_fd(3), std::fs::File::from_raw_fd(4)) };
+            memory.set_len(4 * 4096).unwrap();
+            socket.write_all(&100_u64.to_le_bytes()).unwrap();
+            let ack = |command: u32, result: i64| {
+                let mut frame = [0_u8; 16];
+                frame[..4].copy_from_slice(&0x3143_5548_u32.to_le_bytes());
+                frame[4..8].copy_from_slice(&command.to_le_bytes());
+                frame[8..].copy_from_slice(&result.to_le_bytes());
+                frame
+            };
+            let mut control = [0_u8; 16];
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
+            socket.write_all(&ack(4, 1)).unwrap();
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+            socket.write_all(&ack(1, 0)).unwrap();
+            for _ in 0..2 {
+                socket.read_exact(&mut control).unwrap();
+                assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 2);
+                socket.write_all(&ack(4, 1)).unwrap();
+                assert_eq!(socket.read(&mut control).unwrap(), 16);
+                assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+                socket.write_all(&ack(2, 0)).unwrap();
+            }
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::MAX;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_FAILED_BRANCH_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut guest = uml::Session::start(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(2)),
+        )
+        .unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let setup = guest.capture(Capture::default()).unwrap();
+
+        let mut session = unbooted_session();
+        session.host = launch.host_identity().unwrap();
+        session.launch = launch;
+        session.checkpoints = checkpoints;
+        session.session = Some(guest);
+        session.snapshots.insert(SnapId(1), setup);
+        session.setup = (SnapId(1), 100);
+
+        let before_setup_branch = session.cache_identity().unwrap();
+        session
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+        let before_rejected_branch = session.cache_identity().unwrap();
+        assert_ne!(before_rejected_branch, before_setup_branch);
+
+        let error = session
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                vec![vec![0; environment::channel::MAX_CHANNEL_BYTES + 1]],
+                Vec::new(),
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("payload tape"), "{error}");
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .cache_identity()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        assert!(matches!(
+            session
+                .run_until(101)
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
     }
 
     fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
