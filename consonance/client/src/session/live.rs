@@ -396,8 +396,15 @@ impl Session {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(self.config.seed, config, payloads, effects)?;
+        let spec = service_branch_spec(
+            self.config.seed,
+            config,
+            payloads,
+            effects,
+            coverage_schedule,
+        )?;
         self.branch_input(snapshot, &spec)
     }
 

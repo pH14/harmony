@@ -5,7 +5,7 @@ use std::{error::Error, fmt, sync::Arc, time::Duration};
 use crate::{Client, Transport};
 use control_proto::{Reply, SnapId, StopReason};
 use environment::{
-    channel::Effect,
+    channel::{CoverageSchedule, Effect},
     input_spec::{InputSpec, ServiceConfig},
 };
 use serde::{Deserialize, Serialize};
@@ -559,10 +559,12 @@ fn service_branch_spec(
     config: ServiceConfig,
     payloads: Vec<Vec<u8>>,
     effects: Vec<(u64, Effect)>,
+    coverage_schedule: Option<CoverageSchedule>,
 ) -> Result<InputSpec, Box<dyn Error>> {
     let mut spec = InputSpec::seeded(seed);
     spec.set_config(config);
     spec.set_payloads(Some(payloads));
+    spec.set_coverage_schedule(coverage_schedule);
     for (at, effect) in effects {
         if spec.effects().contains_key(&at) {
             return Err(
@@ -1826,6 +1828,7 @@ mod tests {
                 (900, Effect::xor_memory(0x1000, vec![33]).unwrap()),
                 (100, Effect::xor_memory(0x1000, vec![32]).unwrap()),
             ],
+            None,
         )
         .expect("distinct moments");
         assert_eq!(spec.seed(), 7);
@@ -1854,6 +1857,7 @@ mod tests {
                 (100, Effect::xor_memory(0x1000, vec![32]).unwrap()),
                 (100, Effect::xor_memory(0x1000, vec![33]).unwrap()),
             ],
+            None,
         )
         .expect_err("one moment carries one effect");
         assert!(
@@ -1864,7 +1868,7 @@ mod tests {
 
     #[test]
     fn a_service_branch_without_effects_records_an_empty_schedule() {
-        let spec = service_branch_spec(0, service_config(b"package"), Vec::new(), Vec::new())
+        let spec = service_branch_spec(0, service_config(b"package"), Vec::new(), Vec::new(), None)
             .expect("no effects");
         assert!(spec.effects().is_empty());
         assert_eq!(spec.payloads(), Some([].as_slice()));

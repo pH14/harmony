@@ -16,9 +16,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-use control_proto::{Reply, SnapId, StopReason, decode_reply, encode_reply};
+use control_proto::{
+    Answer, DecisionId, Moment, Reply, Resolution, SnapId, StopConditions, StopMask, StopReason,
+    decode_reply, encode_reply,
+};
 use environment::{
-    channel::Effect,
+    channel::{CoverageSchedule, Effect},
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
 
@@ -50,6 +53,7 @@ const BRANCH: u8 = 12;
 const RUN_UNTIL: u8 = 13;
 const SDK_EVENTS: u8 = 14;
 const STORE_BYTES: u8 = 15;
+const RUN_RESOLVING: u8 = 16;
 
 const OK: u8 = 0;
 const FAILED: u8 = 1;
@@ -108,8 +112,16 @@ pub trait SearchSession: std::fmt::Debug {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>>;
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>>;
+    fn run_resolving(
+        &mut self,
+        _deadline: u64,
+        _resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        Err("this session cannot resolve a service decision".into())
+    }
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>>;
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>>;
     fn abandoned(&self) -> bool;
@@ -189,12 +201,28 @@ impl SearchSession for Session {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        Session::branch_with_service(self, snapshot, config, payloads, effects)
+        Session::branch_with_service(self, snapshot, config, payloads, effects, coverage_schedule)
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         Session::run_until(self, deadline)
+    }
+
+    fn run_resolving(
+        &mut self,
+        deadline: u64,
+        resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        Session::run(
+            self,
+            StopConditions {
+                deadline: Some(Moment(deadline)),
+                on: StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+            },
+            Some(resolution),
+        )
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
@@ -962,13 +990,34 @@ impl SearchSession for WorkerSession {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(self.seed, config, payloads, effects)?;
+        let spec = service_branch_spec(self.seed, config, payloads, effects, coverage_schedule)?;
         self.call_unit(Out::op(BRANCH).u64(snapshot.0).bytes(&spec.encode()))
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         let reply = self.call(Out::op(RUN_UNTIL).u64(deadline), &[])?;
+        match decode_reply(&reply) {
+            Ok(Some((_, Ok(Reply::Stop(stop)), consumed))) if consumed == reply.len() => Ok(stop),
+            _ => Err(malformed("stop reason").into()),
+        }
+    }
+
+    fn run_resolving(
+        &mut self,
+        deadline: u64,
+        resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let reply = self.call(
+            Out::op(RUN_RESOLVING)
+                .u64(deadline)
+                .u64(resolution.vtime.0)
+                .u64(u64::from(resolution.service))
+                .u64(resolution.id.0)
+                .bytes(&resolution.answer.0),
+            &[],
+        )?;
         match decode_reply(&reply) {
             Ok(Some((_, Ok(Reply::Stop(stop)), consumed))) if consumed == reply.len() => Ok(stop),
             _ => Err(malformed("stop reason").into()),
@@ -1153,6 +1202,26 @@ impl Served {
                 let deadline = input.u64()?;
                 input.finish()?;
                 let stop = session.run_until(deadline)?;
+                encode_reply(0, &Ok(Reply::Stop(stop)), &mut out.0)
+                    .map_err(|error| format!("encode stop reason: {error}"))?;
+            }
+            RUN_RESOLVING => {
+                let deadline = input.u64()?;
+                let vtime = Moment(input.u64()?);
+                let service = u16::try_from(input.u64()?)
+                    .map_err(|_| malformed("service namespace overflows"))?;
+                let id = DecisionId(input.u64()?);
+                let answer = Answer(input.bytes()?.to_vec());
+                input.finish()?;
+                let stop = session.run_resolving(
+                    deadline,
+                    Resolution {
+                        vtime,
+                        service,
+                        id,
+                        answer,
+                    },
+                )?;
                 encode_reply(0, &Ok(Reply::Stop(stop)), &mut out.0)
                     .map_err(|error| format!("encode stop reason: {error}"))?;
             }
@@ -1351,6 +1420,7 @@ mod tests {
             _: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, Effect)>,
+            _: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
             Err("a served session branches from an input".into())
         }
@@ -1360,6 +1430,27 @@ mod tests {
                 return Err(SessionError::Hung(Duration::from_secs(3)).into());
             }
             self.current = self.current.wrapping_add(1);
+            self.runs += 1;
+            Ok(StopReason::Deadline {
+                vtime: Moment(deadline),
+            })
+        }
+
+        fn run_resolving(
+            &mut self,
+            deadline: u64,
+            resolution: Resolution,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            if resolution.vtime != Moment(12)
+                || resolution.service != 19
+                || resolution.id != DecisionId(7)
+            {
+                return Err("wrong service decision".into());
+            }
+            let [1, byte] = resolution.answer.0.as_slice() else {
+                return Err("wrong service answer".into());
+            };
+            self.current = *byte;
             self.runs += 1;
             Ok(StopReason::Deadline {
                 vtime: Moment(deadline),
@@ -1688,7 +1779,13 @@ mod tests {
         assert!(held > 0);
         assert_eq!(session.console_tail().unwrap(), b"tail");
         session
-            .branch_with_service(SnapId(1), ServiceConfig::default(), Vec::new(), Vec::new())
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
             .unwrap();
         assert_eq!(session.state_hash().unwrap(), [3; 32]);
         session.replay_snapshot(snap).unwrap();
@@ -1716,6 +1813,28 @@ mod tests {
             "the last counters outlive the worker"
         );
         assert_eq!(session.store_bytes(), None);
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_worker_forwards_explicit_service_resolution() {
+        let (mut session, server) = threaded(3);
+        assert_eq!(
+            session
+                .run_resolving(
+                    40,
+                    Resolution {
+                        vtime: Moment(12),
+                        service: 19,
+                        id: DecisionId(7),
+                        answer: Answer(vec![1, 0x42]),
+                    },
+                )
+                .unwrap(),
+            StopReason::Deadline { vtime: Moment(40) }
+        );
+        assert_eq!(session.state_hash().unwrap(), [0x42; 32]);
         drop(session);
         server.join().unwrap();
     }

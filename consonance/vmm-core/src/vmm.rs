@@ -17,7 +17,7 @@ use crate::virtual_time::LiveVirtualTimeTrace;
 use environment::{
     channel,
     input_spec::ServiceConfig,
-    sdk::{self, EventClass, ServiceOutcome},
+    sdk::{self, CoverageOutcome, EventClass, ServiceOutcome},
 };
 
 pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
@@ -47,6 +47,12 @@ pub enum SdkStop {
         moment: u64,
         seq: u32,
         question: channel::Question,
+    },
+    CoverageDecision {
+        moment: u64,
+        seq: u32,
+        question: channel::Question,
+        ready: u32,
     },
 }
 
@@ -1916,6 +1922,27 @@ where
             let mut projected = sdk.env.clone();
             projected.record_question(moment, question, answer.clone());
             projected.snapshot_state_with_binding_reserve()?;
+            if let Some(SdkStop::CoverageDecision { ready, .. }) = &sdk.pending_stop {
+                let observed = <[u8; 8]>::try_from(question.payload())
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| channel::ChannelError::Malformed)?;
+                let thread = u32::try_from(question.request_id())
+                    .map_err(|_| channel::ChannelError::Malformed)?;
+                let mut thresholds = sdk.coverage_thresholds.clone();
+                if !matches!(
+                    sdk::decide_coverage(
+                        &mut projected,
+                        &mut thresholds,
+                        moment,
+                        thread,
+                        observed,
+                        *ready,
+                    ),
+                    Ok(CoverageOutcome::Answered(_))
+                ) {
+                    return Err(channel::ChannelError::Malformed);
+                }
+            }
         }
         Ok(())
     }
@@ -1949,7 +1976,10 @@ where
 
     pub fn take_sdk_stop(&mut self) -> Option<SdkStop> {
         self.sdk.as_mut().and_then(|s| {
-            if matches!(s.pending_stop, Some(SdkStop::Decision { .. })) {
+            if matches!(
+                s.pending_stop,
+                Some(SdkStop::Decision { .. } | SdkStop::CoverageDecision { .. })
+            ) {
                 s.pending_stop.clone()
             } else {
                 s.pending_stop.take()
@@ -1960,6 +1990,9 @@ where
     pub fn pending_service_question(&self) -> Option<(u64, &channel::Question)> {
         match self.sdk.as_ref()?.pending_stop.as_ref()? {
             SdkStop::Decision {
+                moment, question, ..
+            }
+            | SdkStop::CoverageDecision {
                 moment, question, ..
             } => Some((*moment, question)),
             _ => None,
@@ -1977,28 +2010,99 @@ where
         &mut self,
         answer: channel::Answer,
     ) -> Result<(u64, channel::Question), VmmError> {
-        let Some(SdkStop::Decision {
-            moment,
-            seq,
-            question,
-        }) = self.sdk.as_ref().and_then(|sdk| sdk.pending_stop.clone())
-        else {
-            return Err(VmmError::ContractViolation(
-                "no service request is pending".into(),
-            ));
+        let stop = self
+            .sdk
+            .as_ref()
+            .and_then(|sdk| sdk.pending_stop.clone())
+            .ok_or_else(|| VmmError::ContractViolation("no service request is pending".into()))?;
+        let (moment, seq, question, opcode, payload, coverage_commit) = match stop {
+            SdkStop::Decision {
+                moment,
+                seq,
+                question,
+            } => {
+                let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
+                    VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
+                })?;
+                (moment, seq, question, 3, payload, None)
+            }
+            SdkStop::CoverageDecision {
+                moment,
+                seq,
+                question,
+                ready,
+            } => {
+                let thread = u32::try_from(question.request_id())
+                    .map_err(|_| VmmError::ContractViolation("invalid coverage thread".into()))?;
+                let observed = <[u8; 8]>::try_from(question.payload())
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| {
+                        VmmError::ContractViolation("invalid coverage observation".into())
+                    })?;
+                let sdk = self
+                    .sdk
+                    .as_ref()
+                    .expect("pending request requires SDK channel");
+                let mut env = sdk.env.clone();
+                env.record_question(moment, &question, answer.clone());
+                let mut thresholds = sdk.coverage_thresholds.clone();
+                let CoverageOutcome::Answered(coverage) = sdk::decide_coverage(
+                    &mut env,
+                    &mut thresholds,
+                    moment,
+                    thread,
+                    observed,
+                    ready,
+                )
+                .map_err(|_| VmmError::ContractViolation("invalid coverage answer".into()))?
+                else {
+                    return Err(VmmError::ContractViolation(
+                        "unresolved coverage answer".into(),
+                    ));
+                };
+                (
+                    moment,
+                    seq,
+                    question,
+                    2,
+                    coverage.encode().to_vec(),
+                    Some((env, thresholds, coverage)),
+                )
+            }
+            _ => {
+                return Err(VmmError::ContractViolation(
+                    "no service request is pending".into(),
+                ));
+            }
         };
-        let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
-            VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
-        })?;
         let mut response = [0; HC_PAGE];
-        let len = encode_response(ServiceId::Sdk, 3, seq, Status::Ok, &payload, &mut response)
-            .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
+        let len = encode_response(
+            ServiceId::Sdk,
+            opcode,
+            seq,
+            Status::Ok,
+            &payload,
+            &mut response,
+        )
+        .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
         self.write_doorbell_response(&response[..len])?;
         let sdk = self
             .sdk
             .as_mut()
             .expect("pending request requires SDK channel");
-        sdk.env.record_question(moment, &question, answer);
+        if let Some((env, thresholds, coverage)) = coverage_commit {
+            sdk.env = env;
+            sdk.coverage_thresholds = thresholds;
+            sdk.coverage.push((
+                moment,
+                coverage.thread,
+                coverage.observed,
+                coverage.ready,
+                coverage.selected,
+            ));
+        } else {
+            sdk.env.record_question(moment, &question, answer);
+        }
         sdk.pending_stop = None;
         Ok((moment, question))
     }
@@ -2332,7 +2436,7 @@ where
                 }
             };
             match self.decide_coverage(moment, thread, observed, ready) {
-                Ok(coverage) => {
+                Ok(CoverageOutcome::Answered(coverage)) => {
                     let n = encode_response(
                         ServiceId::Sdk,
                         2,
@@ -2343,6 +2447,17 @@ where
                     )
                     .unwrap_or(0);
                     return (n, None);
+                }
+                Ok(CoverageOutcome::External(question)) => {
+                    return (
+                        0,
+                        Some(SdkStop::CoverageDecision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                            ready,
+                        }),
+                    );
                 }
                 Err(status) => {
                     let n = encode_response(ServiceId::Sdk, 2, header.seq, status, &[], resp)
@@ -2431,7 +2546,7 @@ where
         thread: u32,
         observed: u64,
         ready: u32,
-    ) -> Result<sdk::Coverage, Status> {
+    ) -> Result<CoverageOutcome, Status> {
         let Some(sdk) = self.sdk.as_mut() else {
             return Err(Status::UnknownService);
         };
@@ -2443,8 +2558,10 @@ where
             observed,
             ready,
         )?;
-        sdk.coverage
-            .push((moment, thread, observed, ready, coverage.selected));
+        if let CoverageOutcome::Answered(answer) = &coverage {
+            sdk.coverage
+                .push((moment, thread, observed, ready, answer.selected));
+        }
         Ok(coverage)
     }
 
@@ -2747,6 +2864,21 @@ fn append_sdk_hash_channel(
             v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
             v.extend_from_slice(question.payload());
         }
+        Some(SdkStop::CoverageDecision {
+            moment,
+            seq,
+            question,
+            ready,
+        }) => {
+            v.push(4);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&seq.to_le_bytes());
+            v.extend_from_slice(&question.service().to_le_bytes());
+            v.extend_from_slice(&question.request_id().to_le_bytes());
+            v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
+            v.extend_from_slice(question.payload());
+            v.extend_from_slice(&ready.to_le_bytes());
+        }
     }
     v.push(u8::from(pending_snapshot));
     if !coverage_thresholds.is_empty() {
@@ -2829,6 +2961,17 @@ mod tests {
                 moment: 37,
                 seq: 12,
                 question: channel::Question::with_request_id(91, 19, vec![1, 3, 5]).unwrap(),
+            }),
+            Some(SdkStop::CoverageDecision {
+                moment: 37,
+                seq: 12,
+                question: channel::Question::with_request_id(
+                    3,
+                    channel::SERVICE_COVERAGE_QUANTUM,
+                    1_u64.to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+                ready: 2,
             }),
         ] {
             sdk.pending_stop = stop;
@@ -3766,6 +3909,75 @@ mod tests {
     }
 
     #[test]
+    fn unrecorded_coverage_quantum_stops_before_guest_response_and_replays_recorded_answer() {
+        let build = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            enable_seeded_service(&mut vmm, 7);
+            vmm
+        };
+        let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+        request[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        request[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        request[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        let mut frame = [0_u8; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 2, 9, &request, &mut frame).unwrap();
+        let mut vmm = build();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        assert_eq!(vmm.service_doorbell(n as u32).unwrap(), Step::SdkStop);
+        let question = channel::Question::with_request_id(
+            7,
+            channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            vmm.take_sdk_stop(),
+            Some(SdkStop::CoverageDecision {
+                moment: 0,
+                seq: 9,
+                question: question.clone(),
+                ready: 2,
+            })
+        );
+        assert_eq!(&vmm.guest_memory()[RESP_GPA..RESP_GPA + 16], &[0; 16]);
+        assert!(vmm.sdk_coverage().is_empty());
+        let stopped = vmm.state_hash().unwrap();
+        let invalid = channel::Answer::Data(0_u64.to_le_bytes().to_vec());
+        assert!(
+            vmm.sdk_snapshot_after_answer(0, &question, &invalid)
+                .is_err()
+        );
+        assert_eq!(vmm.state_hash().unwrap(), stopped);
+        let answer = channel::Answer::Data(64_u64.to_le_bytes().to_vec());
+        vmm.sdk_snapshot_after_answer(0, &question, &answer)
+            .unwrap();
+        vmm.resolve_service_answer(answer.clone()).unwrap();
+        let (header, payload) = decode(&vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
+        assert_eq!(
+            (header.opcode, header.seq, header.status),
+            (2, 9, Status::Ok as u16)
+        );
+        assert_eq!(u64::from_le_bytes(payload[..8].try_into().unwrap()), 65);
+        let selected = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        assert!(selected < 2);
+        assert_eq!(vmm.sdk_coverage(), &[(0, 7, 1, 2, selected)]);
+        let after = vmm.state_hash().unwrap();
+
+        let mut replay = build();
+        replay.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        replay
+            .sdk
+            .as_mut()
+            .unwrap()
+            .env
+            .record_question(0, &question, answer);
+        assert_eq!(replay.service_doorbell(n as u32).unwrap(), Step::Continued);
+        assert_eq!(replay.sdk_coverage(), vmm.sdk_coverage());
+        assert_eq!(replay.state_hash().unwrap(), after);
+    }
+
+    #[test]
     fn coverage_threshold_is_enforced_and_snapshot_replay_reproduces() {
         let build = || {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -3773,7 +3985,9 @@ mod tests {
             vmm
         };
         let mut base = build();
-        let first = base.decide_coverage(4, 1, 1, 2).unwrap();
+        let CoverageOutcome::Answered(first) = base.decide_coverage(4, 1, 1, 2).unwrap() else {
+            panic!("nominal coverage must answer");
+        };
         let snap = base.sdk_snapshot().unwrap().expect("SDK snapshot");
         let hash_after_first = base.state_hash().unwrap();
         assert_eq!(base.decide_coverage(5, 1, 3, 2), Err(Status::BadRequest));
@@ -4296,9 +4510,20 @@ mod tests {
     }
 
     #[test]
-    fn oversized_service_answer_preserves_channel_state() {
+    fn oversized_explicit_service_answer_preserves_channel_state() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         enable_oversized(&mut vmm, 7);
+        let mut payload = 4u16.to_le_bytes().to_vec();
+        payload.extend_from_slice(&77u64.to_le_bytes());
+        let mut request = [0; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
+        let mut response = [0; HC_PAGE];
+        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
+        assert_eq!(length, 0);
+        let stop = stop.expect("custom service must stop for input");
+        assert!(matches!(stop, SdkStop::Decision { .. }));
+        vmm.sdk.as_mut().unwrap().pending_stop = Some(stop.clone());
         let before = vmm
             .sdk
             .as_ref()
@@ -4307,18 +4532,12 @@ mod tests {
             .snapshot_state()
             .unwrap()
             .encode();
-        let mut payload = 4u16.to_le_bytes().to_vec();
-        payload.extend_from_slice(&77u64.to_le_bytes());
-        let mut request = [0; HC_PAGE];
-        let n =
-            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
-        let mut response = [0; HC_PAGE];
-        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
-        assert!(stop.is_none());
-        assert_eq!(
-            decode(&response[..length]).unwrap().0.status,
-            Status::Internal as u16
+        assert!(
+            vmm.resolve_service_answer(channel::Answer::Data(vec![0; MAX_PAYLOAD]))
+                .is_err()
         );
+        assert_eq!(vmm.take_sdk_stop(), Some(stop));
+        assert!(response.iter().all(|byte| *byte == 0));
         assert_eq!(
             before,
             vmm.sdk

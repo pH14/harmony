@@ -329,7 +329,9 @@ The structured process smoke uses the same preparation path with an external
 `/etc/harmony/bundle`, installs a standing process-window service through the
 session service factory, and checks supervisor registers and console markers
 for ready, hook completion, pause, kill, and restart. It also restores a
-portable snapshot and requires identical continuation evidence:
+portable snapshot and requires identical continuation evidence. The smoke
+resolves each standing-service decision as recorded input, restoring its local
+poll state at the checkpoint before replay:
 
 ```sh
 HARMONY_PLATFORM_KERNEL=/path/to/kernel \

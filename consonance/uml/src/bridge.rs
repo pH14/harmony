@@ -8,7 +8,10 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-use environment::channel::{HandlerSnapshot, NominalHandler, RecordedEnv, ServiceHandler};
+use environment::channel::{
+    Answer, CoverageSchedule, HandlerSnapshot, NominalHandler, Question, RecordedEnv,
+    ServiceHandler,
+};
 use environment::sdk::{self, EventClass, ServiceOutcome};
 #[cfg(target_os = "linux")]
 use environment::{
@@ -156,6 +159,7 @@ pub enum Signal {
     Violation { id: u32, data: Vec<u8> },
     SnapshotPoint,
     Exhausted,
+    Decision(Question),
 }
 
 #[derive(Debug)]
@@ -191,6 +195,7 @@ impl Services {
         seed: u64,
         handler: Box<dyn ServiceHandler>,
         payloads: Vec<Vec<u8>>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), String> {
         let identity = handler.identity().to_vec();
         let configuration = handler.configuration().to_vec();
@@ -219,6 +224,7 @@ impl Services {
         }
         env.set_payloads(Some(payloads))
             .map_err(|error| format!("payload tape: {error}"))?;
+        env.set_coverage_schedule(coverage_schedule);
         self.env = env;
         Ok(())
     }
@@ -240,6 +246,51 @@ impl Services {
         }
         self.latest = moment;
         self.answer(moment, frame, response)
+    }
+
+    pub(crate) fn prepare_resolution(
+        &self,
+        request: &[u8],
+        moment: u64,
+        service: u16,
+        id: u64,
+        answer: &[u8],
+    ) -> Result<(Self, Vec<u8>), String> {
+        if answer.len() > MAX_PAYLOAD {
+            return Err("service resolution exceeds the bridge frame".into());
+        }
+        let mut candidate = self.clone();
+        let mut response = vec![0; MAX_FRAME];
+        let probe = candidate.exchange(request, &mut response)?;
+        let Some(Signal::Decision(question)) = probe.signal else {
+            return Err("the held request is not a service decision".into());
+        };
+        let Some((stamp, _)) = request.split_first_chunk::<STAMP_LEN>() else {
+            return Err("held request has no virtual-time stamp".into());
+        };
+        if u64::from_le_bytes(*stamp) != moment
+            || question.service() != service
+            || question.request_id() != id
+        {
+            return Err("service resolution does not match the held question".into());
+        }
+        let answer = Answer::decode(answer).map_err(|error| format!("service answer: {error}"))?;
+        candidate.env.record_question(moment, &question, answer);
+        candidate
+            .env
+            .snapshot_state_with_binding_reserve()
+            .map_err(|error| format!("recorded service answer: {error}"))?;
+        let reply = candidate.exchange(request, &mut response)?;
+        if reply.signal.is_some() {
+            return Err("recorded service answer left the guest waiting".into());
+        }
+        let (header, _) = decode(&response[..reply.length])
+            .map_err(|error| format!("service response: {error}"))?;
+        if header.status != Status::Ok as u16 {
+            return Err(format!("service answer was rejected: {}", header.status));
+        }
+        response.truncate(reply.length);
+        Ok((candidate, response))
     }
 
     fn answer(
@@ -289,10 +340,10 @@ impl Services {
                     Ok(ServiceOutcome::Answered(body)) => {
                         Ok(reply(respond(ServiceId::Sdk, Status::Ok, &body, response)))
                     }
-                    Ok(ServiceOutcome::External(question)) => Err(format!(
-                        "service {} asked for a host decision, which User-mode Linux cannot pause for",
-                        question.service()
-                    )),
+                    Ok(ServiceOutcome::External(question)) => Ok(Reply {
+                        length: 0,
+                        signal: Some(Signal::Decision(question)),
+                    }),
                     Err(status) => Ok(reply(refuse(status, response))),
                 }
             }
@@ -309,8 +360,14 @@ impl Services {
                         )
                     });
                 Ok(reply(match decided {
-                    Ok(coverage) => {
+                    Ok(sdk::CoverageOutcome::Answered(coverage)) => {
                         respond(ServiceId::Sdk, Status::Ok, &coverage.encode(), response)
+                    }
+                    Ok(sdk::CoverageOutcome::External(question)) => {
+                        return Ok(Reply {
+                            length: 0,
+                            signal: Some(Signal::Decision(question)),
+                        });
                     }
                     Err(status) => respond(ServiceId::Sdk, status, &[], response),
                 }))
@@ -513,6 +570,15 @@ pub(crate) fn serve(socket: OwnedFd, bridge: Bridge, state: Arc<AtomicU8>) -> Br
         };
         let recorded = services.events.len();
         let answer = match services.exchange(&request[..length], &mut response) {
+            Ok(Reply {
+                signal: Some(Signal::Decision(question)),
+                ..
+            }) => {
+                break Some(format!(
+                    "unresolved service decision {}",
+                    question.service()
+                ));
+            }
             Ok(answer) => answer.length,
             Err(failure) => break Some(failure),
         };
@@ -601,7 +667,12 @@ mod branch_isolation_tests {
         assert!(services.env.snapshot_state().is_ok());
         assert!(
             services
-                .branch(2, Box::new(handler), vec![vec![0; MAX_CHANNEL_BYTES + 1]])
+                .branch(
+                    2,
+                    Box::new(handler),
+                    vec![vec![0; MAX_CHANNEL_BYTES + 1]],
+                    None
+                )
                 .is_err()
         );
         assert_eq!(services.env.snapshot_state(), Err(ChannelError::Poisoned));
@@ -614,11 +685,15 @@ mod branch_isolation_tests {
         };
         let mut services = Services::new(1);
         let before = services.env.snapshot_state().unwrap().encode();
-        assert!(services.branch(2, Box::new(handler), Vec::new()).is_err());
+        assert!(
+            services
+                .branch(2, Box::new(handler), Vec::new(), None)
+                .is_err()
+        );
         assert_eq!(services.env.snapshot_state().unwrap().encode(), before);
         assert!(
             services
-                .branch(2, Box::new(NominalHandler), Vec::new())
+                .branch(2, Box::new(NominalHandler), Vec::new(), None)
                 .is_ok()
         );
     }
@@ -723,14 +798,175 @@ mod tests {
 
             let mut services = Services::new(1);
             let before = services.env.snapshot_state().unwrap().encode();
-            assert!(services.branch(7, Box::new(handler), Vec::new()).is_err());
+            assert!(
+                services
+                    .branch(7, Box::new(handler), Vec::new(), None)
+                    .is_err()
+            );
             assert_eq!(services.env.snapshot_state().unwrap().encode(), before);
             assert!(
                 services
-                    .branch(7, Box::new(NominalHandler), Vec::new())
+                    .branch(7, Box::new(NominalHandler), Vec::new(), None)
                     .is_ok()
             );
         }
+    }
+
+    #[test]
+    fn unrecorded_custom_service_waits_before_user_mode_linux_answers() {
+        let mut services = Services::new(1);
+        services.env = RecordedEnv::new(
+            1,
+            Box::new(ReseedContractHandler::new(false)) as Box<dyn ServiceHandler>,
+        );
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(7_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut request = [0; MAX_FRAME];
+        let length = encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
+        let mut response = [0; MAX_FRAME];
+        let reply = services
+            .answer(4, &request[..length], &mut response)
+            .unwrap();
+        assert_eq!(reply.length, 0);
+        assert!(matches!(
+            reply.signal,
+            Some(Signal::Decision(question)) if question.service() == 19 && question.request_id() == 7
+        ));
+        assert!(response.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn unrecorded_coverage_quantum_waits_before_user_mode_linux_answers() {
+        let mut services = Services::new(1);
+        services.env = RecordedEnv::new(
+            1,
+            Box::new(ReseedContractHandler::new(false)) as Box<dyn ServiceHandler>,
+        );
+        let mut payload = [0_u8; hypercall_proto::SDK_COVERAGE_REQUEST_LEN];
+        payload[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        payload[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        let mut request = [0; MAX_FRAME];
+        let length = encode_request(ServiceId::Sdk, 2, 1, &payload, &mut request).unwrap();
+        let mut response = [0; MAX_FRAME];
+        let reply = services
+            .answer(4, &request[..length], &mut response)
+            .unwrap();
+        assert_eq!(reply.length, 0);
+        assert!(matches!(
+            reply.signal,
+            Some(Signal::Decision(question)) if question.service() == environment::channel::SERVICE_COVERAGE_QUANTUM && question.request_id() == 7
+        ));
+        assert!(response.iter().all(|byte| *byte == 0));
+        assert!(services.coverage.is_empty());
+        let mut stamped = [0; STAMP_LEN + MAX_FRAME];
+        stamped[..STAMP_LEN].copy_from_slice(&4_u64.to_le_bytes());
+        stamped[STAMP_LEN..STAMP_LEN + length].copy_from_slice(&request[..length]);
+        let request = &stamped[..STAMP_LEN + length];
+        let before = services.encode().unwrap();
+        assert!(
+            services
+                .prepare_resolution(
+                    request,
+                    4,
+                    environment::channel::SERVICE_COVERAGE_QUANTUM,
+                    7,
+                    &Answer::Data(0_u64.to_le_bytes().to_vec()).encode(),
+                )
+                .is_err()
+        );
+        assert_eq!(services.encode().unwrap(), before);
+        let (resolved, reply) = services
+            .prepare_resolution(
+                request,
+                4,
+                environment::channel::SERVICE_COVERAGE_QUANTUM,
+                7,
+                &Answer::Data(64_u64.to_le_bytes().to_vec()).encode(),
+            )
+            .unwrap();
+        let (header, body) = decode(&reply).unwrap();
+        assert_eq!(header.status, Status::Ok as u16);
+        assert_eq!(u64::from_le_bytes(body[..8].try_into().unwrap()), 65);
+        assert_eq!(resolved.coverage.get(&7), Some(&65));
+    }
+
+    #[test]
+    fn resolution_records_before_releasing_a_held_custom_service() {
+        let mut services = Services::new(1);
+        services.env = RecordedEnv::new(
+            1,
+            Box::new(ReseedContractHandler::new(false)) as Box<dyn ServiceHandler>,
+        );
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(7_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut request = [0; STAMP_LEN + MAX_FRAME];
+        request[..STAMP_LEN].copy_from_slice(&4_u64.to_le_bytes());
+        let length =
+            encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+        let request = &request[..STAMP_LEN + length];
+        let before = services.encode().unwrap();
+        let answer = Answer::Data(vec![42]).encode();
+        assert!(
+            services
+                .prepare_resolution(request, 4, 19, 8, &answer)
+                .is_err()
+        );
+        assert!(
+            services
+                .prepare_resolution(request, 4, 19, 7, &[9])
+                .is_err()
+        );
+        assert_eq!(services.encode().unwrap(), before);
+        let (resolved, reply) = services
+            .prepare_resolution(request, 4, 19, 7, &answer)
+            .unwrap();
+        let (header, body) = decode(&reply).unwrap();
+        assert_eq!(header.status, Status::Ok as u16);
+        assert_eq!(body, &[1, 42]);
+        assert_eq!(resolved.env.snapshot_state().unwrap().answers().count(), 1);
+        let saved = resolved.encode().unwrap();
+        let factory: ServiceFactory = Arc::new(|config| {
+            Ok(Box::new(ReseedContractHandler {
+                identity: config.identity.clone(),
+                configuration: config.configuration.clone(),
+                change_identity: false,
+                zero_only: true,
+            }))
+        });
+        let restored = Services::decode(&saved, &factory).unwrap();
+        assert_eq!(restored.encode().unwrap(), saved);
+    }
+
+    #[test]
+    fn coverage_schedule_answers_without_a_decision_and_survives_bridge_state() {
+        let mut services = Services::new(1);
+        let schedule = CoverageSchedule::new(1024, vec![(10, 20, 1)]).unwrap();
+        services.env.set_coverage_schedule(Some(schedule.clone()));
+        let mut payload = [0; hypercall_proto::SDK_COVERAGE_REQUEST_LEN];
+        payload[..4].copy_from_slice(&7_u32.to_le_bytes());
+        payload[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        payload[12..16].copy_from_slice(&1_u32.to_le_bytes());
+        let mut request = [0; STAMP_LEN + MAX_FRAME];
+        request[..STAMP_LEN].copy_from_slice(&10_u64.to_le_bytes());
+        let length =
+            encode_request(ServiceId::Sdk, 2, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+        let mut response = [0; MAX_FRAME];
+        let reply = services
+            .exchange(&request[..STAMP_LEN + length], &mut response)
+            .unwrap();
+        assert!(reply.signal.is_none());
+        let (header, body) = decode(&response[..reply.length]).unwrap();
+        assert_eq!(header.status, Status::Ok as u16);
+        assert_eq!(u64::from_le_bytes(body[..8].try_into().unwrap()), 2);
+        assert_eq!(services.env.snapshot_state().unwrap().answers().count(), 0);
+        let encoded = services.encode().unwrap();
+        let restored =
+            Services::decode(&encoded, &environment::input_spec::nominal_factory()).unwrap();
+        assert_eq!(restored.env.coverage_schedule(), Some(&schedule));
+        assert_eq!(restored.encode().unwrap(), encoded);
     }
 
     fn exchange(guest: &OwnedFd, moment: u64, service: ServiceId, payload: &[u8]) -> Vec<u8> {

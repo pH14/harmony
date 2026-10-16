@@ -143,6 +143,13 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
 
+Unrecorded standing-service questions stop at an explicit decision. The fault
+client derives an answer from the action's configuration and resumes through a
+recorded resolution before the guest sees it. Worker and UML sessions carry
+the same resolution. Each branch also records a compact schedule of coverage
+quantums from its action windows. The SDK selects that quantum directly, so a
+small quantum does not create one answer-tape entry per callback.
+
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
