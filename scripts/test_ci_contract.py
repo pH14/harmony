@@ -120,7 +120,7 @@ class StructureTests(unittest.TestCase):
         commands = "\n".join(str(step.get("run", "")) for step in steps)
         for required in (
             "--no-default-features --features consonance-host --bin harmony-consonance-host",
-            "--options runtime",
+            "--options runtime,hard,kill",
             "--entitlements consonance/vmm-backend/hvf.entitlements.plist",
             "--library-constraint scripts/macos-os-only-library-constraint.coderequirement",
             "harmony harmony-consonance-host",

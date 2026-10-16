@@ -405,7 +405,7 @@ mod tests {
             "org.harmony.strict-host-test",
         ]);
         if runtime {
-            command.args(["--options", "runtime"]);
+            command.args(["--options", "runtime,hard,kill"]);
         }
         command.arg("--entitlements").arg(&entitlements);
         if constraint {
