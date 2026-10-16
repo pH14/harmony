@@ -351,6 +351,7 @@ dependencies = [
  "iced-x86",
  "object",
  "oci-support",
+ "postcard",
  "process-proto",
  "searcher",
  "serde",
