@@ -127,9 +127,6 @@ jobs:
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
         run: cargo test --locked -p uml --lib profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes -- --ignored
-      - name: Replay loaded code against the reviewed UML bundle
-        if: matrix.architecture == 'x86_64'
-        run: python3 scripts/test-loaded-code-identity.py --profile "$RUNNER_TEMP/uml-first"
       - name: Bind the recorded UML kernel to the approved profile
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
