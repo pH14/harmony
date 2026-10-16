@@ -5103,6 +5103,11 @@ where
                     replay_window_depth,
                     replay_job_parents.len(),
                 )?;
+                if replay_continuations.contains_key(&usize::try_from(skip.reservation)?) {
+                    return Err(
+                        "campaign replay recorded a skip before a taken continuation".into(),
+                    );
+                }
                 if stop_reservations_after_objective(
                     header.stop_campaign_on_objective,
                     core.objective_witness.is_some(),

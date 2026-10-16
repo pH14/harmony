@@ -327,6 +327,89 @@ fn continuation_config(
 }
 
 #[test]
+fn replay_rejects_duplicate_skip_for_taken_continuation() {
+    let mut config = continuation_config(1, DrawMixture::EnergySplice { scale: 6 }, 12);
+    config.stop_campaign_on_objective = false;
+    let mut stream = Vec::new();
+    run_campaign_checkpointed(
+        &TestWorkload,
+        &config,
+        &CampaignOrigin::Genesis,
+        &mut stream,
+        None,
+    )
+    .unwrap();
+    let records = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .skip(1)
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    replay_campaign_checkpointed(&TestWorkload, &stream, None, None).unwrap();
+    let reservation = 18_u64;
+    let job = records
+        .iter()
+        .find(|record| record["event"] == "job" && record["reservation"] == reservation)
+        .unwrap();
+    assert_eq!(job["selector"]["path"], "continuation");
+    let mut skip = records
+        .iter()
+        .find(|record| record["event"] == "skip" && record["reservation"] == 17)
+        .unwrap()
+        .clone();
+    skip["reservation"] = serde_json::json!(reservation);
+    skip["draw_checkpoint_before"] = job["draw_checkpoint_before"].clone();
+    let mut after = skip["draw_checkpoint_before"].clone();
+    after["records"] = serde_json::json!(after["records"].as_u64().unwrap() + 1);
+    skip["draw_checkpoint_after"] = after;
+    let mut changed = records.clone();
+    let insert_at = changed
+        .iter()
+        .enumerate()
+        .filter(|(_, record)| record["event"] == "job")
+        .nth(usize::try_from(reservation).unwrap() - config.window)
+        .unwrap()
+        .0
+        + 1;
+    changed.insert(insert_at, skip);
+    for record in changed.iter_mut().skip(insert_at + 1) {
+        if record["event"] != "job" && record["event"] != "skip" {
+            continue;
+        }
+        if record["reservation"].as_u64().unwrap() >= reservation {
+            let before = &mut record["draw_checkpoint_before"];
+            before["records"] = serde_json::json!(before["records"].as_u64().unwrap() + 1);
+        }
+        let after = &mut record["draw_checkpoint_after"];
+        if !after.is_null() {
+            after["records"] = serde_json::json!(after["records"].as_u64().unwrap() + 1);
+        }
+    }
+    let end = changed.last_mut().unwrap();
+    assert_eq!(end["event"], "end");
+    end["skips"] = serde_json::json!(end["skips"].as_u64().unwrap() + 1);
+    let mut changed_stream = std::str::from_utf8(&stream)
+        .unwrap()
+        .lines()
+        .next()
+        .unwrap()
+        .to_owned();
+    changed_stream.push('\n');
+    for record in &changed {
+        changed_stream.push_str(&serde_json::to_string(record).unwrap());
+        changed_stream.push('\n');
+    }
+    let error = replay_campaign_checkpointed(&TestWorkload, changed_stream.as_bytes(), None, None)
+        .expect_err("a taken continuation cannot skip an ordinary duplicate");
+    assert!(
+        error
+            .to_string()
+            .contains("skip before a taken continuation"),
+        "{error}"
+    );
+}
+
+#[test]
 fn continuations_replay_exactly_under_snapshot_pressure() {
     for (workers, mixture, budget_mib) in [
         (1, DrawMixture::EnergySplice { scale: 6 }, 12),

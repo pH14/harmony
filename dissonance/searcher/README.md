@@ -60,7 +60,9 @@ duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
 limit of 1,024 attempts for one reservation. Each skip must occur during the
 initial window fill or immediately after the admission that opens its later
-reservation slot. A terminal record follows only
+reservation slot. A reservation that takes a continuation cannot record a
+duplicate skip because continuation dispatch bypasses ordinary selection. A
+terminal record follows only
 after the campaign has drained its jobs and finished
 successfully. Replay requires that record and checks its job, skip, and
 admission totals. Without a wall-time limit, it also requires every reservation
