@@ -248,6 +248,7 @@ impl Services {
         self.answer(moment, frame, response)
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn prepare_resolution(
         &self,
         request: &[u8],
