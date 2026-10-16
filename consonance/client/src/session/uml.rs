@@ -805,6 +805,70 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
+    fn terminal_session(script: &str, parent: &tempfile::TempDir) -> UmlSession {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]).process_group(0);
+        let checkpoints = Checkpoints::new();
+        let guest = uml::Session::start(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let mut session = unbooted_session();
+        session.session = Some(guest);
+        session.checkpoints = checkpoints;
+        session.progress_limit = Duration::from_secs(5);
+        session
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn host_signal_abandons_instead_of_reporting_guest_shutdown() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut session = terminal_session("kill -KILL $$", &parent);
+        let error = session.run_until(1).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Control(message)) if message.contains("Signaled(9)")
+        ));
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .run_until(1)
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn clean_guest_exit_remains_a_terminal_shutdown() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut session = terminal_session("exit 0", &parent);
+        let stop = session.run_until(1).unwrap();
+        let StopReason::Crash { info, .. } = stop else {
+            panic!("expected a terminal guest stop");
+        };
+        assert_eq!(info.kind, CrashKind::Shutdown);
+        assert!(String::from_utf8_lossy(&info.detail).contains("Exited(0)"));
+        assert!(!session.abandoned());
+    }
+
     #[test]
     fn fresh_restore_timeout_abandons_with_a_typed_watchdog_error() {
         let limit = Duration::from_millis(25);

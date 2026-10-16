@@ -121,8 +121,11 @@
   process exit or signal, and a host-enforced console or wall limit all report
   `Stop::Closed` regardless of which host poll wins. Callers use `Session::run`
   or `settle_terminal_console` to classify the final process reason;
-  settlement probes the current process state and refuses host limits; callers
-  cannot supply an earlier exit reason. A guest whose virtual time
+  settlement probes the current process state and refuses host limits and
+  signaled host exits after process cleanup; callers cannot supply an earlier
+  exit reason. A host signal such as SIGKILL is an infrastructure failure, not
+  a guest shutdown or crash, and the client abandons the session (#708). A
+  guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
   checkpoint is bounded while it waits for the restore request and replies.

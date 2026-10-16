@@ -522,7 +522,7 @@ impl Session {
             )));
         }
         match exit.reason {
-            ExitReason::Exited(_) | ExitReason::Signaled(_) => Ok(exit.reason),
+            ExitReason::Exited(_) => Ok(exit.reason),
             reason => Err(SessionError::Stopped(reason)),
         }
     }
