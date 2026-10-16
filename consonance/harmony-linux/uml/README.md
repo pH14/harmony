@@ -88,7 +88,10 @@ The guest TASK_SIZE remains in the console for diagnosis.
   by dynamic code or hidden from the executable-load scan.
 - Host stops and continues of stub processes no longer raise guest
   interrupts. A stub that dies without the kernel killing it panics the
-  guest.
+  guest. If the host cannot clone a userspace stub, the UML process writes a
+  fixed stderr diagnostic and exits with reserved status 87. That host
+  resource failure never becomes a guest `fork` error or a normal guest exit;
+  a genuine guest-local `fork` limit is still returned to the guest.
 - Guest physical memory has a fixed layout. UML turns off host address
   randomization by re-executing itself, which Docker's default seccomp
   profile refuses. The range reserved for the host heap covers the host's

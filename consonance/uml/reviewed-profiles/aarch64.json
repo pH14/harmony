@@ -2,15 +2,15 @@
   "architecture": "aarch64",
   "config": {
     "name": "config",
-    "sha256": "8ddfa0a6cac5bdbe76b7eedee4b26d2d51139bae2f8c44302c1e4573928b827d"
+    "sha256": "b4bc33e677512c2ff5a4fc432225b6e7ddf6c1fa6f5e8233dacfd18929e8aebe"
   },
   "executable": {
     "name": "linux",
-    "sha256": "e512466b0cfb5183a163da22bc4deec49ec5e3ecd91ab57d6930dad754fb2d34"
+    "sha256": "4faf8171cf3fc890c93db4e65e35e3de5d5a00aa5f01bad0bad06b222272b221"
   },
   "host_libraries": [],
   "kernel_version": "7.2-rc4",
-  "patch_series_sha256": "895784dd2cbf0be436ca8d0dae2d5ac9a7ade21659c1f83c5b0400b3ee5c1133",
+  "patch_series_sha256": "5df62332931b769da63ca0df81c5e7ead64c6709333c8c8a889c66e64817285c",
   "rootfs": {
     "name": "initramfs.cpio.gz",
     "sha256": "9ace2740d0a6586fc9e6c07e908557d70afca39034fa022d9cb5d1ba03c101e3"

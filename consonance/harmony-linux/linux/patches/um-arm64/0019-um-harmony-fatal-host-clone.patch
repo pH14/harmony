@@ -1,0 +1,35 @@
+Fail closed when a UML userspace stub cannot be cloned
+
+A failed host clone in start_userspace is a host capacity failure, not a
+guest fork failure. Returning -errno lets the guest observe it as ENOMEM,
+possibly emit different events, and shut down normally under the same
+profile and host identity. Exit the UML host process with a reserved status
+after writing a diagnostic directly to stderr. The launcher classifies that
+status as an infrastructure failure independently of console collection.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
+exception.
+
+---
+--- a/arch/um/os-Linux/skas/process.c
++++ b/arch/um/os-Linux/skas/process.c
+@@ -562,6 +562,8 @@ __initcall(init_stub_exe_fd);
+ 
+ int using_seccomp;
+ 
++#define HOST_CLONE_FAILED 87
++
+ /*
+  * Assume the host has PTRACE_SYSEMU until check_sysemu() says otherwise. Every
+  * host that can run x86 UML has had it since 2.6, so this default is what that
+@@ -641,6 +643,8 @@ int start_userspace(struct mm_id *mm_id)
+ 		printk(UM_KERN_ERR "%s : clone failed, errno = %d\n",
+ 		       __func__, errno);
+-		goto out_close;
++		write(STDERR_FILENO, "Harmony UML host clone failed\n",
++		      sizeof("Harmony UML host clone failed\n") - 1);
++		_exit(HOST_CLONE_FAILED);
+ 	}
+ 
+ 	if (using_seccomp) {

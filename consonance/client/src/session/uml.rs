@@ -857,6 +857,20 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
+    fn host_clone_status_abandons_instead_of_reporting_guest_shutdown() {
+        let parent = tempfile::tempdir().unwrap();
+        let mut session = terminal_session("exit 87", &parent);
+        let error = session.run_until(1).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Control(message)) if message.contains("HostFailure")
+        ));
+        assert!(session.abandoned());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn clean_guest_exit_remains_a_terminal_shutdown() {
         let parent = tempfile::tempdir().unwrap();
         let mut session = terminal_session("exit 0", &parent);

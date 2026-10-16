@@ -218,13 +218,18 @@
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit. After
   an automatic stop, cleanup joins the console reader and bridge before
-  classifying the exit. Output already written beyond the byte limit is a
-  console-limit stop, including when an event cut or another automatic stop
-  was observed before the reader caught up. Without an overflow, a completed
-  event cut or bridge failure takes precedence over the process status, even
-  if the exit poll won the race. An explicit kill remains a kill. A UML
+  classifying the exit. Apart from reserved host-failure status 87, output
+  already written beyond the byte limit is a console-limit stop, including
+  when an event cut or another automatic stop was observed before the reader
+  caught up. Without an overflow or host failure, a completed event cut or
+  bridge failure takes precedence over the process status, even if the exit
+  poll won the race. An explicit kill remains a kill. A UML
   session refuses a console-limit host stop instead of treating it as a guest
-  crash.
+  crash. The owned UML kernels reserve process status 87 for an internal host
+  clone failure. `Guest` reports `ExitReason::HostFailure` even if the bridge
+  or console collector also observes the exit, and `Session` refuses to settle
+  it as a guest shutdown or make it an accepted search stop. The signal is
+  the host process status; the diagnostic console line is only for diagnosis.
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.
