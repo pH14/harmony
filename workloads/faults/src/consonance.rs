@@ -1653,10 +1653,17 @@ pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
 
 pub fn identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
     let base = base_identity(kernel, initramfs, config)?;
-    Ok(match &config.root {
-        Some(root) => format!("{base};root={:x}", Sha256::digest(root.as_slice())),
-        None => base,
-    })
+    Ok(identity_with_root(
+        &base,
+        config.root.as_deref().map(Vec::as_slice),
+    ))
+}
+
+fn identity_with_root(base: &str, root: Option<&[u8]>) -> String {
+    match root {
+        Some(root) => format!("{base};root={:x}", Sha256::digest(root)),
+        None => base.to_owned(),
+    }
 }
 
 fn base_identity(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> Result<String, String> {
@@ -2814,18 +2821,13 @@ mod tests {
         assert_eq!(decoded.message, message.encode().unwrap());
         assert!(service_factory()(&service).is_ok());
         assert!(DebugHandler::decode(&[255, 255, 255, 255]).is_err());
-        let mut config = FaultConfig {
-            knobs: Vec::new(),
-            ram_mib: DEFAULT_RAM_MIB,
-            backend: GuestBackend::Vm,
-            root: None,
-        };
-        let base = identity(b"kernel", b"initramfs", &config);
-        config.root = Some(Arc::new(vec![1]));
-        let first = identity(b"kernel", b"initramfs", &config);
-        config.root = Some(Arc::new(vec![2]));
+        let base = identity_with_root("test-admitted-session", None);
+        let first = identity_with_root("test-admitted-session", Some(&[1]));
         assert_ne!(first, base);
-        assert_ne!(first, identity(b"kernel", b"initramfs", &config));
+        assert_ne!(
+            first,
+            identity_with_root("test-admitted-session", Some(&[2]))
+        );
     }
 
     #[test]

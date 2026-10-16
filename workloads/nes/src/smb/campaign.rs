@@ -1005,12 +1005,26 @@ mod tests {
         not(miri)
     ))]
     #[test]
-    fn consonance_policy_binds_the_session_identity_before_guest_replay() {
+    fn consonance_policy_binds_the_admitted_identity_before_guest_replay() {
         let kernel = b"kernel";
         let initramfs = b"initramfs";
-        let game = SmbGame::new_consonance(&synthetic_nrom(), kernel, initramfs).unwrap();
-        let expected = machine::consonance::identity(kernel, initramfs).unwrap();
-        assert!(game.emulator_identity().starts_with(&expected));
+        let expected = "consonance-whole-vm-v3;session=admitted-test-session";
+        let game = SmbGame::<super::ConsonanceMachine, super::ConsonancePortable> {
+            rom: synthetic_nrom(),
+            core_path: super::PathBuf::new(),
+            core_sha256: String::new(),
+            execution_sha256: String::new(),
+            identity: format!(
+                "{expected};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4"
+            ),
+            backend: super::SmbBackend::Consonance {
+                kernel: kernel.to_vec(),
+                initramfs: initramfs.to_vec(),
+            },
+            machine: super::PhantomData,
+            loopback: false,
+        };
+        assert!(game.emulator_identity().starts_with(expected));
 
         let run = SmbCampaignRun {
             vocabulary: SmbButtonVocabulary::default(),

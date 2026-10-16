@@ -1270,8 +1270,36 @@ mod tests {
         }
     }
 
+    fn fixture_workload(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> FaultWorkload {
+        let identity = if config.uml().is_some() {
+            identity(kernel, initramfs, config).unwrap()
+        } else {
+            let root = config
+                .root
+                .as_ref()
+                .map(|bytes| format!(";root-sha256={:x}", Sha256::digest(bytes.as_slice())))
+                .unwrap_or_default();
+            format!(
+                "test-admitted-vm;kernel-sha256={:x};initramfs-sha256={:x};ram-mib={};cmdline-sha256={:x}{root}",
+                Sha256::digest(kernel),
+                Sha256::digest(initramfs),
+                config.ram_mib,
+                Sha256::digest(config.cmdline()),
+            )
+        };
+        FaultWorkload {
+            kernel: kernel.to_vec(),
+            initramfs: initramfs.to_vec(),
+            config: config.clone(),
+            identity,
+            root_seal: OnceLock::new(),
+            snapshot_cache: None,
+            session_worker: None,
+        }
+    }
+
     fn game() -> FaultWorkload {
-        FaultWorkload::new(b"kernel", b"initramfs", &config(&[])).unwrap()
+        fixture_workload(b"kernel", b"initramfs", &config(&[]))
     }
 
     fn run(nodes: u16, hooks: Vec<u32>) -> FaultCampaignRun {
@@ -1522,7 +1550,7 @@ mod tests {
     #[test]
     fn the_image_identity_covers_the_workload_image_bytes() {
         let etcd = game();
-        let postgres = FaultWorkload::new(b"kernel", b"postgres-initramfs", &config(&[])).unwrap();
+        let postgres = fixture_workload(b"kernel", b"postgres-initramfs", &config(&[]));
         assert_ne!(etcd.image_identity(), postgres.image_identity());
         assert_ne!(
             etcd.workload_identity_sha256(),
@@ -1548,7 +1576,7 @@ mod tests {
                 identity: identity.to_owned(),
                 work_parent: "work".into(),
             }));
-            FaultWorkload::new(b"kernel", b"initramfs", &config).unwrap()
+            fixture_workload(b"kernel", b"initramfs", &config)
         };
         let vm = game();
         let first = uml("profile=a;cpu=x");
@@ -1568,8 +1596,7 @@ mod tests {
     fn the_recorded_policies_pin_the_knobs_and_the_action_format() {
         let game = game();
         let policies = game.policies(&run(1, vec![1, 2]));
-        let tuned =
-            FaultWorkload::new(b"kernel", b"initramfs", &config(&["faultlab.puts=20"])).unwrap();
+        let tuned = fixture_workload(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
         let mut older = policies.clone();
         older.insert(ACTION_FORMAT_FIELD.to_owned(), "500000000".to_owned());
