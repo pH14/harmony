@@ -7,9 +7,21 @@
 
 - `Profile::load` reads `profile.json`, checks the schema, the SECCOMP
   userspace mode, the host architecture and the empty host library list, then
-  re-hashes the executable, config and rootfs and checks that the executable
-  has no ELF interpreter. `VerifiedProfile::identity_sha256` hashes the parsed
-  profile. On Linux it copies and re-hashes those three files into sealed
+  re-hashes the executable, config and fixture rootfs and checks that the
+  executable has no ELF interpreter. It also requires the entire parsed
+  profile to match the architecture's source-reviewed manifest in
+  `reviewed-profiles`. This manifest pins the kernel, config and fixture
+  rootfs digests, kernel version, patch-series digest and virtual-time costs
+  independently of the caller's `profile.json`; rewriting both an artifact
+  and its self-declared digest cannot admit a different owned kernel.
+  Workload initramfs overrides have a separate image-admission boundary.
+  The x86 qualification check uses a test-only initramfs override with the
+  reviewed kernel to execute direct `WRFSBASE` and `WRGSBASE`, then compares
+  guest-visible FS and GS bases after reused and fresh checkpoint restores.
+  It requires a host that exposes FSGSBASE and leaves the reviewed fixture
+  rootfs unchanged.
+  `VerifiedProfile::identity_sha256` hashes the parsed profile. On Linux it
+  copies and re-hashes those three files into sealed
   memory-backed descriptors before returning. The executable and rootfs
   descriptors remain open through child spawn, so later path changes cannot
   substitute different bytes for the verified profile. The child receives the
@@ -109,8 +121,11 @@
   process exit or signal, and a host-enforced console or wall limit all report
   `Stop::Closed` regardless of which host poll wins. Callers use `Session::run`
   or `settle_terminal_console` to classify the final process reason;
-  settlement probes the current process state and refuses host limits; callers
-  cannot supply an earlier exit reason. A guest whose virtual time
+  settlement probes the current process state and refuses host limits and
+  signaled host exits after process cleanup; callers cannot supply an earlier
+  exit reason. A host signal such as SIGKILL is an infrastructure failure, not
+  a guest shutdown or crash, and the client abandons the session. A
+  guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
   checkpoint is bounded while it waits for the restore request and replies.
@@ -121,12 +136,13 @@
   restores one in place, or starts a fresh process that restores one at boot.
   At restore, the console collector drains output already written by the
   paused guest and clears its diagnostic tail before the new branch runs. This
-  keeps text from a discarded branch out of later crash classification and
-  diagnostics. Its cumulative byte count still enforces the host output limit.
+  keeps text from a discarded branch out of later diagnostics. Its cumulative
+  byte count still enforces the host output limit.
   After a terminal guest stop, the client waits for the host process to exit,
-  finishes process cleanup, and joins the console collector before using the
-  tail to classify a kernel panic. A closed bridge whose process does not exit
-  within the progress limit fails instead of guessing from partial output.
+  finishes process cleanup, and joins the console collector before recording
+  the diagnostic tail. The kernel-owned exit status classifies a panic. A closed
+  bridge whose process does not exit within the progress limit fails instead
+  of guessing from partial output.
   The host owns the guest's physical memory file and an image file, both
   memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
   session's `Checkpoints` page store plus the services state at the capture.
@@ -163,62 +179,56 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-- `Recording` schema 6 names the loaded Harmony executable, profile, full
+  Public UML sessions require a sealed static Linux host in every build.
+  Admission hashes the full sealed main executable. Before and after session
+  operations and each service exchange, the guard reuses that immutable file
+  digest while comparing live executable bytes and the complete executable-map
+  census. An ordinary GNU executable cannot start a UML session.
+- `Recording` schema 6 names the admitted Harmony executable, profile, full
   host identity, seed, memory, boot arguments, event count and event hash of a
-  run. Earlier schemas are refused. The executable identity includes the
-  SHA-256 of the running Linux `/proc/self/exe` inode and the mapped bytes of
-  every executable region, including dependent libraries and the vDSO. A
-  replacement at the original path cannot make a different host build claim
-  the recording. Creation, replay checks and replay launch refuse every
-  ambient `LD_*` name and `GLIBC_TUNABLES`, including empty definitions. It also
-  reads the kernel-saved program-header location from `/proc/self/auxv` and
-  requires the recording identity code to lie in an executable load segment of
-  the opened `/proc/self/exe`; both addresses must also have matching
-  file-backed mappings. This refuses direct dynamic-loader launches with
-  command-line code selectors even when separate Btrfs subvolumes reuse a
-  mapping inode number. The mapping digest also catches resident
-  `/etc/ld.so.preload` libraries and injected libraries whose constructor clears
-  its override before admission. It refuses anonymous or memfd executable
-  memory, writable executable memory, unreadable bytes, and unrecognized
-  special executable mappings other than the exact conventional x86-64
-  kernel-emulated `[vsyscall]` range. Each loader-listed ELF image also binds
-  its executable and pure read-only load segments in loader order. This catches
-  a read-only library data change that alters a guest entropy response without
-  changing the library's code. Writable library initializers, RELRO/GOT values,
-  symbol bindings, constructor effects, code loaded or unloaded later, and
-  changes to executable memory after measurement remain outside this identity.
-  Self-measurement is not an adversarial attestation.
-  Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
-  recording or replay binaries directly with all `LD_*` variables and
-  `GLIBC_TUNABLES` unset.
-  It derives the seed from the live launch's
-  bridge and refuses an unbridged run or a replaced initramfs, which it cannot
-  replay. Recording creation derives identity from the admitted `Launch`;
-  replay checks read the recorded processor's current identity. A caller cannot
-  supply a stale identity in either path. `Recording::check` refuses a
-  different executable, profile or host. `Recording::launch` refuses a
-  different executable and binds the recorded processor and identity through
-  the cut even if the caller skips `check`.
+  run. Earlier schemas are refused. On Linux, the executable identity requires
+  the same sealed static host as a session. `Recording::new`, `check`, and
+  `launch` all refuse an unsealed or dynamically linked host before they can
+  certify or replay a recording. A replacement at the original path cannot
+  make a different host build claim the recording. The seed comes from the
+  live launch's bridge; an unbridged run or replaced initramfs is refused.
+  Replay checks read the recorded processor's current identity and refuse a
+  different executable, profile, or host. `Recording::launch` binds the
+  recorded processor and identity even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit. After
   an automatic stop, cleanup joins the console reader and bridge before
-  classifying the exit. Output already written beyond the byte limit is a
-  console-limit stop, including when an event cut or another automatic stop
-  was observed before the reader caught up. Without an overflow, a completed
-  event cut or bridge failure takes precedence over the process status, even
-  if the exit poll won the race. An explicit kill remains a kill. A UML
+  classifying the exit. Apart from reserved host-failure status 87, output
+  already written beyond the byte limit is a console-limit stop, including
+  when an event cut or another automatic stop was observed before the reader
+  caught up. Without an overflow or host failure, a completed event cut or
+  bridge failure takes precedence over the process status, even if the exit
+  poll won the race. An explicit kill remains a kill. A UML
   session refuses a console-limit host stop instead of treating it as a guest
-  crash.
+  crash. The owned UML kernels reserve process status 87 for an internal host
+  clone failure. `Guest` reports `ExitReason::HostFailure` even if the bridge
+  or console collector also observes the exit, and `Session` refuses to settle
+  it as a guest shutdown or make it an accepted search stop. The signal is
+  the host process status; the diagnostic console line is only for diagnosis.
   Cleanup kills the process group, reaps it, kills any process still in the
   group or session, and removes the work directory. `Exit` reports any
   process that survived the sweep.
+
+  A kernel panic exits with reserved status 86 and is reported as
+  `ExitReason::GuestPanic`. The client classifies that kernel-owned status as
+  a panic crash; console text cannot claim one. The kernel rejects guest
+  `/proc/exitcode` writes selecting 86 or 87, including low-byte aliases.
+  Host signals and fatal UML traps remain control failures.
 
 The parent-death signal follows the thread that spawned the guest, so a guest
 must be started from a thread that outlives it.
 
 `harmony-uml-qualify` is the qualification binary described in
-`consonance/harmony-linux/uml/README.md`.
+`consonance/harmony-linux/uml/README.md`. Qualification CI builds it as a
+static-musl executable. Its suites reexec from a fully sealed memfd before
+using public Recording and Session admission, both natively and inside the
+Docker qualification container.
 
 The crate's `unsafe` blocks are host system calls: sequenced-packet sockets,
 descriptor passing, `memfd_create`, fixed mappings and process-group signals.

@@ -40,6 +40,11 @@ cargo build --release -p harmony-cli
 ./target/release/harmony check
 ```
 
+Consonance runs from a source checkout also need the paired
+`harmony-consonance-host` beside `harmony`. Release archives include both;
+the [CLI README](cli/README.md) explains the platform-specific host build and
+signing steps.
+
 Prepare a language project or point directly at an OCI image:
 
 ```sh

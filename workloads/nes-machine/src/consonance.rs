@@ -906,20 +906,21 @@ mod tests {
     }
 
     #[test]
-    fn outer_identity_binds_the_exact_session_and_loaded_executable() {
+    fn outer_identity_binds_the_supplied_session_and_guest_image() {
         let kernel = b"kernel";
         let initramfs = b"initramfs";
-        let (config, setup_payloads) = session_inputs();
-        let session =
-            Session::identity_with_config_and_payloads(kernel, initramfs, &config, &setup_payloads)
-                .unwrap();
-        assert_eq!(
-            identity(kernel, initramfs).unwrap(),
-            identity_with_session(kernel, initramfs, &session)
-        );
+        let current = identity_with_session(kernel, initramfs, "admitted-session-A");
+        assert!(current.starts_with("consonance-whole-vm-v3;"));
+        assert!(current.contains(&format!("kernel-sha256={:x}", Sha256::digest(kernel))));
+        assert!(current.contains(&format!("initramfs-sha256={:x}", Sha256::digest(initramfs))));
+        assert!(current.ends_with(";session=admitted-session-A"));
         assert_ne!(
             identity_with_session(kernel, initramfs, "loaded-executable-A"),
             identity_with_session(kernel, initramfs, "loaded-executable-B")
+        );
+        assert_ne!(
+            current,
+            identity_with_session(b"changed kernel", initramfs, "admitted-session-A")
         );
     }
 }

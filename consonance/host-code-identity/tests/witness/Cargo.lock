@@ -258,6 +258,7 @@ name = "loaded-code-witness"
 version = "0.1.0"
 dependencies = [
  "consonance-client",
+ "host-code-identity",
  "serde_json",
  "uml",
 ]

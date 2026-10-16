@@ -961,13 +961,13 @@ mod tests {
         use vmm_core::vendor::arm64::{board, bringup};
         use vmm_core::vmm::{Vmm, VmmError, VtimeWiring};
 
-        let image_identity = image_identity_with_config_and_payloads(
+        let image_identity = image_identity_with_loaded_executable(
             image,
             b"",
             &config,
             setup_payloads.as_deref().unwrap_or(&[]),
-        )
-        .unwrap();
+            "test-sealed-host-v1",
+        );
         let boot_config = config.clone();
         let boot_image = image.to_vec();
         let boot = move || -> Result<Vmm<Box<dyn Backend<A = HostArch>>>, VmmError> {
@@ -1001,7 +1001,7 @@ mod tests {
         let setup = snapshot_handle(&mut client, "setup snapshot").unwrap();
         Session {
             client,
-            loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             setup: setup.id,
             setup_at: setup.at,
             image_identity,

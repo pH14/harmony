@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
-use host_code_identity::LoaderEpoch;
 use hypercall_proto::MAX_FRAME;
 use sha2::{Digest, Sha256};
 use snapshot_store::{PAGE_SIZE, PageHash};
@@ -154,14 +153,33 @@ pub struct Session {
     image_at: Option<Snapshot>,
     audit: bool,
     missed: Vec<u64>,
-    loader_epoch: LoaderEpoch,
+    host_guard: HostGuard,
 }
 
-fn check_loader_epoch(expected: LoaderEpoch) -> Result<(), SessionError> {
-    if host_code_identity::loader_epoch()? != expected {
-        return Err(SessionError::Protocol(
-            "host loader changed after UML session admission".into(),
-        ));
+#[derive(Clone, Copy)]
+enum HostGuard {
+    Strict(host_code_identity::StrictExecutableGuard),
+    #[cfg(test)]
+    TestFixture,
+}
+
+fn capture_host_guard() -> Result<HostGuard, SessionError> {
+    #[cfg(target_os = "linux")]
+    host_code_identity::reject_loader_overrides()?;
+    Ok(HostGuard::Strict(
+        host_code_identity::StrictExecutableGuard::capture()?.1,
+    ))
+}
+
+fn check_host_guard(expected: HostGuard) -> Result<(), SessionError> {
+    match expected {
+        HostGuard::Strict(admitted) => {
+            #[cfg(target_os = "linux")]
+            host_code_identity::reject_loader_overrides()?;
+            admitted.check()?;
+        }
+        #[cfg(test)]
+        HostGuard::TestFixture => {}
     }
     Ok(())
 }
@@ -317,14 +335,34 @@ impl Session {
     }
 
     pub fn start(
-        mut command: Command,
+        command: Command,
         work: TempDir,
         launch: &Launch,
         checkpoints: &Checkpoints,
         restore: Option<&Checkpoint>,
         progress_limit: Option<Duration>,
     ) -> Result<Self, SessionError> {
-        let loader_epoch = host_code_identity::loader_epoch()?;
+        let host_guard = capture_host_guard()?;
+        Self::start_with_guard(
+            command,
+            work,
+            launch,
+            checkpoints,
+            restore,
+            progress_limit,
+            host_guard,
+        )
+    }
+
+    fn start_with_guard(
+        mut command: Command,
+        work: TempDir,
+        launch: &Launch,
+        checkpoints: &Checkpoints,
+        restore: Option<&Checkpoint>,
+        progress_limit: Option<Duration>,
+        host_guard: HostGuard,
+    ) -> Result<Self, SessionError> {
         if let Some(checkpoint) = restore {
             checkpoints.require_owned_snapshot(&checkpoint.memory)?;
         }
@@ -342,7 +380,7 @@ impl Session {
             Some(memory.physmem.try_clone()?),
         )?;
         let socket = socket.ok_or(SessionError::NoBridge)?;
-        check_loader_epoch(loader_epoch)?;
+        check_host_guard(host_guard)?;
         let mut session = Self {
             guest,
             socket,
@@ -358,7 +396,7 @@ impl Session {
             image_at: None,
             audit: false,
             missed: Vec::new(),
-            loader_epoch,
+            host_guard,
         };
         if let Some(checkpoint) = restore
             && let Err(error) = session.restore_at_boot(checkpoint)
@@ -368,7 +406,7 @@ impl Session {
                 console: session.console_tail(),
             });
         }
-        check_loader_epoch(loader_epoch)?;
+        check_host_guard(host_guard)?;
         Ok(session)
     }
 
@@ -405,12 +443,12 @@ impl Session {
         payloads: Vec<Vec<u8>>,
         coverage_schedule: Option<environment::channel::CoverageSchedule>,
     ) -> Result<(), SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let result = self
             .services
             .branch(seed, handler, payloads, coverage_schedule)
             .map_err(SessionError::Protocol);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         result
     }
 
@@ -433,7 +471,7 @@ impl Session {
         id: u64,
         answer: &[u8],
     ) -> Result<Stop, SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let request = self
             .pending
             .as_deref()
@@ -441,7 +479,7 @@ impl Session {
         let prepared = self
             .services
             .prepare_resolution(request, moment, service, id, answer);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let (services, response) = prepared.map_err(SessionError::BadResolution)?;
         bridge::send(&self.socket, &response)?;
         self.services = services;
@@ -477,7 +515,7 @@ impl Session {
     }
 
     pub fn bridge_state_digest(&self) -> Result<[u8; 32], SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let mut digest = Sha256::new();
         digest.update(b"harmony-uml-bridge-state-v1\0");
         digest.update(self.services.encode().map_err(SessionError::Protocol)?);
@@ -485,7 +523,7 @@ impl Session {
             digest.update(request);
         }
         let digest = digest.finalize().into();
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         Ok(digest)
     }
 
@@ -508,7 +546,11 @@ impl Session {
         let waited = now();
         let reason = loop {
             match self.guest.stopped()? {
-                Some(reason @ (ExitReason::Exited(_) | ExitReason::Signaled(_))) => break reason,
+                Some(
+                    reason @ (ExitReason::Exited(_)
+                    | ExitReason::Signaled(_)
+                    | ExitReason::GuestPanic),
+                ) => break reason,
                 Some(reason) => return Err(SessionError::Stopped(reason)),
                 None if waited.elapsed() >= limit => return Err(SessionError::Hung(limit)),
                 None => std::thread::sleep(POLL),
@@ -522,13 +564,13 @@ impl Session {
             )));
         }
         match exit.reason {
-            ExitReason::Exited(_) | ExitReason::Signaled(_) => Ok(exit.reason),
+            ExitReason::Exited(_) | ExitReason::GuestPanic => Ok(exit.reason),
             reason => Err(SessionError::Stopped(reason)),
         }
     }
 
     pub fn capture(&mut self, capture: Capture) -> Result<Checkpoint, SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let request = self.pending.clone().ok_or(SessionError::NotPaused)?;
         let flags = if capture.omit_host_memory {
             OMIT_HOST_MEMORY
@@ -614,7 +656,7 @@ impl Session {
         let memory = checkpoints.adopt(id);
         self.memory_at = Some(memory.share());
         self.image_at = Some(memory.share());
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         Ok(Checkpoint {
             memory,
             services: self.services.clone(),
@@ -623,12 +665,12 @@ impl Session {
     }
 
     pub fn restore(&mut self, checkpoint: &Checkpoint) -> Result<(), SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         if self.pending.is_none() {
             return Err(SessionError::NotPaused);
         }
         let result = self.restore_from(checkpoint);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         result
     }
 
@@ -767,9 +809,9 @@ impl Session {
     }
 
     fn serve(&mut self, until: Until) -> Result<Stop, SessionError> {
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         let result = self.serve_inner(until);
-        check_loader_epoch(self.loader_epoch)?;
+        check_host_guard(self.host_guard)?;
         result
     }
 
@@ -793,6 +835,9 @@ impl Session {
                 let length = match self.receive() {
                     Ok(0) => return Ok(due.unwrap_or(Stop::Closed)),
                     Ok(length) => length,
+                    Err(error @ SessionError::Stopped(ExitReason::HostFailure)) => {
+                        return Err(error);
+                    }
                     Err(SessionError::Stopped(_)) => return Ok(due.unwrap_or(Stop::Closed)),
                     Err(error) => return Err(error),
                 };
@@ -820,8 +865,9 @@ impl Session {
                 }
                 length
             };
+            let host_guard = self.host_guard;
             let reply = match self.services.exchange_guarded(
-                self.loader_epoch,
+                || check_host_guard(host_guard).map_err(|error| error.to_string()),
                 &self.request[..length],
                 &mut self.response,
             ) {
@@ -831,7 +877,7 @@ impl Session {
                     return Err(SessionError::Protocol(failure));
                 }
             };
-            check_loader_epoch(self.loader_epoch)?;
+            check_host_guard(self.host_guard)?;
             if let Some(Signal::Decision(question)) = &reply.signal {
                 self.pending = Some(self.request[..length].to_vec());
                 return Ok(Stop::Decision {
@@ -1544,13 +1590,14 @@ mod tests {
         launch.console_limit_bytes = 0;
         launch.wall_limit = Duration::from_secs(1);
         assert!(matches!(
-            Session::start(
+            Session::start_with_guard(
                 Command::new("false"),
                 tempfile::tempdir().unwrap(),
                 &launch,
                 &second,
                 Some(&foreign),
                 None,
+                HostGuard::TestFixture,
             ),
             Err(SessionError::Memory(MemoryError::ForeignSnapshot))
         ));
@@ -1569,13 +1616,14 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "sleep 30"]).process_group(0);
         let limit = Duration::from_millis(25);
-        let error = match Session::start(
+        let error = match Session::start_with_guard(
             command,
             launch.work_directory().unwrap(),
             &launch,
             &checkpoints,
             Some(&saved),
             Some(limit),
+            HostGuard::TestFixture,
         ) {
             Ok(_) => panic!("a restore-mode guest sent no request"),
             Err(error) => error,
@@ -1657,7 +1705,16 @@ mod tests {
             .process_group(0);
         let checkpoints = Checkpoints::new();
         let work = launch.work_directory().unwrap();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let pid = session.guest.pid();
         TEST_TERMINAL_POLL_READY.store(false, Ordering::Release);
         TEST_HOLD_TERMINAL_POLL.store(true, Ordering::Release);
@@ -1727,7 +1784,16 @@ mod tests {
             .process_group(0);
         let checkpoints = Checkpoints::new();
         let work = launch.work_directory().unwrap();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let pid = session.guest.pid();
         crate::launch::TEST_TERMINAL_CONSOLE_READY.store(false, Ordering::Release);
         crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(true, Ordering::Release);
@@ -1833,7 +1899,16 @@ mod tests {
             .env("HARMONY_UML_DEADLINE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let first = session.run_until(0).unwrap();
         let zero_hash = session.bridge_state_digest().unwrap();
         assert!(matches!(
@@ -1920,7 +1995,16 @@ mod tests {
             .env("HARMONY_UML_DECISION_MARKER", &marker)
             .process_group(0);
         let checkpoints = Checkpoints::new();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         session
             .branch(7, Box::new(WaitingHandler), Vec::new(), None)
             .unwrap();

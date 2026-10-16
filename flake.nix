@@ -112,11 +112,13 @@
           };
           umlBuilder = pkgs.writeShellApplication {
             name = "harmony-build-uml";
-            runtimeInputs = commonRuntimeInputs ++ [ pkgs.gcc13 pkgs.glibc.static ];
+            runtimeInputs = commonRuntimeInputs ++ [ pkgs.gcc13 pkgs.glibc.static pkgs.pahole ];
             text = ''
               export HARMONY_NIX_SOURCE=${self.outPath}
               export HARMONY_NIX_LINUX_SOURCE=${if isArm64 then umlArm64Source else linuxSource}
               export HARMONY_NIX_MUSL_SOURCE=${muslSource}
+              export HARMONY_UML_PAHOLE=${pkgs.pahole}/bin/pahole
+              export HARMONY_UML_RUSTC=${pkgs.coreutils}/bin/false
               export LIBRARY_PATH="${pkgs.glibc.static}/lib''${LIBRARY_PATH:+:$LIBRARY_PATH}"
               export NIX_LDFLAGS="-L${pkgs.glibc.static}/lib''${NIX_LDFLAGS:+ $NIX_LDFLAGS}"
               exec ${./consonance/harmony-linux/uml/nix-build.sh} "$@"

@@ -61,14 +61,22 @@ PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
     (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "PostgreSQL CLI Package"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Guest Runtime"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language CLI Tools"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language UML Profile"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Image — <Language>"): 45,
+}
+PR_EXTENDED_CHECK_BUDGETS = {
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
 }
 
 
 def pull_request_budget(workflow_path: str, job_name: str) -> int:
-    return PR_ARTIFACT_BUILD_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES)
+    return PR_ARTIFACT_BUILD_BUDGETS.get(
+        (workflow_path, job_name),
+        PR_EXTENDED_CHECK_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES),
+    )
 
 
 # Trigger classes. `pr` jobs run on pull requests and on pushes to main and
@@ -89,7 +97,7 @@ class Job(NamedTuple):
     trigger: str
     timeout_minutes: int
     # Why full work lives inside Checks, or why a separately registered
-    # artifact prerequisite needs a longer build budget.
+    # pull-request job needs a longer budget.
     exception: str = ""
     # Cargo packages whose lint and unit tests this job owns.
     crates: tuple[str, ...] = ()
@@ -551,6 +559,9 @@ HARMONY_CHECKS = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("CLI", "pr", 15, crates=("harmony-cli",), test_targets=("harmony-cli:staging",), select="rust_checks"),
+        Job("Consonance Host", "pr", 15, select="rust_checks"),
+        Job("Consonance Host Arm64", "pr", 15, select="rust_checks"),
+        Job("Consonance Host Public API", "pr", 15, select="rust_checks"),
         Job("NES Adapter", "pr", 15, select="rust_checks"),
         Job("Fault Injection", "pr", 15, select="rust_checks"),
     ),
@@ -595,6 +606,7 @@ HARMONY_HOST_COMPATIBILITY = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("macOS Arm64", "pr", 15, select="rust_checks"),
+        Job("macOS Consonance Host Package", "pr", 15, select="rust_checks"),
         Job("Linux Arm64", "pr", 15, select="rust_checks"),
         Job("Linux Arm64 Dissonance", "pr", 15, select="rust_checks"),
         Job("Linux Arm64 Qualification", "pr", 15, select="rust_checks"),
@@ -632,10 +644,16 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
         Job("Language Guest Runtime", "pr", 45,
             exception="A guest runtime missing from the cache is built from source once before bounded consumers.",
             select="harmony_languages"),
+        Job("Language CLI Tools", "pr", 45,
+            exception="The paired native frontend and static musl host are built once before bounded language consumers.",
+            select="harmony_languages"),
         Job("Language Image — <Language>", "pr", 45,
             exception="A language layer missing from the cache is built from source, including CPython and OpenJDK.",
             select="harmony_languages"),
         Job("Check — <Language>", "pr", 15, select="harmony_languages"),
+        Job("C Investigation", "pr", 35,
+            exception="The bounded C branch and search investigation takes longer under live sealed-host code checks; it runs separately from the 15-minute language smokes.",
+            select="harmony_languages"),
         Job("Language UML Profile", "pr", 45,
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
@@ -654,6 +672,9 @@ HARMONY_OCI_CHECKS = Workflow(
             exception="A cold build of the exact guest kernel and runtime exceeds "
                       "the pull request check budget.",
             select="rust_checks"),
+        Job("PostgreSQL CLI Package", "pr", 45,
+            exception="The paired native frontend and static musl host are built before the bounded PostgreSQL smoke.",
+            scope="harmony_oci", select="rust_checks"),
         Job("Container Execution", "pr", 15,
             test_targets=("oci-support:platform", "oci-support:process_platform"),
             ignored_tests=OCI_PLATFORM_TESTS,
@@ -735,6 +756,14 @@ CONSONANCE_UML = Workflow(
         Job("UML Artifacts — <Architecture>", "pr", 45,
             exception="Two cold compilations of the pinned UML kernel and locked "
                       "toolchain exceed the pull request check budget.",
+            ignored_tests=(
+                "uml profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes",
+                "harmony-cli::bin/harmony adapters::faults::runs::tests::loaded_reviewed_uml_profile_binds_the_recorded_kernel",
+                "consonance-client session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash",
+                "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
+                "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
+                "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
+            ),
             select="rust_checks"),
         Job("UML Qualification — <Target>", "pr", 15, select="rust_checks"),
     ),

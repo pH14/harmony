@@ -303,7 +303,61 @@ the reference for a fresh replay.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
+## Build the paired binaries from source
+
+A source build for Consonance needs both executables in one directory. Release
+archives already contain the pair. On Linux, install the host's musl linker
+(for example, `musl-tools` on Ubuntu), then build the native frontend and the
+static host from the repository root. Choose the musl target for the host
+architecture:
+
+```sh
+musl_target=x86_64-unknown-linux-musl  # use aarch64-unknown-linux-musl on Arm64
+rustup target add "$musl_target"
+cargo build --locked --release -p harmony-cli --bin harmony
+cargo build --locked --release -p harmony-cli --target "$musl_target" \
+  --no-default-features --features consonance-host --bin harmony-consonance-host
+cp "target/$musl_target/release/harmony-consonance-host" target/release/
+./target/release/harmony check
+```
+
+On macOS, build the second executable for the native target and sign it with
+the same hardened runtime, Hypervisor entitlement and OS-only library constraint
+used by the release package:
+
+```sh
+cargo build --locked --release -p harmony-cli --bin harmony
+cargo build --locked --release -p harmony-cli --no-default-features \
+  --features consonance-host --bin harmony-consonance-host
+codesign --force --sign - --identifier org.harmony.consonance-host \
+  --options runtime,hard,kill \
+  --entitlements consonance/vmm-backend/hvf.entitlements.plist \
+  --library-constraint scripts/macos-os-only-library-constraint.coderequirement \
+  target/release/harmony-consonance-host
+./target/release/harmony check
+```
+
+These commands leave the native QuickNES frontend beside its strict Consonance
+host. A Consonance command refuses an absent or unqualified companion.
+
 ## Storage and boundaries
+
+The Linux and macOS CLI installations pair `harmony` with
+`harmony-consonance-host` in the same `bin` directory. `harmony` keeps the native
+QuickNES runner and dispatches Consonance commands to the paired host. On Linux,
+it copies the static-musl host into a fresh executable memfd, seals its complete
+contents against writes and resizing, then executes it. The host checks those
+seals, the full loaded ELF bytes (including writable initializers), and its
+executable mappings before it parses a command. On macOS, the paired host is a
+hardened signed executable with the OS-only library constraint and Hypervisor
+entitlement. It checks the kernel-loaded code hash, exact signing policy and
+loaded system images before command dispatch. A missing or invalid host stops
+Consonance commands. The paired host reparses the original command and its
+configuration; the frontend's runner choice cannot authorize a later changed
+recipe. Saved Consonance recordings retain this strict host identity. Native
+QuickNES recordings retain their native loaded-image identity.
+Linux hosts must permit executable memfds; `vm.memfd_noexec=2` prevents
+Consonance execution and produces an explicit error.
 
 The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a
@@ -312,14 +366,12 @@ fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
-Replay verifies the loaded CLI executable identity, architecture and saved artifact hashes.
-Linux hashes the running executable through `/proc/self/exe`, the actual bytes
-of every executable mapping, and each loaded ELF image's pure read-only load
-segments at admission. This covers dependent libraries and the vDSO. macOS
-combines the main code-directory hash with the mapped executable segments of
-dyld-listed images, including dylibs and dyld itself. Both remain bound to the
-loaded main image when its pathname is replaced while the process is running. If the host
-cannot provide the corresponding identity, recording and replay fail closed.
+Replay verifies the recorded host executable identity, architecture and saved artifact hashes.
+Consonance recording and replay require the strict host at the manifest boundary,
+including when package code is called without the frontend. Linux worker reexec
+uses the sealed image through `/proc/self/exe`, so a mutable pathname cannot
+replace the worker executable. If the host cannot provide its strict identity,
+recording and replay fail closed.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
 evidence. Replay and branch selection use that verified manifest copy, even

@@ -2,22 +2,55 @@
 
 use std::io;
 
+#[cfg(feature = "in-process")]
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LoadedImageGuard(host_code_identity::LoaderEpoch);
+pub(crate) enum LoadedImageGuard {
+    Strict(host_code_identity::StrictExecutableGuard),
+    #[cfg(test)]
+    TestFixture,
+}
 
+fn strict_host_identity() -> io::Result<String> {
+    reject_loader_overrides()?;
+    #[cfg(target_os = "linux")]
+    {
+        host_code_identity::sealed_static_executable_identity()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        host_code_identity::strict_macos_executable_identity()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "strict host admission is unavailable on this platform",
+        ))
+    }
+}
+
+#[cfg(feature = "in-process")]
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
-        Ok(Self(host_code_identity::loader_epoch()?))
+        reject_loader_overrides()?;
+        Ok(Self::Strict(
+            host_code_identity::StrictExecutableGuard::capture()?.1,
+        ))
     }
 
     pub(crate) fn check(self) -> io::Result<()> {
-        if host_code_identity::loader_epoch()? != self.0 {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "host loader changed after loaded-image admission",
-            ));
-        }
-        Ok(())
+        let admitted = match self {
+            Self::Strict(admitted) => admitted,
+            #[cfg(test)]
+            Self::TestFixture => return Ok(()),
+        };
+        reject_loader_overrides()?;
+        admitted.check()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture() -> Self {
+        Self::TestFixture
     }
 
     pub(crate) fn identity() -> io::Result<(String, Self)> {
@@ -38,6 +71,16 @@ impl LoadedImageGuard {
         }
         Ok(lease)
     }
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn strict_test_host_ready() -> bool {
+    let admitted = LoadedImageGuard::capture();
+    #[cfg(target_env = "musl")]
+    admitted
+        .as_ref()
+        .expect("a musl test must execute from a sealed static host");
+    admitted.is_ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -107,10 +150,15 @@ pub(crate) fn rerun_clean_loader_test(test: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
+    strict_host_identity()
+}
+
+#[cfg(target_os = "linux")]
+pub fn native_loaded_executable_diagnostic_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
     let mut executable = std::fs::File::open("/proc/self/exe")?;
     reject_mismatched_executable_mapping(
-        loaded_executable_identity_self as *const () as usize,
+        native_loaded_executable_diagnostic_identity_self as *const () as usize,
         &executable,
     )?;
     let main = digest_open_executable(&mut executable)?;
@@ -386,6 +434,11 @@ unsafe extern "C" {
 
 #[cfg(target_os = "macos")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
+    strict_host_identity()
+}
+
+#[cfg(target_os = "macos")]
+pub fn native_loaded_executable_diagnostic_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
     let main = loaded_executable_identity_for_child(std::process::id())?;
     host_code_identity::loaded_executable_identity(&main)
@@ -434,6 +487,126 @@ pub fn loaded_executable_identity_self() -> io::Result<String> {
     Err(io::Error::other(
         "cannot identify the loaded executable on this host",
     ))
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn native_loaded_executable_diagnostic_identity_self() -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "native loaded-code diagnostics are unavailable on this platform",
+    ))
+}
+
+#[cfg(all(
+    test,
+    feature = "in-process",
+    target_os = "linux",
+    target_env = "gnu",
+    any(target_arch = "x86_64", target_arch = "aarch64"),
+    not(miri)
+))]
+mod strict_host_tests {
+    use super::*;
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn ordinary_gnu_binary_cannot_admit_a_strict_session_or_worker() {
+        if rerun_clean_loader_test(
+            "image_identity::strict_host_tests::ordinary_gnu_binary_cannot_admit_a_strict_session_or_worker",
+        ) {
+            return;
+        }
+        let expected = "host executable is not a sealed memfd";
+        assert!(
+            loaded_executable_identity_self()
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert!(
+            LoadedImageGuard::capture()
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert!(
+            crate::session::identity(b"kernel", b"initramfs")
+                .unwrap_err()
+                .contains(expected)
+        );
+        assert!(
+            crate::session::Session::new(b"kernel", b"initramfs")
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+        assert!(
+            crate::session::WorkerLauncher::current_exe(vec!["session-worker".into()])
+                .unwrap_err()
+                .to_string()
+                .contains(expected)
+        );
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "in-process",
+    target_os = "linux",
+    target_env = "musl",
+    not(miri)
+))]
+mod sealed_guard_tests {
+    use super::*;
+    use crate::cache::{
+        CacheIndex, LocalIndex, Namespace,
+        extent::{extent_len, write_extent},
+    };
+
+    #[test]
+    fn unexpected_executable_mapping_revokes_a_published_lease() {
+        const CHILD_ENV: &str = "HARMONY_EXTRA_RX_PUBLISH_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("/proc/self/exe")
+                .args([
+                    "--exact",
+                    "image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.contains("running 1 test")
+                    && stdout.contains("1 passed"),
+                "{}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let guard = LoadedImageGuard::capture().unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"live-code"]);
+        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let lease = index
+            .publish(namespace, b"snapshot", None, extent, [9; 32], 1)
+            .unwrap();
+        assert_eq!(index.stats().entries, 1);
+
+        let mapping = memmap2::MmapMut::map_anon(4096)
+            .unwrap()
+            .make_exec()
+            .unwrap();
+        assert!(guard.check_published(&index, lease).is_err());
+        assert!(index.lookup(namespace, b"snapshot").is_none());
+        assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
+        drop(mapping);
+        guard.check().unwrap();
+    }
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
@@ -564,7 +737,7 @@ mod linux_tests {
             assert!(
                 error
                     .to_string()
-                    .contains("not in the kernel-loaded executable"),
+                    .contains("host executable is not a sealed memfd"),
                 "{error}"
             );
             return;

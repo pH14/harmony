@@ -21,9 +21,11 @@ jobs:
           - runner: ubuntu-24.04
             platform: Linux x86-64
             triple: x86_64-unknown-linux-gnu
+            musl_triple: x86_64-unknown-linux-musl
           - runner: ubuntu-24.04-arm
             platform: Linux Arm64
             triple: aarch64-unknown-linux-gnu
+            musl_triple: aarch64-unknown-linux-musl
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -31,7 +33,37 @@ jobs:
       - run: cargo build --locked --release -p harmony-cli
         env:
           HARMONY_RELEASE_VERSION: ${{ github.ref_name }}
-      - run: tar -C target/release -czf harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz harmony
+      - name: Build sealed static Consonance host
+        if: runner.os == 'Linux'
+        env:
+          HARMONY_RELEASE_VERSION: ${{ github.ref_name }}
+          MUSL_TRIPLE: ${{ matrix.musl_triple }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add "$MUSL_TRIPLE"
+          cargo build --locked --release -p harmony-cli --target "$MUSL_TRIPLE" \
+            --no-default-features --features consonance-host --bin harmony-consonance-host
+          cp "target/$MUSL_TRIPLE/release/harmony-consonance-host" target/release/
+          python3 scripts/test-consonance-host-package.py \
+            --frontend target/release/harmony \
+            --host target/release/harmony-consonance-host --platform linux
+      - name: Build and constrain signed Consonance host
+        if: runner.os == 'macOS'
+        env:
+          HARMONY_RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          cargo build --locked --release -p harmony-cli \
+            --no-default-features --features consonance-host --bin harmony-consonance-host
+          codesign --force --sign - --identifier org.harmony.consonance-host \
+            --options runtime,hard,kill \
+            --entitlements consonance/vmm-backend/hvf.entitlements.plist \
+            --library-constraint scripts/macos-os-only-library-constraint.coderequirement \
+            target/release/harmony-consonance-host
+          python3 scripts/test-consonance-host-package.py \
+            --frontend target/release/harmony \
+            --host target/release/harmony-consonance-host --platform macos
+      - run: tar -C target/release -czf harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz harmony harmony-consonance-host
       - uses: actions/upload-artifact@v4
         with:
           name: cli-${{ matrix.triple }}
@@ -75,9 +107,14 @@ jobs:
       - name: Qualify the released runtime on hardware
         env:
           GUEST_ISA: ${{ matrix.isa }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          HOST_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
         run: |
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add "$HOST_TARGET"
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           export HARMONY_PLATFORM_INITRAMFS="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/initramfs-oci.cpio.gz"
@@ -87,7 +124,8 @@ jobs:
           else
             export HARMONY_PLATFORM_KERNEL="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/bzImage"
           fi
-          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture
+          timeout -k 10 720 cargo test --locked --release --target "$HOST_TARGET" \
+            -p oci-support --test platform --test process_platform -- --ignored --nocapture
       - name: Package the runtime and checksum
         run: |
           isa=${{ matrix.isa }}
@@ -148,6 +186,8 @@ jobs:
       - name: Build and package the pinned UML profile
         run: |
           nix run .#uml-images -- --output "$RUNNER_TEMP/profile/${{ matrix.isa }}"
+          cmp "$RUNNER_TEMP/profile/${{ matrix.isa }}/profile.json" \
+            "consonance/uml/reviewed-profiles/${{ matrix.isa }}.json"
           tar -C "$RUNNER_TEMP/profile" -czf harmony-uml-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz ${{ matrix.isa }}
           sha256sum harmony-uml-*.tar.gz > harmony-uml-${{ github.ref_name }}-${{ matrix.isa }}.tar.gz.sha256
       - uses: actions/upload-artifact@v4

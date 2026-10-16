@@ -26,61 +26,46 @@ initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
 payload bytes; the empty list keeps the ordinary session identity.
 `identity_with_config_and_payloads` computes the same identity before boot and
-returns an error if the loaded executable cannot be identified. Identity
-admission refuses every ambient `LD_*` name and `GLIBC_TUNABLES` on Linux;
-`DYLD_FRAMEWORK_PATH`, `DYLD_FALLBACK_FRAMEWORK_PATH`,
-`DYLD_VERSIONED_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`,
-`DYLD_FALLBACK_LIBRARY_PATH`, `DYLD_VERSIONED_LIBRARY_PATH`,
-`DYLD_IMAGE_SUFFIX`, `DYLD_INSERT_LIBRARIES`, `DYLD_SHARED_REGION`, and
-`DYLD_SHARED_CACHE_DIR` on macOS. Even empty definitions are refused because
-some loader variables give empty values a meaning. Linux admission reads the
-kernel-saved program-header location from `/proc/self/auxv` and requires the
-identity code to lie in an executable load segment of the opened
-`/proc/self/exe`; both addresses must also have matching file-backed mappings.
-This refuses direct dynamic-loader launches whose command-line options bypass
-the environment check, including when separate Btrfs subvolumes reuse a mapping
-inode number. Linux also hashes the bytes of every executable mapping through
-`/proc/self/mem` at admission, including ordinary dependent libraries, the
-dynamic loader, and the vDSO. Each loader-listed ELF image additionally binds
-its executable and pure read-only load segments in loader order, so a library
-`.rodata` change alters the identity even when its code stays the same. It
-refuses anonymous or memfd executable memory, writable executable memory,
-unreadable bytes, text relocations, and unrecognized special
-executable mappings. The exact conventional x86-64 kernel-emulated `[vsyscall]`
-mapping is represented by its shape and kernel release. This captures resident
-`/etc/ld.so.preload` libraries and injected libraries whose constructor clears
-`LD_PRELOAD` before admission. Writable library initializers, RELRO/GOT values,
-symbol bindings, constructor effects, and changes to executable memory after
-measurement remain outside the Linux identity. On
-macOS, the loaded identity combines the main code-directory hash with the
-mapped executable segments of dyld-listed images, including dylibs and dyld
-itself. macOS library data remains outside that identity. This self-measurement
-is not an adversarial attestation.
+returns an error if the loaded executable cannot be identified.
 
-A loaded-image digest by itself cannot remember a library that was loaded,
-called, and unloaded before the next digest. In-process sessions, UML sessions,
-and session workers capture the process loader's cumulative generation before
-image admission and require it to stay unchanged across operations. Linux uses
-the loader's addition and removal counters; macOS uses dyld image callbacks.
-The check occurs again after a service handler runs and before its answer
-reaches the guest. A changed or unavailable generation fails the session even
-when the current loaded-image digest has returned to its original value. This
-guard covers loader-managed image churn; it does not certify writable library
-initializers or arbitrary changes to already mapped code.
-Cache publication checks the generation after the index callback. If it
+Public identity admission requires a strict host in every build, including
+callers of the library API. On Linux, that host is a fully static ELF executed
+from a write-sealed memfd. Admission rejects a program interpreter, dependent
+libraries, writable executable segments, unsupported executable mappings, and
+ambient loader overrides. It binds the sealed executable to the kernel-loaded
+mapping and measures the complete executable-map census, including the vDSO,
+each time the guard is checked. The full sealed-file digest is measured at
+admission and reused only while the file identity and seals remain stable;
+each recheck still compares every live executable byte with that file. An
+ordinary GNU executable and a dynamic library whose constructor clears its
+loader variable are refused.
+
+On macOS, admission requires the kernel-loaded main executable's CDHash to
+match a strictly validated signed image with hardened runtime, the Hypervisor
+entitlement, and the exact OS-only library constraint. Its loaded-image census
+must stay within the permitted OS cache. In-process sessions, UML sessions,
+session workers, cache operations, and service exchanges recheck strict host
+identity at their operation boundaries. The macOS recheck uses kernel-loaded
+signing state and CDHash, dyld generation, and the shared-cache census;
+path-based worker launch repeats full static signature validation. A changed
+or unavailable identity fails the session before a result is accepted.
+
+Cache publication checks strict host identity after the index callback. If it
 changed, the index revokes the committed entry and any descendants before the
 session returns an error. Another thread can observe a published entry before
 that check completes, so this guard is not an atomic cross-thread publication
-fence; each consuming session checks its own generation before using the cache.
+fence; each consuming session checks its own host identity before using the cache.
 `Session::image_identity()` returns the identifier admitted at construction;
-artifact and guest-operation boundaries perform the live generation checks.
+artifact and guest-operation boundaries perform the live identity checks.
 
 A nonempty `identity_tag` adds a workload domain; it does not replace those
 setup inputs.
 
-On Linux, `cargo run` itself defines `LD_LIBRARY_PATH`; build first and run the
-binary directly with all `LD_*` variables and `GLIBC_TUNABLES` unset when
-creating sessions or workers.
+On Linux, `cargo run` and an ordinary GNU executable cannot create sessions or
+workers. The product CLI routes Consonance work into its sealed static host.
+Native CLI manifests use
+`native_loaded_executable_diagnostic_identity_self` to measure their dynamic
+CLI process.
 
 Sparse snapshot pages are relative to setup RAM, so a session checks this
 identity before importing pages from another session. Cache extents carry the
@@ -354,9 +339,12 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
-UML terminal classification waits for the host console collector to finish, so
-the final kernel output cannot race the panic decision. Crash diagnostics report
-the settled exit status whether the bridge closure or process exit was seen first.
+UML terminal settlement waits for the host process to exit and the console
+collector to finish before reporting the diagnostic tail. The kernel-owned exit
+status decides a panic; console text does not. Crash diagnostics report the
+settled ordinary exit status whether the bridge closure or process exit was
+seen first. A signaled host exit abandons the session instead of producing a
+guest crash or shutdown.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic

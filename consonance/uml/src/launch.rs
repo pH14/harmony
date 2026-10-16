@@ -36,6 +36,8 @@ const SWEEP_LIMIT: Duration = Duration::from_secs(5);
 const BRIDGE_FD: i32 = 3;
 pub(crate) const PHYSMEM_FD: i32 = 4;
 const HIGH_FD: i32 = 10;
+const GUEST_PANIC_STATUS: i32 = 86;
+const HOST_CLONE_FAILURE_STATUS: i32 = 87;
 
 #[cfg(test)]
 static TEST_EVENT_CUT_FINISH_PID: AtomicI32 = AtomicI32::new(0);
@@ -128,6 +130,8 @@ pub struct Launch {
 pub enum ExitReason {
     Exited(i32),
     Signaled(i32),
+    GuestPanic,
+    HostFailure,
     WallLimit,
     ConsoleLimit,
     Killed,
@@ -693,6 +697,10 @@ impl Guest {
 
     pub fn wait(mut self) -> io::Result<Exit> {
         let reason = loop {
+            let stopped = self.stopped()?;
+            if stopped == Some(ExitReason::HostFailure) {
+                break ExitReason::HostFailure;
+            }
             if self.over_limit.load(Ordering::Acquire) {
                 break ExitReason::ConsoleLimit;
             }
@@ -701,7 +709,7 @@ impl Guest {
                 bridge::FAILED => break ExitReason::BridgeFailure,
                 _ => {}
             }
-            if let Some(reason) = self.stopped()? {
+            if let Some(reason) = stopped {
                 break reason;
             }
             std::thread::sleep(POLL);
@@ -710,10 +718,14 @@ impl Guest {
     }
 
     pub(crate) fn stopped(&mut self) -> io::Result<Option<ExitReason>> {
+        let status = self.child.try_wait()?;
+        if status.is_some_and(|status| exit_reason(status) == ExitReason::HostFailure) {
+            return Ok(Some(ExitReason::HostFailure));
+        }
         if self.over_limit.load(Ordering::Acquire) {
             return Ok(Some(ExitReason::ConsoleLimit));
         }
-        if let Some(status) = self.child.try_wait()? {
+        if let Some(status) = status {
             return Ok(Some(exit_reason(status)));
         }
         if self.started.elapsed() >= self.wall_limit {
@@ -730,7 +742,12 @@ impl Guest {
         self.finished = true;
         let wall = self.started.elapsed();
         kill_group(self.pid);
-        self.child.wait()?;
+        let status = self.child.wait()?;
+        let reason = if exit_reason(status) == ExitReason::HostFailure {
+            ExitReason::HostFailure
+        } else {
+            reason
+        };
         let leftovers = sweep(self.pid);
         #[cfg(test)]
         if reason == ExitReason::EventCut
@@ -763,9 +780,14 @@ impl Guest {
         let tail = self.console.lock().unwrap_or_else(PoisonError::into_inner);
         let (console, console_bytes) = (tail.bytes(), tail.total());
         drop(tail);
-        let reason = if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
+        let reason = if reason == ExitReason::HostFailure {
+            reason
+        } else if reason != ExitReason::Killed && self.over_limit.load(Ordering::Acquire) {
             ExitReason::ConsoleLimit
-        } else if matches!(reason, ExitReason::Exited(_) | ExitReason::Signaled(_)) {
+        } else if matches!(
+            reason,
+            ExitReason::Exited(_) | ExitReason::Signaled(_) | ExitReason::GuestPanic
+        ) {
             match self.bridge_state.load(Ordering::Acquire) {
                 bridge::CUT => ExitReason::EventCut,
                 bridge::FAILED => ExitReason::BridgeFailure,
@@ -814,6 +836,8 @@ fn now() -> Instant {
 
 fn exit_reason(status: ExitStatus) -> ExitReason {
     match (status.code(), status.signal()) {
+        (Some(GUEST_PANIC_STATUS), _) => ExitReason::GuestPanic,
+        (Some(HOST_CLONE_FAILURE_STATUS), _) => ExitReason::HostFailure,
         (Some(code), _) => ExitReason::Exited(code),
         (None, Some(signal)) => ExitReason::Signaled(signal),
         (None, None) => ExitReason::Signaled(0),
@@ -911,6 +935,26 @@ mod tests {
     use super::*;
 
     #[cfg(target_os = "linux")]
+    const UNAME26: libc::c_int = 0x0020000;
+
+    #[test]
+    fn kernel_statuses_are_distinct_from_guest_exit_statuses() {
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(GUEST_PANIC_STATUS << 8)),
+            ExitReason::GuestPanic
+        );
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(HOST_CLONE_FAILURE_STATUS << 8)),
+            ExitReason::HostFailure
+        );
+        assert_eq!(exit_reason(ExitStatus::from_raw(0)), ExitReason::Exited(0));
+        assert_eq!(
+            exit_reason(ExitStatus::from_raw(7 << 8)),
+            ExitReason::Exited(7)
+        );
+    }
+
+    #[cfg(target_os = "linux")]
     fn deny_fixed_layout(command: &mut Command, deny_zero: bool) {
         let mut program = [
             libc::sock_filter {
@@ -974,7 +1018,7 @@ mod tests {
                 if libc::personality(0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                if libc::personality(UNAME26 as libc::c_ulong) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
@@ -991,7 +1035,7 @@ mod tests {
                     if libc::personality(0) < 0 {
                         return Err(io::Error::last_os_error());
                     }
-                    if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                    if libc::personality(UNAME26 as libc::c_ulong) < 0 {
                         return Err(io::Error::last_os_error());
                     }
                 }
@@ -1316,7 +1360,7 @@ mod tests {
         assert!(output.status.success());
         let inherited =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
-        assert_ne!(inherited & libc::UNAME26 as u32, 0);
+        assert_ne!(inherited & UNAME26 as u32, 0);
         assert_eq!(inherited & libc::ADDR_NO_RANDOMIZE as u32, 0);
 
         let mut command = Command::new("/bin/cat");
@@ -1345,7 +1389,7 @@ mod tests {
         assert!(output.status.success());
         let inherited =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
-        assert_eq!(inherited, libc::UNAME26 as u32);
+        assert_eq!(inherited, UNAME26 as u32);
 
         let mut command = Command::new("/bin/cat");
         command.arg("/proc/self/personality");
@@ -1417,9 +1461,7 @@ mod tests {
         let output = unsafe {
             let inherited = libc::personality(u32::MAX as libc::c_ulong);
             assert!(inherited >= 0);
-            if libc::personality((inherited as libc::c_ulong) | (libc::UNAME26 as libc::c_ulong))
-                < 0
-            {
+            if libc::personality((inherited as libc::c_ulong) | (UNAME26 as libc::c_ulong)) < 0 {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::EPERM) {
                     return;
@@ -1434,7 +1476,7 @@ mod tests {
         let flags =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
         assert_ne!(flags & libc::ADDR_NO_RANDOMIZE as u32, 0);
-        assert_eq!(flags & libc::UNAME26 as u32, 0);
+        assert_eq!(flags & UNAME26 as u32, 0);
     }
 
     #[test]
@@ -1716,6 +1758,18 @@ mod tests {
         assert_eq!(exit.console_bytes, 20);
         assert!(exit.leftovers.is_empty());
         assert!(exit.work_removed);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn console_text_cannot_claim_host_clone_failure() {
+        let parent = tempfile::tempdir().unwrap();
+        let launch = launch(parent.path());
+        let exit = shell(&launch, "echo Harmony UML host clone failed; exit 0")
+            .wait()
+            .unwrap();
+        assert_eq!(exit.reason, ExitReason::Exited(0));
     }
 
     #[test]

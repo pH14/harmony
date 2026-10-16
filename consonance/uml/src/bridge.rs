@@ -311,17 +311,10 @@ impl Services {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     pub(crate) fn exchange_guarded(
         &mut self,
-        expected: host_code_identity::LoaderEpoch,
+        check: impl Fn() -> Result<(), String>,
         request: &[u8],
         response: &mut [u8],
     ) -> Result<Reply, String> {
-        let check = || -> Result<(), String> {
-            let actual = host_code_identity::loader_epoch().map_err(|error| error.to_string())?;
-            if actual != expected {
-                return Err("host loader changed after UML session admission".into());
-            }
-            Ok(())
-        };
         check()?;
         let result = self.exchange(request, response);
         check()?;
@@ -1326,7 +1319,17 @@ mod loader_epoch_tests {
         request.truncate(STAMP_LEN + length);
         let guard = host_code_identity::loader_epoch().unwrap();
         assert!(matches!(
-            services.exchange_guarded(guard, &request, &mut response),
+            services.exchange_guarded(
+                || {
+                    let actual = host_code_identity::loader_epoch().map_err(|error| error.to_string())?;
+                    if actual != guard {
+                        return Err("host loader changed after UML session admission".into());
+                    }
+                    Ok(())
+                },
+                &request,
+                &mut response,
+            ),
             Err(message) if message.contains("host loader changed")
         ));
         assert_eq!(

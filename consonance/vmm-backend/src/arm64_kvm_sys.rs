@@ -172,7 +172,7 @@ impl LiveKvm {
         // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
         // input structure required by KVM_ENABLE_CAP. The kernel only reads it
         // for this ioctl; the reference remains live for the entire call.
-        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL as _, &cap) };
         if result == 0 {
             Ok(())
         } else {
@@ -196,7 +196,7 @@ impl LiveKvm {
         // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
         // input structure required by KVM_ENABLE_CAP. The kernel only reads it
         // for this ioctl; the reference remains live for the entire call.
-        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL as _, &cap) };
         if result == 0 {
             Ok(())
         } else {
@@ -397,7 +397,7 @@ impl Arm64Kvm for LiveKvm {
         let result = unsafe {
             libc::ioctl(
                 self._vm.as_raw_fd(),
-                KVM_CLEAR_DIRTY_LOG_IOCTL,
+                KVM_CLEAR_DIRTY_LOG_IOCTL as _,
                 std::ptr::from_ref(&clear),
             )
         };

@@ -37,7 +37,10 @@ use sha2::{Digest, Sha256};
 pub use crate::SharedState;
 pub use crate::nes::STATE_HEADER_LEN;
 
-#[cfg(not(miri))]
+#[cfg(all(not(miri), target_os = "linux", not(target_env = "gnu")))]
+#[path = "quicknes/identity_musl.rs"]
+mod identity;
+#[cfg(all(not(miri), any(not(target_os = "linux"), target_env = "gnu")))]
 mod identity;
 #[cfg(not(miri))]
 mod loader_guard;

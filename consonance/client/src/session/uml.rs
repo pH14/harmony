@@ -61,7 +61,7 @@ fn checked_cache_sidecar(identity: [u8; 32], sidecar: &[u8]) -> Result<&[u8], Bo
 
 fn root_identity(
     config: &UmlLaunch,
-    profile: &VerifiedProfile,
+    profile_identity: &str,
     host: &uml::HostIdentity,
     initramfs: &[u8],
     loaded_executable: &str,
@@ -70,7 +70,7 @@ fn root_identity(
     identity.update(b"harmony-uml-root-v6\0");
     identity.update((loaded_executable.len() as u64).to_le_bytes());
     identity.update(loaded_executable.as_bytes());
-    identity.update(profile.identity_sha256().as_bytes());
+    identity.update(profile_identity.as_bytes());
     identity.update(host.identity_sha256().as_bytes());
     identity.update(config.seed.to_le_bytes());
     identity.update(config.memory_mib.to_le_bytes());
@@ -83,6 +83,33 @@ fn root_identity(
     identity.update((initramfs.len() as u64).to_le_bytes());
     identity.update(initramfs);
     identity.finalize().into()
+}
+
+fn require_profile_identity(actual: &str, expected: &str) -> Result<(), Box<dyn Error>> {
+    if actual != expected {
+        return Err(SessionError::Control(
+            "the UML profile identity changed after workload admission".into(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn admitted_initramfs(
+    launch: &Launch,
+    expected_sha256: [u8; 32],
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let initramfs = launch
+        .initramfs_bytes()?
+        .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?;
+    let actual_sha256: [u8; 32] = Sha256::digest(&initramfs).into();
+    if actual_sha256 != expected_sha256 {
+        return Err(SessionError::Control(
+            "the pinned UML initramfs changed after workload admission".into(),
+        )
+        .into());
+    }
+    Ok(initramfs)
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -111,7 +138,7 @@ struct Counters {
 pub struct UmlSession {
     session: Option<uml::Session>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
-    profile: VerifiedProfile,
+    profile: Option<VerifiedProfile>,
     launch: Launch,
     host: uml::HostIdentity,
     seed: u64,
@@ -148,13 +175,13 @@ fn started() -> Instant {
 
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
+        let (loaded_executable, loaded_image_guard) =
+            crate::image_identity::LoadedImageGuard::identity()?;
         let profile = uml::Profile::load(&config.profile)?;
-        if profile.identity_sha256() != config.expected_profile_identity_sha256 {
-            return Err(SessionError::Control(
-                "the UML profile identity changed after workload admission".into(),
-            )
-            .into());
-        }
+        require_profile_identity(
+            profile.identity_sha256(),
+            &config.expected_profile_identity_sha256,
+        )?;
         let mut launch = Launch::new(config.work_parent.clone());
         launch.memory_mib = config.memory_mib;
         launch.set_initramfs(&config.initramfs)?;
@@ -165,19 +192,14 @@ impl UmlSession {
         launch.console_tail_bytes = CONSOLE_TAIL;
         launch.bind_expected_host(config.expected_host.clone())?;
         let host = launch.host_identity()?;
-        let initramfs = launch
-            .initramfs_bytes()?
-            .ok_or_else(|| SessionError::Control("the pinned initramfs is missing".into()))?;
-        let actual_initramfs_sha256: [u8; 32] = Sha256::digest(&initramfs).into();
-        if actual_initramfs_sha256 != config.expected_initramfs_sha256 {
-            return Err(SessionError::Control(
-                "the pinned UML initramfs changed after workload admission".into(),
-            )
-            .into());
-        }
-        let (loaded_executable, loaded_image_guard) =
-            crate::image_identity::LoadedImageGuard::identity()?;
-        let root_identity = root_identity(config, &profile, &host, &initramfs, &loaded_executable);
+        let initramfs = admitted_initramfs(&launch, config.expected_initramfs_sha256)?;
+        let root_identity = root_identity(
+            config,
+            profile.identity_sha256(),
+            &host,
+            &initramfs,
+            &loaded_executable,
+        );
         let checkpoints = Checkpoints::new();
         let mut session = uml::Session::spawn(
             &launch,
@@ -212,7 +234,7 @@ impl UmlSession {
         let mut this = Self {
             session: Some(session),
             loaded_image_guard,
-            profile,
+            profile: Some(profile),
             launch,
             host,
             seed: config.seed,
@@ -300,6 +322,16 @@ impl UmlSession {
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
         }
+        if self
+            .session
+            .as_ref()
+            .is_none_or(|session| !session.paused())
+            && self.profile.is_none()
+        {
+            return Err(
+                SessionError::Control("the UML session has no admitted profile".into()).into(),
+            );
+        }
         let checkpoint = self
             .snapshots
             .get(&snapshot)
@@ -320,9 +352,12 @@ impl UmlSession {
             return Ok(());
         }
         self.session = None;
+        let profile = self.profile.as_ref().ok_or_else(|| {
+            SessionError::Control("the UML session has no admitted profile".into())
+        })?;
         let session = uml::Session::spawn(
             &self.launch,
-            &self.profile,
+            profile,
             &self.checkpoints,
             Some(checkpoint),
             Some(self.progress_limit),
@@ -345,7 +380,7 @@ impl UmlSession {
             .as_ref()
             .map(uml::Session::console_tail)
             .unwrap_or_default();
-        let kind = if detail.contains("Kernel panic") {
+        let kind = if terminal_reason == uml::ExitReason::GuestPanic {
             CrashKind::Panic
         } else {
             CrashKind::Shutdown
@@ -737,55 +772,6 @@ mod tests {
     use crate::cache::LocalIndex;
     use environment::input_spec::nominal_factory;
     use std::path::PathBuf;
-    use uml::{Artifact, Profile, VirtualTimeCosts};
-
-    fn profile_fixture() -> (tempfile::TempDir, VerifiedProfile) {
-        let directory = tempfile::tempdir().unwrap();
-        let mut elf = vec![0_u8; 120];
-        elf[..4].copy_from_slice(b"\x7fELF");
-        elf[4] = 2;
-        elf[5] = 1;
-        elf[0x20..0x28].copy_from_slice(&64_u64.to_le_bytes());
-        elf[0x36..0x38].copy_from_slice(&56_u16.to_le_bytes());
-        elf[0x38..0x3a].copy_from_slice(&1_u16.to_le_bytes());
-        elf[64..68].copy_from_slice(&1_u32.to_le_bytes());
-        std::fs::write(directory.path().join("linux"), elf).unwrap();
-        std::fs::write(directory.path().join("config"), b"config").unwrap();
-        std::fs::write(directory.path().join("rootfs"), b"rootfs").unwrap();
-        let artifact = |name: &str| Artifact {
-            name: name.into(),
-            sha256: format!(
-                "{:x}",
-                Sha256::digest(std::fs::read(directory.path().join(name)).unwrap())
-            ),
-        };
-        let profile = Profile {
-            schema: 4,
-            architecture: std::env::consts::ARCH.into(),
-            kernel_version: String::new(),
-            userspace: "seccomp".into(),
-            patch_series_sha256: String::new(),
-            host_libraries: Vec::new(),
-            executable: artifact("linux"),
-            config: artifact("config"),
-            rootfs: artifact("rootfs"),
-            virtual_time: VirtualTimeCosts {
-                syscall_vns: 1,
-                clock_read_vns: 1,
-            },
-        };
-        std::fs::write(
-            directory.path().join("profile.json"),
-            serde_json::to_vec(&profile).unwrap(),
-        )
-        .unwrap();
-        let profile = uml::Profile::load(directory.path()).unwrap();
-        (directory, profile)
-    }
-
-    fn profile() -> VerifiedProfile {
-        profile_fixture().1
-    }
 
     fn host() -> uml::HostIdentity {
         uml::HostIdentity {
@@ -801,8 +787,8 @@ mod tests {
     fn unbooted_session() -> UmlSession {
         UmlSession {
             session: None,
-            loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
-            profile: profile(),
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            profile: None,
             launch: Launch::new(PathBuf::new()),
             host: host(),
             seed: 7,
@@ -817,6 +803,128 @@ mod tests {
             abandoned: false,
             counters: Counters::default(),
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn terminal_session(script: &str, parent: &tempfile::TempDir) -> UmlSession {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", script]).process_group(0);
+        let checkpoints = Checkpoints::new();
+        let guest = uml::Session::start(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(5)),
+        )
+        .unwrap();
+        let mut session = unbooted_session();
+        session.session = Some(guest);
+        session.checkpoints = checkpoints;
+        session.progress_limit = Duration::from_secs(5);
+        session
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn host_signal_abandons_instead_of_reporting_guest_shutdown() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let parent = tempfile::tempdir().unwrap();
+        let mut session = terminal_session("kill -KILL $$", &parent);
+        let error = session.run_until(1).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Control(message)) if message.contains("Signaled(9)")
+        ));
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .run_until(1)
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn host_clone_status_abandons_instead_of_reporting_guest_shutdown() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let parent = tempfile::tempdir().unwrap();
+        let mut session = terminal_session("exit 87", &parent);
+        let error = session.run_until(1).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<SessionError>(),
+            Some(SessionError::Control(message)) if message.contains("HostFailure")
+        ));
+        assert!(session.abandoned());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn clean_guest_exit_remains_a_terminal_shutdown() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let parent = tempfile::tempdir().unwrap();
+        let mut session = terminal_session("printf 'Kernel panic: forged\\n'; exit 0", &parent);
+        let stop = session.run_until(1).unwrap();
+        let StopReason::Crash { info, .. } = stop else {
+            panic!("expected a terminal guest stop");
+        };
+        assert_eq!(info.kind, CrashKind::Shutdown);
+        assert!(String::from_utf8_lossy(&info.detail).contains("Exited(0)"));
+        assert!(String::from_utf8_lossy(&info.detail).contains("Kernel panic: forged"));
+        assert!(!session.abandoned());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[ignore = "requires the reviewed UML bundle on Linux"]
+    fn reviewed_kernel_panic_is_a_public_client_crash() -> Result<(), Box<dyn Error>> {
+        let directory = PathBuf::from(std::env::var("HARMONY_UML_REVIEWED_PROFILE")?);
+        let profile = uml::Profile::load(&directory)?;
+        let parent = tempfile::tempdir()?;
+        let mut launch = Launch::new(parent.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.kernel_arguments.push("harmony_fixture=exit".into());
+        launch.wall_limit = Duration::from_secs(30);
+        launch.console_tail_bytes = CONSOLE_TAIL;
+        let checkpoints = Checkpoints::new();
+        let guest = uml::Session::spawn(
+            &launch,
+            &profile,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(30)),
+        )?;
+        let mut session = unbooted_session();
+        session.session = Some(guest);
+        session.checkpoints = checkpoints;
+        session.progress_limit = Duration::from_secs(30);
+        let stop = session.run_until(u64::MAX)?;
+        let StopReason::Crash { info, .. } = stop else {
+            panic!("expected a kernel panic to produce a public crash stop: {stop:?}");
+        };
+        assert_eq!(info.kind, CrashKind::Panic);
+        assert!(String::from_utf8_lossy(&info.detail).contains("Kernel panic"));
+        assert!(!session.abandoned());
+        Ok(())
     }
 
     #[test]
@@ -838,6 +946,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn capture_timeout_abandons_with_a_typed_watchdog_error() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -863,7 +974,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::capture_timeout_abandons_with_a_typed_watchdog_error --nocapture")
-            .arg(std::env::current_exe().unwrap())
+            .arg(format!("/proc/{}/exe", std::process::id()))
             .env("HARMONY_UML_CAPTURE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -886,6 +997,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn paused_restore_timeout_abandons_with_a_typed_watchdog_error() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -926,7 +1040,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error --nocapture")
-            .arg(std::env::current_exe().unwrap())
+            .arg(format!("/proc/{}/exe", std::process::id()))
             .env("HARMONY_UML_RESTORE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -955,6 +1069,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn rejected_service_branch_cannot_leave_a_usable_rewound_uml_session() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -1001,7 +1118,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session --nocapture")
-            .arg(std::env::current_exe().unwrap())
+            .arg(format!("/proc/{}/exe", std::process::id()))
             .env("HARMONY_UML_FAILED_BRANCH_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -1069,6 +1186,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn service_factory_aliasing_the_live_handler_abandons_the_session() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -1155,7 +1275,7 @@ mod tests {
             command
                 .arg("-c")
                 .arg("exec \"$0\" --exact session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session --nocapture")
-                .arg(std::env::current_exe().unwrap())
+                .arg(format!("/proc/{}/exe", std::process::id()))
                 .env("HARMONY_UML_ALIASED_SERVICE_CHILD", "1")
                 .process_group(0);
             let checkpoints = Checkpoints::new();
@@ -1265,52 +1385,37 @@ mod tests {
 
     #[test]
     fn profile_changed_after_admission_rejects_before_guest_boot() {
-        let (directory, admitted) = profile_fixture();
-        let path = directory.path().join("profile.json");
-        let mut changed: Profile = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        changed.kernel_version.push_str("-changed");
-        std::fs::write(&path, serde_json::to_vec(&changed).unwrap()).unwrap();
-        let config = UmlLaunch {
-            profile: directory.path().to_path_buf(),
-            expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
-            expected_host: host(),
-            initramfs: directory.path().join("rootfs"),
-            expected_initramfs_sha256: Sha256::digest(b"rootfs").into(),
-            memory_mib: 128,
-            kernel_arguments: Vec::new(),
-            work_parent: directory.path().to_path_buf(),
-            seed: 1,
-            setup_budget: 1,
-            progress_limit: Duration::from_secs(1),
-        };
-        let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
+        let error = require_profile_identity("changed", "admitted").unwrap_err();
         assert!(error.to_string().contains("profile identity changed"));
+        require_profile_identity("admitted", "admitted").unwrap();
     }
 
     #[test]
     fn initramfs_changed_after_admission_rejects_before_guest_boot() {
-        let (directory, admitted) = profile_fixture();
+        let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("override.cpio");
         std::fs::write(&path, b"changed initramfs").unwrap();
-        let config = UmlLaunch {
-            profile: directory.path().to_path_buf(),
-            expected_profile_identity_sha256: admitted.identity_sha256().to_owned(),
-            expected_host: uml::HostIdentity::current().unwrap(),
-            initramfs: path,
-            expected_initramfs_sha256: Sha256::digest(b"admitted initramfs").into(),
-            memory_mib: 128,
-            kernel_arguments: Vec::new(),
-            work_parent: directory.path().to_path_buf(),
-            seed: 1,
-            setup_budget: 1,
-            progress_limit: Duration::from_secs(1),
-        };
-        let error = UmlSession::boot(&config, nominal_factory()).err().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.set_initramfs(&path).unwrap();
+        let expected = Sha256::digest(b"admitted initramfs").into();
+        let error = admitted_initramfs(&launch, expected).unwrap_err();
         assert!(
             error
                 .to_string()
                 .contains("initramfs changed after workload admission")
         );
+        assert_eq!(
+            admitted_initramfs(&launch, Sha256::digest(b"changed initramfs").into()).unwrap(),
+            b"changed initramfs"
+        );
+    }
+
+    #[test]
+    fn missing_admitted_profile_cannot_restore_a_fresh_guest() {
+        let mut session = unbooted_session();
+        let error = session.restore(SnapId(1)).unwrap_err();
+        assert!(error.to_string().contains("has no admitted profile"));
+        assert!(session.session.is_none());
     }
 
     #[test]
@@ -1349,11 +1454,11 @@ mod tests {
 
     #[test]
     fn root_identity_refuses_a_different_admitted_guest_processor() {
-        let profile = profile();
+        let profile_identity = "admitted-profile";
         let host = host();
         let config = UmlLaunch {
             profile: PathBuf::new(),
-            expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
+            expected_profile_identity_sha256: profile_identity.into(),
             expected_host: host.clone(),
             initramfs: PathBuf::new(),
             expected_initramfs_sha256: Sha256::digest(b"initramfs").into(),
@@ -1364,18 +1469,31 @@ mod tests {
             setup_budget: 100,
             progress_limit: Duration::from_secs(1),
         };
-        let local = root_identity(&config, &profile, &host, b"initramfs", "loaded-a");
+        let local = root_identity(&config, profile_identity, &host, b"initramfs", "loaded-a");
         let mut foreign_host = host.clone();
         foreign_host.processor ^= 1;
-        let foreign = root_identity(&config, &profile, &foreign_host, b"initramfs", "loaded-a");
+        let foreign = root_identity(
+            &config,
+            profile_identity,
+            &foreign_host,
+            b"initramfs",
+            "loaded-a",
+        );
         assert_ne!(local, foreign);
         let mut foreign_boot = host.clone();
         foreign_boot.boot_cpuinfo.push_str("cache_alignment: 128\n");
         assert_ne!(
             local,
-            root_identity(&config, &profile, &foreign_boot, b"initramfs", "loaded-a")
+            root_identity(
+                &config,
+                profile_identity,
+                &foreign_boot,
+                b"initramfs",
+                "loaded-a"
+            )
         );
-        let foreign_executable = root_identity(&config, &profile, &host, b"initramfs", "loaded-b");
+        let foreign_executable =
+            root_identity(&config, profile_identity, &host, b"initramfs", "loaded-b");
         assert_ne!(local, foreign_executable);
 
         let index = LocalIndex::new(1 << 20);
@@ -1405,11 +1523,11 @@ mod tests {
 
     #[test]
     fn root_identity_separates_boot_arguments_from_initramfs_bytes() {
-        let profile = profile();
+        let profile_identity = "admitted-profile";
         let host = host();
         let mut config = UmlLaunch {
             profile: PathBuf::new(),
-            expected_profile_identity_sha256: profile.identity_sha256().to_owned(),
+            expected_profile_identity_sha256: profile_identity.into(),
             expected_host: host.clone(),
             initramfs: PathBuf::new(),
             expected_initramfs_sha256: Sha256::digest(b"070701").into(),
@@ -1420,11 +1538,18 @@ mod tests {
             setup_budget: 100,
             progress_limit: Duration::from_secs(1),
         };
-        let with_empty_argument = root_identity(&config, &profile, &host, b"070701", "loaded-a");
+        let with_empty_argument =
+            root_identity(&config, profile_identity, &host, b"070701", "loaded-a");
         config.kernel_arguments.clear();
         let mut padded_initramfs = [0_u8; 8].to_vec();
         padded_initramfs.extend_from_slice(b"070701");
-        let with_padding = root_identity(&config, &profile, &host, &padded_initramfs, "loaded-a");
+        let with_padding = root_identity(
+            &config,
+            profile_identity,
+            &host,
+            &padded_initramfs,
+            "loaded-a",
+        );
         assert_ne!(with_empty_argument, with_padding);
     }
 }

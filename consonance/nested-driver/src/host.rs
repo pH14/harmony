@@ -703,19 +703,12 @@ mod tests {
         .unwrap();
         assert!(result.actions.is_empty());
         assert_eq!(result.preparation_failure, Some(vec![observation.clone()]));
-        let workload = NestedWorkload::new(
-            &[],
-            &[],
-            &Options {
-                seed: 42,
-                executions: 1,
-                ram_mib: 256,
-                wall_seconds: None,
-                output: PathBuf::new(),
-            },
-            [0; 32],
-        )
-        .unwrap();
+        let workload = NestedWorkload {
+            kernel: Vec::new(),
+            initramfs: Vec::new(),
+            config: SessionConfig::default(),
+            identity: "nested-report-fixture".into(),
+        };
         let mut evidence = Evidence::default();
         workload
             .merge_preparation_failure(&mut evidence, result.preparation_failure.as_ref().unwrap());
