@@ -232,24 +232,16 @@ mod tests {
     ))]
     #[test]
     fn consonance_policy_binds_the_admitted_identity_before_guest_replay() {
-        let kernel = b"kernel";
-        let initramfs = b"initramfs";
         let expected = "consonance-whole-vm-v3;session=admitted-test-session";
-        let game = SmbGame::<super::ConsonanceMachine, super::ConsonancePortable> {
-            rom: synthetic_nrom(),
-            core_path: super::PathBuf::new(),
-            core_sha256: String::new(),
-            execution_sha256: String::new(),
-            identity: format!(
-                "{expected};result_digest=postcard-1.1.3-logical-xsave-sha256-hex-v4"
-            ),
-            backend: super::SmbBackend::Consonance {
-                kernel: kernel.to_vec(),
-                initramfs: initramfs.to_vec(),
-            },
-            machine: super::PhantomData,
-            loopback: false,
-        };
+        let game = SmbGame::<
+            machine::consonance::ConsonanceMachine,
+            machine::consonance::ConsonancePortable,
+        >::with_targets(
+            &synthetic_nrom(),
+            format!("{expected};result_digest=semantic-postcard-1.1.3-sha256-hex-v1"),
+            super::CONSONANCE_SNAPSHOT_CHECKPOINT_FORMAT,
+            Box::new(|| Err("the policy check never builds a target".to_owned())),
+        );
         assert!(game.emulator_identity().starts_with(expected));
 
         let run = SmbCampaignRun {
