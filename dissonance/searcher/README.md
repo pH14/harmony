@@ -425,7 +425,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_pace_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_stale_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
@@ -485,13 +485,19 @@ the rank below it, and so on down. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
 fall back past several stalled tiers at once, which matters when the states
 that decide a later death lie several tiers back. Every rank below that block
-then weighs at least the block's per-rank weight divided by `(k + 1)^2`,
-where `k` is the rank's index from the top and 2 is the exponent the cell
-weights use. With no fall, the leading tier keeps at least `6 / pi^2`, about
-61%, of tier draws, and rank `k` keeps a share that shrinks polynomially with
-`k` instead of by a factor of eight per rank. A live
-branch many ranks under a dead end therefore keeps drawing without any rank
-having to fall first. Within the tier each cell
+then weighs at least `b * s / (k + 1)^2`, where `b` is the block's per-rank
+weight, `k` is the rank's index from the top, and 2 is the exponent the cell
+weights use. The staleness `s = D / (D + G)` measures how long the deepest
+progress value has gone without rising: `D` is the tier draws since it last
+rose, and `G` is the mean tier draws per rise so far, all tier draws divided
+by the number of rises. A frontier that keeps rising leaves `s` near zero and
+the eight-to-one ratio unchanged. A stuck frontier drives `s` toward one, and
+then rank `k` keeps a share that shrinks polynomially with `k` instead of by a
+factor of eight per rank, while the leading tier keeps at least `6 / pi^2`,
+about 61%, of tier draws when nothing has fallen. A live branch many ranks
+under a dead end therefore keeps drawing without any rank having to fall
+first. `SelectorAccounting` keeps `frontier_rises` and `frontier_mark`, the
+tier draw count at the last rise, so checkpoints and replay rebuild `s`. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
