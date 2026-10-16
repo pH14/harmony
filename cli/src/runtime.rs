@@ -119,14 +119,7 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     select_existing_runtime(c, &directories, kernel_name)?;
     if c.base_initramfs.is_none() || (c.backend != Backend::Uml && c.kernel.is_none()) {
         let directory = acquire("guest", isa, offline)?;
-        let pair = directory.join(isa);
-        let kernel = pair.join(kernel_name);
-        let base = pair.join("initramfs-oci.cpio.gz");
-        c.runtime_qualification = Some(verify_runtime_pair(&kernel, &base, kernel_name)?);
-        c.base_initramfs.get_or_insert(base);
-        if c.backend != Backend::Uml {
-            c.kernel.get_or_insert(kernel);
-        }
+        select_acquired_runtime(c, &directory, isa, kernel_name)?;
     }
     if c.backend == Backend::Uml {
         if c.uml_profile.is_none() {
@@ -141,6 +134,23 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     {
         *path = fs::canonicalize(&*path)
             .map_err(|e| format!("runtime artifact {}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn select_acquired_runtime(
+    c: &mut Consonance,
+    directory: &Path,
+    isa: &str,
+    kernel_name: &str,
+) -> Result<()> {
+    let pair = directory.join(isa);
+    let kernel = pair.join(kernel_name);
+    let base = pair.join("initramfs-oci.cpio.gz");
+    c.runtime_qualification = Some(verify_runtime_pair(&kernel, &base, kernel_name)?);
+    c.base_initramfs.get_or_insert(base);
+    if c.backend != Backend::Uml {
+        c.kernel.get_or_insert(kernel);
     }
     Ok(())
 }
@@ -741,22 +751,50 @@ mod tests {
     }
 
     #[test]
-    fn cached_guest_pair_without_manifest_fails_clearly() {
+    fn acquired_cached_guest_pair_requires_current_manifest() {
         let root = tempfile::tempdir().unwrap();
-        write_pair(root.path(), b"kernel", b"base", SOURCE_DIGEST, "x86_64");
+        let pair = root.path().join("x86_64");
+        write_pair(&pair, b"kernel", b"base", SOURCE_DIGEST, "x86_64");
         fs::write(root.path().join(".complete"), b"release archive digest").unwrap();
-        fs::remove_file(root.path().join("runtime-manifest.json")).unwrap();
+        for source in [None, Some("0".repeat(64))] {
+            write_pair(
+                &pair,
+                b"kernel",
+                b"base",
+                source.as_deref().unwrap_or(SOURCE_DIGEST),
+                "x86_64",
+            );
+            if source.is_none() {
+                fs::remove_file(pair.join("runtime-manifest.json")).unwrap();
+            }
+            let mut rejected = Consonance {
+                backend: Backend::Kvm,
+                ..Consonance::default()
+            };
+            let error = select_acquired_runtime(&mut rejected, root.path(), "x86_64", "bzImage")
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("runtime manifest"), "{error}");
+            if source.is_none() {
+                assert!(error.contains("outdated cached guest bundle"), "{error}");
+            }
+            assert!(rejected.kernel.is_none());
+            assert!(rejected.base_initramfs.is_none());
+            assert!(rejected.runtime_qualification.is_none());
+        }
 
-        let error = verify_runtime_pair(
-            &root.path().join("bzImage"),
-            &root.path().join("initramfs-oci.cpio.gz"),
-            "bzImage",
-        )
-        .unwrap_err()
-        .to_string();
-
-        assert!(error.contains("runtime manifest"), "{error}");
-        assert!(error.contains("outdated cached guest bundle"), "{error}");
+        write_pair(&pair, b"kernel", b"base", SOURCE_DIGEST, "x86_64");
+        let mut current = Consonance {
+            backend: Backend::Kvm,
+            ..Consonance::default()
+        };
+        select_acquired_runtime(&mut current, root.path(), "x86_64", "bzImage").unwrap();
+        assert_eq!(current.kernel, Some(pair.join("bzImage")));
+        assert_eq!(
+            current.base_initramfs,
+            Some(pair.join("initramfs-oci.cpio.gz"))
+        );
+        assert!(current.runtime_qualification.is_some());
     }
 
     #[test]
