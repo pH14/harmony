@@ -137,7 +137,8 @@ manifest check. Supplying both paths explicitly permits a custom layout, for
 which the caller must provide a qualified kernel and base initramfs pair.
 An explicit UML base initramfs is likewise the caller's choice. Capturing
 artifact hashes for replay identity does not qualify an older kernel for the
-current boot command line.
+current boot command line. The source key includes the CLI sources that supply
+and assemble the default x86 and Arm kernel command lines.
 
 NES defaults to the QuickNES runner:
 
