@@ -970,6 +970,20 @@ mod tests {
             let decoded: CampaignStreamRecord<(), FaultArchiveKey> =
                 serde_json::from_str(&line).unwrap();
             assert_eq!(decoded, record);
+            if digest == 0 {
+                for noncanonical in ["+0", "00"] {
+                    let changed = line.replacen(
+                        "\"digest\":\"0\"",
+                        &format!("\"digest\":\"{noncanonical}\""),
+                        1,
+                    );
+                    assert_ne!(changed, line);
+                    assert!(
+                        serde_json::from_str::<CampaignStreamRecord<(), FaultArchiveKey>>(&changed)
+                            .is_err()
+                    );
+                }
+            }
         }
     }
 

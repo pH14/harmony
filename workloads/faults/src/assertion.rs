@@ -164,9 +164,14 @@ mod digest_serde {
         D: Deserializer<'de>,
     {
         if deserializer.is_human_readable() {
-            String::deserialize(deserializer)?
-                .parse()
-                .map_err(serde::de::Error::custom)
+            let decimal = String::deserialize(deserializer)?;
+            let digest: u128 = decimal.parse().map_err(serde::de::Error::custom)?;
+            if digest.to_string() != decimal {
+                return Err(serde::de::Error::custom(
+                    "assertion digest is not canonical decimal",
+                ));
+            }
+            Ok(digest)
         } else {
             u128::deserialize(deserializer)
         }
