@@ -63,6 +63,107 @@ jobs:
       - name: Configuration and investigation
         run: cargo nextest run --all-features -p harmony-cli
 
+  consonance-host:
+    name: Consonance Host
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain and musl linker
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-consonance-host-linux
+      - name: Build both packaged executables
+        run: |
+          cargo build --locked -p harmony-cli --bin harmony
+          cargo build --locked -p harmony-cli --target x86_64-unknown-linux-musl \
+            --no-default-features --features consonance-host --bin harmony-consonance-host
+      - name: Prove sealed launch and native QuickNES routing
+        run: |
+          python3 scripts/test-consonance-host-package.py \
+            --frontend target/debug/harmony \
+            --host target/x86_64-unknown-linux-musl/debug/harmony-consonance-host \
+            --platform linux
+
+  consonance-host-arm64:
+    name: Consonance Host Arm64
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    env:
+      CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+      CC_aarch64_unknown_linux_musl: musl-gcc
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain and musl linker
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          rustup target add aarch64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-consonance-host-arm64
+      - name: Build both packaged executables
+        run: |
+          cargo build --locked -p harmony-cli --bin harmony
+          cargo build --locked -p harmony-cli --target aarch64-unknown-linux-musl \
+            --no-default-features --features consonance-host --bin harmony-consonance-host
+      - name: Prove sealed launch and native QuickNES routing
+        run: |
+          python3 scripts/test-consonance-host-package.py \
+            --frontend target/debug/harmony \
+            --host target/aarch64-unknown-linux-musl/debug/harmony-consonance-host \
+            --platform linux
+
+  consonance-public-api:
+    name: Consonance Host Public API
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain and musl linker
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-consonance-public-api-linux
+      - name: Exercise public APIs inside a sealed static host
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+        run: |
+          cargo test --locked --target x86_64-unknown-linux-musl \
+            -p consonance-client --features in-process,uml --lib \
+            session::tests::sealed_host_admits_public_session_identity -- --exact
+          cargo test --locked --target x86_64-unknown-linux-musl \
+            -p consonance-client --features in-process,uml --lib \
+            session::worker::tests::sealed_host_reexecs_a_public_worker -- --exact
+          cargo test --locked --target x86_64-unknown-linux-musl \
+            -p consonance-client --features in-process,uml --lib \
+            session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown -- --exact
+          cargo test --locked --target x86_64-unknown-linux-musl \
+            -p uml --lib \
+            recording::tests::sealed_host_admits_public_recording_round_trip -- --exact
+
   nes-adapter:
     name: NES Adapter
     needs: scope

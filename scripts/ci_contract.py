@@ -548,6 +548,8 @@ HARMONY_CHECKS = Workflow(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("CLI", "pr", 15, crates=("harmony-cli",), test_targets=("harmony-cli:staging",), select="rust_checks"),
         Job("Consonance Host", "pr", 15, select="rust_checks"),
+        Job("Consonance Host Arm64", "pr", 15, select="rust_checks"),
+        Job("Consonance Host Public API", "pr", 15, select="rust_checks"),
         Job("NES Adapter", "pr", 15, select="rust_checks"),
         Job("Fault Injection", "pr", 15, select="rust_checks"),
     ),

@@ -51,18 +51,12 @@ def check_pair(frontend, host, platform):
 
         missing_image = str(bin_dir / "missing-issue688-image")
         missing_rom = str(bin_dir / "missing-issue688.nes")
-        if platform == "linux":
-            config = (
-                f'[workload]\npackage="nes"\ninput="{missing_rom}"\n'
-                '[runner]\nkind="consonance"\nbackend="kvm"\n'
-            )
-            error = "No such file or directory"
-        else:
-            config = (
-                f'[workload]\npackage="faults"\ninput="{missing_image}"\n'
-                '[runner]\nkind="consonance"\nbackend="hvf"\n'
-            )
-            error = "image names a path outside its layout or rootfs"
+        backend = "kvm" if platform == "linux" else "hvf"
+        config = (
+            f'[workload]\npackage="faults"\ninput="{missing_image}"\n'
+            f'[runner]\nkind="consonance"\nbackend="{backend}"\n'
+        )
+        error = "image names a path outside its layout or rootfs"
         consonance = (str(packaged_frontend), "check", "--offline", "--config-toml", config)
         expect(run(*consonance), 2, error)
 

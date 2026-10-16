@@ -31,6 +31,67 @@ class StructureTests(unittest.TestCase):
                 if "scripts/test-loaded-code-identity.py" in step.get("run", "")]
         self.assertEqual(runs, [("launcher", "python3 scripts/test-loaded-code-identity.py")])
 
+    def test_linux_strict_host_exercises_public_apis_from_sealed_musl(self):
+        import yaml
+
+        registered = next(job for job in ci_contract.HARMONY_CHECKS.jobs
+                          if job.name == "Consonance Host Public API")
+        self.assertEqual((registered.trigger, registered.timeout_minutes, registered.select),
+                         ("pr", 15, "rust_checks"))
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_CHECKS.path).read_text())["jobs"]
+        job = jobs["consonance-public-api"]
+        self.assertEqual(job["name"], registered.name)
+        self.assertEqual(job["timeout-minutes"], registered.timeout_minutes)
+        self.assertEqual(job["needs"], "scope")
+        self.assertEqual(job["if"], "needs.scope.outputs.rust_checks == 'true'")
+        step = next(step for step in job["steps"]
+                    if step.get("name") == "Exercise public APIs inside a sealed static host")
+        self.assertEqual(step["env"]["CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER"],
+                         "${{ github.workspace }}/scripts/linux-sealed-test-runner.py")
+        commands = step["run"]
+        for expected in (
+            "-p consonance-client --features in-process,uml --lib",
+            "-p uml --lib",
+            "session::tests::sealed_host_admits_public_session_identity -- --exact",
+            "session::worker::tests::sealed_host_reexecs_a_public_worker -- --exact",
+            "session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown -- --exact",
+            "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, commands)
+        self.assertTrue((ROOT / "scripts/linux-sealed-test-runner.py").is_file())
+
+    def test_linux_arm64_strict_host_package_has_its_own_bounded_job(self):
+        import yaml
+
+        registered = next(job for job in ci_contract.HARMONY_CHECKS.jobs
+                          if job.name == "Consonance Host Arm64")
+        self.assertEqual((registered.trigger, registered.timeout_minutes, registered.select),
+                         ("pr", 15, "rust_checks"))
+        jobs = yaml.safe_load((ROOT / ci_contract.HARMONY_CHECKS.path).read_text())["jobs"]
+        job = jobs["consonance-host-arm64"]
+        self.assertEqual(job["name"], registered.name)
+        self.assertEqual(job["runs-on"], "ubuntu-24.04-arm")
+        self.assertEqual(job["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"],
+                         "musl-gcc")
+        self.assertEqual(job["env"]["CC_aarch64_unknown_linux_musl"], "musl-gcc")
+        self.assertEqual(job["timeout-minutes"], registered.timeout_minutes)
+        self.assertEqual(job["needs"], "scope")
+        self.assertEqual(job["if"], "needs.scope.outputs.rust_checks == 'true'")
+        commands = "\n".join(step.get("run", "") for step in job["steps"])
+        for expected in (
+            "rustup target add aarch64-unknown-linux-musl",
+            "cargo build --locked -p harmony-cli --bin harmony",
+            "--target aarch64-unknown-linux-musl",
+            "--features consonance-host --bin harmony-consonance-host",
+            "scripts/test-consonance-host-package.py",
+            "--platform linux",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, commands)
+        fixture = (ROOT / "scripts/test-consonance-host-package.py").read_text()
+        self.assertIn('package="faults"', fixture)
+
     def test_release_guest_archive_carries_verified_runtime_pair(self):
         import yaml
 
