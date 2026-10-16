@@ -13,7 +13,8 @@ use control_proto::{
 };
 use environment::{
     channel::{
-        ChannelError, Effect, HandlerFingerprint, NominalHandler, RecordedEnv, ServiceHandler,
+        ChannelError, Effect, HandlerFingerprint, HandlerSnapshot, NominalHandler, RecordedEnv,
+        ServiceHandler,
     },
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
@@ -1642,10 +1643,29 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             _ => return Ok(Err(ControlError::Unsupported)),
         };
         if seed.is_some() {
-            let decode_env = RecordedEnv::new(0, prepared_handler.clone());
+            let Ok(before_clone) = HandlerSnapshot::capture(prepared_handler.as_ref()) else {
+                return Ok(Err(ControlError::Unsupported));
+            };
+            let decode_handler = prepared_handler.clone();
+            if !matches!(
+                (
+                    HandlerSnapshot::capture(decode_handler.as_ref()),
+                    HandlerSnapshot::capture(prepared_handler.as_ref()),
+                ),
+                (Ok(candidate), Ok(original)) if candidate == before_clone && original == before_clone
+            ) {
+                return Ok(Err(ControlError::Unsupported));
+            }
+            let decode_env = RecordedEnv::new(0, decode_handler);
             if decode_env.handler().identity() != restore_config.identity
                 || decode_env.handler().configuration() != restore_config.configuration
             {
+                return Ok(Err(ControlError::Unsupported));
+            }
+            if !matches!(
+                HandlerSnapshot::capture(prepared_handler.as_ref()),
+                Ok(original) if original == before_clone
+            ) {
                 return Ok(Err(ControlError::Unsupported));
             }
         }
@@ -6080,6 +6100,149 @@ mod tests {
         );
         let _ = hash(&mut s);
         let _ = snap(&mut s);
+    }
+
+    #[derive(Clone, Copy)]
+    enum PreparedMutation {
+        CloneOriginal,
+        CloneCandidate,
+        DecodeSeed,
+    }
+
+    struct OneShotPreparedCloneService {
+        state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        mutation: PreparedMutation,
+    }
+
+    impl environment::channel::ServiceHandler for OneShotPreparedCloneService {
+        fn identity(&self) -> &[u8] {
+            b"one-shot-prepared-clone-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(vec![self.state.load(std::sync::atomic::Ordering::SeqCst)])
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            let [value] = state else {
+                return Err(environment::channel::ChannelError::Malformed);
+            };
+            self.state
+                .store(*value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            match (self.mutation, seed) {
+                (PreparedMutation::DecodeSeed, 0) => {
+                    let _ = self.state.compare_exchange(
+                        0,
+                        1,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                }
+                (PreparedMutation::CloneCandidate, 1..) => {
+                    self.state.store(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            let state = match self.mutation {
+                PreparedMutation::CloneOriginal => {
+                    let _ = self.state.compare_exchange(
+                        0,
+                        1,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    std::sync::Arc::clone(&self.state)
+                }
+                PreparedMutation::CloneCandidate
+                    if self.state.load(std::sync::atomic::Ordering::SeqCst) == 0 =>
+                {
+                    std::sync::Arc::new(std::sync::atomic::AtomicU8::new(1))
+                }
+                _ => std::sync::Arc::clone(&self.state),
+            };
+            Box::new(Self {
+                state,
+                mutation: self.mutation,
+            })
+        }
+    }
+
+    fn branch_rejects_a_prepared_handler_change(mutation: PreparedMutation) {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let base = snap(&mut server);
+        let before = hash(&mut server);
+        let nominal = nominal_factory();
+        server.set_service_factory(std::sync::Arc::new(move |config| {
+            if config.identity == b"one-shot-prepared-clone-v1" {
+                Ok(Box::new(OneShotPreparedCloneService {
+                    state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                    mutation,
+                })
+                    as Box<dyn environment::channel::ServiceHandler>)
+            } else {
+                nominal(config)
+            }
+        }));
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(ServiceConfig {
+            identity: b"one-shot-prepared-clone-v1".to_vec(),
+            configuration: vec![],
+        });
+        let env = Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        };
+        assert_eq!(
+            server.handle(&Request::Branch { snap: base, env }).unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "branch restore materializes snapshot-store mappings")]
+    fn branch_rejects_a_prepared_handler_clone_that_changes_its_state() {
+        branch_rejects_a_prepared_handler_change(PreparedMutation::CloneOriginal);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "branch restore materializes snapshot-store mappings")]
+    fn branch_rejects_a_prepared_handler_clone_with_different_state() {
+        branch_rejects_a_prepared_handler_change(PreparedMutation::CloneCandidate);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "branch restore materializes snapshot-store mappings")]
+    fn branch_rejects_decode_seed_that_changes_the_prepared_handler() {
+        branch_rejects_a_prepared_handler_change(PreparedMutation::DecodeSeed);
     }
 
     #[derive(Clone)]

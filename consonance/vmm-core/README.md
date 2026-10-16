@@ -118,6 +118,10 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Before the decode-seed probe, branch preparation checks that cloning the new
+handler preserves both the original and clone state. It checks the original
+again after the decode seed, rejecting shared-state changes before installing
+the branch.
 Branch and import preparation also compare a handler-only fingerprint of the
 live SDK handler's identity, configuration, and state before and after calling
 a service factory or restoring a prepared handler. If a factory or shallow
