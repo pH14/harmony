@@ -207,7 +207,7 @@ recoverable refusal without retiring the VM.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version
-14; each uses presence fields so optional devices retain their state without
+17; each uses presence fields so optional devices retain their state without
 selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
 the unread queue even when full snapshot hashing is disabled. The x86 device
@@ -726,3 +726,48 @@ next quantum. The next threshold is part of the SDK snapshot. A thread whose
 count restarts at the first threshold gets a fresh entry, because Linux reuses
 thread IDs. A zero, malformed or overflowing quantum leaves the environment and
 every threshold unchanged.
+
+## ARM executable RAM restore qualification
+
+`tests/arm64_executable_restore.rs` promotes the public-VMM experiment in
+[issue #633](https://github.com/pH14/harmony/issues/633) into a registered Linux
+ARM hardware test. It compares guest-authored PL011 bytes for cold A/B,
+uninterrupted B, capture-only B, fresh-restored B, and a warmed reused VM
+alternating A/B executable page contents. A separate RAM-only restoration
+control avoids CPU restoration as a cache-maintenance confounder. Every
+transition checks that only executable page 0 differs, that full restored RAM
+matches, and that the guest RAM allocation stays in place. The guest loops back
+to the same instruction address; no RAM remapping is requested. A portable
+negative control rejects stale, missing and extra observation bytes.
+
+Before any guest entry, the fixture sets `SCTLR_EL1.I` through the public state
+restore API and checks the captured control value, including after warmup and
+restoration. Stage-1 translation stays disabled. The four-instruction guest
+loops directly to the variant instruction, without a cache-enabling prologue or
+cache-maintenance instruction. Thus the RAM-only control never re-enables the
+cache between the host write and guest fetch. The test pins its thread to its
+current allowed CPU before constructing any VM, verifies placement during the
+restore loops, and restores the original affinity on exit. External `taskset`
+selects which core class it exercises; ordinary registered invocation also
+remains pinned. Output records CPU number, available sysfs MIDR and raw host
+MMFR2, and observed guest SCTLR. Missing sysfs register information is reported
+as unavailable; the test does not infer host stage-2 FWB or CTR cache-coherence
+features from virtualized guest IDs. Guest instruction-cache enablement and CPU
+placement are controls, not proof that a particular host retains stale lines.
+A passing result remains specific to its actual host/kernel/cache behavior.
+
+Run on a Linux ARM host with accessible KVM, pinning each qualified core class:
+
+```sh
+taskset -c 0 cargo test --locked -p vmm-core --test arm64_executable_restore live::executable_ram_restores_match_guest_continuations -- --ignored --exact --nocapture
+```
+
+Require exactly one passed test. An unavailable KVM device fails the requested
+hardware test; an empty test selection on another platform is not qualification.
+Record source revision, kernel, CPU/core placement and output with the result.
+The earlier public-path experiment passed on Linux 6.18.43-current-arm64 on
+Cortex-A720 and Cortex-A520 cores; those negative observations do not establish
+cache coherence on other hosts or kernels. ARM KVM still inherits the default
+instruction-cache hook, and #633 remains an investigation without a confirmed
+stale-instruction witness. This fixture does not qualify cross-host restore,
+arbitrary code mutation, or continuously enforced executable admission.

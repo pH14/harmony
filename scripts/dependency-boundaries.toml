@@ -31,6 +31,7 @@ platform_contracts = [
 ]
 consonance_client = [
     "consonance/client",
+    "consonance/host-code-identity",
     "consonance/hypercall-doorbell",
     "consonance/uml",
 ]
@@ -57,6 +58,7 @@ workload_packages = [
 composition_apps_tests = [
     "demos/twin-dragons/rust",
     "consonance/nested-driver",
+    "consonance/host-code-identity/tests/witness",
     "cli",
     "consonance/control-proto/fuzz",
     "consonance/telemetry",

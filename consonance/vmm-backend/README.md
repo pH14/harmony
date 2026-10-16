@@ -410,11 +410,19 @@ guest-written key read back as `0x1234` without restore and zero after cold
 restore. HVF now refuses capture if any key half is nonzero, and policy
 installation and restore clear all ten keys to the fresh-vCPU zero baseline.
 Backend creation probes read/write access to each key and refuses a host that
-cannot establish this boundary. Arm portable records use wire version 10 to
-reject older snapshots that lacked proof of the ACTLR and key capture checks.
+cannot establish this boundary. Arm portable records first used wire version 10
+to reject older snapshots that lacked proof of the ACTLR and key capture checks.
 The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
 covers all ten keys, capture refusal, and clean reused, fresh, and policy
 restores.
+
+Both ARM KVM and HVF capture and restore guest-writable `MDCCINT_EL1.RX` and
+`MDCCINT_EL1.TX` as part of the debug state. A guest write to RX survives normal
+execution on HVF but was lost after a cold snapshot restore, so Arm portable
+records now use wire version 11 and reject older records that omitted this
+register. Both backends and the codec reject nonzero reserved bits. The ignored
+`arm64_hvf_mdccint` hardware test compares guest readback without restore and
+after a fresh VMM restore.
 
 ARM KVM and HVF expose pure restore-shape checks through the `Backend` trait,
 so portable snapshot import rejects their known invalid vCPU records before
@@ -511,6 +519,31 @@ ARM KVM host and in the userspace model.
 The ignored `guest_gic_spi_trigger_survives_fresh_restore` ARM KVM test compares
 guest readback of that baseline and of a programmed edge after uninterrupted
 execution and cold restore.
+KVM also retains guest writes to the redistributor `GICR_PROPBASER` and
+`GICR_PENDBASER` even when no ITS is present. ARM GIC state version 8 records
+both 64-bit values, and ARM device blobs include them in replay identity. KVM
+canonicalizes an initially zero `GICR_PROPBASER` to `0x180` when userspace
+writes it, so backend creation writes both fresh redistributor bases before
+first guest entry. Restore checks reserved bits and KVM's canonical
+shareability and cacheability fields before changing vCPU state, then writes
+both halves and requires exact readback. KVM rewrites outer-shareable,
+noncacheable inner, and noncanonical outer-cacheable values on write; imported
+records containing those values are rejected before mutation. The ignored
+`guest_gicr_bases_survive_reused_and_fresh_restore` test compares guest MMIO
+readback after uninterrupted execution, an in-place restore, and a cold restore.
+ARM KVM selects VGIC `GICD_IIDR` implementation revision 2 before configuring
+the device and requires exact readback. KVM revisions 2 and 3 return different
+guest-visible `GICR_CTLR` values on the same host, so accepting the host's
+default revision would make guest behavior depend on its kernel version. The
+full configured `GICD_IIDR` and `GICD_TYPER2` values enter backend capabilities
+and the runtime contract; the latter includes any host-dependent
+`nASSGIcap` bit. A bounded msr1 guest probe read `GICR_CTLR=0` under revision
+2 and `0x6` under revision 3 while `ICC_CTLR_EL1` remained `0x8400`.
+On GICv4.1 hosts with direct SGIs, `GICD_CTLR.nASSGIreq` can hold guest-writable
+state. The record represents only distributor Group-1 enable, so capture refuses
+bit 8 and any other distributor-control bits outside the fixed and represented
+set. Imported records with unrepresented bits are rejected before device
+mutation. A fake-KVM regression exercises the fail-closed boundary.
 The single-vCPU machine supports SPI routing only to affinity zero. The
 userspace GIC rejects a nonzero `GICD_IROUTER` write. KVM can execute that
 write inside its in-kernel VGIC, so capture reads both 32-bit KVM device-attribute

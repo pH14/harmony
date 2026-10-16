@@ -86,6 +86,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "host-code-identity",
  "hypercall-proto",
  "libc",
  "serde",
@@ -250,6 +251,14 @@ name = "guest-image"
 version = "0.1.0"
 dependencies = [
  "thiserror",
+]
+
+[[package]]
+name = "host-code-identity"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sha2",
 ]
 
 [[package]]

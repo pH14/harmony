@@ -203,6 +203,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "host-code-identity",
  "hypercall-proto",
  "libc",
  "serde",
@@ -487,6 +488,15 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "host-code-identity"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sha2",
+ "tempfile",
+]
 
 [[package]]
 name = "hypercall-doorbell"
@@ -1125,6 +1135,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "environment",
+ "host-code-identity",
  "hypercall-proto",
  "libc",
  "rustix",

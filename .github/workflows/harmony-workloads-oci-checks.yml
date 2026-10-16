@@ -107,6 +107,8 @@ jobs:
           sudo chmod a+rw /dev/kvm
       - name: Run and restore containers inside the guest
         if: steps.scope.outputs.enabled == 'true'
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: |
           set -o pipefail
           timeout -k 10 720 cargo test --locked --release -p oci-support \

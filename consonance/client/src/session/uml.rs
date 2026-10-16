@@ -56,7 +56,7 @@ fn root_identity(
     loaded_executable: &str,
 ) -> [u8; 32] {
     let mut identity = Sha256::new();
-    identity.update(b"harmony-uml-root-v5\0");
+    identity.update(b"harmony-uml-root-v6\0");
     identity.update((loaded_executable.len() as u64).to_le_bytes());
     identity.update(loaded_executable.as_bytes());
     identity.update(profile.identity_sha256().as_bytes());

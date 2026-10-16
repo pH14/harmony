@@ -5,6 +5,9 @@
 # runs. Signing a private copy and renaming it over the original keeps parallel
 # test processes from executing a half-written file.
 set -eu
+unset DYLD_FRAMEWORK_PATH DYLD_FALLBACK_FRAMEWORK_PATH DYLD_VERSIONED_FRAMEWORK_PATH
+unset DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_VERSIONED_LIBRARY_PATH
+unset DYLD_IMAGE_SUFFIX DYLD_INSERT_LIBRARIES DYLD_SHARED_REGION DYLD_SHARED_CACHE_DIR
 
 binary=$1
 marker=$binary.hvf-signed

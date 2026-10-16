@@ -13,7 +13,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     ptr::NonNull,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use control_proto::{Reply, SnapId, StopReason, decode_reply, encode_reply};
@@ -31,6 +31,9 @@ const HEADER: usize = 16;
 const MAX_FDS: usize = 2 * ANCHOR_DEPTH as usize;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v1";
+const IMAGE_HELLO_LIMIT: usize = 512;
+const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
 const INIT: u8 = 1;
 const STATE_HASH: u8 = 2;
@@ -386,7 +389,12 @@ fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> i
     }
 }
 
-fn recv_with_fds(stream: &UnixStream, buffer: &mut [u8]) -> io::Result<(usize, Vec<OwnedFd>)> {
+#[allow(clippy::disallowed_methods)]
+fn recv_with_fds(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<(usize, Vec<OwnedFd>)> {
     let space = control_space(MAX_FDS);
     let mut control = vec![0_u64; space.div_ceil(size_of::<u64>())];
     let mut iov = libc::iovec {
@@ -400,6 +408,13 @@ fn recv_with_fds(stream: &UnixStream, buffer: &mut [u8]) -> io::Result<(usize, V
     message.msg_control = control.as_mut_ptr().cast();
     message.msg_controllen = space as _;
     let received = loop {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            stream.set_read_timeout(Some(remaining))?;
+        }
         // SAFETY: message, its iovec and its control buffer stay alive and unmoved for the call.
         let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &raw mut message, RECV_FLAGS) };
         if let Ok(received) = usize::try_from(received) {
@@ -460,24 +475,64 @@ fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
     writer.write_all(body)
 }
 
-fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+#[allow(clippy::disallowed_methods)]
+fn read_exact_until(
+    stream: &UnixStream,
+    mut buffer: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !buffer.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        let size = (&*stream).read(buffer)?;
+        if size == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buffer = &mut buffer[size..];
+    }
+    Ok(())
+}
+
+fn recv_with_limit(
+    stream: &UnixStream,
+    limit: usize,
+    deadline: Option<Instant>,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut header = [0_u8; HEADER];
-    let (received, fds) = recv_with_fds(stream, &mut header)?;
+    let (received, fds) = recv_with_fds(stream, &mut header, deadline)?;
     if received == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
     let mut reader = stream;
-    reader.read_exact(&mut header[received..])?;
+    if let Some(deadline) = deadline {
+        read_exact_until(stream, &mut header[received..], deadline)?;
+    } else {
+        reader.read_exact(&mut header[received..])?;
+    }
     let len = usize::try_from(u64::from_le_bytes(
         header[..8].try_into().expect("eight bytes"),
     ))
     .map_err(|_| malformed("length overflows"))?;
+    if len > limit {
+        return Err(malformed("frame length exceeds limit"));
+    }
     if u64::from_le_bytes(header[8..].try_into().expect("eight bytes")) != fds.len() as u64 {
         return Err(malformed("descriptor count"));
     }
     let mut body = vec![0; len];
-    reader.read_exact(&mut body)?;
+    if let Some(deadline) = deadline {
+        read_exact_until(stream, &mut body, deadline)?;
+    } else {
+        reader.read_exact(&mut body)?;
+    }
     Ok((body, fds))
+}
+
+fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    recv_with_limit(stream, usize::MAX, None)
 }
 
 struct Mapping {
@@ -546,6 +601,7 @@ pub struct WorkerLauncher {
     program: PathBuf,
     args: Vec<OsString>,
     expected_image: String,
+    expected_main: String,
 }
 
 impl WorkerLauncher {
@@ -554,10 +610,20 @@ impl WorkerLauncher {
             program: std::env::current_exe()?,
             args,
             expected_image: crate::image_identity::loaded_executable_identity_self()?,
+            expected_main: crate::image_identity::loaded_executable_identity_for_child(
+                std::process::id(),
+            )?,
         })
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
+        crate::image_identity::reject_loader_overrides()?;
+        if crate::image_identity::loaded_executable_identity_self()? != self.expected_image {
+            return Err(io::Error::other(
+                "launcher loaded image changed before worker spawn",
+            ));
+        }
         let (parent, child) = UnixStream::pair()?;
         let raw = child.as_raw_fd();
         let mut command = Command::new(&self.program);
@@ -574,7 +640,7 @@ impl WorkerLauncher {
         let mut process = command.spawn()?;
         let actual = crate::image_identity::loaded_executable_identity_for_child(process.id());
         let check = match actual {
-            Ok(actual) if actual == self.expected_image => Ok(()),
+            Ok(actual) if actual == self.expected_main => Ok(()),
             Ok(_) => Err(io::Error::other(
                 "session worker executable differs from launcher",
             )),
@@ -583,12 +649,32 @@ impl WorkerLauncher {
                 format!("cannot identify session worker executable: {error}"),
             )),
         };
+        drop(child);
+        let deadline = Instant::now() + IMAGE_HELLO_TIMEOUT;
+        let check = check.and_then(|()| {
+            let (body, fds) = recv_with_limit(&parent, IMAGE_HELLO_LIMIT, Some(deadline))?;
+            if !fds.is_empty() {
+                return Err(malformed("worker image hello carries descriptors"));
+            }
+            let mut input = In(&body);
+            if input.bytes()? != IMAGE_HELLO {
+                return Err(malformed("worker image hello has an unknown version"));
+            }
+            let actual = input.string()?;
+            input.finish()?;
+            if actual != self.expected_image {
+                return Err(io::Error::other(
+                    "session worker loaded image differs from launcher",
+                ));
+            }
+            Ok(())
+        });
+        let check = check.and(parent.set_read_timeout(None));
         if let Err(error) = check {
             let _ = process.kill();
             let _ = process.wait();
             return Err(error);
         }
-        drop(child);
         Ok((process, parent))
     }
 }
@@ -1136,7 +1222,7 @@ fn inherited_stream() -> Result<UnixStream, Box<dyn Error>> {
 pub fn serve_inherited(
     services: impl Fn(&str) -> Option<ServiceFactory>,
 ) -> Result<(), Box<dyn Error>> {
-    serve(&inherited_stream()?, &mut |init: Init| {
+    serve_inherited_with_open(&mut |init: Init| {
         let factory = services(&init.service)
             .ok_or_else(|| format!("unknown session service {}", init.service))?;
         let mut session = Session::new_with_config_and_payloads(
@@ -1148,6 +1234,16 @@ pub fn serve_inherited(
         session.set_service_factory(factory);
         Ok(Box::new(session) as Box<dyn ServedSession>)
     })
+}
+
+fn serve_inherited_with_open(open: &mut Open<'_>) -> Result<(), Box<dyn Error>> {
+    crate::image_identity::reject_loader_overrides()?;
+    let stream = inherited_stream()?;
+    let identity = crate::image_identity::loaded_executable_identity_self()?;
+    let mut hello = Out::default();
+    hello.bytes(IMAGE_HELLO).bytes(identity.as_bytes());
+    send(&stream, &hello.0, &[])?;
+    serve(&stream, open)
 }
 
 #[cfg(test)]
@@ -1324,6 +1420,53 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn worker_entry_and_launch_refuse_loader_overrides() {
+        const CHILD_ENV: &str = "HARMONY_LOADER_WORKER_TEST_CHILD";
+        #[cfg(target_os = "linux")]
+        let override_name = "LD_LIBRARY_PATH";
+        #[cfg(target_os = "macos")]
+        let override_name = "DYLD_LIBRARY_PATH";
+
+        if let Some(which) = std::env::var_os(CHILD_ENV) {
+            let error = if which == "launch" {
+                WorkerLauncher {
+                    program: std::env::current_exe().unwrap(),
+                    args: vec!["--version".into()],
+                    expected_image: String::new(),
+                    expected_main: String::new(),
+                }
+                .spawn()
+                .unwrap_err()
+                .to_string()
+            } else {
+                serve_inherited(|_| None).unwrap_err().to_string()
+            };
+            assert!(error.contains(override_name), "{error}");
+            return;
+        }
+
+        for which in ["launch", "entry"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("session::worker::tests::worker_entry_and_launch_refuse_loader_overrides")
+                .env(CHILD_ENV, which)
+                .env(override_name, std::env::temp_dir())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{which}: {}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     #[test]
     fn worker_config_carries_the_named_guest_contract_and_rejects_unknown_profiles() {
         let config = config().with_nested_host();
@@ -1354,7 +1497,13 @@ mod tests {
 
     #[allow(clippy::disallowed_methods)]
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn worker_launcher_rejects_replaced_running_image() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::worker_launcher_rejects_replaced_running_image",
+        ) {
+            return;
+        }
         let child_directory = std::env::var_os("HARMONY_WORKER_IDENTITY_CHILD_DIRECTORY");
         if let Some(directory) = child_directory {
             let directory = PathBuf::from(directory);
@@ -1378,7 +1527,10 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("session worker executable differs from launcher"),
+                    .contains("session worker executable differs from launcher")
+                    || error
+                        .to_string()
+                        .contains("launcher loaded image changed before worker spawn"),
                 "{error}"
             );
             return;
@@ -1452,7 +1604,49 @@ mod tests {
         if std::env::var_os(WORKER_FD_ENV).is_none() {
             return;
         }
-        serve(&inherited_stream().unwrap(), &mut Fake::open).unwrap();
+        serve_inherited_with_open(&mut Fake::open).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn worker_image_hello_has_a_deadline_and_size_limit() {
+        let (receiver, sender) = UnixStream::pair().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let error = recv_with_limit(&receiver, IMAGE_HELLO_LIMIT, Some(deadline)).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{error}"
+        );
+        receiver.set_read_timeout(None).unwrap();
+        let mut header = [0_u8; HEADER];
+        header[..8].copy_from_slice(&((IMAGE_HELLO_LIMIT + 1) as u64).to_le_bytes());
+        (&sender).write_all(&header).unwrap();
+        let error = recv_with_limit(
+            &receiver,
+            IMAGE_HELLO_LIMIT,
+            Some(Instant::now() + Duration::from_secs(1)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("frame length exceeds limit"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn worker_launcher_refuses_a_child_without_image_hello() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::worker_launcher_refuses_a_child_without_image_hello",
+        ) {
+            return;
+        }
+        let launcher = WorkerLauncher::current_exe(vec!["--help".into()]).unwrap();
+        let started = Instant::now();
+        let error = launcher.spawn().unwrap_err();
+        assert!(started.elapsed() < IMAGE_HELLO_TIMEOUT, "{error}");
     }
 
     #[test]
@@ -1587,7 +1781,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn killed_worker_processes_release_their_leases_and_keep_the_cache_consistent() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
+        ) {
+            return;
+        }
         let index = Arc::new(LocalIndex::new(1 << 20));
         let mut owner = spawned(3);
         let mut reader = spawned(50);

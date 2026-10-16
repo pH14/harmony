@@ -88,18 +88,23 @@ architectural comparator in the parent module compares vCPU and canonical GIC
 fields independently of snapshot hashes. Context ID, auxiliary memory
 attributes, translation results, cache selection, and auxiliary fault status
 registers survive capture and restore and affect both full and component
-identities. VM-state version 8 carries these fields explicitly.
+identities. The guest-writable `MDCCINT_EL1` interrupt controls also survive
+capture and restore and enter architectural comparison, text output, and both
+state hashes. Arm VM-state version 11 carries that debug field explicitly.
 
 The runtime arm64 contract extends the fixed CPU baseline and host ASID width
 with the three SMCCC workaround firmware levels observed by the backend after
 the guest CPU policy is installed and the backend's PSCI implementation
-profile. It also includes KVM's immutable GIC CPU-interface capability fields.
+profile. It also includes KVM's immutable GIC CPU-interface capability fields
+and the full post-configuration `GICD_IIDR` and `GICD_TYPER2` values. KVM pins
+the IIDR revision before VGIC initialization; the remaining distributor
+identity distinguishes hosts with different guest-visible capabilities.
 HVF and KVM answer some PSCI HVCs differently, so their profiles are not
 replay-compatible. Snapshot restore requires the same runtime contract.
 The same hash is an unconditional state-hash chunk and diagnostic component,
 including when full snapshot hashing is disabled.
 
-Device blobs use the current version 16 format and retain unread serial input
+Device blobs use the current version 17 format and retain unread serial input
 in FIFO order. Presence fields describe the
 optional GIC, doorbell, and pvclock records; pvclock records preserve the page
 GPA, registration capability, and pending-versus-armed handshake state.
@@ -108,6 +113,14 @@ both group enables, and active-priority registers alongside distributor and
 redistributor state. It also includes per-INTID trigger configuration, so a
 guest-programmed SPI edge/level choice survives snapshot restore and enters
 architectural comparison and state identity.
+It also retains both guest-writable redistributor base registers and compares
+their full 64-bit values in architectural identity.
+Public restore checks the common GIC record shape, then asks the KVM backend
+to validate and restore its redistributor bases. The userspace GIC restore
+still requires both bases to be zero. A public VMM regression uses the KVM
+backend over a fake device to prove both nonzero bases survive restore while
+reserved bits are rejected before mutation; a live backend test covers guest
+MMIO writes and readback.
 The record omits SPI routing because the only supported single-vCPU route is
 zero: KVM rejects capture of any nonzero `GICD_IROUTER` value, and restore
 clears all routes to zero. Consequently there is no additional device-blob

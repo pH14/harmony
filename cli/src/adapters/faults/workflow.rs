@@ -92,7 +92,7 @@ fn capture_runtime(manifest: &mut Manifest, path: &Path, artifacts: &Artifacts) 
 }
 
 fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
-    let base = fs::read(c.base_initramfs.as_ref().ok_or("missing base initramfs")?)?;
+    let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
     let generated = c.bundle()?;
     let prepared = faults_workload::prepare::prepare_oci_with_bundle(
         c.image.as_deref().ok_or("application image missing")?,
@@ -102,7 +102,7 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     )?;
     Ok((
         Artifacts {
-            kernel: fs::read(c.kernel.as_ref().ok_or("missing kernel")?)?,
+            kernel,
             initramfs: prepared.initramfs,
         },
         prepared.bundle,
@@ -328,12 +328,9 @@ pub fn run(
         &oci_support::bundle::LaunchRequest::new(c.command.clone()),
         super::execution_mode(c.backend),
     )?;
-    let initramfs =
-        prepared.initramfs(&fs::read(c.base_initramfs.as_ref().ok_or("missing base")?)?);
-    let artifacts = Artifacts {
-        kernel: fs::read(c.kernel.as_ref().ok_or("missing kernel")?)?,
-        initramfs,
-    };
+    let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
+    let initramfs = prepared.initramfs(&base);
+    let artifacts = Artifacts { kernel, initramfs };
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;

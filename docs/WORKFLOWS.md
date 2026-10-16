@@ -57,13 +57,15 @@ The `Archive` job in `Checks / Dissonance` also checks that the searcher builds
 for `wasm32-unknown-unknown`, so the browser demo can run the campaign
 coordinator.
 
-`Checks / Harmony Host Compatibility` selects both Linux Arm64 jobs through
-`rust_checks`. `Linux Arm64` compiles the backend and enforces the portable-test
-floor; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks. Each
-retains the 15-minute pull-request limit, giving qualification its own job
-budget. The two Linux Arm64 jobs use separate Rust build caches so each can
-save its own build artifacts on main. The macOS Arm64 job continues to run
-both groups of checks in one job.
+`Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
+`rust_checks`. `Linux Arm64` compiles the backend and runs the portable
+Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
+Dissonance tests; `Linux Arm64 Qualification` runs the SHA-256 and CLI checks.
+Each suite enforces its own portable-test floor. Splitting the Dissonance suite
+keeps the full Arm test coverage within separate 15-minute pull-request jobs.
+The jobs use separate Rust build caches so each can save its own build artifacts
+on main. The macOS Arm64 job continues to run both portable suites and the
+qualification checks in one job.
 
 `Checks / Dissonance / Analysis` ships coverage only. The searcher has no
 mutation baseline, and adding one is separate work.
@@ -79,11 +81,26 @@ gh workflow run consonance-analysis.yml --ref <branch> -f job=miri-whole-crate -
 ```
 
 `Checks / Consonance / UML` owns the User-mode Linux profiles for x86-64 and
-arm64. `UML Launcher` lints and tests the `uml` crate. `UML Artifacts —
+arm64. Artifact and qualification checks run on both architectures. `UML Launcher`
+lints and tests `uml` and `host-code-identity` on x86-64, then runs
+`scripts/test-loaded-code-identity.py` on Linux. That public regression checks
+an ordinary `$ORIGIN` linked library A/B change, a constructor-cleared preload,
+replay refusal, and admission refusal for anonymous executable memory. It uses
+a minimal profile without booting a guest; pass `--profile <existing-values-profile>`
+to also verify divergent UML entropy and event hashes locally. `UML Artifacts —
 <Architecture>` builds the profile twice from the locked Nix toolchain and
 fails unless every artifact is byte-identical; two cold builds have a
 registered 45-minute exception. The arm64 profile builds from the pinned RFC
-port, and every check below runs on an x86-64 and an arm64 runner.
+port.
+
+The root Nextest configuration starts Linux test binaries through
+`scripts/linux-clean-loader-test.sh`, which removes Cargo's code-selecting
+loader variables before the test begins. The Fault Injection, NES Adapter,
+Container Execution, Nested Host Qualification, extended guest runtime
+qualification, and release runtime qualification jobs use that runner only for
+their Linux Cargo test steps. This test-only cleanup does not change production
+identity admission or Miri execution.
+
 `UML Qualification — <Target>` runs three suites of `harmony-uml-qualify` in
 sequence as the runner's ordinary UID, natively and under Docker's default
 seccomp profile with every capability dropped. A failing suite does not stop
@@ -592,8 +609,12 @@ is separate from repository lint.
 The Guest Memory job includes the nested driver’s portable arithmetic and
 mapping checks. Its mapping composition runs in the bounded Consonance Miri
 matrix; the full matrix interprets the driver library.
+The host-code-identity Miri target exercises the loader callback's unsafe
+program-header copy with a synthetic record on pull requests that change that
+crate. Its whole library runs in scheduled Consonance analysis.
 
-The release workflow publishes the CLI, a guest kernel and base initramfs,
+The release workflow publishes the CLI, a guest kernel and base initramfs with
+their source-bound runtime manifest,
 a pinned UML profile, and the source SDK for language preparation. Guest, UML
 and SDK archives carry SHA-256 sidecars. `harmony check` and `harmony prepare`
 fetch assets for the CLI version and host architecture into the user data

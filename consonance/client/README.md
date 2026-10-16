@@ -26,8 +26,43 @@ initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
 payload bytes; the empty list keeps the ordinary session identity.
 `identity_with_config_and_payloads` computes the same identity before boot and
-returns an error if the loaded executable cannot be identified. A nonempty
-`identity_tag` adds a workload domain; it does not replace those setup inputs.
+returns an error if the loaded executable cannot be identified. Identity
+admission refuses every ambient `LD_*` name and `GLIBC_TUNABLES` on Linux;
+`DYLD_FRAMEWORK_PATH`, `DYLD_FALLBACK_FRAMEWORK_PATH`,
+`DYLD_VERSIONED_FRAMEWORK_PATH`, `DYLD_LIBRARY_PATH`,
+`DYLD_FALLBACK_LIBRARY_PATH`, `DYLD_VERSIONED_LIBRARY_PATH`,
+`DYLD_IMAGE_SUFFIX`, `DYLD_INSERT_LIBRARIES`, `DYLD_SHARED_REGION`, and
+`DYLD_SHARED_CACHE_DIR` on macOS. Even empty definitions are refused because
+some loader variables give empty values a meaning. Linux admission reads the
+kernel-saved program-header location from `/proc/self/auxv` and requires the
+identity code to lie in an executable load segment of the opened
+`/proc/self/exe`; both addresses must also have matching file-backed mappings.
+This refuses direct dynamic-loader launches whose command-line options bypass
+the environment check, including when separate Btrfs subvolumes reuse a mapping
+inode number. Linux also hashes the bytes of every executable mapping through
+`/proc/self/mem` at admission, including ordinary dependent libraries, the
+dynamic loader, and the vDSO. Each loader-listed ELF image additionally binds
+its executable and pure read-only load segments in loader order, so a library
+`.rodata` change alters the identity even when its code stays the same. It
+refuses anonymous or memfd executable memory, writable executable memory,
+unreadable bytes, text relocations, and unrecognized special
+executable mappings. The exact conventional x86-64 kernel-emulated `[vsyscall]`
+mapping is represented by its shape and kernel release. This captures resident
+`/etc/ld.so.preload` libraries and injected libraries whose constructor clears
+`LD_PRELOAD` before admission. Writable library initializers, RELRO/GOT values,
+symbol bindings, constructor effects, later loads or unloads, and changes to
+executable memory after measurement remain outside the Linux identity. On
+macOS, the loaded identity combines the main code-directory hash with the
+mapped executable segments of dyld-listed images, including dylibs and dyld
+itself. macOS library data remains outside that identity. This self-measurement
+is not an adversarial attestation.
+A nonempty `identity_tag` adds a workload domain; it does not replace those
+setup inputs.
+
+On Linux, `cargo run` itself defines `LD_LIBRARY_PATH`; build first and run the
+binary directly with all `LD_*` variables and `GLIBC_TUNABLES` unset when
+creating sessions or workers.
+
 Sparse snapshot pages are relative to setup RAM, so a session checks this
 identity before importing pages from another session. Cache extents carry the
 same identity. Snapshots made with the earlier image identity calculation do
@@ -184,11 +219,16 @@ Unix socket pair, named by `HARMONY_SESSION_WORKER_FD`, and the child serves it
 with `serve_inherited`. The child re-executes the same binary, so it carries the
 same HVF entitlement and inherits the calling thread's CPU affinity.
 `WorkerLauncher::current_exe` records the parent's loaded image identity and
-checks the spawned child's loaded image before sending the initialization request.
-Linux hashes the parent through `/proc/self/exe` and checks procfs's PID
-namespace before reading `/proc/<child-pid>/exe`; macOS reads each process's
-code-directory hash. A replacement of the executable pathname cannot cause a
-different worker image to run under the parent's recorded identity. Each call is
+checks the spawned child's main executable. The child then measures its own
+loaded image and sends that identity before the parent sends initialization;
+the parent refuses a different identity before guest setup.
+The launcher checks loader overrides again immediately before spawn, and the
+worker rejects them on entry before accepting initialization.
+Linux checks procfs's PID namespace before reading `/proc/<child-pid>/exe` and
+compares the parent's and child's admission-time executable mappings. macOS
+reads each process's main code-directory hash. A replacement of the executable
+pathname cannot cause a different worker image to run under the parent's
+recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A

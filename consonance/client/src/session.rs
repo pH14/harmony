@@ -833,7 +833,7 @@ pub fn identity_with_config_and_payloads(
     setup_payloads: &[Vec<u8>],
 ) -> Result<String, String> {
     Ok(format!(
-        "consonance-session-v3;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
+        "consonance-session-v4;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
         bytes_hex(&image_identity_with_config_and_payloads(
             kernel,
             initramfs,
@@ -885,7 +885,7 @@ fn image_identity_with_loaded_executable(
     loaded_identity: &str,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"consonance-session-image-v3\0");
+    digest.update(b"consonance-session-image-v4\0");
     update_digest_field(&mut digest, loaded_identity.as_bytes());
     update_digest_field(&mut digest, kernel);
     update_digest_field(&mut digest, initramfs);
@@ -927,6 +927,145 @@ fn bytes_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, io};
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn public_session_identity_changes_with_loaded_dylib_bytes() {
+        use std::ffi::CString;
+        use std::fs;
+        use std::os::unix::ffi::OsStrExt;
+        use std::process::Command;
+
+        fn uuid_range(image: &[u8]) -> std::ops::Range<usize> {
+            let field =
+                |offset: usize| u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap());
+            assert_eq!(field(0), 0xfeedfacf);
+            let end = 32 + field(20) as usize;
+            assert!(end <= image.len());
+            let mut offset = 32;
+            for _ in 0..field(16) {
+                let kind = field(offset);
+                let size = field(offset + 4) as usize;
+                assert!(size >= 8 && offset + size <= end);
+                if kind == 0x1b {
+                    assert_eq!(size, 24);
+                    return offset + 8..offset + 24;
+                }
+                offset += size;
+            }
+            panic!("test dylib lacks LC_UUID");
+        }
+
+        const CHILD_ENV: &str = "HARMONY_SESSION_DYLIB_IDENTITY_TEST_CHILD";
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::public_session_identity_changes_with_loaded_dylib_bytes",
+        ) {
+            return;
+        }
+        if let Some(directory) = std::env::var_os(CHILD_ENV) {
+            let directory = std::path::PathBuf::from(directory);
+            let active = directory.join("active.dylib");
+            let config = SessionConfig::default();
+            let identity =
+                || Session::identity_with_config(b"kernel", b"initramfs", &config).unwrap();
+            let baseline = identity();
+            let main =
+                crate::image_identity::loaded_executable_identity_for_child(std::process::id())
+                    .unwrap();
+            let mut loaded = Vec::new();
+            for (source, expected) in [("a.dylib", 11), ("b.dylib", 22)] {
+                fs::copy(directory.join(source), &active).unwrap();
+                let path = CString::new(active.as_os_str().as_bytes()).unwrap();
+                // SAFETY: path is NUL terminated and remains valid through this synchronous load.
+                let handle =
+                    unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+                assert!(!handle.is_null());
+                // SAFETY: handle came from the successful dlopen and the symbol name is static.
+                let symbol = unsafe { libc::dlsym(handle, c"answer".as_ptr()) };
+                assert!(!symbol.is_null());
+                // SAFETY: both test dylibs export answer with the exact extern C function signature.
+                let answer: unsafe extern "C" fn() -> i32 = unsafe { std::mem::transmute(symbol) };
+                // SAFETY: the resolved function belongs to the still-loaded test dylib.
+                assert_eq!(unsafe { answer() }, expected);
+                loaded.push(identity());
+                assert_eq!(
+                    crate::image_identity::loaded_executable_identity_for_child(std::process::id())
+                        .unwrap(),
+                    main
+                );
+                // SAFETY: handle came from the successful dlopen and is closed exactly once.
+                assert_eq!(unsafe { libc::dlclose(handle) }, 0);
+                fs::remove_file(&active).unwrap();
+            }
+            assert_ne!(baseline, loaded[0]);
+            assert_ne!(baseline, loaded[1]);
+            assert_ne!(loaded[0], loaded[1]);
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        for (stem, answer) in [("a", 11), ("b", 22)] {
+            let source = directory.path().join(format!("{stem}.c"));
+            let dylib = directory.path().join(format!("{stem}.dylib"));
+            fs::write(
+                &source,
+                format!("int answer(void) {{ return {answer}; }}\n"),
+            )
+            .unwrap();
+            assert!(
+                Command::new("cc")
+                    .args([
+                        "-dynamiclib",
+                        "-Wl,-no_adhoc_codesign",
+                        "-Wl,-install_name,@rpath/active.dylib",
+                        "-o",
+                    ])
+                    .arg(&dylib)
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let first_path = directory.path().join("a.dylib");
+        let first = fs::read(&first_path).unwrap();
+        let second_path = directory.path().join("b.dylib");
+        let mut second = fs::read(&second_path).unwrap();
+        let second_uuid = uuid_range(&second);
+        second[second_uuid].copy_from_slice(&first[uuid_range(&first)]);
+        fs::write(&second_path, second).unwrap();
+        for path in [&first_path, &second_path] {
+            assert!(
+                Command::new("codesign")
+                    .args(["--force", "--sign", "-"])
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let first = fs::read(&first_path).unwrap();
+        let second = fs::read(&second_path).unwrap();
+        let header_end = 32 + u32::from_le_bytes(first[20..24].try_into().unwrap()) as usize;
+        assert_eq!(&first[..header_end], &second[..header_end]);
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "session::tests::public_session_identity_changes_with_loaded_dylib_bytes",
+            ])
+            .env(CHILD_ENV, directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "{}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 
     #[derive(Debug)]
     struct SnapshotTransport {
@@ -1144,7 +1283,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn deferred_checkpoint_hashing_stays_out_of_execution_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::deferred_checkpoint_hashing_stays_out_of_execution_identity",
+        ) {
+            return;
+        }
         let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
         let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
         assert_eq!(
@@ -1184,7 +1329,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain",
+        ) {
+            return;
+        }
         for ordinary in [
             SessionConfig::default(),
             SessionConfig::default().with_identity_tag("workload"),
@@ -1276,7 +1427,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn image_identity_is_ordered_and_hex_stable() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::image_identity_is_ordered_and_hex_stable",
+        ) {
+            return;
+        }
         assert_eq!(image_identity_hex(b"a", b"b").unwrap().len(), 64);
         assert_ne!(image_identity(b"a", b"b"), image_identity(b"b", b"a"));
         assert_eq!(image_identity(b"a", b"b"), image_identity(b"a", b"b"));
@@ -1287,12 +1444,18 @@ mod tests {
         assert!(
             identity(b"a", b"b")
                 .unwrap()
-                .contains("consonance-session-v3")
+                .contains("consonance-session-v4")
         );
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn loaded_executable_identity_separates_equal_setup_and_preboot_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::loaded_executable_identity_separates_equal_setup_and_preboot_identity",
+        ) {
+            return;
+        }
         let config = SessionConfig::default().with_identity_tag("same-workload");
         let payloads = vec![b"setup".to_vec()];
         let loaded = crate::image_identity::loaded_executable_identity_self().unwrap();
@@ -1324,7 +1487,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn session_config_is_validated_and_part_of_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::session_config_is_validated_and_part_of_identity",
+        ) {
+            return;
+        }
         let default = SessionConfig::default();
         assert_eq!(default.ram_bytes, 128 * 1024 * 1024);
         assert_eq!(default.cmdline, default_cmdline());
@@ -1354,7 +1523,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn session_config_identity_tag_changes_domain_without_dropping_image_bytes() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::session_config_identity_tag_changes_domain_without_dropping_image_bytes",
+        ) {
+            return;
+        }
         let default = SessionConfig::default();
         let tagged = default.clone().with_identity_tag("subject-a");
         assert_eq!(tagged.identity_tag, "subject-a");
@@ -1369,7 +1544,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn tagged_image_identity_includes_execution_setup() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::tagged_image_identity_includes_execution_setup",
+        ) {
+            return;
+        }
         let base = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
             .with_identity_tag("same-workload");
         let identity = image_identity_with_config(b"kernel", b"initramfs", &base);
@@ -1404,7 +1585,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setup_payload_identity_preserves_order_and_boundaries() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::setup_payload_identity_preserves_order_and_boundaries",
+        ) {
+            return;
+        }
         let config = SessionConfig::default();
         let base = image_identity_with_config(b"kernel", b"initramfs", &config);
         let payloads = vec![b"a".to_vec(), b"bc".to_vec()];

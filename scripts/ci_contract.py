@@ -154,6 +154,7 @@ CARGO_MANIFESTS = (
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
     "consonance/harmony-linux/runtime-fixture/Cargo.toml",
+    "consonance/host-code-identity/tests/witness/Cargo.toml",
     "dissonance/Cargo.toml",
     "workloads/fault-policy/Cargo.toml",
     "workloads/faults/Cargo.toml",
@@ -253,15 +254,19 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_actlr_state_refuses_capture_and_clean_restore_resets_it",
         "vmm-backend::arm64_sysreg_snapshot guest_pauth_keys_refuse_capture_and_clean_restore_resets_them",
+        "vmm-core::arm64_hvf_mdccint guest_mdccint_el1_survives_a_cold_public_snapshot_restore",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
     "linux-aarch64": (
+        "vmm-core::arm64_executable_restore live::executable_ram_restores_match_guest_continuations",
         ARM64_BASELINE_TEST,
         "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_mdccint_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_cpu_interface_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_spi_trigger_survives_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_gicr_bases_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_nonzero_spi_route_rejects_capture_and_zero_route_restores",
         "vmm-backend::arm64_sysreg_snapshot guest_physical_timer_state_refuses_capture_and_legacy_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore",
@@ -295,7 +300,7 @@ OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform 
 def _consonance_crates() -> tuple[str, ...]:
     return (
         "consonance-client", "control-proto", "environment", "execution-proto",
-        "gicv3", "guest-image", "hypercall-doorbell", "hypercall-proto",
+        "gicv3", "guest-image", "host-code-identity", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
     )
@@ -319,6 +324,7 @@ CONSONANCE_CHECKS = Workflow(
         Job("CPU State", "pr", 15,
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
+                          "vmm-core:arm64_hvf_mdccint",
                           "vmm-backend:kvm_smoke"),
             ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
@@ -349,6 +355,7 @@ CONSONANCE_CHECKS = Workflow(
         Job("Snapshot and Restore", "pr", 15,
             crates=("snapshot-store", "unison"),
             test_targets=("vmm-core:snapshot_branch", "vmm-core:event_loop",
+                          "vmm-core:arm64_executable_restore",
                           "vmm-core:x86_kvm_pcide_preflight"),
             ignored_tests=("vmm-backend::kvm_smoke save_restore_round_trips_on_real_kvm",
                            "vmm-backend::kvm_smoke sysenter_restore_rejects_values_kvm_cannot_preserve",
@@ -589,6 +596,7 @@ HARMONY_HOST_COMPATIBILITY = Workflow(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("macOS Arm64", "pr", 15, select="rust_checks"),
         Job("Linux Arm64", "pr", 15, select="rust_checks"),
+        Job("Linux Arm64 Dissonance", "pr", 15, select="rust_checks"),
         Job("Linux Arm64 Qualification", "pr", 15, select="rust_checks"),
     ),
 )
@@ -723,7 +731,7 @@ CONSONANCE_UML = Workflow(
     triggers=("pull_request", "push", "workflow_dispatch"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
-        Job("UML Launcher", "pr", 15, crates=("uml",), select="rust_checks"),
+        Job("UML Launcher", "pr", 15, crates=("host-code-identity", "uml"), select="rust_checks"),
         Job("UML Artifacts — <Architecture>", "pr", 45,
             exception="Two cold compilations of the pinned UML kernel and locked "
                       "toolchain exceed the pull request check budget.",
@@ -804,6 +812,7 @@ MEDIA_REQUIRED = {
 
 # Component ownership of the Miri targets declared in `miri_scope.py`.
 MIRI_OWNERS = {
+    "host-code-identity": "Consonance",
     "vmm-core": "Consonance",
     "nested-driver": "Consonance",
     "hypercall-doorbell": "Consonance",

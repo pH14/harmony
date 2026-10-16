@@ -73,9 +73,11 @@ musl target. ARM builds rebuild the Rust standard library against LSE musl and
 scan the complete shipped binaries for unsupported instructions.
 
 `runtime-artifacts.py` records and verifies the canonical kernel, OCI runtime,
-and platform fixture. `source-key` hashes platform build sources and pinned
-contracts; generated build/download directories are excluded. `seal` records
-that source digest and every required artifact digest in `runtime-manifest.json`.
+and platform fixture. `source-key` hashes platform build sources, pinned
+contracts, and the CLI sources that define and assemble both architectures'
+default kernel command lines; generated build/download directories are
+excluded. `seal` records that source digest and every required artifact digest
+in `runtime-manifest.json`.
 Run it only after building the artifacts from those sources.
 
 `verify` reports one of four qualification scopes:

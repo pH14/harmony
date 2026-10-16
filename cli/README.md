@@ -125,6 +125,23 @@ and installed artifacts under `share/harmony/guest/ARCH`. The cache uses
 `HARMONY_DATA_DIR`, otherwise `XDG_DATA_HOME/harmony`, macOS
 `~/Library/Application Support/Harmony`, or Linux `~/.local/share/harmony`.
 New release assets become available when their release is published.
+Automatic discovery selects the first directory containing a current-source
+`runtime-manifest.json`, the architecture's kernel, and
+`initramfs-oci.cpio.gz`, with both file hashes matching the manifest. It skips
+stale, incomplete, or changed local bundles and applies the same check to
+cached and downloaded bundles before use. UML also checks an automatically
+selected base initramfs this way. An older cached release without a manifest
+must be removed and fetched again. For KVM and HVF, a single artifact override
+takes its counterpart from the same resolved directory and requires the same
+manifest check. Supplying both paths explicitly permits a custom layout, for
+which the caller must provide a qualified kernel and base initramfs pair.
+Selected artifact bytes are checked again when loaded, so a concurrent rebuild
+cannot replace a qualified kernel or base before execution. An explicit UML
+base initramfs is likewise the caller's choice. Capturing
+artifact hashes for replay identity does not qualify an older kernel for the
+current boot command line. The platform source key includes the CLI sources
+that supply and assemble the default x86 and Arm kernel command lines.
+Workload command lines belong to each workload's execution and cache identity.
 
 NES defaults to the QuickNES runner:
 
@@ -255,7 +272,9 @@ selector. Point-filtered logs show the console captured at that boundary.
 
 The `nested` package preserves the nested VM search supported by the runtime.
 Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
-`runner.options.kernel` pointing to a kernel built with nested KVM support.
+both `runner.options.kernel` pointing to a kernel built with nested KVM support
+and `runner.options.base_initramfs` pointing to its matching OCI base. This
+noncanonical profile pair is caller-qualified and must be supplied together.
 It requires Linux x86-64 with nested KVM enabled. Search and finding summaries
 are supported; branching, shell, continuation and console timelines are not yet
 implemented by this package. Replay requires the saved campaign stream to match
@@ -286,7 +305,7 @@ and further exploration uses `search`.
 
 ## Storage and boundaries
 
-The v3 manifest contains the loaded Harmony executable identity, resolved
+The v4 manifest contains the loaded Harmony executable identity, resolved
 workload and runner identities, artifact hashes, parent recording and a
 package-owned payload. Shared recording storage never decodes
 fault actions or controller inputs. Package adapters own payload schemas and
@@ -294,10 +313,13 @@ operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
 Replay verifies the loaded CLI executable identity, architecture and saved artifact hashes.
-Linux hashes the executable image through `/proc/self/exe`; macOS records the
-running process's code-directory hash. Both remain bound to the loaded image
-when its pathname is replaced while the process is running. If the host cannot
-provide a loaded-image identity, recording and replay fail closed.
+Linux hashes the running executable through `/proc/self/exe`, the actual bytes
+of every executable mapping, and each loaded ELF image's pure read-only load
+segments at admission. This covers dependent libraries and the vDSO. macOS
+combines the main code-directory hash with the mapped executable segments of
+dyld-listed images, including dylibs and dyld itself. Both remain bound to the
+loaded main image when its pathname is replaced while the process is running. If the host
+cannot provide the corresponding identity, recording and replay fail closed.
 Faults replay, branching and search from a branch also compare the saved
 `report.json` or `run.json` outcome with its manifest copy before using that
 evidence. Replay and branch selection use that verified manifest copy, even
