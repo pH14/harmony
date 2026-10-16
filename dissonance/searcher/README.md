@@ -58,7 +58,9 @@ rule applies when cumulative work reaches the recorded work budget. Schema versi
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
-limit of 1,024 attempts for one reservation. A terminal record follows only
+limit of 1,024 attempts for one reservation. Each skip must occur during the
+initial window fill or immediately after the admission that opens its later
+reservation slot. A terminal record follows only
 after the campaign has drained its jobs and finished
 successfully. Replay requires that record and checks its job, skip, and
 admission totals. Without a wall-time limit, it also requires every reservation

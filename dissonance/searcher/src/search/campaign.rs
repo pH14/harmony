@@ -4569,12 +4569,17 @@ impl ReplaySkipSchedule {
     fn accept_skip(
         &mut self,
         reservation: u64,
-        selected: usize,
+        admissions: usize,
+        window: usize,
         total: usize,
     ) -> Result<(), Box<dyn Error>> {
         let slot = usize::try_from(reservation)?;
-        if slot >= selected || slot >= total {
+        if slot >= admissions.saturating_add(window).min(total) || slot >= total {
             return Err("recorded skip names a reservation outside the selection window".into());
+        }
+        let selection_admission = if slot < window { 0 } else { slot - window + 1 };
+        if admissions != selection_admission {
+            return Err("recorded skip was not drawn at its selection boundary".into());
         }
         if self.admitted.contains(&reservation) {
             return Err("recorded skip follows its job admission".into());
@@ -5094,9 +5099,8 @@ where
             CampaignStreamRecord::Skip(skip) => {
                 replay_skips.accept_skip(
                     skip.reservation,
-                    replay_admissions
-                        .saturating_add(replay_window_depth)
-                        .min(replay_job_parents.len()),
+                    replay_admissions,
+                    replay_window_depth,
                     replay_job_parents.len(),
                 )?;
                 if stop_reservations_after_objective(
@@ -9098,12 +9102,94 @@ mod tests {
     fn multi_window_reservations_each_allow_the_full_skip_limit() {
         let mut schedule = super::ReplaySkipSchedule::default();
         for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
-            schedule.accept_skip(0, 2, 2).unwrap();
+            schedule.accept_skip(0, 0, 2, 2).unwrap();
         }
         for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
-            schedule.accept_skip(1, 2, 2).unwrap();
+            schedule.accept_skip(1, 0, 2, 2).unwrap();
         }
-        assert!(schedule.accept_skip(1, 2, 2).is_err());
+        assert!(schedule.accept_skip(1, 0, 2, 2).is_err());
+    }
+
+    #[test]
+    fn skips_follow_the_admission_that_opens_their_window_slot() {
+        let mut schedule = super::ReplaySkipSchedule::default();
+        schedule.accept_skip(0, 0, 2, 4).unwrap();
+        schedule.accept_skip(1, 0, 2, 4).unwrap();
+        schedule.admit(1);
+        assert!(schedule.accept_skip(1, 1, 2, 4).is_err());
+        schedule.accept_skip(2, 1, 2, 4).unwrap();
+        schedule.admit(0);
+        schedule.accept_skip(3, 2, 2, 4).unwrap();
+
+        let mut curtailed = super::ReplaySkipSchedule::default();
+        curtailed.accept_skip(0, 0, 2, 1).unwrap();
+        assert!(curtailed.accept_skip(0, 1, 2, 1).is_err());
+
+        for (reservation, admissions) in [(0, 1), (1, 1), (2, 0), (2, 2), (3, 1)] {
+            let mut schedule = super::ReplaySkipSchedule::default();
+            assert!(schedule.accept_skip(reservation, admissions, 2, 4).is_err());
+        }
+    }
+
+    #[test]
+    fn replay_rejects_a_skip_moved_past_a_later_reservations_admission() {
+        let mut config = three_worker_config();
+        config.campaign_seed = 1;
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 2;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("source campaign");
+        let jobs = job_lines(&stream);
+        let [(first_index, first), (second_index, second)] = jobs.as_slice() else {
+            panic!("source campaign did not admit exactly two jobs");
+        };
+        assert_eq!((first.reservation, second.reservation), (1, 0));
+        assert_eq!((first.parent_id, second.parent_id), (0, 0));
+        assert!(
+            first
+                .decisions
+                .iter()
+                .any(|decision| matches!(decision, CampaignAdmissionDecision::Retained { .. }))
+        );
+        replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("original campaign replays");
+        let mut lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let first_value: serde_json::Value = serde_json::from_str(&lines[*first_index]).unwrap();
+        let skip = serde_json::json!({
+            "event": "skip",
+            "reservation": 0,
+            "parent_id": 0,
+            "mutation_seed": first.mutation_seed,
+            "mixture_weight": first.mixture_weight,
+            "splice_weight": first.splice_weight,
+            "selector": first_value["selector"],
+            "suffix_limit": 1,
+        });
+        lines.insert(*second_index, serde_json::to_string(&skip).unwrap());
+        let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        end["skips"] = serde_json::json!(1);
+        *lines.last_mut().unwrap() = serde_json::to_string(&end).unwrap();
+        let changed = format!("{}\n", lines.join("\n"));
+        let error = replay_campaign_checkpointed(&workload, changed.as_bytes(), None, None)
+            .expect_err("replay accepted impossible skip after later reservation admission")
+            .to_string();
+        assert!(error.contains("selection boundary"), "{error}");
     }
 
     #[test]
