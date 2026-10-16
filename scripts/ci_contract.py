@@ -319,6 +319,7 @@ CONSONANCE_CHECKS = Workflow(
         Job("CPU State", "pr", 15,
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
+                          "vmm-core:arm64_hvf_mdccint",
                           "vmm-backend:kvm_smoke"),
             ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",

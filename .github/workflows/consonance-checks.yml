@@ -111,7 +111,7 @@ jobs:
           filter=$(python3 scripts/ci_contract.py nextest-filter vmm-core 'CPU State')
           cargo nextest run --release --all-features -p vmm-core --lib -E "$filter"
           cargo nextest run --release --all-features -p vmm-core \
-            --test x86_cpu_snapshots --test arm64_skeleton
+            --test x86_cpu_snapshots --test arm64_skeleton --test arm64_hvf_mdccint
       - name: Grant /dev/kvm access
         if: steps.scope.outputs.enabled == 'true'
         run: |
