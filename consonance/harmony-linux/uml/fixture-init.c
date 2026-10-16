@@ -8,6 +8,7 @@
  */
 #define _GNU_SOURCE
 #include <errno.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -107,6 +108,70 @@ static void boot(void)
 	snprintf(line, sizeof(line), "HARMONY_UML PASS release=%s machine=%s\n",
 		 name.release, name.machine);
 	say(line);
+	power_off();
+}
+
+static int read_exitcode(void)
+{
+	char text[64];
+	char *end;
+	long value;
+	int fd = open("/proc/exitcode", O_RDONLY | O_CLOEXEC);
+	ssize_t length;
+
+	if (fd < 0)
+		fail("open-exitcode-read");
+	length = read(fd, text, sizeof(text) - 1);
+	if (length <= 0)
+		fail("read-exitcode");
+	close(fd);
+	text[length] = '\0';
+	errno = 0;
+	value = strtol(text, &end, 10);
+	if (errno != 0 || end == text || (*end != '\n' && *end != '\0') ||
+	    value < INT_MIN || value > INT_MAX)
+		fail("parse-exitcode");
+	return (int)value;
+}
+
+static void exitcode_spoof(void)
+{
+	static const char *values[] = { "86\n", "87\n", "342\n", "-169\n" };
+	const int initial = read_exitcode();
+	int rejected = 0;
+	char line[180];
+
+	for (size_t index = 0; index < sizeof(values) / sizeof(values[0]); index++) {
+		int fd = open("/proc/exitcode", O_WRONLY | O_CLOEXEC);
+		ssize_t written;
+		int write_errno;
+		int after;
+
+		if (fd < 0)
+			fail("open-exitcode-write");
+		errno = 0;
+		written = write(fd, values[index], strlen(values[index]));
+		write_errno = errno;
+		close(fd);
+		after = read_exitcode();
+		if (written == -1 && write_errno == EINVAL && after == initial) {
+			snprintf(line, sizeof(line), "HARMONY_UML EXITCODE REJECTED value=%s", values[index]);
+			say(line);
+			rejected++;
+		} else {
+			snprintf(line, sizeof(line),
+				 "HARMONY_UML EXITCODE ACCEPTED value=%s", values[index]);
+			say(line);
+			snprintf(line, sizeof(line),
+				 "HARMONY_UML EXITCODE OBSERVED result=%zd errno=%d initial=%d after=%d\n",
+				 written, write_errno, initial, after);
+			say(line);
+		}
+	}
+	if (rejected == (int)(sizeof(values) / sizeof(values[0])))
+		say("HARMONY_UML EXITCODE PASS\n");
+	else
+		say("HARMONY_UML EXITCODE FAIL\n");
 	power_off();
 }
 
@@ -568,6 +633,8 @@ int main(void)
 		orphans();
 	else if (strcmp(mode, "exit") == 0)
 		return 3;
+	else if (strcmp(mode, "exitcode_spoof") == 0)
+		exitcode_spoof();
 	open_harmony();
 	if (strcmp(mode, "values") == 0)
 		values();
