@@ -2051,6 +2051,15 @@ where
         }
     }
 
+    pub(crate) fn pending_sdk_stop_moment(&self) -> Option<u64> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::Decision { moment, .. }
+            | SdkStop::CoverageDecision { moment, .. }
+            | SdkStop::DeferredDoorbell { moment, .. } => Some(*moment),
+            _ => None,
+        }
+    }
+
     pub fn pending_service_question(&self) -> Option<(u64, &channel::Question)> {
         match self.sdk.as_ref()?.pending_stop.as_ref()? {
             SdkStop::Decision {
