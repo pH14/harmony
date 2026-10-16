@@ -349,7 +349,8 @@ unsafe extern "C" {
 #[cfg(target_os = "macos")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
-    loaded_executable_identity_for_child(std::process::id())
+    let main = loaded_executable_identity_for_child(std::process::id())?;
+    host_code_identity::loaded_executable_identity(&main)
 }
 
 #[cfg(target_os = "macos")]

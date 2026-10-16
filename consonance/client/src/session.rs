@@ -928,6 +928,99 @@ mod tests {
     use super::*;
     use std::{collections::VecDeque, io};
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn public_session_identity_changes_with_loaded_dylib_bytes() {
+        use std::ffi::CString;
+        use std::fs;
+        use std::os::unix::ffi::OsStrExt;
+        use std::process::Command;
+
+        const CHILD_ENV: &str = "HARMONY_SESSION_DYLIB_IDENTITY_TEST_CHILD";
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::public_session_identity_changes_with_loaded_dylib_bytes",
+        ) {
+            return;
+        }
+        if let Some(directory) = std::env::var_os(CHILD_ENV) {
+            let directory = std::path::PathBuf::from(directory);
+            let active = directory.join("active.dylib");
+            let config = SessionConfig::default();
+            let identity =
+                || Session::identity_with_config(b"kernel", b"initramfs", &config).unwrap();
+            let baseline = identity();
+            let main =
+                crate::image_identity::loaded_executable_identity_for_child(std::process::id())
+                    .unwrap();
+            let mut loaded = Vec::new();
+            for (source, expected) in [("a.dylib", 11), ("b.dylib", 22)] {
+                fs::copy(directory.join(source), &active).unwrap();
+                let path = CString::new(active.as_os_str().as_bytes()).unwrap();
+                // SAFETY: path is NUL terminated and remains valid through this synchronous load.
+                let handle =
+                    unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+                assert!(!handle.is_null());
+                // SAFETY: handle came from the successful dlopen and the symbol name is static.
+                let symbol = unsafe { libc::dlsym(handle, c"answer".as_ptr()) };
+                assert!(!symbol.is_null());
+                // SAFETY: both test dylibs export answer with the exact extern C function signature.
+                let answer: unsafe extern "C" fn() -> i32 = unsafe { std::mem::transmute(symbol) };
+                // SAFETY: the resolved function belongs to the still-loaded test dylib.
+                assert_eq!(unsafe { answer() }, expected);
+                loaded.push(identity());
+                assert_eq!(
+                    crate::image_identity::loaded_executable_identity_for_child(std::process::id())
+                        .unwrap(),
+                    main
+                );
+                // SAFETY: handle came from the successful dlopen and is closed exactly once.
+                assert_eq!(unsafe { libc::dlclose(handle) }, 0);
+                fs::remove_file(&active).unwrap();
+            }
+            assert_ne!(baseline, loaded[0]);
+            assert_ne!(baseline, loaded[1]);
+            assert_ne!(loaded[0], loaded[1]);
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        for (stem, answer) in [("a", 11), ("b", 22)] {
+            let source = directory.path().join(format!("{stem}.c"));
+            let dylib = directory.path().join(format!("{stem}.dylib"));
+            fs::write(
+                &source,
+                format!("int answer(void) {{ return {answer}; }}\n"),
+            )
+            .unwrap();
+            assert!(
+                Command::new("cc")
+                    .args(["-dynamiclib", "-o"])
+                    .arg(&dylib)
+                    .arg(&source)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "session::tests::public_session_identity_changes_with_loaded_dylib_bytes",
+            ])
+            .env(CHILD_ENV, directory.path())
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success()
+                && String::from_utf8_lossy(&output.stdout).contains("running 1 test"),
+            "{}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     #[derive(Debug)]
     struct SnapshotTransport {
         requests: Vec<control_proto::Request>,
