@@ -974,7 +974,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::capture_timeout_abandons_with_a_typed_watchdog_error --nocapture")
-            .arg("/proc/self/exe")
+            .arg(format!("/proc/{}/exe", std::process::id()))
             .env("HARMONY_UML_CAPTURE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -1040,7 +1040,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error --nocapture")
-            .arg("/proc/self/exe")
+            .arg(format!("/proc/{}/exe", std::process::id()))
             .env("HARMONY_UML_RESTORE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -1118,7 +1118,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session --nocapture")
-            .arg("/proc/self/exe")
+            .arg(format!("/proc/{}/exe", std::process::id()))
             .env("HARMONY_UML_FAILED_BRANCH_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -1275,7 +1275,7 @@ mod tests {
             command
                 .arg("-c")
                 .arg("exec \"$0\" --exact session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session --nocapture")
-                .arg("/proc/self/exe")
+                .arg(format!("/proc/{}/exe", std::process::id()))
                 .env("HARMONY_UML_ALIASED_SERVICE_CHILD", "1")
                 .process_group(0);
             let checkpoints = Checkpoints::new();

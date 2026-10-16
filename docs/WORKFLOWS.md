@@ -66,7 +66,8 @@ disk-backed host is refused, the paired frontend enters the sealed host, and
 native QuickNES remains on the frontend. The package fixture uses the Faults
 runner on both Linux architectures. A separate x86-64 musl job runs the public
 Session, worker reexec and failure recovery, UML shutdown, timeout, branch and
-handler tests, live-code revocation, Recording, and terminal console limits through
+handler tests, executable-map rejection and cache revocation, Recording, and
+terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
 fully sealed executable memfd before execution. All 15 exact tests require
 one test to start and pass. The musl positive tests fail if strict host

@@ -114,6 +114,9 @@ jobs:
         run: |
           rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
           rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          rustup target add "${{ matrix.architecture }}-unknown-linux-musl"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -136,9 +139,15 @@ jobs:
       - name: Report a reviewed kernel panic through the public UML client
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-        run: cargo test --locked -p consonance-client --features uml --lib reviewed_kernel_panic_is_a_public_client_crash -- --ignored --nocapture
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          set -euo pipefail
+          output=$(cargo test --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p consonance-client --features uml --lib session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Fxq 'running 1 test' <<<"$output"
+          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
       - name: Reject guest writes to host-reserved UML exit statuses
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
@@ -153,7 +162,13 @@ jobs:
         if: matrix.architecture == 'x86_64'
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
-        run: cargo test --locked -p uml --test fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore -- --ignored --nocapture
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+        run: |
+          set -euo pipefail
+          output=$(cargo test --locked --target x86_64-unknown-linux-musl -p uml --test fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Fxq 'running 1 test' <<<"$output"
+          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
       - uses: actions/upload-artifact@v4
         with:
           name: uml-artifacts-${{ github.sha }}-${{ matrix.architecture }}

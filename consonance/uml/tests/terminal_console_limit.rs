@@ -1,4 +1,4 @@
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", target_env = "musl"))]
 
 use std::os::unix::process::CommandExt;
 use std::process::Command;
