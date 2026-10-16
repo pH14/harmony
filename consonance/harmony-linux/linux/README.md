@@ -54,6 +54,10 @@ consonance/harmony-linux/scripts/build-platform-runtime.sh
 The build requires `nightly-2026-06-16` with `rust-src` and the native Linux
 musl target. It builds the matching kernel and static guest binaries, packages
 the platform OCI fixture, and records a source and artifact manifest. The
+canonical entry point rejects `N6_TRAPS_OFF`, `TASK_PARK_PROFILE`, and
+`NESTED_HOST_PROFILE`; build those separate profile kernels through the
+architecture's kernel builder. A profile build must not leave an older default
+kernel to be sealed as the current canonical runtime. The
 lower-level `build-oci-runtime-initramfs.sh` accepts the built platform init and
 supervisor through `HARMONY_RUNTIME_INIT` and `HARMONY_RUNTIME_SUPERVISOR`.
 It fails when a required input is missing. Every ARM executable must satisfy
