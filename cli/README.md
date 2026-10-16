@@ -303,6 +303,43 @@ the reference for a fresh replay.
 These are developer qualification tools. Ordinary investigation uses a branch,
 and further exploration uses `search`.
 
+## Build the paired binaries from source
+
+A source build for Consonance needs both executables in one directory. Release
+archives already contain the pair. On Linux, install the host's musl linker
+(for example, `musl-tools` on Ubuntu), then build the native frontend and the
+static host from the repository root. Choose the musl target for the host
+architecture:
+
+```sh
+musl_target=x86_64-unknown-linux-musl  # use aarch64-unknown-linux-musl on Arm64
+rustup target add "$musl_target"
+cargo build --locked --release -p harmony-cli --bin harmony
+cargo build --locked --release -p harmony-cli --target "$musl_target" \
+  --no-default-features --features consonance-host --bin harmony-consonance-host
+cp "target/$musl_target/release/harmony-consonance-host" target/release/
+./target/release/harmony check
+```
+
+On macOS, build the second executable for the native target and sign it with
+the same hardened runtime, Hypervisor entitlement and OS-only library constraint
+used by the release package:
+
+```sh
+cargo build --locked --release -p harmony-cli --bin harmony
+cargo build --locked --release -p harmony-cli --no-default-features \
+  --features consonance-host --bin harmony-consonance-host
+codesign --force --sign - --identifier org.harmony.consonance-host \
+  --options runtime \
+  --entitlements consonance/vmm-backend/hvf.entitlements.plist \
+  --library-constraint scripts/macos-os-only-library-constraint.coderequirement \
+  target/release/harmony-consonance-host
+./target/release/harmony check
+```
+
+These commands leave the native QuickNES frontend beside its strict Consonance
+host. A Consonance command refuses an absent or unqualified companion.
+
 ## Storage and boundaries
 
 The Linux and macOS CLI installations pair `harmony` with
