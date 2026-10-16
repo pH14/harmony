@@ -141,7 +141,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str = "tier_progress_earned_fall_yield_cell_recent_count_decay_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -244,6 +244,12 @@ pub struct SelectorAccounting {
     pub portfolio: Option<PortfolioAccounting>,
 }
 
+#[derive(Clone, Copy)]
+struct TierBelow {
+    draws: u64,
+    finds: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TierRuns {
     pub current: u64,
@@ -264,6 +270,10 @@ pub struct TierRuns {
     pub next_draws: u64,
     #[serde(default)]
     pub next_cells: u64,
+    #[serde(default)]
+    pub finds: u64,
+    #[serde(default)]
+    pub run_finds: u64,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -2615,6 +2625,10 @@ where
             if novel_cell || carried_win {
                 runs.wins = runs.wins.saturating_add(1);
                 runs.dry = 0;
+                let finder =
+                    parent_id.map_or(key.progress(), |parent| self.entries[parent].key.progress());
+                let runs = self.tier_runs_mut(finder);
+                runs.finds = runs.finds.saturating_add(1);
             }
             if fresh {
                 self.restart_tier_run(key.progress());
@@ -2814,6 +2828,7 @@ where
             .next_back()
             .map(|(below, _)| (format!("{below:?}"), self.tier_runs(*below)));
         let runs = self.tier_runs_mut(progress);
+        runs.run_finds = runs.finds;
         runs.longest = runs.longest.max(runs.current);
         runs.current = 0;
         runs.wins = 0;
@@ -2824,11 +2839,36 @@ where
         runs.next_cells = next_runs.cells;
     }
 
-    fn tier_halvings(&self, progress: K::Progress, next: Option<K::Progress>) -> u32 {
+    fn run_yield(runs: &TierRuns) -> TierBelow {
+        TierBelow {
+            draws: runs.current,
+            finds: runs.finds.saturating_sub(runs.run_finds),
+        }
+    }
+
+    fn yields_more(left: TierBelow, right: TierBelow) -> bool {
+        u128::from(left.finds) * u128::from(right.draws.saturating_add(1))
+            > u128::from(right.finds) * u128::from(left.draws.saturating_add(1))
+    }
+
+    fn earned_halvings(runs: &TierRuns, below: TierBelow) -> u32 {
+        let earned = ((u128::from(below.finds) * u128::from(runs.current.saturating_add(1)))
+            << TIER_RANK_SHIFT)
+            / (u128::from(runs.wins.saturating_add(1)) * u128::from(below.draws.saturating_add(1)));
+        earned.max(1).ilog2().min(TIER_RANK_SHIFT)
+    }
+
+    fn tier_halvings(
+        &self,
+        progress: K::Progress,
+        next: Option<K::Progress>,
+        below: TierBelow,
+    ) -> u32 {
         let Some(next) = next else {
             return 0;
         };
         let runs = self.tier_runs(progress);
+        let earned = Self::earned_halvings(&runs, below);
         let cells = self.tiers.get(&progress).map_or(1, |tier| {
             u64::try_from(tier.places.len().max(1)).unwrap_or(u64::MAX)
         });
@@ -2852,6 +2892,7 @@ where
                 .max(1)
                 .ilog2()
                 .min(TIER_RANK_SHIFT)
+                .min(earned)
         } else {
             0
         }
@@ -2862,19 +2903,36 @@ where
         let mut ranked = self.tiers.keys().rev().copied().peekable();
         let mut floor = 0_usize;
         let mut halvings = 0;
+        let mut best = Vec::with_capacity(tiers);
+        let mut lead = TierBelow { draws: 0, finds: 0 };
+        for progress in self.tiers.keys() {
+            best.push(lead);
+            let own = self
+                .selector_accounting
+                .tier_runs
+                .get(&format!("{progress:?}"))
+                .map_or(lead, Self::run_yield);
+            if Self::yields_more(own, lead) {
+                lead = own;
+            }
+        }
+        best.reverse();
         while let Some(progress) = ranked.next() {
-            halvings = self.tier_halvings(progress, ranked.peek().copied());
+            let below = best[floor];
+            halvings = self.tier_halvings(progress, ranked.peek().copied(), below);
             if halvings < TIER_RANK_SHIFT || ranked.peek().is_none() {
                 break;
             }
             floor += 1;
         }
-        let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
+        let test_weight = tier_weight(u8::try_from(floor).unwrap_or(u8::MAX));
+        let tested = u64::try_from(tiers.saturating_sub(floor + 1).max(1)).unwrap_or(u64::MAX);
+        let floor_weight = ((test_weight << TIER_RANK_SHIFT) >> halvings).saturating_mul(tested);
         let weights = (0..tiers).map(|rank| {
             if rank <= floor {
                 floor_weight
             } else {
-                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                test_weight
             }
         });
         let index = draw_weighted(rand, weights)?;
@@ -8756,6 +8814,7 @@ mod tests {
                 runs.yields += 1;
                 runs.cells += u64::from(new_cell);
                 runs.wins += 1;
+                runs.finds += 1;
                 runs.dry = 0;
             }
             if minor == 1 && archive.tier_runs(progress).draws == 256 {

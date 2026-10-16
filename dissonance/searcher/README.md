@@ -425,14 +425,19 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_pace_yield_cell_recent_count_decay_v2`, and the stream header names
+One selector exists, `tier_progress_earned_fall_yield_cell_recent_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
-progress values held by selectable entries, ranked from the deepest; a tier at
-rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
-the leading tier takes most of the draws, and no tier holding an entry takes
-zero. Every workload uses this ratio, so a workload's progress value must not
-fall along the route to its goal: states on that route would rank below a tier
-that leads nowhere and receive almost no draws. The
+progress values held by selectable entries, ranked from the deepest. The
+floor is the deepest rank the weight has fallen to, as described below; with
+no fall it is the leading tier. With `w = 1 << ((8 - min(f, 8)) * 3)` for the
+floor at rank `f`, `n` the number of ranks below the floor, and `h` the
+floor's halvings, every rank at or above the floor weighs `(8 * w * n) >> h`
+and every rank below the floor weighs `w`. The ranks below the floor
+therefore share one eighth of a full floor rank's weight evenly, a test share
+that keeps every lower tier drawn, and no tier holding an entry takes zero.
+Every workload uses this rule, so a workload's progress value must not fall
+along the route to its goal: states on that route would rank below a tier
+that leads nowhere and receive only the test share until they yield. The
 replay verifier bounds a recorded rank by completed progress levels in
 previously admitted archive entries when that selection was reserved. The
 bound includes historical levels that may no longer be selectable, so it
@@ -475,7 +480,15 @@ keeps farming at its usual gap holds.
 When the rank below is a different tier from the one recorded when the run
 began, or no tier was recorded, `Nd` and `Ny` are that tier's totals. A
 leading tier that yields at least as much per draw as the rank below opens
-cells keeps its full weight. Progress from the tier restores its full weight.
+cells keeps its full weight. The ranks below must also earn each halving.
+A tier's finds are the new cells and carried-in wins whose parent was drawn
+from it. With `Bd` and `By` the draws and finds in the current run of the
+rank below the tier that finds the most per draw, the tier halves at most
+`log2(8 * By * (Td + 1) / ((Ty + 1) * (Bd + 1)))` times, rounded down. The
+weight moves below the tier in proportion to how much more that rank finds
+per draw, and a full fall needs it to find at least as much per draw as the
+tier. Ranks below a stalled tier that find nothing keep only the test share,
+while a live branch below it earns weight as fast as it yields. Progress from the tier restores its full weight.
 A dead-end route that keeps opening cells beside each other at its deepest
 progress value therefore still loses weight, because its cells are finite and
 each opens no deeper ground. When the leading tier has halved all the way
@@ -516,8 +529,9 @@ new ground instead of settling to an equal share with every cell behind them.
 `cell_resets`, `tier_draws_by_rank`, `best_holder_draws` per preference,
 `tier_runs` keyed by each tier's progress value with its current and longest
 run, its total draws and yields, its yields in the current run as `wins`,
-its draws since its last yield as `dry`, its new cells as `cells`, and the rank below's name, draws and new cells when
-the run began, and the draws each
+its draws since its last yield as `dry`, its new cells as `cells`, its finds
+as `finds` and its finds when the run began as `run_finds`, and the rank
+below's name, draws and new cells when the run began, and the draws each
 cell received, and
 every live progress line carries it under `selector`. The draws each cell
 received and `selector.portfolio` appear once each time the executions double,
