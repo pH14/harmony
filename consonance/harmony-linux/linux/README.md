@@ -79,8 +79,14 @@ closure, and the generated runtime requests neither feature.
 
 The supported workload guest is the shipped 64-bit Linux kernel and its
 initramfs. The x86 loader requires the [64-bit Linux boot entry](https://docs.kernel.org/arch/x86/boot.html).
-The x86 kernel build rejects raw RDTSC, RDTSCP, RDRAND, and RDSEED in the
-kernel proper, setup, and decompressor. Its scan checks that the known
+The x86 kernel build rejects RDTSC, RDTSCP, RDRAND, and RDSEED decoded at
+canonical kernel-proper instruction starts. It requires direct branches to
+target those starts and checks the physical entry separately. Setup's loaded
+file bytes and the decompressor's executable sections are raw-scanned for the
+same encodings.
+Counter-shaped kernel operand bytes and the compressed payload while mapped
+executable remain computed-entry limits ([#657](https://github.com/pH14/harmony/issues/657)).
+The scan checks that the known
 linker-defined code sections present in each image are marked executable before
 relying on section-based disassembly. It rejects unknown or duplicate allocated
 data sections and scans opcode bytes in loaded file ranges outside reviewed
