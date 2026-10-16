@@ -717,6 +717,8 @@ pub use linux::{
 
 #[cfg(target_os = "macos")]
 mod macos {
+    mod strict;
+
     use std::ffi::c_void;
     use std::io;
     use std::mem::size_of;
@@ -728,6 +730,8 @@ mod macos {
     use sha2::{Digest, Sha256};
 
     use crate::LoaderEpoch;
+
+    pub use strict::strict_macos_executable_identity;
 
     static IMAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
     static CALLBACKS_ACTIVE: AtomicU64 = AtomicU64::new(0);
@@ -1307,4 +1311,7 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{loaded_executable_identity, loader_epoch, mapped_executable_sha256};
+pub use macos::{
+    loaded_executable_identity, loader_epoch, mapped_executable_sha256,
+    strict_macos_executable_identity,
+};
