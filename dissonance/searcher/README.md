@@ -399,7 +399,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_fallen_age_yield_cell_recent_count_decay_v4`, and the stream header names
+One selector exists, `tier_progress_fallen_age_yield_cell_recent_count_decay_v5`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
@@ -419,11 +419,11 @@ The leading tier gives up weight while it makes no progress. A tier makes
 progress when a parent drawn from it opens a cell at a deeper progress value;
 a new cell beside its parent at the same progress value is not progress. A
 tier's run starts when it appears or makes progress. A tier's age counts its
-own draws, the draws of the rank directly above it, and the draws of any
-higher rank while every rank between them has fallen to its full halvings.
-The run is the age since the run began. A tier that receives almost no draws
-while the weight falls through the ranks above it still ages, and a leading
-tier that keeps yielding ages only the rank directly below it. When the run
+own draws and the draws of any higher rank while that rank and every rank
+between them have fallen to their full halvings. The run is the age since the
+run began. A tier that receives almost no draws while the weight falls through
+the ranks above it still ages, and a leading tier that keeps yielding ages no
+tier below it. When the run
 passes twice the tier's cell count, the leading tier's weight halves, and it
 halves again each time the run doubles, down to the weight of the rank
 below. The halvings apply only while the rank below

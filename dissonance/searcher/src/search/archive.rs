@@ -136,7 +136,7 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_fallen_age_yield_cell_recent_count_decay_v4";
+pub const SELECTOR_IDENTIFIER: &str = "tier_progress_fallen_age_yield_cell_recent_count_decay_v5";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -2736,7 +2736,7 @@ where
             .copied()
             .enumerate()
             .skip(rank)
-            .take_while(|(below, _)| *below <= floor.max(rank + 1))
+            .take_while(|(below, _)| *below <= floor.max(rank))
             .map(|(_, tier)| tier)
             .collect();
         for tier in aged {
