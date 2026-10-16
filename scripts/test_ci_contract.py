@@ -22,19 +22,14 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
-    def test_uml_artifacts_replay_loaded_code_against_reviewed_bundle(self):
+    def test_uml_launcher_refuses_dynamic_loaded_code_once(self):
         import yaml
 
-        steps = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]["artifacts"]["steps"]
-        build = next(index for index, step in enumerate(steps)
-                     if step.get("name") == "Build twice and match the reviewed profile")
-        replays = [(index, step) for index, step in enumerate(steps)
-                   if "scripts/test-loaded-code-identity.py --profile" in step.get("run", "")]
-        self.assertEqual(len(replays), 1)
-        index, step = replays[0]
-        self.assertGreater(index, build)
-        self.assertEqual(step.get("if"), "matrix.architecture == 'x86_64'")
-        self.assertIn('"$RUNNER_TEMP/uml-first"', step["run"])
+        jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
+        runs = [(job, step.get("run", "")) for job, details in jobs.items()
+                for step in details.get("steps", [])
+                if "scripts/test-loaded-code-identity.py" in step.get("run", "")]
+        self.assertEqual(runs, [("launcher", "python3 scripts/test-loaded-code-identity.py")])
 
     def test_release_guest_archive_carries_verified_runtime_pair(self):
         import yaml
