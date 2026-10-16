@@ -654,6 +654,7 @@ fn write_vgic_redist_u64<K: Arm64Kvm + ?Sized>(k: &mut K, offset: u64, value: u6
     )
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub(crate) fn canonicalize_vgic_redist_bases<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
     for offset in [GICR_PROPBASER, GICR_PENDBASER] {
         let value = read_vgic_redist_u64(k, offset)?;
