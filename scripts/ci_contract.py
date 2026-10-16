@@ -792,6 +792,7 @@ MEDIA_REQUIRED = {
 
 # Component ownership of the Miri targets declared in `miri_scope.py`.
 MIRI_OWNERS = {
+    "host-code-identity": "Consonance",
     "vmm-core": "Consonance",
     "nested-driver": "Consonance",
     "hypercall-doorbell": "Consonance",

@@ -6,7 +6,13 @@ use std::process::Command;
 fn compile(source: &str, output: PathBuf, definitions: &[&str]) {
     std::fs::create_dir_all(output.parent().unwrap()).unwrap();
     let mut command = Command::new("cc");
-    command.args(["-shared", "-fPIC", "-O2", "-Wl,-soname,libwitness.so"]);
+    command.args([
+        "-shared",
+        "-fPIC",
+        "-O2",
+        "-Wl,-z,separate-code",
+        "-Wl,-soname,libwitness.so",
+    ]);
     for definition in definitions {
         command.arg(format!("-D{definition}"));
     }
@@ -38,6 +44,11 @@ fn main() {
         "witness.c",
         out.join("preload/libclear.so"),
         &["WITNESS_FLIP=1", "WITNESS_CLEAR_PRELOAD=1"],
+    );
+    compile(
+        "witness.c",
+        out.join("rodata/libwitness.so"),
+        &["WITNESS_RODATA=1"],
     );
     println!("cargo:rustc-link-search=native={}", out.join("A").display());
     println!("cargo:rustc-link-arg-bin=loaded-code-witness=-Wl,-rpath,$ORIGIN");

@@ -598,6 +598,9 @@ is separate from repository lint.
 The Guest Memory job includes the nested driver’s portable arithmetic and
 mapping checks. Its mapping composition runs in the bounded Consonance Miri
 matrix; the full matrix interprets the driver library.
+The host-code-identity Miri target exercises the loader callback's unsafe
+program-header copy with a synthetic record on pull requests that change that
+crate. Its whole library runs in scheduled Consonance analysis.
 
 The release workflow publishes the CLI, a guest kernel and base initramfs,
 a pinned UML profile, and the source SDK for language preparation. Guest, UML

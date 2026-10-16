@@ -41,16 +41,21 @@ This refuses direct dynamic-loader launches whose command-line options bypass
 the environment check, including when separate Btrfs subvolumes reuse a mapping
 inode number. Linux also hashes the bytes of every executable mapping through
 `/proc/self/mem` at admission, including ordinary dependent libraries, the
-dynamic loader, and the vDSO. It refuses anonymous or memfd executable memory,
-writable executable memory, unreadable bytes, and unrecognized special
+dynamic loader, and the vDSO. Each loader-listed ELF image additionally binds
+its executable and pure read-only load segments in loader order, so a library
+`.rodata` change alters the identity even when its code stays the same. It
+refuses anonymous or memfd executable memory, writable executable memory,
+unreadable bytes, text relocations, and unrecognized special
 executable mappings. The exact conventional x86-64 kernel-emulated `[vsyscall]`
 mapping is represented by its shape and kernel release. This captures resident
 `/etc/ld.so.preload` libraries and injected libraries whose constructor clears
-`LD_PRELOAD` before admission. It does not
-bind non-executable library data, symbol bindings, constructor effects, later
-loads or unloads, or changes to executable memory after the measurement. On
-macOS, the loaded identity still covers the main code-directory hash only;
-dylibs are outside it. This self-measurement is not an adversarial attestation.
+`LD_PRELOAD` before admission. Writable library initializers, RELRO/GOT values,
+symbol bindings, constructor effects, later loads or unloads, and changes to
+executable memory after measurement remain outside the Linux identity. On
+macOS, the loaded identity combines the main code-directory hash with the
+mapped executable segments of dyld-listed images, including dylibs and dyld
+itself. macOS library data remains outside that identity. This self-measurement
+is not an adversarial attestation.
 A nonempty `identity_tag` adds a workload domain; it does not replace those
 setup inputs.
 

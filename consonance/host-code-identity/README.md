@@ -2,15 +2,22 @@
 
 On Linux, `mapped_executable_sha256` reads the bytes currently mapped with
 execute permission in its own process through `/proc/self/mem`. It includes the
-main program, dynamic loader, dependent libraries, and the vDSO. The digest
-uses mapping permissions, file offsets, lengths, mapping kinds, and mapped
-bytes; file paths and absolute addresses are excluded so ordinary pathname
-replacement and address randomization do not change the identity of unchanged
-loaded code. Repeated records retain multiple mappings of the same bytes.
+main program, dynamic loader, dependent libraries, and the vDSO. It also reads
+each loaded ELF image's executable and pure read-only `PT_LOAD` segments as one
+ordered image record. This binds ordinary library `.rodata` to the code that
+uses it; a one-byte read-only data change cannot keep the same identity while
+changing a guest entropy response. Executable mapping records include their
+permissions, file offsets, lengths, mapping kinds, and mapped bytes. ELF image
+records include their segment layout and mapped bytes in loader order. File
+paths and absolute addresses are excluded so pathname replacement and address
+randomization do not change the identity of unchanged images. Repeated records
+retain multiplicity.
 
 Admission refuses anonymous or memfd executable memory, writable executable
-memory, unrecognized special executable mappings, unreadable bytes, and changes
-to the executable map list while measuring it. The vDSO's bytes are included.
+memory, unrecognized special executable mappings, unreadable bytes, writable or
+inaccessible pure read-only segments, text relocations, and changes to the
+relevant maps or loader generation while measuring them. The vDSO's bytes are
+included.
 The conventional x86-64 `--xp` `[vsyscall]` range has no readable user code;
 only its exact kernel gateway shape and running kernel release are recorded.
 Other kernel gateway shapes fail closed. A process with a JIT must use a
@@ -19,11 +26,17 @@ device and inode numbers to identify the mapped bytes, so pathname replacement
 and Btrfs inode reuse cannot make
 different mapped code equal at the measurement point.
 
-This is an admission-time code-byte identity, measured under a quiescent loader
-and memory map. It does not bind data or read-only non-executable library
-segments, symbol bindings, constructor effects, or code loaded, unloaded, or
-changed later. A second map-list read catches ordinary concurrent map changes
-but cannot make a process snapshot atomic against adversarial mutation.
+This is an admission-time identity, measured under a quiescent loader and
+memory map. Pure read-only ELF segments exclude the `PF_W` load segment even
+where the loader later protects its RELRO pages as `r--p`. Hashing those mapped
+RELRO bytes would make otherwise identical processes differ under ASLR because
+they contain relocated pointers. Writable library initializers, RELRO/GOT
+values, symbol bindings, constructor effects, generic file-mapped non-ELF data,
+and code loaded, unloaded, or changed later remain outside the identity. A
+one-byte writable library initializer can still change guest behavior while
+retaining this identity. The second relevant-map and loader census catches
+ordinary concurrent changes but cannot make a process snapshot atomic against
+adversarial mutation.
 Constructors run before admission, and a process that can interpose the map or
 memory reads can spoof this self-measurement; it is not an attestation boundary.
 
