@@ -37,6 +37,8 @@ pub fn compare_gic_architecture(
     scalar!(timer_hz);
     scalar!(timer_intid);
     scalar!(gicd_ctlr);
+    scalar!(gicr_propbaser);
+    scalar!(gicr_pendbaser);
     scalar!(pmr);
     scalar!(bpr0);
     scalar!(bpr1);
@@ -203,6 +205,8 @@ impl Arm64ArchitecturalState {
         write_u64(&mut out, "gic.timer_hz", gic.timer_hz)?;
         writeln!(out, "gic.timer_intid {:08x}", gic.timer_intid)?;
         writeln!(out, "gic.gicd_ctlr {:08x}", gic.gicd_ctlr)?;
+        write_u64(&mut out, "gic.gicr_propbaser", gic.gicr_propbaser)?;
+        write_u64(&mut out, "gic.gicr_pendbaser", gic.gicr_pendbaser)?;
         write_u32_array(&mut out, "gic.group", &gic.group)?;
         write_u32_array(&mut out, "gic.enable", &gic.enable)?;
         write_u32_array(&mut out, "gic.pending", &gic.pending)?;
@@ -738,6 +742,18 @@ mod comparator_tests {
                 index: None,
             })
         );
+        for field in ["gicr_propbaser", "gicr_pendbaser"] {
+            let mut planted = expected.clone();
+            if field == "gicr_propbaser" {
+                planted.gicr_propbaser = 0x1234_5180;
+            } else {
+                planted.gicr_pendbaser = 0x1234_0580;
+            }
+            assert_eq!(
+                compare_gic_architecture(&expected, &planted),
+                Err(GicArchitectureDifference { field, index: None })
+            );
+        }
         let mut planted = expected.clone();
         planted.bpr1 = 7;
         assert_eq!(

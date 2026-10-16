@@ -25,6 +25,9 @@ deadline is derived from the current V-time and timer registers rather than
 stored in the state record.
 The record also carries the GIC CPU-interface binary points, control, group
 enables, and active-priority registers needed by KVM's in-kernel controller.
+It carries the KVM redistributor property and pending base registers so their
+guest-visible readback enters snapshots and identity. The userspace model
+reports zero for both and rejects a nonzero value on restore.
 The userspace controller's current Group-1 arbitration uses its own PMR and
 active INTID state; these additional CPU-interface fields remain zero on HVF.
 `input_unmasked` checks the individual input's distributor, redistributor,

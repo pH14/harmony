@@ -276,6 +276,7 @@ impl LiveKvm {
         })
         .map_err(kvm_err)?;
         self.vgic = Some(vgic);
+        crate::arm64_kvm::canonicalize_vgic_redist_bases(self)?;
         Ok(())
     }
 

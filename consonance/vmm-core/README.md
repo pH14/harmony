@@ -207,7 +207,7 @@ recoverable refusal without retiring the VM.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version
-14; each uses presence fields so optional devices retain their state without
+17; each uses presence fields so optional devices retain their state without
 selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
 the unread queue even when full snapshot hashing is disabled. The x86 device
