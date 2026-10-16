@@ -184,13 +184,46 @@ jobs:
           docker load --input language-image/${{ matrix.id }}.tar
       - name: Check admission, timer progress, park progress and replay identity
         run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-${{ matrix.id }}:local language-evidence
-      - name: Check guest debugging, saved branches and search continuation
-        if: matrix.id == 'c'
-        run: timeout -k 10 720 bash cli/tests/investigation.sh language-evidence/investigation
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: language-evidence-${{ matrix.id }}
+          path: language-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  c-investigation:
+    name: C Investigation
+    needs: [scope, guest, images, tools]
+    if: needs.scope.outputs.harmony_languages == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: language-image-c
+          path: language-image
+      - uses: actions/download-artifact@v4
+        with:
+          name: language-guest-runtime
+          path: consonance/harmony-linux/build/x86_64
+      - uses: actions/download-artifact@v4
+        with:
+          name: language-cli-tools
+          path: target/release
+      - name: Restore paired CLI permissions and enable KVM
+        run: |
+          chmod +x target/release/harmony target/release/harmony-consonance-host
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          docker load --input language-image/c.tar
+      - name: Check guest debugging, saved branches and search continuation
+        run: timeout -k 10 1800 bash cli/tests/investigation.sh language-evidence/investigation
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-investigation-c
           path: language-evidence
           if-no-files-found: error
           retention-days: 14

@@ -193,8 +193,12 @@ Every job declares a trigger class.
   `PostgreSQL CLI Package` and `Language CLI Tools` build the paired native
   frontend and static Consonance host once for their consumers, and
   `Language Image — <Language>` builds each language workload image. Their
-  consumers keep the 15-minute budget. `PR_ARTIFACT_BUILD_BUDGETS` registers
-  each prerequisite; it does not permit full searches on pull requests.
+  consumers keep the 15-minute budget. The separate `C Investigation` job has
+  a 35-minute exception for its bounded branch and search continuation check:
+  two GitHub runs reached successive search phases but exhausted six- and
+  twelve-minute step limits after the sealed-host identity checks were added.
+  `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
+  named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
   to main, and declare their own ceiling.
 
@@ -223,10 +227,11 @@ budgets are registered separately and apply only to the named prerequisite.
 exists. Each `Language Image — <Language>` job builds one language layer from
 source when its cache misses, then composes the current shared runtime onto it.
 `Language CLI Tools` builds and verifies the native frontend and static host
-once for all language and UML command consumers; the 15-minute jobs only
-restore the pair. The scoped `PostgreSQL CLI Package` does the same before the
-15-minute PostgreSQL search. These artifact jobs each have a 45-minute cold
-build budget. A language layer's cache key is the hash of its own recipe
+once for all language and UML command consumers; the 15-minute language smokes
+and separate C investigation restore the pair. The scoped
+`PostgreSQL CLI Package` does the same before the 15-minute PostgreSQL search.
+These artifact jobs each have a 45-minute cold build budget. A language layer's
+cache key is the hash of its own recipe
 inputs. Weekly runs and `rebuild_images` dispatches rebuild every layer.
 
 Scheduled OCI, historical-bug, UML campaign, and nested-host workflows also

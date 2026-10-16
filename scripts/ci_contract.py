@@ -67,10 +67,16 @@ PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language UML Profile"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Image — <Language>"): 45,
 }
+PR_EXTENDED_CHECK_BUDGETS = {
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
+}
 
 
 def pull_request_budget(workflow_path: str, job_name: str) -> int:
-    return PR_ARTIFACT_BUILD_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES)
+    return PR_ARTIFACT_BUILD_BUDGETS.get(
+        (workflow_path, job_name),
+        PR_EXTENDED_CHECK_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES),
+    )
 
 
 # Trigger classes. `pr` jobs run on pull requests and on pushes to main and
@@ -91,7 +97,7 @@ class Job(NamedTuple):
     trigger: str
     timeout_minutes: int
     # Why full work lives inside Checks, or why a separately registered
-    # artifact prerequisite needs a longer build budget.
+    # pull-request job needs a longer budget.
     exception: str = ""
     # Cargo packages whose lint and unit tests this job owns.
     crates: tuple[str, ...] = ()
@@ -641,6 +647,9 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
             exception="A language layer missing from the cache is built from source, including CPython and OpenJDK.",
             select="harmony_languages"),
         Job("Check — <Language>", "pr", 15, select="harmony_languages"),
+        Job("C Investigation", "pr", 35,
+            exception="The bounded C branch and search investigation takes longer under live sealed-host code checks; it runs separately from the 15-minute language smokes.",
+            select="harmony_languages"),
         Job("Language UML Profile", "pr", 45,
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
