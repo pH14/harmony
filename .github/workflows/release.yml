@@ -107,9 +107,14 @@ jobs:
       - name: Qualify the released runtime on hardware
         env:
           GUEST_ISA: ${{ matrix.isa }}
-          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          HOST_TARGET: ${{ matrix.target }}
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CC_aarch64_unknown_linux_musl: musl-gcc
         run: |
+          sudo apt-get install -y --no-install-recommends musl-tools
+          rustup target add "$HOST_TARGET"
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           export HARMONY_PLATFORM_INITRAMFS="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/initramfs-oci.cpio.gz"
@@ -119,7 +124,8 @@ jobs:
           else
             export HARMONY_PLATFORM_KERNEL="$GITHUB_WORKSPACE/consonance/harmony-linux/build/$GUEST_ISA/bzImage"
           fi
-          timeout -k 10 720 cargo test --locked --release -p oci-support --test platform --test process_platform -- --ignored --nocapture
+          timeout -k 10 720 cargo test --locked --release --target "$HOST_TARGET" \
+            -p oci-support --test platform --test process_platform -- --ignored --nocapture
       - name: Package the runtime and checksum
         run: |
           isa=${{ matrix.isa }}

@@ -113,6 +113,43 @@ class StructureTests(unittest.TestCase):
                 self.assertIn(expected, commands)
         self.assertTrue((ROOT / "scripts/linux-sealed-test-runner.py").is_file())
 
+    def test_oci_runtime_qualification_uses_sealed_static_hosts(self):
+        import yaml
+
+        cases = (
+            (ci_contract.HARMONY_OCI_CHECKS.path, "container-execution",
+             "Run and restore containers inside the guest", "x86_64-unknown-linux-musl"),
+            (ci_contract.CONSONANCE_RUNTIME.path, "runtime-artifacts",
+             "Extended platform replay", "x86_64-unknown-linux-musl"),
+            (ci_contract.RELEASE.path, "guest",
+             "Qualify the released runtime on hardware", '"$HOST_TARGET"'),
+        )
+        for path, job_name, step_name, target in cases:
+            with self.subTest(workflow=path):
+                job = yaml.safe_load((ROOT / path).read_text())["jobs"][job_name]
+                steps = job["steps"]
+                qualification = next(step for step in steps if step.get("name") == step_name)
+                runner = "${{ github.workspace }}/scripts/linux-sealed-test-runner.py"
+                self.assertEqual(
+                    qualification["env"]["CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER"],
+                    runner,
+                )
+                self.assertIn(f"--target {target}", qualification["run"])
+                self.assertIn("-p oci-support --test platform --test process_platform",
+                              re.sub(r"\s+", " ", qualification["run"].replace("\\", "")))
+                commands = "\n".join(step.get("run", "") for step in steps)
+                self.assertIn("rustup target add", commands)
+                self.assertIn("musl-tools", commands)
+                if job_name == "guest":
+                    self.assertEqual(
+                        qualification["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER"],
+                        runner,
+                    )
+                    self.assertEqual(
+                        qualification["env"]["CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER"],
+                        "musl-gcc",
+                    )
+
     def test_linux_arm64_strict_host_package_has_its_own_bounded_job(self):
         import yaml
 
