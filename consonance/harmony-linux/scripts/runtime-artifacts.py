@@ -14,6 +14,7 @@ INPUTS = (
     "consonance/harmony-linux", "consonance/hypercall-proto",
     "consonance/hypercall-doorbell", "consonance/execution-proto",
     "consonance/process-proto", "cli/src/oci/mod.rs", "cli/src/oci/runner.rs",
+    "workloads/faults/src/consonance.rs", "workloads/nes-machine/src/consonance.rs",
 )
 EXCLUDED = {".git", "target", "build", "dl", "__pycache__"}
 MANIFEST = "runtime-manifest.json"

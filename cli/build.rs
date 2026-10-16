@@ -19,6 +19,8 @@ fn main() {
         "consonance/process-proto",
         "cli/src/oci/mod.rs",
         "cli/src/oci/runner.rs",
+        "workloads/faults/src/consonance.rs",
+        "workloads/nes-machine/src/consonance.rs",
     ];
     for input in inputs {
         println!("cargo:rerun-if-changed={}", root.join(input).display());
