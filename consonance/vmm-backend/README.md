@@ -524,8 +524,11 @@ KVM also retains guest writes to the redistributor `GICR_PROPBASER` and
 both 64-bit values, and ARM device blobs include them in replay identity. KVM
 canonicalizes an initially zero `GICR_PROPBASER` to `0x180` when userspace
 writes it, so backend creation writes both fresh redistributor bases before
-first guest entry. Restore checks reserved bits, writes both halves, and
-requires exact readback. The ignored
+first guest entry. Restore checks reserved bits and KVM's canonical
+shareability and cacheability fields before changing vCPU state, then writes
+both halves and requires exact readback. KVM rewrites outer-shareable,
+noncacheable inner, and noncanonical outer-cacheable values on write; imported
+records containing those values are rejected before mutation. The ignored
 `guest_gicr_bases_survive_reused_and_fresh_restore` test compares guest MMIO
 readback after uninterrupted execution, an in-place restore, and a cold restore.
 ARM KVM selects VGIC `GICD_IIDR` implementation revision 2 before configuring

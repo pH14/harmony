@@ -56,6 +56,12 @@ const GICR_PENDBASER: u64 = 0x0078;
 const GICR_PROPBASER_RESERVED: u64 = (0b1_1111 << 59) | (0b1111 << 52) | (0b11 << 5);
 const GICR_PENDBASER_RESERVED: u64 =
     (0b1_1111 << 59) | (0b1111 << 52) | (0b1111 << 12) | 0b111_1111;
+
+fn kvm_canonical_gicr_base(value: u64) -> bool {
+    (value >> 10) & 0b11 != 0b10
+        && matches!((value >> 7) & 0b111, 2..=7)
+        && matches!((value >> 56) & 0b111, 0..=1)
+}
 const GICR_ISACTIVER0: u64 = GICR_SGI_BASE + 0x0300;
 const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
 const HARMONY_GIC_IMPL_SPIS: u32 = 64;
@@ -881,6 +887,8 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || u64::from(s.gicd_ctlr) & !GICD_CTLR_REPRESENTED != 0
         || s.gicr_propbaser & GICR_PROPBASER_RESERVED != 0
         || s.gicr_pendbaser & GICR_PENDBASER_RESERVED != 0
+        || !kvm_canonical_gicr_base(s.gicr_propbaser)
+        || !kvm_canonical_gicr_base(s.gicr_pendbaser)
         || s.cntv_ctl != 0
         || s.cntv_cval != 0
         || s.timer_fired
@@ -1819,6 +1827,10 @@ impl FakeKvm {
             (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_IIDR, false),
             pinned_vgic_iidr(0x4b00_343b) as u64,
         );
+        for offset in [GICR_PROPBASER, GICR_PENDBASER] {
+            fake.vgic_attrs
+                .insert((KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset, false), 0x180);
+        }
         fake
     }
 
@@ -2527,6 +2539,43 @@ mod tests {
     }
 
     #[test]
+    fn redistributor_bases_reject_kvm_rewritten_fields_before_vcpu_mutation() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+        for (name, propbaser, pendbaser) in [
+            ("zero property base", 0, 0x580),
+            ("property shareability", 0x180 | (2 << 10), 0x580),
+            ("property inner cacheability", 0x80, 0x580),
+            ("property outer cacheability", 0x180 | (2 << 56), 0x580),
+            ("zero pending base", 0x180, 0),
+            ("pending shareability", 0x180, 0x980),
+            ("pending inner cacheability", 0x180, 0x480),
+            ("pending outer cacheability", 0x180, 0x580 | (2 << 56)),
+        ] {
+            let mut invalid = valid;
+            let gic = invalid.gic.as_mut().unwrap();
+            gic.gicr_propbaser = propbaser;
+            gic.gicr_pendbaser = pendbaser;
+            let mut target = FakeKvm::new();
+            target.vcpu_init().unwrap();
+            let before = save_vcpu(&target).unwrap();
+            assert!(
+                matches!(
+                    restore_vcpu(&mut target, &invalid),
+                    Err(BackendError::InvalidState)
+                ),
+                "restore accepted {name}"
+            );
+            assert_eq!(
+                save_vcpu(&target).unwrap(),
+                before,
+                "restore mutated {name}"
+            );
+        }
+    }
+
+    #[test]
     fn vgic_iidr_revision_pin_preserves_other_identity_bits() {
         assert_eq!(pinned_vgic_iidr(0x4b00_343b), 0x4b00_243b);
         assert_eq!(pinned_vgic_iidr(0xabcd_f123), 0xabcd_2123);
@@ -2591,11 +2640,13 @@ mod tests {
                 Err(BackendError::InvalidState)
             ));
             let mut target = FakeKvm::new();
+            let before_attrs = target.vgic_attrs.clone();
             assert!(matches!(
                 restore_vgic(&mut target, &invalid),
                 Err(BackendError::InvalidState)
             ));
             assert!(target.calls.is_empty());
+            assert_eq!(target.vgic_attrs, before_attrs);
         }
     }
 
