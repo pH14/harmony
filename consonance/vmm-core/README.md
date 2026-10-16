@@ -327,6 +327,13 @@ bits for init-valued x87/SSE components normalize, while active components remai
 bound. Every other sidecar field remains encoded. The original portable bytes
 retain the host restore bitmap and remain the input used for restore.
 
+Sparse-delta cache publication commits to the complete sidecar and target-pages
+digest after projecting only that x86 XSAVE metadata or the Arm virtual timer's
+captured counter, according to the validated VM-state architecture. Unknown or
+invalid CPU records cannot publish. The image prefix and every other sidecar
+field remain bound, including SDK, policy, control and trace state; the extent
+keeps its original restore bytes.
+
 The non-default `harmony_omit_nested_state` compiler configuration is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive
 header; for enabled SVM it discards the saved GIF flag. Raw CPU observations

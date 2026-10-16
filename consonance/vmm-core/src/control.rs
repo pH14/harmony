@@ -7129,6 +7129,11 @@ mod tests {
     fn sparse_delta_sidecar_commits_target_independent_of_parent_layout() {
         let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut source);
+        let backend = source.vmm_mut().unwrap().backend_mut();
+        let mut cpu = backend.save().unwrap();
+        cpu.xsave = vec![0; 576];
+        vmm_backend::arch::x86::canonicalize_xsave(&mut cpu.xsave);
+        backend.set_state(cpu);
         let setup = snap(&mut source);
         let mut image = source.vmm().unwrap().guest_memory().to_vec();
         let setup_page = image[4096..8192].to_vec();

@@ -212,6 +212,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "uml",
+ "vm-state",
  "vmm-backend",
  "vmm-core",
  "vtime",
