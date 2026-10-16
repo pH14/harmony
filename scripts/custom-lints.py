@@ -122,7 +122,7 @@ NUMBERED_NAME_ALLOWLIST = re.compile(
     # Bit-width suffixes (u8, u32, i64, f64, ...).
     r"(?:u|i|f)(?:8|16|32|64|128)$"
     # Architecture and hardware names.
-    r"|(?:x86|arm64|Arm64|X86|Gicv3|gicv3)$"
+    r"|(?:x86|arm64|aarch64|Arm64|X86|Gicv3|gicv3)$"
     # Architectural x86 control register names.
     r"|(?:cr[02348])$"
     # Hardware device names (Pl011, Uart8250, ...).
