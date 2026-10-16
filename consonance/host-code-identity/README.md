@@ -1,5 +1,26 @@
 # Host executable mappings
 
+On Linux, `sealed_static_executable_identity` is a separate, strict identity
+for a static ELF host launched from a sealed executable memfd. It opens the live
+`/proc/self/exe`, requires the write, grow, shrink, and seal seals, rejects an
+ELF interpreter, needed libraries, text relocations, and executable stack or
+writable code, then hashes the entire ELF file. The full-file hash includes
+`PF_W` initializer bytes that the ordinary mapped-image identity excludes. It
+also checks that the one live code mapping matches the sealed file, hashes the
+live vDSO, records the fixed x86-64 vsyscall gateway when present, and rejects
+every other executable mapping. A second executable-map census rejects ordinary
+changes during measurement. The result has its own versioned domain and does
+not share the dynamic-host identity format.
+
+This primitive requires a static musl host and an executable memfd with all
+four required seals. A normal on-disk binary, dynamic loader, shared library,
+JIT, or manually created executable mapping fails closed. It is an admission
+measurement of the current process, not an attestation against arbitrary
+injected code or a guarantee about maps added after measurement. Callers must
+control launch and recheck at relevant operation boundaries. Existing Session
+and Recording callers still use their current identity until separately moved
+to this stricter launch boundary.
+
 On Linux, `mapped_executable_sha256` reads the bytes currently mapped with
 execute permission in its own process through `/proc/self/mem`. It includes the
 main program, dynamic loader, dependent libraries, and the vDSO. It also reads
