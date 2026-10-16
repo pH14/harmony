@@ -13,10 +13,12 @@ if [ "$#" -gt 0 ]; then
     esac
 fi
 
-if [ -z "$prebuilt" ] && [ -z "$payload_output" ] &&
-   [ -n "${N6_TRAPS_OFF:-}${TASK_PARK_PROFILE:-}${NESTED_HOST_PROFILE:-}" ]; then
-    echo "FAIL: canonical platform runtime rejects profile kernels; run the profile kernel builder directly" >&2
-    exit 1
+if [ -z "$prebuilt" ] && [ -z "$payload_output" ]; then
+    if [ -n "${N6_TRAPS_OFF:-}${TASK_PARK_PROFILE:-}${NESTED_HOST_PROFILE:-}" ] ||
+       [ "${ARM64_KERNEL_PROFILE:-minimal}" != minimal ]; then
+        echo "FAIL: canonical platform runtime rejects profile kernels; run the profile kernel builder directly" >&2
+        exit 1
+    fi
 fi
 
 cd "$(dirname "$0")/../linux"
