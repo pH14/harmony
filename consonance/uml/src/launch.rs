@@ -934,6 +934,9 @@ fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) 
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    const UNAME26: libc::c_int = 0x0020000;
+
     #[test]
     fn kernel_statuses_are_distinct_from_guest_exit_statuses() {
         assert_eq!(
@@ -1015,7 +1018,7 @@ mod tests {
                 if libc::personality(0) < 0 {
                     return Err(io::Error::last_os_error());
                 }
-                if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                if libc::personality(UNAME26 as libc::c_ulong) < 0 {
                     return Err(io::Error::last_os_error());
                 }
                 if libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
@@ -1032,7 +1035,7 @@ mod tests {
                     if libc::personality(0) < 0 {
                         return Err(io::Error::last_os_error());
                     }
-                    if libc::personality(libc::UNAME26 as libc::c_ulong) < 0 {
+                    if libc::personality(UNAME26 as libc::c_ulong) < 0 {
                         return Err(io::Error::last_os_error());
                     }
                 }
@@ -1357,7 +1360,7 @@ mod tests {
         assert!(output.status.success());
         let inherited =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
-        assert_ne!(inherited & libc::UNAME26 as u32, 0);
+        assert_ne!(inherited & UNAME26 as u32, 0);
         assert_eq!(inherited & libc::ADDR_NO_RANDOMIZE as u32, 0);
 
         let mut command = Command::new("/bin/cat");
@@ -1386,7 +1389,7 @@ mod tests {
         assert!(output.status.success());
         let inherited =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
-        assert_eq!(inherited, libc::UNAME26 as u32);
+        assert_eq!(inherited, UNAME26 as u32);
 
         let mut command = Command::new("/bin/cat");
         command.arg("/proc/self/personality");
@@ -1458,9 +1461,7 @@ mod tests {
         let output = unsafe {
             let inherited = libc::personality(u32::MAX as libc::c_ulong);
             assert!(inherited >= 0);
-            if libc::personality((inherited as libc::c_ulong) | (libc::UNAME26 as libc::c_ulong))
-                < 0
-            {
+            if libc::personality((inherited as libc::c_ulong) | (UNAME26 as libc::c_ulong)) < 0 {
                 let error = io::Error::last_os_error();
                 if error.raw_os_error() == Some(libc::EPERM) {
                     return;
@@ -1475,7 +1476,7 @@ mod tests {
         let flags =
             u32::from_str_radix(std::str::from_utf8(&output.stdout).unwrap().trim(), 16).unwrap();
         assert_ne!(flags & libc::ADDR_NO_RANDOMIZE as u32, 0);
-        assert_eq!(flags & libc::UNAME26 as u32, 0);
+        assert_eq!(flags & UNAME26 as u32, 0);
     }
 
     #[test]

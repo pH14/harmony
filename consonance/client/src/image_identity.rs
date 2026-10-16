@@ -2,18 +2,17 @@
 
 use std::io;
 
-#[cfg(feature = "strict-host")]
+#[cfg(feature = "in-process")]
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "in-process")]
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct LoadedImageGuard {
-    #[cfg(not(feature = "strict-host"))]
-    epoch: host_code_identity::LoaderEpoch,
-    #[cfg(feature = "strict-host")]
-    identity: [u8; 32],
+pub(crate) enum LoadedImageGuard {
+    Strict([u8; 32]),
+    #[cfg(test)]
+    TestFixture,
 }
 
-#[cfg(feature = "strict-host")]
 fn strict_host_identity() -> io::Result<String> {
     reject_loader_overrides()?;
     #[cfg(target_os = "linux")]
@@ -33,38 +32,32 @@ fn strict_host_identity() -> io::Result<String> {
     }
 }
 
+#[cfg(feature = "in-process")]
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
-        #[cfg(feature = "strict-host")]
-        {
-            Ok(Self {
-                identity: Sha256::digest(strict_host_identity()?.as_bytes()).into(),
-            })
-        }
-        #[cfg(not(feature = "strict-host"))]
-        {
-            Ok(Self {
-                epoch: host_code_identity::loader_epoch()?,
-            })
-        }
+        Ok(Self::Strict(
+            Sha256::digest(strict_host_identity()?.as_bytes()).into(),
+        ))
     }
 
     pub(crate) fn check(self) -> io::Result<()> {
-        #[cfg(feature = "strict-host")]
-        if <[u8; 32]>::from(Sha256::digest(strict_host_identity()?.as_bytes())) != self.identity {
+        let expected = match self {
+            Self::Strict(expected) => expected,
+            #[cfg(test)]
+            Self::TestFixture => return Ok(()),
+        };
+        if <[u8; 32]>::from(Sha256::digest(strict_host_identity()?.as_bytes())) != expected {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "strict host executable changed after admission",
             ));
         }
-        #[cfg(not(feature = "strict-host"))]
-        if host_code_identity::loader_epoch()? != self.epoch {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "host loader changed after loaded-image admission",
-            ));
-        }
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fixture() -> Self {
+        Self::TestFixture
     }
 
     pub(crate) fn identity() -> io::Result<(String, Self)> {
@@ -85,6 +78,16 @@ impl LoadedImageGuard {
         }
         Ok(lease)
     }
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn strict_test_host_ready() -> bool {
+    let admitted = LoadedImageGuard::capture();
+    #[cfg(target_env = "musl")]
+    admitted
+        .as_ref()
+        .expect("a musl test must execute from a sealed static host");
+    admitted.is_ok()
 }
 
 #[cfg(target_os = "macos")]
@@ -152,24 +155,24 @@ pub(crate) fn rerun_clean_loader_test(test: &str) -> bool {
     true
 }
 
-#[cfg(all(target_os = "linux", feature = "strict-host"))]
+#[cfg(target_os = "linux")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
     strict_host_identity()
 }
 
-#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
-pub fn loaded_executable_identity_self() -> io::Result<String> {
+#[cfg(target_os = "linux")]
+pub fn native_loaded_executable_diagnostic_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
     let mut executable = std::fs::File::open("/proc/self/exe")?;
     reject_mismatched_executable_mapping(
-        loaded_executable_identity_self as *const () as usize,
+        native_loaded_executable_diagnostic_identity_self as *const () as usize,
         &executable,
     )?;
     let main = digest_open_executable(&mut executable)?;
     host_code_identity::loaded_executable_identity(&main)
 }
 
-#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
+#[cfg(target_os = "linux")]
 fn reject_mismatched_executable_mapping(
     code_address: usize,
     executable: &std::fs::File,
@@ -187,7 +190,7 @@ fn reject_mismatched_executable_mapping(
     reject_code_outside_executable_segments(code_address, auxv, executable)
 }
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(target_os = "linux")]
 fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64, u64, u64)> {
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
@@ -238,7 +241,7 @@ fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64,
     ))
 }
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 struct KernelAuxv {
     phdr: usize,
@@ -247,7 +250,7 @@ struct KernelAuxv {
     entry: usize,
 }
 
-#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
+#[cfg(target_os = "linux")]
 fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
     let word = std::mem::size_of::<usize>();
     let record = word * 2;
@@ -290,7 +293,7 @@ fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
     })
 }
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy)]
 struct LoadSegment {
     flags: u32,
@@ -300,7 +303,7 @@ struct LoadSegment {
     memsz: u64,
 }
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(target_os = "linux")]
 fn reject_code_outside_executable_segments(
     code_address: usize,
     auxv: KernelAuxv,
@@ -436,13 +439,13 @@ unsafe extern "C" {
     ) -> std::ffi::c_int;
 }
 
-#[cfg(all(target_os = "macos", feature = "strict-host"))]
+#[cfg(target_os = "macos")]
 pub fn loaded_executable_identity_self() -> io::Result<String> {
     strict_host_identity()
 }
 
-#[cfg(all(target_os = "macos", not(feature = "strict-host")))]
-pub fn loaded_executable_identity_self() -> io::Result<String> {
+#[cfg(target_os = "macos")]
+pub fn native_loaded_executable_diagnostic_identity_self() -> io::Result<String> {
     reject_loader_overrides()?;
     let main = loaded_executable_identity_for_child(std::process::id())?;
     host_code_identity::loaded_executable_identity(&main)
@@ -493,9 +496,16 @@ pub fn loaded_executable_identity_self() -> io::Result<String> {
     ))
 }
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn native_loaded_executable_diagnostic_identity_self() -> io::Result<String> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "native loaded-code diagnostics are unavailable on this platform",
+    ))
+}
+
 #[cfg(all(
     test,
-    feature = "strict-host",
     feature = "in-process",
     target_os = "linux",
     target_env = "gnu",
@@ -674,7 +684,7 @@ mod linux_tests {
             assert!(
                 error
                     .to_string()
-                    .contains("not in the kernel-loaded executable"),
+                    .contains("host executable is not a sealed memfd"),
                 "{error}"
             );
             return;

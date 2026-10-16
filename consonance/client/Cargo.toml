@@ -7,7 +7,6 @@ license.workspace = true
 [features]
 in-process = ["dep:vmm-core", "dep:vmm-backend", "dep:environment"]
 uml = ["in-process", "dep:uml"]
-strict-host = ["uml?/strict-host"]
 
 [dependencies]
 hypercall-proto = { path = "../hypercall-proto", version = "=0.1.0", default-features = false }

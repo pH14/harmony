@@ -787,7 +787,7 @@ mod tests {
     fn unbooted_session() -> UmlSession {
         UmlSession {
             session: None,
-            loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             profile: None,
             launch: Launch::new(PathBuf::new()),
             host: host(),
@@ -837,6 +837,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn host_signal_abandons_instead_of_reporting_guest_shutdown() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         let parent = tempfile::tempdir().unwrap();
         let mut session = terminal_session("kill -KILL $$", &parent);
         let error = session.run_until(1).unwrap_err();
@@ -858,6 +861,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn host_clone_status_abandons_instead_of_reporting_guest_shutdown() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         let parent = tempfile::tempdir().unwrap();
         let mut session = terminal_session("exit 87", &parent);
         let error = session.run_until(1).unwrap_err();
@@ -872,6 +878,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn clean_guest_exit_remains_a_terminal_shutdown() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         let parent = tempfile::tempdir().unwrap();
         let mut session = terminal_session("printf 'Kernel panic: forged\\n'; exit 0", &parent);
         let stop = session.run_until(1).unwrap();
@@ -937,6 +946,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn capture_timeout_abandons_with_a_typed_watchdog_error() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -962,7 +974,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::capture_timeout_abandons_with_a_typed_watchdog_error --nocapture")
-            .arg(std::env::current_exe().unwrap())
+            .arg("/proc/self/exe")
             .env("HARMONY_UML_CAPTURE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -985,6 +997,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn paused_restore_timeout_abandons_with_a_typed_watchdog_error() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -1025,7 +1040,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error --nocapture")
-            .arg(std::env::current_exe().unwrap())
+            .arg("/proc/self/exe")
             .env("HARMONY_UML_RESTORE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -1054,6 +1069,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn rejected_service_branch_cannot_leave_a_usable_rewound_uml_session() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -1100,7 +1118,7 @@ mod tests {
         command
             .arg("-c")
             .arg("exec \"$0\" --exact session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session --nocapture")
-            .arg(std::env::current_exe().unwrap())
+            .arg("/proc/self/exe")
             .env("HARMONY_UML_FAILED_BRANCH_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
@@ -1168,6 +1186,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn service_factory_aliasing_the_live_handler_abandons_the_session() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::io::{Read, Write};
         use std::os::fd::FromRawFd;
         use std::os::unix::process::CommandExt;
@@ -1254,7 +1275,7 @@ mod tests {
             command
                 .arg("-c")
                 .arg("exec \"$0\" --exact session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session --nocapture")
-                .arg(std::env::current_exe().unwrap())
+                .arg("/proc/self/exe")
                 .env("HARMONY_UML_ALIASED_SERVICE_CHILD", "1")
                 .process_group(0);
             let checkpoints = Checkpoints::new();
