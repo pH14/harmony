@@ -87,11 +87,16 @@ pub fn locate(name: &str) -> Result<PathBuf> {
 
 impl Manifest {
     pub fn new(config: Config, mode: &str) -> Result<Self> {
+        let binary_identity = if config.runner.kind == "consonance" {
+            crate::host_boundary::strict_identity()?
+        } else {
+            consonance_client::image_identity::loaded_executable_identity_self()?
+        };
         let runner_identity = crate::runners::identity(&config.runner)?;
         let checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         Ok(Self {
             format: "harmony-run-v4".into(),
-            binary_identity: consonance_client::image_identity::loaded_executable_identity_self()?,
+            binary_identity,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
             status: "running".into(),
@@ -147,12 +152,15 @@ impl Manifest {
     }
 
     pub fn verify(&self, path: &Path) -> Result<()> {
+        let binary_identity = if self.config.runner.kind == "consonance" {
+            crate::host_boundary::strict_identity()?
+        } else {
+            consonance_client::image_identity::loaded_executable_identity_self()?
+        };
         if self.architecture != std::env::consts::ARCH {
             return Err("run architecture differs from this host".into());
         }
-        if self.binary_identity
-            != consonance_client::image_identity::loaded_executable_identity_self()?
-        {
+        if self.binary_identity != binary_identity {
             return Err("this run requires the exact Harmony executable that recorded it".into());
         }
         crate::runners::verify(&self.config.runner, &self.runner_identity)?;
@@ -257,6 +265,14 @@ pub fn store_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dynamic_host_cannot_issue_consonance_manifest() {
+        let mut config = Config::default();
+        config.runner.kind = "consonance".into();
+        assert!(Manifest::new(config, "run").is_err());
+    }
     #[cfg(not(miri))]
     #[allow(clippy::disallowed_methods)]
     #[test]

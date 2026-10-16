@@ -107,8 +107,9 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
     let root = data_dir()?.join("runtime").join(RELEASE);
     let guest = root.join("guest").join(isa);
     let local = PathBuf::from("consonance/harmony-linux/build").join(isa);
-    let installed = std::env::current_exe()?
-        .parent()
+    let installed = crate::host_boundary::installed_binary_hint()
+        .as_deref()
+        .and_then(Path::parent)
         .and_then(Path::parent)
         .map(|p| p.join("share/harmony/guest").join(isa));
     let directories = [Some(local), installed, Some(guest.clone())]
