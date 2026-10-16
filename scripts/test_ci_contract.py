@@ -92,8 +92,8 @@ class StructureTests(unittest.TestCase):
             "client_test session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session",
             "client_test session::worker::tests::worker_launcher_refuses_a_child_without_image_hello",
             "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
-            "client_test image_identity::sealed_guard_tests::changed_live_code_revokes_a_published_lease",
-            "sealed_static::tests::cached_guard_rejects_changed_live_code -- --exact",
+            "client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
+            "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact",
             "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
             "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
         ):
