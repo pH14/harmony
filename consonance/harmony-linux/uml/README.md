@@ -221,7 +221,9 @@ an arbitrary locally built profile is not admitted by a production launcher.
   The `harmony_fixture=` boot parameter selects a mode: `boot` forks 16
   children, checks their exit codes and powers off; `hang` spins without system
   calls; `flood` writes the console forever; `orphans` leaves 16 sleeping
-  children and spins; `exit` returns from init so the kernel panics.
+  children and spins; `exit` returns from init so the kernel panics;
+  `exitcode_spoof` attempts reserved host-status writes to `/proc/exitcode`
+  and powers off after reporting whether each write was rejected.
   Four modes write their observations to `/dev/harmony` as events: `values`
   reports clocks, counters, random values, addresses, IDs, the auxiliary
   vector and the `/proc` files a program reads at startup, then runs
