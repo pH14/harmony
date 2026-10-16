@@ -8,7 +8,7 @@ const DEAD: u8 = 1;
 const LIVE: u8 = 2;
 const LIVE_PLACES: u16 = 64;
 const ROOM_PLACES: u16 = 128;
-const ROOMS_PER_POSITION: u16 = 17;
+const ROOMS_PER_POSITION: u16 = 256;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -17,6 +17,10 @@ pub struct Config {
     pub fork: u8,
     pub dead_len: u8,
     pub rooms: u8,
+    #[serde(default)]
+    pub room_run: u8,
+    #[serde(default)]
+    pub entry_run: u8,
     pub pattern: u64,
 }
 
@@ -36,10 +40,13 @@ impl Config {
             || self.fork >= self.length
             || self.dead_len == 0
             || self.fork + self.dead_len >= self.length
-            || self.rooms > 16
+            || (self.room_run == 0 && self.rooms > 16)
+            || self.room_run > 8
+            || self.entry_run > 8
         {
             return Err(
-                "fork needs length 2..=31, fork + dead_len < length, dead_len >= 1 and rooms <= 16"
+                "fork needs length 2..=31, fork + dead_len < length, dead_len >= 1, room_run <= 8, \
+                 entry_run <= 8 and rooms <= 16 unless room_run is set"
                     .into(),
             );
         }
@@ -67,12 +74,16 @@ impl Config {
         self.validate().is_ok()
             && s.goal == (s.route == LIVE && s.position == self.length)
             && match s.route {
-                SHARED => s.position <= self.fork && s.room == 0 && s.run == 0,
+                SHARED => {
+                    s.position <= self.fork
+                        && s.room == 0
+                        && (s.run == 0 || (s.position == self.fork && s.run < self.entry_presses()))
+                }
                 DEAD => {
                     s.position > self.fork
                         && s.position <= self.tip()
                         && s.room <= self.rooms
-                        && s.run <= s.room
+                        && s.run < self.room_explores(s.room)
                 }
                 LIVE => {
                     s.position > self.fork
@@ -105,6 +116,10 @@ impl Config {
                     self.initial()
                 }
             }
+            SHARED if right && s.run + 1 < self.entry_presses() => State {
+                run: s.run + 1,
+                ..s
+            },
             SHARED if right => State {
                 route: LIVE,
                 ..enter
@@ -131,11 +146,21 @@ impl Config {
         let bit = self.action(s.position + s.room + s.run) & 1;
         (self.action(s.position) + 2 + bit) % 4
     }
+    pub fn entry_presses(&self) -> u8 {
+        self.entry_run.max(1)
+    }
+    pub fn room_explores(&self, room: u8) -> u8 {
+        if self.room_run == 0 {
+            room.saturating_add(1)
+        } else {
+            self.room_run
+        }
+    }
     fn explore(&self, s: State, action: u8) -> State {
         if s.room == self.rooms || action != self.explore_action(s) {
             return State { run: 0, ..s };
         }
-        if s.run == s.room {
+        if s.run + 1 == self.room_explores(s.room) {
             State {
                 room: s.room + 1,
                 run: 0,
@@ -199,6 +224,8 @@ mod tests {
             fork: 2,
             dead_len: 3,
             rooms: 3,
+            room_run: 0,
+            entry_run: 0,
             pattern: 0b10_01_00_11_10_01_00_11,
         }
     }
@@ -277,12 +304,58 @@ mod tests {
     }
 
     #[test]
+    fn a_room_run_sets_every_rooms_explore_count_and_an_entry_run_hides_presses_at_the_fork() {
+        let w = Config {
+            rooms: 40,
+            room_run: 3,
+            entry_run: 3,
+            ..config()
+        };
+        let mut s = dead_tip(&w);
+        for room in 0..w.rooms {
+            for run in 0..2 {
+                s = w.step(s, w.explore_action(s));
+                assert_eq!((s.room, s.run), (room, run + 1));
+            }
+            s = w.step(s, w.explore_action(s));
+            assert_eq!((s.room, s.run), (room + 1, 0));
+            assert!(w.state_is_bounded(s));
+        }
+        assert_eq!(w.step(s, w.explore_action(s)), s);
+        let fork = tape(&w, &[w.action(0), w.action(1)]);
+        let mut s = fork;
+        for run in 1..3 {
+            s = w.step(s, w.action(2));
+            assert_eq!((s.route, s.position, s.run), (SHARED, 2, run));
+            assert_eq!(w.key(s, false), w.key(fork, false));
+        }
+        let entered = w.step(s, w.action(2));
+        assert_eq!((entered.route, entered.position), (LIVE, 3));
+        let dead = w.step(s, w.advance(2));
+        assert_eq!((dead.route, dead.position, dead.run), (DEAD, 3, 0));
+        assert_eq!(w.step(s, (w.action(2) + 2) % 4), w.initial());
+        assert!(w.reachable().unwrap());
+        assert!(w.dead_route_is_dead().unwrap());
+    }
+
+    #[test]
     fn strict_schema_and_bounds() {
         let w = config();
         assert!(Config { length: 1, ..w }.validate().is_err());
         assert!(Config { dead_len: 0, ..w }.validate().is_err());
         assert!(Config { dead_len: 6, ..w }.validate().is_err());
         assert!(Config { rooms: 17, ..w }.validate().is_err());
+        assert!(
+            Config {
+                rooms: 255,
+                room_run: 4,
+                ..w
+            }
+            .validate()
+            .is_ok()
+        );
+        assert!(Config { room_run: 9, ..w }.validate().is_err());
+        assert!(Config { entry_run: 9, ..w }.validate().is_err());
         assert!(!w.state_is_bounded(State {
             run: 1,
             ..w.initial()
@@ -302,11 +375,11 @@ mod tests {
             };
             let report = crate::run(&workload, crate::test_seed(), 2000, true).unwrap();
             assert_eq!(report["verified"], true);
-            let runs = report["selector"]["tier_runs"].as_object().unwrap();
-            let most = |field: &str| runs.values().filter_map(|r| r[field].as_u64()).max();
-            assert!(runs.len() > 1, "{runs:?}");
-            assert!(most("dry") > Some(0), "{runs:?}");
-            assert!(most("cells") > Some(1), "{runs:?}");
+            let arms = report["selector"]["tier_arms"].as_object().unwrap();
+            let most = |field: &str| arms.values().filter_map(|r| r[field].as_u64()).max();
+            assert!(arms.len() > 1, "{arms:?}");
+            assert!(most("pulls") > most("yields"), "{arms:?}");
+            assert!(most("yields") > Some(1), "{arms:?}");
         }
     }
 }
