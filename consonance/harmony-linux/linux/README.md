@@ -128,7 +128,9 @@ its memory tail, intersects the file source of a later load. Linux copies the
 file-backed loads in program-header order within one buffer; such an
 intersection could change executable bytes after scanning. Decoded direct
 branches from kernel or decompressor code into loaded non-code bytes, including
-reviewed data and load slack, fail admission. The
+reviewed data and load slack, fail admission. Every kernel direct branch target
+must be a canonical instruction start in a loaded executable section. Targets
+outside every load's declared memory size are rejected. The
 kernel ELF's physical entry must map uniquely to a complete loaded executable
 section. If that entry is inside a canonical instruction, the scanner decodes
 again from the entry byte; an executable-section flag alone does not make the

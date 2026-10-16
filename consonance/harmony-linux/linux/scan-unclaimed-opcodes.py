@@ -467,6 +467,13 @@ def scan_symbol_restarts(data, programs, sections, tag, path, entry):
         for name, kind, flags, address, offset, size in sections
         if flags & 4 and kind == 1 and size
         and (tag == "vmlinux" or name in (".text", ".head.text"))
+        and (tag != "vmlinux" or flags & 2 and any(
+            load_kind == 1 and load_offset <= offset
+            and offset + size <= load_offset + load_size
+            and address - load_address == offset - load_offset
+            for _index, load_kind, _load_flags, load_offset, load_address, load_size,
+                _memory_size in programs
+        ))
     }
     if not names and tag != "decompressor":
         return
@@ -536,6 +543,11 @@ def scan_symbol_restarts(data, programs, sections, tag, path, entry):
                                 and not any(first <= target < last for first, last in code_ranges):
                             raise ValueError(
                                 f"direct branch into loaded non-code in {tag}:{source}:{mode} "
+                                f"from 0x{site:x} to 0x{target:x}"
+                            )
+                        if tag == "vmlinux":
+                            raise ValueError(
+                                f"direct branch outside loaded executable sections in {tag}:{source}:{mode} "
                                 f"from 0x{site:x} to 0x{target:x}"
                             )
 
