@@ -90,7 +90,9 @@ raw-scans every file-backed PT_LOAD byte across its mixed 16-/32-bit execution.
 The decompressor raw-scans every executable section because its 32-bit startup
 calls helpers in `.text` before switching modes; `.text` is also disassembled
 in both 64-bit modes. Even opcode-shaped immediates in decompressor code fail
-closed. An unreadable or empty disassembly also fails the build. This guards
+closed. The hardware-RNG raw scan checks every byte start, including overlapping
+`0f c7` encodings, so an earlier benign match cannot hide a later RDRAND or
+RDSEED. An unreadable or empty disassembly also fails the build. This guards
 against an executable image whose section flags or sizes hide code from `objdump -d`.
 Read-only data shares some executable ELF segments, so segment flags alone do
 not identify instruction bytes. `test_x86_counter_scan.py` exercises hidden

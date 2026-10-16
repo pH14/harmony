@@ -1401,6 +1401,55 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_overlapping_decompressor_rng_bytes_are_rejected_by_full_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            safe = root / "safe.s"
+            safe.write_text('.section .text,"ax"\n.global _start\n_start:\nret\n.fill 15,1,0xcc\n')
+            run("as", "--64", "-o", str(root / "safe.o"), str(safe))
+            run("ld", "-nostdlib", "-e", "_start", "-o", str(root / "safe.elf"),
+                str(root / "safe.o"))
+            kernel = root / "vmlinux"
+            setup = root / "arch/x86/boot/setup.elf"
+            decompressor = root / "arch/x86/boot/compressed/vmlinux"
+            setup.parent.mkdir(parents=True)
+            decompressor.parent.mkdir(parents=True)
+            kernel.write_bytes((root / "safe.elf").read_bytes())
+            setup.write_bytes((root / "safe.elf").read_bytes())
+
+            assembly = root / "overlap.s"
+            assembly.write_text(
+                '.section .head.text,"ax"\n.code32\n'
+                '.global startup_32\nstartup_32:\nlret\n'
+                '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+                'lea hidden(%rip), %rax\nadd $2, %rax\njmp *%rax\n'
+                '.fill 15,1,0xcc\n'
+                '.section .text,"ax"\n.fill 16,1,0x90\nhidden:\n'
+                '.byte 0x0f,0xc7,0x0f,0xc7,0xf0\nret\n.fill 15,1,0xcc\n'
+            )
+            linker = root / "overlap.ld"
+            linker.write_text(
+                "PHDRS { all PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0x400000; .head.text : { *(.head.text) } :all "
+                ".text : { *(.text) } :all }\n"
+            )
+            run("as", "--64", "-o", str(root / "overlap.o"), str(assembly))
+            run("ld", "-nostdlib", "-T", str(linker), "-e", "startup_32", "-o",
+                str(decompressor), str(root / "overlap.o"))
+            result = subprocess.run(
+                ["bash", str(SCAN), str(kernel), str(setup), str(decompressor)],
+                capture_output=True, text=True,
+            )
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn(
+                "raw hardware-RNG opcode bytes in decompressor section .text",
+                result.stderr,
+            )
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_decompressor_32_bit_helper_counter_hidden_by_64_bit_decode_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

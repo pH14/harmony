@@ -153,7 +153,7 @@ require_code_sections() {
 # raw_byte_scan_one <path> <tag>: scan one artifact's executable sections. 0 =
 # clean, 1 = a hit or a structural problem (missing/no-sections).
 raw_byte_scan_one() {
-    local path=$1 tag=$2 names s hex n31 n01f9 nrng m reg rc=0
+    local path=$1 tag=$2 names s hex n31 n01f9 nrng rc=0
     local dis counter_found rng_found bin
     if [ ! -f "$path" ]; then
         echo "FAIL: boot artifact '$tag' not found at $path — every executable component of" >&2
@@ -217,7 +217,6 @@ raw_byte_scan_one() {
                 fi
             done
         fi
-        rm -f "$bin"
         n31=$(grep -oE '0f31' <<<"$hex" | wc -l | tr -d ' ')
         n01f9=$(grep -oE '0f01f9' <<<"$hex" | wc -l | tr -d ' ')
         if [ "$n31" != 0 ] || [ "$n01f9" != 0 ]; then
@@ -241,15 +240,25 @@ raw_byte_scan_one() {
                 | grep -Ei -C 2 '\<(rdtsc|rdtscp)\>' >&2 || true
             rc=1
         fi
-        # rdrand/rdseed are `0f c7` with modrm reg field 6/7 (`/1` is cmpxchg8b,
-        # a legitimate instruction), so decode the modrm byte of each candidate.
-        nrng=0
-        for m in $(grep -oE '0fc7[0-9a-f]{2}' <<<"$hex"); do
-            reg=$(( (0x${m:4:2} >> 3) & 7 ))
-            if [ "$reg" = 6 ] || [ "$reg" = 7 ]; then
-                nrng=$((nrng + 1))
-            fi
-        done
+        # Scan every byte start: a benign 0f c7 /1 can overlap an executable
+        # 0f c7 /6 or /7 two bytes later, which non-overlapping grep misses.
+        if ! nrng=$(od -An -v -tx1 "$bin" | awk '
+            {
+                for (i = 1; i <= NF; i++) {
+                    byte = $i
+                    if (older == "0f" && previous == "c7" \
+                            && byte ~ /^[37bf][0-9a-f]$/) hits++
+                    older = previous
+                    previous = byte
+                }
+            }
+            END { print hits + 0 }
+        '); then
+            rm -f "$bin"
+            echo "FAIL: could not scan raw hardware-RNG bytes in $tag section $s" >&2
+            return 1
+        fi
+        rm -f "$bin"
         if [ "$nrng" != 0 ]; then
             echo "FAIL: raw hardware-RNG opcode bytes in $tag section $s —" >&2
             echo "  rdrand/rdseed(0fc7 /6|/7)=$nrng. These artifacts must carry NONE: the" >&2
