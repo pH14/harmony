@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(all(target_os = "linux", test))]
 use std::io;
 
 use serde::{Deserialize, Serialize};
@@ -53,34 +53,10 @@ pub enum ReplayRefused {
 }
 
 fn loaded_executable_identity_self() -> std::io::Result<String> {
-    #[cfg(all(target_os = "linux", feature = "strict-host"))]
+    #[cfg(target_os = "linux")]
     {
         host_code_identity::reject_loader_overrides()?;
         host_code_identity::sealed_static_executable_identity()
-    }
-    #[cfg(all(target_os = "linux", not(feature = "strict-host")))]
-    {
-        use sha2::{Digest, Sha256};
-        use std::io::Read as _;
-
-        host_code_identity::reject_loader_overrides()?;
-
-        let mut executable = std::fs::File::open("/proc/self/exe")?;
-        reject_mismatched_executable_mapping(
-            loaded_executable_identity_self as *const () as usize,
-            &executable,
-        )?;
-        let mut digest = Sha256::new();
-        let mut block = [0_u8; 65536];
-        loop {
-            let length = executable.read(&mut block)?;
-            if length == 0 {
-                break;
-            }
-            digest.update(&block[..length]);
-        }
-        let main = format!("linux-exe-sha256-v1:{:x}", digest.finalize());
-        host_code_identity::loaded_executable_identity(&main)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -90,25 +66,7 @@ fn loaded_executable_identity_self() -> std::io::Result<String> {
     }
 }
 
-#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
-fn reject_mismatched_executable_mapping(
-    code_address: usize,
-    executable: &std::fs::File,
-) -> io::Result<()> {
-    let auxv = kernel_auxv(&std::fs::read("/proc/self/auxv")?)?;
-    let maps = std::fs::read_to_string("/proc/self/maps")?;
-    let code = mapped_file(&maps, code_address, true)?;
-    let phdr = mapped_file(&maps, auxv.phdr, false)?;
-    if code != phdr {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "running code is not in the kernel-loaded executable",
-        ));
-    }
-    reject_code_outside_executable_segments(code_address, auxv, executable)
-}
-
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(all(target_os = "linux", test))]
 fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64, u64, u64)> {
     for line in maps.lines() {
         let mut fields = line.split_whitespace();
@@ -159,7 +117,7 @@ fn mapped_file(maps: &str, address: usize, executable: bool) -> io::Result<(u64,
     ))
 }
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(all(target_os = "linux", test))]
 #[derive(Clone, Copy)]
 struct KernelAuxv {
     phdr: usize,
@@ -168,50 +126,7 @@ struct KernelAuxv {
     entry: usize,
 }
 
-#[cfg(all(target_os = "linux", not(feature = "strict-host")))]
-fn kernel_auxv(bytes: &[u8]) -> io::Result<KernelAuxv> {
-    let word = std::mem::size_of::<usize>();
-    let record = word * 2;
-    if !bytes.len().is_multiple_of(record) {
-        return Err(io::Error::other("malformed kernel auxiliary vector"));
-    }
-    let mut values = [None; 4];
-    for pair in bytes.chunks_exact(record) {
-        let key = usize::from_ne_bytes(pair[..word].try_into().unwrap());
-        let value = usize::from_ne_bytes(pair[word..].try_into().unwrap());
-        let slot = match key {
-            0 => break,
-            3 => Some(0),
-            4 => Some(1),
-            5 => Some(2),
-            9 => Some(3),
-            _ => None,
-        };
-        if let Some(slot) = slot
-            && values[slot].replace(value).is_some()
-        {
-            return Err(io::Error::other(
-                "duplicate kernel executable auxiliary value",
-            ));
-        }
-    }
-    let [Some(phdr), Some(phent), Some(phnum), Some(entry)] = values else {
-        return Err(io::Error::other(
-            "missing kernel executable auxiliary value",
-        ));
-    };
-    if phdr == 0 || phent == 0 || phnum == 0 || entry == 0 {
-        return Err(io::Error::other("empty kernel executable auxiliary value"));
-    }
-    Ok(KernelAuxv {
-        phdr,
-        phent,
-        phnum,
-        entry,
-    })
-}
-
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(all(target_os = "linux", test))]
 #[derive(Clone, Copy)]
 struct LoadSegment {
     flags: u32,
@@ -221,7 +136,7 @@ struct LoadSegment {
     memsz: u64,
 }
 
-#[cfg(all(target_os = "linux", any(test, not(feature = "strict-host"))))]
+#[cfg(all(target_os = "linux", test))]
 fn reject_code_outside_executable_segments(
     code_address: usize,
     auxv: KernelAuxv,
@@ -642,54 +557,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_os = "linux")]
-    #[cfg(not(feature = "strict-host"))]
-    #[cfg_attr(miri, ignore)]
-    fn public_recording_uses_the_current_host_instead_of_a_supplied_identity() {
-        let overrides = host_code_identity::loader_override_names();
-        if !overrides.is_empty() {
-            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-            command
-                .arg("--exact")
-                .arg("recording::tests::public_recording_uses_the_current_host_instead_of_a_supplied_identity");
-            for name in overrides {
-                command.env_remove(name);
-            }
-            let output = command.output().unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            assert!(
-                output.status.success()
-                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
-                "{}\nstdout: {stdout}\nstderr: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-        let profile = profile("a");
-        let mut launch = Launch::new(PathBuf::from("/work"));
-        launch.bridge = Some(Bridge::new(41));
-        let recording = Recording::new(&profile, &launch, &[]).unwrap();
-        assert_eq!(recording.host, HostIdentity::current().unwrap());
-        assert!(recording.check(&profile).is_ok());
-
-        let mut forged = recording.clone();
-        forged.host.cpu_model.push_str(";forged");
-        assert!(matches!(
-            forged.check(&profile),
-            Err(ReplayRefused::Host { .. })
-        ));
-
-        let replay = forged.launch(std::env::temp_dir()).unwrap();
-        let work = replay.work_directory().unwrap();
-        assert!(matches!(
-            crate::Guest::start(std::process::Command::new("true"), work, &replay),
-            Err(LaunchError::HostIdentity { .. })
-        ));
-    }
-
-    #[test]
-    #[cfg(all(feature = "strict-host", target_os = "linux", target_env = "gnu"))]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     #[cfg_attr(miri, ignore)]
     fn public_recording_methods_refuse_an_unsealed_gnu_host() {
         let profile = profile("a");
@@ -708,6 +576,29 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
+    fn sealed_host_admits_public_recording_round_trip() {
+        #[cfg(target_env = "musl")]
+        host_code_identity::sealed_static_executable_identity().unwrap();
+        #[cfg(not(target_env = "musl"))]
+        if host_code_identity::sealed_static_executable_identity().is_err() {
+            return;
+        }
+        let profile = profile("a");
+        let mut launch = Launch::new(PathBuf::from("/work"));
+        launch.bridge = Some(Bridge::new(41));
+        let recording = Recording::new(&profile, &launch, &[]).unwrap();
+        assert!(
+            recording
+                .host_executable_identity
+                .starts_with("linux-sealed-static-memfd-")
+        );
+        recording.check(&profile).unwrap();
+        recording.launch(PathBuf::from("/replay")).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn direct_dynamic_loader_launch_cannot_claim_recording_identity() {
         const CHILD_ENV: &str = "HARMONY_DIRECT_LOADER_RECORDING_TEST_CHILD";
         if std::env::var_os(CHILD_ENV).is_some() {
@@ -716,7 +607,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("not in the kernel-loaded executable"),
+                    .contains("host executable is not a sealed memfd"),
                 "{error}"
             );
             return;

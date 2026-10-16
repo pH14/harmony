@@ -9,8 +9,6 @@ use std::time::{Duration, Instant};
 
 use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
-#[cfg(not(feature = "strict-host"))]
-use host_code_identity::LoaderEpoch;
 use hypercall_proto::MAX_FRAME;
 use sha2::{Digest, Sha256};
 use snapshot_store::{PAGE_SIZE, PageHash};
@@ -158,42 +156,40 @@ pub struct Session {
     host_guard: HostGuard,
 }
 
-#[cfg(feature = "strict-host")]
-type HostGuard = [u8; 32];
-#[cfg(not(feature = "strict-host"))]
-type HostGuard = LoaderEpoch;
+#[derive(Clone, Copy)]
+enum HostGuard {
+    Strict([u8; 32]),
+    #[cfg(test)]
+    TestFixture,
+}
 
 fn capture_host_guard() -> Result<HostGuard, SessionError> {
-    #[cfg(feature = "strict-host")]
-    {
-        #[cfg(target_os = "linux")]
-        host_code_identity::reject_loader_overrides()?;
-        #[cfg(target_os = "linux")]
-        let identity = host_code_identity::sealed_static_executable_identity()?;
-        #[cfg(target_os = "macos")]
-        let identity = host_code_identity::strict_macos_executable_identity()?;
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-        return Err(SessionError::Protocol(
-            "strict host admission is unavailable on this platform".into(),
-        ));
-        Ok(Sha256::digest(identity.as_bytes()).into())
-    }
-    #[cfg(not(feature = "strict-host"))]
-    {
-        Ok(host_code_identity::loader_epoch()?)
-    }
+    #[cfg(target_os = "linux")]
+    host_code_identity::reject_loader_overrides()?;
+    #[cfg(target_os = "linux")]
+    let identity = host_code_identity::sealed_static_executable_identity()?;
+    #[cfg(target_os = "macos")]
+    let identity = host_code_identity::strict_macos_executable_identity()?;
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    return Err(SessionError::Protocol(
+        "strict host admission is unavailable on this platform".into(),
+    ));
+    Ok(HostGuard::Strict(
+        Sha256::digest(identity.as_bytes()).into(),
+    ))
 }
 
 fn check_host_guard(expected: HostGuard) -> Result<(), SessionError> {
-    if capture_host_guard()? != expected {
-        return Err(SessionError::Protocol(
-            if cfg!(feature = "strict-host") {
-                "host executable changed after UML session admission"
-            } else {
-                "host loader changed after UML session admission"
+    match expected {
+        HostGuard::Strict(identity) => {
+            if !matches!(capture_host_guard()?, HostGuard::Strict(actual) if actual == identity) {
+                return Err(SessionError::Protocol(
+                    "host executable changed after UML session admission".into(),
+                ));
             }
-            .into(),
-        ));
+        }
+        #[cfg(test)]
+        HostGuard::TestFixture => {}
     }
     Ok(())
 }
@@ -349,7 +345,7 @@ impl Session {
     }
 
     pub fn start(
-        mut command: Command,
+        command: Command,
         work: TempDir,
         launch: &Launch,
         checkpoints: &Checkpoints,
@@ -357,6 +353,26 @@ impl Session {
         progress_limit: Option<Duration>,
     ) -> Result<Self, SessionError> {
         let host_guard = capture_host_guard()?;
+        Self::start_with_guard(
+            command,
+            work,
+            launch,
+            checkpoints,
+            restore,
+            progress_limit,
+            host_guard,
+        )
+    }
+
+    fn start_with_guard(
+        mut command: Command,
+        work: TempDir,
+        launch: &Launch,
+        checkpoints: &Checkpoints,
+        restore: Option<&Checkpoint>,
+        progress_limit: Option<Duration>,
+        host_guard: HostGuard,
+    ) -> Result<Self, SessionError> {
         if let Some(checkpoint) = restore {
             checkpoints.require_owned_snapshot(&checkpoint.memory)?;
         }
@@ -1584,13 +1600,14 @@ mod tests {
         launch.console_limit_bytes = 0;
         launch.wall_limit = Duration::from_secs(1);
         assert!(matches!(
-            Session::start(
+            Session::start_with_guard(
                 Command::new("false"),
                 tempfile::tempdir().unwrap(),
                 &launch,
                 &second,
                 Some(&foreign),
                 None,
+                HostGuard::TestFixture,
             ),
             Err(SessionError::Memory(MemoryError::ForeignSnapshot))
         ));
@@ -1609,13 +1626,14 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", "sleep 30"]).process_group(0);
         let limit = Duration::from_millis(25);
-        let error = match Session::start(
+        let error = match Session::start_with_guard(
             command,
             launch.work_directory().unwrap(),
             &launch,
             &checkpoints,
             Some(&saved),
             Some(limit),
+            HostGuard::TestFixture,
         ) {
             Ok(_) => panic!("a restore-mode guest sent no request"),
             Err(error) => error,
@@ -1697,7 +1715,16 @@ mod tests {
             .process_group(0);
         let checkpoints = Checkpoints::new();
         let work = launch.work_directory().unwrap();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let pid = session.guest.pid();
         TEST_TERMINAL_POLL_READY.store(false, Ordering::Release);
         TEST_HOLD_TERMINAL_POLL.store(true, Ordering::Release);
@@ -1767,7 +1794,16 @@ mod tests {
             .process_group(0);
         let checkpoints = Checkpoints::new();
         let work = launch.work_directory().unwrap();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let pid = session.guest.pid();
         crate::launch::TEST_TERMINAL_CONSOLE_READY.store(false, Ordering::Release);
         crate::launch::TEST_HOLD_TERMINAL_CONSOLE.store(true, Ordering::Release);
@@ -1873,7 +1909,16 @@ mod tests {
             .env("HARMONY_UML_DEADLINE_CHILD", "1")
             .process_group(0);
         let checkpoints = Checkpoints::new();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         let first = session.run_until(0).unwrap();
         let zero_hash = session.bridge_state_digest().unwrap();
         assert!(matches!(
@@ -1960,7 +2005,16 @@ mod tests {
             .env("HARMONY_UML_DECISION_MARKER", &marker)
             .process_group(0);
         let checkpoints = Checkpoints::new();
-        let mut session = Session::start(command, work, &launch, &checkpoints, None, None).unwrap();
+        let mut session = Session::start_with_guard(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            None,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
         session
             .branch(7, Box::new(WaitingHandler), Vec::new(), None)
             .unwrap();

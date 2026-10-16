@@ -179,49 +179,21 @@
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
-  With `strict-host` enabled, a UML session instead requires the sealed static
-  host and repeats its complete executable-map census before and after session
-  operations and each service exchange. This covers musl hosts whose loader
-  generation never changes.
-- `Recording` schema 6 names the loaded Harmony executable, profile, full
+  Public UML sessions require a sealed static Linux host in every build.
+  They remeasure the sealed main executable and complete executable-map census
+  before and after session operations and each service exchange. An ordinary
+  GNU executable cannot start a UML session.
+- `Recording` schema 6 names the admitted Harmony executable, profile, full
   host identity, seed, memory, boot arguments, event count and event hash of a
-  run. Earlier schemas are refused. The executable identity includes the
-  SHA-256 of the running Linux `/proc/self/exe` inode and the mapped bytes of
-  every executable region, including dependent libraries and the vDSO. A
-  replacement at the original path cannot make a different host build claim
-  the recording. Creation, replay checks and replay launch refuse every
-  ambient `LD_*` name and `GLIBC_TUNABLES`, including empty definitions. It also
-  reads the kernel-saved program-header location from `/proc/self/auxv` and
-  requires the recording identity code to lie in an executable load segment of
-  the opened `/proc/self/exe`; both addresses must also have matching
-  file-backed mappings. This refuses direct dynamic-loader launches with
-  command-line code selectors even when separate Btrfs subvolumes reuse a
-  mapping inode number. The mapping digest also catches resident
-  `/etc/ld.so.preload` libraries and injected libraries whose constructor clears
-  its override before admission. It refuses anonymous or memfd executable
-  memory, writable executable memory, unreadable bytes, and unrecognized
-  special executable mappings other than the exact conventional x86-64
-  kernel-emulated `[vsyscall]` range. Each loader-listed ELF image also binds
-  its executable and pure read-only load segments in loader order. This catches
-  a read-only library data change that alters a guest entropy response without
-  changing the library's code. Writable library initializers, RELRO/GOT values,
-  symbol bindings, constructor effects, code loaded or unloaded later, and
-  changes to executable memory after measurement remain outside this identity.
-  Self-measurement is not an adversarial attestation.
-  Linux `cargo run` itself defines `LD_LIBRARY_PATH`, so build first and run
-  recording or replay binaries directly with all `LD_*` variables and
-  `GLIBC_TUNABLES` unset.
-  It derives the seed from the live launch's
-  bridge and refuses an unbridged run or a replaced initramfs, which it cannot
-  replay. Recording creation derives identity from the admitted `Launch`;
-  replay checks read the recorded processor's current identity. A caller cannot
-  supply a stale identity in either path. `Recording::check` refuses a
-  different executable, profile or host. `Recording::launch` refuses a
-  different executable and binds the recorded processor and identity through
-  the cut even if the caller skips `check`.
-  With `strict-host` enabled, all three public recording methods refuse an
-  unsealed or dynamically linked Linux host before they can certify or replay
-  a recording.
+  run. Earlier schemas are refused. On Linux, the executable identity requires
+  the same sealed static host as a session. `Recording::new`, `check`, and
+  `launch` all refuse an unsealed or dynamically linked host before they can
+  certify or replay a recording. A replacement at the original path cannot
+  make a different host build claim the recording. The seed comes from the
+  live launch's bridge; an unbridged run or replaced initramfs is refused.
+  Replay checks read the recorded processor's current identity and refuse a
+  different executable, profile, or host. `Recording::launch` binds the
+  recorded processor and identity even if the caller skips `check`.
 - `Guest` starts the process in its own process group with a parent-death
   signal, merges stdout and stderr into one pipe, and keeps a bounded console
   tail. It stops the guest at a wall-clock limit or a console byte limit. After
