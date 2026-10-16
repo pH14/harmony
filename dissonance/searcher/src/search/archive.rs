@@ -8709,6 +8709,68 @@ mod tests {
     }
 
     #[test]
+    fn a_rank_far_below_a_farming_top_draws_while_the_ranks_between_only_farm() {
+        let mut archive = TestArchive::new(|_| 1);
+        for minor in 0..12_u8 {
+            for place in 0..64_u16 {
+                let mut key = probe_key(1, minor, place, 0);
+                key.state_fingerprint = minor;
+                archive.prepare_selection();
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![minor],
+                            key,
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .expect("insert tier cell")
+                    .expect("retain tier cell");
+            }
+        }
+        for minor in 0..12_u8 {
+            archive.restart_tier_run((1, minor));
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x7ea1_0017);
+        let mut since_win = [0_u64; 12];
+        let mut reached = None;
+        for draw_index in 0..1_u64 << 22 {
+            let (id, draw) = archive.select_parent(&mut rand).expect("a tier draw");
+            archive.record_selection(id, &draw);
+            let progress = archive.entries[id].key.progress();
+            let minor = usize::from(progress.1);
+            let gap = match minor {
+                11 if archive.tier_runs(progress).yields < 2048 => 64,
+                11 => 21_700,
+                2..=10 => 113,
+                _ => u64::MAX,
+            };
+            since_win[minor] += 1;
+            if since_win[minor] == gap {
+                since_win[minor] = 0;
+                let new_cell = archive.tier_runs(progress).yields.is_multiple_of(4);
+                let runs = archive.tier_runs_mut(progress);
+                runs.yields += 1;
+                runs.cells += u64::from(new_cell);
+                runs.wins += 1;
+                runs.dry = 0;
+            }
+            if minor == 1 && archive.tier_runs(progress).draws == 256 {
+                reached = Some(draw_index);
+                break;
+            }
+        }
+        let reached = reached.expect("rank 10 drew 256 times within 2^22 draws");
+        assert!(
+            reached < 1 << 18,
+            "rank 10 drew 256 times only after {reached} draws"
+        );
+    }
+
+    #[test]
     fn tier_runs_survive_a_checkpoint() {
         let mut archive = tier_archive(&[(2, 1, 0), (1, 9, 0)]);
         let draw = SelectorDraw {
