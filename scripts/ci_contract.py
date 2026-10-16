@@ -153,6 +153,7 @@ CARGO_MANIFESTS = (
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
     "consonance/harmony-linux/runtime-fixture/Cargo.toml",
+    "consonance/host-code-identity/tests/witness/Cargo.toml",
     "dissonance/Cargo.toml",
     "workloads/fault-policy/Cargo.toml",
     "workloads/faults/Cargo.toml",
