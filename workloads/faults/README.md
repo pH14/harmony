@@ -380,7 +380,10 @@ Each campaign job's recorded result digest binds its logical result to a tagged
 final endpoint certificate. Every runnable candidate snapshot also carries a
 certificate captured before the next action, so an intermediate endpoint
 cannot diverge and later converge undetected. Restoring a KVM source snapshot
-checks its recorded certificate before using its logical observation. KVM
+checks its recorded certificate before using its logical observation. Restoring
+either backend also reconstructs the SDK observation from the restored session,
+including the current action's park and read reports, and rejects a failed,
+terminal, or inconsistent saved observation. KVM
 certificates hash the current worker session's whole state, including RAM and
 device state. Candidate capture and final certification fail if that session is
 missing, foreign, abandoned, or unhashable; restore may rebuild the prefix in a
