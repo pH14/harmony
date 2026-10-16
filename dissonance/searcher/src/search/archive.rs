@@ -142,7 +142,7 @@ pub fn retention_policy_from_identifier(
 }
 
 pub const SELECTOR_IDENTIFIER: &str =
-    "tier_progress_cascade_pace_rank_floor_yield_cell_recent_count_decay_v3";
+    "tier_progress_cascade_pace_stale_rank_floor_yield_cell_recent_count_decay_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -168,12 +168,22 @@ fn count_decay(draws: u64) -> u64 {
 }
 
 #[must_use]
-fn rank_floor(floor_weight: u64, rank: usize) -> u64 {
-    floor_weight
-        / u64::try_from(rank)
+fn rank_floor(floor_weight: u64, rank: usize, accounting: &SelectorAccounting) -> u64 {
+    let draws = accounting.cell_selections;
+    let stale = draws.saturating_sub(accounting.frontier_mark);
+    let rises = accounting.frontier_rises;
+    let decay = u128::from(
+        u64::try_from(rank)
             .unwrap_or(u64::MAX)
             .saturating_add(1)
-            .saturating_pow(COUNT_DECAY_EXPONENT)
+            .saturating_pow(COUNT_DECAY_EXPONENT),
+    );
+    let numerator = u128::from(floor_weight) * u128::from(stale) * u128::from(rises);
+    let denominator =
+        (u128::from(stale) * u128::from(rises) + u128::from(draws)).saturating_mul(decay);
+    numerator
+        .checked_div(denominator)
+        .map_or(0, |floor| u64::try_from(floor).unwrap_or(u64::MAX))
 }
 
 #[must_use]
@@ -250,6 +260,10 @@ pub struct SelectorAccounting {
     pub draws_by_cell: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tier_runs: BTreeMap<String, TierRuns>,
+    #[serde(default)]
+    pub frontier_rises: u64,
+    #[serde(default)]
+    pub frontier_mark: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
 }
@@ -2584,18 +2598,28 @@ where
         self.cost_in_group.push(candidate_cost_in_group);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
-        match &mut self.live_progress {
+        let frontier_rose = match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
                     *deepest = key;
                     *cheapest = candidate_cost_in_group;
+                    true
                 }
                 Ordering::Equal => {
                     *cheapest = (*cheapest).min(candidate_cost_in_group);
+                    false
                 }
-                Ordering::Less => {}
+                Ordering::Less => false,
             },
-            None => self.live_progress = Some((key, candidate_cost_in_group)),
+            None => {
+                self.live_progress = Some((key, candidate_cost_in_group));
+                true
+            }
+        };
+        if frontier_rose {
+            let accounting = &mut self.selector_accounting;
+            accounting.frontier_rises = accounting.frontier_rises.saturating_add(1);
+            accounting.frontier_mark = accounting.cell_selections;
         }
         self.selected.push(0);
         self.productive.push(0);
@@ -2884,8 +2908,11 @@ where
             if rank <= floor {
                 floor_weight
             } else {
-                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
-                    .max(rank_floor(floor_weight, rank))
+                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)).max(rank_floor(
+                    floor_weight,
+                    rank,
+                    &self.selector_accounting,
+                ))
             }
         });
         let index = draw_weighted(rand, weights)?;
@@ -3722,7 +3749,7 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        TIER_RANK_SHIFT, TierCells, WeightedSet, rank_floor, tier_weight,
+        TIER_RANK_SHIFT, TierCells, WeightedSet, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -4917,10 +4944,7 @@ mod tests {
             }
             let tiers = archive.tiers.keys().rev().copied().collect::<Vec<_>>();
             let weights = (0..tiers.len())
-                .map(|rank| {
-                    tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
-                        .max(rank_floor(tier_weight(0), rank))
-                })
+                .map(|rank| tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)))
                 .collect::<Vec<_>>();
             for seed in 0..32 {
                 let mut reference = RomuDuoJrRand::with_seed(seed);
@@ -8458,7 +8482,7 @@ mod tests {
         runs.wins = 64;
         runs.dry = 0;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0009, 4096);
-        assert!(counts[0] > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
 
     fn roughly_equal(left: u64, right: u64) -> bool {
@@ -8554,7 +8578,7 @@ mod tests {
             archive.record_selection(1, &next);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000a, 4096);
-        assert!(counts[0] > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
 
     #[test]
@@ -8586,7 +8610,7 @@ mod tests {
             archive.record_selection(2, &middle);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000b, 4096);
-        assert!(counts[1] > counts[2] * 3, "{counts:?}");
+        assert!(counts[1] > counts[2] * 5, "{counts:?}");
     }
 
     #[test]
@@ -8607,7 +8631,7 @@ mod tests {
         runs.dry = 0;
         archive.tier_runs_mut((1, 9)).yields = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
-        assert!(counts[0] > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
         archive.tier_runs_mut((1, 9)).cells = 64;
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_0011, 4096);
         assert!(roughly_equal(counts[0], counts[1]), "{counts:?}");
@@ -8683,7 +8707,7 @@ mod tests {
             archive.record_selection(0, &draw);
         }
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000f, 4096);
-        assert!(counts[0] > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
         for _ in 0..1024 {
             archive.record_selection(0, &draw);
         }
@@ -8719,7 +8743,7 @@ mod tests {
     #[test]
     fn a_tier_that_keeps_winning_at_its_usual_gap_keeps_its_weight() {
         let counts = top_tier_with_a_busy_rank_below(4096, 255, 64);
-        assert!(counts[0] > counts[1] * 3, "{counts:?}");
+        assert!(counts[0] > counts[1] * 5, "{counts:?}");
     }
 
     #[test]
