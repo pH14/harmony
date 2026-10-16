@@ -224,8 +224,7 @@ fn execute(mut request: Request) -> Result<u8> {
         }
         crate::runners::resolve(&mut request.config.runner, request.offline)?;
         let runtime = crate::runners::consonance(&request.config.runner)?;
-        let kernel = fs::read(runtime.kernel.ok_or("missing kernel")?)?;
-        let base = fs::read(runtime.base_initramfs.ok_or("missing base initramfs")?)?;
+        let (kernel, base) = crate::runtime::read_pair(&runtime)?;
         let initramfs = nested_driver::host::prepare(
             request
                 .config

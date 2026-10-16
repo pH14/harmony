@@ -11,6 +11,7 @@ pub struct Consonance {
     pub kernel: Option<PathBuf>,
     pub base_initramfs: Option<PathBuf>,
     pub uml_profile: Option<PathBuf>,
+    pub runtime_qualification: Option<RuntimeQualification>,
 }
 impl Default for Consonance {
     fn default() -> Self {
@@ -20,6 +21,7 @@ impl Default for Consonance {
             kernel: None,
             base_initramfs: None,
             uml_profile: None,
+            runtime_qualification: None,
         }
     }
 }
@@ -45,6 +47,13 @@ struct RuntimeManifest {
     architecture: String,
     source_digest: String,
     files: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeQualification {
+    kernel_sha256: String,
+    base_initramfs_sha256: String,
 }
 
 pub fn digest(bytes: &[u8]) -> String {
@@ -113,7 +122,7 @@ pub fn resolve(c: &mut Consonance, offline: bool) -> Result<()> {
         let pair = directory.join(isa);
         let kernel = pair.join(kernel_name);
         let base = pair.join("initramfs-oci.cpio.gz");
-        verify_runtime_pair(&kernel, &base, kernel_name)?;
+        c.runtime_qualification = Some(verify_runtime_pair(&kernel, &base, kernel_name)?);
         c.base_initramfs.get_or_insert(base);
         if c.backend != Backend::Uml {
             c.kernel.get_or_insert(kernel);
@@ -141,26 +150,38 @@ fn select_existing_runtime(
     directories: &[PathBuf],
     kernel_name: &str,
 ) -> Result<()> {
+    let was_qualified = c.runtime_qualification.take().is_some();
     if c.backend == Backend::Uml {
         if c.base_initramfs.is_none() {
-            c.base_initramfs = directories
-                .iter()
-                .map(|directory| directory.join("initramfs-oci.cpio.gz"))
-                .find(|base| {
-                    let kernel = base.with_file_name(kernel_name);
-                    verify_runtime_pair(&kernel, base, kernel_name).is_ok()
-                });
+            for directory in directories {
+                let kernel = directory.join(kernel_name);
+                let base = directory.join("initramfs-oci.cpio.gz");
+                if let Ok(qualification) = verify_runtime_pair(&kernel, &base, kernel_name) {
+                    c.base_initramfs = Some(base);
+                    c.runtime_qualification = Some(qualification);
+                    break;
+                }
+            }
+        } else if was_qualified {
+            let base = c.base_initramfs.as_ref().ok_or("missing base initramfs")?;
+            let kernel = base.with_file_name(kernel_name);
+            c.runtime_qualification = Some(verify_runtime_pair(&kernel, base, kernel_name)?);
         }
         return Ok(());
     }
     match (&c.kernel, &c.base_initramfs) {
-        (Some(_), Some(_)) => return Ok(()),
+        (Some(kernel), Some(base)) => {
+            if was_qualified {
+                c.runtime_qualification = Some(verify_runtime_pair(kernel, base, kernel_name)?);
+            }
+            return Ok(());
+        }
         (Some(kernel), None) => {
             let base = kernel
                 .parent()
                 .ok_or("kernel override has no parent directory")?
                 .join("initramfs-oci.cpio.gz");
-            verify_runtime_pair(kernel, &base, kernel_name)?;
+            c.runtime_qualification = Some(verify_runtime_pair(kernel, &base, kernel_name)?);
             c.base_initramfs = Some(base);
             return Ok(());
         }
@@ -169,7 +190,7 @@ fn select_existing_runtime(
                 .parent()
                 .ok_or("base_initramfs override has no parent directory")?
                 .join(kernel_name);
-            verify_runtime_pair(&kernel, base, kernel_name)?;
+            c.runtime_qualification = Some(verify_runtime_pair(&kernel, base, kernel_name)?);
             c.kernel = Some(kernel);
             return Ok(());
         }
@@ -178,9 +199,10 @@ fn select_existing_runtime(
     for directory in directories {
         let kernel = directory.join(kernel_name);
         let base = directory.join("initramfs-oci.cpio.gz");
-        if verify_runtime_pair(&kernel, &base, kernel_name).is_ok() {
+        if let Ok(qualification) = verify_runtime_pair(&kernel, &base, kernel_name) {
             c.kernel = Some(kernel);
             c.base_initramfs = Some(base);
+            c.runtime_qualification = Some(qualification);
             break;
         }
     }
@@ -197,7 +219,11 @@ fn paired_files(kernel: &Path, base: &Path) -> bool {
     }
 }
 
-fn verify_runtime_pair(kernel: &Path, base: &Path, kernel_name: &str) -> Result<()> {
+fn verify_runtime_pair(
+    kernel: &Path,
+    base: &Path,
+    kernel_name: &str,
+) -> Result<RuntimeQualification> {
     if !paired_files(kernel, base) {
         return Err(format!(
             "runtime kernel {} and base {} must be regular files in one directory",
@@ -234,11 +260,22 @@ fn verify_runtime_pair(kernel: &Path, base: &Path, kernel_name: &str) -> Result<
         )
         .into());
     }
-    for (name, file) in [(kernel_name, kernel), ("initramfs-oci.cpio.gz", base)] {
-        let expected = manifest
-            .files
-            .get(name)
-            .ok_or_else(|| format!("runtime manifest {} omits {name}", path.display()))?;
+    let kernel_sha256 = manifest
+        .files
+        .get(kernel_name)
+        .ok_or_else(|| format!("runtime manifest {} omits {kernel_name}", path.display()))?
+        .clone();
+    let base_initramfs_sha256 = manifest
+        .files
+        .get("initramfs-oci.cpio.gz")
+        .ok_or_else(|| {
+            format!(
+                "runtime manifest {} omits initramfs-oci.cpio.gz",
+                path.display()
+            )
+        })?
+        .clone();
+    for (file, expected) in [(kernel, &kernel_sha256), (base, &base_initramfs_sha256)] {
         let mut reader = fs::File::open(file)?;
         let mut sha = Sha256::new();
         let mut chunk = [0_u8; 1024 * 1024];
@@ -258,7 +295,34 @@ fn verify_runtime_pair(kernel: &Path, base: &Path, kernel_name: &str) -> Result<
             .into());
         }
     }
-    Ok(())
+    Ok(RuntimeQualification {
+        kernel_sha256,
+        base_initramfs_sha256,
+    })
+}
+
+pub fn read_pair(c: &Consonance) -> Result<(Vec<u8>, Vec<u8>)> {
+    let kernel_path = c.kernel.as_ref().ok_or("missing kernel")?;
+    let base_path = c.base_initramfs.as_ref().ok_or("missing base initramfs")?;
+    let kernel = fs::read(kernel_path)?;
+    let base = fs::read(base_path)?;
+    if let Some(qualification) = &c.runtime_qualification {
+        if c.backend != Backend::Uml && digest(&kernel) != qualification.kernel_sha256 {
+            return Err(format!(
+                "runtime kernel {} changed after selection",
+                kernel_path.display()
+            )
+            .into());
+        }
+        if digest(&base) != qualification.base_initramfs_sha256 {
+            return Err(format!(
+                "runtime base {} changed after selection",
+                base_path.display()
+            )
+            .into());
+        }
+    }
+    Ok((kernel, base))
 }
 
 pub fn acquire(kind: &str, isa: &str, offline: bool) -> Result<PathBuf> {
@@ -629,6 +693,19 @@ mod tests {
         assert!(select_existing_runtime(&mut kernel_only, &[], "bzImage").is_err());
         assert!(select_existing_runtime(&mut base_only, &[], "bzImage").is_err());
         assert!(select_existing_runtime(&mut both_explicit, &[], "bzImage").is_ok());
+        assert!(both_explicit.runtime_qualification.is_none());
+        assert_eq!(
+            read_pair(&both_explicit).unwrap(),
+            (b"old kernel".to_vec(), b"old base".to_vec())
+        );
+        let mut forged = both_explicit.clone();
+        forged.runtime_qualification = Some(RuntimeQualification {
+            kernel_sha256: digest(b"old kernel"),
+            base_initramfs_sha256: digest(b"old base"),
+        });
+        fs::remove_file(root.path().join("runtime-manifest.json")).unwrap();
+        assert!(select_existing_runtime(&mut forged, &[], "bzImage").is_err());
+        assert!(forged.runtime_qualification.is_none());
     }
 
     #[test]
@@ -680,6 +757,71 @@ mod tests {
 
         assert!(error.contains("runtime manifest"), "{error}");
         assert!(error.contains("outdated cached guest bundle"), "{error}");
+    }
+
+    #[test]
+    fn selected_runtime_rejects_files_changed_before_consumption() {
+        for name in ["bzImage", "initramfs-oci.cpio.gz"] {
+            let root = tempfile::tempdir().unwrap();
+            write_pair(root.path(), b"kernel", b"base", SOURCE_DIGEST, "x86_64");
+            let mut config = Consonance {
+                backend: Backend::Kvm,
+                ..Consonance::default()
+            };
+            select_existing_runtime(&mut config, &[root.path().to_path_buf()], "bzImage").unwrap();
+            assert!(config.runtime_qualification.is_some());
+            let mut runner = crate::config::Runner::default();
+            crate::runners::store_consonance(&mut runner, &config).unwrap();
+            let config = crate::runners::consonance(&runner).unwrap();
+            fs::write(root.path().join(name), b"changed after selection").unwrap();
+
+            assert!(read_pair(&config).is_err(), "accepted changed {name}");
+        }
+    }
+
+    #[test]
+    fn qualified_pair_is_reverified_when_resolved_again() {
+        let root = tempfile::tempdir().unwrap();
+        write_pair(root.path(), b"kernel", b"base", SOURCE_DIGEST, "x86_64");
+        let mut config = Consonance {
+            backend: Backend::Kvm,
+            ..Consonance::default()
+        };
+        select_existing_runtime(&mut config, &[root.path().to_path_buf()], "bzImage").unwrap();
+        assert!(config.runtime_qualification.is_some());
+        select_existing_runtime(&mut config, &[], "bzImage").unwrap();
+        assert!(config.runtime_qualification.is_some());
+        fs::write(root.path().join("bzImage"), b"changed kernel").unwrap();
+        assert!(select_existing_runtime(&mut config, &[], "bzImage").is_err());
+        assert!(config.runtime_qualification.is_none());
+    }
+
+    #[test]
+    fn uml_auto_base_keeps_its_hash_after_profile_kernel_selection() {
+        let root = tempfile::tempdir().unwrap();
+        write_pair(
+            root.path(),
+            b"guest kernel",
+            b"base",
+            SOURCE_DIGEST,
+            "x86_64",
+        );
+        let profile = root.path().join("linux");
+        fs::write(&profile, b"profile kernel").unwrap();
+        let mut config = Consonance {
+            backend: Backend::Uml,
+            ..Consonance::default()
+        };
+        select_existing_runtime(&mut config, &[root.path().to_path_buf()], "bzImage").unwrap();
+        config.kernel = Some(profile);
+        select_existing_runtime(&mut config, &[], "bzImage").unwrap();
+        assert!(config.runtime_qualification.is_some());
+        assert_eq!(
+            read_pair(&config).unwrap(),
+            (b"profile kernel".to_vec(), b"base".to_vec())
+        );
+        fs::write(root.path().join("initramfs-oci.cpio.gz"), b"changed base").unwrap();
+        assert!(read_pair(&config).is_err());
     }
     #[test]
     fn selection_uses_input_and_actual_host_capabilities() {
