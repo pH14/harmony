@@ -438,11 +438,11 @@ impl Session {
             .pending
             .as_deref()
             .ok_or_else(|| SessionError::BadResolution("no service decision is pending".into()))?;
-        let (services, response) = self
+        let prepared = self
             .services
-            .prepare_resolution(request, moment, service, id, answer)
-            .map_err(SessionError::BadResolution)?;
+            .prepare_resolution(request, moment, service, id, answer);
         check_loader_epoch(self.loader_epoch)?;
+        let (services, response) = prepared.map_err(SessionError::BadResolution)?;
         bridge::send(&self.socket, &response)?;
         self.services = services;
         self.pending = None;
