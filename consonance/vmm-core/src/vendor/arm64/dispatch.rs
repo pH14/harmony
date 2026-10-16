@@ -2035,17 +2035,26 @@ mod tests {
         assert_eq!([restored.gicr_propbaser, restored.gicr_pendbaser], bases);
         assert_eq!(target.state_hash().unwrap(), source_hash);
 
-        let mut invalid = saved;
-        let mut devices = records::decode_device_blob(&invalid.devices.0).unwrap();
-        devices.gic.as_mut().unwrap().gicr_propbaser |= 1 << 6;
-        invalid.devices = records::encode_device_blob(&devices);
-        let mut rejected = machine([0, 0]);
-        let before = rejected.save_vm_state().unwrap();
-        assert!(matches!(
-            rejected.restore_vm_state(&invalid),
-            Err(VmmError::ContractViolation(message)) if message.contains("backend rejected snapshot shape")
-        ));
-        assert_eq!(rejected.save_vm_state().unwrap(), before);
+        for (propbaser, pendbaser) in [
+            (bases[0] | (1 << 6), bases[1]),
+            (0, bases[1]),
+            (bases[0] | (2 << 10), bases[1]),
+            (bases[0], bases[1] | (2 << 56)),
+        ] {
+            let mut invalid = saved.clone();
+            let mut devices = records::decode_device_blob(&invalid.devices.0).unwrap();
+            let gic = devices.gic.as_mut().unwrap();
+            gic.gicr_propbaser = propbaser;
+            gic.gicr_pendbaser = pendbaser;
+            invalid.devices = records::encode_device_blob(&devices);
+            let mut rejected = machine([0, 0]);
+            let before = rejected.save_vm_state().unwrap();
+            assert!(matches!(
+                rejected.restore_vm_state(&invalid),
+                Err(VmmError::ContractViolation(message)) if message.contains("backend rejected snapshot shape")
+            ));
+            assert_eq!(rejected.save_vm_state().unwrap(), before);
+        }
     }
 
     #[test]
