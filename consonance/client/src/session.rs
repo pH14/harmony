@@ -937,6 +937,26 @@ mod tests {
         use std::os::unix::ffi::OsStrExt;
         use std::process::Command;
 
+        fn uuid_range(image: &[u8]) -> std::ops::Range<usize> {
+            let field =
+                |offset: usize| u32::from_le_bytes(image[offset..offset + 4].try_into().unwrap());
+            assert_eq!(field(0), 0xfeedfacf);
+            let end = 32 + field(20) as usize;
+            assert!(end <= image.len());
+            let mut offset = 32;
+            for _ in 0..field(16) {
+                let kind = field(offset);
+                let size = field(offset + 4) as usize;
+                assert!(size >= 8 && offset + size <= end);
+                if kind == 0x1b {
+                    assert_eq!(size, 24);
+                    return offset + 8..offset + 24;
+                }
+                offset += size;
+            }
+            panic!("test dylib lacks LC_UUID");
+        }
+
         const CHILD_ENV: &str = "HARMONY_SESSION_DYLIB_IDENTITY_TEST_CHILD";
         if crate::image_identity::rerun_clean_loader_test(
             "session::tests::public_session_identity_changes_with_loaded_dylib_bytes",
@@ -995,7 +1015,12 @@ mod tests {
             .unwrap();
             assert!(
                 Command::new("cc")
-                    .args(["-dynamiclib", "-o"])
+                    .args([
+                        "-dynamiclib",
+                        "-Wl,-no_adhoc_codesign",
+                        "-Wl,-install_name,@rpath/active.dylib",
+                        "-o",
+                    ])
                     .arg(&dylib)
                     .arg(&source)
                     .status()
@@ -1003,6 +1028,27 @@ mod tests {
                     .success()
             );
         }
+        let first_path = directory.path().join("a.dylib");
+        let first = fs::read(&first_path).unwrap();
+        let second_path = directory.path().join("b.dylib");
+        let mut second = fs::read(&second_path).unwrap();
+        let second_uuid = uuid_range(&second);
+        second[second_uuid].copy_from_slice(&first[uuid_range(&first)]);
+        fs::write(&second_path, second).unwrap();
+        for path in [&first_path, &second_path] {
+            assert!(
+                Command::new("codesign")
+                    .args(["--force", "--sign", "-"])
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let first = fs::read(&first_path).unwrap();
+        let second = fs::read(&second_path).unwrap();
+        let header_end = 32 + u32::from_le_bytes(first[20..24].try_into().unwrap()) as usize;
+        assert_eq!(&first[..header_end], &second[..header_end]);
         let output = Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
