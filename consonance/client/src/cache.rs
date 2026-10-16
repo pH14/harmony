@@ -145,6 +145,7 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
     ) -> Result<Lease, CacheError>;
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
     fn release(&self, lease: Lease);
+    fn revoke(&self, lease: Lease);
     fn report_store(&self, holder: u64, bytes: u64) -> bool;
     fn forget_store(&self, holder: u64);
     fn stats(&self) -> CacheStats;
@@ -251,6 +252,29 @@ impl State {
         }
         self.segments.free_committed(entry.extent);
         self.stats.evictions += 1;
+    }
+
+    fn revoke(&mut self, id: u64) {
+        if !self.entries.contains_key(&id) {
+            return;
+        }
+        let mut children = BTreeMap::<u64, Vec<u64>>::new();
+        for (&child, entry) in &self.entries {
+            if let Some(parent) = entry.parent {
+                children.entry(parent).or_default().push(child);
+            }
+        }
+        let mut descendants = Vec::new();
+        let mut pending = vec![id];
+        while let Some(parent) = pending.pop() {
+            descendants.push(parent);
+            if let Some(children) = children.get(&parent) {
+                pending.extend(children.iter().copied());
+            }
+        }
+        for descendant in descendants.into_iter().rev() {
+            self.evict(descendant);
+        }
     }
 
     fn make_room(&mut self, needed: usize) -> Result<(), CacheError> {
@@ -474,6 +498,13 @@ impl CacheIndex for LocalIndex {
         }
     }
 
+    fn revoke(&self, lease: Lease) {
+        let mut state = self.state();
+        if Arc::ptr_eq(&lease.owner, &state.owner) {
+            state.revoke(lease.entry);
+        }
+    }
+
     fn report_store(&self, holder: u64, bytes: u64) -> bool {
         let mut state = self.state();
         state.set_store(holder, Some(usize::try_from(bytes).unwrap_or(usize::MAX)));
@@ -573,6 +604,31 @@ mod tests {
             .keys
             .get(&ns("a"))
             .is_some_and(|keys| keys.contains_key(key))
+    }
+
+    #[test]
+    fn revoking_a_published_entry_invalidates_existing_leases_and_descendants() {
+        let index = LocalIndex::new(1 << 20);
+        let root = put_empty(&index, b"r", 1).unwrap();
+        let other = index.lookup(ns("a"), b"r").unwrap();
+        let child = put(&index, ns("a"), b"r1", Some(&root), &[], &[]).unwrap();
+        index.revoke(root);
+        assert!(index.lookup(ns("a"), b"r1").is_none());
+        assert!(index.lookup(ns("a"), b"r").is_none());
+        assert!(matches!(
+            index.chain(&other),
+            Err(CacheError::UnknownLease(_))
+        ));
+        assert!(matches!(
+            index.chain(&child),
+            Err(CacheError::UnknownLease(_))
+        ));
+        index.release(other);
+        index.release(child);
+        assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
+        let replacement = put_empty(&index, b"r", 1).unwrap();
+        assert_eq!(index.chain(&replacement).unwrap().len(), 1);
+        index.release(replacement);
     }
 
     fn resolved(index: &LocalIndex, lease: &Lease) -> (Vec<(u64, u8)>, Vec<u8>) {

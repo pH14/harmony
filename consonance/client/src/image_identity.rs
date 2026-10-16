@@ -26,6 +26,18 @@ impl LoadedImageGuard {
         guard.check()?;
         Ok((identity, guard))
     }
+
+    pub(crate) fn check_published(
+        self,
+        index: &dyn crate::cache::CacheIndex,
+        lease: crate::cache::Lease,
+    ) -> io::Result<crate::cache::Lease> {
+        if let Err(error) = self.check() {
+            index.revoke(lease);
+            return Err(error);
+        }
+        Ok(lease)
+    }
 }
 
 #[cfg(target_os = "macos")]
