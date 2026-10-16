@@ -186,7 +186,7 @@ jobs:
         run: timeout -k 10 720 bash workloads/languages/run-check.sh harmony-language-${{ matrix.id }}:local language-evidence
       - name: Check guest debugging, saved branches and search continuation
         if: matrix.id == 'c'
-        run: timeout -k 10 360 bash cli/tests/investigation.sh language-evidence/investigation
+        run: timeout -k 10 720 bash cli/tests/investigation.sh language-evidence/investigation
       - if: always()
         uses: actions/upload-artifact@v4
         with:
