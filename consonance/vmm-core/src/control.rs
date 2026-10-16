@@ -2529,6 +2529,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn unmodeled_guest_exit_must_retire_the_failed_run() {
         let mut server = server(vec![
             Exit::Arch(X86Exit::Io {
@@ -5266,6 +5270,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn oversized_live_recording_refuses_capture_but_allows_replay_and_import() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
@@ -12228,6 +12233,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn poisoned_live_handler_allows_replay_and_import_recovery() {
         use std::sync::atomic::AtomicU64;
         use std::sync::{Arc, Mutex};
