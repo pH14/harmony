@@ -195,6 +195,7 @@ dependencies = [
 name = "host-code-identity"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sha2",
 ]
 
