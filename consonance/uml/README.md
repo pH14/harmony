@@ -180,9 +180,10 @@
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
   Public UML sessions require a sealed static Linux host in every build.
-  They remeasure the sealed main executable and complete executable-map census
-  before and after session operations and each service exchange. An ordinary
-  GNU executable cannot start a UML session.
+  Admission hashes the full sealed main executable. Before and after session
+  operations and each service exchange, the guard reuses that immutable file
+  digest while comparing live executable bytes and the complete executable-map
+  census. An ordinary GNU executable cannot start a UML session.
 - `Recording` schema 6 names the admitted Harmony executable, profile, full
   host identity, seed, memory, boot arguments, event count and event hash of a
   run. Earlier schemas are refused. On Linux, the executable identity requires

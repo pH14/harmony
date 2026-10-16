@@ -3,12 +3,9 @@
 use std::io;
 
 #[cfg(feature = "in-process")]
-use sha2::{Digest, Sha256};
-
-#[cfg(feature = "in-process")]
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum LoadedImageGuard {
-    Strict([u8; 32]),
+    Strict(host_code_identity::StrictExecutableGuard),
     #[cfg(test)]
     TestFixture,
 }
@@ -35,24 +32,20 @@ fn strict_host_identity() -> io::Result<String> {
 #[cfg(feature = "in-process")]
 impl LoadedImageGuard {
     pub(crate) fn capture() -> io::Result<Self> {
+        reject_loader_overrides()?;
         Ok(Self::Strict(
-            Sha256::digest(strict_host_identity()?.as_bytes()).into(),
+            host_code_identity::StrictExecutableGuard::capture()?.1,
         ))
     }
 
     pub(crate) fn check(self) -> io::Result<()> {
-        let expected = match self {
-            Self::Strict(expected) => expected,
+        let admitted = match self {
+            Self::Strict(admitted) => admitted,
             #[cfg(test)]
             Self::TestFixture => return Ok(()),
         };
-        if <[u8; 32]>::from(Sha256::digest(strict_host_identity()?.as_bytes())) != expected {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                "strict host executable changed after admission",
-            ));
-        }
-        Ok(())
+        reject_loader_overrides()?;
+        admitted.check()
     }
 
     #[cfg(test)]
@@ -553,6 +546,79 @@ mod strict_host_tests {
                 .to_string()
                 .contains(expected)
         );
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "in-process",
+    target_os = "linux",
+    target_env = "musl",
+    not(miri)
+))]
+mod sealed_guard_tests {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::FileExt;
+
+    use super::*;
+    use crate::cache::{
+        CacheIndex, LocalIndex, Namespace,
+        extent::{extent_len, write_extent},
+    };
+
+    #[inline(never)]
+    fn live_code_probe() -> u8 {
+        std::hint::black_box(83)
+    }
+
+    #[test]
+    fn changed_live_code_revokes_a_published_lease() {
+        const CHILD_ENV: &str = "HARMONY_CHANGED_LIVE_CODE_PUBLISH_CHILD";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new("/proc/self/exe")
+                .args([
+                    "--exact",
+                    "image_identity::sealed_guard_tests::changed_live_code_revokes_a_published_lease",
+                    "--nocapture",
+                ])
+                .env(CHILD_ENV, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.contains("running 1 test")
+                    && stdout.contains("1 passed"),
+                "{}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let guard = LoadedImageGuard::capture().unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"live-code"]);
+        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let lease = index
+            .publish(namespace, b"snapshot", None, extent, [9; 32], 1)
+            .unwrap();
+        assert_eq!(index.stats().entries, 1);
+
+        let address = std::hint::black_box(live_code_probe as *const () as usize) as u64;
+        let memory = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/proc/self/mem")
+            .unwrap();
+        let mut original = [0_u8];
+        memory.read_exact_at(&mut original, address).unwrap();
+        memory.write_all_at(&[original[0] ^ 1], address).unwrap();
+        assert!(guard.check_published(&index, lease).is_err());
+        assert!(index.lookup(namespace, b"snapshot").is_none());
+        assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
+        memory.write_all_at(&original, address).unwrap();
+        guard.check().unwrap();
     }
 }
 
