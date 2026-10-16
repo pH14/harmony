@@ -49,9 +49,9 @@ use crate::{
     target::{FaultAction, FaultObservations, FaultOperation, FaultSnapshot},
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v5";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v6";
 pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v5";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v2";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v3";
 pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v1";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
@@ -143,6 +143,24 @@ pub type FaultCampaignModeReport = CampaignModeReport<FaultAction, FaultArchiveR
 pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
 type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
+
+#[derive(Clone, Copy, Serialize)]
+enum EndpointCertificate {
+    KvmWholeState([u8; 32]),
+    KvmUnavailableAfterFailure,
+    UmlWholeStateUnavailable,
+}
+
+fn endpoint_result_sha256(
+    result: &FaultCampaignJobResult,
+    endpoint: EndpointCertificate,
+) -> Result<String, Box<dyn Error>> {
+    postcard_value_sha256(&(
+        "fault-campaign-result-endpoint-v1",
+        postcard_result_sha256(result)?,
+        endpoint,
+    ))
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultCampaignReport {
@@ -359,6 +377,21 @@ impl Reporting for FaultWorkload {
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
         postcard_result_sha256(result)
+    }
+
+    fn certified_result_sha256(
+        &self,
+        result: &FaultCampaignJobResult,
+        target: &Self::Target,
+    ) -> Result<String, Box<dyn Error>> {
+        let endpoint = if self.config.uml().is_some() {
+            EndpointCertificate::UmlWholeStateUnavailable
+        } else if target.failed() {
+            EndpointCertificate::KvmUnavailableAfterFailure
+        } else {
+            EndpointCertificate::KvmWholeState(target.state_hash_current()?)
+        };
+        endpoint_result_sha256(result, endpoint)
     }
 
     fn snapshot_identity_sha256(
@@ -916,6 +949,28 @@ mod tests {
         archive::{SelectorDraw, SelectorPath},
         campaign::{CampaignJobRecord, CampaignStreamRecord},
     };
+
+    #[test]
+    fn endpoint_certificate_distinguishes_state_and_unavailability() {
+        let result = FaultCampaignJobResult {
+            preparation_failure: None,
+            actions: Vec::new(),
+        };
+        let first =
+            endpoint_result_sha256(&result, EndpointCertificate::KvmWholeState([1; 32])).unwrap();
+        let second =
+            endpoint_result_sha256(&result, EndpointCertificate::KvmWholeState([2; 32])).unwrap();
+        let failed =
+            endpoint_result_sha256(&result, EndpointCertificate::KvmUnavailableAfterFailure)
+                .unwrap();
+        let uml =
+            endpoint_result_sha256(&result, EndpointCertificate::UmlWholeStateUnavailable).unwrap();
+        assert_ne!(first, second);
+        assert_ne!(first, failed);
+        assert_ne!(first, uml);
+        assert_ne!(failed, uml);
+        assert_ne!(first, postcard_result_sha256(&result).unwrap());
+    }
 
     #[test]
     fn campaign_job_record_round_trips_assertion_digest() {

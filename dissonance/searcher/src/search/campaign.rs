@@ -226,6 +226,13 @@ pub trait Reporting: CampaignTypes {
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
+    fn certified_result_sha256(
+        &self,
+        result: &CampaignJobResult<Self>,
+        _target: &Self::Target,
+    ) -> Result<String, Box<dyn Error>> {
+        self.result_sha256(result)
+    }
     fn snapshot_identity_sha256(&self, snapshot: &Self::Snapshot)
     -> Result<String, Box<dyn Error>>;
     fn archive_report(
@@ -3212,7 +3219,7 @@ where
                 )
                 .and_then(|result| {
                     let result_sha256 = workload
-                        .result_sha256(&result)
+                        .certified_result_sha256(&result, target)
                         .map_err(|error| error.to_string())?;
                     let execution_work = execution_work_delta(
                         work_before,
@@ -5455,7 +5462,7 @@ where
                     )
                     .into());
                 }
-                let digest = workload.result_sha256(&result)?;
+                let digest = workload.certified_result_sha256(&result, &target)?;
                 if digest != job.result_sha256 {
                     return Err(format!(
                         "replayed job {} result digest {digest} diverged from recorded {}",

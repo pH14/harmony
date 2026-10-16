@@ -631,6 +631,30 @@ impl FaultTarget {
         })
     }
 
+    pub fn state_hash_current(&self) -> Result<[u8; 32], String> {
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot
+                .as_mut()
+                .ok_or("the current job session is unavailable")?;
+            if live.key != self.config.key {
+                return Err("the current job session has a different identity".to_owned());
+            }
+            if live.abandoned || live.session.abandoned() {
+                return Err("the current job session was abandoned".to_owned());
+            }
+            let result = live
+                .session
+                .state_hash()
+                .map_err(|error| format!("current job state hash: {error}"));
+            if live.abandoned || live.session.abandoned() {
+                *slot = None;
+                return Err("the current job session was abandoned while hashing".to_owned());
+            }
+            result
+        })
+    }
+
     #[must_use]
     pub fn console_tail(&self) -> String {
         LIVE.with(|cell| {
@@ -1879,6 +1903,38 @@ mod tests {
             panic!("the future standing service must answer");
         };
         assert_ne!(first.answer.0, future.encode());
+    }
+
+    #[test]
+    fn current_job_state_hash_never_boots_a_missing_or_foreign_session() {
+        let target = unbooted_target();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        assert!(
+            target
+                .state_hash_current()
+                .unwrap_err()
+                .contains("unavailable")
+        );
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        LIVE.with(|slot| slot.borrow_mut().as_mut().unwrap().key = [1; 32]);
+        assert!(
+            target
+                .state_hash_current()
+                .unwrap_err()
+                .contains("different identity")
+        );
+        LIVE.with(|slot| {
+            assert_eq!(slot.borrow().as_ref().unwrap().key, [1; 32]);
+            slot.borrow_mut().as_mut().unwrap().abandoned = true;
+        });
+        LIVE.with(|slot| slot.borrow_mut().as_mut().unwrap().key = [0; 32]);
+        assert!(
+            target
+                .state_hash_current()
+                .unwrap_err()
+                .contains("abandoned")
+        );
+        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]

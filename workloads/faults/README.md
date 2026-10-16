@@ -376,6 +376,19 @@ campaign streams, archive reports, and progress records. This lets the tagged
 job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
+Each campaign job's recorded result digest now binds its logical result to a
+tagged endpoint certificate. KVM jobs that finish with a healthy target certify
+the current worker session's whole-state hash once after execution, including
+RAM and device state. If that session is missing, foreign, abandoned, or cannot
+be hashed, the campaign or replay fails instead of booting a replacement to
+produce a misleading digest. The whole-state hash scans guest RAM once per job,
+so it adds work proportional to configured RAM and job count. A failed KVM job
+records an explicit whole-state-unavailable tag: its action observations and
+failure result remain checked, but the stream makes no claim about its final
+whole state. UML also records a distinct whole-state-unavailable tag because
+that backend does not provide a whole-state hash. The KVM and UML campaign
+stream formats are versioned separately for this certificate change.
+
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose
 hash matches its instrumentation attestation. A runtime hello identifies the
