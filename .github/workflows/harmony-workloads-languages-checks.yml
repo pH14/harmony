@@ -76,6 +76,37 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  tools:
+    name: Language CLI Tools
+    needs: scope
+    if: needs.scope.outputs.harmony_languages == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain and musl linker
+        run: |
+          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
+          rustup default "$HARMONY_RUST_TOOLCHAIN"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-language-cli-tools
+      - name: Build and verify the paired CLI
+        run: |
+          bash scripts/build-consonance-cli-pair.sh paired-cli
+          python3 scripts/test-consonance-host-package.py \
+            --frontend paired-cli/harmony \
+            --host paired-cli/harmony-consonance-host --platform linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: language-cli-tools
+          path: paired-cli
+          if-no-files-found: error
+          retention-days: 14
+
   images:
     name: Language Image — ${{ matrix.name }}
     needs: scope
@@ -118,7 +149,7 @@ jobs:
 
   check:
     name: Check — ${{ matrix.name }}
-    needs: [scope, guest, images]
+    needs: [scope, guest, images, tools]
     if: needs.scope.outputs.harmony_languages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -141,15 +172,13 @@ jobs:
         with:
           name: language-guest-runtime
           path: consonance/harmony-linux/build/x86_64
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: harmony-language-cli
-      - name: Build the CLI and enable KVM
+          name: language-cli-tools
+          path: target/release
+      - name: Restore paired CLI permissions and enable KVM
         run: |
-          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
-          rustup default "$HARMONY_RUST_TOOLCHAIN"
-          cargo build --locked --release -p harmony-cli
+          chmod +x target/release/harmony target/release/harmony-consonance-host
           test -c /dev/kvm
           sudo chmod a+rw /dev/kvm
           docker load --input language-image/${{ matrix.id }}.tar
@@ -188,7 +217,7 @@ jobs:
 
   uml-command:
     name: UML Command Replay
-    needs: [scope, guest, images, uml-profile]
+    needs: [scope, guest, images, uml-profile, tools]
     if: needs.scope.outputs.harmony_languages == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -206,15 +235,13 @@ jobs:
         with:
           name: language-uml-profile
           path: uml-profile
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/download-artifact@v4
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          shared-key: harmony-language-cli
-      - name: Build the CLI
+          name: language-cli-tools
+          path: target/release
+      - name: Restore paired CLI permissions
         run: |
-          rustup toolchain install "$HARMONY_RUST_TOOLCHAIN" --profile minimal
-          rustup default "$HARMONY_RUST_TOOLCHAIN"
-          cargo build --locked --release -p harmony-cli
+          chmod +x target/release/harmony target/release/harmony-consonance-host
           chmod +x uml-profile/linux
       - name: Verify plain command replay as an ordinary user on UML
         run: |

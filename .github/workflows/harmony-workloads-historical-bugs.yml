@@ -132,11 +132,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build tools
+      - name: Build paired Harmony tools
         run: |
-          cargo build --locked --release -p harmony-cli
-          mkdir -p tools
-          cp target/release/harmony tools/harmony
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+          bash scripts/build-consonance-cli-pair.sh tools
       - uses: actions/upload-artifact@v4
         with:
           name: historical-tools-${{ github.run_id }}
@@ -220,6 +220,8 @@ jobs:
         with:
           name: historical-tools-${{ github.run_id }}
           path: tools
+      - name: Restore paired tool permissions
+        run: chmod +x tools/harmony tools/harmony-consonance-host
       - uses: actions/download-artifact@v4
         with:
           name: historical-images-${{ matrix.id }}-${{ github.run_id }}
