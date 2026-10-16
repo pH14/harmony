@@ -76,15 +76,30 @@
   stops with `ExitReason::EventCut`. A cut at zero stops the guest before its
   first request and records no events.
 - `Session` holds the bridge socket on the caller's thread instead. Its
-  services answer the same SDK requests as the KVM backend through
-  `environment::sdk`: entropy, events, assertion violations, standing-service
-  questions answered by a `ServiceHandler`, payload pulls and coverage.
-  `branch` installs a seed, handler and payloads after checking that reseeding
-  with both the branch seed and the decode seed zero keeps the handler identity
-  and configuration unchanged. It also rejects a decode-seed probe that changes
-  the original handler. A rejected branch leaves independent live services
-  untouched; if a shallow handler clone changes the live service state, the
-  service channel is poisoned so it cannot export a misleading checkpoint.
+  services answer SDK requests through `environment::sdk`: entropy, events,
+  assertion violations, recorded standing-service answers, payload pulls and
+  coverage. An unrecorded custom service or coverage quantum pauses the socket
+  before a guest reply. `resolve_and_run` accepts a matching answer, records it
+  against the held question, and then sends the guest response. Invalid
+  resolutions leave the held request and services state unchanged. A recorded
+  coverage schedule supplies a branch's window quantum without per-callback
+  decisions.
+  It records the host process loader generation before starting the guest,
+  checks it across session operations, and checks again after every service
+  decision immediately before sending the guest reply. A handler that loads
+  and unloads a library during one decision fails the run even if the set of
+  loaded images is the same afterward. The client also holds its admission
+  generation across fresh UML processes and checkpoint publication.
+  `branch` checks that reseeding with both the branch seed and the decode seed
+  zero keeps the handler identity and configuration unchanged, then installs
+  the handler, payloads, optional coverage schedule, and a fresh host-bridge
+  entropy stream from the branch seed. The guest kernel's `getrandom` stream
+  starts from the boot seed and remains part of checkpointed guest state; a
+  branch does not reseed it. A plain restore retains the captured host-bridge
+  entropy position. A decode-seed probe that changes the original handler is
+  rejected. A rejected branch leaves independent live services untouched; if
+  a shallow handler clone changes the live service state, the service channel
+  is poisoned so it cannot export a misleading checkpoint.
   `run_until` runs to a
   virtual-time deadline, and `run_to_snapshot_point` runs to the guest's
   snapshot request. A request already paused at or beyond a deadline stays

@@ -2,6 +2,44 @@
 
 use std::io;
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LoadedImageGuard(host_code_identity::LoaderEpoch);
+
+impl LoadedImageGuard {
+    pub(crate) fn capture() -> io::Result<Self> {
+        Ok(Self(host_code_identity::loader_epoch()?))
+    }
+
+    pub(crate) fn check(self) -> io::Result<()> {
+        if host_code_identity::loader_epoch()? != self.0 {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "host loader changed after loaded-image admission",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn identity() -> io::Result<(String, Self)> {
+        let guard = Self::capture()?;
+        let identity = loaded_executable_identity_self()?;
+        guard.check()?;
+        Ok((identity, guard))
+    }
+
+    pub(crate) fn check_published(
+        self,
+        index: &dyn crate::cache::CacheIndex,
+        lease: crate::cache::Lease,
+    ) -> io::Result<crate::cache::Lease> {
+        if let Err(error) = self.check() {
+            index.revoke(lease);
+            return Err(error);
+        }
+        Ok(lease)
+    }
+}
+
 #[cfg(target_os = "macos")]
 const LOADER_OVERRIDE_VARS: &[&str] = &[
     "DYLD_FRAMEWORK_PATH",

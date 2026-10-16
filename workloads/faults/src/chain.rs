@@ -247,6 +247,7 @@ mod tests {
                 &actions_key(actions),
                 parent,
                 extent,
+                [0; 32],
                 1,
             )
             .unwrap()

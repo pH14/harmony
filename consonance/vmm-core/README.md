@@ -28,6 +28,15 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+
+The composition layer can inject a host-operation guard into `ControlServer`.
+The server checks it before and after each control request, including before
+the request's reply is encoded, and attaches it to every fresh or recovery VM.
+The VMM checks the same guard before servicing a doorbell and immediately
+before writing any service answer to guest memory. Consonance uses this hook
+to reject host loader changes without making the execution core depend on a
+particular process-loader implementation.
+
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
 refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
 so that tape alone cannot replay the continuation from genesis. This includes
@@ -42,11 +51,34 @@ rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+Custom service and coverage-quantum requests stop as decisions before guest
+response bytes are written. A coverage stop retains the thread, observation,
+ready count, and doorbell sequence in the SDK snapshot and whole-state hash.
+`Run { resolve }` binds the answer to the request payload, then completes the
+original coverage exchange. Invalid quantum answers leave the pending stop and
+coverage threshold unchanged.
+If an SDK request reaches a `Run` deadline during a chained guest step, control
+reports the deadline before answering it. Valid custom service and coverage
+requests remain pending decisions. Other doorbells retain their raw request
+frame, including malformed requests, without writing a response or changing the
+payload cursor, entropy stream, event log, or pvclock registration. The pending
+request is part of the whole-state hash and portable snapshot. A later `Run`
+dispatches it under the branch's service plan before resuming the guest.
+Resolving a pending decision at or after the `Run` deadline leaves its answer
+unrecorded and its response page untouched for the next action.
 If a backend completion chains a later SDK decision into the same guest step
 after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
+An x86 SDK doorbell does not advance virtual time. An effect added at the
+moment of an already surfaced decision would run after its live answer but
+before that request when replayed from an earlier snapshot. At a deferred raw
+doorbell, the effect would run before its response live but after the response
+in an unsplit run. `Perturb` rejects either same-moment input without changing
+the pending request. A restored pending decision or raw doorbell with an effect
+or reseed already due rejects `Run` before consuming the request or writing
+response bytes.
 If a backend step or scheduled-input application fails after `Run` begins,
 control retires the live VM. A failed step can already have advanced virtual
 time or changed guest state, so the session cannot mint a reproducer or accept
@@ -112,6 +144,10 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Before the decode-seed probe, branch preparation checks that cloning the new
+handler preserves both the original and clone state. It checks the original
+again after the decode seed, rejecting shared-state changes before installing
+the branch.
 Branch and import preparation also compare a handler-only fingerprint of the
 live SDK handler's identity, configuration, and state before and after calling
 a service factory or restoring a prepared handler. If a factory or shallow
@@ -320,6 +356,13 @@ CPU records and applies the existing logical XSAVE restore-bitmap rule: presence
 bits for init-valued x87/SSE components normalize, while active components remain
 bound. Every other sidecar field remains encoded. The original portable bytes
 retain the host restore bitmap and remain the input used for restore.
+
+Sparse-delta cache publication commits to the complete sidecar and target-pages
+digest after projecting only that x86 XSAVE metadata or the Arm virtual timer's
+captured counter, according to the validated VM-state architecture. Unknown or
+invalid CPU records cannot publish. The image prefix and every other sidecar
+field remain bound, including SDK, policy, control and trace state; the extent
+keeps its original restore bytes.
 
 The non-default `harmony_omit_nested_state` compiler configuration is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive

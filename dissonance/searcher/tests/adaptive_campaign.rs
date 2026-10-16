@@ -71,12 +71,14 @@ struct TimingTarget {
     execution_work: u64,
     failed: bool,
     observations: Vec<(u8,)>,
+    endpoint_marker: Option<u8>,
 }
 
 struct TimingWorkload {
     fail_timed_action: bool,
     fail_preparation: bool,
     clear_observations_on_apply: bool,
+    endpoint_marker: Option<u8>,
 }
 
 impl CampaignTypes for TimingWorkload {
@@ -115,6 +117,20 @@ impl Reporting for TimingWorkload {
 
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>> {
         postcard_value_sha256(result)
+    }
+    fn certified_result_sha256(
+        &self,
+        result: &CampaignJobResult<Self>,
+        target: &Self::Target,
+    ) -> Result<String, Box<dyn Error>> {
+        match target.endpoint_marker {
+            Some(marker) => postcard_value_sha256(&(
+                b"test-endpoint-certificate-v1",
+                self.result_sha256(result)?,
+                marker,
+            )),
+            None => self.result_sha256(result),
+        }
     }
     fn snapshot_identity_sha256(
         &self,
@@ -236,7 +252,10 @@ impl InputPolicy for TimingWorkload {
 
 impl TargetExecution for TimingWorkload {
     fn new_target(&self) -> Result<Self::Target, String> {
-        Ok(TimingTarget::default())
+        Ok(TimingTarget {
+            endpoint_marker: self.endpoint_marker,
+            ..TimingTarget::default()
+        })
     }
 
     fn reset(&self, target: &mut Self::Target) {
@@ -504,11 +523,43 @@ fn fixture_stream(workload: &TimingWorkload) -> Vec<u8> {
 }
 
 #[test]
+fn replay_rejects_hidden_endpoint_drift_with_matching_results() {
+    let live = TimingWorkload {
+        fail_timed_action: false,
+        fail_preparation: false,
+        clear_observations_on_apply: false,
+        endpoint_marker: Some(17),
+    };
+    let replay = TimingWorkload {
+        endpoint_marker: Some(23),
+        ..live
+    };
+    let logical_result = CampaignJobResult::<TimingWorkload> {
+        preparation_failure: None,
+        actions: Vec::new(),
+    };
+    assert_eq!(
+        live.result_sha256(&logical_result)
+            .expect("live result digest"),
+        replay
+            .result_sha256(&logical_result)
+            .expect("replay result digest")
+    );
+    let stream = fixture_stream(&live);
+    replay_campaign_checkpointed(&live, &stream, None, None)
+        .expect("same endpoint replays exactly");
+    let error = replay_campaign_checkpointed(&replay, &stream, None, None)
+        .expect_err("changed hidden endpoint must break replay");
+    assert!(error.to_string().contains("result digest"), "{error}");
+}
+
+#[test]
 fn campaign_adaptive_duration_replays_concurrently_and_rejects_tampering() {
     let workload = TimingWorkload {
         fail_timed_action: false,
         fail_preparation: false,
         clear_observations_on_apply: false,
+        endpoint_marker: None,
     };
     let config = fixture_config();
     let mut stream = Vec::new();
@@ -608,6 +659,7 @@ fn replay_rejects_fabricated_duration_history_at_reservation() {
         fail_timed_action: false,
         fail_preparation: false,
         clear_observations_on_apply: false,
+        endpoint_marker: None,
     };
     let stream = fixture_stream(&workload);
     let tampered = mutate_first_duration_job(&stream, |record| {
@@ -629,6 +681,7 @@ fn replay_rejects_remaining_work_that_does_not_match_reservation() {
         fail_timed_action: false,
         fail_preparation: false,
         clear_observations_on_apply: false,
+        endpoint_marker: None,
     };
     let stream = fixture_stream(&workload);
     let tampered = mutate_first_duration_job(&stream, |record| {
@@ -647,6 +700,7 @@ fn failed_duration_actions_do_not_train_the_policy() {
         fail_timed_action: true,
         fail_preparation: false,
         clear_observations_on_apply: false,
+        endpoint_marker: None,
     };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed_with_options(
@@ -684,6 +738,7 @@ fn preparation_failure_continues_campaign_and_is_hashed_once() {
         fail_timed_action: false,
         fail_preparation: true,
         clear_observations_on_apply: false,
+        endpoint_marker: None,
     };
     let mut stream = Vec::new();
     let live = run_campaign_checkpointed_with_options(
@@ -758,6 +813,7 @@ fn failed_parent_skips_replay_and_preserves_preparation_observations() {
         fail_timed_action: false,
         fail_preparation: true,
         clear_observations_on_apply: true,
+        endpoint_marker: None,
     };
     let mut target = workload.new_target().expect("fixture target");
     let result = workload

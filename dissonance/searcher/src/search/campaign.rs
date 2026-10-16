@@ -261,6 +261,13 @@ pub trait Reporting: CampaignTypes {
     fn action_cost_unit(&self) -> &'static str;
     fn execution_work_unit(&self) -> &'static str;
     fn result_sha256(&self, result: &CampaignJobResult<Self>) -> Result<String, Box<dyn Error>>;
+    fn certified_result_sha256(
+        &self,
+        result: &CampaignJobResult<Self>,
+        _target: &Self::Target,
+    ) -> Result<String, Box<dyn Error>> {
+        self.result_sha256(result)
+    }
     fn snapshot_identity_sha256(&self, snapshot: &Self::Snapshot)
     -> Result<String, Box<dyn Error>>;
     fn archive_report(
@@ -470,6 +477,48 @@ pub trait TargetExecution: CampaignTypes {
         Ok(true)
     }
     fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>>;
+    fn candidate_replay_certificate(
+        &self,
+        _snapshot: &Self::Snapshot,
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        Ok(None)
+    }
+    fn current_replay_certificate(
+        &self,
+        _target: &Self::Target,
+    ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+        Ok(None)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn execute_job_certified(
+        &self,
+        run: &Self::Run,
+        target: &mut Self::Target,
+        origin_snapshot: &Self::Snapshot,
+        replay: &[Self::Action],
+        replay_certificates: &[Option<[u8; 32]>],
+        parent_milestones: Self::Milestones,
+        suffix: &[Self::Action],
+        retention: RetentionPolicy,
+        stop_rollout_on_objective: bool,
+    ) -> Result<CampaignJobResult<Self>, Box<dyn Error>>
+    where
+        Self: Workload + Sized,
+    {
+        if replay.len() != replay_certificates.len() {
+            return Err("replay certificate count does not match the action path".into());
+        }
+        self.execute_job(
+            run,
+            target,
+            origin_snapshot,
+            replay,
+            parent_milestones,
+            suffix,
+            retention,
+            stop_rollout_on_objective,
+        )
+    }
     #[allow(clippy::too_many_arguments)]
     fn execute_job(
         &self,
@@ -1674,7 +1723,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     .collect()
             })
             .unwrap_or_default();
-        workload.merge_origin_evidence(&mut self.evidence, source);
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(workload, run, target)?;
@@ -1686,6 +1734,15 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for (index, entry) in source_entries.iter().enumerate() {
             index_of.insert(entry.id, index);
             if entry.input.actions.is_empty() {
+                if let Some(expected) = entry.snapshot_identity_sha256.as_deref() {
+                    let genesis = self.archive.entries[genesis_id]
+                        .snapshot
+                        .as_deref()
+                        .ok_or("whole-tree import genesis snapshot was released early")?;
+                    if workload.snapshot_identity_sha256(genesis)? != expected {
+                        return Err("imported genesis differs from its source entry digest".into());
+                    }
+                }
                 imported.push(Some(genesis_id));
                 continue;
             }
@@ -1722,7 +1779,70 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
             let parent_entry = &self.archive.entries[parent_id];
             let mut milestones = parent_entry.milestones;
             let prefix = entry.input.clone();
-            let snapshot = if let Some(snapshot) = checkpointed.get(&entry.id) {
+            let suffix = prefix
+                .actions
+                .get(parent_input_len..)
+                .ok_or("source archive input is shorter than its imported parent")?
+                .to_vec();
+            let checkpoint_snapshot = checkpointed.get(&entry.id).copied();
+            let checkpoint_certificate = checkpoint_snapshot
+                .map(|snapshot| workload.candidate_replay_certificate(snapshot))
+                .transpose()?
+                .flatten();
+            let mut replay_certificates = vec![None; suffix.len()];
+            let reconstructed = if checkpoint_snapshot.is_none() || checkpoint_certificate.is_some()
+            {
+                workload.restore(
+                    target,
+                    parent_entry
+                        .snapshot
+                        .as_deref()
+                        .ok_or("whole-tree import parent snapshot was released early")?,
+                )?;
+                let mut terminal = false;
+                for (index, action) in suffix.iter().enumerate() {
+                    workload.apply_action(target, action, &mut milestones)?;
+                    if workload
+                        .rollout_outcome(run, target)?
+                        .disposition
+                        .is_terminal()
+                    {
+                        terminal = true;
+                        break;
+                    }
+                    replay_certificates[index] = workload.current_replay_certificate(target)?;
+                }
+                if terminal {
+                    None
+                } else {
+                    let rebuilt = workload.snapshot(target)?;
+                    if workload.candidate_replay_certificate(&rebuilt)?.is_some()
+                        && replay_certificates.iter().any(Option::is_none)
+                    {
+                        return Err(
+                            "certified imported path lacks an action-prefix certificate".into()
+                        );
+                    }
+                    Some(rebuilt)
+                }
+            } else {
+                None
+            };
+            let snapshot = if let Some(snapshot) = checkpoint_snapshot {
+                if checkpoint_certificate.is_some() {
+                    let rebuilt = reconstructed.as_ref().ok_or(
+                        "checkpointed source prefix stopped during certificate reconstruction",
+                    )?;
+                    if workload.candidate_replay_certificate(rebuilt)? != checkpoint_certificate
+                        || workload.snapshot_identity_sha256(rebuilt)?
+                            != workload.snapshot_identity_sha256(snapshot)?
+                    {
+                        return Err(
+                            "checkpointed source prefix differs from its reconstructed endpoint"
+                                .into(),
+                        );
+                    }
+                }
                 workload.restore(target, snapshot)?;
                 milestones = merge_max(workload, milestones, entry.milestones);
                 counts.checkpointed = counts.checkpointed.saturating_add(1);
@@ -1733,57 +1853,45 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 {
                     None
                 } else {
-                    Some((*snapshot).clone())
+                    Some(snapshot.clone())
                 }
             } else {
-                workload.restore(
-                    target,
-                    parent_entry
-                        .snapshot
-                        .as_deref()
-                        .ok_or("whole-tree import parent snapshot was released early")?,
-                )?;
-                let mut terminal = false;
-                for action in &entry.input.actions[parent_input_len..] {
-                    workload.apply_action(target, action, &mut milestones)?;
-                    if workload
-                        .rollout_outcome(run, target)?
-                        .disposition
-                        .is_terminal()
-                    {
-                        terminal = true;
-                        break;
-                    }
-                }
-                if terminal {
-                    None
-                } else {
-                    Some(workload.snapshot(target)?)
-                }
+                reconstructed
             };
             let Some(snapshot) = snapshot else {
+                if entry.snapshot_identity_sha256.is_some() {
+                    return Err(
+                        "imported endpoint with a source entry digest did not reconstruct".into(),
+                    );
+                }
                 counts.terminal = counts.terminal.saturating_add(1);
                 imported.push(None);
                 continue;
             };
+            if let Some(expected) = entry.snapshot_identity_sha256.as_deref()
+                && workload.snapshot_identity_sha256(&snapshot)? != expected
+            {
+                return Err("imported endpoint differs from its source entry digest".into());
+            }
             workload.merge_import_evidence(&mut self.evidence, milestones, &prefix);
             let key = workload.current_key(target)?;
-            let suffix = prefix
-                .actions
-                .get(parent_input_len..)
-                .ok_or("source archive input is shorter than its imported parent")?
-                .to_vec();
             let inserted_before = self.archive.entries.len();
-            match self.archive.insert(
-                Some(parent_id),
-                0,
-                ArchiveCandidate {
-                    suffix,
-                    key,
-                    milestones,
-                },
-                snapshot,
-            )? {
+            match self
+                .archive
+                .insert_after_certified(
+                    Some(parent_id),
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix,
+                        key,
+                        milestones,
+                    },
+                    snapshot,
+                    Some(replay_certificates.as_slice()),
+                )?
+                .0
+            {
                 Some(id) if id == inserted_before => {
                     counts.imported = counts.imported.saturating_add(1);
                     imported.push(Some(id));
@@ -1803,6 +1911,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         self.archive
             .preserve_inactive_snapshots(preserve_inactive_snapshots)?;
+        workload.merge_origin_evidence(&mut self.evidence, source);
         Ok(counts)
     }
 
@@ -1846,6 +1955,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         }
         let mut current_parent = parent_index;
         let mut pending_suffix = Vec::new();
+        let mut pending_certificates = Vec::new();
         let mut previous_key = None;
         let mut decisions = Vec::new();
         let mut duration = DurationAdmission::default();
@@ -1859,7 +1969,14 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         for action in actions {
             let tracked = tracked_action(&action.action) && !action.outcome.disposition.is_failed();
             duration.applied |= tracked;
+            let certificate = action
+                .candidate
+                .as_ref()
+                .map(|candidate| workload.candidate_replay_certificate(&candidate.snapshot))
+                .transpose()?
+                .flatten();
             pending_suffix.push(action.action);
+            pending_certificates.push(certificate);
             workload.merge_action_evidence(&mut self.evidence, &action, sequence, || {
                 let mut input = self
                     .archive
@@ -1907,8 +2024,11 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     decisions.push(CampaignAdmissionDecision::ProbeRefused);
                     continue;
                 }
+                if certificate.is_some() && pending_certificates.iter().any(Option::is_none) {
+                    return Err("certified campaign path lacks an action-prefix certificate".into());
+                }
                 let retained_before = self.archive.retained;
-                let (admitted, key) = self.archive.insert_after(
+                let (admitted, key) = self.archive.insert_after_certified(
                     Some(current_parent),
                     previous_key,
                     sequence,
@@ -1918,6 +2038,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         milestones: action.milestones,
                     },
                     candidate.snapshot,
+                    Some(&pending_certificates),
                 )?;
                 left_place |= key.place() != parent_place;
                 match admitted {
@@ -1931,6 +2052,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        pending_certificates.clear();
                         previous_key = None;
                     }
                     Some(id) => {
@@ -1942,6 +2064,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         });
                         current_parent = id;
                         pending_suffix.clear();
+                        pending_certificates.clear();
                         previous_key = None;
                     }
                     None => {
@@ -2692,6 +2815,7 @@ fn planned_finish<G: Workload + ?Sized>(
 #[serde(bound = "")]
 struct JobSpecRecord<G: Workload + ?Sized> {
     replay: Vec<G::Action>,
+    replay_certificates: Vec<Option<[u8; 32]>>,
     parent_milestones: G::Milestones,
     suffix: Vec<G::Action>,
 }
@@ -2700,6 +2824,7 @@ impl<G: Workload + ?Sized> JobSpecRecord<G> {
     fn of(spec: &JobSpec<G>) -> Self {
         Self {
             replay: spec.replay.clone(),
+            replay_certificates: spec.replay_certificates.clone(),
             parent_milestones: spec.parent_milestones,
             suffix: spec.suffix.clone(),
         }
@@ -3722,12 +3847,17 @@ impl ReplaySkipSchedule {
     fn accept_skip(
         &mut self,
         reservation: u64,
-        selected: usize,
+        admissions: usize,
+        window: usize,
         total: usize,
     ) -> Result<(), Box<dyn Error>> {
         let slot = usize::try_from(reservation)?;
-        if slot >= selected || slot >= total {
+        if slot >= admissions.saturating_add(window).min(total) || slot >= total {
             return Err("recorded skip names a reservation outside the selection window".into());
+        }
+        let selection_admission = if slot < window { 0 } else { slot - window + 1 };
+        if admissions != selection_admission {
+            return Err("recorded skip was not drawn at its selection boundary".into());
         }
         if self.admitted.contains(&reservation) {
             return Err("recorded skip follows its job admission".into());
@@ -4177,7 +4307,7 @@ where
     let mut duration_work = VecDeque::from([(0, counters.bootstrap_execution_work)]);
     let mut replay_metadata_uses = BTreeMap::<u64, u32>::new();
     let mut replay_job_snapshots =
-        BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, u64)>::new();
+        BTreeMap::<usize, (Arc<G::Snapshot>, Vec<G::Action>, Vec<Option<[u8; 32]>>, u64)>::new();
     let mut replay_continuations = BTreeMap::<usize, ContinuationReservation<G>>::new();
     let mut replay_continuation_energy = BTreeMap::<usize, Option<u16>>::new();
     let mut replay_job_weights = BTreeMap::<usize, (u8, u8)>::new();
@@ -4247,11 +4377,15 @@ where
             CampaignStreamRecord::Skip(skip) => {
                 replay_skips.accept_skip(
                     skip.reservation,
-                    replay_admissions
-                        .saturating_add(replay_window_depth)
-                        .min(replay_job_parents.len()),
+                    replay_admissions,
+                    replay_window_depth,
                     replay_job_parents.len(),
                 )?;
+                if replay_continuations.contains_key(&usize::try_from(skip.reservation)?) {
+                    return Err(
+                        "campaign replay recorded a skip before a taken continuation".into(),
+                    );
+                }
                 if stop_reservations_after_objective(
                     header.stop_campaign_on_objective,
                     core.objective_witness.is_some(),
@@ -4469,7 +4603,7 @@ where
                     .archive
                     .index_of_id(job.parent_id)
                     .ok_or("recorded job names a parent the archive does not hold")?;
-                let ((snapshot, replay, snapshot_id), parent_milestones) = {
+                let ((snapshot, replay, replay_certificates, snapshot_id), parent_milestones) = {
                     let entry = core
                         .archive
                         .entries
@@ -4577,11 +4711,12 @@ where
                 last_admitted = Some((finish, replay_job_slot));
                 replay_planned_clock = finish;
                 let job_execution_work_before = workload.execution_work(&target);
-                let result = workload.execute_job(
+                let result = workload.execute_job_certified(
                     &replay_run,
                     &mut target,
                     &snapshot,
                     &replay,
+                    &replay_certificates,
                     parent_milestones,
                     &suffix,
                     replay_retention,
@@ -4599,7 +4734,7 @@ where
                     )
                     .into());
                 }
-                let digest = workload.result_sha256(&result)?;
+                let digest = workload.certified_result_sha256(&result, &target)?;
                 if digest != job.result_sha256 {
                     return Err(format!(
                         "replayed job {} result digest {digest} diverged from recorded {}",
@@ -5054,6 +5189,10 @@ mod tests {
         bootstrap_objective: bool,
         targets: Option<Arc<LiveTargets>>,
     }
+    std::thread_local! {
+        static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
     impl CampaignTypes for TestWorkload {
         type Target = TestTarget;
         type Action = TestAction;
@@ -5253,6 +5392,22 @@ mod tests {
         }
         fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
             target.snapshot()
+        }
+        fn candidate_replay_certificate(
+            &self,
+            snapshot: &Self::Snapshot,
+        ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+            Ok(CERTIFIED_IMPORT.with(|enabled| enabled.get().then_some([*snapshot; 32])))
+        }
+        fn current_replay_certificate(
+            &self,
+            target: &Self::Target,
+        ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+            Ok(CERTIFIED_IMPORT.with(|enabled| {
+                (enabled.get()
+                    && !OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.get() && target.value == 3))
+                .then_some([target.value; 32])
+            }))
         }
         fn action_cost_fn(&self) -> fn(&Self::Action) -> u64 {
             test_action_cost
@@ -6988,6 +7143,227 @@ mod tests {
     }
 
     #[test]
+    fn whole_tree_import_certifies_evicted_replay_prefixes_with_or_without_source_snapshots() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let actions = vec![
+            TestAction::new(1, 1),
+            TestAction::new(2, 1),
+            TestAction::new(3, 1),
+        ];
+        let source = TestArchiveReport {
+            entries: vec![
+                ArchiveEntryReport {
+                    id: 0,
+                    parent_id: None,
+                    created_execution: 0,
+                    input: Input::default(),
+                    key: TestKey(0),
+                    milestones: (),
+                    snapshot_identity_sha256: None,
+                    selector: None,
+                },
+                ArchiveEntryReport {
+                    id: 1,
+                    parent_id: Some(0),
+                    created_execution: 1,
+                    input: Input {
+                        actions: actions.clone(),
+                    },
+                    key: TestKey(6),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&6).unwrap()),
+                    selector: None,
+                },
+            ],
+            marker: 0,
+        };
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+        let result = (|| -> Result<(), Box<dyn Error>> {
+            for checkpoint in [
+                None,
+                Some(SnapshotCheckpoint {
+                    format: workload.checkpoint_format().to_owned(),
+                    entries: vec![SnapshotCheckpointEntry { id: 1, snapshot: 6 }],
+                }),
+            ] {
+                let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+                core.archive.set_memory_budget(usize::MAX, |_| 1);
+                let mut target = TestTarget::default();
+                let counts =
+                    core.import_tree(&workload, &(), &mut target, &source, checkpoint.as_ref())?;
+                assert_eq!(counts.imported, 1);
+                core.archive.set_memory_budget(
+                    core.archive.history_memory_bytes().saturating_add(1),
+                    |_| 1,
+                );
+                for _ in 0..8 {
+                    core.archive.maintain_memory_budget()?;
+                    if core.archive.snapshot_evictions() > 0 {
+                        break;
+                    }
+                }
+                let child = core.archive.index_of_id(1).unwrap();
+                assert!(
+                    core.archive.entries[child].snapshot.is_none(),
+                    "evictions={}, resident={}, history={}, snapshots={}",
+                    core.archive.snapshot_evictions(),
+                    core.archive.resident_memory_bytes(),
+                    core.archive.history_memory_bytes(),
+                    core.archive.resident_snapshot_count(),
+                );
+                let (_, replay, certificates, pin) = core.archive.pin_job_origin(child)?;
+                assert_eq!(replay, actions);
+                assert_eq!(
+                    certificates,
+                    vec![Some([1; 32]), Some([3; 32]), Some([6; 32])]
+                );
+                core.archive.unpin_job_origin(pin);
+            }
+            let mut conflicting_source = source.clone();
+            conflicting_source.entries[1].snapshot_identity_sha256 =
+                Some(workload.snapshot_identity_sha256(&7)?);
+            let conflicting_checkpoint = SnapshotCheckpoint {
+                format: workload.checkpoint_format().to_owned(),
+                entries: vec![SnapshotCheckpointEntry { id: 1, snapshot: 7 }],
+            };
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.archive.set_memory_budget(usize::MAX, |_| 1);
+            let mut target = TestTarget::default();
+            let error = core
+                .import_tree(
+                    &workload,
+                    &(),
+                    &mut target,
+                    &conflicting_source,
+                    Some(&conflicting_checkpoint),
+                )
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("differs from its reconstructed endpoint"),
+                "{error}"
+            );
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.set(true));
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let missing = core
+                .import_tree(&workload, &(), &mut target, &source, None)
+                .unwrap_err()
+                .to_string();
+            OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.set(false));
+            assert!(
+                missing.contains("lacks an action-prefix certificate"),
+                "{missing}"
+            );
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            Ok(())
+        })();
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+        result.unwrap();
+    }
+
+    #[test]
+    fn whole_tree_import_rejects_mismatched_source_snapshot_without_checkpoint() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let source = TestArchiveReport {
+            entries: vec![
+                ArchiveEntryReport {
+                    id: 0,
+                    parent_id: None,
+                    created_execution: 0,
+                    input: Input::default(),
+                    key: TestKey(0),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&0).unwrap()),
+                    selector: None,
+                },
+                ArchiveEntryReport {
+                    id: 1,
+                    parent_id: Some(0),
+                    created_execution: 1,
+                    input: Input {
+                        actions: vec![TestAction::new(1, 1), TestAction::new(2, 1)],
+                    },
+                    key: TestKey(3),
+                    milestones: (),
+                    snapshot_identity_sha256: Some(workload.snapshot_identity_sha256(&3).unwrap()),
+                    selector: None,
+                },
+            ],
+            marker: 9,
+        };
+        for (entry, conflicting_value) in [(1, 4), (0, 1)] {
+            let mut conflicting = source.clone();
+            conflicting.entries[entry].snapshot_identity_sha256 = Some(
+                workload
+                    .snapshot_identity_sha256(&conflicting_value)
+                    .unwrap(),
+            );
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            let mut target = TestTarget::default();
+            let error = core
+                .import_tree(&workload, &(), &mut target, &conflicting, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("source entry digest"), "{error}");
+            assert_eq!(core.archive.entries.len(), 1);
+            assert_eq!(core.archive.input_index_nodes(), 1);
+            assert_eq!(core.evidence, 0);
+        }
+    }
+
+    #[test]
+    fn certified_admission_rejects_a_missing_prefix_before_archiving() {
+        let (workload, _, mut core, _) = test_core();
+        let first = TestAction::new(1, 1);
+        let second = TestAction::new(2, 1);
+        let result = CampaignJobResult::<TestWorkload> {
+            preparation_failure: None,
+            actions: vec![
+                CampaignActionResult {
+                    action: first,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: None,
+                },
+                CampaignActionResult {
+                    action: second,
+                    observations: Vec::new(),
+                    milestones: (),
+                    outcome: Outcome::default(),
+                    candidate: Some(CampaignCandidate {
+                        key: TestKey(3),
+                        viable: true,
+                        snapshot: 3,
+                    }),
+                },
+            ],
+        };
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+        let error = core
+            .admit_job(&workload, 0, result)
+            .unwrap_err()
+            .to_string();
+        CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+        assert!(
+            error.contains("lacks an action-prefix certificate"),
+            "{error}"
+        );
+        assert_eq!(core.archive.entries.len(), 1);
+        assert_eq!(core.archive.input_index_nodes(), 1);
+    }
+
+    #[test]
     fn recorded_splice_tail_validates_strategy_and_bounds() {
         let (_game, _run, _core, _target) = test_core();
         let action = TestAction::new(0x01, 4);
@@ -8300,12 +8676,94 @@ mod tests {
     fn multi_window_reservations_each_allow_the_full_skip_limit() {
         let mut schedule = super::ReplaySkipSchedule::default();
         for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
-            schedule.accept_skip(0, 2, 2).unwrap();
+            schedule.accept_skip(0, 0, 2, 2).unwrap();
         }
         for _ in 0..super::CONSECUTIVE_SKIP_LIMIT {
-            schedule.accept_skip(1, 2, 2).unwrap();
+            schedule.accept_skip(1, 0, 2, 2).unwrap();
         }
-        assert!(schedule.accept_skip(1, 2, 2).is_err());
+        assert!(schedule.accept_skip(1, 0, 2, 2).is_err());
+    }
+
+    #[test]
+    fn skips_follow_the_admission_that_opens_their_window_slot() {
+        let mut schedule = super::ReplaySkipSchedule::default();
+        schedule.accept_skip(0, 0, 2, 4).unwrap();
+        schedule.accept_skip(1, 0, 2, 4).unwrap();
+        schedule.admit(1);
+        assert!(schedule.accept_skip(1, 1, 2, 4).is_err());
+        schedule.accept_skip(2, 1, 2, 4).unwrap();
+        schedule.admit(0);
+        schedule.accept_skip(3, 2, 2, 4).unwrap();
+
+        let mut curtailed = super::ReplaySkipSchedule::default();
+        curtailed.accept_skip(0, 0, 2, 1).unwrap();
+        assert!(curtailed.accept_skip(0, 1, 2, 1).is_err());
+
+        for (reservation, admissions) in [(0, 1), (1, 1), (2, 0), (2, 2), (3, 1)] {
+            let mut schedule = super::ReplaySkipSchedule::default();
+            assert!(schedule.accept_skip(reservation, admissions, 2, 4).is_err());
+        }
+    }
+
+    #[test]
+    fn replay_rejects_a_skip_moved_past_a_later_reservations_admission() {
+        let mut config = three_worker_config();
+        config.campaign_seed = 1;
+        config.workers = 1;
+        config.window = 2;
+        config.execution_budget = 2;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut stream = Vec::new();
+        run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        )
+        .expect("source campaign");
+        let jobs = job_lines(&stream);
+        let [(first_index, first), (second_index, second)] = jobs.as_slice() else {
+            panic!("source campaign did not admit exactly two jobs");
+        };
+        assert_eq!((first.reservation, second.reservation), (1, 0));
+        assert_eq!((first.parent_id, second.parent_id), (0, 0));
+        assert!(
+            first
+                .decisions
+                .iter()
+                .any(|decision| matches!(decision, CampaignAdmissionDecision::Retained { .. }))
+        );
+        replay_campaign_checkpointed(&workload, &stream, None, None)
+            .expect("original campaign replays");
+        let mut lines = std::str::from_utf8(&stream)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        let first_value: serde_json::Value = serde_json::from_str(&lines[*first_index]).unwrap();
+        let skip = serde_json::json!({
+            "event": "skip",
+            "reservation": 0,
+            "parent_id": 0,
+            "mutation_seed": first.mutation_seed,
+            "mixture_weight": first.mixture_weight,
+            "splice_weight": first.splice_weight,
+            "selector": first_value["selector"],
+            "suffix_limit": 1,
+        });
+        lines.insert(*second_index, serde_json::to_string(&skip).unwrap());
+        let mut end: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+        end["skips"] = serde_json::json!(1);
+        *lines.last_mut().unwrap() = serde_json::to_string(&end).unwrap();
+        let changed = format!("{}\n", lines.join("\n"));
+        let error = replay_campaign_checkpointed(&workload, changed.as_bytes(), None, None)
+            .expect_err("replay accepted impossible skip after later reservation admission")
+            .to_string();
+        assert!(error.contains("selection boundary"), "{error}");
     }
 
     #[test]

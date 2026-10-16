@@ -46,6 +46,7 @@ pub struct JobSpec<G: CampaignTypes + ?Sized> {
     pub planned_finish: u64,
     pub snapshot: Arc<G::Snapshot>,
     pub replay: Vec<G::Action>,
+    pub replay_certificates: Vec<Option<[u8; 32]>>,
     pub parent_milestones: G::Milestones,
     pub suffix: Vec<G::Action>,
 }
@@ -72,17 +73,18 @@ pub fn run_job<G: Workload>(
     job: &JobSpec<G>,
 ) -> Result<JobOutcome<G>, Box<dyn Error>> {
     let work_before = workload.execution_work(target);
-    let result = workload.execute_job(
+    let result = workload.execute_job_certified(
         &config.run,
         target,
         &job.snapshot,
         &job.replay,
+        &job.replay_certificates,
         job.parent_milestones,
         &job.suffix,
         config.retention,
         config.stop_rollout_on_objective,
     )?;
-    let result_sha256 = workload.result_sha256(&result)?;
+    let result_sha256 = workload.certified_result_sha256(&result, target)?;
     let execution_work =
         execution_work_delta(work_before, workload.execution_work(target), "worker")?;
     Ok(JobOutcome {
@@ -317,6 +319,21 @@ where
             admissions: None,
         };
         for job in in_flight {
+            let parent_index = coordinator
+                .core
+                .archive
+                .index_of_id(job.pending.parent_id)
+                .ok_or("search checkpoint in-flight job names a missing parent entry")?;
+            let (_, expected_replay, expected_certificates) =
+                coordinator.core.archive.job_origin(parent_index)?;
+            if job.spec.replay != expected_replay
+                || job.spec.replay_certificates != expected_certificates
+            {
+                return Err(
+                    "search checkpoint in-flight replay certificate path differs from its archive"
+                        .into(),
+                );
+            }
             let index = coordinator
                 .core
                 .archive
@@ -338,6 +355,7 @@ where
                     planned_finish: job.pending.planned_finish,
                     snapshot,
                     replay: job.spec.replay.clone(),
+                    replay_certificates: job.spec.replay_certificates.clone(),
                     parent_milestones: job.spec.parent_milestones,
                     suffix: job.spec.suffix.clone(),
                 },
@@ -1015,7 +1033,8 @@ where
             });
             *reserved = reserved.saturating_add(1);
             core.archive.pin_metadata(parent_id)?;
-            let (snapshot, replay, snapshot_id) = core.archive.pin_job_origin(parent_index)?;
+            let (snapshot, replay, replay_certificates, snapshot_id) =
+                core.archive.pin_job_origin(parent_index)?;
             let entry = &core.archive.entries[parent_index];
             return Ok(Some((
                 JobSpec {
@@ -1023,6 +1042,7 @@ where
                     planned_finish: 0,
                     snapshot,
                     replay,
+                    replay_certificates,
                     parent_milestones: entry.milestones,
                     suffix,
                 },
@@ -1191,7 +1211,8 @@ where
             *reserved = reserved.saturating_add(1);
             core.start_suffix_job(parent_id, suffix_limit);
             core.archive.pin_metadata(parent_id)?;
-            let (snapshot, replay, snapshot_id) = core.archive.pin_job_origin(parent_index)?;
+            let (snapshot, replay, replay_certificates, snapshot_id) =
+                core.archive.pin_job_origin(parent_index)?;
             let entry = &core.archive.entries[parent_index];
             return Ok(Some((
                 JobSpec {
@@ -1199,6 +1220,7 @@ where
                     planned_finish: 0,
                     snapshot,
                     replay,
+                    replay_certificates,
                     parent_milestones: entry.milestones,
                     suffix,
                 },

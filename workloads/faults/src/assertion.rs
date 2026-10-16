@@ -141,7 +141,41 @@ impl Assertions {
 )]
 pub struct AssertionSet {
     pub count: u32,
+    #[serde(with = "digest_serde")]
     pub digest: u128,
+}
+
+mod digest_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S>(digest: &u128, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&digest.to_string())
+        } else {
+            digest.serialize(serializer)
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<u128, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        if deserializer.is_human_readable() {
+            let decimal = String::deserialize(deserializer)?;
+            let digest: u128 = decimal.parse().map_err(serde::de::Error::custom)?;
+            if digest.to_string() != decimal {
+                return Err(serde::de::Error::custom(
+                    "assertion digest is not canonical decimal",
+                ));
+            }
+            Ok(digest)
+        } else {
+            u128::deserialize(deserializer)
+        }
+    }
 }
 
 impl AssertionSet {

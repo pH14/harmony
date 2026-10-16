@@ -50,12 +50,31 @@ executable mappings. The exact conventional x86-64 kernel-emulated `[vsyscall]`
 mapping is represented by its shape and kernel release. This captures resident
 `/etc/ld.so.preload` libraries and injected libraries whose constructor clears
 `LD_PRELOAD` before admission. Writable library initializers, RELRO/GOT values,
-symbol bindings, constructor effects, later loads or unloads, and changes to
-executable memory after measurement remain outside the Linux identity. On
+symbol bindings, constructor effects, and changes to executable memory after
+measurement remain outside the Linux identity. On
 macOS, the loaded identity combines the main code-directory hash with the
 mapped executable segments of dyld-listed images, including dylibs and dyld
 itself. macOS library data remains outside that identity. This self-measurement
 is not an adversarial attestation.
+
+A loaded-image digest by itself cannot remember a library that was loaded,
+called, and unloaded before the next digest. In-process sessions, UML sessions,
+and session workers capture the process loader's cumulative generation before
+image admission and require it to stay unchanged across operations. Linux uses
+the loader's addition and removal counters; macOS uses dyld image callbacks.
+The check occurs again after a service handler runs and before its answer
+reaches the guest. A changed or unavailable generation fails the session even
+when the current loaded-image digest has returned to its original value. This
+guard covers loader-managed image churn; it does not certify writable library
+initializers or arbitrary changes to already mapped code.
+Cache publication checks the generation after the index callback. If it
+changed, the index revokes the committed entry and any descendants before the
+session returns an error. Another thread can observe a published entry before
+that check completes, so this guard is not an atomic cross-thread publication
+fence; each consuming session checks its own generation before using the cache.
+`Session::image_identity()` returns the identifier admitted at construction;
+artifact and guest-operation boundaries perform the live generation checks.
+
 A nonempty `identity_tag` adds a workload domain; it does not replace those
 setup inputs.
 
@@ -81,6 +100,13 @@ A package that answers its own opaque service requests installs a resolver with
 carries the package's `ServiceConfig` into the branch so the control server
 builds that handler. The handler is built before the live VM changes, so an
 uninstalled configuration fails the branch and leaves the session untouched.
+An unrecorded custom answer now surfaces as `StopReason::Decision`. The package
+passes an encoded answer to `Session::run` with a `Resolution`; the control
+server records it before guest delivery. `SearchSession::run_resolving` carries
+the same operation through worker and User-mode Linux sessions for fault search.
+`branch_with_service` also accepts an optional recorded coverage schedule, so
+an action's quantum is selected from input bytes at each SDK coverage exchange
+without writing one answer per callback.
 
 The same call carries the host-plane effects the run after the branch applies,
 each against the virtual moment it lands at, so a package stages a machine-level
@@ -157,9 +183,10 @@ the same local number. `CacheIndex` is the interface workers use:
 |---|---|
 | `lookup(namespace, key)` | a lease on the longest cached prefix |
 | `extent(len)` | a writable region, after evicting entries to fit the budget |
-| `publish(namespace, key, parent, extent, cost)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
+| `publish(namespace, key, parent, extent, target_commitment, cost)` | a lease on the committed entry; an equal-target duplicate keeps the first entry and frees the new extent, while a divergent duplicate fails without returning a lease |
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
+| `revoke(lease)` | removes the entry and descendants, invalidating any held leases after a failed post-publication guard |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
 | `forget_store(holder)` | removes a finished worker's store from the budget |
 
@@ -171,6 +198,24 @@ that returned to the setup content, and the sparse sidecar, with a SHA-256
 checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
+
+The target commitment identifies the resolved state, not the chosen delta
+layout. For VMM snapshots, it binds the cache image prefix to the sparse
+sidecar with only the established logical CPU-state projections: init-valued
+x86 XSAVE restore presence and the Arm virtual timer's captured counter.
+Every other sidecar field stays in the commitment, and the original sidecar
+bytes remain in the extent for restore. Sparse delta export derives the
+sidecar's target-pages digest from all target pages that differ from setup,
+independently of the selected parent;
+the sidecar also carries the setup RAM digest, canonical state suffix, VM
+state, SDK state, policy and control state. Publication rejects a sidecar
+without that target-pages digest. For UML checkpoints, the commitment binds
+the cache identity to the checkpoint digest, which covers logical memory and
+bridge/service state. The cache compares commitments while holding its index
+lock, before returning a duplicate lease.
+On a divergent publication, the cache error carries the namespace, key,
+and both logical target commitments so the conflicting executions can be
+identified without accepting either as a duplicate.
 
 Eviction takes, among entries with no lease and no children, the one with the
 lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost
@@ -263,9 +308,14 @@ recheck the same admitted processor and host identity. A publish exports the
 checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
-or inject interrupts. `store_bytes` is the allocated size of every held
-checkpoint, and telemetry reports the count and host time of captures,
-restores, fresh restores and imports.
+or inject interrupts. If handler or payload validation rejects a branch after
+its checkpoint has been restored, the client abandons the guest so a caller
+cannot continue from the rewound state after receiving an error. The client
+also checks the active service handler around branch factory calls and cached
+imports, abandoning the guest if a factory, clone, reseed, or restore changes
+the live handler through shared state. `store_bytes`
+is the allocated size of every held checkpoint, and telemetry reports the
+count and host time of captures, restores, fresh restores and imports.
 
 `SearchSession` is the set of calls a search worker makes, implemented by
 `Session`, `WorkerSession` and `UmlSession`.

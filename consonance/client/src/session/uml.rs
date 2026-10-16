@@ -6,9 +6,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use control_proto::{CrashInfo, CrashKind, EventRef, Moment, SnapId, StopReason};
+use control_proto::{
+    CrashInfo, CrashKind, DecisionId, EventRef, Moment, Resolution, SnapId, StopReason,
+};
 use environment::{
-    channel::Effect,
+    channel::{CoverageSchedule, Effect, HandlerFingerprint},
     input_spec::{ServiceConfig, ServiceFactory},
 };
 use sha2::{Digest, Sha256};
@@ -32,6 +34,15 @@ fn cache_sidecar(identity: [u8; 32], raw: &[u8]) -> Result<Vec<u8>, Box<dyn Erro
     sidecar.extend_from_slice(&identity);
     sidecar.extend_from_slice(raw);
     Ok(sidecar)
+}
+
+fn target_commitment(identity: [u8; 32], target: &Checkpoint) -> Result<[u8; 32], Box<dyn Error>> {
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-cache-uml-target-v1\0");
+    digest.update(CACHE_SIDECAR_MAGIC);
+    digest.update(identity);
+    digest.update(target.digest()?);
+    Ok(digest.finalize().into())
 }
 
 fn checked_cache_sidecar(identity: [u8; 32], sidecar: &[u8]) -> Result<&[u8], Box<dyn Error>> {
@@ -99,6 +110,7 @@ struct Counters {
 
 pub struct UmlSession {
     session: Option<uml::Session>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
     profile: VerifiedProfile,
     launch: Launch,
     host: uml::HostIdentity,
@@ -163,7 +175,8 @@ impl UmlSession {
             )
             .into());
         }
-        let loaded_executable = crate::image_identity::loaded_executable_identity_self()?;
+        let (loaded_executable, loaded_image_guard) =
+            crate::image_identity::LoadedImageGuard::identity()?;
         let root_identity = root_identity(config, &profile, &host, &initramfs, &loaded_executable);
         let checkpoints = Checkpoints::new();
         let mut session = uml::Session::spawn(
@@ -177,6 +190,7 @@ impl UmlSession {
             config.seed,
             handler(&factory, &ServiceConfig::default())?,
             Vec::new(),
+            None,
         )?;
         let moment = match session.run_to_snapshot_point(config.setup_budget) {
             Ok(Stop::SnapshotPoint(moment)) => moment,
@@ -197,6 +211,7 @@ impl UmlSession {
         };
         let mut this = Self {
             session: Some(session),
+            loaded_image_guard,
             profile,
             launch,
             host,
@@ -223,10 +238,12 @@ impl UmlSession {
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
         cache_domain.update(setup_checkpoint.digest()?);
         this.cache_domain = cache_domain.finalize().into();
+        this.loaded_image_guard.check()?;
         Ok(this)
     }
 
     fn live(&mut self) -> Result<&mut uml::Session, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
         }
@@ -235,7 +252,35 @@ impl UmlSession {
             .ok_or_else(|| SessionError::Control("the guest is not running".into()).into())
     }
 
+    fn live_service_fingerprint(&mut self) -> Result<HandlerFingerprint, Box<dyn Error>> {
+        let result = self.live()?.service_handler_fingerprint();
+        result.map_err(|error| self.abandon(error))
+    }
+
+    fn import_service_fingerprint(&mut self) -> Result<Option<HandlerFingerprint>, Box<dyn Error>> {
+        if self.abandoned {
+            return Err(SessionError::Abandoned.into());
+        }
+        if self.session.is_some() {
+            self.live_service_fingerprint().map(Some)
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn verify_live_service_fingerprint(
+        &mut self,
+        before: Option<&HandlerFingerprint>,
+    ) -> Result<(), Box<dyn Error>> {
+        if let Some(before) = before {
+            let result = self.live()?.verify_service_handler_unchanged(before);
+            result.map_err(|error| self.abandon(error))?;
+        }
+        Ok(())
+    }
+
     fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let begun = started();
         let checkpoint = self
             .live()?
@@ -246,10 +291,12 @@ impl UmlSession {
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
+        self.loaded_image_guard.check()?;
         Ok((id, at))
     }
 
     fn restore(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
         }
@@ -269,6 +316,7 @@ impl UmlSession {
                 .restore(checkpoint)
                 .map_err(|error| self.abandon(error))?;
             self.counters.restores.since(begun);
+            self.loaded_image_guard.check()?;
             return Ok(());
         }
         self.session = None;
@@ -282,6 +330,7 @@ impl UmlSession {
         .map_err(|error| self.abandon(error))?;
         self.session = Some(session);
         self.counters.fresh_restores.since(begun);
+        self.loaded_image_guard.check()?;
         Ok(())
     }
 
@@ -308,6 +357,42 @@ impl UmlSession {
                 detail: format!("{terminal_reason:?}\n{detail}").into_bytes(),
             },
         })
+    }
+
+    fn finish_run(
+        &mut self,
+        result: Result<Stop, uml::SessionError>,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let latest = self.session.as_ref().map_or(0, uml::Session::moment);
+        let outcome = match result {
+            Ok(Stop::Deadline(moment)) => Ok(StopReason::Deadline {
+                vtime: Moment(moment),
+            }),
+            Ok(Stop::Decision { moment, question }) => {
+                let mut ctx = question.service().to_le_bytes().to_vec();
+                ctx.extend(question.payload());
+                Ok(StopReason::Decision {
+                    vtime: Moment(moment),
+                    id: DecisionId(question.request_id()),
+                    ctx,
+                })
+            }
+            Ok(Stop::Violation { moment, id, data }) => Ok(StopReason::Assertion {
+                vtime: Moment(moment),
+                ev: EventRef { id, data },
+            }),
+            Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
+                vtime: Moment(moment),
+            }),
+            Ok(Stop::Closed) => self.crash(latest),
+            Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
+                "the guest stopped at {stop:?}"
+            )))),
+            Err(error @ uml::SessionError::BadResolution(_)) => Err(error.into()),
+            Err(error) => Err(self.abandon(error)),
+        };
+        self.loaded_image_guard.check()?;
+        outcome
     }
 
     fn abandon(&mut self, error: uml::SessionError) -> Box<dyn Error> {
@@ -365,6 +450,7 @@ impl SearchSession for UmlSession {
     }
 
     fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let state = self.live()?.bridge_state_digest()?;
         let setup = self
             .snapshots
@@ -375,10 +461,13 @@ impl SearchSession for UmlSession {
         digest.update(b"harmony-uml-cache-identity-v2\0");
         digest.update(setup);
         digest.update(state);
-        Ok(digest.finalize().into())
+        let identity = digest.finalize().into();
+        self.loaded_image_guard.check()?;
+        Ok(identity)
     }
 
     fn root_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         Ok(self.root_identity)
     }
 
@@ -388,10 +477,12 @@ impl SearchSession for UmlSession {
         namespace: Namespace,
         target: SnapId,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let target = self
             .snapshots
             .get(&target)
             .ok_or_else(|| SessionError::Control("unknown root snapshot".into()))?;
+        let target_commitment = target_commitment(self.root_identity, target)?;
         let sidecar = cache_sidecar(self.root_identity, &target.sidecar()?)?;
         let extent = self
             .checkpoints
@@ -402,7 +493,9 @@ impl SearchSession for UmlSession {
                 write_extent(extent.bytes_mut(), pages, &[], &sidecar)?;
                 Ok(extent)
             })??;
-        Ok(index.publish(namespace, b"root", None, extent, 1)?)
+        self.loaded_image_guard.check()?;
+        let lease = index.publish(namespace, b"root", None, extent, target_commitment, 1)?;
+        Ok(self.loaded_image_guard.check_published(index, lease)?)
     }
 
     fn import_root(
@@ -410,6 +503,7 @@ impl SearchSession for UmlSession {
         index: &dyn CacheIndex,
         lease: &Lease,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let chain = index.chain(lease)?;
         if chain.len() != 1 {
             return Err("root snapshot must have exactly one extent".into());
@@ -418,17 +512,21 @@ impl SearchSession for UmlSession {
         let deltas = [delta];
         let resolved = resolve(&deltas)?;
         let sidecar = checked_cache_sidecar(self.root_identity, resolved.sidecar)?;
+        let before = self.import_service_fingerprint()?;
         let near = self
             .snapshots
             .get(&self.setup.0)
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
-        let checkpoint =
-            self.checkpoints
-                .import_full(near, &resolved.pages, sidecar, &self.factory)?;
+        let imported = self
+            .checkpoints
+            .import_full(near, &resolved.pages, sidecar, &self.factory);
+        self.verify_live_service_fingerprint(before.as_ref())?;
+        let checkpoint = imported?;
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
+        self.loaded_image_guard.check()?;
         Ok((id, at))
     }
 
@@ -472,6 +570,7 @@ impl SearchSession for UmlSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let checkpoint = |id: SnapId| -> Result<&Checkpoint, Box<dyn Error>> {
             self.snapshots
@@ -481,6 +580,7 @@ impl SearchSession for UmlSession {
         let setup = checkpoint(self.setup.0)?;
         let parent_checkpoint = parent.map(|(id, _)| checkpoint(id)).transpose()?;
         let target_checkpoint = checkpoint(target)?;
+        let target_commitment = target_commitment(self.cache_domain, target_checkpoint)?;
         let sidecar = cache_sidecar(self.cache_domain, &target_checkpoint.sidecar()?)?;
         let extent = self.checkpoints.delta(
             setup,
@@ -496,7 +596,16 @@ impl SearchSession for UmlSession {
                 Ok(extent)
             },
         )??;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
+        self.loaded_image_guard.check()?;
+        let lease = index.publish(
+            namespace,
+            key,
+            parent.map(|(_, lease)| lease),
+            extent,
+            target_commitment,
+            cost,
+        )?;
+        Ok(self.loaded_image_guard.check_published(index, lease)?)
     }
 
     fn import_cached(
@@ -505,6 +614,7 @@ impl SearchSession for UmlSession {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         let begun = started();
         let chain = index.chain(lease)?;
         let mut deltas = chain
@@ -515,23 +625,27 @@ impl SearchSession for UmlSession {
             delta.sidecar = checked_cache_sidecar(self.cache_domain, delta.sidecar)?;
         }
         let resolved = resolve(&deltas)?;
+        let before = self.import_service_fingerprint()?;
         let setup = self
             .snapshots
             .get(&self.setup.0)
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
         let near = self.snapshots.get(&near).unwrap_or(setup);
-        let checkpoint = self.checkpoints.import(
+        let imported = self.checkpoints.import(
             setup,
             near,
             &resolved.pages,
             resolved.sidecar,
             &self.factory,
-        )?;
+        );
+        self.verify_live_service_fingerprint(before.as_ref())?;
+        let checkpoint = imported?;
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
         self.counters.imports.since(begun);
+        self.loaded_image_guard.check()?;
         Ok((id, at))
     }
 
@@ -540,6 +654,7 @@ impl SearchSession for UmlSession {
     }
 
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         self.snapshots.remove(&snapshot);
         Ok(())
     }
@@ -550,40 +665,46 @@ impl SearchSession for UmlSession {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         if !effects.is_empty() {
             return Err(SessionError::Control(
                 "User-mode Linux cannot apply host memory writes or interrupts".into(),
             )
             .into());
         }
-        let handler = handler(&self.factory, &config)?;
+        let before = self.live_service_fingerprint()?;
+        let prepared = handler(&self.factory, &config);
+        self.verify_live_service_fingerprint(Some(&before))?;
+        let handler = prepared?;
         self.restore(snapshot)?;
         let seed = self.seed;
-        self.live()?.branch(seed, handler, payloads)?;
+        self.live()?
+            .branch(seed, handler, payloads, coverage_schedule)
+            .map_err(|error| self.abandon(error))?;
+        self.loaded_image_guard.check()?;
         Ok(())
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         let result = self.live()?.run_until(deadline);
-        let latest = self.session.as_ref().map_or(0, uml::Session::moment);
-        match result {
-            Ok(Stop::Deadline(moment)) => Ok(StopReason::Deadline {
-                vtime: Moment(moment),
-            }),
-            Ok(Stop::Violation { moment, id, data }) => Ok(StopReason::Assertion {
-                vtime: Moment(moment),
-                ev: EventRef { id, data },
-            }),
-            Ok(Stop::Exhausted(moment)) => Ok(StopReason::Quiescent {
-                vtime: Moment(moment),
-            }),
-            Ok(Stop::Closed) => self.crash(latest),
-            Ok(stop) => Err(self.abandon(uml::SessionError::Protocol(format!(
-                "the guest stopped at {stop:?}"
-            )))),
-            Err(error) => Err(self.abandon(error)),
-        }
+        self.finish_run(result)
+    }
+
+    fn run_resolving(
+        &mut self,
+        deadline: u64,
+        resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let result = self.live()?.resolve_and_run(
+            deadline,
+            resolution.vtime.0,
+            resolution.service,
+            resolution.id.0,
+            &resolution.answer.0,
+        );
+        self.finish_run(result)
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
@@ -591,6 +712,7 @@ impl SearchSession for UmlSession {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        self.loaded_image_guard.check()?;
         Ok(self
             .session
             .as_ref()
@@ -679,6 +801,7 @@ mod tests {
     fn unbooted_session() -> UmlSession {
         UmlSession {
             session: None,
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::capture().unwrap(),
             profile: profile(),
             launch: Launch::new(PathBuf::new()),
             host: host(),
@@ -725,7 +848,7 @@ mod tests {
             let mut socket = unsafe { std::fs::File::from_raw_fd(3) };
             socket.write_all(&100_u64.to_le_bytes()).unwrap();
             let mut control = [0_u8; 16];
-            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            socket.read_exact(&mut control).unwrap();
             assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
             std::thread::sleep(Duration::from_secs(30));
             return;
@@ -775,7 +898,7 @@ mod tests {
             memory.set_len(4 * 4096).unwrap();
             socket.write_all(&100_u64.to_le_bytes()).unwrap();
             let mut control = [0_u8; 16];
-            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            socket.read_exact(&mut control).unwrap();
             assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
             let ack = |command: u32, result: i64| {
                 let mut frame = [0_u8; 16];
@@ -828,13 +951,315 @@ mod tests {
         assert!(session.abandoned());
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn rejected_service_branch_cannot_leave_a_usable_rewound_uml_session() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+
+        if std::env::var_os("HARMONY_UML_FAILED_BRANCH_CHILD").is_some() {
+            // SAFETY: the UML launcher passes distinct owned bridge and memory descriptors.
+            let (mut socket, memory) =
+                unsafe { (std::fs::File::from_raw_fd(3), std::fs::File::from_raw_fd(4)) };
+            memory.set_len(4 * 4096).unwrap();
+            socket.write_all(&100_u64.to_le_bytes()).unwrap();
+            let ack = |command: u32, result: i64| {
+                let mut frame = [0_u8; 16];
+                frame[..4].copy_from_slice(&0x3143_5548_u32.to_le_bytes());
+                frame[4..8].copy_from_slice(&command.to_le_bytes());
+                frame[8..].copy_from_slice(&result.to_le_bytes());
+                frame
+            };
+            let mut control = [0_u8; 16];
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
+            socket.write_all(&ack(4, 1)).unwrap();
+            assert_eq!(socket.read(&mut control).unwrap(), 16);
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+            socket.write_all(&ack(1, 0)).unwrap();
+            for _ in 0..2 {
+                socket.read_exact(&mut control).unwrap();
+                assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 2);
+                socket.write_all(&ack(4, 1)).unwrap();
+                assert_eq!(socket.read(&mut control).unwrap(), 16);
+                assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+                socket.write_all(&ack(2, 0)).unwrap();
+            }
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::MAX;
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg("exec \"$0\" --exact session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session --nocapture")
+            .arg(std::env::current_exe().unwrap())
+            .env("HARMONY_UML_FAILED_BRANCH_CHILD", "1")
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut guest = uml::Session::start(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(2)),
+        )
+        .unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let setup = guest.capture(Capture::default()).unwrap();
+
+        let mut session = unbooted_session();
+        session.host = launch.host_identity().unwrap();
+        session.launch = launch;
+        session.checkpoints = checkpoints;
+        session.session = Some(guest);
+        session.snapshots.insert(SnapId(1), setup);
+        session.setup = (SnapId(1), 100);
+
+        let before_setup_branch = session.cache_identity().unwrap();
+        session
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
+            .unwrap();
+        let before_rejected_branch = session.cache_identity().unwrap();
+        assert_ne!(before_rejected_branch, before_setup_branch);
+
+        let error = session
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                vec![vec![0; environment::channel::MAX_CHANNEL_BYTES + 1]],
+                Vec::new(),
+                None,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("payload tape"), "{error}");
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .cache_identity()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        assert!(matches!(
+            session
+                .run_until(101)
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn service_factory_aliasing_the_live_handler_abandons_the_session() {
+        use std::io::{Read, Write};
+        use std::os::fd::FromRawFd;
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU8, Ordering},
+        };
+
+        use environment::channel::{
+            Answer, ChannelError, Question, ServiceHandler, ServiceResponse,
+        };
+
+        #[derive(Clone)]
+        struct AliasedHandler(Arc<AtomicU8>);
+
+        impl ServiceHandler for AliasedHandler {
+            fn identity(&self) -> &[u8] {
+                b"aliased-uml-handler"
+            }
+
+            fn configuration(&self) -> &[u8] {
+                &[]
+            }
+
+            fn respond(&mut self, _: u64, _: &Question) -> Result<ServiceResponse, ChannelError> {
+                Ok(ServiceResponse::Answered(Answer::Data(vec![
+                    self.0.load(Ordering::SeqCst),
+                ])))
+            }
+
+            fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+                Ok(vec![self.0.load(Ordering::SeqCst)])
+            }
+
+            fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+                let [value] = state else {
+                    return Err(ChannelError::Malformed);
+                };
+                self.0.store(*value, Ordering::SeqCst);
+                Ok(())
+            }
+
+            fn reseed(&mut self, seed: u64) {
+                self.0.store(seed as u8, Ordering::SeqCst);
+            }
+
+            fn clone_box(&self) -> Box<dyn ServiceHandler> {
+                Box::new(self.clone())
+            }
+        }
+
+        if std::env::var_os("HARMONY_UML_ALIASED_SERVICE_CHILD").is_some() {
+            // SAFETY: the UML launcher passes distinct owned bridge and memory descriptors.
+            let (mut socket, memory) =
+                unsafe { (std::fs::File::from_raw_fd(3), std::fs::File::from_raw_fd(4)) };
+            memory.set_len(4 * 4096).unwrap();
+            socket.write_all(&100_u64.to_le_bytes()).unwrap();
+            let ack = |command: u32, result: i64| {
+                let mut frame = [0_u8; 16];
+                frame[..4].copy_from_slice(&0x3143_5548_u32.to_le_bytes());
+                frame[4..8].copy_from_slice(&command.to_le_bytes());
+                frame[8..].copy_from_slice(&result.to_le_bytes());
+                frame
+            };
+            let mut control = [0_u8; 16];
+            socket.read_exact(&mut control).unwrap();
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 1);
+            socket.write_all(&ack(4, 1)).unwrap();
+            socket.read_exact(&mut control).unwrap();
+            assert_eq!(u32::from_le_bytes(control[4..8].try_into().unwrap()), 5);
+            socket.write_all(&ack(1, 0)).unwrap();
+            std::thread::sleep(Duration::from_secs(30));
+            return;
+        }
+
+        for operation in ["root", "cached", "branch"] {
+            let directory = tempfile::tempdir().unwrap();
+            let mut launch = Launch::new(directory.path().to_path_buf());
+            launch.bridge = Some(Bridge::new(7));
+            launch.wall_limit = Duration::MAX;
+            let work = launch.work_directory().unwrap();
+            let mut command = Command::new("/bin/sh");
+            command
+                .arg("-c")
+                .arg("exec \"$0\" --exact session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session --nocapture")
+                .arg(std::env::current_exe().unwrap())
+                .env("HARMONY_UML_ALIASED_SERVICE_CHILD", "1")
+                .process_group(0);
+            let checkpoints = Checkpoints::new();
+            let mut guest = uml::Session::start(
+                command,
+                work,
+                &launch,
+                &checkpoints,
+                None,
+                Some(Duration::from_secs(2)),
+            )
+            .unwrap();
+            assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+            let old_state = Arc::new(AtomicU8::new(0));
+            guest
+                .branch(3, Box::new(AliasedHandler(old_state)), Vec::new(), None)
+                .unwrap();
+            let setup = guest.capture(Capture::default()).unwrap();
+
+            let mut session = unbooted_session();
+            session.host = launch.host_identity().unwrap();
+            session.launch = launch;
+            session.checkpoints = checkpoints;
+            session.session = Some(guest);
+            session.snapshots.insert(SnapId(1), setup);
+            session.setup = (SnapId(1), 100);
+            let index = LocalIndex::new(1 << 20);
+            let namespace = Namespace::new(&[b"alias"]);
+            let lease = match operation {
+                "root" => Some(session.publish_root(&index, namespace, SnapId(1)).unwrap()),
+                "cached" => Some(
+                    session
+                        .publish_snapshot(&index, namespace, b"saved", None, SnapId(1), 1)
+                        .unwrap(),
+                ),
+                _ => None,
+            };
+
+            let live_state = Arc::new(AtomicU8::new(0));
+            session
+                .live()
+                .unwrap()
+                .branch(
+                    7,
+                    Box::new(AliasedHandler(Arc::clone(&live_state))),
+                    Vec::new(),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(live_state.load(Ordering::SeqCst), 7);
+            let factory_state = Arc::clone(&live_state);
+            let result = if operation == "branch" {
+                session.factory = Arc::new(move |_| {
+                    factory_state.store(9, Ordering::SeqCst);
+                    Err(ChannelError::Malformed)
+                });
+                session.branch_with_service(
+                    SnapId(1),
+                    ServiceConfig {
+                        identity: b"aliased-uml-handler".to_vec(),
+                        configuration: Vec::new(),
+                    },
+                    Vec::new(),
+                    Vec::new(),
+                    None,
+                )
+            } else {
+                session.factory = Arc::new(move |config| {
+                    if config.identity != b"aliased-uml-handler" || !config.configuration.is_empty()
+                    {
+                        return Err(ChannelError::Malformed);
+                    }
+                    Ok(Box::new(AliasedHandler(Arc::clone(&factory_state))))
+                });
+                let lease = lease.as_ref().unwrap();
+                if operation == "root" {
+                    session.import_root(&index, lease).map(|_| ())
+                } else {
+                    session.import_cached(&index, lease, SnapId(1)).map(|_| ())
+                }
+            };
+            assert!(result.is_err());
+            assert_eq!(
+                live_state.load(Ordering::SeqCst),
+                if operation == "branch" { 9 } else { 3 }
+            );
+            assert!(session.abandoned());
+            assert!(matches!(
+                session
+                    .cache_identity()
+                    .unwrap_err()
+                    .downcast_ref::<SessionError>(),
+                Some(SessionError::Abandoned)
+            ));
+        }
+    }
+
     fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
         let sidecar = cache_sidecar(identity, b"checkpoint").unwrap();
         let len = extent_len(0, 0, sidecar.len()).unwrap();
         let mut extent = index.extent(len).unwrap();
         write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
         index
-            .publish(Namespace::new(&[b"test"]), key, None, extent, 1)
+            .publish(Namespace::new(&[b"test"]), key, None, extent, [0; 32], 1)
             .unwrap()
     }
 

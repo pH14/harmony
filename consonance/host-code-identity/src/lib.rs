@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LoaderEpoch([u64; 2]);
+
 #[cfg(target_os = "linux")]
 mod linux {
     use std::ffi::OsString;
@@ -11,6 +14,8 @@ mod linux {
     use std::os::unix::fs::FileExt;
 
     use sha2::{Digest, Sha256};
+
+    use crate::LoaderEpoch;
 
     #[derive(PartialEq, Eq)]
     struct ExecutableMap {
@@ -255,6 +260,51 @@ mod linux {
             .ok_or_else(|| invalid("Linux loader has no mapped images"))
     }
 
+    struct EpochProbe {
+        value: Option<LoaderEpoch>,
+        error: Option<io::Error>,
+    }
+
+    extern "C" fn first_epoch(
+        info: *mut libc::dl_phdr_info,
+        size: usize,
+        data: *mut c_void,
+    ) -> libc::c_int {
+        // SAFETY: data points to the live probe supplied to the synchronous loader walk.
+        let probe = unsafe { &mut *data.cast::<EpochProbe>() };
+        if info.is_null() || size < size_of::<libc::dl_phdr_info>() {
+            probe.error = Some(invalid("Linux loader generation fields are unavailable"));
+            return 1;
+        }
+        // SAFETY: the callback record remains live, and size covers both generation fields.
+        let info = unsafe { &*info };
+        if info.dlpi_adds < info.dlpi_subs {
+            probe.error = Some(invalid("Linux loader generation is inconsistent"));
+        } else {
+            probe.value = Some(LoaderEpoch([info.dlpi_adds, info.dlpi_subs]));
+        }
+        1
+    }
+
+    pub fn loader_epoch() -> io::Result<LoaderEpoch> {
+        let mut probe = EpochProbe {
+            value: None,
+            error: None,
+        };
+        // SAFETY: the loader callback borrows probe only during this synchronous walk.
+        let result =
+            unsafe { libc::dl_iterate_phdr(Some(first_epoch), (&raw mut probe).cast::<c_void>()) };
+        if let Some(error) = probe.error {
+            return Err(error);
+        }
+        if result != 1 {
+            return Err(invalid("Linux loader generation walk was interrupted"));
+        }
+        probe
+            .value
+            .ok_or_else(|| invalid("Linux loader generation is empty"))
+    }
+
     fn mapped_range(image: &LoadedImage, header: ProgramHeader) -> io::Result<(u64, u64)> {
         let start = image
             .bias
@@ -497,9 +547,48 @@ mod linux {
     #[cfg(test)]
     mod tests {
         use super::{
-            ImageCollector, collect_image, copy_loaded_image, executable_maps,
-            finish_mapping_digest, mapped_range, read_only_coverage,
+            EpochProbe, ImageCollector, collect_image, copy_loaded_image, executable_maps,
+            finish_mapping_digest, first_epoch, mapped_range, read_only_coverage,
         };
+        use crate::LoaderEpoch;
+
+        #[test]
+        fn loader_epoch_callback_validates_generation_fields() {
+            // SAFETY: libc::dl_phdr_info contains only integer and pointer fields, for which
+            // zero is a valid initial value before the generation counters are assigned.
+            let mut info: libc::dl_phdr_info = unsafe { std::mem::zeroed() };
+            info.dlpi_adds = 3;
+            info.dlpi_subs = 1;
+            let mut probe = EpochProbe {
+                value: None,
+                error: None,
+            };
+            assert_eq!(
+                first_epoch(
+                    &raw mut info,
+                    std::mem::size_of::<libc::dl_phdr_info>(),
+                    (&raw mut probe).cast(),
+                ),
+                1
+            );
+            assert_eq!(probe.value, Some(LoaderEpoch([3, 1])));
+            assert!(probe.error.is_none());
+
+            probe.value = None;
+            assert_eq!(first_epoch(&raw mut info, 0, (&raw mut probe).cast()), 1);
+            assert!(probe.value.is_none());
+            assert!(probe.error.is_some());
+
+            probe.error = None;
+            info.dlpi_subs = 4;
+            first_epoch(
+                &raw mut info,
+                std::mem::size_of::<libc::dl_phdr_info>(),
+                (&raw mut probe).cast(),
+            );
+            assert!(probe.value.is_none());
+            assert!(probe.error.is_some());
+        }
 
         #[test]
         fn copied_loader_headers_and_generation_are_owned() {
@@ -616,7 +705,7 @@ mod linux {
 
 #[cfg(target_os = "linux")]
 pub use linux::{
-    loaded_executable_identity, loader_override_names, mapped_executable_sha256,
+    loaded_executable_identity, loader_epoch, loader_override_names, mapped_executable_sha256,
     reject_loader_overrides,
 };
 
@@ -631,6 +720,8 @@ mod macos {
     };
 
     use sha2::{Digest, Sha256};
+
+    use crate::LoaderEpoch;
 
     static IMAGE_EPOCH: AtomicU64 = AtomicU64::new(0);
     static CALLBACKS_ACTIVE: AtomicU64 = AtomicU64::new(0);
@@ -741,6 +832,11 @@ mod macos {
             epoch: start,
             images,
         })
+    }
+
+    pub fn loader_epoch() -> io::Result<LoaderEpoch> {
+        let current = generation()?;
+        Ok(LoaderEpoch([current.epoch, u64::from(current.images)]))
     }
 
     fn copy_mapped(address: usize, bytes: &mut [u8]) -> io::Result<()> {
@@ -1205,4 +1301,4 @@ mod macos {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos::{loaded_executable_identity, mapped_executable_sha256};
+pub use macos::{loaded_executable_identity, loader_epoch, mapped_executable_sha256};

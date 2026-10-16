@@ -17,10 +17,12 @@ use crate::virtual_time::LiveVirtualTimeTrace;
 use environment::{
     channel,
     input_spec::ServiceConfig,
-    sdk::{self, EventClass, ServiceOutcome},
+    sdk::{self, CoverageOutcome, EventClass, ServiceOutcome},
 };
 
 pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
+
+pub type HostOperationGuard = std::sync::Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalReason {
@@ -47,6 +49,17 @@ pub enum SdkStop {
         moment: u64,
         seq: u32,
         question: channel::Question,
+    },
+    CoverageDecision {
+        moment: u64,
+        seq: u32,
+        question: channel::Question,
+        ready: u32,
+    },
+    DeferredDoorbell {
+        moment: u64,
+        requested_len: u32,
+        request: Vec<u8>,
     },
 }
 
@@ -337,9 +350,11 @@ where
     checkpoint_hash_preimage_armed: bool,
     checkpoint_hash_preimage: Option<CheckpointHashPreimage>,
     pub(crate) idle_wake_vns: Option<u64>,
+    run_deadline_vns: Option<u64>,
     pub(crate) last_step_control_idle_landing_vns: Option<u64>,
     pub(crate) sdk: Option<SdkChannel>,
     pub(crate) pvclock: Option<PvclockChannel>,
+    host_operation_guard: Option<HostOperationGuard>,
 }
 
 enum RestoreValidation {
@@ -411,10 +426,23 @@ where
             checkpoint_hash_preimage_armed: false,
             checkpoint_hash_preimage: None,
             idle_wake_vns: None,
+            run_deadline_vns: None,
             last_step_control_idle_landing_vns: None,
             sdk: None,
             pvclock: None,
+            host_operation_guard: None,
         }
+    }
+
+    pub fn set_host_operation_guard(&mut self, guard: HostOperationGuard) {
+        self.host_operation_guard = Some(guard);
+    }
+
+    fn check_host_operation_guard(&self) -> Result<(), VmmError> {
+        if let Some(guard) = &self.host_operation_guard {
+            guard().map_err(VmmError::ContractViolation)?;
+        }
+        Ok(())
     }
 
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
@@ -1101,9 +1129,36 @@ where
     }
 
     pub fn step(&mut self) -> Result<Step, VmmError> {
+        self.step_until(None)
+    }
+
+    pub(crate) fn step_until(&mut self, deadline_vns: Option<u64>) -> Result<Step, VmmError> {
+        self.run_deadline_vns = deadline_vns;
+        let result = self.step_inner();
+        self.run_deadline_vns = None;
+        result
+    }
+
+    fn step_inner(&mut self) -> Result<Step, VmmError> {
         self.last_step_control_idle_landing_vns = None;
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
+        }
+        if let Some((moment, requested_len, request)) = self.pending_deferred_doorbell() {
+            if self
+                .run_deadline_vns
+                .is_some_and(|deadline| moment >= deadline)
+            {
+                return Ok(Step::SdkStop);
+            }
+            self.sdk
+                .as_mut()
+                .expect("deferred doorbell has SDK")
+                .pending_stop = None;
+            let step = self.finish_doorbell(moment, requested_len, &request)?;
+            self.pvclock_refresh()?;
+            <B::A as Vendor>::post_exit(self)?;
+            return Ok(step);
         }
         if let Some(reason) = self.terminal {
             return Ok(Step::Terminal(reason));
@@ -1913,9 +1968,30 @@ where
         answer: &channel::Answer,
     ) -> Result<(), channel::ChannelError> {
         if let Some(sdk) = &self.sdk {
-            let mut projected = sdk.env.clone();
+            let mut projected = sdk.env.checked_clone()?;
             projected.record_question(moment, question, answer.clone());
             projected.snapshot_state_with_binding_reserve()?;
+            if let Some(SdkStop::CoverageDecision { ready, .. }) = &sdk.pending_stop {
+                let observed = <[u8; 8]>::try_from(question.payload())
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| channel::ChannelError::Malformed)?;
+                let thread = u32::try_from(question.request_id())
+                    .map_err(|_| channel::ChannelError::Malformed)?;
+                let mut thresholds = sdk.coverage_thresholds.clone();
+                if !matches!(
+                    sdk::decide_coverage(
+                        &mut projected,
+                        &mut thresholds,
+                        moment,
+                        thread,
+                        observed,
+                        *ready,
+                    ),
+                    Ok(CoverageOutcome::Answered(_))
+                ) {
+                    return Err(channel::ChannelError::Malformed);
+                }
+            }
         }
         Ok(())
     }
@@ -1949,7 +2025,14 @@ where
 
     pub fn take_sdk_stop(&mut self) -> Option<SdkStop> {
         self.sdk.as_mut().and_then(|s| {
-            if matches!(s.pending_stop, Some(SdkStop::Decision { .. })) {
+            if matches!(
+                s.pending_stop,
+                Some(
+                    SdkStop::Decision { .. }
+                        | SdkStop::CoverageDecision { .. }
+                        | SdkStop::DeferredDoorbell { .. }
+                )
+            ) {
                 s.pending_stop.clone()
             } else {
                 s.pending_stop.take()
@@ -1957,9 +2040,32 @@ where
         })
     }
 
+    fn pending_deferred_doorbell(&self) -> Option<(u64, u32, Vec<u8>)> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::DeferredDoorbell {
+                moment,
+                requested_len,
+                request,
+            } => Some((*moment, *requested_len, request.clone())),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pending_sdk_stop_moment(&self) -> Option<u64> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::Decision { moment, .. }
+            | SdkStop::CoverageDecision { moment, .. }
+            | SdkStop::DeferredDoorbell { moment, .. } => Some(*moment),
+            _ => None,
+        }
+    }
+
     pub fn pending_service_question(&self) -> Option<(u64, &channel::Question)> {
         match self.sdk.as_ref()?.pending_stop.as_ref()? {
             SdkStop::Decision {
+                moment, question, ..
+            }
+            | SdkStop::CoverageDecision {
                 moment, question, ..
             } => Some((*moment, question)),
             _ => None,
@@ -1977,28 +2083,99 @@ where
         &mut self,
         answer: channel::Answer,
     ) -> Result<(u64, channel::Question), VmmError> {
-        let Some(SdkStop::Decision {
-            moment,
-            seq,
-            question,
-        }) = self.sdk.as_ref().and_then(|sdk| sdk.pending_stop.clone())
-        else {
-            return Err(VmmError::ContractViolation(
-                "no service request is pending".into(),
-            ));
+        let stop = self
+            .sdk
+            .as_ref()
+            .and_then(|sdk| sdk.pending_stop.clone())
+            .ok_or_else(|| VmmError::ContractViolation("no service request is pending".into()))?;
+        let (moment, seq, question, opcode, payload, coverage_commit) = match stop {
+            SdkStop::Decision {
+                moment,
+                seq,
+                question,
+            } => {
+                let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
+                    VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
+                })?;
+                (moment, seq, question, 3, payload, None)
+            }
+            SdkStop::CoverageDecision {
+                moment,
+                seq,
+                question,
+                ready,
+            } => {
+                let thread = u32::try_from(question.request_id())
+                    .map_err(|_| VmmError::ContractViolation("invalid coverage thread".into()))?;
+                let observed = <[u8; 8]>::try_from(question.payload())
+                    .map(u64::from_le_bytes)
+                    .map_err(|_| {
+                        VmmError::ContractViolation("invalid coverage observation".into())
+                    })?;
+                let sdk = self
+                    .sdk
+                    .as_ref()
+                    .expect("pending request requires SDK channel");
+                let mut env = sdk.env.checked_clone()?;
+                env.record_question(moment, &question, answer.clone());
+                let mut thresholds = sdk.coverage_thresholds.clone();
+                let CoverageOutcome::Answered(coverage) = sdk::decide_coverage(
+                    &mut env,
+                    &mut thresholds,
+                    moment,
+                    thread,
+                    observed,
+                    ready,
+                )
+                .map_err(|_| VmmError::ContractViolation("invalid coverage answer".into()))?
+                else {
+                    return Err(VmmError::ContractViolation(
+                        "unresolved coverage answer".into(),
+                    ));
+                };
+                (
+                    moment,
+                    seq,
+                    question,
+                    2,
+                    coverage.encode().to_vec(),
+                    Some((env, thresholds, coverage)),
+                )
+            }
+            _ => {
+                return Err(VmmError::ContractViolation(
+                    "no service request is pending".into(),
+                ));
+            }
         };
-        let payload = sdk::answer_bytes(&answer).ok_or_else(|| {
-            VmmError::ContractViolation("service answer exceeds the doorbell frame".into())
-        })?;
         let mut response = [0; HC_PAGE];
-        let len = encode_response(ServiceId::Sdk, 3, seq, Status::Ok, &payload, &mut response)
-            .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
+        let len = encode_response(
+            ServiceId::Sdk,
+            opcode,
+            seq,
+            Status::Ok,
+            &payload,
+            &mut response,
+        )
+        .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
         self.write_doorbell_response(&response[..len])?;
         let sdk = self
             .sdk
             .as_mut()
             .expect("pending request requires SDK channel");
-        sdk.env.record_question(moment, &question, answer);
+        if let Some((env, thresholds, coverage)) = coverage_commit {
+            sdk.env = env;
+            sdk.coverage_thresholds = thresholds;
+            sdk.coverage.push((
+                moment,
+                coverage.thread,
+                coverage.observed,
+                coverage.ready,
+                coverage.selected,
+            ));
+        } else {
+            sdk.env.record_question(moment, &question, answer);
+        }
         sdk.pending_stop = None;
         Ok((moment, question))
     }
@@ -2011,27 +2188,68 @@ where
     }
 
     pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
-        if req_len as usize > HC_PAGE {
-            let mut resp = [0_u8; HC_PAGE];
-            let n = encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
-                .unwrap_or(0);
-            self.write_doorbell_response(&resp[..n])?;
-            return Ok(Step::Continued);
-        }
-        let req_len = req_len as usize;
-        let Some(req) = self
-            .guest_slice(REQ_GPA as u64, req_len)
-            .map(<[u8]>::to_vec)
-        else {
-            return Err(VmmError::ContractViolation(format!(
-                "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
-                 transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
-                 low-GPA memslot; RAM is high)"
-            )));
-        };
+        self.check_host_operation_guard()?;
         let moment = self.effective_vns().unwrap_or(0);
+        let req = if req_len as usize > HC_PAGE {
+            Vec::new()
+        } else {
+            self.guest_slice(REQ_GPA as u64, req_len as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    VmmError::ContractViolation(format!(
+                        "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
+                         transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
+                         low-GPA memslot; RAM is high)"
+                    ))
+                })?
+        };
+        let at_run_deadline = self
+            .run_deadline_vns
+            .is_some_and(|deadline| moment >= deadline);
+        let sdk_decision = at_run_deadline
+            && decode(&req).ok().is_some_and(|(header, payload)| {
+                if !header.is_request() || header.service != ServiceId::Sdk as u16 {
+                    return false;
+                }
+                let Some(sdk) = self.sdk.as_ref() else {
+                    return false;
+                };
+                match header.opcode {
+                    3 => sdk::service_question(payload).is_ok(),
+                    2 => sdk::coverage_request(payload).is_ok_and(|(thread, observed, ready)| {
+                        sdk::coverage_question(&sdk.coverage_thresholds, thread, observed, ready)
+                            .is_ok()
+                    }),
+                    _ => false,
+                }
+            });
+        if at_run_deadline && !sdk_decision {
+            let sdk = self.sdk.as_mut().ok_or_else(|| {
+                VmmError::ContractViolation(
+                    "control deadline deferral requires an SDK channel".to_owned(),
+                )
+            })?;
+            sdk.pending_stop = Some(SdkStop::DeferredDoorbell {
+                moment,
+                requested_len: req_len,
+                request: req,
+            });
+            return Ok(Step::SdkStop);
+        }
+        self.finish_doorbell(moment, req_len, &req)
+    }
+
+    fn finish_doorbell(&mut self, moment: u64, req_len: u32, req: &[u8]) -> Result<Step, VmmError> {
         let mut resp = [0_u8; HC_PAGE];
-        let (resp_len, stop) = self.dispatch_doorbell(moment, &req, &mut resp);
+        let (resp_len, stop) = if req_len as usize > HC_PAGE {
+            (
+                encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
+                    .unwrap_or(0),
+                None,
+            )
+        } else {
+            self.dispatch_doorbell(moment, req, &mut resp)
+        };
         self.write_doorbell_response(&resp[..resp_len])?;
         match stop {
             Some(s) => {
@@ -2069,6 +2287,7 @@ where
     }
 
     fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
+        self.check_host_operation_guard()?;
         let Some(dst) = self.guest_slice_mut(RESP_GPA as u64, resp.len()) else {
             return Err(VmmError::ContractViolation(format!(
                 "doorbell response page {RESP_GPA:#x}+{} is not backed",
@@ -2101,6 +2320,9 @@ where
             );
             return (n, None);
         }
+        let at_run_deadline = self
+            .run_deadline_vns
+            .is_some_and(|deadline| moment >= deadline);
         if header.service == ServiceId::Pvclock as u16 {
             if !self.pvclock_available() {
                 let n = encode_error(
@@ -2290,6 +2512,22 @@ where
                     None,
                 );
             };
+            if at_run_deadline {
+                return match sdk::service_question(payload) {
+                    Ok(question) => (
+                        0,
+                        Some(SdkStop::Decision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                        }),
+                    ),
+                    Err(status) => (
+                        encode_error(header.service, header.opcode, header.seq, status, resp),
+                        None,
+                    ),
+                };
+            }
             return match sdk::decide_service(&mut sdk.env, moment, payload) {
                 Ok(ServiceOutcome::Answered(bytes)) => (
                     encode_response(ServiceId::Sdk, 3, header.seq, Status::Ok, &bytes, resp)
@@ -2331,8 +2569,31 @@ where
                     return (n, None);
                 }
             };
+            if at_run_deadline {
+                let sdk = self.sdk.as_ref().expect("SDK presence checked above");
+                return match sdk::coverage_question(
+                    &sdk.coverage_thresholds,
+                    thread,
+                    observed,
+                    ready,
+                ) {
+                    Ok(question) => (
+                        0,
+                        Some(SdkStop::CoverageDecision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                            ready,
+                        }),
+                    ),
+                    Err(status) => (
+                        encode_error(header.service, header.opcode, header.seq, status, resp),
+                        None,
+                    ),
+                };
+            }
             match self.decide_coverage(moment, thread, observed, ready) {
-                Ok(coverage) => {
+                Ok(CoverageOutcome::Answered(coverage)) => {
                     let n = encode_response(
                         ServiceId::Sdk,
                         2,
@@ -2343,6 +2604,17 @@ where
                     )
                     .unwrap_or(0);
                     return (n, None);
+                }
+                Ok(CoverageOutcome::External(question)) => {
+                    return (
+                        0,
+                        Some(SdkStop::CoverageDecision {
+                            moment,
+                            seq: header.seq,
+                            question,
+                            ready,
+                        }),
+                    );
                 }
                 Err(status) => {
                     let n = encode_response(ServiceId::Sdk, 2, header.seq, status, &[], resp)
@@ -2431,7 +2703,7 @@ where
         thread: u32,
         observed: u64,
         ready: u32,
-    ) -> Result<sdk::Coverage, Status> {
+    ) -> Result<CoverageOutcome, Status> {
         let Some(sdk) = self.sdk.as_mut() else {
             return Err(Status::UnknownService);
         };
@@ -2443,8 +2715,10 @@ where
             observed,
             ready,
         )?;
-        sdk.coverage
-            .push((moment, thread, observed, ready, coverage.selected));
+        if let CoverageOutcome::Answered(answer) = &coverage {
+            sdk.coverage
+                .push((moment, thread, observed, ready, answer.selected));
+        }
         Ok(coverage)
     }
 
@@ -2747,6 +3021,32 @@ fn append_sdk_hash_channel(
             v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
             v.extend_from_slice(question.payload());
         }
+        Some(SdkStop::CoverageDecision {
+            moment,
+            seq,
+            question,
+            ready,
+        }) => {
+            v.push(4);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&seq.to_le_bytes());
+            v.extend_from_slice(&question.service().to_le_bytes());
+            v.extend_from_slice(&question.request_id().to_le_bytes());
+            v.extend_from_slice(&(question.payload().len() as u32).to_le_bytes());
+            v.extend_from_slice(question.payload());
+            v.extend_from_slice(&ready.to_le_bytes());
+        }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            v.push(5);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&requested_len.to_le_bytes());
+            v.extend_from_slice(&(request.len() as u32).to_le_bytes());
+            v.extend_from_slice(request);
+        }
     }
     v.push(u8::from(pending_snapshot));
     if !coverage_thresholds.is_empty() {
@@ -2829,6 +3129,22 @@ mod tests {
                 moment: 37,
                 seq: 12,
                 question: channel::Question::with_request_id(91, 19, vec![1, 3, 5]).unwrap(),
+            }),
+            Some(SdkStop::CoverageDecision {
+                moment: 37,
+                seq: 12,
+                question: channel::Question::with_request_id(
+                    3,
+                    channel::SERVICE_COVERAGE_QUANTUM,
+                    1_u64.to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+                ready: 2,
+            }),
+            Some(SdkStop::DeferredDoorbell {
+                moment: 37,
+                requested_len: 3,
+                request: vec![1, 2, 3],
             }),
         ] {
             sdk.pending_stop = stop;
@@ -3074,6 +3390,104 @@ mod tests {
         fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
             Box::new(self.clone())
         }
+    }
+
+    struct MutatingCloneService(std::sync::Arc<std::sync::atomic::AtomicU8>);
+
+    impl channel::ServiceHandler for MutatingCloneService {
+        fn identity(&self) -> &[u8] {
+            b"vmm-mutating-clone-service"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &channel::Question,
+        ) -> Result<channel::ServiceResponse, channel::ChannelError> {
+            panic!("guest service decisions require an explicit answer")
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, channel::ChannelError> {
+            Ok(vec![self.0.load(std::sync::atomic::Ordering::SeqCst)])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), channel::ChannelError> {
+            let [value] = state else {
+                return Err(channel::ChannelError::Malformed);
+            };
+            self.0.store(*value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn channel::ServiceHandler> {
+            let _ = self.0.compare_exchange(
+                0,
+                1,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            Box::new(Self(std::sync::Arc::clone(&self.0)))
+        }
+    }
+
+    fn mutating_clone_vmm() -> (
+        Vmm<MockBackend>,
+        std::sync::Arc<std::sync::atomic::AtomicU8>,
+    ) {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+        let config = ServiceConfig {
+            identity: b"vmm-mutating-clone-service".to_vec(),
+            configuration: Vec::new(),
+        };
+        vmm.enable_sdk(
+            channel::RecordedEnv::new(
+                7,
+                Box::new(MutatingCloneService(std::sync::Arc::clone(&state))),
+            ),
+            &config,
+        );
+        (vmm, state)
+    }
+
+    #[test]
+    fn service_answer_preflight_rejects_a_clone_that_changes_the_live_handler() {
+        let (vmm, state) = mutating_clone_vmm();
+        let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
+        assert_eq!(
+            vmm.sdk_snapshot_after_answer(4, &question, &channel::Answer::Nominal),
+            Err(channel::ChannelError::Poisoned)
+        );
+        assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(vmm.sdk.as_ref().unwrap().env.is_poisoned());
+    }
+
+    #[test]
+    fn coverage_answer_rejects_a_clone_that_changes_the_live_handler() {
+        let (mut vmm, state) = mutating_clone_vmm();
+        let question = channel::Question::with_request_id(
+            11,
+            channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        vmm.sdk.as_mut().unwrap().pending_stop = Some(SdkStop::CoverageDecision {
+            moment: 4,
+            seq: 12,
+            question,
+            ready: 2,
+        });
+        assert!(
+            vmm.resolve_service_answer(channel::Answer::Data(7_u64.to_le_bytes().to_vec()))
+                .is_err()
+        );
+        assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(vmm.sdk.as_ref().unwrap().env.is_poisoned());
+        assert!(vmm.pending_service_question().is_some());
     }
 
     fn enable_nominal(vmm: &mut Vmm<MockBackend>, seed: u64) {
@@ -3547,6 +3961,28 @@ mod tests {
     }
 
     #[test]
+    fn host_operation_guard_refuses_doorbell_reply_before_guest_memory_write() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        let changed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = std::sync::Arc::clone(&changed);
+        vmm.set_host_operation_guard(std::sync::Arc::new(move || {
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("host loader changed".into())
+            } else {
+                Ok(())
+            }
+        }));
+        vmm.write_doorbell_response(&[0xAB; 16]).unwrap();
+        changed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let before = vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 16].to_vec();
+        assert!(matches!(
+            vmm.write_doorbell_response(&[0xCD; 16]),
+            Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
+        ));
+        assert_eq!(&vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 16], before);
+    }
+
+    #[test]
     fn drain_rebases_high_base_gfns_and_excludes_the_doorbell_slot() {
         let mut m = configured_mock(vec![]);
         m.push_dirty_gfns(vec![0x4_0001, 0x4_0003, 15]);
@@ -3766,6 +4202,75 @@ mod tests {
     }
 
     #[test]
+    fn unrecorded_coverage_quantum_stops_before_guest_response_and_replays_recorded_answer() {
+        let build = || {
+            let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+            enable_seeded_service(&mut vmm, 7);
+            vmm
+        };
+        let mut request = [0_u8; SDK_COVERAGE_REQUEST_LEN];
+        request[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        request[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        request[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        let mut frame = [0_u8; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 2, 9, &request, &mut frame).unwrap();
+        let mut vmm = build();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        assert_eq!(vmm.service_doorbell(n as u32).unwrap(), Step::SdkStop);
+        let question = channel::Question::with_request_id(
+            7,
+            channel::SERVICE_COVERAGE_QUANTUM,
+            1_u64.to_le_bytes().to_vec(),
+        )
+        .unwrap();
+        assert_eq!(
+            vmm.take_sdk_stop(),
+            Some(SdkStop::CoverageDecision {
+                moment: 0,
+                seq: 9,
+                question: question.clone(),
+                ready: 2,
+            })
+        );
+        assert_eq!(&vmm.guest_memory()[RESP_GPA..RESP_GPA + 16], &[0; 16]);
+        assert!(vmm.sdk_coverage().is_empty());
+        let stopped = vmm.state_hash().unwrap();
+        let invalid = channel::Answer::Data(0_u64.to_le_bytes().to_vec());
+        assert!(
+            vmm.sdk_snapshot_after_answer(0, &question, &invalid)
+                .is_err()
+        );
+        assert_eq!(vmm.state_hash().unwrap(), stopped);
+        let answer = channel::Answer::Data(64_u64.to_le_bytes().to_vec());
+        vmm.sdk_snapshot_after_answer(0, &question, &answer)
+            .unwrap();
+        vmm.resolve_service_answer(answer.clone()).unwrap();
+        let (header, payload) = decode(&vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
+        assert_eq!(
+            (header.opcode, header.seq, header.status),
+            (2, 9, Status::Ok as u16)
+        );
+        assert_eq!(u64::from_le_bytes(payload[..8].try_into().unwrap()), 65);
+        let selected = u32::from_le_bytes(payload[8..12].try_into().unwrap());
+        assert!(selected < 2);
+        assert_eq!(vmm.sdk_coverage(), &[(0, 7, 1, 2, selected)]);
+        let after = vmm.state_hash().unwrap();
+
+        let mut replay = build();
+        replay.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        replay
+            .sdk
+            .as_mut()
+            .unwrap()
+            .env
+            .record_question(0, &question, answer);
+        assert_eq!(replay.service_doorbell(n as u32).unwrap(), Step::Continued);
+        assert_eq!(replay.sdk_coverage(), vmm.sdk_coverage());
+        assert_eq!(replay.state_hash().unwrap(), after);
+    }
+
+    #[test]
     fn coverage_threshold_is_enforced_and_snapshot_replay_reproduces() {
         let build = || {
             let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
@@ -3773,7 +4278,9 @@ mod tests {
             vmm
         };
         let mut base = build();
-        let first = base.decide_coverage(4, 1, 1, 2).unwrap();
+        let CoverageOutcome::Answered(first) = base.decide_coverage(4, 1, 1, 2).unwrap() else {
+            panic!("nominal coverage must answer");
+        };
         let snap = base.sdk_snapshot().unwrap().expect("SDK snapshot");
         let hash_after_first = base.state_hash().unwrap();
         assert_eq!(base.decide_coverage(5, 1, 3, 2), Err(Status::BadRequest));
@@ -4296,9 +4803,20 @@ mod tests {
     }
 
     #[test]
-    fn oversized_service_answer_preserves_channel_state() {
+    fn oversized_explicit_service_answer_preserves_channel_state() {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         enable_oversized(&mut vmm, 7);
+        let mut payload = 4u16.to_le_bytes().to_vec();
+        payload.extend_from_slice(&77u64.to_le_bytes());
+        let mut request = [0; HC_PAGE];
+        let n =
+            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
+        let mut response = [0; HC_PAGE];
+        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
+        assert_eq!(length, 0);
+        let stop = stop.expect("custom service must stop for input");
+        assert!(matches!(stop, SdkStop::Decision { .. }));
+        vmm.sdk.as_mut().unwrap().pending_stop = Some(stop.clone());
         let before = vmm
             .sdk
             .as_ref()
@@ -4307,18 +4825,12 @@ mod tests {
             .snapshot_state()
             .unwrap()
             .encode();
-        let mut payload = 4u16.to_le_bytes().to_vec();
-        payload.extend_from_slice(&77u64.to_le_bytes());
-        let mut request = [0; HC_PAGE];
-        let n =
-            hypercall_proto::encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request).unwrap();
-        let mut response = [0; HC_PAGE];
-        let (length, stop) = vmm.dispatch_doorbell(19, &request[..n], &mut response);
-        assert!(stop.is_none());
-        assert_eq!(
-            decode(&response[..length]).unwrap().0.status,
-            Status::Internal as u16
+        assert!(
+            vmm.resolve_service_answer(channel::Answer::Data(vec![0; MAX_PAYLOAD]))
+                .is_err()
         );
+        assert_eq!(vmm.take_sdk_stop(), Some(stop));
+        assert!(response.iter().all(|byte| *byte == 0));
         assert_eq!(
             before,
             vmm.sdk
