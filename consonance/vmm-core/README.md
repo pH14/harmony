@@ -49,10 +49,14 @@ ready count, and doorbell sequence in the SDK snapshot and whole-state hash.
 original coverage exchange. Invalid quantum answers leave the pending stop and
 coverage threshold unchanged.
 If an SDK request reaches a `Run` deadline during a chained guest step, control
-retains custom service and coverage requests as pending decisions and reports the
-deadline first. The pending request and its unanswered response page survive a
-snapshot and branch; the branch's service plan supplies the answer on a later
-`Run`.
+reports the deadline before answering it. Valid custom service and coverage
+requests remain pending decisions. Other doorbells retain their raw request
+frame, including malformed requests, without writing a response or changing the
+payload cursor, entropy stream, event log, or pvclock registration. The pending
+request is part of the whole-state hash and portable snapshot. A later `Run`
+dispatches it under the branch's service plan before resuming the guest.
+Resolving a pending decision at or after the `Run` deadline leaves its answer
+unrecorded and its response page untouched for the next action.
 If a backend completion chains a later SDK decision into the same guest step
 after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.

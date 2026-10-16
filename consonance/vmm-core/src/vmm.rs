@@ -54,6 +54,11 @@ pub enum SdkStop {
         question: channel::Question,
         ready: u32,
     },
+    DeferredDoorbell {
+        moment: u64,
+        requested_len: u32,
+        request: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1124,6 +1129,22 @@ where
         if self.pending_service_question().is_some() {
             return Ok(Step::SdkStop);
         }
+        if let Some((moment, requested_len, request)) = self.pending_deferred_doorbell() {
+            if self
+                .run_deadline_vns
+                .is_some_and(|deadline| moment >= deadline)
+            {
+                return Ok(Step::SdkStop);
+            }
+            self.sdk
+                .as_mut()
+                .expect("deferred doorbell has SDK")
+                .pending_stop = None;
+            let step = self.finish_doorbell(moment, requested_len, &request)?;
+            self.pvclock_refresh()?;
+            <B::A as Vendor>::post_exit(self)?;
+            return Ok(step);
+        }
         if let Some(reason) = self.terminal {
             return Ok(Step::Terminal(reason));
         }
@@ -1991,13 +2012,28 @@ where
         self.sdk.as_mut().and_then(|s| {
             if matches!(
                 s.pending_stop,
-                Some(SdkStop::Decision { .. } | SdkStop::CoverageDecision { .. })
+                Some(
+                    SdkStop::Decision { .. }
+                        | SdkStop::CoverageDecision { .. }
+                        | SdkStop::DeferredDoorbell { .. }
+                )
             ) {
                 s.pending_stop.clone()
             } else {
                 s.pending_stop.take()
             }
         })
+    }
+
+    fn pending_deferred_doorbell(&self) -> Option<(u64, u32, Vec<u8>)> {
+        match self.sdk.as_ref()?.pending_stop.as_ref()? {
+            SdkStop::DeferredDoorbell {
+                moment,
+                requested_len,
+                request,
+            } => Some((*moment, *requested_len, request.clone())),
+            _ => None,
+        }
     }
 
     pub fn pending_service_question(&self) -> Option<(u64, &channel::Question)> {
@@ -2128,27 +2164,67 @@ where
     }
 
     pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
-        if req_len as usize > HC_PAGE {
-            let mut resp = [0_u8; HC_PAGE];
-            let n = encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
-                .unwrap_or(0);
-            self.write_doorbell_response(&resp[..n])?;
-            return Ok(Step::Continued);
-        }
-        let req_len = req_len as usize;
-        let Some(req) = self
-            .guest_slice(REQ_GPA as u64, req_len)
-            .map(<[u8]>::to_vec)
-        else {
-            return Err(VmmError::ContractViolation(format!(
-                "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
-                 transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
-                 low-GPA memslot; RAM is high)"
-            )));
-        };
         let moment = self.effective_vns().unwrap_or(0);
+        let req = if req_len as usize > HC_PAGE {
+            Vec::new()
+        } else {
+            self.guest_slice(REQ_GPA as u64, req_len as usize)
+                .map(<[u8]>::to_vec)
+                .ok_or_else(|| {
+                    VmmError::ContractViolation(format!(
+                        "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
+                         transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
+                         low-GPA memslot; RAM is high)"
+                    ))
+                })?
+        };
+        let at_run_deadline = self
+            .run_deadline_vns
+            .is_some_and(|deadline| moment >= deadline);
+        let sdk_decision = at_run_deadline
+            && decode(&req).ok().is_some_and(|(header, payload)| {
+                if !header.is_request() || header.service != ServiceId::Sdk as u16 {
+                    return false;
+                }
+                let Some(sdk) = self.sdk.as_ref() else {
+                    return false;
+                };
+                match header.opcode {
+                    3 => sdk::service_question(payload).is_ok(),
+                    2 => sdk::coverage_request(payload).is_ok_and(|(thread, observed, ready)| {
+                        sdk::coverage_question(&sdk.coverage_thresholds, thread, observed, ready)
+                            .is_ok()
+                    }),
+                    _ => false,
+                }
+            });
+        if at_run_deadline && !sdk_decision {
+            let sdk = self.sdk.as_mut().ok_or_else(|| {
+                VmmError::ContractViolation(
+                    "control deadline deferral requires an SDK channel".to_owned(),
+                )
+            })?;
+            sdk.pending_stop = Some(SdkStop::DeferredDoorbell {
+                moment,
+                requested_len: req_len,
+                request: req,
+            });
+            return Ok(Step::SdkStop);
+        }
+        self.finish_doorbell(moment, req_len, &req)
+    }
+
+    fn finish_doorbell(&mut self, moment: u64, req_len: u32, req: &[u8]) -> Result<Step, VmmError> {
         let mut resp = [0_u8; HC_PAGE];
-        let (resp_len, stop) = self.dispatch_doorbell(moment, &req, &mut resp);
+        let (resp_len, stop) = if req_len as usize > HC_PAGE {
+            (
+                encode_response(ServiceId::Event, 1, 0, Status::BadRequest, &[], &mut resp)
+                    .unwrap_or(0),
+                None,
+            )
+        } else {
+            self.dispatch_doorbell(moment, req, &mut resp)
+        };
         self.write_doorbell_response(&resp[..resp_len])?;
         match stop {
             Some(s) => {
@@ -2934,6 +3010,17 @@ fn append_sdk_hash_channel(
             v.extend_from_slice(question.payload());
             v.extend_from_slice(&ready.to_le_bytes());
         }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            v.push(5);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&requested_len.to_le_bytes());
+            v.extend_from_slice(&(request.len() as u32).to_le_bytes());
+            v.extend_from_slice(request);
+        }
     }
     v.push(u8::from(pending_snapshot));
     if !coverage_thresholds.is_empty() {
@@ -3027,6 +3114,11 @@ mod tests {
                 )
                 .unwrap(),
                 ready: 2,
+            }),
+            Some(SdkStop::DeferredDoorbell {
+                moment: 37,
+                requested_len: 3,
+                request: vec![1, 2, 3],
             }),
         ] {
             sdk.pending_stop = stop;

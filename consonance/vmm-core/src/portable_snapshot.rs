@@ -601,6 +601,17 @@ fn encode_pending_stop(out: &mut Vec<u8>, stop: Option<&SdkStop>) {
             out.extend_from_slice(question.payload());
             out.extend_from_slice(&ready.to_le_bytes());
         }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            out.push(5);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&requested_len.to_le_bytes());
+            put_vec_len(out, request.len());
+            out.extend_from_slice(request);
+        }
     }
 }
 
@@ -649,6 +660,24 @@ fn decode_pending_stop(
                 seq,
                 question,
                 ready,
+            })
+        }
+        5 => {
+            let moment = input.u64()?;
+            let requested_len = input.u32()?;
+            let frame_len = usize::try_from(input.u64()?)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK deferred doorbell"))?;
+            if frame_len > PAGE_SIZE
+                || (requested_len as usize <= PAGE_SIZE && frame_len != requested_len as usize)
+                || (requested_len as usize > PAGE_SIZE && frame_len != 0)
+            {
+                return Err(PortableSnapshotError::Malformed("SDK deferred doorbell"));
+            }
+            let request = input.section(frame_len)?;
+            Some(SdkStop::DeferredDoorbell {
+                moment,
+                requested_len,
+                request,
             })
         }
         _ => return Err(PortableSnapshotError::Malformed("SDK pending stop")),
@@ -2452,6 +2481,11 @@ mod tests {
                 .unwrap(),
                 ready: 2,
             }),
+            Some(SdkStop::DeferredDoorbell {
+                moment: 31,
+                requested_len: 3,
+                request: vec![8, 9, 10],
+            }),
         ];
         for stop in stops {
             let (memory, vm_state, mut sdk, policy) = fixture();
@@ -2508,10 +2542,31 @@ mod tests {
                 assert!(decode_pending_stop(&mut SliceReader::new(&bytes[..end])).is_err());
             }
         }
-        assert!(decode_pending_stop(&mut SliceReader::new(&[5])).is_err());
+        assert!(decode_pending_stop(&mut SliceReader::new(&[6])).is_err());
         let mut bytes = vec![3];
         bytes.extend_from_slice(&[0; 22]);
         bytes.extend_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_pending_stop(&mut SliceReader::new(&bytes)).is_err());
+
+        let mut deferred = Vec::new();
+        encode_pending_stop(
+            &mut deferred,
+            Some(&SdkStop::DeferredDoorbell {
+                moment: 31,
+                requested_len: 3,
+                request: vec![8, 9, 10],
+            }),
+        );
+        deferred[9..13].copy_from_slice(&4_u32.to_le_bytes());
+        assert!(matches!(
+            decode_pending_stop(&mut SliceReader::new(&deferred)),
+            Err(PortableSnapshotError::Malformed("SDK deferred doorbell"))
+        ));
+        deferred[9..13].copy_from_slice(&3_u32.to_le_bytes());
+        deferred[13..21].copy_from_slice(&((PAGE_SIZE as u64) + 1).to_le_bytes());
+        assert!(matches!(
+            decode_pending_stop(&mut SliceReader::new(&deferred)),
+            Err(PortableSnapshotError::Malformed("SDK deferred doorbell"))
+        ));
     }
 }

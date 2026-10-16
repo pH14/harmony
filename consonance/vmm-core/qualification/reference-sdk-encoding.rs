@@ -48,6 +48,17 @@ fn encode_sdk_channel(
             v.extend_from_slice(question.payload());
             v.extend_from_slice(&ready.to_le_bytes());
         }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            v.push(5);
+            v.extend_from_slice(&moment.to_le_bytes());
+            v.extend_from_slice(&requested_len.to_le_bytes());
+            v.extend_from_slice(&(request.len() as u32).to_le_bytes());
+            v.extend_from_slice(request);
+        }
     }
     v.push(u8::from(sdk.pending_snapshot));
     if !sdk.coverage_thresholds.is_empty() {
