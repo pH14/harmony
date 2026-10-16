@@ -159,12 +159,8 @@ impl Package for Nes {
                 m.store(&out, "core", &fs::read(runner.core.ok_or("missing core")?)?)?;
             } else {
                 let runner = crate::runners::consonance(&m.config.runner)?;
-                m.store(
-                    &out,
-                    "kernel",
-                    &fs::read(runner.kernel.ok_or("missing kernel")?)?,
-                )?;
-                let base = fs::read(runner.base_initramfs.ok_or("missing base initramfs")?)?;
+                let (kernel, base) = crate::runtime::read_pair(&runner)?;
+                m.store(&out, "kernel", &kernel)?;
                 m.store(
                     &out,
                     "initramfs",
@@ -210,8 +206,7 @@ impl Package for Nes {
             #[cfg(target_os = "linux")]
             {
                 let runner = crate::runners::consonance(&m.config.runner)?;
-                let kernel = fs::read(runner.kernel.ok_or("missing kernel")?)?;
-                let base = fs::read(runner.base_initramfs.ok_or("missing base initramfs")?)?;
+                let (kernel, base) = crate::runtime::read_pair(&runner)?;
                 let prepared = _guest.as_ref().ok_or("missing prepared guest")?;
                 m.store(&out, "kernel", &kernel)?;
                 m.store(&out, "initramfs", &prepared.initramfs(&base))?;
