@@ -740,6 +740,22 @@ matches, and that the guest RAM allocation stays in place. The guest loops back
 to the same instruction address; no RAM remapping is requested. A portable
 negative control rejects stale, missing and extra observation bytes.
 
+Before any guest entry, the fixture sets `SCTLR_EL1.I` through the public state
+restore API and checks the captured control value, including after warmup and
+restoration. Stage-1 translation stays disabled. The four-instruction guest
+loops directly to the variant instruction, without a cache-enabling prologue or
+cache-maintenance instruction. Thus the RAM-only control never re-enables the
+cache between the host write and guest fetch. The test pins its thread to its
+current allowed CPU before constructing any VM, verifies placement during the
+restore loops, and restores the original affinity on exit. External `taskset`
+selects which core class it exercises; ordinary registered invocation also
+remains pinned. Output records CPU number, available sysfs MIDR and raw host
+MMFR2, and observed guest SCTLR. Missing sysfs register information is reported
+as unavailable; the test does not infer host stage-2 FWB or CTR cache-coherence
+features from virtualized guest IDs. Guest instruction-cache enablement and CPU
+placement are controls, not proof that a particular host retains stale lines.
+A passing result remains specific to its actual host/kernel/cache behavior.
+
 Run on a Linux ARM host with accessible KVM, pinning each qualified core class:
 
 ```sh
