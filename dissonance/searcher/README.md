@@ -425,7 +425,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_pace_stale_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_stale_gap_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
@@ -487,12 +487,14 @@ fall back past several stalled tiers at once, which matters when the states
 that decide a later death lie several tiers back. Every rank below that block
 then weighs at least `b * s / (k + 1)^2`, where `b` is the block's per-rank
 weight, `k` is the rank's index from the top, and 2 is the exponent the cell
-weights use. The staleness `s = D / (D + G)` measures how long the deepest
+weights use. The staleness `s = D / (D + 8 * G)` measures how long the deepest
 progress value has gone without rising: `D` is the tier draws since it last
 rose, and `G` is the mean tier draws per rise so far, all tier draws divided
-by the number of rises. A frontier that keeps rising leaves `s` near zero and
-the eight-to-one ratio unchanged. A stuck frontier drives `s` toward one, and
-then rank `k` keeps a share that shrinks polynomially with `k` instead of by a
+by the number of rises. The factor 8 is the same gap factor the halving rule
+uses, so `s` reaches one half only after the frontier has gone eight times its
+average gap without rising. A frontier that rises at its usual gap keeps `s`
+at or below about one ninth, so the eight-to-one ratio barely changes. A
+stuck frontier drives `s` toward one, and then rank `k` keeps a share that shrinks polynomially with `k` instead of by a
 factor of eight per rank, while the leading tier keeps at least `6 / pi^2`,
 about 61%, of tier draws when nothing has fallen. A live branch many ranks
 under a dead end therefore keeps drawing without any rank having to fall

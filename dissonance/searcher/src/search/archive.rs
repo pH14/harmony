@@ -142,7 +142,7 @@ pub fn retention_policy_from_identifier(
 }
 
 pub const SELECTOR_IDENTIFIER: &str =
-    "tier_progress_cascade_pace_stale_rank_floor_yield_cell_recent_count_decay_v3";
+    "tier_progress_cascade_pace_stale_gap_rank_floor_yield_cell_recent_count_decay_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -179,8 +179,9 @@ fn rank_floor(floor_weight: u64, rank: usize, accounting: &SelectorAccounting) -
             .saturating_pow(COUNT_DECAY_EXPONENT),
     );
     let numerator = u128::from(floor_weight) * u128::from(stale) * u128::from(rises);
-    let denominator =
-        (u128::from(stale) * u128::from(rises) + u128::from(draws)).saturating_mul(decay);
+    let denominator = (u128::from(stale) * u128::from(rises)
+        + u128::from(DRY_GAP_FACTOR) * u128::from(draws))
+    .saturating_mul(decay);
     numerator
         .checked_div(denominator)
         .map_or(0, |floor| u64::try_from(floor).unwrap_or(u64::MAX))
