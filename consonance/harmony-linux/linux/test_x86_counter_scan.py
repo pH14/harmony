@@ -487,6 +487,76 @@ class CounterScanCoverage(unittest.TestCase):
         platform.system() == "Linux" and platform.machine() == "x86_64",
         "native x86 Linux binutils required",
     )
+    def test_kernel_direct_branch_cannot_enter_uncopied_file_boundary(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            assembly = root / "branch.s"
+            assembly.write_text(
+                '.section .tail,"",@progbits\n.byte 0x0f,0x31,0xc3\n'
+                '.section .text,"ax",@progbits\n.global _start\n_start:\n'
+                '.byte 0xeb,0x2e\n.fill 31,1,0x90\n.fill 15,1,0xcc\n'
+                '.section .phantom,"ax",@progbits\n.byte 0xc3\n.fill 15,1,0xcc\n'
+            )
+            linker = root / "branch.ld"
+            linker.write_text(
+                "PHDRS { text PT_LOAD FLAGS(5); }\n"
+                "SECTIONS { . = 0; .tail : { *(.tail) } "
+                ". = 0xffffffff81000000; "
+                ".text : AT(0x01000000) { *(.text) } :text "
+                ".phantom : { *(.phantom) } :NONE }\n"
+            )
+            obj = root / "branch.o"
+            elf = root / "branch.elf"
+            stripped = root / "branch-stripped.elf"
+            run("as", "--64", "-o", str(obj), str(assembly))
+            run("ld", "-nostdlib", "-z", "max-page-size=0x200000",
+                "-T", str(linker), "-e", "_start", "-o", str(elf), str(obj))
+            original = bytearray(elf.read_bytes())
+            program = struct.unpack_from("<Q", original, 32)[0]
+            source = struct.unpack_from("<Q", original, program + 8)[0]
+            virtual, physical, size, memory_size = struct.unpack_from(
+                "<QQQQ", original, program + 16
+            )
+            self.assertEqual(
+                (source, virtual, physical, size, memory_size),
+                (0x200000, 0xffffffff81000000, 0x01000000, 48, 48),
+            )
+            self.assertEqual(virtual >> 12, (virtual + size) >> 12)
+            spec = importlib.util.spec_from_file_location("scan_unclaimed_opcodes", SCAN_UNCLAIMED)
+            scanner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(scanner)
+            _programs, sections = scanner.headers(original)
+            phantom = next(section for section in sections if section[0] == ".phantom")
+            self.assertEqual((phantom[1], phantom[2] & 6, phantom[3], phantom[5]),
+                             (1, 6, virtual + size, 16))
+            self.assertGreaterEqual(phantom[4], source + size)
+            self.assertEqual(original[source + size - 15 : source + size], b"\xcc" * 15)
+            struct.pack_into("<Q", original, 24, physical)
+            original[48:52] = b"\x0f\x31\xc3\0"
+            for branch, rejected in ((b"\xeb\x2e", True), (b"\xeb\x00", False)):
+                with self.subTest(branch=branch.hex()):
+                    data = bytearray(original)
+                    data[source : source + len(branch)] = branch
+                    elf.write_bytes(data)
+                    run("objcopy", "-R", ".comment", "-S", str(elf), str(stripped))
+                    loaded = bytearray(stripped.read_bytes())
+                    self.assertEqual(loaded[48:51], b"\x0f\x31\xc3")
+                    loaded[:size] = loaded[source : source + size]
+                    self.assertEqual(loaded[size : size + 3], b"\x0f\x31\xc3")
+                    result = subprocess.run(
+                        ["python3", str(SCAN_UNCLAIMED), f"vmlinux={elf}"],
+                        capture_output=True, text=True,
+                    )
+                    if rejected:
+                        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn("direct branch outside loaded executable sections", result.stderr)
+                    else:
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    @unittest.skipUnless(
+        platform.system() == "Linux" and platform.machine() == "x86_64",
+        "native x86 Linux binutils required",
+    )
     def test_executable_segment_with_hidden_code_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1047,6 +1117,10 @@ class CounterScanCoverage(unittest.TestCase):
                             ["bash", str(SCAN), str(kernel)], capture_output=True, text=True
                         )
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                        if mode == "intel64-displacement" and tag == "vmlinux":
+                            self.assertIn("direct branch outside loaded executable sections",
+                                          result.stderr)
+                            continue
                         self.assertIn("counter instruction", result.stderr)
                         if mode.startswith("symbol-restart"):
                             self.assertIn("symbol-restart", result.stderr)
