@@ -22,7 +22,7 @@ def run(*command):
     subprocess.run(command, check=True, capture_output=True)
 
 
-def fixture(root, setup_sects=7):
+def fixture(root, setup_sects=7, decompressor_64_entry="ret"):
     build = root / "kernel-build"
     boot = build / "arch/x86/boot"
     compressed = boot / "compressed"
@@ -80,7 +80,8 @@ def fixture(root, setup_sects=7):
     decompressor_source.write_text(
         '.section .head.text,"ax"\n.code32\n'
         '.global startup_32\nstartup_32:\nlret\n'
-        '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\nret\n'
+        '.balign 512,0\n.code64\n.global startup_64\nstartup_64:\n'
+        f'{decompressor_64_entry}\n'
         '.fill 15,1,0xcc\n.section .rodata..compressed,"a"\n'
         f'.incbin "{root / "kernel.gz"}"\n'
         '.section .text,"ax"\nret\n.fill 15,1,0xcc\n'
@@ -144,6 +145,37 @@ class X86ImageIdentity(unittest.TestCase):
                 (output / "x86_64/bzImage.vmlinux").read_bytes(),
                 (build / "vmlinux").read_bytes(),
             )
+
+    def test_rejects_decompressor_branch_into_boot_initramfs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            link_base = 0x400000
+            boot_load = 0x100000
+            ram_size = 8 << 20
+            initramfs_size = 0x2345
+            initramfs_start = (ram_size - initramfs_size) & ~0xFFF
+            target = link_base + initramfs_start - boot_load
+            build, image = fixture(root, decompressor_64_entry=f"jmp 0x{target:x}")
+            decompressor = (build / "arch/x86/boot/compressed/vmlinux").read_bytes()
+            spec = importlib.util.spec_from_file_location("scan_unclaimed_opcodes", SCAN_UNCLAIMED)
+            scanner = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(scanner)
+            programs, _sections = scanner.headers(decompressor)
+            self.assertFalse(any(
+                kind == 1 and address <= target < address + memory_size
+                for _index, kind, _flags, _offset, address, _size, memory_size in programs
+            ))
+            displacement = target - (link_base + 0x200 + 5)
+            self.assertEqual(image[4096 + 0x200 : 4096 + 0x205],
+                             b"\xe9" + struct.pack("<i", displacement))
+            self.assertEqual(target - link_base + boot_load, initramfs_start)
+
+            output = root / "published"
+            result = verify(build, output)
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("direct branch outside loaded executable sections",
+                          result.stderr)
+            self.assertFalse(output.exists())
 
     def test_rejects_setup_header_with_wrong_packed_decompressor_offset(self):
         with tempfile.TemporaryDirectory() as directory:

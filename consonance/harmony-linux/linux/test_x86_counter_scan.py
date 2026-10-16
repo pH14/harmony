@@ -1117,8 +1117,8 @@ class CounterScanCoverage(unittest.TestCase):
                             ["bash", str(SCAN), str(kernel)], capture_output=True, text=True
                         )
                         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                        if mode == "intel64-displacement" and tag == "vmlinux":
-                            self.assertIn("direct branch outside loaded executable sections",
+                        if mode == "intel64-displacement":
+                            self.assertIn(f"direct branch outside loaded executable sections in {tag}:",
                                           result.stderr)
                             continue
                         self.assertIn("counter instruction", result.stderr)
