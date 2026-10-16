@@ -60,6 +60,39 @@ class RuntimeArtifactTests(unittest.TestCase):
         cache.write_text("generated")
         self.assertEqual(RUNTIME.source_digest(self.repo), expected)
 
+    def test_default_cli_boot_contract_change_invalidates_old_pair(self):
+        cli = self.repo / "cli/src/oci/runner.rs"
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        (self.root / "bzImage").write_text("artifact")
+        for architecture in ("x86_64", "aarch64"):
+            with self.subTest(architecture=architecture):
+                cli.write_text('x86 cmdline="harmony_pvclock"; arm cmdline="nohlt"')
+                old_key = RUNTIME.source_digest(self.repo)
+                RUNTIME.seal(self.repo, self.root, architecture)
+                self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "exact-input")
+
+                if architecture == "x86_64":
+                    cli.write_text('x86 cmdline="tokenless"; arm cmdline="nohlt"')
+                else:
+                    cli.write_text('x86 cmdline="harmony_pvclock"; arm cmdline="new-arm-option"')
+                self.assertNotEqual(RUNTIME.source_digest(self.repo), old_key)
+                self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "host-only")
+
+    def test_cli_boot_assembly_change_invalidates_old_pair(self):
+        cli = self.repo / "cli/src/oci/mod.rs"
+        cli.parent.mkdir(parents=True, exist_ok=True)
+        (self.root / "bzImage").write_text("artifact")
+        for architecture in ("x86_64", "aarch64"):
+            with self.subTest(architecture=architecture):
+                cli.write_text('default arguments: rdinit=/usr/lib/harmony/init')
+                old_key = RUNTIME.source_digest(self.repo)
+                RUNTIME.seal(self.repo, self.root, architecture)
+                self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "exact-input")
+
+                cli.write_text('default arguments: rdinit=/new/init')
+                self.assertNotEqual(RUNTIME.source_digest(self.repo), old_key)
+                self.assertEqual(RUNTIME.verify(self.repo, self.root, architecture)["scope"], "host-only")
+
     def test_wrong_architecture_and_missing_kernel_fail(self):
         RUNTIME.seal(self.repo, self.root, "aarch64")
         with self.assertRaisesRegex(ValueError, "architecture"):
