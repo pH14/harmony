@@ -2,18 +2,6 @@
 
 use std::io;
 
-#[cfg(target_os = "linux")]
-const LOADER_OVERRIDE_VARS: &[&str] = &[
-    "LD_PRELOAD",
-    "LD_AUDIT",
-    "LD_LIBRARY_PATH",
-    "LD_ORIGIN_PATH",
-    "LD_HWCAP_MASK",
-    "LD_ASSUME_KERNEL",
-    "LD_DYNAMIC_WEAK",
-    "GLIBC_TUNABLES",
-];
-
 #[cfg(target_os = "macos")]
 const LOADER_OVERRIDE_VARS: &[&str] = &[
     "DYLD_FRAMEWORK_PATH",
@@ -28,32 +16,44 @@ const LOADER_OVERRIDE_VARS: &[&str] = &[
     "DYLD_SHARED_CACHE_DIR",
 ];
 
+#[cfg(target_os = "linux")]
+fn loader_override_names() -> Vec<std::ffi::OsString> {
+    host_code_identity::loader_override_names()
+}
+
+#[cfg(target_os = "macos")]
+fn loader_override_names() -> Vec<std::ffi::OsString> {
+    LOADER_OVERRIDE_VARS
+        .iter()
+        .filter(|name| std::env::var_os(name).is_some())
+        .map(std::ffi::OsString::from)
+        .collect()
+}
+
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-const LOADER_OVERRIDE_VARS: &[&str] = &[];
+fn loader_override_names() -> Vec<std::ffi::OsString> {
+    Vec::new()
+}
 
 pub(crate) fn reject_loader_overrides() -> io::Result<()> {
-    for &name in LOADER_OVERRIDE_VARS {
-        if std::env::var_os(name).is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!("ambient loader override {name} is set"),
-            ));
-        }
+    if let Some(name) = loader_override_names().into_iter().next() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("ambient loader override {} is set", name.to_string_lossy()),
+        ));
     }
     Ok(())
 }
 
 #[cfg(test)]
 pub(crate) fn rerun_clean_loader_test(test: &str) -> bool {
-    if !LOADER_OVERRIDE_VARS
-        .iter()
-        .any(|name| std::env::var_os(name).is_some())
-    {
+    let overrides = loader_override_names();
+    if overrides.is_empty() {
         return false;
     }
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command.arg("--exact").arg(test);
-    for name in LOADER_OVERRIDE_VARS {
+    for name in overrides {
         command.env_remove(name);
     }
     let output = command.output().unwrap();
@@ -75,7 +75,8 @@ pub fn loaded_executable_identity_self() -> io::Result<String> {
         loaded_executable_identity_self as *const () as usize,
         &executable,
     )?;
-    digest_open_executable(&mut executable)
+    let main = digest_open_executable(&mut executable)?;
+    host_code_identity::loaded_executable_identity(&main)
 }
 
 #[cfg(target_os = "linux")]
@@ -423,7 +424,7 @@ mod loader_override_tests {
                 command
                     .arg("--exact")
                     .arg("image_identity::loader_override_tests::ambient_loader_override_refuses_identity_even_when_empty");
-                for name in LOADER_OVERRIDE_VARS {
+                for name in loader_override_names() {
                     command.env_remove(name);
                 }
                 let output = command
@@ -547,7 +548,7 @@ mod linux_tests {
             .arg(std::env::current_exe().unwrap())
             .arg("--exact")
             .arg("image_identity::linux_tests::direct_dynamic_loader_launch_cannot_claim_executable_identity");
-        for name in LOADER_OVERRIDE_VARS {
+        for name in loader_override_names() {
             command.env_remove(name);
         }
         let output = command.env(CHILD_ENV, "1").output().unwrap();

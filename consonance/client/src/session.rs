@@ -833,7 +833,7 @@ pub fn identity_with_config_and_payloads(
     setup_payloads: &[Vec<u8>],
 ) -> Result<String, String> {
     Ok(format!(
-        "consonance-session-v3;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
+        "consonance-session-v4;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
         bytes_hex(&image_identity_with_config_and_payloads(
             kernel,
             initramfs,
@@ -885,7 +885,7 @@ fn image_identity_with_loaded_executable(
     loaded_identity: &str,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"consonance-session-image-v3\0");
+    digest.update(b"consonance-session-image-v4\0");
     update_digest_field(&mut digest, loaded_identity.as_bytes());
     update_digest_field(&mut digest, kernel);
     update_digest_field(&mut digest, initramfs);
@@ -1305,7 +1305,7 @@ mod tests {
         assert!(
             identity(b"a", b"b")
                 .unwrap()
-                .contains("consonance-session-v3")
+                .contains("consonance-session-v4")
         );
     }
 

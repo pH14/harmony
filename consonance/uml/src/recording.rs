@@ -11,19 +11,7 @@ use crate::bridge::{Bridge, Event, event_hash};
 use crate::launch::{Launch, LaunchError};
 use crate::profile::{HostIdentity, VerifiedProfile};
 
-const SCHEMA: u32 = 5;
-
-#[cfg(target_os = "linux")]
-const LOADER_OVERRIDE_VARS: &[&str] = &[
-    "LD_PRELOAD",
-    "LD_AUDIT",
-    "LD_LIBRARY_PATH",
-    "LD_ORIGIN_PATH",
-    "LD_HWCAP_MASK",
-    "LD_ASSUME_KERNEL",
-    "LD_DYNAMIC_WEAK",
-    "GLIBC_TUNABLES",
-];
+const SCHEMA: u32 = 6;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -70,14 +58,7 @@ fn loaded_executable_identity_self() -> std::io::Result<String> {
         use sha2::{Digest, Sha256};
         use std::io::Read as _;
 
-        for &name in LOADER_OVERRIDE_VARS {
-            if std::env::var_os(name).is_some() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("ambient loader override {name} is set"),
-                ));
-            }
-        }
+        host_code_identity::reject_loader_overrides()?;
 
         let mut executable = std::fs::File::open("/proc/self/exe")?;
         reject_mismatched_executable_mapping(
@@ -93,7 +74,8 @@ fn loaded_executable_identity_self() -> std::io::Result<String> {
             }
             digest.update(&block[..length]);
         }
-        Ok(format!("linux-exe-sha256-v1:{:x}", digest.finalize()))
+        let main = format!("linux-exe-sha256-v1:{:x}", digest.finalize());
+        host_code_identity::loaded_executable_identity(&main)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -432,7 +414,7 @@ mod tests {
     use super::*;
     use crate::profile::{Artifact, Profile, VirtualTimeCosts};
 
-    const EXECUTABLE: &str = "linux-exe-sha256-v1:base";
+    const EXECUTABLE: &str = "linux-exe-execmaps-sha256-v2:base";
 
     #[test]
     #[cfg(target_os = "linux")]
@@ -529,17 +511,17 @@ mod tests {
             &events,
         )
         .unwrap();
-        assert_eq!(recording.schema, 5);
+        assert_eq!(recording.schema, 6);
         assert!(
             recording
                 .check_with_host(&profile("a"), &host("model=1"), EXECUTABLE)
                 .is_ok()
         );
         let mut old_schema = recording.clone();
-        old_schema.schema = 4;
+        old_schema.schema = 5;
         assert!(matches!(
             old_schema.check_with_host(&profile("a"), &host("model=1"), EXECUTABLE),
-            Err(ReplayRefused::Schema(4))
+            Err(ReplayRefused::Schema(5))
         ));
         assert!(matches!(
             recording.check_with_host(&profile("b"), &host("model=1"), EXECUTABLE),
@@ -571,7 +553,7 @@ mod tests {
             recording.check_with_host(
                 &profile("a"),
                 &host("model=1"),
-                "linux-exe-sha256-v1:changed"
+                "linux-exe-execmaps-sha256-v2:changed"
             ),
             Err(ReplayRefused::Executable { .. })
         ));
@@ -658,15 +640,13 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
     fn public_recording_uses_the_current_host_instead_of_a_supplied_identity() {
-        if LOADER_OVERRIDE_VARS
-            .iter()
-            .any(|name| std::env::var_os(name).is_some())
-        {
+        let overrides = host_code_identity::loader_override_names();
+        if !overrides.is_empty() {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
             command
                 .arg("--exact")
                 .arg("recording::tests::public_recording_uses_the_current_host_instead_of_a_supplied_identity");
-            for name in LOADER_OVERRIDE_VARS {
+            for name in overrides {
                 command.env_remove(name);
             }
             let output = command.output().unwrap();
@@ -736,7 +716,7 @@ mod tests {
             .arg(std::env::current_exe().unwrap())
             .arg("--exact")
             .arg("recording::tests::direct_dynamic_loader_launch_cannot_claim_recording_identity");
-        for name in LOADER_OVERRIDE_VARS {
+        for name in host_code_identity::loader_override_names() {
             command.env_remove(name);
         }
         let output = command.env(CHILD_ENV, "1").output().unwrap();
@@ -783,7 +763,7 @@ mod tests {
                 command
                     .arg("--exact")
                     .arg("recording::tests::recording_refuses_ambient_loader_override");
-                for name in LOADER_OVERRIDE_VARS {
+                for name in host_code_identity::loader_override_names() {
                     command.env_remove(name);
                 }
                 let output = command
