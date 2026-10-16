@@ -297,10 +297,16 @@ pub(crate) fn execute_job(
     }
     target.restore(origin_snapshot)?;
     for (action, certificate) in replay.iter().zip(replay_certificates) {
+        if target.failed() && target.watchdog_cutoffs() != 0 {
+            break;
+        }
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
         target.apply_replayed(*action);
+        if target.failed() && target.watchdog_cutoffs() != 0 {
+            break;
+        }
         target.verify_replayed_endpoint(*certificate)?;
     }
     let mut aggregate = parent_milestones;
