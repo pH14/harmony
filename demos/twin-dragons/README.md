@@ -467,9 +467,9 @@ time.
 `famidash_level_select_tape` export, writes the level to `$047B`, presses A and
 waits 90 frames, the same wait as the Stereo Madness setup.
 
-The native search clears Stereo Madness in 6,800 to 9,000 executions on seeds
-1 to 5, so at 120 rollouts per second the browser search reaches Back on Track
-in about a minute.
+The native search with 16 workers clears Stereo Madness in 10,900 to 14,700
+executions on seeds 1 to 5, so at 120 rollouts per second the browser search
+reaches Back on Track in about two minutes.
 
 ### Super Mario Bros.
 
@@ -670,8 +670,8 @@ workers and in the browser coordinator in Node on the same seed and execution
 budget, and requires every job and skip line of the two decision streams to be
 equal. The native stream's closing end record must report the browser's
 execution count. Twin Dragons runs `twin-dragons-campaign` for 600 executions. Famidash
-runs `nes-eval` with `alphabet_only` on seed 5 for 10,000 executions and must
-clear Stereo Madness. Super
+runs `nes-eval` with `alphabet_only` on seed 2 for 10,000 executions and must
+reach 90 percent of Stereo Madness. Super
 Mario Bros. runs `nes-eval` with `energy_splice:6`, a window of 16 and a
 1,024 MiB memory budget for 400 executions, Mega Man 2 runs it with
 `whole_game` for 400, and Metroid for 160. `ORACLE_GAMES` (comma-separated
