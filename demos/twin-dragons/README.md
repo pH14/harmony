@@ -134,6 +134,34 @@ archived actions, `feed::archived_state` replays the input through a fresh
 target and returns the recorded actions, so replay, forks and Play from here use
 the actions the core really ran. The native live view uses the same rule.
 
+### Native runs
+
+`tools/launcher.py` starts live campaigns on Linux machines over SSH and serves
+the page that watches them. Copy `tools/arcade-machines.example.toml` to
+`~/.config/harmony/arcade-machines.toml` and list each machine with its SSH
+destination, a working directory, and the most workers and memory the page may
+ask for. The optional `roms` directory holds the ROMs the site does not ship,
+named as in `roms/manifest.json`. Then run:
+
+```bash
+npm run build
+tools/launcher.py
+```
+
+and open `http://127.0.0.1:8790/`. On a loopback address the page asks
+`/launcher/machines`; when the launcher answers, a Native runs button opens a
+dialog to pick the machine, game, workers, memory cap, seed and time limit. A
+run copies the committed `HEAD` with `git archive` to `<dir>/src/<commit>`,
+builds the QuickNES core with `scripts/build-quicknes-core.sh` and `nes-eval`
+there once per commit, uploads the ROM, and starts `nes-eval` with
+`live: 127.0.0.1:0` as a `systemd-run` unit named `harmony-arcade-<id>` with
+`MemoryMax` 1 GiB above the search's memory budget and `Nice=10`. The launcher
+reads the port `nes-eval` printed, forwards it with `ssh -L`, and serves the
+page at `/runs/<id>/?game=<game>&live` with `/runs/<id>/live/` proxied to that
+port. A restarted launcher finds the running units on each machine and
+reattaches. The launcher answers only requests whose `Host` and `Origin` are its
+own loopback address, and starting or stopping a run takes a JSON POST.
+
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside
 it. Rollouts have 1 to 24 controller actions. Each action holds its buttons for
@@ -326,8 +354,8 @@ is on arrives, and it moves to that rollout's exit once the exit has at least
 three live sprites, so the view never shows a level the search has not started
 exploring. Levels that other
 lineages reach, such as the worlds past a warp zone the path did not take, do
-not move the view. When the path's level has had no live rollouts for 8 seconds
-while a deeper level has some, the path moves to the deepest such level. A
+not move the view. When a deeper level has had more live rollouts than the
+path's level for 8 seconds, the path moves to the deepest such level. A
 search whose root has already cleared its level, such as a branch started after
 the flag or the axe, moves as soon as a deeper level has live rollouts. The map
 always draws clearing rollouts and the camera follows the one that leaves the

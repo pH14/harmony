@@ -53,6 +53,7 @@ pub struct Request {
     pub memory_mib: usize,
     pub window: usize,
     pub wall_seconds: u64,
+    #[serde(default)]
     pub mixture: String,
     pub verification: String,
     #[serde(default)]

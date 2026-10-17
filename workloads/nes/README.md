@@ -314,8 +314,11 @@ when the archived input does not hold every frame the core ran, as the browser
 does. Requests are limited to 64 KiB with 10-second read and write timeouts,
 and the server holds at most 64 connections. Open
 `http://127.0.0.1:8790/?game=GAME&live` to watch. The live view supports Super
-Mario Bros., Mega Man 2, Metroid, Famidash and Twin Dragons, starts at genesis,
-and rejects `stage`, `ai`, `root_input`, `metroid_terminal` and `resume`.
+Mario Bros., Mega Man 2, Metroid, Twin Dragons and the five Famidash groups:
+`famidash`, `famidash-community`, `famidash-b`, `famidash-c` and `famidash-d`,
+each with its group's ROM. It starts at genesis, uses the arcade game's own draw
+mixture, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`, `resume`
+and `mixture`.
 
 ## Product CLI adapter
 

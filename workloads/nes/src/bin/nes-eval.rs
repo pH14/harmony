@@ -69,15 +69,19 @@ fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Re
         .transpose()
 }
 
+type LiveFamidash<const GROUP: usize> =
+    nes_games::famidash::campaign::FamidashGame<NativeMachine, GROUP>;
+
 fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<()> {
     if request.stage.is_some()
         || request.ai.is_some()
         || request.root_input.is_some()
         || request.metroid_terminal.is_some()
         || request.resume.is_some()
+        || !request.mixture.is_empty()
     {
         return Err(
-            "a live view runs the arcade game from genesis without stage, ai, root or resume options"
+            "a live view runs the arcade game from genesis with its own mixture, without stage, ai, root, resume or mixture options"
                 .into(),
         );
     }
@@ -89,9 +93,13 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
         "metroid" => {
             evaluate_live::<MetroidGame<NativeMachine>>(rom, request, out, started, "metroid")
         }
-        "famidash" => evaluate_live::<nes_games::famidash::campaign::FamidashGame<NativeMachine>>(
-            rom, request, out, started, "famidash",
-        ),
+        "famidash" => evaluate_live::<LiveFamidash<0>>(rom, request, out, started, "famidash"),
+        "famidash-community" => {
+            evaluate_live::<LiveFamidash<1>>(rom, request, out, started, "famidash-community")
+        }
+        "famidash-b" => evaluate_live::<LiveFamidash<2>>(rom, request, out, started, "famidash-b"),
+        "famidash-c" => evaluate_live::<LiveFamidash<3>>(rom, request, out, started, "famidash-c"),
+        "famidash-d" => evaluate_live::<LiveFamidash<4>>(rom, request, out, started, "famidash-d"),
         "twin-dragons" => evaluate_live::<
             nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
         >(rom, request, out, started, "twin-dragons"),

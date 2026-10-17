@@ -35,7 +35,10 @@ use serde_json::{Value, json};
 
 use crate::{
     eval::{Request, Result, evaluate_watched},
-    search::campaign::{CampaignCoordinator, CampaignWatch, JobOutcome, JobSpec, WatchedJob},
+    search::{
+        campaign::{CampaignCoordinator, CampaignWatch, JobOutcome, JobSpec, WatchedJob},
+        draw::draw_mixture_identifier,
+    },
     witness::EndpointIdentity,
 };
 
@@ -722,6 +725,10 @@ where
         .into());
     }
     eprintln!("live view listening on {local}");
+    let request = &Request {
+        mixture: draw_mixture_identifier(G::mixture()),
+        ..request.clone()
+    };
     let execution_sha256 =
         machine::quicknes::prepared_execution_sha256(&request.core, &request.core_sha256)?;
     let shared: SharedFeed<G::View> = Arc::new(Mutex::new(Shared {
