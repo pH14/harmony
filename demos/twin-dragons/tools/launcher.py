@@ -47,6 +47,7 @@ MEMORY_HEADROOM_MIB = 1024
 LISTEN_PATTERN = re.compile(r"live view listening on 127\.0\.0\.1:(\d+)")
 RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9-]+$")
 STATUS_SECONDS = 10.0
+LAUNCHER_HEADER = "X-Harmony-Launcher"
 
 
 @dataclass(frozen=True)
@@ -419,7 +420,8 @@ class Launcher:
                 if not RUN_ID.match(run_id) or not launch:
                     continue
                 settings = Settings(**json.loads(launch))
-                run = Run(run_id, settings, state="running")
+                started = time.mktime(time.strptime(run_id[:15], "%Y%m%d-%H%M%S"))
+                run = Run(run_id, settings, state="running", started=started)
                 with self.lock:
                     self.runs[run_id] = run
                 try:
@@ -465,8 +467,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", kind)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header(LAUNCHER_HEADER, "1")
         self.end_headers()
-        self.wfile.write(body)
+        if self.command != "HEAD":
+            self.wfile.write(body)
 
     def json(self, status: int, value: Any) -> None:
         self.reply(status, json.dumps(value).encode(), "application/json")
@@ -538,6 +542,10 @@ class Handler(BaseHTTPRequestHandler):
             pass
         finally:
             upstream.close()
+
+    def do_HEAD(self) -> None:
+        if self.allowed():
+            self.reply(200, b"", "text/html")
 
     def do_POST(self) -> None:
         if not self.allowed():

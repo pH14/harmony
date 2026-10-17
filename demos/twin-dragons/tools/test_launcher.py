@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from __future__ import annotations
 
+import http.client
 import shlex
 import subprocess
 import tempfile
+import threading
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import launcher
@@ -90,6 +93,36 @@ class LauncherTest(unittest.TestCase):
         ).stdout
         self.assertEqual(output.splitlines(), args)
         self.assertEqual(shlex.split(shell)[:2], ["bash", "-c"])
+
+    def test_the_server_marks_its_pages_and_refuses_other_hosts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            site = Path(directory)
+            (site / "index.html").write_text("page")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), launcher.Handler)
+            port = server.server_address[1]
+            launcher.Handler.launcher = launcher.Launcher(self.config(), site)
+            launcher.Handler.port = port
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+
+                def get(method: str, path: str, host: str) -> http.client.HTTPResponse:
+                    connection = http.client.HTTPConnection("127.0.0.1", port)
+                    connection.request(method, path, headers={"Host": host})
+                    return connection.getresponse()
+
+                page = get("HEAD", "/?game=famidash", f"127.0.0.1:{port}")
+                self.assertEqual(page.status, 200)
+                self.assertEqual(page.getheader(launcher.LAUNCHER_HEADER), "1")
+                machines = get("GET", "/launcher/machines", f"localhost:{port}")
+                self.assertEqual(machines.status, 200)
+                self.assertIn(b'"example"', machines.read())
+                self.assertEqual(get("GET", "/", f"evil.example:{port}").status, 403)
+                self.assertEqual(
+                    get("GET", "/runs/none/live/events", f"127.0.0.1:{port}").status, 404
+                )
+            finally:
+                server.shutdown()
+                server.server_close()
 
 
 if __name__ == "__main__":

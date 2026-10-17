@@ -26,6 +26,9 @@ jobs:
           node-version: '22'
           cache: npm
           cache-dependency-path: demos/twin-dragons/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Install Rust and browser build tools
         run: |
           rustup toolchain install 1.97.0 --profile minimal --component clippy --target wasm32-unknown-unknown
@@ -48,6 +51,7 @@ jobs:
           wasm-pack test --node demos/twin-dragons/rust
           cd demos/twin-dragons
           npm test
+          python3 -m unittest discover -s tools -p test_launcher.py
       - name: Static demo and corresponding source
         uses: actions/upload-artifact@v4
         with:

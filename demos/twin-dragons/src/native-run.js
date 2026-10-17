@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const REFRESH_MS = 3000;
+const LAUNCHER_HEADER = "X-Harmony-Launcher";
 
 function element(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
@@ -27,6 +28,8 @@ function describe(run) {
 
 export async function nativeRuns(gameId, mount) {
   if (!LOOPBACK.has(location.hostname)) return;
+  const page = await fetch(location.href, { method: "HEAD" }).catch(() => null);
+  if (!page?.headers.has(LAUNCHER_HEADER)) return;
   const options = await fetch("/launcher/machines").then((response) => (response.ok ? response.json() : null)).catch(() => null);
   if (!options?.machines?.length) return;
   const machine = element("select"), game = element("select");
@@ -35,7 +38,7 @@ export async function nativeRuns(gameId, mount) {
   const workers = element("input", { type: "number", min: 1, value: 4 }),
     memory = element("input", { type: "number", min: 0.25, step: 0.25, value: 4 }),
     seed = element("input", { type: "number", min: 0, value: 1 }),
-    hours = element("input", { type: "number", min: 0.1, max: 72, step: 0.5, value: 12 }),
+    hours = element("input", { type: "number", min: 0.5, max: 72, step: 0.5, value: 12 }),
     start = element("button", { type: "submit", textContent: "Start run" }),
     message = element("p", { className: "native-message", role: "status" }),
     list = element("ul", { className: "native-runs" });
