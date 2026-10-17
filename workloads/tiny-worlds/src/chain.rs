@@ -56,7 +56,8 @@ impl LocalState {
             | WorldState::Crossing(_)
             | WorldState::PassiveClock(_)
             | WorldState::Targets(_)
-            | WorldState::Fork(_) => {
+            | WorldState::Fork(_)
+            | WorldState::Gated(_) => {
                 unreachable!("validated non-nested, non-graph stage")
             }
         }
@@ -105,9 +106,10 @@ impl Config {
                     | World::PassiveClock(_)
                     | World::Targets(_)
                     | World::Fork(_)
+                    | World::Gated(_)
             ) {
                 return Err(
-                    "graph, crossing, passive-clock, targets and fork stages are unsupported"
+                    "graph, crossing, passive-clock, targets, fork and gated stages are unsupported"
                         .into(),
                 );
             }

@@ -8,6 +8,7 @@ pub mod deadline;
 pub mod deadline_actions;
 pub mod delayed;
 pub mod fork;
+pub mod gated;
 pub mod graph;
 pub mod held;
 pub mod map;
@@ -240,6 +241,8 @@ pub struct Evidence {
     pub targets: Option<targets::Evidence>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fork_first: Vec<Option<u64>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gated_first: Vec<Option<u64>>,
 }
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ArchiveReport<const CAPACITY_TWO: bool = false> {
@@ -854,6 +857,14 @@ impl<const CAPACITY_TWO: bool> Evaluation for Workload<CAPACITY_TWO> {
                         after.goal,
                     ];
                     for (first, reached) in e.fork_first.iter_mut().zip(reached) {
+                        if reached {
+                            first.get_or_insert(reached_work);
+                        }
+                    }
+                }
+                (World::Gated(w), State::Gated(_), State::Gated(after)) => {
+                    e.gated_first.resize(4, None);
+                    for (first, reached) in e.gated_first.iter_mut().zip(w.first_marks(after)) {
                         if reached {
                             first.get_or_insert(reached_work);
                         }
