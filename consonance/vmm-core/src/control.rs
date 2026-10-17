@@ -2646,6 +2646,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn host_operation_guard_follows_fresh_restore_vmm() {
         let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let signal = Arc::clone(&changed);
@@ -3564,6 +3568,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn changing_service_factory_under_same_recorded_contract_stops_for_input() {
         let mut server = payload_server();
         hello(&mut server);
@@ -3684,6 +3692,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn branch_coverage_schedule_is_the_recorded_source_of_guest_quantum() {
         let mut server = payload_server();
         hello(&mut server);
@@ -6496,6 +6508,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn branch_rejects_service_contract_drift_from_either_reseed() {
         for (late, zero_only) in [(false, false), (true, false), (false, true)] {
             if cfg!(miri) && late {
