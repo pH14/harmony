@@ -11,6 +11,7 @@ use nes_games::{
     },
     famidash::{
         campaign::FamidashGame,
+        levels::Menu,
         target::{
             FamidashObservations, FamidashSnapshot, FamidashTarget, decode_state, level_select_tape,
         },
@@ -25,12 +26,12 @@ pub type Famidash = FamidashGame<Traced<JsMachine>>;
 
 impl BrowserGame for Famidash {
     fn root_snapshot(
-        _target: &mut FamidashTarget<Traced<JsMachine>>,
+        target: &mut FamidashTarget<Traced<JsMachine>>,
         core: u32,
         raw: &[u8],
         frames: u64,
     ) -> Result<FamidashSnapshot, Box<dyn Error>> {
-        let decoded = decode_state(&restore_ram(core, raw)?)?;
+        let decoded = decode_state(&restore_ram(core, raw)?, target.stage())?;
         Ok(FamidashSnapshot {
             emulator_state: pack_quicknes_state(raw)?,
             observation: FamidashObservations {
@@ -53,7 +54,7 @@ pub fn famidash_observation(ram: &[u8]) -> Result<String, JsValue> {
 
 #[wasm_bindgen]
 pub fn famidash_level_select_tape() -> Result<String, JsValue> {
-    let tape: Vec<Action> = actions(&level_select_tape());
+    let tape: Vec<Action> = actions(&level_select_tape(Menu::MainLevels));
     serde_json::to_string(&tape).map_err(js_error)
 }
 

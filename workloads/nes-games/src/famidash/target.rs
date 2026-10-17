@@ -10,7 +10,7 @@ use machine::{Machine, MachineError, SnapId, StopConditions, nes};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    famidash::progress,
+    famidash::levels::{self, Menu, Side, Stage},
     nes_backend::{NesBackend, NesMemory},
     target::{ExitKind, Target},
 };
@@ -21,7 +21,6 @@ pub type FamidashInput = crate::search::archive::Input<ButtonChord>;
 
 pub const A_BUTTON: u8 = 0x01;
 pub const RIGHT_BUTTON: u8 = 0x80;
-pub const LAST_LEVEL: u8 = 21;
 pub const GAME_STATE_PLAYING: u8 = 2;
 pub const GAME_STATE_COMPLETE: u8 = 3;
 pub const GAME_STATE_LEVEL_SELECT: u8 = 6;
@@ -79,6 +78,8 @@ pub struct FamidashMechanicalState {
     pub paused: bool,
     pub dead: bool,
     pub gameplay: Option<FamidashGameplayState>,
+    pub side: Side,
+    pub goal: u8,
 }
 
 impl FamidashMechanicalState {
@@ -94,12 +95,12 @@ impl FamidashMechanicalState {
 
     #[must_use]
     pub fn finished(self) -> bool {
-        self.complete() && self.level >= LAST_LEVEL
+        self.complete() && self.level >= self.goal
     }
 
     #[must_use]
     pub fn advancing(self) -> bool {
-        self.complete() && self.level < LAST_LEVEL
+        self.complete() && self.level < self.goal
     }
 
     #[must_use]
@@ -118,7 +119,7 @@ impl FamidashMechanicalState {
             100
         } else {
             self.gameplay.map_or(0, |gameplay| {
-                progress::percent(self.level, gameplay.scroll_x)
+                levels::percent(self.side, self.level, gameplay.scroll_x)
             })
         }
     }
@@ -160,6 +161,7 @@ impl FamidashSnapshot {
 #[derive(Debug)]
 pub struct FamidashTarget<M: NesBackend<Vec<u8>>> {
     machine: M,
+    stage: Stage,
     genesis: SnapId,
     current: SnapId,
     genesis_observation: FamidashObservations,
@@ -173,22 +175,22 @@ pub struct FamidashTarget<M: NesBackend<Vec<u8>>> {
 }
 
 impl<M: NesBackend<Vec<u8>> + NesMemory> FamidashTarget<M> {
-    pub fn from_power_on_at_level(mut machine: M, level: u8) -> Result<Self, MachineError> {
-        if level >= progress::LEVEL_COUNT {
-            return Err(MachineError::Backend(format!(
-                "Famidash has no level {level}"
-            )));
-        }
+    pub fn from_power_on(mut machine: M, stage: Stage) -> Result<Self, MachineError> {
+        let stage =
+            Stage::new(stage.side, stage.level, stage.goal).map_err(MachineError::Backend)?;
         let power_on = machine.snapshot()?;
-        machine.branch(power_on, &nes::reproducer(&level_select_tape()))?;
+        machine.branch(
+            power_on,
+            &nes::reproducer(&level_select_tape(stage.group().menu)),
+        )?;
         run_setup(&mut machine)?;
         machine.drop_snapshot(power_on)?;
-        machine.poke_wram(LEVEL, level)?;
+        machine.poke_wram(LEVEL, stage.level)?;
         let level_select = machine.snapshot()?;
         machine.branch(level_select, &nes::reproducer(&start_level_tape()))?;
         run_setup(&mut machine)?;
         machine.drop_snapshot(level_select)?;
-        Self::from_machine(machine, level)
+        Self::from_machine(machine, stage)
     }
 }
 
@@ -206,10 +208,10 @@ fn run_setup<M: Machine>(machine: &mut M) -> Result<(), MachineError> {
 }
 
 impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
-    pub fn from_machine(mut machine: M, level: u8) -> Result<Self, MachineError> {
+    pub fn from_machine(mut machine: M, stage: Stage) -> Result<Self, MachineError> {
         let wram = read_wram(&machine)?;
-        let state = decode_state(&wram)?;
-        validate_genesis(state, level)?;
+        let state = decode_state(&wram, stage)?;
+        validate_genesis(state, stage.level)?;
         let genesis = machine.snapshot()?;
         let observation = FamidashObservations {
             frame_count: 0,
@@ -218,6 +220,7 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
         };
         Ok(Self {
             machine,
+            stage,
             genesis,
             current: genesis,
             genesis_observation: observation.clone(),
@@ -231,12 +234,9 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
         })
     }
 
-    pub fn from_power_on(mut machine: M) -> Result<Self, MachineError> {
-        let power_on = machine.snapshot()?;
-        machine.branch(power_on, &nes::reproducer(&setup_tape()))?;
-        run_setup(&mut machine)?;
-        machine.drop_snapshot(power_on)?;
-        Self::from_machine(machine, 0)
+    #[must_use]
+    pub fn stage(&self) -> Stage {
+        self.stage
     }
 
     #[must_use]
@@ -306,7 +306,8 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
             }
             Some(())
         };
-        let state = |target: &Self| decode_state(&read_wram(&target.machine).ok()?).ok();
+        let state =
+            |target: &Self| decode_state(&read_wram(&target.machine).ok()?, target.stage).ok();
         for _ in 0..LEVEL_DONE_POLLS {
             if state(self)?.game_state == GAME_STATE_LEVEL_SELECT {
                 break;
@@ -359,8 +360,9 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
         self.execution_work = self
             .execution_work
             .saturating_add(u64::try_from(produced_frames).unwrap_or(u64::MAX));
+        let stage = self.stage;
         let stop_index = self.machine.frames().iter().position(|wram| {
-            decode_state(wram).is_ok_and(|state| state.terminal() || state.advancing())
+            decode_state(wram, stage).is_ok_and(|state| state.terminal() || state.advancing())
         });
         let logical_frames = stop_index.map_or(produced_frames, |index| index.saturating_add(1));
         let endpoint_wram = self
@@ -369,7 +371,7 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
             .get(logical_frames.saturating_sub(1))
             .copied()
             .unwrap_or(initial_wram);
-        let Ok(endpoint_state) = decode_state(&endpoint_wram) else {
+        let Ok(endpoint_state) = decode_state(&endpoint_wram, stage) else {
             return self.fail();
         };
         let mut prior_state = initial_state;
@@ -381,7 +383,7 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
             .take(logical_frames)
             .enumerate()
         {
-            let Ok(state) = decode_state(wram) else {
+            let Ok(state) = decode_state(wram, stage) else {
                 return self.fail();
             };
             if spatial_bucket(state) != spatial_bucket(prior_state)
@@ -446,7 +448,7 @@ impl<M: NesBackend<Vec<u8>>> FamidashTarget<M> {
             let Ok(wram) = read_wram(&self.machine) else {
                 return self.fail();
             };
-            let Ok(state) = decode_state(&wram) else {
+            let Ok(state) = decode_state(&wram, stage) else {
                 return self.fail();
             };
             let observation = Self::make_observation(endpoint_frame.saturating_add(driven), state);
@@ -473,16 +475,16 @@ impl FamidashTarget<QuickNesMachine> {
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        level: u8,
+        stage: Stage,
     ) -> Result<Self, MachineError> {
-        Self::from_power_on_at_level(
+        Self::from_power_on(
             QuickNesMachine::from_rom_bytes_with_identity(
                 rom,
                 core_path,
                 core_sha256,
                 execution_sha256,
             )?,
-            level,
+            stage,
         )
     }
 
@@ -490,11 +492,11 @@ impl FamidashTarget<QuickNesMachine> {
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
-        level: u8,
+        stage: Stage,
     ) -> Result<Self, MachineError> {
-        Self::from_power_on_at_level(
+        Self::from_power_on(
             QuickNesMachine::from_rom_bytes(rom, core_path, core_sha256)?,
-            level,
+            stage,
         )
     }
 
@@ -524,7 +526,7 @@ impl FamidashTarget<QuickNesMachine> {
                     &mut metadata,
                     &mut skip,
                 )?;
-                let state = decode_state(&read_wram(&self.machine)?)?;
+                let state = decode_state(&read_wram(&self.machine)?, self.stage)?;
                 if state.advancing() {
                     self.advance_level(state.level, |target, chord| {
                         target
@@ -542,7 +544,7 @@ impl FamidashTarget<QuickNesMachine> {
                     .ok_or("Famidash film could not advance to the next level")?;
                 }
             }
-            let endpoint = decode_state(&read_wram(&self.machine)?)?;
+            let endpoint = decode_state(&read_wram(&self.machine)?, self.stage)?;
             let mut remaining = tail_frames;
             while remaining > 0 {
                 let hold = remaining.min(u32::from(MAX_HOLD_FRAMES));
@@ -631,7 +633,8 @@ impl FamidashTarget<QuickNesMachine> {
                     audio.len() / usize::from(QUICKNES_AUDIO_CHANNELS),
                 )?);
             }
-            if stop_at_advance && decode_state(&read_wram(&self.machine)?)?.advancing() {
+            if stop_at_advance && decode_state(&read_wram(&self.machine)?, self.stage)?.advancing()
+            {
                 break;
             }
         }
@@ -792,11 +795,15 @@ fn wait(tape: &mut Vec<ButtonChord>, frames: u32) {
 }
 
 #[must_use]
-pub fn level_select_tape() -> Vec<ButtonChord> {
+pub fn level_select_tape(menu: Menu) -> Vec<ButtonChord> {
     let mut tape = Vec::new();
     wait(&mut tape, 22);
     tape.push(ButtonChord::new(A_BUTTON, 1));
     wait(&mut tape, 936);
+    if menu == Menu::CommunityLevels {
+        tape.push(ButtonChord::new(RIGHT_BUTTON, 1));
+        wait(&mut tape, MENU_SETTLE_FRAMES);
+    }
     tape.push(ButtonChord::new(A_BUTTON, 1));
     wait(&mut tape, 90);
     tape
@@ -811,7 +818,7 @@ pub fn start_level_tape() -> Vec<ButtonChord> {
 
 #[must_use]
 pub fn setup_tape() -> Vec<ButtonChord> {
-    let mut tape = level_select_tape();
+    let mut tape = level_select_tape(Menu::MainLevels);
     tape.extend(start_level_tape());
     tape
 }
@@ -838,7 +845,7 @@ fn long(wram: &[u8], address: usize) -> Result<i32, MachineError> {
     ]))
 }
 
-pub fn decode_state(wram: &[u8]) -> Result<FamidashMechanicalState, MachineError> {
+pub fn decode_state(wram: &[u8], stage: Stage) -> Result<FamidashMechanicalState, MachineError> {
     let game_state = byte(wram, GAME_STATE)?;
     let level = byte(wram, LEVEL)?;
     let paused = byte(wram, PAUSED)? != 0;
@@ -870,6 +877,8 @@ pub fn decode_state(wram: &[u8]) -> Result<FamidashMechanicalState, MachineError
         paused,
         dead,
         gameplay,
+        side: stage.side,
+        goal: stage.goal,
     })
 }
 
@@ -913,6 +922,10 @@ pub fn boundary_fields(state: FamidashMechanicalState) -> (u8, bool, u8, bool, b
 mod tests {
     use super::*;
 
+    fn main() -> Stage {
+        Stage::through_group(Side::Main, 0).unwrap()
+    }
+
     fn playing_wram() -> Vec<u8> {
         let mut wram = vec![0; WRAM_SIZE];
         wram[GAME_STATE] = GAME_STATE_PLAYING;
@@ -927,7 +940,7 @@ mod tests {
     fn world_position_adds_the_scroll_to_the_screen_position() {
         let mut wram = playing_wram();
         wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&1_000_i32.to_le_bytes());
-        let gameplay = decode_state(&wram).unwrap().gameplay.unwrap();
+        let gameplay = decode_state(&wram, main()).unwrap().gameplay.unwrap();
         assert_eq!(gameplay.x, 1_080);
         assert_eq!(gameplay.camera_y, 2 * 240 + 0xef);
         assert_eq!(gameplay.y, 2 * 240 + 0xef + 178);
@@ -937,7 +950,7 @@ mod tests {
     fn a_negative_scroll_before_the_level_moves_is_signed() {
         let mut wram = playing_wram();
         wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&(-240_i32).to_le_bytes());
-        let state = decode_state(&wram).unwrap();
+        let state = decode_state(&wram, main()).unwrap();
         assert_eq!(state.gameplay.unwrap().x, -160);
         assert_eq!(state.percent(), 0);
     }
@@ -947,7 +960,7 @@ mod tests {
         for player in 0..2 {
             let mut wram = playing_wram();
             wram[CUBE_DATA + player] = DEATH;
-            let state = decode_state(&wram).unwrap();
+            let state = decode_state(&wram, main()).unwrap();
             assert!(state.dead);
             assert!(state.terminal());
             assert!(state.gameplay.is_none());
@@ -959,40 +972,56 @@ mod tests {
         let mut wram = playing_wram();
         wram[GAME_STATE] = GAME_STATE_COMPLETE;
         wram[CUBE_DATA] = DEATH;
-        let state = decode_state(&wram).unwrap();
+        let state = decode_state(&wram, main()).unwrap();
         assert!(state.complete());
         assert!(!state.dead);
         assert!(state.advancing());
         assert!(!state.terminal());
         assert_eq!(state.percent(), 100);
         assert_eq!(state.cleared(), 1);
-        wram[LEVEL] = LAST_LEVEL;
-        let state = decode_state(&wram).unwrap();
+        wram[LEVEL] = 21;
+        let state = decode_state(&wram, main()).unwrap();
         assert!(state.finished());
         assert!(!state.advancing());
         assert!(state.terminal());
-        assert_eq!(state.cleared(), LAST_LEVEL + 1);
+        assert_eq!(state.cleared(), 22);
+        wram[LEVEL] = 30;
+        let single = Stage::single(Side::B, 30).unwrap();
+        let state = decode_state(&wram, single).unwrap();
+        assert!(state.finished());
+        assert_eq!(state.side, Side::B);
+    }
+
+    #[test]
+    fn the_percent_uses_the_side_level_length() {
+        let mut wram = playing_wram();
+        wram[LEVEL] = 23;
+        wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&(732_i32 * 40).to_le_bytes());
+        let stage = Stage::single(Side::C, 23).unwrap();
+        assert_eq!(decode_state(&wram, stage).unwrap().percent(), 40);
+        let stage = Stage::single(Side::Main, 23).unwrap();
+        assert_eq!(decode_state(&wram, stage).unwrap().percent(), 99);
     }
 
     #[test]
     fn a_paused_level_has_no_gameplay() {
         let mut wram = playing_wram();
         wram[PAUSED] = 1;
-        let state = decode_state(&wram).unwrap();
+        let state = decode_state(&wram, main()).unwrap();
         assert!(state.gameplay.is_none());
         assert!(!state.terminal());
     }
 
     #[test]
     fn genesis_requires_gameplay_in_the_selected_level() {
-        assert!(validate_genesis(decode_state(&playing_wram()).unwrap(), 0).is_ok());
+        assert!(validate_genesis(decode_state(&playing_wram(), main()).unwrap(), 0).is_ok());
         let mut wram = playing_wram();
         wram[LEVEL] = 1;
-        assert!(validate_genesis(decode_state(&wram).unwrap(), 0).is_err());
-        assert!(validate_genesis(decode_state(&wram).unwrap(), 1).is_ok());
+        assert!(validate_genesis(decode_state(&wram, main()).unwrap(), 0).is_err());
+        assert!(validate_genesis(decode_state(&wram, main()).unwrap(), 1).is_ok());
         wram[LEVEL] = 0;
         wram[GAME_STATE] = GAME_STATE_LEVEL_SELECT;
-        assert!(validate_genesis(decode_state(&wram).unwrap(), 0).is_err());
+        assert!(validate_genesis(decode_state(&wram, main()).unwrap(), 0).is_err());
     }
 
     #[test]
@@ -1005,6 +1034,24 @@ mod tests {
             .map(|chord| u32::from(chord.bounded_hold_frames()))
             .sum();
         assert_eq!(frames, 1_141);
-        assert!(tape.starts_with(&level_select_tape()));
+        assert!(tape.starts_with(&level_select_tape(Menu::MainLevels)));
+    }
+
+    #[test]
+    fn the_community_menu_is_one_right_press_from_the_main_menu() {
+        let main = level_select_tape(Menu::MainLevels);
+        let community = level_select_tape(Menu::CommunityLevels);
+        let pressed: Vec<u8> = community
+            .iter()
+            .filter(|chord| chord.buttons != 0)
+            .map(|chord| chord.buttons)
+            .collect();
+        assert_eq!(pressed, [A_BUTTON, RIGHT_BUTTON, A_BUTTON]);
+        let frames = |tape: &[ButtonChord]| -> u32 {
+            tape.iter()
+                .map(|chord| u32::from(chord.bounded_hold_frames()))
+                .sum()
+        };
+        assert_eq!(frames(&community), frames(&main) + 1 + MENU_SETTLE_FRAMES);
     }
 }

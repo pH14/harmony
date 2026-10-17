@@ -226,7 +226,7 @@ pub const CHORDS: ChordVocabulary = ChordVocabulary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::famidash::target::{FamidashGameplayState, GAME_STATE_COMPLETE, LAST_LEVEL};
+    use crate::famidash::target::{FamidashGameplayState, GAME_STATE_COMPLETE};
     use crate::search::rand::RomuDuoJrRand;
 
     fn state(x: i32, y: i32, gamemode: u8) -> FamidashMechanicalState {
@@ -239,6 +239,7 @@ mod tests {
                 gamemode,
                 ..FamidashGameplayState::default()
             }),
+            goal: 21,
             ..FamidashMechanicalState::default()
         }
     }
@@ -324,9 +325,9 @@ mod tests {
             (milestones(complete).cleared, milestones(complete).percent),
             (1, 0)
         );
-        complete.level = LAST_LEVEL;
+        complete.level = 21;
         assert!(milestones(complete).complete);
-        assert_eq!(milestones(complete).cleared, LAST_LEVEL + 1);
+        assert_eq!(milestones(complete).cleared, 22);
     }
 
     #[test]

@@ -8,7 +8,10 @@ use std::{
 };
 
 use nes_workload::{
-    famidash::campaign::{FamidashCampaignRun, FamidashGame},
+    famidash::{
+        campaign::{FamidashCampaignRun, FamidashGame},
+        levels::{Side, Stage},
+    },
     film::{Capture, FilmMetadata, Filmable, Reel},
     search::archive::Input,
     stb::{
@@ -34,6 +37,7 @@ struct Args {
     core_sha256: String,
     ai: Option<String>,
     level: u8,
+    goal: Option<u8>,
     input: PathBuf,
     evidence: PathBuf,
     out: PathBuf,
@@ -51,6 +55,7 @@ impl Args {
         let mut core_sha256 = None;
         let mut ai = None;
         let mut level = 0;
+        let mut goal = None;
         let mut input = None;
         let mut evidence = None;
         let mut out = None;
@@ -76,6 +81,7 @@ impl Args {
                 "--core-sha256" => core_sha256 = Some(text()?),
                 "--ai" => ai = Some(text()?),
                 "--level" => level = text()?.parse()?,
+                "--goal" => goal = Some(text()?.parse()?),
                 "--input" => input = Some(PathBuf::from(&value)),
                 "--evidence" => evidence = Some(PathBuf::from(&value)),
                 "--out" => out = Some(PathBuf::from(&value)),
@@ -93,6 +99,7 @@ impl Args {
             core_sha256: core_sha256.ok_or("missing --core-sha256")?,
             ai,
             level,
+            goal,
             input: input.ok_or("missing --input")?,
             evidence: evidence.ok_or("missing --evidence")?,
             out: out.ok_or("missing --out")?,
@@ -269,13 +276,16 @@ fn main() -> Result<()> {
             if args.ai.is_some() {
                 return Err("Famidash takes no ai option".into());
             }
+            let side =
+                Side::from_rom(&rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
+            let stage = Stage::new(side, args.level, args.goal.unwrap_or(args.level))?;
             produce(
-                FamidashGame::new_at_level(
+                FamidashGame::new(
                     &rom,
                     &args.core,
                     &args.core_sha256,
                     &execution_sha256,
-                    args.level,
+                    stage,
                 ),
                 FamidashCampaignRun,
                 &args,

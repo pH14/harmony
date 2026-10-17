@@ -5,18 +5,25 @@ use std::error::Error;
 use crate::{
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
+        levels::{Side, Stage},
         target::{
             FamidashMechanicalState, FamidashObservations, FamidashSnapshot, FamidashTarget,
             decode_state,
         },
     },
-    nes_backend::NesBackend,
+    nes_backend::{NesBackend, NesMemory},
     search::draw::DrawMixture,
 };
 use machine::nes::WRAM_SIZE;
 use serde::{Deserialize, Serialize};
 
 use super::{ArcadeGame, HIDDEN, Machines};
+
+const MAIN: Stage = Stage {
+    side: Side::Main,
+    level: 0,
+    goal: 21,
+};
 
 const MAP_TOPS: [i32; 22] = [
     662, 664, 679, 630, 599, 615, 710, 584, 643, 678, 480, 250, 616, 272, 661, 422, 658, 604, 558,
@@ -71,7 +78,7 @@ fn view(state: FamidashMechanicalState) -> View {
     }
 }
 
-impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>> + NesMemory + 'static> ArcadeGame for FamidashGame<M> {
     type Machine = M;
     type View = View;
 
@@ -80,9 +87,9 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for FamidashGame<M> {
             rom,
             identity,
             identity_sha256,
-            0,
+            MAIN,
             Box::new(move || {
-                FamidashTarget::from_power_on(machines().map_err(|error| error.to_string())?)
+                FamidashTarget::from_power_on(machines().map_err(|error| error.to_string())?, MAIN)
                     .map_err(|error| error.to_string())
             }),
         )
@@ -97,7 +104,7 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for FamidashGame<M> {
     }
 
     fn motion(wram: &[u8; WRAM_SIZE]) -> [u16; 4] {
-        match decode_state(wram) {
+        match decode_state(wram, MAIN) {
             Ok(state) => match state.gameplay {
                 Some(gameplay) => {
                     let (x, y) = map_point(state.level, gameplay.x, gameplay.y);
@@ -110,11 +117,11 @@ impl<M: NesBackend<Vec<u8>> + 'static> ArcadeGame for FamidashGame<M> {
     }
 
     fn memory_cleared(memory: &[u8]) -> u8 {
-        decode_state(memory).map_or(0, cleared)
+        decode_state(memory, MAIN).map_or(0, cleared)
     }
 
     fn memory_view(memory: &[u8]) -> Result<View, Box<dyn Error>> {
-        Ok(view(decode_state(memory)?))
+        Ok(view(decode_state(memory, MAIN)?))
     }
 
     fn view(observation: &FamidashObservations) -> View {

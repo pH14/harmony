@@ -2,7 +2,7 @@
 
 use std::error::Error;
 #[cfg(unix)]
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(unix)]
 use machine::quicknes::QuickNesMachine;
@@ -18,6 +18,7 @@ use crate::{
             chord_time, merge_milestones, merge_progress_watermark, milestone_key,
             milestones_from_observation,
         },
+        levels::Stage,
         target::{
             ButtonChord, FamidashInput, FamidashObservations, FamidashSnapshot, FamidashTarget,
             MAX_HOLD_FRAMES,
@@ -66,14 +67,15 @@ impl<M: NesBackend<Vec<u8>>> FamidashGame<M> {
         rom: &[u8],
         core: &str,
         core_sha256: &str,
-        level: u8,
+        stage: Stage,
         targets: FamidashTargets<M>,
     ) -> Self {
-        let genesis = if level == 0 {
-            "famidash-stereo-madness-v1".to_owned()
-        } else {
-            format!("famidash-level-{level}-v1")
-        };
+        let genesis = format!(
+            "famidash-{}-level-{}-to-{}-v1",
+            stage.side.id(),
+            stage.level,
+            stage.goal
+        );
         Self {
             rom_sha256: format!("{:x}", Sha256::digest(rom)),
             identity: format!(
@@ -92,17 +94,12 @@ impl<M: NesBackend<Vec<u8>>> FamidashGame<M> {
 #[cfg(unix)]
 impl FamidashGame<QuickNesMachine> {
     #[must_use]
-    pub fn new(rom: &[u8], core_path: &Path, core_sha256: &str, execution_sha256: &str) -> Self {
-        Self::new_at_level(rom, core_path, core_sha256, execution_sha256, 0)
-    }
-
-    #[must_use]
-    pub fn new_at_level(
+    pub fn new(
         rom: &[u8],
         core_path: &Path,
         core_sha256: &str,
         execution_sha256: &str,
-        level: u8,
+        stage: Stage,
     ) -> Self {
         let core = machine::quicknes::core_identity();
         let target_rom = rom.to_vec();
@@ -113,29 +110,18 @@ impl FamidashGame<QuickNesMachine> {
             rom,
             &core,
             &crate::nes_backend::native_identity_sha256(core_sha256, execution_sha256),
-            level,
+            stage,
             Box::new(move || {
                 FamidashTarget::from_rom_bytes_headless_with_identity(
                     &target_rom,
                     &target_core,
                     &target_sha256,
                     &target_execution,
-                    level,
+                    stage,
                 )
                 .map_err(|error| error.to_string())
             }),
         )
-    }
-
-    pub fn from_environment(rom: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let core_path = PathBuf::from(
-            std::env::var_os("HARMONY_QUICKNES_CORE")
-                .ok_or("HARMONY_QUICKNES_CORE must name the pinned QuickNES core")?,
-        );
-        let core_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&core_path)?));
-        let execution_sha256 =
-            machine::quicknes::prepared_execution_sha256(&core_path, &core_sha256)?;
-        Ok(Self::new(rom, &core_path, &core_sha256, &execution_sha256))
     }
 }
 
@@ -651,11 +637,17 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+    use crate::famidash::levels::Side;
+
+    fn game(execution: &str, stage: Stage) -> FamidashGame<QuickNesMachine> {
+        FamidashGame::new(&[0], Path::new("core.so"), "core", execution, stage)
+    }
 
     #[test]
     fn native_policy_rejects_a_changed_prepared_execution() {
-        let first = FamidashGame::new(&[0], Path::new("core.so"), "core", "first");
-        let second = FamidashGame::new(&[0], Path::new("core.so"), "core", "second");
+        let stage = Stage::through_group(Side::Main, 0).unwrap();
+        let first = game("first", stage);
+        let second = game("second", stage);
         assert!(
             first
                 .emulator_identity()
@@ -664,6 +656,24 @@ mod tests {
         assert!(
             second
                 .resolve_recorded(&first.policies(&FamidashCampaignRun))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_policy_names_the_side_start_and_goal() {
+        let main = game("first", Stage::through_group(Side::Main, 0).unwrap());
+        let b = game("first", Stage::single(Side::B, 4).unwrap());
+        assert!(
+            main.emulator_identity()
+                .contains("genesis=famidash-main-level-0-to-21-v1")
+        );
+        assert!(
+            b.emulator_identity()
+                .contains("genesis=famidash-b-level-4-to-4-v1")
+        );
+        assert!(
+            b.resolve_recorded(&main.policies(&FamidashCampaignRun))
                 .is_err()
         );
     }

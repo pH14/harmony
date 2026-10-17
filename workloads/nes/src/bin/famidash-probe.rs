@@ -2,8 +2,12 @@
 
 use std::{collections::BTreeMap, env, error::Error, fs, path::PathBuf};
 
-use nes_workload::famidash::target::{
-    A_BUTTON, ButtonChord, FamidashInput, FamidashMechanicalState, FamidashSnapshot, FamidashTarget,
+use nes_workload::famidash::{
+    levels::{Side, Stage},
+    target::{
+        A_BUTTON, ButtonChord, FamidashInput, FamidashMechanicalState, FamidashSnapshot,
+        FamidashTarget,
+    },
 };
 use nes_workload::target::Target;
 use sha2::{Digest, Sha256};
@@ -30,8 +34,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         env::var_os("HARMONY_QUICKNES_CORE").ok_or("HARMONY_QUICKNES_CORE must name QuickNES")?,
     );
     let core_sha256 = format!("{:x}", Sha256::digest(fs::read(&core)?));
-    let mut target =
-        FamidashTarget::from_rom_bytes_headless(&fs::read(&rom)?, &core, &core_sha256, level)?;
+    let rom = fs::read(&rom)?;
+    let side = Side::from_rom(&rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
+    let mut target = FamidashTarget::from_rom_bytes_headless(
+        &rom,
+        &core,
+        &core_sha256,
+        Stage::single(side, level)?,
+    )?;
     if args.get(3).map(String::as_str) == Some("timing") {
         let stride: u64 = args.get(4).ok_or(USAGE)?.parse()?;
         let horizon: u64 = args.get(5).ok_or(USAGE)?.parse()?;

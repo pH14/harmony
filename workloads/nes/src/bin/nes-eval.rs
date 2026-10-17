@@ -2,7 +2,10 @@
 
 use nes_workload::{
     eval::{Request, Result, evaluate, run_cli},
-    famidash::campaign::{FamidashCampaignRun, FamidashGame},
+    famidash::{
+        campaign::{FamidashCampaignRun, FamidashGame},
+        levels::{Side, Stage},
+    },
     live::{NativeMachine, evaluate_live},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
@@ -96,6 +99,16 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
     }
 }
 
+fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Stage> {
+    let side = Side::from_rom(rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
+    let level = stage.unwrap_or(0);
+    Ok(if whole_game {
+        Stage::through_group(side, level)?
+    } else {
+        Stage::single(side, level)?
+    })
+}
+
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
     run_cli(|request, rom, out, started| {
@@ -123,8 +136,10 @@ fn main() -> Result<()> {
             {
                 return Err("this game takes no stage, ai or whole_game option".into());
             }
-            "famidash" if request.ai.is_some() || request.whole_game => {
-                return Err("Famidash takes no ai or whole_game option".into());
+            "famidash"
+                if request.ai.is_some() || (request.stage.is_none() && !request.whole_game) =>
+            {
+                return Err("Famidash takes a stage, whole_game, or both".into());
             }
             _ => {}
         }
@@ -212,12 +227,12 @@ fn main() -> Result<()> {
                 started,
             ),
             "famidash" => evaluate(
-                FamidashGame::new_at_level(
+                FamidashGame::new(
                     &rom,
                     p,
                     h,
                     &execution_sha256,
-                    request.stage.unwrap_or(0),
+                    famidash_stage(&rom, request.stage, request.whole_game)?,
                 ),
                 FamidashCampaignRun,
                 &request,

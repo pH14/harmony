@@ -9,27 +9,56 @@ the QuickNES type alias, films and endpoint identities. The adapter implements
 `CampaignTypes`, `TargetExecution`, `InputPolicy`, `Evaluation` and `Reporting`
 the same way the [Twin Dragons](../twin_dragons/README.md) adapter does.
 
-## ROM
+## ROMs
 
-`scripts/build-famidash-rom.sh` downloads the official 1.2.8 release ROM pinned
-in `famidash-versions.env`, with the MIT license and the music credits from the
-release commit, and checks all three SHA-256 values. It writes
-`build/famidash/famidash.nes` unchanged. The game is MIT licensed, copyright
-2023-2024 TFDSoft.
+`scripts/build-famidash-rom.sh` downloads the four official 1.2.8 release ROMs
+pinned in `famidash-versions.env`: the main game and the B-Sides, C-Sides and
+D-Sides. It also downloads the MIT license, the credits and the four music
+metadata files from release commit 0df680d, and checks every SHA-256 value. It
+writes `famidash.nes`, `famidash-b-sides.nes`, `famidash-c-sides.nes` and
+`famidash-d-sides.nes` to `build/famidash` unchanged, with
+`UPSTREAM-music-*.json5` naming the artist of each level's song. The game is
+MIT licensed, copyright 2023-2024 TFDSoft.
 
 The ROM is an MMC3 cartridge with four-screen nametables and battery-backed
 cartridge RAM. The pinned QuickNES core could not restore four-screen states,
 so `scripts/build-quicknes-core.sh` applies a second patch that reads the 4 KiB
 nametable block in one call.
 
+## Levels
+
+A level is a side plus its index on that side's ROM. `levels.rs` in
+`nes-games/src/famidash` holds each level's name and length and the five
+groups the arcade shows, 109 levels in all:
+
+| Group | ROM | Levels | Menu |
+| --- | --- | --- | --- |
+| Main | `famidash.nes` | 0 to 21 | Main levels |
+| Community | `famidash.nes` | 22 to 42 | Community levels |
+| B-Sides | `famidash-b-sides.nes` | 0 to 30 | Community levels |
+| C-Sides | `famidash-c-sides.nes` | 0 to 24 | Community levels |
+| D-Sides | `famidash-d-sides.nes` | 0 to 9 | Community levels |
+
+The title menu's first button opens the main levels and the second opens the
+community levels. On the side ROMs the first button only shows a notice, so
+their levels come from the second. `Side::from_rom` names the side from the
+ROM's SHA-256. Release 1.2.8 has no E-Sides ROM.
+
 ## Memory map
 
-Addresses come from the debug symbols of the 1.2.8 build.
+Addresses come from the cc65 debug symbols of four builds of commit 0df680d:
+`make`, `make b-sides`, `make c-sides` and `make d-sides`. The builds are used
+for their symbols only. All 587 RAM symbols have the same address in the four
+builds. The main, B-Sides and C-Sides builds are byte-identical to the release
+ROMs. The D-Sides build differs from its release ROM in 28 bytes of level data,
+with the same RAM symbols and level length tables. Every address below was
+checked in the symbols of all four builds, and `famidash-probe` decodes every
+one at a level start on each of the four release ROMs.
 
 | Address | Meaning |
 | --- | --- |
 | `$0498` | Game state: 2 playing, 3 level complete, 6 level select |
-| `$047B` | Level, 0 to 42; the first 22 are the main levels |
+| `$047B` | Level index on the side's ROM |
 | `$05B5` | Paused |
 | `$7A` | Game mode: cube, ship, ball, UFO, robot, spider, wave, swing |
 | `$7B`, `$7C` | Player flags; bit 0 is death, one byte per player |
@@ -48,22 +77,28 @@ table, and stops at 99 until the level is complete.
 
 ## Declared workload
 
-Setup presses A at the title and at the menu to reach level select, presses A
-again to start Stereo Madness and waits 90 frames, 1,141 frames in all. A
-request's `stage` starts another level instead: setup writes the level number
-at level select before the last A press, as the browser demo does, and the
-level is part of the emulator identity. The genesis check requires gameplay at
-0 percent in the chosen level.
+Setup presses A at the title, waits for the menu and presses A for the main
+levels, or Right, 20 idle frames and A for the community levels. At level
+select it writes the level number to `$047B`, as the browser demo does, then
+presses A and waits 90 frames. For Stereo Madness that is 1,141 frames. The
+genesis check requires gameplay at 0 percent in the chosen level.
+
+A `Stage` names the side, the starting level and the goal level, both in one
+group. A `nes-eval` request's `stage` alone runs that one level, and the goal
+is the same level. `whole_game` runs from `stage`, or the group's first level,
+through the group's last level. The side comes from the ROM. The emulator
+identity names the side, the start and the goal.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
-6 to 40. A death bit is a terminal death. The search plays the main levels in
-order from the starting level, and the objective is game state 3 in Dash,
-level 21. Frames outside gameplay are not archived.
+6 to 40. A death bit is a terminal death. The search plays the group's levels
+in order from the starting level, and the objective is game state 3 in the
+goal level. Frames outside gameplay are not archived.
 
-Game state 3 in an earlier level ends the action at that frame. The target
-then presses buttons to start the next level: A once every 16 frames until the
-level-select state 6 appears, 20 idle frames, Right, 20 idle frames, A, and
-the 90-frame wait from setup. It checks that the level number went up by one
+Game state 3 in a level before the goal ends the action at that frame. The
+target then presses buttons to start the next level: A once every 16 frames
+until the level-select state 6 appears, 20 idle frames, Right, 20 idle frames,
+A, and the 90-frame wait from setup. Level select keeps the menu the setup
+chose, so Right stays within the group. It checks that the level number went up by one
 and that gameplay is running. The advance takes about 290 frames. Its presses
 are part of the recorded input, so replays and films follow the same path.
 The action's observation list ends with the arrival in the next level.
@@ -102,7 +137,7 @@ then percent, then world x.
 ```sh
 workloads/nes/scripts/build-famidash-rom.sh
 cat >request.json <<EOF
-{"game": "famidash", "rom": "workloads/nes/build/famidash/famidash.nes",
+{"game": "famidash", "stage": 0, "rom": "workloads/nes/build/famidash/famidash.nes",
  "core": "QUICKNES_CORE", "rom_sha256": "ROM_SHA256", "core_sha256": "CORE_SHA256",
  "seed": 1, "workers": 8, "executions": 2000000, "memory_mib": 2048,
  "window": 1, "wall_seconds": 300, "mixture": "alphabet_only",
@@ -113,8 +148,8 @@ cargo run --release --manifest-path workloads/nes/Cargo.toml --bin nes-eval -- r
 
 Seeds 1 to 5 clear Stereo Madness in 7,700 to 10,600 executions, 1.4 to 3.7
 seconds on 8 workers, and each victory witness replays. `nes-film` accepts
-`--game famidash` with `--level` for a run started at another level, and
-renders the witness.
+`--game famidash` with `--level` and an optional `--goal` for the run's stage,
+and renders the witness.
 
 `famidash-probe ROM LEVEL INPUT.json` replays an input from a level's start and
 prints the endpoint. With `trace` it prints the decoded state every frame. With
