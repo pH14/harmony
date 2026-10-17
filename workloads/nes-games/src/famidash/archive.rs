@@ -17,13 +17,13 @@ use crate::{
 };
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
-pub const KEY_POLICY_IDENTIFIER: &str =
-    "famidash_level_band_512_cell_32x16_mode_speed_motion_camera_subpixel_eighths_earliest_v5";
+pub const KEY_POLICY_IDENTIFIER: &str = "famidash_level_band_512_cell_32x16_mode_speed_motion_camera_subpixel_eighths_x_slot_8_earliest_v6";
 pub const REPLACEMENT_IDENTIFIER: &str = "earliest_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_tap_1_4_or_hold_6_40_v1";
 
 const CELL_WIDTH: i32 = 32;
 const CELL_HEIGHT: i32 = 16;
+const CELL_SLOT_WIDTH: i32 = 8;
 const PROGRESS_BAND: i32 = 512;
 const CAMERA_PHASE_WIDTH: u8 = 32;
 
@@ -47,7 +47,7 @@ pub struct FamidashArchiveKey {
 impl ArchiveKey for FamidashArchiveKey {
     type Place = (u8, i32, i32, u8, bool, bool, bool, u8);
     type Progress = (u8, i32);
-    type Identity = (u8, u8);
+    type Identity = (u8, u8, i32);
 
     fn place(self) -> Self::Place {
         (
@@ -67,7 +67,11 @@ impl ArchiveKey for FamidashArchiveKey {
     }
 
     fn identity(self) -> Self::Identity {
-        (self.motion, self.camera_phase)
+        (
+            self.motion,
+            self.camera_phase,
+            self.x.rem_euclid(CELL_WIDTH) / CELL_SLOT_WIDTH,
+        )
     }
 
     fn capacity() -> usize {
@@ -299,7 +303,7 @@ mod tests {
         assert_eq!(up.place(), down.place());
         assert_eq!(
             [rest.identity(), up.identity(), down.identity()],
-            [(0, 0), (1, 0), (2, 0)]
+            [(0, 0, 2), (1, 0, 2), (2, 0, 2)]
         );
     }
 
@@ -314,14 +318,26 @@ mod tests {
         assert_eq!(low.place(), next.place());
         assert_eq!(low.identity(), high.identity());
         assert_ne!(high.identity(), next.identity());
-        assert_eq!([low.identity(), next.identity()], [(0, 3), (0, 5)]);
+        assert_eq!([low.identity(), next.identity()], [(0, 3, 0), (0, 5, 0)]);
+    }
+
+    #[test]
+    fn each_8_pixel_slot_of_a_cell_is_its_own_identity() {
+        let [first, second, last] =
+            [992, 1_000, 1_023].map(|x| archive_key(state(x, 897, 0)).unwrap());
+        assert_eq!(first.place(), last.place());
+        assert_eq!(
+            [first.identity(), second.identity(), last.identity()],
+            [(0, 0, 0), (0, 0, 1), (0, 0, 3)]
+        );
     }
 
     #[test]
     fn the_earliest_state_in_a_cell_is_preferred() {
         let near = archive_key(state(1_000, 897, 0)).unwrap();
-        let far = archive_key(state(1_020, 897, 0)).unwrap();
+        let far = archive_key(state(1_007, 897, 0)).unwrap();
         assert_eq!(near.place(), far.place());
+        assert_eq!(near.identity(), far.identity());
         assert_eq!(near.preference_cmp(0, far), Ordering::Greater);
     }
 

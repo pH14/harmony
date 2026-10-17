@@ -115,11 +115,19 @@ The archive key is the level, world x and y, game mode, gravity, size, dual
 mode, the speed `$045E`, the sign of the vertical velocity and the camera's
 vertical sub-pixel `$04A8` in eighths. The place is the level and the 32 ×
 16-pixel cell with the mode fields and the speed, progress is the level and
-the 512-pixel band of world x, and the identity is the vertical motion with
-the camera eighth. Each identity at a place keeps one entry, the one furthest
-left. At one speed x is also time, and a later arrival in the same cell has
-had fewer frames to line up the next jump. Many later arrivals are already
-doomed whatever the player presses.
+the 512-pixel band of world x, and the identity is the vertical motion, the
+camera eighth and the 8-pixel slot of x within the cell. Each identity at a
+place keeps one entry, the one furthest left. At one speed x is also time, and
+a later arrival in the same slot has had fewer frames to line up the next
+jump. Many later arrivals are already doomed whatever the player presses.
+
+The slot keeps jump arcs apart. Two cubes that jumped 12 pixels apart pass
+through the same cells at the same height and vertical speed, and land 12
+pixels apart, often one on a platform and one off it. With one entry per cell,
+the arc that jumped first holds every mid-air cell of both arcs, and the later
+arc is dropped as a duplicate. On D-Sides Kratos the jump onto the platform
+before the green orb at x 1,760 has a 2-frame window. In a seed 1 run, every
+mid-air cell of the winning arc was held by an entry from an earlier jump.
 
 Speed portals set `$045E` to the portal's index: 0 for the 1x portal, 1 for
 0.5x, 2 for 2x, 3 for 3x, 4 for 4x and 5 for the slow portal. Routes split at a
