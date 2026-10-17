@@ -174,9 +174,14 @@ PT_LOAD segments, executable PT_GNU_STACK, DT_TEXTREL/DF_TEXTREL images and
 TLSdesc relocations anywhere in the closure. Every XGETBV site must have a
 recognized straight-line ECX-zero sequence. The bounded recognizer rejects
 intervening ECX writes, branches, calls, unknown instructions and observed
-alternate direct entries. Trusted control flow must also exclude indirect entry
-that bypasses initialization; linear disassembly cannot enforce that condition
-for arbitrary code.
+alternate entries. Selector and loader-trampoline proofs require unique decoded
+predecessors and refuse any instruction overlapping another decode stream.
+Address sorting alone cannot establish that a zeroing instruction dominates a
+selector read. Boundary scanning reuses known instruction starts and deduplicates
+unknown starts; its conservative prefix/opcode filter covers every refused
+family before invoking the disassembler. Trusted control flow must also exclude
+indirect entry that bypasses initialization; linear disassembly cannot enforce
+that condition for arbitrary code.
 
 Every XSAVE/XSAVEC site must sit inside one of glibc's two loader trampolines;
 FXSAVE and the other save variants are refused without an exemption.
@@ -193,7 +198,8 @@ instruction anywhere else rejects the image.
 
 The controlled native x86 subset also excludes implementation-dependent
 reciprocal and reciprocal-square-root estimates (RCP/RSQRT and their VEX/EVEX
-forms), and x87 transcendental approximations (F2XM1, FSIN, FCOS, FSINCOS,
+forms, including the FP16 VRCPPH/VRCPSH/VRSQRTPH/VRSQRTSH instructions), and x87
+transcendental approximations (F2XM1, FSIN, FCOS, FSINCOS,
 FPTAN, FPATAN, FYL2X, FYL2XP1). Both this checker and the production Faults image
 admission enforce that refusal; an instruction allowlist cannot override it.
 This can reject images containing unused libm routines. Removing those routines

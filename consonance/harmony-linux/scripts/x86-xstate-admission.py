@@ -20,7 +20,7 @@ MAX_TREE = 2 * 1024 * 1024 * 1024
 SAVE = {"fxsave", "fxsave64", "xsave", "xsave64", "xsavec", "xsavec64", "xsaveopt", "xsaveopt64", "xsaves", "xsaves64"}
 RESTORE = {"xrstor", "xrstor64", "xrstors", "xrstors64", "fxrstor", "fxrstor64"}
 APPROXIMATE = {"rcpps", "rcpss", "rsqrtps", "rsqrtss", "vrcpps", "vrcpss", "vrsqrtps", "vrsqrtss",
-               "vrcp14pd", "vrcp14ps", "vrcp14sd", "vrcp14ss", "vrcp28pd", "vrcp28ps", "vrcp28sd", "vrcp28ss",
+               "vrcpph", "vrcpsh", "vrsqrtph", "vrsqrtsh", "vrcp14pd", "vrcp14ps", "vrcp14sd", "vrcp14ss", "vrcp28pd", "vrcp28ps", "vrcp28sd", "vrcp28ss",
                "vrsqrt14pd", "vrsqrt14ps", "vrsqrt14sd", "vrsqrt14ss", "vrsqrt28pd", "vrsqrt28ps", "vrsqrt28sd", "vrsqrt28ss",
                "fsin", "fcos", "fsincos", "fptan", "fpatan", "f2xm1", "fyl2x", "fyl2xp1"}
 SCOPE = {
@@ -273,7 +273,38 @@ def match_steps(instructions, start, step, steps):
     return index - step, masks
 
 
-def loader_trampoline(instructions, index, targets):
+def proof_edges(instructions):
+    predecessors, overlapping, active = {}, set(), []
+    for item in instructions:
+        start = item["address"]
+        end = start + len(bytes.fromhex(item["bytes"]))
+        predecessors.setdefault(end, []).append(item)
+        active = [(ip, stop) for ip, stop in active if stop > start]
+        if active:
+            overlapping.add(start)
+            overlapping.update(ip for ip, _ in active)
+        active.append((start, end))
+    return predecessors, overlapping
+
+
+def possible_special_start(code):
+    prefixes = {0xf0, 0xf2, 0xf3, 0x2e, 0x36, 0x3e, 0x26, 0x64, 0x65, 0x66, 0x67}
+    offset = 0
+    while offset < len(code) and (code[offset] in prefixes or 0x40 <= code[offset] <= 0x4f):
+        offset += 1
+    if offset == len(code):
+        return False
+    opcode = code[offset]
+    if opcode in (0xc4, 0xc5, 0x62):
+        return True
+    if offset + 1 == len(code):
+        return False
+    second = code[offset + 1]
+    return (opcode == 0x0f and second in (0x01, 0xae, 0xc7, 0x52, 0x53)
+            or opcode == 0xd9 and second in (0xf0, 0xf1, 0xf2, 0xf3, 0xf9, 0xfb, 0xfe, 0xff))
+
+
+def loader_trampoline(instructions, index, targets, predecessors, overlapping):
     """Name the glibc loader trampoline holding a save, or None.
 
     The lazy-binding resolver never runs under LD_BIND_NOW=1, and the dynamic
@@ -293,7 +324,10 @@ def loader_trampoline(instructions, index, targets):
         span_items = instructions[first:last + 1]
         if any(a["address"] + len(bytes.fromhex(a["bytes"])) != b["address"] for a, b in zip(span_items, span_items[1:])):
             continue
-        if any(item["address"] in targets for item in span_items[1:]):
+        if any(item["address"] in overlapping for item in span_items):
+            continue
+        if any(item["address"] in targets or len(predecessors.get(item["address"], [])) != 1
+               for item in span_items[1:]):
             continue
         return kind
     return None
@@ -347,8 +381,8 @@ def executable_coverage(data, segments, objdump):
             groups.append((start, raw, anchors))
     special_names = SAVE | RESTORE | APPROXIMATE | {"xgetbv"}
     special_re = re.compile(r"\b(" + "|".join(sorted(special_names, key=len, reverse=True)) + r")\b")
-    instructions, targets, visited = {}, set(), set()
     pending = {entry for _, _, entries in groups for entry in entries}
+    instructions, targets, visited = {}, set(pending), set()
     count = 0
 
     def decode(code, address):
@@ -394,6 +428,7 @@ def executable_coverage(data, segments, objdump):
                 pending.add(target)
     # Inspect instructions crossing every independently decoded ELF edge. A
     # section ending mid-instruction must not hide its final opcode bytes.
+    boundary_decodes = {}
     for boundary in sorted(boundaries):
         view = next(((start, code) for start, code, _ in groups if start < boundary < start + len(code)), None)
         if view is None:
@@ -401,9 +436,14 @@ def executable_coverage(data, segments, objdump):
         start, code = view
         for ip in range(max(start, boundary - 14), boundary):
             candidate = code[ip - start:ip - start + 15]
-            if not any(byte in candidate for byte in (0x0f, 0xd9, 0xc4, 0xc5, 0x62)):
+            if ip in instructions:
+                first = instructions[ip]
+            elif not possible_special_start(candidate):
                 continue
-            first = next(decode(candidate, ip), None)
+            else:
+                if ip not in boundary_decodes:
+                    boundary_decodes[ip] = next(decode(candidate, ip), None)
+                first = boundary_decodes[ip]
             if first and first["mnemonic"] in special_names and ip + len(bytes.fromhex(first["bytes"])) > boundary:
                 instructions[ip] = first
     if not instructions:
@@ -413,6 +453,7 @@ def executable_coverage(data, segments, objdump):
 
 def disassemble(data, segments, objdump):
     instructions, targets = executable_coverage(data, segments, objdump)
+    predecessors, overlapping = proof_edges(instructions)
     sites = []
     for index, item in enumerate(instructions):
         if item["mnemonic"] not in SAVE | RESTORE | APPROXIMATE | {"xgetbv"}:
@@ -425,8 +466,12 @@ def disassemble(data, segments, objdump):
             safe = {"mov", "movb", "movw", "movl", "movq", "lea", "leal", "leaq",
                     "and", "andl", "andq", "or", "orl", "orq", "add", "addl", "addq",
                     "sub", "subl", "subq", "cmp", "cmpl", "cmpq", "test", "testl", "testq"}
-            for before in reversed(instructions[max(0, index - 16):index]):
-                if cursor in targets or before["address"] + len(bytes.fromhex(before["bytes"])) != cursor:
+            for _ in range(16):
+                incoming = predecessors.get(cursor, [])
+                if cursor in targets or cursor in overlapping or len(incoming) != 1:
+                    break
+                before = incoming[0]
+                if before["address"] in overlapping:
                     break
                 operands = re.sub(r"\s", "", before["operands"])
                 if (before["mnemonic"] in ("xor", "xorl") and operands == "%ecx,%ecx"
@@ -446,7 +491,7 @@ def disassemble(data, segments, objdump):
             item["selector_proof_instructions"] = chain if zero else []
             item["requires_reviewed_control_flow_proof"] = True
         if item["mnemonic"] in SAVE:
-            item["loader_trampoline"] = (loader_trampoline(instructions, index, targets)
+            item["loader_trampoline"] = (loader_trampoline(instructions, index, targets, predecessors, overlapping)
                                          if item["mnemonic"] in {"xsave", "xsave64", "xsavec", "xsavec64"} else None)
         sites.append(item)
     return sites

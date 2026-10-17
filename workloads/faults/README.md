@@ -56,8 +56,9 @@ The scan rejects:
 - a hardware entropy or CPU-identity instruction (RDRAND, RDSEED, RNDR,
   RNDRRS, RDPID, LSL) without a review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
-- x86 reciprocal/reciprocal-square-root estimates (RCP/RSQRT, including
-  VEX/EVEX forms) and x87 transcendental approximations (F2XM1, FSIN, FCOS,
+- x86 reciprocal/reciprocal-square-root estimates (RCP/RSQRT and their
+  VEX/EVEX forms, including FP16 VRCPPH/VRCPSH/VRSQRTPH/VRSQRTSH) and x87
+  transcendental approximations (F2XM1, FSIN, FCOS,
   FSINCOS, FPTAN, FPATAN, FYL2X, FYL2XP1), even if listed for review;
 - an arm64 monitor-based LL/SC instruction, even if listed for review;
 - an arm64 executable load that contains an allocated non-executable section;
