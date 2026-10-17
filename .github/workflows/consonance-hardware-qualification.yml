@@ -120,7 +120,9 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Run retained x86_kvm_virtual_time oracles
-        run: python3 scripts/qualify-consonance.py run x1-bundle/x86_kvm_virtual_time x1-report --replica '${{ matrix.replica }}' --ignored
+        run: |
+          sudo cat /sys/class/dmi/id/product_uuid | tr '[:upper:]' '[:lower:]' > "$RUNNER_TEMP/host-instance-id"
+          python3 scripts/qualify-consonance.py run x1-bundle/x86_kvm_virtual_time x1-report --replica '${{ matrix.replica }}' --host-id-file "$RUNNER_TEMP/host-instance-id" --ignored
       - uses: actions/upload-artifact@v4
         if: always()
         with:

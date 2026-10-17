@@ -31,7 +31,7 @@ class QualificationTests(unittest.TestCase):
                 tests[test] = Q.digest(log)
             receipt = folder / "receipt.json"
             Q.write(receipt, {"version": 1, "cell": self.cell, "artifact": self.artifact,
-                "replica": str(index), "host": {"hostname": f"host-{index}", "kernel": "linux", "cpuinfo": "cpu"},
+                "replica": str(index), "host": {"instance_id": f"12345678-1234-1234-1234-{index + 1:012d}", "hostname": f"host-{index}", "kernel": "linux", "cpuinfo": "cpu"},
                 "tests": tests, "evidence": {"digest": "b" * 64, "events": 6, "guest_deliveries": 2, "checkpoints": 3}})
             self.receipts.append(receipt)
         self.identity = patch.object(Q, "identity", return_value=self.artifact)
@@ -63,9 +63,22 @@ class QualificationTests(unittest.TestCase):
             self.compare()
 
     def test_same_host_is_not_cross_host_evidence(self):
-        self.alter("host", Q.read(self.receipts[0])["host"])
+        host = Q.read(self.receipts[0])["host"]
+        host["hostname"] = "renamed-same-instance"
+        self.alter("host", host)
         with self.assertRaisesRegex(ValueError, "replicas"):
             self.compare()
+
+    def test_shared_image_hostname_can_identify_distinct_instances(self):
+        host = Q.read(self.receipts[1])["host"]
+        host["hostname"] = Q.read(self.receipts[0])["host"]["hostname"]
+        self.alter("host", host)
+        self.compare()
+
+    def test_invalid_instance_identity_refuses(self):
+        for value in ("", "not-a-uuid", "00000000-0000-0000-0000-000000000000", "ffffffff-ffff-ffff-ffff-ffffffffffff"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                Q.host_instance_id(value)
 
     def test_missing_oracle_and_unknown_fields_refuse(self):
         self.alter("tests", {})
