@@ -530,7 +530,12 @@ impl SearchSession for UmlSession {
             })??;
         self.loaded_image_guard.check()?;
         let lease = index.publish(namespace, b"root", None, extent, target_commitment, 1)?;
-        Ok(self.loaded_image_guard.check_published(index, lease)?)
+        let lease = self.loaded_image_guard.check_published(index, lease)?;
+        if let Err(error) = index.verify_lease(&lease) {
+            index.release(lease);
+            return Err(error.into());
+        }
+        Ok(lease)
     }
 
     fn import_root(
@@ -640,7 +645,12 @@ impl SearchSession for UmlSession {
             target_commitment,
             cost,
         )?;
-        Ok(self.loaded_image_guard.check_published(index, lease)?)
+        let lease = self.loaded_image_guard.check_published(index, lease)?;
+        if let Err(error) = index.verify_lease(&lease) {
+            index.release(lease);
+            return Err(error.into());
+        }
+        Ok(lease)
     }
 
     fn import_cached(
@@ -681,6 +691,10 @@ impl SearchSession for UmlSession {
         self.snapshots.insert(id, checkpoint);
         self.counters.imports.since(begun);
         self.loaded_image_guard.check()?;
+        if let Err(error) = index.verify_lease(lease) {
+            self.snapshots.remove(&id);
+            return Err(error.into());
+        }
         Ok((id, at))
     }
 

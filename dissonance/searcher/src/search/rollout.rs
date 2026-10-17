@@ -75,7 +75,10 @@ impl<G: Workload + ?Sized> Rollout<G> for WorkloadRollout<'_, G> {
         action: &G::Action,
         milestones: &mut G::Milestones,
     ) -> Result<(), Box<dyn Error>> {
-        self.workload.apply_action(self.target, action, milestones)
+        self.workload.verify_integrity()?;
+        self.workload
+            .apply_action(self.target, action, milestones)?;
+        self.workload.verify_integrity()
     }
 
     fn observations(&self) -> Vec<G::Observations> {
@@ -111,6 +114,7 @@ pub fn execute_job<G: Workload + ?Sized>(
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
 ) -> Result<CampaignJobResult<G>, Box<dyn Error>> {
+    workload.verify_integrity()?;
     workload.reset(target);
     workload.restore(target, origin_snapshot)?;
     let mut replay_milestones = parent_milestones;
@@ -121,6 +125,7 @@ pub fn execute_job<G: Workload + ?Sized>(
     {
         for action in replay {
             workload.apply_action(target, action, &mut replay_milestones)?;
+            workload.verify_integrity()?;
             if workload
                 .rollout_outcome(run, target)?
                 .disposition

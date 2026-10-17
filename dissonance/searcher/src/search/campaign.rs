@@ -410,6 +410,10 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+
     fn new_target(&self) -> Result<Self::Target, String>;
     fn reset(&self, target: &mut Self::Target);
     fn restore(
@@ -1900,6 +1904,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         limited: bool,
         mut tracked_action: impl FnMut(&G::Action) -> bool,
     ) -> Result<(u64, Vec<CampaignAdmissionDecision>, DurationAdmission), Box<dyn Error>> {
+        workload.verify_integrity()?;
         let CampaignJobResult {
             preparation_failure,
             actions,
@@ -2585,6 +2590,7 @@ fn build_report<G: Workload>(
     stream_sha256: String,
     materialize_final_artifacts: bool,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>> {
+    workload.verify_integrity()?;
     let executions_completed = core.sequence;
     let probe_refused = core.probe_refused;
     let terminal_endpoints = core.terminal_endpoints;
@@ -3206,6 +3212,7 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
+    workload.verify_integrity()?;
     let executable_identity = workload.executable_identity()?;
     let work_budget = options.work_budget;
     let placement = options.placement.as_ref();
@@ -3338,6 +3345,7 @@ where
                     config.stop_rollout_on_objective,
                 )
                 .and_then(|result| {
+                    workload.verify_integrity()?;
                     let result_sha256 = workload
                         .certified_result_sha256(&result, target)
                         .map_err(|error| error.to_string())?;
@@ -3425,6 +3433,7 @@ where
                           counters: &mut CampaignCounters,
                           reserved: &mut u64|
              -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
+                workload.verify_integrity()?;
                 if *reserved >= config.execution_budget
                     || stop_reservations_after_work_budget(
                         work_budget,
@@ -3775,6 +3784,7 @@ where
             idle_clock.update(running, IdleReason::NoJob);
 
             while !pending.is_empty() || !completed.is_empty() {
+                workload.verify_integrity()?;
                 let next_admission = schedule.first().map(|(_, reservation)| *reservation);
                 let mut ready_reply = if next_admission
                     .is_some_and(|reservation| completed.contains_key(&reservation))
@@ -3869,6 +3879,7 @@ where
                 }
 
                 while let Some(&(finish, reservation)) = schedule.first() {
+                    workload.verify_integrity()?;
                     let Some(completed_job) = completed.remove(&reservation) else {
                         break;
                     };
@@ -4256,6 +4267,7 @@ where
             sink,
         )?;
     }
+    workload.verify_integrity()?;
     writer.write_line(
         &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
             jobs: reserved,
@@ -4541,6 +4553,7 @@ fn write_search_checkpoint<G: Workload>(
     completed: &BTreeMap<usize, CompletedJob<G>>,
     spec_records: &BTreeMap<usize, JobSpecRecord<G>>,
 ) -> Result<(), Box<dyn Error>> {
+    workload.verify_integrity()?;
     let reservations = schedule
         .iter()
         .map(|(_, reservation)| *reservation)
@@ -4792,6 +4805,7 @@ fn replay_campaign_checkpointed_inner<G: Workload>(
 where
     G::ArchiveReport: Serialize,
 {
+    workload.verify_integrity()?;
     let executable_identity = workload.executable_identity()?;
     let stream_sha256 = format!("{:x}", Sha256::digest(stream_bytes));
     let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
@@ -6000,6 +6014,7 @@ mod tests {
     #[derive(Default)]
     struct LiveTargets {
         refuse: bool,
+        integrity_invalidated: std::sync::atomic::AtomicBool,
         fail_next_target: std::sync::atomic::AtomicBool,
         first_action_started: std::sync::atomic::AtomicBool,
         second_selection_waits_for_first_action: std::sync::atomic::AtomicBool,
@@ -6187,7 +6202,29 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct TestIntegrityViolation;
+
+    impl std::fmt::Display for TestIntegrityViolation {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("injected determinism contradiction")
+        }
+    }
+
+    impl Error for TestIntegrityViolation {}
+
     impl TargetExecution for TestWorkload {
+        fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
+            if self.targets.as_ref().is_some_and(|targets| {
+                targets
+                    .integrity_invalidated
+                    .load(std::sync::atomic::Ordering::SeqCst)
+            }) {
+                return Err(Box::new(TestIntegrityViolation));
+            }
+            Ok(())
+        }
+
         fn new_target(&self) -> Result<Self::Target, String> {
             let Some(targets) = &self.targets else {
                 return Ok(TestTarget::default());
@@ -8789,6 +8826,56 @@ mod tests {
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert_eq!(replayed, live);
+    }
+
+    #[test]
+    fn determinism_contradiction_invalidates_live_campaign_without_a_completed_report() {
+        let targets = Arc::new(LiveTargets::default());
+        let invalidate = Arc::clone(&targets);
+        *targets.action_hook.lock().unwrap() = Some(Arc::new(move |_| {
+            invalidate
+                .integrity_invalidated
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(Arc::clone(&targets)),
+        };
+        let mut stream = Vec::new();
+        let result = run_campaign_checkpointed(
+            &workload,
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("a disputed campaign must not return a report"),
+        };
+        assert!(
+            error.downcast_ref::<TestIntegrityViolation>().is_some(),
+            "{error}"
+        );
+        assert!(
+            targets
+                .integrity_invalidated
+                .load(std::sync::atomic::Ordering::SeqCst)
+        );
+        assert!(job_lines(&stream).is_empty());
+        assert!(
+            !std::str::from_utf8(&stream)
+                .unwrap()
+                .lines()
+                .skip(1)
+                .any(|line| matches!(
+                    serde_json::from_str::<CampaignStreamRecord<EmpiricalStepCheckpoint>>(line)
+                        .unwrap(),
+                    CampaignStreamRecord::End(_)
+                ))
+        );
+        assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
     #[test]
