@@ -17,7 +17,8 @@ their flags and starting addresses do not control what bytes are checked.
 The scan deliberately rejects opcode-shaped bytes inside instruction operands,
 including LEA displacements and immediates: a computed jump or return can enter
 those bytes as a different instruction stream. The shipped N6 guest has no such
-bytes. Arm64 is checked as aligned words across the whole executable segment,
+bytes. Both architectures link it against the pinned musl, because the host
+glibc static runtime carries incidental `0F C7` call displacements. Arm64 is checked as aligned words across the whole executable segment,
 regardless of section lengths. Runtime-generated or modified executable code is
 outside this static image audit.
 Its hidden-section negative control clears the `.text` executable flag while
