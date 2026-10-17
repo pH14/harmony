@@ -18,7 +18,7 @@ use crate::{
 
 pub use crate::search::archive::MAX_ARCHIVE_ENTRIES;
 pub const KEY_POLICY_IDENTIFIER: &str =
-    "famidash_level_band_512_cell_32x16_mode_motion_camera_subpixel_eighths_earliest_v4";
+    "famidash_level_band_512_cell_32x16_mode_speed_motion_camera_subpixel_eighths_earliest_v5";
 pub const REPLACEMENT_IDENTIFIER: &str = "earliest_then_fewest_frames";
 pub const DURATION_IDENTIFIER: &str = "stratified_tap_1_4_or_hold_6_40_v1";
 
@@ -39,12 +39,13 @@ pub struct FamidashArchiveKey {
     pub gravity: bool,
     pub mini: bool,
     pub dual: bool,
+    pub speed: u8,
     pub motion: u8,
     pub camera_phase: u8,
 }
 
 impl ArchiveKey for FamidashArchiveKey {
-    type Place = (u8, i32, i32, u8, bool, bool, bool);
+    type Place = (u8, i32, i32, u8, bool, bool, bool, u8);
     type Progress = (u8, i32);
     type Identity = (u8, u8);
 
@@ -57,6 +58,7 @@ impl ArchiveKey for FamidashArchiveKey {
             self.gravity,
             self.mini,
             self.dual,
+            self.speed,
         )
     }
 
@@ -109,6 +111,7 @@ pub fn archive_key(state: FamidashMechanicalState) -> Option<FamidashArchiveKey>
         gravity: gameplay.gravity,
         mini: gameplay.mini,
         dual: gameplay.dual,
+        speed: gameplay.speed,
         motion: gameplay.vertical_motion(),
         camera_phase: gameplay.camera_subpixel / CAMERA_PHASE_WIDTH,
     })
@@ -247,7 +250,7 @@ mod tests {
     #[test]
     fn places_are_32_by_16_pixel_cells_per_level_and_mode() {
         let key = archive_key(state(1_000, 897, 0)).unwrap();
-        assert_eq!(key.place(), (0, 31, 56, 0, false, false, false));
+        assert_eq!(key.place(), (0, 31, 56, 0, false, false, false, 0));
         let mut later = state(1_000, 897, 0);
         later.level = 1;
         assert_ne!(archive_key(later).unwrap().place(), key.place());
@@ -259,6 +262,19 @@ mod tests {
             archive_key(state(1_023, 911, 0)).unwrap().place(),
             key.place()
         );
+    }
+
+    #[test]
+    fn each_speed_is_its_own_place() {
+        let at = |speed| {
+            let mut state = state(2_784, 816, 1);
+            state.gameplay.as_mut().unwrap().speed = speed;
+            archive_key(state).unwrap()
+        };
+        let [double, triple] = [2, 3].map(at);
+        assert_ne!(double.place(), triple.place());
+        assert_eq!(double.progress(), triple.progress());
+        assert_eq!(double.identity(), triple.identity());
     }
 
     #[test]

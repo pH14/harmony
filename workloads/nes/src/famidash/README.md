@@ -69,6 +69,7 @@ one at a level start on each of the four release ROMs.
 | `$04A2` | Horizontal scroll, signed 32-bit |
 | `$04A6`, `$04A7` | Vertical scroll: fine row 0 to 239, then nametable row |
 | `$04A8` | Vertical scroll sub-pixel |
+| `$045E` | Speed portal index |
 
 World x is the scroll plus the player's screen x. World y is the nametable row
 times 240 plus the fine row plus the player's screen y. Level percent is the
@@ -111,14 +112,22 @@ are part of the recorded input, so replays and films follow the same path.
 The action's observation list ends with the arrival in the next level.
 
 The archive key is the level, world x and y, game mode, gravity, size, dual
-mode, the sign of the vertical velocity and the camera's vertical sub-pixel
-`$04A8` in eighths. The place is the level and the 32 × 16-pixel cell with the
-mode fields, progress is the level and the 512-pixel band of world x, and the
-identity is the vertical motion with the camera eighth. Each identity at a
-place keeps one entry, the one furthest left. The level scrolls at a fixed
-speed, so x is also time, and a later arrival in the same cell has had fewer
-frames to line up the next jump. Many later arrivals are already doomed
-whatever the player presses.
+mode, the speed `$045E`, the sign of the vertical velocity and the camera's
+vertical sub-pixel `$04A8` in eighths. The place is the level and the 32 ×
+16-pixel cell with the mode fields and the speed, progress is the level and
+the 512-pixel band of world x, and the identity is the vertical motion with
+the camera eighth. Each identity at a place keeps one entry, the one furthest
+left. At one speed x is also time, and a later arrival in the same cell has
+had fewer frames to line up the next jump. Many later arrivals are already
+doomed whatever the player presses.
+
+Speed portals set `$045E` to the portal's index: 0 for the 1x portal, 1 for
+0.5x, 2 for 2x, 3 for 3x, 4 for 4x and 5 for the slow portal. Routes split at a
+speed portal that one jump touches and the next misses, and the two speeds then
+meet different obstacles at the same x. On C-Sides Thermodynamix a ship that
+passes 18 pixels above the 3x portal goes on at 2x and later reaches a place it
+cannot pass whatever the player presses. A cell holds each speed separately,
+so the leftmost entry at one speed does not displace the other.
 
 The camera sub-pixel changes only while the camera scrolls vertically, and
 world y leaves it out. Collision uses the camera's whole pixel, and the game

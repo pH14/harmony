@@ -39,6 +39,7 @@ const GAME_STATE: usize = 0x0498;
 const SCROLL_X: usize = 0x04a2;
 const SCROLL_Y: usize = 0x04a6;
 const SCROLL_Y_SUBPIXEL: usize = 0x04a8;
+const SPEED: usize = 0x045e;
 const PAUSED: usize = 0x05b5;
 const DEATH: u8 = 0x01;
 const DEATH_CHECK_SCREEN_X: u8 = 0x20;
@@ -60,6 +61,7 @@ pub struct FamidashGameplayState {
     pub gravity: bool,
     pub mini: bool,
     pub dual: bool,
+    pub speed: u8,
 }
 
 impl FamidashGameplayState {
@@ -878,6 +880,7 @@ pub fn decode_state(wram: &[u8], stage: Stage) -> Result<FamidashMechanicalState
             gravity: byte(wram, PLAYER_GRAVITY)? != 0,
             mini: byte(wram, PLAYER_MINI)? != 0,
             dual: byte(wram, DUAL)? != 0,
+            speed: byte(wram, SPEED)?,
         })
     } else {
         None
