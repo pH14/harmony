@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "a7618c81fe1795b10f9f564c7801682239059d3a",
-    "build": "locally verified static build",
-    "checks": "npm test 63/63; cargo test -p nes-games 187/187; browser famidash; manual check of the grouped Famidash picker (109 levels) and a D-Sides level",
-    "asset_manifest_sha256": "35657e93a53fb48e9ddfa3bd68a662b2b0c7af4722bf76b6d96ad15137b2bb5c"
+    "commit": "d774204cbbc5f66afca3341738377efa78279f75",
+    "build": "GitHub Actions run 39066769813, artifact twin-dragons-browser-dist",
+    "checks": "CI Twin Dragons Build, Browser games (incl. famidash) and Browser interface passed on d774204cb",
+    "asset_manifest_sha256": "1f885e7cb57095cf9021f4e9e9a8e20ac28a6e04ea0bea08fa673ea9d92528ae"
   }
 }
