@@ -131,8 +131,8 @@
               export HARMONY_NIX_SOURCE=${self.outPath}
               export HARMONY_NIX_LINUX_SOURCE=${linuxSource}
               export HARMONY_NIX_BUSYBOX_SOURCE=${busyboxSource}
+              export HARMONY_NIX_MUSL_SOURCE=${muslSource}
               ${nixpkgs.lib.optionalString isArm64 ''
-                export HARMONY_NIX_MUSL_SOURCE=${muslSource}
                 export HARMONY_NIX_POSTGRES_SOURCE=${postgresSource}
               ''}
               ${nixpkgs.lib.optionalString (!isArm64) ''
