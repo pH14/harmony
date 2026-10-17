@@ -506,6 +506,34 @@ fn x86_host_input_name(mnemonic: Mnemonic) -> Option<&'static str> {
         Mnemonic::Rdseed => Some("RDSEED"),
         Mnemonic::Rdpid => Some("RDPID"),
         Mnemonic::Lsl => Some("LSL"),
+        Mnemonic::Rcpps | Mnemonic::Vrcpps => Some("RCPPS"),
+        Mnemonic::Rcpss | Mnemonic::Vrcpss => Some("RCPSS"),
+        Mnemonic::Rsqrtps | Mnemonic::Vrsqrtps => Some("RSQRTPS"),
+        Mnemonic::Rsqrtss | Mnemonic::Vrsqrtss => Some("RSQRTSS"),
+        Mnemonic::Vrcp14pd
+        | Mnemonic::Vrcp14ps
+        | Mnemonic::Vrcp14sd
+        | Mnemonic::Vrcp14ss
+        | Mnemonic::Vrcp28pd
+        | Mnemonic::Vrcp28ps
+        | Mnemonic::Vrcp28sd
+        | Mnemonic::Vrcp28ss => Some("VRCP"),
+        Mnemonic::Vrsqrt14pd
+        | Mnemonic::Vrsqrt14ps
+        | Mnemonic::Vrsqrt14sd
+        | Mnemonic::Vrsqrt14ss
+        | Mnemonic::Vrsqrt28pd
+        | Mnemonic::Vrsqrt28ps
+        | Mnemonic::Vrsqrt28sd
+        | Mnemonic::Vrsqrt28ss => Some("VRSQRT"),
+        Mnemonic::Fsin => Some("FSIN"),
+        Mnemonic::Fcos => Some("FCOS"),
+        Mnemonic::Fsincos => Some("FSINCOS"),
+        Mnemonic::Fptan => Some("FPTAN"),
+        Mnemonic::Fpatan => Some("FPATAN"),
+        Mnemonic::F2xm1 => Some("F2XM1"),
+        Mnemonic::Fyl2x => Some("FYL2X"),
+        Mnemonic::Fyl2xp1 => Some("FYL2XP1"),
         _ => None,
     }
 }
@@ -785,6 +813,31 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     }
     sites.sort();
     sites.dedup();
+    if let Some(site) = sites.iter().find(|site| {
+        matches!(
+            site.instruction.as_str(),
+            "RCPPS"
+                | "RCPSS"
+                | "RSQRTPS"
+                | "RSQRTSS"
+                | "VRCP"
+                | "VRSQRT"
+                | "FSIN"
+                | "FCOS"
+                | "FSINCOS"
+                | "FPTAN"
+                | "FPATAN"
+                | "F2XM1"
+                | "FYL2X"
+                | "FYL2XP1"
+        )
+    }) {
+        return Err(format!(
+            "unsupported implementation-dependent arithmetic {} at 0x{:x}",
+            site.instruction, site.address
+        )
+        .into());
+    }
     Ok(Some(sites))
 }
 
@@ -958,6 +1011,34 @@ mod tests {
         bytes[368..376].copy_from_slice(&1_u64.to_le_bytes());
         bytes[4096..4096 + code.len()].copy_from_slice(code);
         bytes
+    }
+
+    #[test]
+    fn approximate_arithmetic_cannot_be_reviewed_into_vm_or_uml_admission() {
+        for code in [
+            vec![0x0f, 0x53, 0xc0, 0xc3],
+            vec![0x0f, 0x52, 0xc0, 0xc3],
+            vec![0xf3, 0x0f, 0x53, 0xc0, 0xc3],
+            vec![0xf3, 0x0f, 0x52, 0xc0, 0xc3],
+            vec![0xd9, 0xfe, 0xc3],
+            vec![0xc5, 0xf8, 0x53, 0xc0, 0xc3],
+            vec![0x62, 0xf2, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0xeb, 1, 0xb8, 0x0f, 0x53, 0xc0, 0xc3, 0xc3],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(&code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(
+                report
+                    .scan_errors
+                    .iter()
+                    .any(|error| error.contains("implementation-dependent arithmetic")),
+                "{report:?}"
+            );
+            assert!(report.require_for(ExecutionMode::Vm).is_err());
+            assert!(report.require_for(ExecutionMode::Uml).is_err());
+        }
+        assert!(scan_elf(&elf(&[0x0f, 0x51, 0xc0, 0xc3], 5, 6), "control").is_ok());
     }
 
     fn adjacent_x86_elf(left_tail: &[u8], right: &[u8]) -> Vec<u8> {
