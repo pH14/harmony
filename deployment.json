@@ -77,9 +77,9 @@
     }
   },
   "arcade": {
-    "commit": "1d99f2524f1f9c908460c429a506fab2519c6bd0",
+    "commit": "a7618c81fe1795b10f9f564c7801682239059d3a",
     "build": "locally verified static build",
-    "checks": "npm test 61/61; browser famidash, room-cameras, interactions, arrow-pan, level-finish, smb, levels-browser, swarm, tour, tour-mobile, replay-pause, browser",
-    "asset_manifest_sha256": "e8161abb8c6d970dad832eef5d5aa763cd41a523c7fe97c4d758d56bb4c5efec"
+    "checks": "npm test 63/63; cargo test -p nes-games 187/187; browser famidash; manual check of the grouped Famidash picker (109 levels) and a D-Sides level",
+    "asset_manifest_sha256": "35657e93a53fb48e9ddfa3bd68a662b2b0c7af4722bf76b6d96ad15137b2bb5c"
   }
 }
