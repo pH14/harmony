@@ -67,7 +67,12 @@ fn loaded_executable_identity_from_csops(
     Ok(identity)
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn loaded_executable_identity_self() -> io::Result<String> {
+    Ok("wasm32-module-v1".to_owned())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_arch = "wasm32")))]
 pub(crate) fn loaded_executable_identity_self() -> io::Result<String> {
     Err(io::Error::other(
         "cannot identify the loaded executable on this host",

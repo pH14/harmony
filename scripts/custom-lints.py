@@ -34,6 +34,7 @@ GAME_NAMES = [
     r"mm2",
     r"zelda",
     r"tetris",
+    r"twin[\s_-]*dragons",
 ]
 
 # Emulator and runtime names.
@@ -496,7 +497,7 @@ def check_numbered_names(repo_root: Path, files: list[str]) -> list[Violation]:
 
 MISPLACED_WORKLOAD_FILE_RE = re.compile(
     r"(?:^|[-_/])"
-    r"(?:game|nes|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
+    r"(?:game|nes|twin[-_]dragons|smb|mario|metroid|tetanes|tetris|postgres|etcd|cockroach|k3s|docker|faultlab|fault[-_]library)"
     r"(?:[-_./]|$)",
     re.IGNORECASE,
 )
@@ -1742,6 +1743,7 @@ TOPLEVEL_DIR_ALLOWLIST = {
     "cli",
     "consonance",
     "dissonance",
+    "demos",
     "docs",
     "scripts",
     "workloads",

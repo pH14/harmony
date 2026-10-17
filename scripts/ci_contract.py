@@ -157,6 +157,7 @@ MIRI_FLAGS_DEFAULT = "-Zmiri-permissive-provenance"
 # Every manifest that owns formatting, lints and tests. A workspace root covers
 # its members; the rest are standalone packages outside any workspace.
 CARGO_MANIFESTS = (
+    "demos/twin-dragons/rust/Cargo.toml",
     "Cargo.toml",
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
@@ -166,6 +167,7 @@ CARGO_MANIFESTS = (
     "workloads/fault-policy/Cargo.toml",
     "workloads/faults/Cargo.toml",
     "workloads/nes/Cargo.toml",
+    "workloads/nes-games/Cargo.toml",
     "workloads/nes-guest/Cargo.toml",
     "workloads/nes-machine/Cargo.toml",
     "workloads/nes-protocol/Cargo.toml",
@@ -177,9 +179,11 @@ CARGO_MANIFESTS = (
 # out-of-workspace guest manifests are checked against the root allow-list for
 # licenses alone, because their dependency sets are audited upstream.
 DENY_COMMANDS = (
+    "--manifest-path demos/twin-dragons/rust/Cargo.toml check --config deny.toml",
     "--manifest-path Cargo.toml check",
     "--manifest-path dissonance/Cargo.toml check",
     "--manifest-path workloads/nes/Cargo.toml check --config deny.toml",
+    "--manifest-path workloads/nes-games/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/nes-protocol/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/fault-policy/Cargo.toml check --config deny.toml",
     "--manifest-path workloads/faults/Cargo.toml check --config deny.toml",
@@ -775,7 +779,19 @@ REPOSITORY_MAINTENANCE = Workflow(
     ),
 )
 
+TWIN_DRAGONS_BROWSER_CHECKS = Workflow(
+    path=f"{WORKFLOW_DIR}/twin-dragons-browser.yml",
+    name="Checks / Dissonance Workloads / Twin Dragons Browser",
+    owner="Dissonance Workloads",
+    triggers=("pull_request", "push", "workflow_dispatch"),
+    jobs=(
+        Job("Twin Dragons Build", "pr", 15, crates=("twin-dragons-browser",)),
+        Job("Twin Dragons Browser — <Suite>", "pr", 15),
+    ),
+)
+
 WORKFLOWS = (
+    TWIN_DRAGONS_BROWSER_CHECKS,
     REPOSITORY_CHECKS,
     HARMONY_HOST_COMPATIBILITY,
     CONSONANCE_CHECKS,

@@ -8,17 +8,16 @@ use std::{
     num::{NonZeroU64, NonZeroUsize},
     path::PathBuf,
     sync::{Arc, Mutex, mpsc},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest, Sha256};
 
 use crate::search::archive::{
-    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
-    ContinuationAccounting, Edge, Input, Position, ProgressPoint, RetentionPolicy,
-    SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
-    retention_policy_from_identifier, retention_policy_identifier,
+    Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
+    Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
+    SelectorDraw, SelectorPath, retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, CheckpointWriter, SEARCH_CHECKPOINT_FORMAT,
@@ -42,9 +41,45 @@ pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{WorkerPoolError, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, IdleClock, IdleReason, TargetCounters, nanos_since, now,
-    thread_schedstat,
+    CampaignTelemetry, HostTimes, Moment, TargetCounters, now, unix_seconds,
 };
+
+#[path = "campaign_coordinator.rs"]
+mod coordinator;
+
+pub use coordinator::{CampaignAdmission, CampaignCoordinator, JobOutcome, JobSpec, run_job};
+
+pub type WatchedJob<G, N> = Result<(JobOutcome<G>, N), Box<dyn Error>>;
+
+pub trait CampaignWatch<G: Workload>: Sync {
+    type Note: Send;
+
+    fn run(
+        &self,
+        job: &JobSpec<G>,
+        run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, Self::Note>;
+
+    fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>);
+
+    fn start(&self, _campaign: &mut CampaignCoordinator<'_, G>) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+}
+
+impl<G: Workload> CampaignWatch<G> for () {
+    type Note = ();
+
+    fn run(
+        &self,
+        _job: &JobSpec<G>,
+        run: impl FnOnce() -> Result<JobOutcome<G>, Box<dyn Error>>,
+    ) -> WatchedJob<G, ()> {
+        Ok((run()?, ()))
+    }
+
+    fn admitted(&self, _note: (), _campaign: &mut CampaignCoordinator<'_, G>) {}
+}
 
 pub type CampaignOutcome<G> = (
     CampaignModeReport<<G as CampaignTypes>::Action, <G as CampaignTypes>::ArchiveReport>,
@@ -184,7 +219,7 @@ pub trait CampaignTypes: Sync {
     type Milestones: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Progress: Copy + Default + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Snapshot: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
-    type Observations: Clone + Debug + Eq + Send + Sync + Serialize;
+    type Observations: Clone + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Evidence: Clone + Default;
     type ArchiveReport: Clone;
     type Run: Clone + Sync;
@@ -1221,7 +1256,7 @@ fn record_mixture_outcome(
     Ok(())
 }
 
-fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (u8, u8) {
+pub(super) fn mixture_weights(energy: &MixtureEnergy, mixture: DrawMixture) -> (u8, u8) {
     match mixture {
         DrawMixture::Energy { scale } => (energy.biased_weight(scale), 0),
         DrawMixture::EnergySplice { scale } => energy.splice_weights(scale),
@@ -1275,7 +1310,7 @@ fn stop_reservations_after_work_budget(
         .is_some_and(|budget| bootstrap_execution_work.saturating_add(job_execution_work) >= budget)
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignCandidate<G: CampaignTypes + ?Sized> {
     pub key: G::Key,
@@ -1311,7 +1346,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignCandidate<G> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignActionResult<G: CampaignTypes + ?Sized> {
     pub action: G::Action,
@@ -1357,7 +1392,7 @@ impl<G: CampaignTypes + ?Sized> Debug for CampaignActionResult<G> {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(bound = "")]
 pub struct CampaignJobResult<G: CampaignTypes + ?Sized> {
     pub preparation_failure: Option<Vec<G::Observations>>,
@@ -2544,11 +2579,11 @@ fn record_compaction_elapsed(
     }
 }
 
-fn profile_now() -> Instant {
+fn profile_now() -> Moment {
     now()
 }
 
-fn profile_elapsed(started: Instant) -> u128 {
+fn profile_elapsed(started: Moment) -> u128 {
     started.elapsed().as_nanos()
 }
 
@@ -2708,21 +2743,58 @@ pub fn postcard_result_sha256<G: Workload + ?Sized>(
     postcard_value_sha256(result)
 }
 
+#[derive(Serialize)]
+struct SemanticCandidate<'a, K> {
+    key: &'a K,
+    viable: bool,
+}
+
+#[derive(Serialize)]
+struct SemanticAction<'a, A, O, M, K> {
+    action: &'a A,
+    observations: &'a [O],
+    milestones: &'a M,
+    outcome: crate::search::rollout::Outcome,
+    candidate: Option<SemanticCandidate<'a, K>>,
+}
+
+#[derive(Serialize)]
+struct SemanticResult<'a, A, O, M, K> {
+    preparation_failure: &'a Option<Vec<O>>,
+    actions: Vec<SemanticAction<'a, A, O, M, K>>,
+}
+
+pub fn postcard_semantic_result_sha256<G: CampaignTypes + ?Sized>(
+    result: &CampaignJobResult<G>,
+) -> Result<String, Box<dyn Error>> {
+    postcard_value_sha256(&SemanticResult {
+        preparation_failure: &result.preparation_failure,
+        actions: result
+            .actions
+            .iter()
+            .map(|action| SemanticAction {
+                action: &action.action,
+                observations: &action.observations,
+                milestones: &action.milestones,
+                outcome: action.outcome,
+                candidate: action
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| SemanticCandidate {
+                        key: &candidate.key,
+                        viable: candidate.viable,
+                    }),
+            })
+            .collect(),
+    })
+}
+
 pub fn postcard_value_sha256<T: Serialize + ?Sized>(value: &T) -> Result<String, Box<dyn Error>> {
     let digest = postcard::serialize_with_flavor::<_, PostcardSha256, sha2::digest::Output<Sha256>>(
         value,
         PostcardSha256(Sha256::new()),
     )?;
     Ok(format!("{digest:x}"))
-}
-
-struct JobSpec<G: Workload + ?Sized> {
-    reservation: usize,
-    snapshot: Arc<G::Snapshot>,
-    replay: Vec<G::Action>,
-    replay_certificates: Vec<Option<[u8; 32]>>,
-    parent_milestones: G::Milestones,
-    suffix: Vec<G::Action>,
 }
 
 type SelectedJob<G> = (JobSpec<G>, PendingJob<G>);
@@ -2827,7 +2899,7 @@ struct PendingJob<G: Workload + ?Sized> {
 }
 
 struct CompletedJob<G: Workload + ?Sized> {
-    held_since: Option<std::time::Instant>,
+    held_since: Option<Moment>,
     pending: PendingJob<G>,
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
@@ -2981,21 +3053,40 @@ fn write_live_progress<G: Workload>(
     counters: &CampaignCounters,
     profile: Option<(&LiveCoordinatorProfile, HostTimes)>,
     draw_state_memory_bytes: usize,
-    telemetry_started: Instant,
+    telemetry_started: Moment,
     final_census: bool,
     sink: &mut dyn Write,
 ) -> Result<(), Box<dyn Error>> {
+    let line = serde_json::to_string(&progress_record(
+        core,
+        counters,
+        profile,
+        draw_state_memory_bytes,
+        telemetry_started,
+        final_census,
+    )?)?;
+    sink.write_all(line.as_bytes())?;
+    sink.write_all(b"\n")?;
+    sink.flush()?;
+    Ok(())
+}
+
+fn progress_record<G: Workload>(
+    core: &CoordinatorCore<G>,
+    counters: &CampaignCounters,
+    profile: Option<(&LiveCoordinatorProfile, HostTimes)>,
+    draw_state_memory_bytes: usize,
+    telemetry_started: Moment,
+    final_census: bool,
+) -> Result<CampaignProgressRecord<G::Key>, Box<dyn Error>> {
     let sequence = core.sequence;
-    #[allow(clippy::disallowed_methods)]
-    let unix_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs());
+    let unix_time = unix_seconds();
     let (deepest_key, cheapest, retained) = core
         .archive
         .live_progress()
         .map(|(key, cheapest, retained)| (Some(key), cheapest, retained))
         .unwrap_or((None, 0, 0));
-    let line = serde_json::to_string(&CampaignProgressRecord {
+    Ok(CampaignProgressRecord {
         workload_diagnostics: G::diagnostics(&core.evidence),
         retained_diagnostics: final_census
             .then(|| G::retained_diagnostics(core.archive.retained_snapshots()))
@@ -3046,11 +3137,7 @@ fn write_live_progress<G: Workload>(
             core.archive.selector_counters()
         },
         continuations: core.archive.continuation_report(),
-    })?;
-    sink.write_all(line.as_bytes())?;
-    sink.write_all(b"\n")?;
-    sink.flush()?;
-    Ok(())
+    })
 }
 
 fn bootstrap_core<G: Workload>(
@@ -3194,120 +3281,37 @@ where
     )
 }
 
-#[allow(clippy::too_many_lines)]
 pub fn run_campaign_checkpointed_with_options<G: Workload>(
     workload: &G,
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
-    mut progress: Option<&mut dyn Write>,
+    progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
-    let executable_identity = workload.executable_identity()?;
-    let work_budget = options.work_budget;
-    let placement = options.placement.as_ref();
-    let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
-    if work_budget == Some(0) {
-        return Err("work budget must be nonzero".into());
-    }
-    if config.workers == 0 {
-        return Err("campaign mode requires at least one worker".into());
-    }
-    if !archive_entry_limit_is_valid(config.archive_entry_limit) {
-        return Err("campaign archive entry limit is outside its bounded range".into());
-    }
-    if config.window == 0 {
-        return Err("campaign admission window must hold at least one reservation".into());
-    }
-    if config.memory_budget_mib == Some(0) {
-        return Err("campaign memory budget must be nonzero".into());
-    }
-    if let Some(memory_budget_mib) = config.memory_budget_mib {
-        let budget = memory_budget_mib.saturating_mul(1024 * 1024);
-        if budget
-            <= workload
-                .draw_state_memory_reserve_bytes(&config.run)
-                .saturating_add(duration_memory_reserve)
-        {
-            return Err("campaign memory budget is too small for the bounded draw state".into());
-        }
-    }
-    let mut search_checkpoint = match origin {
-        CampaignOrigin::SearchCheckpoint {
-            path,
-            expected_sha256,
-        } => {
-            let reader = CheckpointReader::open(path)?;
-            if expected_sha256
-                .as_deref()
-                .is_some_and(|expected| expected != reader.file_sha256.as_str())
-            {
-                return Err("selected search checkpoint changed before resume".into());
-            }
-            Some(reader)
-        }
-        _ => None,
-    };
-    let origin_record = resolve_origin(
-        workload,
-        config,
-        origin,
-        search_checkpoint.as_ref(),
-        &executable_identity,
-    )?;
-    let draw_origin = match origin {
-        CampaignOrigin::Genesis => None,
-        CampaignOrigin::SnapshotRoot { .. } => None,
-        CampaignOrigin::SearchCheckpoint { .. } => None,
-        CampaignOrigin::Archive { source, .. } => Some((source.file_sha256(), source.report())),
-    };
-    let (mut draw_state, draw_header) = initial_draw_state(workload, &config.run, draw_origin)?;
-    let mut duration_policies = DurationPolicies::<G::Key>::new();
-    if !memory_is_within_reserve(
-        workload.draw_state_memory_bytes(&draw_state),
-        workload.draw_state_memory_reserve_bytes(&config.run),
-    ) {
-        return Err("initial draw state exceeds its deterministic memory reserve".into());
-    }
-    let mut header = stream_header(
-        workload,
-        config,
-        &origin_record,
-        draw_header,
-        &executable_identity,
-    );
-    header.work_budget = work_budget;
-    let mut writer = StreamWriter::new(stream);
-    writer.write_line(&header)?;
+    run_campaign_watched(workload, config, origin, stream, progress, options, &())
+}
 
-    let mut core = CoordinatorCore::new(
-        workload,
-        &config.run,
-        config.archive_entry_limit,
-        config.memory_budget_mib,
-    );
-    let mut counters = CampaignCounters::new();
-    let mut telemetry = CampaignTelemetry::default();
-    let workers = config.workers as usize;
-    let mut rand = RomuDuoJrRand::with_seed(derive_selection_seed(config.campaign_seed));
-
-    #[allow(clippy::disallowed_methods)]
-    let mut telemetry_started = std::time::Instant::now();
-    let mut reserved = 0_u64;
-    let profile_printed = std::env::var_os("HARMONY_COORDINATOR_PROFILE").is_some();
-    let mut coordinator_profile = LiveCoordinatorProfile::default();
+pub fn run_campaign_watched<G: Workload, W: CampaignWatch<G>>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    watch: &W,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    let placement = options.placement.clone();
+    let placement = placement.as_ref();
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
-    let mut spec_records = BTreeMap::<usize, JobSpecRecord<G>>::new();
-    let action_cost = workload.action_cost_fn();
-
-    let retention = config.retention;
-    let mut admission = telemetry.admission.clone();
-    let mut idle_clock = IdleClock::new(workers);
-    let mut coordinator_schedstat = None;
+    let mut coordinator = None;
     let ((), worker_telemetry) = with_worker_pool(
         config.workers,
         |worker| {
@@ -3322,544 +3326,81 @@ where
             workload.new_target()
         },
         |_| workload.new_target(),
-        |target, spec: JobSpec<G>| {
-            let reservation = spec.reservation;
-            let work_before = workload.execution_work(target);
-            let outcome = workload
-                .execute_job_certified(
-                    &config.run,
-                    target,
-                    &spec.snapshot,
-                    &spec.replay,
-                    &spec.replay_certificates,
-                    spec.parent_milestones,
-                    &spec.suffix,
-                    retention,
-                    config.stop_rollout_on_objective,
-                )
-                .and_then(|result| {
-                    let result_sha256 = workload
-                        .certified_result_sha256(&result, target)
-                        .map_err(|error| error.to_string())?;
-                    let execution_work = execution_work_delta(
-                        work_before,
-                        workload.execution_work(target),
-                        "worker",
-                    )?;
-                    Ok((result, execution_work, result_sha256))
-                })
+        |target, job: JobSpec<G>| {
+            let reservation = job.reservation;
+            let outcome = watch
+                .run(&job, || run_job(workload, config, target, &job))
                 .map_err(|error| error.to_string());
             Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
-            let bootstrap_started = now();
-            let resume = match search_checkpoint.take() {
-                Some(reader) => Some(restore_search_checkpoint(
-                    workload,
-                    config,
-                    &executable_identity,
-                    reader,
-                    &mut core,
-                    &mut draw_state,
-                    &mut duration_policies,
-                    &mut counters,
-                )?),
-                None => {
-                    bootstrap_campaign(
-                        workload,
-                        config,
-                        origin,
-                        &mut core,
-                        &draw_state,
-                        &duration_policies,
-                        &mut counters,
-                    )?;
-                    None
-                }
-            };
-            telemetry.bootstrap_ns = nanos_since(bootstrap_started);
-            if let (Some(path), Some(input)) =
-                (&config.objective_witness_path, &core.objective_witness)
-            {
-                std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
-            }
-
+            let campaign = coordinator.insert(CampaignCoordinator::start(
+                workload,
+                config,
+                origin,
+                stream,
+                progress.map(|sink| -> &mut dyn Write { sink }),
+                options,
+            )?);
+            watch.start(campaign)?;
             bootstrapped.send(())?;
             drop(bootstrapped);
             pool.wait_ready(config.workers)?;
-            #[allow(clippy::disallowed_methods)]
-            let search_started = std::time::Instant::now();
-            telemetry_started = search_started;
-            let started = config.wall_budget.map(|_| telemetry_started);
-            let mut admitted = 0_usize;
-            let mut planned_clock = 0_u64;
-            let mut resumed_in_flight = None;
-            if let Some(resume) = resume {
-                rand = resume.rand;
-                reserved = resume.reserved;
-                coordinator_profile = resume.profile;
-                admitted = resume.admitted;
-                planned_clock = resume.planned_clock;
-                resumed_in_flight = Some(resume.in_flight);
+            while campaign.reserve_next()? {
+                for job in campaign.plan(usize::MAX) {
+                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                }
             }
-            let mut checkpoints = options
-                .checkpoints
-                .clone()
-                .map(|plan| {
-                    CheckpointWriter::create(
-                        plan,
-                        G::checkpoint_marks(&core.evidence),
-                        core.archive.top_progress(),
-                    )
-                })
-                .transpose()?;
-            idle_clock = IdleClock::new(workers);
-            coordinator_schedstat = thread_schedstat();
-            let select = |core: &mut CoordinatorCore<G>,
-                          rand: &mut RomuDuoJrRand,
-                          draw_state: &mut DrawTables<G::Action>,
-                          duration_policies: &DurationPolicies<G::Key>,
-                          writer: &mut StreamWriter<'_>,
-                          counters: &mut CampaignCounters,
-                          reserved: &mut u64|
-             -> Result<Option<SelectedJob<G>>, Box<dyn Error>> {
-                if *reserved >= config.execution_budget
-                    || stop_reservations_after_work_budget(
-                        work_budget,
-                        counters.bootstrap_execution_work,
-                        counters.job_execution_work,
-                    )
-                    || stop_reservations_after_objective(
-                        config.stop_campaign_on_objective,
-                        core.objective_witness.is_some(),
-                    )
-                {
-                    return Ok(None);
+            loop {
+                for job in campaign.plan(usize::MAX) {
+                    pool.dispatch((job.planned_finish, job.reservation), job)?;
                 }
-                if let (Some(started), Some(wall_budget)) = (started, config.wall_budget)
-                    && started.elapsed() >= wall_budget
-                {
-                    return Ok(None);
-                }
-                let mut consecutive_skips = 0_u64;
-                let (continuation_energy, continuation) =
-                    continuation_attempt(core, config.campaign_seed, *reserved);
-                if let Some(continuation) = continuation {
-                    let parent_index = continuation.parent_index;
-                    let suffix = continuation.suffix;
-                    let (mixture_weight, splice_weight) = (0, u8::MAX);
-                    let mut mutation_seed = rand.next_u64();
-                    while energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                        != EnergyStrategy::Splice
-                    {
-                        mutation_seed = rand.next_u64();
-                    }
-                    let parent_id = continuation.parent_id;
-                    let selector = SelectorDraw {
-                        path: SelectorPath::Continuation,
-                        tier_rank: None,
-                        best_preference: None,
-                    };
-                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                    let splice = Some(CampaignSpliceRecord::Tail {
-                        donor_id: continuation.donor,
-                        leaf_id: continuation.leaf,
-                        tail_postcard: postcard::to_allocvec(&suffix)?,
-                    });
-                    *reserved = reserved.saturating_add(1);
-                    core.archive.pin_metadata(parent_id)?;
-                    let (snapshot, replay, replay_certificates, snapshot_id) =
-                        core.archive.pin_job_origin(parent_index)?;
-                    let entry = &core.archive.entries[parent_index];
-                    return Ok(Some((
-                        JobSpec {
-                            reservation: 0,
-                            snapshot,
-                            replay,
-                            replay_certificates,
-                            parent_milestones: entry.milestones,
-                            suffix,
-                        },
-                        PendingJob {
-                            snapshot_id,
-                            parent_id,
-                            continuation_energy,
-                            continuation_wave: continuation.wave.saturating_add(1),
-                            continuation_edge: Some((
-                                continuation.source,
-                                continuation.destination,
-                            )),
-                            mutation_seed,
-                            mixture_weight,
-                            splice_weight,
-                            splice,
-                            selector,
-                            draw_checkpoint_before,
-                            duration_draw: None,
-                            duration_admission_sequence_at_draw: None,
-                            duration_remaining_work: None,
-                            duration_checkpoint_at_draw: None,
-                            suffix_limit: None,
-                            planned_finish: 0,
-                        },
-                    )));
-                }
-                loop {
-                    let (parent_index, selector) = core.archive.select_parent(rand)?;
-                    let parent_id = core
-                        .archive
-                        .stable_id(parent_index)
-                        .ok_or("selected archive slot is missing")?;
-                    let mutation_seed = rand.next_u64();
-                    let (mixture_weight, splice_weight) =
-                        mixture_weights(&core.mixture_energy, config.mixture);
-                    let draw_checkpoint_before = workload.draw_checkpoint(draw_state)?;
-                    let (spliced, splice) =
-                        if energy_strategy(mutation_seed, mixture_weight, splice_weight)?
-                            == EnergyStrategy::Splice
-                        {
-                            match core
-                                .archive
-                                .splice_tail_for_campaign(parent_index, LONGEST_SPLICE_TAIL)
-                            {
-                                Some(CampaignSpliceTail {
-                                    donor_id,
-                                    leaf_id,
-                                    actions,
-                                }) => {
-                                    let tail_postcard = postcard::to_allocvec(&actions)?;
-                                    (
-                                        Some(actions),
-                                        Some(CampaignSpliceRecord::Tail {
-                                            donor_id: core
-                                                .archive
-                                                .stable_id(donor_id)
-                                                .ok_or("splice donor slot is missing")?,
-                                            leaf_id: core
-                                                .archive
-                                                .stable_id(leaf_id)
-                                                .ok_or("splice leaf slot is missing")?,
-                                            tail_postcard,
-                                        }),
-                                    )
-                                }
-                                None => (None, Some(CampaignSpliceRecord::Unavailable)),
-                            }
-                        } else {
-                            (None, None)
-                        };
-                    let remaining_work = work_budget.and_then(|budget| {
-                        NonZeroU64::new(
-                            budget.saturating_sub(
-                                counters
-                                    .bootstrap_execution_work
-                                    .saturating_add(counters.job_execution_work),
-                            ),
-                        )
-                    });
-                    let mut duration_checkpoint_at_draw = None;
-                    let duration_draw = if spliced.is_none() {
-                        workload
-                            .duration_request(
-                                &config.run,
-                                core.archive.entries[parent_index].key,
-                                remaining_work,
-                            )
-                            .map(|request| {
-                                duration_checkpoint_at_draw =
-                                    duration_policies.context_checkpoint(request.context);
-                                let mut duration_rand = RomuDuoJrRand::with_seed(mutation_seed);
-                                duration_policies.draw(
-                                    request.context,
-                                    &mut duration_rand,
-                                    request.max_duration,
-                                )
-                            })
-                    } else {
-                        None
-                    };
-                    let duration_remaining_work = duration_draw.and(remaining_work);
-                    let duration_admission_sequence_at_draw = duration_draw.map(|_| core.sequence);
-                    let previous = core.archive.last_action(parent_index);
-                    let suffix_limit = spliced
-                        .is_none()
-                        .then(|| core.suffix_limit(parent_id, parent_index));
-                    let mut suffix = match (spliced, duration_draw) {
-                        (Some(tail), _) => tail,
-                        (None, Some(draw)) => workload.expand_suffix_duration(
-                            &config.run,
-                            draw_state,
-                            MixtureDraw {
-                                mixture: config.mixture,
-                                weight: mixture_weight,
-                                splice_weight,
-                            },
-                            mutation_seed,
-                            previous,
-                            draw,
-                        )?,
-                        (None, None) => workload.expand_suffix(
-                            &config.run,
-                            draw_state,
-                            MixtureDraw {
-                                mixture: config.mixture,
-                                weight: mixture_weight,
-                                splice_weight,
-                            },
-                            mutation_seed,
-                            previous,
-                        )?,
-                    };
-                    if let Some(limit) = suffix_limit {
-                        suffix.truncate(usize::from(limit));
-                    }
-                    let all_prefixes_archived = consecutive_skips < CONSECUTIVE_SKIP_LIMIT
-                        && core.all_prefixes_archived(parent_index, &suffix);
-                    if all_prefixes_archived {
-                        let duration_checkpoint_before = duration_draw
-                            .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                        let draw_checkpoint_after = workload.finish_stream_record(
-                            &config.run,
-                            draw_state,
-                            &[],
-                            &core.evidence,
-                        )?;
-                        writer.write_line(&CampaignStreamRecord::Skip(CampaignSkipRecord {
-                            reservation: *reserved,
-                            parent_id,
-                            mutation_seed,
-                            mixture_weight,
-                            splice_weight,
-                            splice,
-                            selector,
-                            draw_checkpoint_before,
-                            draw_checkpoint_after,
-                            duration_draw,
-                            duration_admission_sequence_at_draw,
-                            duration_remaining_work,
-                            duration_checkpoint_at_draw,
-                            duration_checkpoint_after: duration_checkpoint_before.clone(),
-                            duration_checkpoint_before,
-                            suffix_limit,
-                        }))?;
-                        core.archive.record_selection(parent_index, &selector);
-                        core.archive.maintain_memory_budget()?;
-                        core.archive.prepare_selection();
-                        counters.duplicates_skipped = counters.duplicates_skipped.saturating_add(1);
-                        consecutive_skips = consecutive_skips.saturating_add(1);
-                        continue;
-                    }
-                    *reserved = reserved.saturating_add(1);
-                    core.start_suffix_job(parent_id, suffix_limit);
-                    core.archive.pin_metadata(parent_id)?;
-                    let (snapshot, replay, replay_certificates, snapshot_id) =
-                        core.archive.pin_job_origin(parent_index)?;
-                    let entry = &core.archive.entries[parent_index];
-                    return Ok(Some((
-                        JobSpec {
-                            reservation: 0,
-                            snapshot,
-                            replay,
-                            replay_certificates,
-                            parent_milestones: entry.milestones,
-                            suffix,
-                        },
-                        PendingJob {
-                            snapshot_id,
-                            parent_id,
-                            continuation_energy,
-                            continuation_wave: 0,
-                            continuation_edge: None,
-                            mutation_seed,
-                            mixture_weight,
-                            splice_weight,
-                            splice,
-                            selector,
-                            draw_checkpoint_before,
-                            duration_draw,
-                            duration_admission_sequence_at_draw,
-                            duration_remaining_work,
-                            duration_checkpoint_at_draw,
-                            suffix_limit,
-                            planned_finish: 0,
-                        },
-                    )));
-                }
-            };
-
-            let pipeline_depth = config.window;
-            let mut pending = BTreeMap::<usize, PendingJob<G>>::new();
-            let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
-            let mut schedule = BTreeSet::<(u64, usize)>::new();
-            let mut running = 0_usize;
-            for job in resumed_in_flight.take().unwrap_or_default() {
-                let parent_index = core
-                    .archive
-                    .index_of_id(job.pending.parent_id)
-                    .ok_or("search checkpoint in-flight job names a missing parent entry")?;
-                let (_, expected_replay, expected_certificates) =
-                    core.archive.job_origin(parent_index)?;
-                if job.spec.replay != expected_replay
-                    || job.spec.replay_certificates != expected_certificates
-                {
-                    return Err("search checkpoint in-flight replay certificate path differs from its archive".into());
-                }
-                let index = core
-                    .archive
-                    .index_of_id(job.pending.snapshot_id)
-                    .ok_or("search checkpoint in-flight job names a missing snapshot entry")?;
-                let snapshot = core.archive.entries[index]
-                    .snapshot
-                    .clone()
-                    .ok_or("search checkpoint in-flight job has no stored snapshot")?;
-                core.start_suffix_job(job.pending.parent_id, job.pending.suffix_limit);
-                let key = (job.pending.planned_finish, job.reservation);
-                schedule.insert(key);
-                pool.dispatch(
-                    key,
-                    JobSpec {
-                        reservation: job.reservation,
-                        snapshot,
-                        replay: job.spec.replay.clone(),
-                        replay_certificates: job.spec.replay_certificates.clone(),
-                        parent_milestones: job.spec.parent_milestones,
-                        suffix: job.spec.suffix.clone(),
-                    },
-                )?;
-                running += 1;
-                if checkpoints.is_some() {
-                    spec_records.insert(job.reservation, job.spec);
-                }
-                pending.insert(job.reservation, job.pending);
-            }
-            let prefill = pipeline_depth.saturating_sub(pending.len());
-            for _ in 0..prefill {
-                let selection_started = profile_now();
-                let selected = select(
-                    &mut core,
-                    &mut rand,
-                    &mut draw_state,
-                    &duration_policies,
-                    &mut writer,
-                    &mut counters,
-                    &mut reserved,
-                )?;
-                coordinator_profile.selection_ns = coordinator_profile
-                    .selection_ns
-                    .saturating_add(profile_elapsed(selection_started));
-                coordinator_profile.selections = coordinator_profile.selections.saturating_add(1);
-                let Some((mut spec, mut pending_job)) = selected else {
+                if campaign.finished() {
                     break;
-                };
-                coordinator_profile.note_dispatch(
-                    &spec,
-                    matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
-                    action_cost,
-                );
-                let reservation = usize::try_from(reserved.saturating_sub(1))?;
-                spec.reservation = reservation;
-                pending_job.planned_finish = planned_finish(planned_clock, &spec, action_cost);
-                let key = (pending_job.planned_finish, reservation);
-                if pending.insert(reservation, pending_job).is_some() {
-                    return Err("campaign reserved one job twice".into());
                 }
-                if checkpoints.is_some() {
-                    spec_records.insert(reservation, JobSpecRecord::of(&spec));
-                }
-                schedule.insert(key);
-                pool.dispatch(key, spec)?;
-                running += 1;
-            }
-            idle_clock.update(running, IdleReason::NoJob);
-
-            while !pending.is_empty() || !completed.is_empty() {
-                let next_admission = schedule.first().map(|(_, reservation)| *reservation);
-                let mut ready_reply = if next_admission
-                    .is_some_and(|reservation| completed.contains_key(&reservation))
-                {
-                    match pool.try_receive() {
-                        Ok(reply) => reply,
-                        Err(WorkerPoolError::RepliesClosed) => None,
-                        Err(error) => return Err(error.into()),
+                let receive_started = profile_now();
+                let reply = match pool.receive() {
+                    Ok(reply) => reply,
+                    Err(WorkerPoolError::RepliesClosed) => {
+                        let reservation = campaign
+                            .next_admission()
+                            .ok_or("campaign lost its planned admission while waiting")?;
+                        return Err(format!(
+                            "campaign reservation {reservation} failed: every worker exited before reporting its result"
+                        )
+                        .into());
                     }
-                } else if pending.is_empty() {
-                    return Err("campaign reorder window ended with an admission gap".into());
-                } else {
-                    let receive_started = profile_now();
-                    let reply = match pool.receive() {
-                        Ok(reply) => reply,
-                        Err(WorkerPoolError::RepliesClosed) => {
-                            let reservation = next_admission
-                                .ok_or("campaign lost its planned admission while waiting")?;
-                            return Err(format!(
-                                "campaign reservation {reservation} failed: every worker exited before reporting its result"
-                            )
-                            .into());
-                        }
-                        Err(error) => return Err(error.into()),
-                    };
-                    let waited = profile_elapsed(receive_started);
-                    coordinator_profile.receive_wait_ns =
-                        coordinator_profile.receive_wait_ns.saturating_add(waited);
-                    let waited = u64::try_from(waited).unwrap_or(u64::MAX);
-                    if completed.is_empty() {
-                        admission.receive_all_running_ns =
-                            admission.receive_all_running_ns.saturating_add(waited);
-                    } else {
-                        admission.receive_head_of_line_ns =
-                            admission.receive_head_of_line_ns.saturating_add(waited);
-                    }
-                    Some(reply)
+                    Err(error) => return Err(error.into()),
                 };
+                campaign.note_receive_wait(profile_elapsed(receive_started));
+                let mut ready_reply = Some(reply);
                 while let Some(reply) = ready_reply {
-                    coordinator_profile.receives = coordinator_profile.receives.saturating_add(1);
-                    let physical_worker = reply.worker;
-                    if physical_worker >= config.workers {
+                    if reply.worker >= config.workers {
                         return Err(
                             "campaign worker replied with an unknown physical identifier".into(),
                         );
                     }
-                    let key = reply.key;
-                    if !schedule.contains(&key) {
-                        return Err("campaign worker replied for an unscheduled job".into());
-                    }
-                    running = running
-                        .checked_sub(1)
-                        .ok_or("campaign worker replied without queued work")?;
-                    let reservation = key.1;
-                    let result = match reply.outcome {
-                        Ok((claimed, result)) if claimed == reservation => result,
+                    let reservation = reply.key.1;
+                    let outcome = match reply.outcome {
+                        Ok((claimed, outcome)) if claimed == reservation => outcome,
                         Ok(_) => {
                             return Err("campaign worker replied for another reservation".into());
                         }
                         Err(error) => Err(error),
                     };
-                    let held = Some(reservation) != next_admission;
-                    idle_clock.update(
-                        running,
-                        if held {
-                            IdleReason::AdmissionOrder
-                        } else {
-                            IdleReason::NoJob
-                        },
-                    );
-                    let pending_job = pending
-                        .remove(&reservation)
-                        .ok_or("campaign worker replied for an unknown reservation")?;
-                    if completed
-                        .insert(
-                            reservation,
-                            CompletedJob {
-                                held_since: held.then(now),
-                                pending: pending_job,
-                                outcome: result,
-                            },
-                        )
-                        .is_some()
-                    {
-                        return Err("campaign worker completed one reservation twice".into());
+                    match outcome {
+                        Ok((outcome, note)) => {
+                            if outcome.reservation != reservation {
+                                return Err(
+                                    "campaign worker replied for another reservation".into()
+                                );
+                            }
+                            campaign.admit(outcome)?;
+                            watch.admitted(note, campaign);
+                        }
+                        Err(error) => campaign.fail(reservation, error)?,
                     }
                     ready_reply = match pool.try_receive() {
                         Ok(reply) => reply,
@@ -3867,418 +3408,14 @@ where
                         Err(error) => return Err(error.into()),
                     };
                 }
-
-                while let Some(&(finish, reservation)) = schedule.first() {
-                    let Some(completed_job) = completed.remove(&reservation) else {
-                        break;
-                    };
-                    schedule.pop_first();
-                    planned_clock = finish;
-                    spec_records.remove(&reservation);
-                    let pending_job = completed_job.pending;
-                    let (result, execution_work, result_sha256) =
-                        completed_job.outcome.map_err(|error| -> Box<dyn Error> {
-                            format!("campaign reservation {reservation} failed: {error}").into()
-                        })?;
-                    if let Some(since) = completed_job.held_since {
-                        let held = nanos_since(since);
-                        admission.results_held = admission.results_held.saturating_add(1);
-                        admission.results_held_ns = admission.results_held_ns.saturating_add(held);
-                        admission.results_held_max_ns = admission.results_held_max_ns.max(held);
-                    }
-                    let tracked_duration = pending_job
-                        .duration_draw
-                        .filter(|_| execution_work > 0)
-                        .map(|draw| draw.duration);
-                    let duration_checkpoint_before = pending_job
-                        .duration_draw
-                        .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                    let objectives_before = core.objectives_reached;
-                    let admission_started = profile_now();
-                    core.archive
-                        .set_admission_wave(pending_job.continuation_wave);
-                    core.finish_suffix_job(pending_job.parent_id, pending_job.suffix_limit);
-                    let (sequence, decisions, duration_admission) = core.admit_job_tracking(
-                        workload,
-                        pending_job.parent_id,
-                        result,
-                        pending_job.suffix_limit.is_some(),
-                        |action| {
-                            tracked_duration.is_some_and(|duration| {
-                                workload.duration_of_action(&config.run, action) == Some(duration)
-                            })
-                        },
-                    )?;
-                    if duration_admission.applied {
-                        let draw = pending_job
-                            .duration_draw
-                            .ok_or("duration application was reported without a duration draw")?;
-                        duration_policies.observe(
-                            draw.context,
-                            draw.duration,
-                            duration_admission.useful,
-                            NonZeroU64::new(execution_work)
-                                .ok_or("duration application requires positive execution work")?,
-                        )?;
-                    }
-                    let duration_checkpoint_after = pending_job
-                        .duration_draw
-                        .and_then(|draw| duration_policies.context_checkpoint(draw.context));
-                    coordinator_profile.admission_ns = coordinator_profile
-                        .admission_ns
-                        .saturating_add(profile_elapsed(admission_started));
-                    coordinator_profile.admissions =
-                        coordinator_profile.admissions.saturating_add(1);
-                    let bookkeeping_started = profile_now();
-                    let parent_index = core
-                        .archive
-                        .index_of_id(pending_job.parent_id)
-                        .ok_or("completed job parent is no longer resident")?;
-                    let isolated_continuation =
-                        pending_job.selector.path == SelectorPath::Continuation;
-                    if isolated_continuation {
-                        core.archive.record_isolated_continuation(parent_index);
-                    } else {
-                        core.archive
-                            .record_selection(parent_index, &pending_job.selector);
-                    }
-                    let retained_ids = retained_archive_indexes(&core, &decisions);
-                    let new_cell_descendant = retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_cell(*id));
-                    let new_slot_descendant = retained_ids
-                        .iter()
-                        .any(|id| core.archive.opened_new_slot(*id));
-                    if !isolated_continuation {
-                        core.archive
-                            .record_selection_outcome(parent_index, !retained_ids.is_empty());
-                    }
-                    if isolated_continuation {
-                        let (landed, replaced) = continuation_arrival::<G>(
-                            &core.archive,
-                            pending_job.continuation_edge,
-                            &decisions,
-                        );
-                        core.archive.record_continuation_outcome(
-                            landed,
-                            replaced,
-                            new_cell_descendant,
-                            pending_job.continuation_wave,
-                        );
-                        core.archive.add_continuation_execution_work(execution_work);
-                    }
-                    record_mixture_outcome(
-                        &mut core.mixture_energy,
-                        config.mixture,
-                        pending_job.selector.path,
-                        pending_job.mutation_seed,
-                        (pending_job.mixture_weight, pending_job.splice_weight),
-                        new_slot_descendant,
-                        execution_work,
-                    )?;
-                    if objectives_before == 0
-                        && let (Some(path), Some(input)) =
-                            (&config.objective_witness_path, &core.objective_witness)
-                    {
-                        std::fs::write(path, serde_json::to_vec_pretty(input)?)?;
-                    }
-                    let draw_checkpoint_after =
-                        finish_record(workload, &config.run, &mut draw_state, &core, &decisions)?;
-                    let draw_state_memory_bytes = workload.draw_state_memory_bytes(&draw_state);
-                    if !memory_is_within_reserve(
-                        draw_state_memory_bytes,
-                        workload.draw_state_memory_reserve_bytes(&config.run),
-                    ) {
-                        return Err(
-                            "live draw state exceeds its deterministic memory reserve".into()
-                        );
-                    }
-                    if !memory_is_within_reserve(
-                        duration_policies.memory_bytes(),
-                        duration_memory_reserve,
-                    ) {
-                        return Err(
-                            "live adaptive duration state exceeds its memory reserve".into()
-                        );
-                    }
-                    core.archive.unpin_job_origin(pending_job.snapshot_id);
-                    core.archive.unpin_metadata(pending_job.parent_id);
-                    let compaction_started = profile_now();
-                    let compactions_before = core.archive.history_compactions();
-                    core.archive.maintain_memory_budget()?;
-                    core.archive.prepare_selection();
-                    record_compaction_elapsed(
-                        &mut coordinator_profile,
-                        compactions_before,
-                        core.archive.history_compactions(),
-                        profile_elapsed(compaction_started),
-                    );
-                    coordinator_profile.bookkeeping_ns = coordinator_profile
-                        .bookkeeping_ns
-                        .saturating_add(profile_elapsed(bookkeeping_started));
-                    let stream_started = profile_now();
-                    writer.write_line(&CampaignStreamRecord::Job(CampaignJobRecord {
-                        continuation_energy: pending_job.continuation_energy,
-                        sequence,
-                        reservation: u64::try_from(reservation)?,
-                        parent_id: pending_job.parent_id,
-                        mutation_seed: pending_job.mutation_seed,
-                        execution_work,
-                        result_sha256,
-                        decisions,
-                        mixture_weight: pending_job.mixture_weight,
-                        splice_weight: pending_job.splice_weight,
-                        splice: pending_job.splice,
-                        selector: pending_job.selector,
-                        draw_checkpoint_before: pending_job.draw_checkpoint_before,
-                        draw_checkpoint_after,
-                        duration_draw: pending_job.duration_draw,
-                        duration_admission_sequence_at_draw: pending_job
-                            .duration_admission_sequence_at_draw,
-                        duration_remaining_work: pending_job.duration_remaining_work,
-                        duration_checkpoint_at_draw: pending_job.duration_checkpoint_at_draw,
-                        duration_checkpoint_before,
-                        duration_checkpoint_after,
-                        suffix_limit: pending_job.suffix_limit,
-                    }))?;
-                    coordinator_profile.stream_write_ns = coordinator_profile
-                        .stream_write_ns
-                        .saturating_add(profile_elapsed(stream_started));
-                    counters.job_execution_work =
-                        counters.job_execution_work.saturating_add(execution_work);
-                    if objectives_before == 0 && core.objectives_reached > 0 {
-                        counters.note_first_objective(sequence);
-                    }
-                    if let Some(sink) = progress.as_deref_mut()
-                        && progress_checkpoint_due(sequence)
-                    {
-                        let host_times = profile_printed.then(|| {
-                            HostTimes::measure(coordinator_schedstat, idle_clock.totals())
-                        });
-                        write_live_progress(
-                            &core,
-                            &counters,
-                            host_times.map(|host_times| (&coordinator_profile, host_times)),
-                            draw_state_memory_bytes,
-                            telemetry_started,
-                            false,
-                            sink,
-                        )?;
-                        if let Some(host_times) = host_times {
-                            eprintln!(
-                                "coordinator-profile executions={sequence} coordinator_cpu_ns={} coordinator_run_wait_ns={} idle_admission_order_ns={} idle_no_job_ns={} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
-                                host_times.coordinator_cpu_ns,
-                                host_times.coordinator_run_wait_ns,
-                                host_times.idle_admission_order_ns,
-                                host_times.idle_no_job_ns,
-                                coordinator_profile.receive_wait_ns,
-                                coordinator_profile.admission_ns,
-                                coordinator_profile.bookkeeping_ns,
-                                coordinator_profile.history_compaction_ns,
-                                coordinator_profile.stream_write_ns,
-                                coordinator_profile.selection_ns,
-                                coordinator_profile.receives,
-                                coordinator_profile.admissions,
-                                coordinator_profile.selections,
-                                core.archive.entries.len(),
-                                core.archive.active_count(),
-                                core.archive.historical_input_actions(),
-                                core.archive.stored_input_actions(),
-                                core.archive.input_index_nodes(),
-                                core.archive.resident_snapshot_count(),
-                                core.archive.resident_snapshot_bytes(),
-                                core.archive.entry_metadata_memory_bytes(),
-                                core.archive.input_index_memory_bytes(),
-                                core.archive.cell_memory_bytes(),
-                                core.archive.history_memory_bytes(),
-                                draw_state_memory_bytes,
-                                core.archive
-                                    .resident_memory_bytes()
-                                    .saturating_add(draw_state_memory_bytes),
-                                core.archive.snapshot_evictions(),
-                                core.archive.history_compactions(),
-                                core.archive.historical_entries_dropped(),
-                                core.archive.input_reconstructions(),
-                                completed.len(),
-                                counters.job_execution_work,
-                                coordinator_profile.replay_jobs,
-                                coordinator_profile.replay_actions,
-                                coordinator_profile.replay_cost,
-                                coordinator_profile.suffix_actions,
-                                coordinator_profile.suffix_cost,
-                            );
-                        }
-                    }
-                    admitted = admitted.saturating_add(1);
-                    let selection_started = profile_now();
-                    let selected = select(
-                        &mut core,
-                        &mut rand,
-                        &mut draw_state,
-                        &duration_policies,
-                        &mut writer,
-                        &mut counters,
-                        &mut reserved,
-                    )?;
-                    coordinator_profile.selection_ns = coordinator_profile
-                        .selection_ns
-                        .saturating_add(profile_elapsed(selection_started));
-                    coordinator_profile.selections =
-                        coordinator_profile.selections.saturating_add(1);
-                    if let Some((mut spec, mut pending_job)) = selected {
-                        coordinator_profile.note_dispatch(
-                            &spec,
-                            matches!(pending_job.splice, Some(CampaignSpliceRecord::Tail { .. })),
-                            action_cost,
-                        );
-                        let reservation = usize::try_from(reserved.saturating_sub(1))?;
-                        spec.reservation = reservation;
-                        pending_job.planned_finish =
-                            planned_finish(planned_clock, &spec, action_cost);
-                        let key = (pending_job.planned_finish, reservation);
-                        if pending.insert(reservation, pending_job).is_some() {
-                            return Err("campaign reserved one job twice".into());
-                        }
-                        if checkpoints.is_some() {
-                            spec_records.insert(reservation, JobSpecRecord::of(&spec));
-                        }
-                        schedule.insert(key);
-                        pool.dispatch(key, spec)?;
-                        running += 1;
-                    }
-                    idle_clock.update(
-                        running,
-                        if completed.is_empty() {
-                            IdleReason::NoJob
-                        } else {
-                            IdleReason::AdmissionOrder
-                        },
-                    );
-                    if let Some(checkpoints) = checkpoints.as_mut()
-                        && let Some(reason) = checkpoints.due(
-                            core.sequence,
-                            G::checkpoint_marks(&core.evidence),
-                            core.archive.top_progress(),
-                        )
-                    {
-                        write_search_checkpoint(
-                            workload,
-                            config,
-                            &executable_identity,
-                            checkpoints,
-                            reason,
-                            &core,
-                            &draw_state,
-                            &duration_policies,
-                            &rand,
-                            &counters,
-                            &coordinator_profile,
-                            reserved,
-                            admitted,
-                            planned_clock,
-                            &schedule,
-                            &pending,
-                            &completed,
-                            &spec_records,
-                        )?;
-                    }
-                }
-                idle_clock.update(
-                    running,
-                    if completed.is_empty() {
-                        IdleReason::NoJob
-                    } else {
-                        IdleReason::AdmissionOrder
-                    },
-                );
-            }
-            if !completed.is_empty() || !schedule.is_empty() {
-                return Err("campaign reorder window ended with an admission gap".into());
-            }
-            if let Some(checkpoints) = checkpoints.as_mut() {
-                write_search_checkpoint(
-                    workload,
-                    config,
-                    &executable_identity,
-                    checkpoints,
-                    "final",
-                    &core,
-                    &draw_state,
-                    &duration_policies,
-                    &rand,
-                    &counters,
-                    &coordinator_profile,
-                    reserved,
-                    admitted,
-                    planned_clock,
-                    &schedule,
-                    &pending,
-                    &completed,
-                    &spec_records,
-                )?;
             }
             pool.close();
             Ok(())
         },
     )?;
-    telemetry.search_ns = nanos_since(telemetry_started);
-    telemetry.admission = admission;
-    telemetry.workers = worker_telemetry;
-    idle_clock.finish(&mut telemetry.admission);
-    telemetry.sum_targets();
-    telemetry.coordinator = serde_json::to_value(&coordinator_profile)?;
-    let persistence_started = now();
-
-    core.archive.preserve_inactive_snapshots(false)?;
-    core.archive.compact_history_for_final_report()?;
-    core.finish_curve();
-    if let Some(sink) = progress {
-        write_live_progress(
-            &core,
-            &counters,
-            profile_printed.then(|| {
-                (
-                    &coordinator_profile,
-                    HostTimes::measure(
-                        coordinator_schedstat,
-                        (
-                            telemetry.admission.idle_admission_order_ns,
-                            telemetry.admission.idle_no_job_ns,
-                        ),
-                    ),
-                )
-            }),
-            workload
-                .draw_state_memory_bytes(&draw_state)
-                .saturating_add(duration_policies.memory_bytes()),
-            telemetry_started,
-            true,
-            sink,
-        )?;
-    }
-    writer.write_line(
-        &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
-            jobs: reserved,
-            skips: counters.duplicates_skipped,
-            executions_completed: core.sequence,
-        }),
-    )?;
-    let stream_sha256 = writer.finish()?;
-    counters.draw_state_memory_bytes = workload
-        .draw_state_memory_bytes(&draw_state)
-        .saturating_add(duration_policies.memory_bytes());
-    let (mut report, checkpoint) = build_report(
-        workload,
-        &header,
-        origin_record,
-        core,
-        &counters,
-        stream_sha256,
-        config.materialize_final_artifacts,
-    )?;
-    telemetry.persistence_ns = nanos_since(persistence_started);
-    report.telemetry = telemetry;
-    Ok((report, checkpoint))
+    coordinator
+        .ok_or("campaign coordinator never started")?
+        .finish(worker_telemetry)
 }
 
 fn bootstrap_campaign<G: Workload>(
@@ -5914,22 +5051,22 @@ mod tests {
 
     use super::{
         ArchiveReportState, ArchiveSource, CampaignActionResult, CampaignAdmissionDecision,
-        CampaignCandidate, CampaignCheckpoint, CampaignConfig, CampaignCounters,
-        CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult, CampaignOrigin,
-        CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord, CampaignStreamHeader,
-        CampaignStreamRecord, CampaignTypes, ContinuationAccounting, CoordinatorCore, DrawTables,
-        DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy, Evaluation, InputPolicy,
-        LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
-        PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint,
-        SnapshotCheckpointEntry, TargetExecution, ThreadPlacement, WorkloadPolicies,
-        archive_entry_limit_is_valid, compact_progress_curve, default_window, draws_continuation,
-        draws_highest_preference, execution_work_delta, finish_record, full_selector_report_due,
-        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        progress_checkpoint_due, progress_line_interval, progress_policy_is_supported,
-        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
-        replay_campaign_prefix_checkpointed, replay_splice, resident_memory_is_within_budget,
-        retained_archive_indexes, run_campaign_checkpointed,
-        run_campaign_checkpointed_with_options, schedule_policy_identifier,
+        CampaignCandidate, CampaignCheckpoint, CampaignConfig, CampaignCoordinator,
+        CampaignCounters, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
+        CampaignOrigin, CampaignOutcome, CampaignProgressRecord, CampaignSpliceRecord,
+        CampaignStreamHeader, CampaignStreamRecord, CampaignTypes, ContinuationAccounting,
+        CoordinatorCore, DrawTables, DurationAdmission, EmpiricalStepCheckpoint, EnergyStrategy,
+        Evaluation, InputPolicy, JobOutcome, JobSpec, LONGEST_SPLICE_TAIL, LiveCoordinatorProfile,
+        MAX_PROGRESS_CURVE_POINTS, PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting,
+        RomuDuoJrRand, SnapshotCheckpoint, SnapshotCheckpointEntry, TargetExecution,
+        ThreadPlacement, WorkloadPolicies, archive_entry_limit_is_valid, compact_progress_curve,
+        default_window, draws_continuation, draws_highest_preference, execution_work_delta,
+        finish_record, full_selector_report_due, is_zero_usize, memory_is_within_reserve,
+        postcard_value_sha256, profile_elapsed, progress_checkpoint_due, progress_line_interval,
+        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
+        replay_campaign_checkpointed, replay_campaign_prefix_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
+        run_campaign_checkpointed_with_options, run_job, schedule_policy_identifier,
         schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
     };
     use crate::search::archive::{
@@ -7556,7 +6693,7 @@ mod tests {
 "key_policy":"test_key","duration_policy":"stratified",
 "step_policy":"step_uniform","replacement_policy":"least_cost_per_group",
 "resume_policy":"whole_tree","retention_policy":"unprobed",
-"parent_scheduler":"tier_pace_yield_cell_recent_count_decay_v1","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
+"parent_scheduler":"tier_progress_cascade_pace_yield_cell_recent_count_decay_v2","preference_portfolio":"preference_portfolio_v1:1,1","executor_mode":"snapshot_resume_archive",
 "selection_seed_derivation":"x","mixture_policy":"biased_half","workload_identity_sha256":"cd","executable_identity":"test-executable",
 "action_cost_unit":"test_cost","execution_work_unit":"test_work"}"#;
 
@@ -8792,6 +7929,55 @@ mod tests {
     }
 
     #[test]
+    fn a_single_threaded_caller_writes_the_same_campaign_as_the_worker_pool() {
+        let mut config = three_worker_config();
+        config.window = 6;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut pooled_stream = Vec::new();
+        let pooled = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut pooled_stream,
+            None,
+        )
+        .expect("pooled campaign");
+        let mut stream = Vec::new();
+        let mut coordinator = CampaignCoordinator::start(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+        )
+        .expect("coordinator");
+        while coordinator.reserve_next().expect("reserve window") {}
+        let mut target = workload.new_target().expect("target");
+        while !coordinator.finished() {
+            let jobs = coordinator.plan(2);
+            assert!(!jobs.is_empty());
+            for job in jobs.into_iter().rev() {
+                let job: JobSpec<TestWorkload> =
+                    postcard::from_bytes(&postcard::to_allocvec(&job).expect("job bytes"))
+                        .expect("job");
+                let outcome = run_job(&workload, &config, &mut target, &job).expect("job runs");
+                let outcome: JobOutcome<TestWorkload> =
+                    postcard::from_bytes(&postcard::to_allocvec(&outcome).expect("outcome bytes"))
+                        .expect("outcome");
+                coordinator.admit(outcome).expect("admission");
+            }
+        }
+        assert_eq!(coordinator.executions(), config.execution_budget);
+        let stepped = coordinator.finish(Vec::new()).expect("finish");
+        assert_eq!(stream, pooled_stream);
+        assert_eq!(stepped, pooled);
+    }
+
+    #[test]
     fn execution_failure_waits_for_earlier_planned_admission() {
         struct JobLineStream {
             bytes: Vec<u8>,
@@ -9703,6 +8889,106 @@ mod tests {
         assert!(peak > 0);
         assert!(peak <= config.workers as usize);
         assert_eq!(targets.live.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[derive(Default)]
+    struct StaggeredWatch {
+        offset: usize,
+        notes: std::sync::Mutex<Vec<usize>>,
+        admitted: std::sync::Mutex<Vec<usize>>,
+        refuse_start: bool,
+    }
+
+    impl super::CampaignWatch<TestWorkload> for StaggeredWatch {
+        type Note = usize;
+
+        fn run(
+            &self,
+            job: &JobSpec<TestWorkload>,
+            run: impl FnOnce() -> Result<JobOutcome<TestWorkload>, Box<dyn Error>>,
+        ) -> super::WatchedJob<TestWorkload, usize> {
+            let delay = (job.reservation * 7 + self.offset) % 4;
+            std::thread::sleep(Duration::from_micros(250 * delay as u64));
+            Ok((run()?, job.reservation))
+        }
+
+        fn admitted(&self, note: usize, campaign: &mut CampaignCoordinator<'_, TestWorkload>) {
+            self.notes.lock().unwrap().push(note);
+            self.admitted.lock().unwrap().extend(
+                campaign
+                    .take_admissions()
+                    .into_iter()
+                    .map(|admission| admission.reservation),
+            );
+        }
+
+        fn start(
+            &self,
+            campaign: &mut CampaignCoordinator<'_, TestWorkload>,
+        ) -> Result<(), Box<dyn Error>> {
+            if self.refuse_start {
+                return Err("the watch refused to start".into());
+            }
+            campaign.watch_admissions();
+            Ok(())
+        }
+    }
+
+    fn watched_stream(watch: &StaggeredWatch) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut stream = Vec::new();
+        super::run_campaign_watched(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut stream,
+            None,
+            CampaignExecutionOptions::default(),
+            watch,
+        )?;
+        Ok(stream)
+    }
+
+    #[test]
+    fn a_watched_campaign_writes_the_unwatched_stream_and_sees_every_admission() {
+        let mut plain = Vec::new();
+        run_campaign_checkpointed(
+            &TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            },
+            &three_worker_config(),
+            &CampaignOrigin::Genesis,
+            &mut plain,
+            None,
+        )
+        .expect("campaign");
+        for offset in 0..3 {
+            let watch = StaggeredWatch {
+                offset,
+                ..StaggeredWatch::default()
+            };
+            assert_eq!(watched_stream(&watch).expect("watched campaign"), plain);
+            let mut notes = watch.notes.into_inner().unwrap();
+            let mut admitted = watch.admitted.into_inner().unwrap();
+            notes.sort_unstable();
+            admitted.sort_unstable();
+            assert!(!notes.is_empty());
+            assert_eq!(notes, admitted);
+        }
+    }
+
+    #[test]
+    fn a_watch_that_fails_to_start_stops_the_campaign() {
+        let watch = StaggeredWatch {
+            refuse_start: true,
+            ..StaggeredWatch::default()
+        };
+        let error = watched_stream(&watch).expect_err("the campaign must stop");
+        assert!(error.to_string().contains("the watch refused to start"));
+        assert!(watch.notes.into_inner().unwrap().is_empty());
     }
 
     #[test]

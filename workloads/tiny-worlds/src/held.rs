@@ -214,9 +214,6 @@ impl ArchiveKey for HeldKey {
     fn preferences() -> usize {
         1
     }
-    fn tier_rank_shift() -> u32 {
-        1
-    }
     fn preference_cmp(self, _preference: usize, other: Self) -> std::cmp::Ordering {
         self.time_left.cmp(&other.time_left)
     }
@@ -226,7 +223,7 @@ impl ArchiveKey for HeldKey {
     fn record(_lineage: &mut (), _key: Self) {}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Observation {
     after: State,
     work_in_job: u64,

@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use nes_workload::{
-    eval::{Result, evaluate, run_cli},
+    eval::{Request, Result, evaluate, run_cli},
+    famidash::{
+        campaign::{FamidashCampaignRun, FamidashGame},
+        levels::{Side, Stage},
+    },
+    live::{NativeMachine, evaluate_live},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
@@ -16,8 +21,9 @@ use nes_workload::{
         campaign::{StbCampaignRun, StbGame},
         target::StbAi,
     },
+    twin_dragons::campaign::{TwinDragonsCampaignRun, TwinDragonsGame},
 };
-use std::{fs, io::BufReader, path::Path};
+use std::{fs, io::BufReader, path::Path, time::Instant};
 
 fn metroid_game(
     rom: &[u8],
@@ -63,9 +69,52 @@ fn root_actions<I: serde::de::DeserializeOwned>(root_input: Option<&Path>) -> Re
         .transpose()
 }
 
+fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<()> {
+    if request.stage.is_some()
+        || request.ai.is_some()
+        || request.root_input.is_some()
+        || request.metroid_terminal.is_some()
+        || request.resume.is_some()
+    {
+        return Err(
+            "a live view runs the arcade game from genesis without stage, ai, root or resume options"
+                .into(),
+        );
+    }
+    match request.game.as_str() {
+        "smb" => {
+            evaluate_live::<SmbGame<NativeMachine>>(rom, request, out, started, "super-mario-bros")
+        }
+        "mm2" => evaluate_live::<Mm2Game<NativeMachine>>(rom, request, out, started, "mega-man-2"),
+        "metroid" => {
+            evaluate_live::<MetroidGame<NativeMachine>>(rom, request, out, started, "metroid")
+        }
+        "famidash" => evaluate_live::<nes_games::famidash::campaign::FamidashGame<NativeMachine>>(
+            rom, request, out, started, "famidash",
+        ),
+        "twin-dragons" => evaluate_live::<
+            nes_games::twin_dragons::campaign::TwinDragonsGame<NativeMachine>,
+        >(rom, request, out, started, "twin-dragons"),
+        _ => Err("this game has no live view".into()),
+    }
+}
+
+fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Stage> {
+    let side = Side::from_rom(rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
+    let level = stage.unwrap_or(0);
+    Ok(if whole_game {
+        Stage::through_group(side, level)?
+    } else {
+        Stage::single(side, level)?
+    })
+}
+
 fn main() -> Result<()> {
     nes_workload::allocator::use_one_malloc_arena();
     run_cli(|request, rom, out, started| {
+        if request.live.is_some() {
+            return live(&request, &rom, &out, started);
+        }
         match request.game.as_str() {
             "smb" | "metroid"
                 if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
@@ -81,6 +130,16 @@ fn main() -> Result<()> {
             }
             "stb" if request.stage.is_some() || request.whole_game => {
                 return Err("STB evaluation takes only an ai option".into());
+            }
+            "twin-dragons"
+                if request.stage.is_some() || request.ai.is_some() || request.whole_game =>
+            {
+                return Err("this game takes no stage, ai or whole_game option".into());
+            }
+            "famidash"
+                if request.ai.is_some() || (request.stage.is_none() && !request.whole_game) =>
+            {
+                return Err("Famidash takes a stage, whole_game, or both".into());
             }
             _ => {}
         }
@@ -159,6 +218,28 @@ fn main() -> Result<()> {
                     started,
                 )
             }
+            "twin-dragons" => evaluate(
+                TwinDragonsGame::new(&rom, p, h, &execution_sha256),
+                TwinDragonsCampaignRun,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+            ),
+            "famidash" => evaluate(
+                FamidashGame::new(
+                    &rom,
+                    p,
+                    h,
+                    &execution_sha256,
+                    famidash_stage(&rom, request.stage, request.whole_game)?,
+                ),
+                FamidashCampaignRun,
+                &request,
+                &execution_sha256,
+                &out,
+                started,
+            ),
             _ => Err("unsupported game".into()),
         }
     })
