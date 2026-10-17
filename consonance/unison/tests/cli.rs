@@ -170,3 +170,30 @@ fn toy_bisect_recovers_a_directly_replayable_point_before_halt() {
     );
     assert_eq!(json["point"]["first_divergent_work"], halted_at - 1);
 }
+
+#[test]
+fn zero_checkpoint_matches_are_inconclusive() {
+    for command in ["toy-compare", "toy-bisect"] {
+        let mut args = vec![
+            command,
+            "--seed",
+            "7",
+            "--diverge-at",
+            "18446744073709551615",
+            "--limit",
+            "0",
+        ];
+        if command == "toy-compare" {
+            args.extend(["--checkpoint-every", "64"]);
+        }
+        let (code, json) = run(&args);
+        assert_eq!(code, Some(3));
+        let report = if command == "toy-compare" {
+            &json
+        } else {
+            &json["compare"]
+        };
+        assert_eq!(report["checkpoints_compared"], 0);
+        assert_eq!(report["verdict"], "matching_checkpoints");
+    }
+}

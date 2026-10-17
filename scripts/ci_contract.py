@@ -418,6 +418,7 @@ CONSONANCE_HARDWARE = Workflow(
     jobs=(
         Job("Runner CPU Features — Replica <N>", "full", 45,
             ignored_tests=("vmm-backend::kvm_smoke *",)),
+        Job("Retained Minimal Guest Executable", "full", 45),
         Job("Minimal Guest Determinism — Replica <N>", "full", 45,
             ignored_tests=("vmm-core::x86_kvm_virtual_time *",)),
         Job("Linux Guest Image", "full", 90),
