@@ -517,7 +517,9 @@ fn x86_host_input_name(mnemonic: Mnemonic) -> Option<&'static str> {
         | Mnemonic::Vrcp28pd
         | Mnemonic::Vrcp28ps
         | Mnemonic::Vrcp28sd
-        | Mnemonic::Vrcp28ss => Some("VRCP"),
+        | Mnemonic::Vrcp28ss
+        | Mnemonic::Vrcpph
+        | Mnemonic::Vrcpsh => Some("VRCP"),
         Mnemonic::Vrsqrt14pd
         | Mnemonic::Vrsqrt14ps
         | Mnemonic::Vrsqrt14sd
@@ -525,7 +527,9 @@ fn x86_host_input_name(mnemonic: Mnemonic) -> Option<&'static str> {
         | Mnemonic::Vrsqrt28pd
         | Mnemonic::Vrsqrt28ps
         | Mnemonic::Vrsqrt28sd
-        | Mnemonic::Vrsqrt28ss => Some("VRSQRT"),
+        | Mnemonic::Vrsqrt28ss
+        | Mnemonic::Vrsqrtph
+        | Mnemonic::Vrsqrtsh => Some("VRSQRT"),
         Mnemonic::Fsin => Some("FSIN"),
         Mnemonic::Fcos => Some("FCOS"),
         Mnemonic::Fsincos => Some("FSINCOS"),
@@ -1023,6 +1027,11 @@ mod tests {
             vec![0xd9, 0xfe, 0xc3],
             vec![0xc5, 0xf8, 0x53, 0xc0, 0xc3],
             vec![0x62, 0xf2, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x08, 0x4d, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x48, 0x4e, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x08, 0x4f, 0xc0, 0xc3],
+            vec![0xeb, 1, 0xb8, 0x62, 0xf6, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
             vec![0xeb, 1, 0xb8, 0x0f, 0x53, 0xc0, 0xc3, 0xc3],
         ] {
             let root = tempfile::tempdir().unwrap();
