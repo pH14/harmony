@@ -418,6 +418,7 @@ CONSONANCE_HARDWARE = Workflow(
     jobs=(
         Job("Runner CPU Features — Replica <N>", "full", 45,
             ignored_tests=("vmm-backend::kvm_smoke *",)),
+        Job("Retained Minimal Guest Executable", "full", 45),
         Job("Minimal Guest Determinism — Replica <N>", "full", 45,
             ignored_tests=("vmm-core::x86_kvm_virtual_time *",)),
         Job("Linux Guest Image", "full", 90),
@@ -758,6 +759,7 @@ CONSONANCE_UML = Workflow(
                 "consonance-client session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash",
                 "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
                 "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
+                "uml::host_failure_provenance *",
                 "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
             ),
             select="rust_checks"),

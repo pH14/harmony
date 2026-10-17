@@ -370,7 +370,7 @@ def x86_body(operation: str) -> list[str]:
         "multiply followed by interrupt-frame capture": ["movl $7, %eax", "imull $9, %eax", "int3", "ret"],
         "PUSHF capture": [".byte 0x66, 0x9c, 0x66, 0x58", "movzwl %ax, %eax", "ret"],
         "PUSHFQ capture": ["pushfq", "popq %rax", "ret"],
-        "SYSCALL R11 capture": ["movl $39, %eax", "syscall", "movq %r11, %rax", "ret"],
+        "SYSCALL R11 capture": ["movl $39, %eax", "movb $0x10, %ah", "sahf", "movl $39, %eax", "syscall", "movq %r11, %rax", "ret"],
     }
     if operation not in bodies:
         raise SweepError(f"x86_64 execute operation has no generator: {operation}")

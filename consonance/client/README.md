@@ -169,7 +169,10 @@ the same local number. `CacheIndex` is the interface workers use:
 | `lookup(namespace, key)` | a lease on the longest cached prefix |
 | `extent(len)` | a writable region, after evicting entries to fit the budget |
 | `publish(namespace, key, parent, extent, target_commitment, cost)` | a lease on the committed entry; an equal-target duplicate keeps the first entry and frees the new extent, while a divergent duplicate fails without returning a lease |
-| `chain(lease)` | the entry's extents, anchor first |
+| `chain(lease)` | the entry's extents, anchor first; fails if quarantined |
+| `verify_namespace(namespace)` / `verify_lease(lease)` | refuses a quarantined domain or held lease |
+| `verify_integrity()` | refuses any known contradiction in this shared index |
+| `divergences()` | both retained witness chains, namespace, action prefix and commitments |
 | `release(lease)` | the entry can be evicted again |
 | `revoke(lease)` | removes the entry and descendants, invalidating any held leases after a failed post-publication guard |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
@@ -198,9 +201,22 @@ without that target-pages digest. For UML checkpoints, the commitment binds
 the cache identity to the checkpoint digest, which covers logical memory and
 bridge/service state. The cache compares commitments while holding its index
 lock, before returning a duplicate lease.
-On a divergent publication, the cache error carries the namespace, key,
-and both logical target commitments so the conflicting executions can be
-identified without accepting either as a duplicate.
+A divergent publication permanently quarantines the entire namespace while
+holding the index lock. Lookups produce no lease, held leases cannot import,
+and subsequent publications, including extents allocated before the contradiction
+and dependent descendants, fail. The namespace's entries and both complete
+extent chains remain pinned against eviction and revocation. Both typed errors
+(`DivergentDuplicate` and `Quarantined`) own the witness record by reference, so
+its bytes survive index teardown. `divergences()` exposes the same record for
+persistence. Ordinary equal-target duplicates still release the new extent.
+Import and publication callers recheck held leases at completion; a concurrent
+quarantine cannot return a successful imported or published handle after that
+check. A consumer must also check integrity before accepting dependent work;
+returned extent bytes alone cannot revoke already running guest execution.
+The fault campaign performs these checks at execution, admission and final
+report boundaries and refuses a completed verdict after any contradiction in
+the shared index. Quarantine is intentionally permanent for this index's lifetime;
+recovery requires a new investigated execution domain.
 
 Eviction takes, among entries with no lease and no children, the one with the
 lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost

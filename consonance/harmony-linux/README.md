@@ -111,7 +111,7 @@ read and do not establish coverage of this later conditional failure. External
 NMI/MCE injection and arbitrary imported pending events are outside this
 contract; the generic backend can represent them.
 
-Outside the patched kernel, workloads must not execute XSAVE-family saves or
+Outside the patched kernel, workloads must not execute FXSAVE/XSAVE-family saves or
 XGETBV with ECX=1. XGETBV with a proven zero selector remains allowed. Static
 linking alone does not exclude libc save routines; glibc's resolver trampolines
 hold XSAVE instructions but never run, because every image boots with
@@ -142,7 +142,7 @@ python3 consonance/harmony-linux/scripts/x86-xstate-admission.py verify-initramf
 
 `--objdump` selects the disassembler. Inventory discovers every ELF by file
 contents regardless of executable permissions and records file digests, metadata,
-symlink targets and every XSAVE-family instruction site. Verify checks the
+symlink targets and every FXSAVE/XSAVE-family instruction site. Verify checks the
 executable properties listed below on that same inventory. It compares nothing
 against a stored digest, so rebuilding an image does not require a new approval.
 Actual launch configuration, kernel, ordered archive composition, ROM and SQL
@@ -157,17 +157,34 @@ Missing dependencies, differing duplicate SONAMEs and ambiguous resolutions
 fail closed. Other interpreters, loader caches, RPATH/RUNPATH and glibc-hwcaps
 search are unsupported. Launch environment overrides are outside the contract.
 
-Executable segments are scanned for XSAVE-family instructions and XGETBV;
+The scanner covers the complete page-rounded executable mapping, including file
+bytes before and after each declared load. It preserves the load, ELF entry,
+allocated-section edges and function-symbol entries as decode anchors, follows
+direct branches into operand bytes and other executable mappings of the same
+ELF, and checks instructions crossing section or adjacent-load boundaries.
+Overlapping executable mappings and data-page aliases are refused. The shared
+coverage pass supplies both state-save and native-arithmetic policy checks.
+Direct transfers outside the ELF and indirect entries still require control-flow
+review of the full immutable dependency closure; scanning alone does not prove
+those transfers safe.
+
+Executable mappings are scanned for FXSAVE/XSAVE-family instructions and XGETBV;
 restore instructions are inventoried separately. Verification rejects W+X
 PT_LOAD segments, executable PT_GNU_STACK, DT_TEXTREL/DF_TEXTREL images and
 TLSdesc relocations anywhere in the closure. Every XGETBV site must have a
 recognized straight-line ECX-zero sequence. The bounded recognizer rejects
 intervening ECX writes, branches, calls, unknown instructions and observed
-alternate direct entries. Trusted control flow must also exclude indirect entry
-that bypasses initialization; linear disassembly cannot enforce that condition
-for arbitrary code.
+alternate entries. Selector and loader-trampoline proofs require unique decoded
+predecessors and refuse any instruction overlapping another decode stream.
+Address sorting alone cannot establish that a zeroing instruction dominates a
+selector read. Boundary scanning reuses known instruction starts and deduplicates
+unknown starts; its conservative prefix/opcode filter covers every refused
+family before invoking the disassembler. Trusted control flow must also exclude
+indirect entry that bypasses initialization; linear disassembly cannot enforce
+that condition for arbitrary code.
 
-Every XSAVE-family site must sit inside one of glibc's two loader trampolines.
+Every XSAVE/XSAVEC site must sit inside one of glibc's two loader trampolines;
+FXSAVE and the other save variants are refused without an exemption.
 The scanner recognizes each trampoline by its complete straight-line shape: the
 stack alignment prologue, the register spills, the XSAVE mask setup, a save to
 `0x40(%rsp)`, one direct call, the matching `xrstor`, the register reloads and
@@ -178,6 +195,28 @@ resolver; every image boots with `LD_BIND_NOW=1`, so it never runs.
 `unused-tlsdesc` is the dynamic TLS descriptor trampoline; the scanner rejects
 TLSdesc relocations anywhere in the closure, so it never runs either. A save
 instruction anywhere else rejects the image.
+
+The controlled native x86 subset also excludes implementation-dependent
+reciprocal and reciprocal-square-root estimates (RCP/RSQRT and their VEX/EVEX
+forms, including the FP16 VRCPPH/VRCPSH/VRSQRTPH/VRSQRTSH instructions), and x87
+transcendental approximations (F2XM1, FSIN, FCOS, FSINCOS,
+FPTAN, FPATAN, FYL2X, FYL2XP1). Both this checker and the production Faults image
+admission enforce that refusal; an instruction allowlist cannot override it.
+This can reject images containing unused libm routines. Removing those routines
+or establishing an executable reachability proof is required before admission;
+a review annotation alone is insufficient. Exact SQRT arithmetic remains
+admitted. This restriction applies to controlled images, not arbitrary VMM
+guests, and does not establish a complete common arithmetic implementation
+across CPUs. Wider native-instruction semantics still require an explicit
+portability domain and retained cross-implementation execution evidence.
+
+| Native variation | Disposition | Boundary |
+| --- | --- | --- |
+| SYSCALL-saved AF | Clear both flags and R11 before the first tick | Owned x86 syscall ingress; arbitrary interrupted R11 is preserved |
+| Native FXSAVE/XSAVE image bytes | Refuse workload saves; canonicalize owned kernel saves | Controlled rootfs and patched guest kernel |
+| Reciprocal and x87 transcendental approximations | Refuse opcode families | Controlled executable mapping scans |
+| UML initial extended registers and PKRU | Clear XSAVE header and extended bytes; restore architectural init state | Owned x86 UML startup patch |
+| Other permitted native arithmetic | Restricted qualification claim | Exact artifact, contract and implementation classes tested; no universal cross-vendor claim |
 
 The initramfs adapter accepts one raw newc `070701` archive or its gzip encoding
 and binds the exact input bytes. It inventories device nodes as metadata without

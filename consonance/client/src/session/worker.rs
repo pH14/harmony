@@ -1002,7 +1002,13 @@ impl SearchSession for WorkerSession {
             cost,
         )?;
         match self.loaded_image_guard.check_published(index, lease) {
-            Ok(lease) => Ok(lease),
+            Ok(lease) => {
+                if let Err(error) = index.verify_lease(&lease) {
+                    index.release(lease);
+                    return Err(error.into());
+                }
+                Ok(lease)
+            }
             Err(error) => {
                 self.failed.set(true);
                 Err(error.into())
@@ -1029,6 +1035,10 @@ impl SearchSession for WorkerSession {
         let mut input = In(&reply);
         let snap = input.snap()?;
         input.finish()?;
+        if let Err(error) = index.verify_lease(lease) {
+            let _ = self.drop_snapshot(snap.0);
+            return Err(error.into());
+        }
         Ok(snap)
     }
 
@@ -1399,16 +1409,25 @@ mod tests {
         states: BTreeMap<u64, u8>,
         current: u8,
         runs: u64,
+        quarantine_on_import: Option<Arc<LocalIndex>>,
     }
 
     impl Fake {
         fn open(init: Init) -> Result<Box<dyn ServedSession>, Box<dyn Error>> {
+            Self::open_quarantining(init, None)
+        }
+
+        fn open_quarantining(
+            init: Init,
+            quarantine_on_import: Option<Arc<LocalIndex>>,
+        ) -> Result<Box<dyn ServedSession>, Box<dyn Error>> {
             if init.service != "fake" {
                 return Err(format!("unknown session service {}", init.service).into());
             }
             let mut fake = Self {
                 next: 1,
                 current: init.kernel[0],
+                quarantine_on_import,
                 ..Self::default()
             };
             fake.states.insert(1, fake.current);
@@ -1588,6 +1607,14 @@ mod tests {
                 .map(|extent| read_extent(extent))
                 .collect::<Result<Vec<_>, _>>()?;
             self.current = resolve(&deltas)?.pages.last().ok_or("no pages")?.2[0];
+            if let Some(index) = self.quarantine_on_import.take() {
+                let mut extent = index.extent(extent_len(0, 0, 0).unwrap())?;
+                write_extent(extent.bytes_mut(), &[], &[], &[])?;
+                assert!(matches!(
+                    index.publish(namespace(), b"key", None, extent, [0xee; 32], 0),
+                    Err(crate::cache::CacheError::DivergentDuplicate { .. })
+                ));
+            }
             self.snapshot()
         }
 
@@ -1665,11 +1692,18 @@ mod tests {
     }
 
     fn threaded(start: u8) -> (WorkerSession, std::thread::JoinHandle<()>) {
+        threaded_quarantining(start, None)
+    }
+
+    fn threaded_quarantining(
+        start: u8,
+        quarantine_on_import: Option<Arc<LocalIndex>>,
+    ) -> (WorkerSession, std::thread::JoinHandle<()>) {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
             serve(
                 &child,
-                &mut Fake::open,
+                &mut |init| Fake::open_quarantining(init, quarantine_on_import.clone()),
                 crate::image_identity::LoadedImageGuard::fixture(),
             )
             .unwrap()
@@ -1893,6 +1927,30 @@ mod tests {
         assert_eq!(second.state_hash().unwrap(), [4; 32]);
         index.release(lease);
         assert_eq!(index.stats().entries, 1);
+        drop((first, second));
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+    }
+
+    #[test]
+    fn quarantine_during_worker_import_refuses_and_drops_the_imported_handle() {
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let (mut first, first_server) = threaded(3);
+        let (mut second, second_server) = threaded_quarantining(50, Some(Arc::clone(&index)));
+        let (snapshot, _) = first.snapshot().unwrap();
+        let lease = first
+            .publish_snapshot(index.as_ref(), namespace(), b"key", None, snapshot, 1)
+            .unwrap();
+        let error = second
+            .import_cached(index.as_ref(), &lease, SnapId(1))
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::cache::CacheError>(),
+            Some(crate::cache::CacheError::Quarantined { .. })
+        ));
+        assert_eq!(second.store_bytes(), Some(4096));
+        assert_eq!(index.divergences().len(), 1);
+        index.release(lease);
         drop((first, second));
         first_server.join().unwrap();
         second_server.join().unwrap();

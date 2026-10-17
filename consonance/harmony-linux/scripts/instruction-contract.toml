@@ -6,6 +6,14 @@
 
 schema = 1
 
+# Native-admission policy metadata is distinct from the finite N6 probe rows.
+# The rootfs checker and Faults admission enforce these exclusions; no N6 row
+# claims that executing these instructions is portable across implementations.
+native-x86-refused = ["RCPPS", "RCPSS", "RSQRTPS", "RSQRTSS", "VRCPPS", "VRCPSS", "VRSQRTPS", "VRSQRTSS", "VRCP14*", "VRCP28*", "VRSQRT14*", "VRSQRT28*", "VRCPPH", "VRCPSH", "VRSQRTPH", "VRSQRTSH", "F2XM1", "FSIN", "FCOS", "FSINCOS", "FPTAN", "FPATAN", "FYL2X", "FYL2XP1"]
+native-x86-disposition = "Refused in controlled executable mappings, including alternate direct entries and page boundaries, even when reviewed. Their numerical latitude has no common native transition rule. Unused library routines are included; this is a known-family exclusion, not a complete portability qualification."
+native-uml-initial-pkru = "Fixed to architectural init zero: the owned x86 UML startup clears the XSAVE header and all extended component bytes, instead of preserving sampled host PKRU policy."
+native-qualification-scope = "Exact admitted artifact and implementation classes with retained evidence. Arbitrary VMM guests, unreviewed indirect entries and the remainder of the native arithmetic surface are not universally qualified by this ledger."
+
 [[instruction]]
 id = "arm64-counter-frequency"
 arch = "arm64"
@@ -196,4 +204,4 @@ channel = "undefined-flags"
 operations = ["shift followed by interrupt-frame capture", "multiply followed by interrupt-frame capture", "PUSHF capture", "PUSHFQ capture", "SYSCALL R11 capture"]
 claim = "execute"
 layers = ["guest-kernel-pin"]
-disposition = "The Harmony guest clears AF at the three 64-bit kernel capture funnels before architecturally undefined vendor residue reaches retained memory."
+disposition = "The Harmony guest clears AF at the three 64-bit kernel capture funnels before architecturally undefined vendor residue reaches retained memory. SYSCALL ingress normalizes both saved flags and R11 before the first tick; interrupt ingress preserves arbitrary R11 data. The syscall probe explicitly plants AF=1."
