@@ -43,12 +43,18 @@ endorsed by the authors.
 - Release: https://github.com/tfdsoft/famidash/releases/tag/1.2.8, built from
   commit `0df680d0e02f0ccb438f1224d162a0ab073b7204`
 - Game code: **MIT license**, shipped as `licenses/famidash-LICENSE.txt`.
-- The site ships the official release ROM `Famidash.v1.2.8.nes` unchanged.
-  `workloads/nes/scripts/build-famidash-rom.sh` downloads it and checks its
+- The site ships the four official release ROMs unchanged:
+  `Famidash.v1.2.8.nes`, `Famidash.B.Sides.v1.2.8.nes`,
+  `Famidash.C.Sides.v1.2.8.nes` and `Famidash.D.Sides.v1.2.8.nes`.
+  `workloads/nes/scripts/build-famidash-rom.sh` downloads them and checks their
   SHA-256.
-- Music is arranged from tracks by ForeverBound, DJVI, Step, Waterflame,
-  Dj-Nate and OcularNebula. The upstream music credits ship as
-  `licenses/famidash-CREDITS.md`.
+- Music is arranged from tracks by the artists that the release's music
+  metadata names for each song. The Famidash credits dialog lists them by
+  side. The metadata ships as `licenses/famidash-music-main.json5`,
+  `licenses/famidash-music-b-sides.json5`,
+  `licenses/famidash-music-c-sides.json5` and
+  `licenses/famidash-music-d-sides.json5`, and the upstream music credits ship
+  as `licenses/famidash-CREDITS.md`.
 - Modified: the level maps and the player sprite sheet are captured from the
   game's screens and composed into images. Browser maps add heat overlays and
   player sprites.

@@ -38,7 +38,9 @@ em++ -O3 -flto -fno-exceptions -fno-rtti "$demo/tools/frontend.cpp" \
 cp "$build/twin-dragons/twin-dragons.nes" "$demo/public/twin-dragons.nes"
 "$root/workloads/nes/scripts/build-famidash-rom.sh" "$build/famidash"
 mkdir -p "$demo/public/famidash"
-cp "$build/famidash/famidash.nes" "$demo/public/famidash/famidash.nes"
+for rom in famidash famidash-b-sides famidash-c-sides famidash-d-sides; do
+    cp "$build/famidash/$rom.nes" "$demo/public/famidash/$rom.nes"
+done
 wasm-pack build "$demo/rust" --target web --release --out-dir pkg --no-opt
 cp "$build/quicknes/LICENSE" "$demo/public/licenses/QuickNES.txt"
 cp "$idle_patch" "$demo/public/licenses/quicknes-idle-loop.patch"
@@ -50,6 +52,9 @@ cp "$demo/CREDITS.md" "$demo/public/licenses/CREDITS.md"
 cp "$build/twin-dragons/UPSTREAM-LICENSE.txt" "$demo/public/licenses/twin-dragons-LICENSE.txt"
 cp "$build/famidash/UPSTREAM-LICENSE.txt" "$demo/public/licenses/famidash-LICENSE.txt"
 cp "$build/famidash/UPSTREAM-CREDITS.md" "$demo/public/licenses/famidash-CREDITS.md"
+for side in main b-sides c-sides d-sides; do
+    cp "$build/famidash/UPSTREAM-music-$side.json5" "$demo/public/licenses/famidash-music-$side.json5"
+done
 . "$root/workloads/nes/twin-dragons-versions.env"
 curl --fail --location --retry 3 --output "$build/twin-dragons.tar.gz" "$TWIN_DRAGONS_URL"
 test "$(sha256sum <"$build/twin-dragons.tar.gz" | cut -d ' ' -f 1)" = "$TWIN_DRAGONS_SHA256"
@@ -84,5 +89,5 @@ cp "$build/sameboy/LICENSE" "$demo/public/licenses/sameboy-LICENSE.txt"
 git -C "$build/sameboy" archive --format=tar.gz --output="$demo/public/licenses/sameboy-source.tar.gz" HEAD
 cp "$demo/tools/sameboy-frontend.c" "$demo/tools/build-sameboy-runtime.sh" "$demo/public/licenses/"
 
-(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs && node tools/build-tobu-maps.mjs && node tools/build-famidash-maps.mjs)
+(cd "$demo" && node tools/build-panorama.mjs && node tools/build-sprites.mjs && node tools/build-tobu-maps.mjs && node tools/build-famidash-music.mjs && node tools/build-famidash-maps.mjs)
 git -C "$root" archive --format=tar.gz --output="$demo/public/licenses/harmony-source.tar.gz" HEAD
