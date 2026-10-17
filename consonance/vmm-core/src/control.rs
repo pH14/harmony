@@ -2646,6 +2646,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn host_operation_guard_follows_fresh_restore_vmm() {
         let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let signal = Arc::clone(&changed);
@@ -2676,6 +2680,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn unmodeled_guest_exit_must_retire_the_failed_run() {
         let mut server = server(vec![
             Exit::Arch(X86Exit::Io {
@@ -3560,6 +3568,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn changing_service_factory_under_same_recorded_contract_stops_for_input() {
         let mut server = payload_server();
         hello(&mut server);
@@ -3680,6 +3692,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn branch_coverage_schedule_is_the_recorded_source_of_guest_quantum() {
         let mut server = payload_server();
         hello(&mut server);
@@ -5952,6 +5968,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn oversized_live_recording_refuses_capture_but_allows_replay_and_import() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
@@ -6010,6 +6027,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "snapshot replay uses mapped snapshot storage")]
     fn oversized_live_handler_allows_replay_recovery() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
@@ -6490,6 +6508,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "reaches snapshot restore (materialize → snapshot-store's tempfile+mmap), which Miri cannot execute; the restore-side map_memory unsafe is exercised under Miri by bringup::tests::compose_restore_target_map_memory_over_an_anonymous_mapping"
+    )]
     fn branch_rejects_service_contract_drift_from_either_reseed() {
         for (late, zero_only) in [(false, false), (true, false), (false, true)] {
             if cfg!(miri) && late {
@@ -14142,6 +14164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn poisoned_live_handler_allows_replay_and_import_recovery() {
         use std::sync::atomic::AtomicU64;
         use std::sync::{Arc, Mutex};
@@ -14255,6 +14278,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "portable import allocates snapshot-store mappings")]
     fn full_and_sparse_import_poisoned_when_factory_aliases_live_service() {
         use std::sync::atomic::{AtomicU64, Ordering};
         use std::sync::{Arc, Mutex};
