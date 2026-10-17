@@ -304,6 +304,7 @@ pub(crate) fn execute_job(
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
         target.apply_replayed(*action);
+        target.verify_integrity()?;
         if target.failed() && target.watchdog_cutoffs() != 0 {
             break;
         }
@@ -324,6 +325,7 @@ pub(crate) fn execute_job(
     }
     for action in suffix {
         target.apply(*action);
+        target.verify_integrity()?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
         let raw_outcome = outcome(target);
@@ -679,6 +681,13 @@ fn held_suffix(
 }
 
 impl TargetExecution for FaultWorkload {
+    fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
+        if let Some(cache) = &self.snapshot_cache {
+            cache.verify_integrity()?;
+        }
+        Ok(())
+    }
+
     fn new_target(&self) -> Result<FaultTarget, String> {
         let target = FaultTarget::new(
             &self.kernel,
@@ -732,6 +741,7 @@ impl TargetExecution for FaultWorkload {
         aggregate: &mut FaultMilestones,
     ) -> Result<(), Box<dyn Error>> {
         target.apply(*action);
+        target.verify_integrity()?;
         merge_action_milestones(aggregate, target);
         Ok(())
     }
@@ -1306,6 +1316,48 @@ mod tests {
         FaultCampaignRun {
             vocabulary: FaultVocabulary::new(nodes, hooks).expect("vocabulary"),
         }
+    }
+
+    #[test]
+    fn campaign_integrity_preserves_cache_contradiction_as_a_typed_error() {
+        use consonance_client::cache::{CacheError, LocalIndex, Namespace};
+
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::new(&[b"campaign-test"]);
+        let first = index
+            .publish(
+                namespace,
+                b"action",
+                None,
+                index.extent(1).unwrap(),
+                [1; 32],
+                0,
+            )
+            .unwrap();
+        let error = index
+            .publish(
+                namespace,
+                b"action",
+                None,
+                index.extent(1).unwrap(),
+                [2; 32],
+                0,
+            )
+            .unwrap_err();
+        assert!(matches!(error, CacheError::DivergentDuplicate { .. }));
+        index.release(first);
+        let game = game().with_snapshot_cache(Some(index.clone()));
+        let error = game.verify_integrity().unwrap_err();
+        drop(game);
+        drop(index);
+        let evidence = match error.downcast_ref::<CacheError>().unwrap() {
+            CacheError::Quarantined { evidence, .. } => evidence,
+            error => panic!("wrong integrity category: {error}"),
+        };
+        assert_eq!(evidence.existing.target_commitment, [1; 32]);
+        assert_eq!(evidence.published.target_commitment, [2; 32]);
+        assert_eq!(evidence.existing.chain[0].bytes().len(), 4096);
+        assert_eq!(evidence.published.chain[0].bytes().len(), 4096);
     }
 
     #[test]

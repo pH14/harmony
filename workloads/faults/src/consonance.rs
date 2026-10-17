@@ -860,7 +860,15 @@ impl FaultTarget {
         }
     }
 
+    pub fn verify_integrity(&self) -> Result<(), CacheError> {
+        if let Some(cache) = &self.config.cache {
+            cache.verify_integrity()?;
+        }
+        Ok(())
+    }
+
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
+        self.verify_integrity()?;
         if snapshot.failed || !snapshot.observation.stop.is_continuable() {
             return Err("the fault snapshot is not a runnable endpoint".into());
         }
@@ -992,6 +1000,7 @@ impl FaultTarget {
     }
 
     pub fn snapshot(&self) -> Result<Option<FaultSnapshot>, String> {
+        self.verify_integrity().map_err(|error| error.to_string())?;
         if self.failed || !self.observation.stop.is_continuable() {
             return Ok(None);
         }
@@ -1090,7 +1099,12 @@ fn with_live<T>(
     config: &Arc<Config>,
     operation: impl FnOnce(&mut Live) -> Result<T, String>,
 ) -> Result<T, String> {
-    LIVE.with(|slot| {
+    if let Some(index) = &config.cache {
+        index
+            .verify_integrity()
+            .map_err(|error| error.to_string())?;
+    }
+    let result = LIVE.with(|slot| {
         let mut slot = slot.borrow_mut();
         if slot.as_ref().is_none_or(|live| live.key != config.key) {
             *slot = Some(Live::boot(config)?);
@@ -1101,7 +1115,13 @@ fn with_live<T>(
             *slot = None;
         }
         result
-    })
+    });
+    if let Some(index) = &config.cache {
+        index
+            .verify_integrity()
+            .map_err(|error| error.to_string())?;
+    }
+    result
 }
 
 fn stop_moment(stop: &StopReason) -> u64 {
@@ -1412,6 +1432,12 @@ impl Live {
     }
 
     fn find(&mut self, actions: &[FaultAction]) -> Result<usize, String> {
+        if let Some(shared) = self.chain.shared() {
+            shared
+                .index
+                .verify_namespace(shared.namespace)
+                .map_err(|error| error.to_string())?;
+        }
         let at = self.chain.local(actions);
         let local = self.chain.depth(at);
         if local == actions.len() {
@@ -2056,6 +2082,28 @@ mod tests {
         assert_eq!(index.stats().entries, 1);
         assert_eq!(index.stats().duplicates, 0);
         assert_eq!(second.session.state_hash().unwrap(), [0x22; 32]);
+        assert!(first.find(&actions).unwrap_err().contains("quarantined"));
+        assert!(index.lookup(namespace, &actions_key(&actions)).is_none());
+        assert!(matches!(
+            index.verify_integrity(),
+            Err(CacheError::Quarantined { .. })
+        ));
+        let evidence = index.divergences();
+        assert_eq!(evidence.len(), 1);
+        assert_eq!(evidence[0].existing.target_commitment, [0x11; 32]);
+        assert_eq!(evidence[0].published.target_commitment, [0x22; 32]);
+        assert_eq!(
+            read_extent(evidence[0].existing.chain[0].bytes())
+                .unwrap()
+                .sidecar,
+            &2u64.to_le_bytes()
+        );
+        assert_eq!(
+            read_extent(evidence[0].published.chain[0].bytes())
+                .unwrap()
+                .sidecar,
+            &3u64.to_le_bytes()
+        );
     }
 
     #[test]
