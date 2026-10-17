@@ -20,6 +20,7 @@ import {
 } from "./branch.js";
 import { StateCache, memoryBudget } from "./memory.js";
 import { liveSearch } from "./live-source.js";
+import { nativeRuns } from "./native-run.js";
 import {
   project,
   completedLevels,
@@ -3504,3 +3505,4 @@ else {
   askedForRom = true;
   $("new-search").onclick();
 }
+nativeRuns(game.id, document.querySelector(".view-tools")).catch(() => {});

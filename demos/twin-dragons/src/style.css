@@ -1433,3 +1433,14 @@ footer .theme-button { margin-left: auto; padding: 4px 0; font-size: 11px; }
   .segments button { padding: 8px 6px; font-size: 10.5px; }
   .toggles button { gap: 4px; }
 }
+.native-open { box-sizing: border-box; height: var(--bar-height); padding: 0 12px; border: 1px solid var(--line); border-radius: 8px; background: transparent; color: var(--text); font-size: 12px; white-space: nowrap; }
+.native-open:hover { background: var(--hover); }
+.native-run { max-width: 640px; }
+.native-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; align-items: end; }
+.native-field { display: grid; gap: 4px; font-size: 11px; color: var(--muted); }
+.native-field input, .native-field select { width: 100%; box-sizing: border-box; }
+.native-message { min-height: 1.2em; margin: 12px 0 0; font-size: 12px; color: var(--muted); }
+.native-runs { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 8px; font-size: 12px; }
+.native-runs li { display: grid; grid-template-columns: 1fr auto; gap: 2px 12px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; }
+.native-state { grid-column: 1; color: var(--muted); overflow-wrap: anywhere; }
+.native-actions { grid-column: 2; grid-row: 1 / span 2; display: flex; gap: 8px; align-items: center; }
