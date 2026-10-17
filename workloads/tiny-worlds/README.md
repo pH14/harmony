@@ -468,6 +468,12 @@ its health is the run's health. `evidence.gated_first` gives the first work
 past the legs, at the kill, at the barrier unkilled, and at or past the barrier
 after the kill.
 
+A nonzero `hard_run` makes the last position before the boss room need
+`max(step_run, hard_run)` presses, so the step into the boss room succeeds
+rarely per draw. With `rooms` set, `room_run` presses of a side action at that
+position enter the next of `rooms` side rooms. Each side room is its own place
+in the same tier, so the top tier keeps finding cells while the hard step waits.
+
 ## Configuration bounds
 
 Every parameter is required except the optional map, fork and gated fields. Bounds keep
@@ -488,7 +494,7 @@ family's and passive clock's reachability hold by construction.
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
 | Fork | `length` 2–63; `dead_len` at least 1; `fork + dead_len` below `length`, or with `goal_at_fork` `length = fork + 1` and `fork + dead_len` at most 63; `rooms` and `shared_rooms` 0–16, or 0–255 with `room_run` set; optional `room_run`, `entry_run`, `step_run` and `run_on_run` 0–8, `grades` 0–15, `room_ramp` 0–16, `run_on` 0–60,000; `pattern` encodes two-bit actions per position, read modulo 32. |
-| Gated | `items` 1–6; `leg` 1–16; `walk` 2–48; `barrier` 1 to `walk - 1`; `step_run` 1–8; `fight` 1–16; `fight_odds` 1–16; `health` 1–15; `hit_odds` 0–16; optional `shortcut` below `items` and `shortcut_run` 0–8; boolean `dense`; `pattern` encodes two-bit actions per route position, read modulo 32. |
+| Gated | `items` 1–6; `leg` 1–16; `walk` 2–48; `barrier` 1 to `walk - 1`; `step_run` 1–8; `fight` 1–16; `fight_odds` 1–16; `health` 1–15; `hit_odds` 0–16; optional `shortcut` below `items` and `shortcut_run` 0–8, `hard_run` 0–12, `rooms` 0–255 and `room_run` 0–8; boolean `dense`; `pattern` encodes two-bit actions per route position, read modulo 32. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
@@ -717,7 +723,7 @@ rule asserts only that the return trip is shorter than the first trip.
 
 ## Calibrated stall worlds
 
-Four worlds reproduce measured game stalls. Each was fitted to the stall's
+Five worlds reproduce measured game stalls. Each was fitted to the stall's
 tier count, draw share per rank, yields per draw at the top tier, gap between
 rises and the rank of the way out before any rule was scored on it. The
 attempts log records each fit and where it misses.
@@ -728,6 +734,7 @@ attempts log records each fit and where it misses.
 | Dead end below the leading tier | Famidash level 19 seed 2, F2: 35 tiers, ranks 10-11 at about 0.3%, way out from rank 10 | 35 tiers; ranks 0-3 at 38 / 18 / 9 / 5% against 40 / 28 / 15 / 8%; ranks 10-11 at 0.9%, about 3x the game |
 | Goal off the progress axis | Famidash C 17 Hi, F2: 79 / 11 / 3% on ranks 0-2, a new tier every ~100 tries | 70 / 16 / 4%, a new tier every ~50 tries |
 | Dense progress | The resource-gated layout with a tier for every step | Solves in about half the sparse world's tries |
+| Hard step before the boss | Metroid Kraid to Ridley and Famidash F2 seeds 4 and 11: the state that leads on sits in ranks 0-2 and needs 15-900 draws | Gated world with `hard_run` 8, 255 rooms of `room_run` 3, no damage; top tier 84.5% under current, 74.5% under F2; about 35 draws per critical cell |
 
 `survival.py` runs paired seeds on several builds and compares tries to the
 goal with Kaplan-Meier curves and a log-rank test against the first build. A

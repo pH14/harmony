@@ -23,10 +23,14 @@ DEAD_END = {"length": 40, "fork": 24, "dead_len": 10, "rooms": 255, "room_run": 
             "shared_rooms": 32, "grades": 15}
 OFF_AXIS = {"length": 25, "fork": 24, "dead_len": 10, "rooms": 255, "room_run": 1, "entry_run": 2, "step_run": 2,
             "goal_at_fork": True, "run_on": 60_000, "run_on_run": 3}
+SCALE = {"workers": 1, "window": 1, "memory_budget_mib": 4096, "archive_entries": 4096, "action_cost_ns": 0,
+         "action_sleep_ns": 0, "snapshot_bytes": 0}
 WORLDS = {
     "resource-gated shortcut": ("gated", GATED, 2_000_000),
     "resource-gated, no shortcut": ("gated", {**GATED, "shortcut": 0, "shortcut_run": 0}, 2_000_000),
     "dense progress": ("gated", {**GATED, "dense": True}, 2_000_000),
+    "hard step before the boss": ("gated", {**GATED, "hit_odds": 0, "hard_run": 8, "rooms": 255, "room_run": 3},
+                                  10_000_000),
     "dead end below the leading tier": ("fork", DEAD_END, 2_000_000),
     "goal off the progress axis": ("fork", OFF_AXIS, 1_000_000),
     "goal off the progress axis, no run-on": ("fork", {**OFF_AXIS, "run_on": 0, "run_on_run": 0}, 1_000_000),
@@ -35,13 +39,15 @@ WORLDS = {
 
 def request(family: str, parameters: dict, seed: int, pattern: int, budget: int) -> dict:
     return {"config": {"family": family, "parameters": {**parameters, "pattern": pattern}}, "seed": seed,
-            "work_budget": budget, "broken": False, "verify": False, "keep": "portfolio"}
+            "work_budget": budget, "broken": False, "verify": False, "keep": "portfolio",
+            "search": {"stop_on_objective": True}, "scale": SCALE}
 
 
 def execute(binary: Path, job: dict) -> tuple[float, bool]:
-    process = subprocess.run([str(binary)], input=json.dumps(job), capture_output=True, text=True, check=False)
+    process = subprocess.run([str(binary)], input=json.dumps(job), stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, text=True, check=False)
     if process.returncode:
-        raise RuntimeError(f"seed {job['seed']}: {process.stderr.strip()[-400:]}")
+        raise RuntimeError(f"seed {job['seed']}: exit status {process.returncode}")
     report = json.loads(process.stdout)
     if report["success"]:
         return float(report["first_objective_execution"]), True
