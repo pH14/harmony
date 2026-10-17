@@ -142,7 +142,7 @@ state keeps: none for QuickNES and 2 KiB for Consonance. SMB stores its work
 RAM there. Observations carry no list of changed RAM
 addresses and no log line, because nothing reads them.
 
-Campaign recordings use the current Dissonance schedule policy version 5 and
+Campaign recordings use the current Dissonance schedule policy version 6 and
 bounded progress policy. Replay rejects recordings from superseded policy
 namespaces before constructing a replay target.
 

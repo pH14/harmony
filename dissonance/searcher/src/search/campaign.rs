@@ -147,7 +147,7 @@ pub const fn default_window(workers: u32) -> usize {
     workers as usize
 }
 
-const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v5";
+const SCHEDULE_POLICY_WINDOW_SUFFIX: &str = "_v6";
 const SCHEDULE_POLICY_WINDOW_PREFIX: &str = "planned_finish_window_";
 const DEFAULT_MIXTURE_WEIGHT: u8 = 128;
 
@@ -6686,7 +6686,7 @@ mod tests {
     }
 
     const RECORDED_HEADER: &str = r#"{"schema_version":14,"format":"campaign-v1","campaign_seed":7,
-"schedule_policy":"planned_finish_window_2_v5","progress_policy":"mechanical_watermark_bounded_1024_v2",
+"schedule_policy":"planned_finish_window_2_v6","progress_policy":"mechanical_watermark_bounded_1024_v2",
 "host":"box","origin_kind":"genesis","origin_path":null,"origin_archive_sha256":null,
 "resume_input_sha256":"ab","resume_actions":0,"execution_budget":10,"stop_rollout_on_objective":true,"stop_campaign_on_objective":true,"wall_budget_seconds":null,
 "archive_entry_limit":128,"action_vocabulary":"test_inputs",
@@ -7546,14 +7546,15 @@ mod tests {
     #[test]
     fn schedule_policy_dispatch_accepts_only_current_windows() {
         let current = schedule_policy_identifier(default_window(1));
-        assert_eq!(current, "planned_finish_window_1_v5");
+        assert_eq!(current, "planned_finish_window_1_v6");
         assert_eq!(schedule_policy_window(&current), Some(1));
-        assert!(schedule_policy_is_supported("planned_finish_window_64_v5"));
+        assert!(schedule_policy_is_supported("planned_finish_window_64_v6"));
+        assert!(!schedule_policy_is_supported("planned_finish_window_64_v5"));
         assert!(!schedule_policy_is_supported("deterministic_window_64_v4"));
-        assert!(!schedule_policy_is_supported("planned_finish_window_0_v5"));
+        assert!(!schedule_policy_is_supported("planned_finish_window_0_v6"));
         assert!(!schedule_policy_is_supported("unknown-schedule"));
         assert_eq!(
-            schedule_policy_window("planned_finish_window_16_v5"),
+            schedule_policy_window("planned_finish_window_16_v6"),
             Some(16)
         );
     }
@@ -7596,7 +7597,7 @@ mod tests {
         let compact = RECORDED_HEADER.replace('\n', "");
         let header: CampaignStreamHeader<()> =
             serde_json::from_str(&compact).expect("recorded header parses");
-        assert_eq!(header.schedule_policy, "planned_finish_window_2_v5");
+        assert_eq!(header.schedule_policy, "planned_finish_window_2_v6");
         assert_eq!(
             header.progress_policy,
             "mechanical_watermark_bounded_1024_v2"

@@ -104,9 +104,9 @@ limit because no selector draw can name a tier beyond that many active entries.
 The final report selects no
 more parents, so its compaction releases metadata pins and the liveness anchor
 and then requires the compacted archive to fit the memory limit. Campaign streams require
-schedule policy version 5
+schedule policy version 6
 and the current bounded progress policy; recordings from superseded policy
-namespaces are rejected before replay because their snapshot accounting differs.
+namespaces are rejected before replay because their memory accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
 deterministic frequency map capped at 4,096 distinct steps. The compact table
@@ -176,6 +176,25 @@ time per admission constant. Final compaction bypasses the batching threshold
 and rejects an archive that is still over its limit. Because of that lag, the
 archive's resident bytes are not checked against the whole budget during the
 campaign.
+
+The archive charges its own heap from logical counts: entries, stored suffix
+actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
+markers and continuation edges. A checkpoint restores those counts, so a resumed
+or replayed archive charges what the live one did. Each count is multiplied by a
+worst-case size under glibc malloc. An allocation of n bytes takes n plus an
+8-byte header, rounded up to 16 bytes, and at least 32 bytes. A vector grown by
+push holds at most twice its length and at least 4 elements, or 8 for bytes. A
+B-tree node holds 11 elements, and every node but the root holds at least 5, so
+a set of maps holding n elements uses at most n/5 nodes plus one per map. Each
+prefix node is charged one child-map node. The selector's weighted sets keep
+freed slots until the selector index is rebuilt, and compaction rebuilds it, so
+freed slots are charged as one per inactive entry. Compaction shrinks the entry
+columns to their length so the doubling bound holds afterwards. Each resident
+snapshot also charges its reference-count block. On synthetic archives these
+charges sit 15-50% above the measured heap; the `memory_tests` unit tests count
+the archive's allocations and fail when any part exceeds its charge. Allocator
+fragmentation and heap a workload's snapshot charge omits stay outside the
+archive's limit and show only in RSS.
 
 Prefix-tree compaction remaps a single surviving child in its existing map.
 The same prefix nodes can hold optional workload endpoint certificates. A
@@ -800,7 +819,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 8; a checkpoint from another
+match. The search checkpoint format is version 9; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation

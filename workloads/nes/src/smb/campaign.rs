@@ -739,7 +739,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"planned_finish_window_12_v5\"")
+                .contains("\"schedule_policy\":\"planned_finish_window_12_v6\"")
         );
     }
 
@@ -802,7 +802,7 @@ mod tests {
                 .lines()
                 .next()
                 .expect("stream header")
-                .contains("\"schedule_policy\":\"planned_finish_window_128_v5\""),
+                .contains("\"schedule_policy\":\"planned_finish_window_128_v6\""),
             "unexpected header: {}",
             recorded.lines().next().unwrap_or_default()
         );
@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(live, replay);
         assert_eq!(live_checkpoint, replay_checkpoint);
         let legacy_tagged = recorded.replacen(
-            "planned_finish_window_128_v5",
+            "planned_finish_window_128_v6",
             "deterministic_window_128_v4",
             1,
         );
@@ -840,7 +840,11 @@ mod tests {
         replay_smb_campaign(&rom, recorded.as_bytes(), None).expect("its own namespace replays");
 
         for historical in [
-            recorded.replacen("planned_finish_window_2_v5", "deterministic_window_2_v4", 1),
+            recorded.replacen(
+                "planned_finish_window_2_v6",
+                "planned_finish_window_2_v5",
+                1,
+            ),
             recorded.replacen(
                 "mechanical_watermark_bounded_1024_v2",
                 "mechanical_watermark_v1",
@@ -857,7 +861,7 @@ mod tests {
         }
 
         let without_schedule =
-            recorded.replacen("\"schedule_policy\":\"planned_finish_window_2_v5\",", "", 1);
+            recorded.replacen("\"schedule_policy\":\"planned_finish_window_2_v6\",", "", 1);
         assert!(
             replay_smb_campaign(&rom, without_schedule.as_bytes(), None).is_err(),
             "a recording without the current schedule policy is refused"
@@ -1232,7 +1236,7 @@ mod tests {
             ("fewest_frames_in_level", "fewest_actions"),
             ("\"whole_tree\"", "\"frontier_shortest\""),
             ("nes_pressable_36", "frozen_nine_mask"),
-            ("planned_finish_window_1_v5", "unknown_order_v9"),
+            ("planned_finish_window_1_v6", "unknown_order_v9"),
         ] {
             let tampered = text.replacen(from, to, 1);
             assert!(

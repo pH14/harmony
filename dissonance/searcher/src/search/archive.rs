@@ -13,6 +13,7 @@ use std::{
 use crate::search::{
     continuation::{Continuation, ContinuationBank},
     draw::SUFFIX_DOUBLING_LIMIT,
+    heap,
     rand::RomuDuoJrRand,
     weighted_set::WeightedSet,
 };
@@ -23,11 +24,13 @@ fn unset_action_cost<A>() -> fn(&A) -> u64 {
 }
 
 fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
-    values
+    let mut kept: Vec<T> = values
         .into_iter()
         .zip(keep)
         .filter_map(|(value, keep)| (*keep).then_some(value))
-        .collect()
+        .collect();
+    kept.shrink_to_fit();
+    kept
 }
 
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
@@ -476,7 +479,6 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     input_index: InputIndex<A>,
     historical_input_actions: usize,
     stored_input_actions: usize,
-    history_memory_bytes: usize,
     pub retained: u64,
     pub rejected: u64,
     selected: Vec<u64>,
@@ -662,12 +664,7 @@ impl<A: Clone + Ord> InputIndex<A> {
         Some(node)
     }
 
-    fn ensure_path(
-        &mut self,
-        mut node: usize,
-        actions: &[A],
-    ) -> Result<(usize, usize), &'static str> {
-        let mut inserted = 0_usize;
+    fn ensure_path(&mut self, mut node: usize, actions: &[A]) -> Result<usize, &'static str> {
         for action in actions {
             let existing = self
                 .nodes
@@ -703,9 +700,8 @@ impl<A: Clone + Ord> InputIndex<A> {
                 .ok_or("input prefix parent disappeared while extending it")?;
             parent.children.insert(action.clone(), child);
             node = child;
-            inserted = inserted.saturating_add(1);
         }
-        Ok((node, inserted))
+        Ok(node)
     }
 
     fn owner(&self, node: usize) -> Option<u64> {
@@ -1082,7 +1078,6 @@ where
             input_index: InputIndex::default(),
             historical_input_actions: 0,
             stored_input_actions: 0,
-            history_memory_bytes: Self::prefix_node_memory_charge(),
             retained: 0,
             rejected: 0,
             selected: Vec::new(),
@@ -1353,9 +1348,10 @@ where
             .snapshot
             .as_deref()
             .map_or(0, |snapshot| self.snapshot_charge(snapshot))
-            .saturating_add(Self::history_entry_memory_charge(
-                entry.input_suffix.len(),
-                0,
+            .saturating_add(Self::snapshot_header_charge())
+            .saturating_add(self.entry_memory_bytes(1))
+            .saturating_add(heap::block(
+                entry.input_suffix.len().saturating_mul(size_of::<A>()),
             ))
     }
 
@@ -1537,7 +1533,7 @@ where
 
         self.id_to_index.clear();
         self.slots.clear();
-        self.resident_snapshot_order.clear();
+        self.resident_snapshot_order = VecDeque::new();
         self.active_count = 0;
         self.resident_snapshots = 0;
         self.resident_snapshot_bytes = 0;
@@ -1589,19 +1585,6 @@ where
             .enumerate()
             .map(|(index, entry)| (entry.key, index))
             .collect();
-        self.history_memory_bytes = Self::prefix_node_memory_charge()
-            .saturating_add(
-                self.entries
-                    .iter()
-                    .map(|entry| Self::history_entry_memory_charge(entry.input_suffix.len(), 0))
-                    .sum::<usize>(),
-            )
-            .saturating_add(
-                self.input_index
-                    .live_nodes
-                    .saturating_sub(1)
-                    .saturating_mul(Self::prefix_node_memory_charge()),
-            );
         self.history_compactions = self.history_compactions.saturating_add(1);
         self.historical_entries_dropped = self
             .historical_entries_dropped
@@ -1610,7 +1593,7 @@ where
         let selector_indexed = std::mem::take(&mut self.selector_indexed);
         self.active_ids = ActiveIds::default();
         self.tiers.clear();
-        self.parent_index.clear();
+        self.parent_index = Vec::new();
         if selector_indexed {
             self.rebuild_selector_index();
         }
@@ -1795,43 +1778,73 @@ where
         parent_id: Option<usize>,
         suffix: &[A],
         stable_id: u64,
-    ) -> Result<(usize, usize), &'static str> {
+    ) -> Result<usize, &'static str> {
         let node = self.input_index_start(parent_id);
-        let (node, inserted) = self.input_index.ensure_path(node, suffix)?;
+        let node = self.input_index.ensure_path(node, suffix)?;
         self.input_index.set_owner(node, Some(stable_id));
-        Ok((node, inserted))
+        Ok(node)
     }
 
-    fn prefix_node_memory_charge() -> usize {
-        size_of::<BTreeMap<A, usize>>()
-            .saturating_add(size_of::<Option<usize>>())
-            .saturating_add(size_of::<A>())
-            .saturating_add(size_of::<usize>())
-            .saturating_add(size_of::<Option<[u8; 32]>>())
-            .saturating_add(64)
+    fn entry_memory_bytes(&self, entries: usize) -> usize {
+        fn column<T>(_: &[T], entries: usize) -> usize {
+            heap::vec_bytes::<T>(entries)
+        }
+        [
+            column(&self.entries, entries),
+            column(&self.active, entries),
+            column(&self.selected, entries),
+            column(&self.productive, entries),
+            column(&self.opened_cell, entries),
+            column(&self.opened_slot, entries),
+            column(&self.cost_in_group, entries),
+            column(&self.replacement_preferences, entries),
+            column(&self.in_place_lengths, entries),
+            column(&self.lineages, entries),
+            column(&self.deepest_leaf, entries),
+            column(&self.parent_index, entries),
+            column(&self.snapshot_selectable, entries),
+            column(&self.keyframe, entries),
+            column(&self.keyframe_id, entries),
+            column(&self.keyframe_dependents, entries),
+            column(&self.referenced, entries),
+            heap::vec_bytes::<usize>(entries),
+            heap::btree_bytes::<u64, usize>(1, entries),
+        ]
+        .into_iter()
+        .fold(0, usize::saturating_add)
     }
 
-    fn history_entry_memory_charge(suffix_len: usize, new_nodes: usize) -> usize {
-        size_of::<ArchiveEntry<A, K, M, S>>()
-            .saturating_add(suffix_len.saturating_mul(size_of::<A>()))
-            .saturating_add(size_of::<K::Lineage>())
-            .saturating_add(size_of::<(K, usize)>())
-            .saturating_add(4_usize.saturating_mul(size_of::<u64>()))
-            .saturating_add(4_usize.saturating_mul(size_of::<usize>()))
-            .saturating_add(128)
-            .saturating_add(new_nodes.saturating_mul(Self::prefix_node_memory_charge()))
+    fn selector_memory_bytes(&self) -> usize {
+        if !self.selector_indexed {
+            return 0;
+        }
+        let active = self.active_count;
+        let places = self.cells.len().min(active);
+        let removals = self.entries.len().saturating_sub(active);
+        let tiers = self.tiers.len();
+        let preferences = K::preferences();
+        heap::btree_bytes::<usize, ()>(1, active)
+            .saturating_add(heap::btree_bytes::<K::Progress, TierCells<K>>(1, tiers))
+            .saturating_add(heap::btree_bytes::<K::Place, CellMembers<K>>(tiers, places))
+            .saturating_add(WeightedSet::<K::Place>::heap_bound(tiers, places, removals))
+            .saturating_add(WeightedSet::<usize>::heap_bound(places, active, removals))
+            .saturating_add(
+                places.saturating_mul(heap::vec_bytes::<BTreeSet<HolderRank<K>>>(preferences)),
+            )
+            .saturating_add(heap::btree_bytes::<HolderRank<K>, ()>(
+                places.saturating_mul(preferences),
+                active.saturating_mul(preferences),
+            ))
     }
 
-    fn cell_memory_charge() -> usize {
-        size_of::<Cell<K>>()
-            .saturating_add(size_of::<CellState>())
-            .saturating_add(size_of::<K::Place>())
-            .saturating_add(size_of::<BTreeSet<usize>>())
-            .saturating_add(128)
+    fn snapshot_header_charge() -> usize {
+        heap::block(size_of::<(usize, usize, S)>()).saturating_sub(size_of::<S>())
     }
 
-    fn auxiliary_history_memory_bytes(&self) -> usize {
-        self.cell_memory_bytes()
+    fn snapshot_header_memory_bytes(&self) -> usize {
+        self.resident_snapshots
+            .saturating_add(self.inflight_snapshot_charges.len())
+            .saturating_mul(Self::snapshot_header_charge())
     }
 
     pub(crate) fn all_extensions_retained(&self, parent_id: usize, actions: &[A]) -> bool {
@@ -2524,14 +2537,12 @@ where
         self.stored_input_actions = self
             .stored_input_actions
             .saturating_add(suffix.as_ref().len());
-        let (input_node, new_nodes) =
-            self.index_retained_input(parent_id, suffix.as_ref(), stable_id)?;
+        let input_node = self.index_retained_input(parent_id, suffix.as_ref(), stable_id)?;
         if let Some(certificates) = certificates {
             let ancestor = self.input_index_start(parent_id);
             self.input_index
                 .bind_certificates(ancestor, suffix.as_ref(), certificates)?;
         }
-        let suffix_len = suffix.as_ref().len();
         self.entries.push(ArchiveEntry {
             id: stable_id,
             parent_id: parent_id.map(|parent| self.entries[parent].id),
@@ -2635,9 +2646,6 @@ where
                 self.reset_cell_draws(cell_of(self.entries[parent].key));
             }
         }
-        self.history_memory_bytes = self
-            .history_memory_bytes
-            .saturating_add(Self::history_entry_memory_charge(suffix_len, new_nodes));
         self.retained = self.retained.saturating_add(1);
         self.index_insert(id);
         self.enforce_snapshot_memory_budget()?;
@@ -3243,8 +3251,9 @@ where
 
     #[must_use]
     pub fn history_memory_bytes(&self) -> usize {
-        self.history_memory_bytes
-            .saturating_add(self.auxiliary_history_memory_bytes())
+        self.entry_metadata_memory_bytes()
+            .saturating_add(self.input_index_memory_bytes())
+            .saturating_add(self.cell_memory_bytes())
             .saturating_add(
                 self.continuations
                     .as_ref()
@@ -3254,28 +3263,46 @@ where
 
     #[must_use]
     pub(crate) fn entry_metadata_memory_bytes(&self) -> usize {
-        self.entries
-            .len()
-            .saturating_mul(Self::history_entry_memory_charge(0, 0))
+        self.entry_memory_bytes(self.entries.len())
+            .saturating_add(heap::btree_bytes::<u64, ()>(1, self.landed.len()))
+            .saturating_add(heap::btree_bytes::<u64, u32>(1, self.metadata_pins.len()))
+            .saturating_add(heap::btree_bytes::<u64, u32>(
+                1,
+                self.inflight_snapshot_pins.len(),
+            ))
+            .saturating_add(heap::btree_bytes::<u64, usize>(
+                1,
+                self.inflight_snapshot_charges.len(),
+            ))
     }
 
     #[must_use]
     pub(crate) fn input_index_memory_bytes(&self) -> usize {
-        self.input_index
-            .live_nodes
-            .saturating_mul(Self::prefix_node_memory_charge())
-            .saturating_add(self.stored_input_actions.saturating_mul(size_of::<A>()))
+        let nodes = self.input_index.live_nodes;
+        self.stored_input_actions
+            .saturating_mul(size_of::<A>())
+            .saturating_add(self.entries.len().saturating_mul(heap::MIN_BLOCK))
+            .saturating_add(heap::vec_bytes::<Option<InputNode<A>>>(nodes))
+            .saturating_add(heap::btree_bytes::<A, usize>(
+                nodes,
+                nodes.saturating_sub(1),
+            ))
     }
 
     #[must_use]
     pub(crate) fn cell_memory_bytes(&self) -> usize {
-        self.cells.len().saturating_mul(Self::cell_memory_charge())
+        let slots = self.slots.len();
+        heap::btree_bytes::<Cell<K>, CellState>(1, self.cells.len())
+            .saturating_add(heap::btree_bytes::<Slot<K>, Vec<usize>>(1, slots))
+            .saturating_add(slots.saturating_mul(heap::vec_bytes::<usize>(K::capacity().max(1))))
+            .saturating_add(self.selector_memory_bytes())
     }
 
     #[must_use]
     pub fn resident_memory_bytes(&self) -> usize {
         self.history_memory_bytes()
             .saturating_add(self.resident_snapshot_bytes())
+            .saturating_add(self.snapshot_header_memory_bytes())
     }
 
     #[must_use]
@@ -3702,6 +3729,10 @@ where
         (exclusive, shared)
     }
 }
+
+#[cfg(test)]
+#[path = "archive_memory_tests.rs"]
+mod memory_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4354,10 +4385,9 @@ mod tests {
     #[test]
     fn input_index_walk_owner_and_pruning_are_exact() {
         let mut index = InputIndex::<u8>::default();
-        let (leaf, inserted) = index
+        let leaf = index
             .ensure_path(0, &[1, 2, 3])
             .expect("insert input prefix");
-        assert_eq!(inserted, 3);
         assert_eq!(index.live_nodes, 4);
         assert_eq!(index.walk(0, &[1, 2, 3]), Some(leaf));
         assert_eq!(index.walk(0, &[1, 2, 4]), None);
@@ -5971,12 +6001,7 @@ mod tests {
 
     #[test]
     fn memory_budget_drops_an_entry_without_freezing_admission() {
-        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
-        let root_charge = Archive::<u8, FlatKey, (), ()>::prefix_node_memory_charge();
-        let history_charge = 3 * Archive::<u8, FlatKey, (), ()>::history_entry_memory_charge(1, 1);
-        let cell_charge = 3 * Archive::<u8, FlatKey, (), ()>::cell_memory_charge();
-        archive.set_memory_budget(root_charge + history_charge + cell_charge + 2, |_| 1);
-        for index in 0_u8..3 {
+        let insert = |archive: &mut Archive<u8, FlatKey, (), ()>, index: u8| {
             archive
                 .insert(
                     None,
@@ -5990,6 +6015,16 @@ mod tests {
                 )
                 .expect("insert budgeted entry")
                 .expect("budget admits a replacement");
+        };
+        let mut unbounded = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        unbounded.set_memory_budget(usize::MAX, |_| 1);
+        for index in 0_u8..3 {
+            insert(&mut unbounded, index);
+        }
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        archive.set_memory_budget(unbounded.resident_memory_bytes() - 1, |_| 1);
+        for index in 0_u8..3 {
+            insert(&mut archive, index);
         }
 
         assert_eq!(archive.active_count(), 2);
@@ -6328,7 +6363,11 @@ mod tests {
         assert!(archive.keyframe[1..4].iter().all(|keyframe| !keyframe));
         assert_eq!(archive.keyframe_dependents[0], 4);
 
-        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(1));
+        archive.memory_limit = Some(
+            archive.history_memory_bytes()
+                + 1
+                + Archive::<u8, FlatKey, (), ()>::snapshot_header_charge(),
+        );
         archive
             .enforce_snapshot_memory_budget()
             .expect("budget remains satisfiable");
@@ -6434,7 +6473,11 @@ mod tests {
                 .to_string()
                 .contains("different endpoint certificate")
         );
-        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(1));
+        archive.memory_limit = Some(
+            archive.history_memory_bytes()
+                + 1
+                + Archive::<u8, FlatKey, (), ()>::snapshot_header_charge(),
+        );
         archive.enforce_snapshot_memory_budget().unwrap();
         assert!(archive.entries[1].snapshot.is_none());
         archive.compact_history(true).unwrap();
@@ -7107,8 +7150,7 @@ mod tests {
             [1, 2, 3]
         );
         assert_eq!(archive.input_reconstructions(), 1);
-        assert!(Archive::<u8, FlatKey, (), ()>::prefix_node_memory_charge() > 1);
-        assert!(Archive::<u8, FlatKey, (), ()>::cell_memory_charge() > 1);
+        assert!(archive.input_index_memory_bytes() > 1);
         assert!(archive.cell_memory_bytes() > 1);
 
         let retained = archive.retained;
@@ -7592,7 +7634,7 @@ mod tests {
         for branch in 0..branches {
             let mut actions = vec![0; depth.max(1)];
             actions[0] = branch;
-            let (leaf, _) = index.ensure_path(0, &actions).unwrap();
+            let leaf = index.ensure_path(0, &actions).unwrap();
             index.set_owner(leaf, Some(u64::from(branch)));
             leaves.push(leaf);
         }
@@ -7651,7 +7693,7 @@ mod tests {
         let mut index = InputIndex::default();
         for leaf in 0..2048_u16 {
             let actions = (0..11).map(|bit| (leaf >> bit) & 1).collect::<Vec<_>>();
-            let (node, _) = index.ensure_path(0, &actions).unwrap();
+            let node = index.ensure_path(0, &actions).unwrap();
             index.set_owner(node, Some(u64::from(leaf)));
         }
         assert!(

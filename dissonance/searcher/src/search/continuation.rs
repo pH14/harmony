@@ -6,11 +6,9 @@ use std::{
     mem::size_of,
 };
 
+use super::heap;
+
 pub const CONTINUATION_IDENTIFIER: &str = "position_edges_preference_queue_v1";
-
-const EDGE_NODE_OVERHEAD: usize = 192;
-
-const PENDING_NODE_OVERHEAD: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Continuation<P, A> {
@@ -56,7 +54,7 @@ pub(crate) struct ContinuationBank<P: Ord, A> {
     pending: BTreeMap<(u8, u64), P>,
     pending_source: BTreeMap<P, Pending<P>>,
     next_sequence: u64,
-    memory_bytes: usize,
+    edge_actions: usize,
     improved_work: u64,
 }
 
@@ -70,28 +68,26 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
             pending: BTreeMap::new(),
             pending_source: BTreeMap::new(),
             next_sequence: 0,
-            memory_bytes: 0,
+            edge_actions: 0,
             improved_work: 0,
         }
     }
 
-    fn edge_bytes(actions: usize) -> usize {
-        size_of::<(P, P)>()
-            .saturating_add(size_of::<Edge<A>>())
-            .saturating_add(actions.saturating_mul(size_of::<A>()))
-            .saturating_add(2 * size_of::<P>())
-            .saturating_add(EDGE_NODE_OVERHEAD)
-    }
-
-    fn pending_bytes() -> usize {
-        size_of::<u64>()
-            .saturating_add(2 * size_of::<P>())
-            .saturating_add(size_of::<Pending<P>>())
-            .saturating_add(PENDING_NODE_OVERHEAD)
-    }
-
     pub fn memory_bytes(&self) -> usize {
-        self.memory_bytes
+        let edges = self.edges.len();
+        self.edge_actions
+            .saturating_mul(size_of::<A>())
+            .saturating_add(edges.saturating_mul(heap::MIN_BLOCK))
+            .saturating_add(heap::btree_bytes::<(P, P), Edge<A>>(1, edges))
+            .saturating_add(heap::btree_bytes::<P, BTreeSet<P>>(1, self.exits.len()))
+            .saturating_add(heap::btree_bytes::<P, ()>(self.exits.len(), edges))
+            .saturating_add(heap::btree_bytes::<P, BTreeSet<P>>(1, self.entrances.len()))
+            .saturating_add(heap::btree_bytes::<P, ()>(self.entrances.len(), edges))
+            .saturating_add(heap::btree_bytes::<(u8, u64), P>(1, self.pending.len()))
+            .saturating_add(heap::btree_bytes::<P, Pending<P>>(
+                1,
+                self.pending_source.len(),
+            ))
     }
 
     pub fn edge_count(&self) -> usize {
@@ -139,17 +135,15 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                     return;
                 }
                 let edge = edge();
-                self.memory_bytes = self
-                    .memory_bytes
-                    .saturating_sub(Self::edge_bytes(held.actions.len()))
-                    .saturating_add(Self::edge_bytes(actions.len()));
+                self.edge_actions = self
+                    .edge_actions
+                    .saturating_sub(held.actions.len())
+                    .saturating_add(actions.len());
                 *held = edge;
             }
             None => {
                 let edge = edge();
-                self.memory_bytes = self
-                    .memory_bytes
-                    .saturating_add(Self::edge_bytes(actions.len()));
+                self.edge_actions = self.edge_actions.saturating_add(actions.len());
                 self.edges.insert((from, to), edge);
                 self.exits.entry(from).or_default().insert(to);
                 self.entrances.entry(to).or_default().insert(from);
@@ -187,7 +181,6 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                     wave,
                     cursor: None,
                 });
-                self.memory_bytes = self.memory_bytes.saturating_add(Self::pending_bytes());
             }
         }
     }
@@ -274,7 +267,6 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
     fn drop_pending(&mut self, source: P) {
         if let Some(held) = self.pending_source.remove(&source) {
             self.pending.remove(&(held.preference, held.sequence));
-            self.memory_bytes = self.memory_bytes.saturating_sub(Self::pending_bytes());
         }
     }
 
@@ -328,9 +320,7 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
 
     fn drop_edge(&mut self, from: P, to: P) {
         if let Some(edge) = self.edges.remove(&(from, to)) {
-            self.memory_bytes = self
-                .memory_bytes
-                .saturating_sub(Self::edge_bytes(edge.actions.len()));
+            self.edge_actions = self.edge_actions.saturating_sub(edge.actions.len());
         }
     }
 }
@@ -369,7 +359,6 @@ impl<P: Copy + Ord, A: Clone> ContinuationBank<P, A> {
                         cursor: None,
                     },
                 );
-                self.memory_bytes = self.memory_bytes.saturating_add(Self::pending_bytes());
             }
         }
     }
@@ -658,10 +647,9 @@ mod tests {
             (30, 31, 99, 2)
         );
         assert_eq!(held.actions.len(), 64);
-        assert_eq!(
-            bank.memory_bytes(),
-            ContinuationBank::<u8, Action>::edge_bytes(64)
-        );
+        let mut fresh = ContinuationBank::<u8, Action>::new(128);
+        fresh.record(1, 2, 30, 31, &actions[..64], 99, 2);
+        assert_eq!(bank.memory_bytes(), fresh.memory_bytes());
     }
 
     #[test]
