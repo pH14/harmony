@@ -68,7 +68,7 @@ try {
   assert.ok(Number(await page.locator('#scrub').inputValue()) > 0, 'The replay advances while the search waits');
 
   await page.locator('#play').click();
-  assert.equal(await page.locator('#play').textContent(), '▶ Replay');
+  await page.waitForFunction(() => document.querySelector('#play').textContent === '▶ Replay', null, {timeout: 5000});
   await page.waitForFunction(() => document.querySelector('#pause').getAttribute('aria-label') === 'Pause Search');
   await growing(page, await paths(page));
 
