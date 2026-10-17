@@ -458,7 +458,7 @@ Map coordinates are the world x and the world y minus the level's map top.
 each ROM, and `famidash_groups()` exports them with the level names. Each map
 covers the rows the camera showed on the recorded route plus 16 lines above
 and below, from 256 lines for Oceane to 905 for Motion, and is as wide as the
-level's scroll plus one screen, from 3,843 pixels for The Challenge to 73,130
+level's scroll plus one screen, from 3,843 pixels for The Challenge to 73,133
 for Every End. Map x is 16 bits, so a point past x 65,535 in Every End shows at
 that column.
 The pose is the game mode (cube, ship, ball, UFO, robot, spider, wave, swing)
@@ -502,11 +502,11 @@ records the victory input of a Dissonance run as the level's route after
 checking that it clears the level. The build sets the parallax pokes for these
 routes too, unless the input clears the level only without them; then the
 route records `"parallax": true` and the map keeps the parallax art. Of the 109
-routes, 78 are pattern strings, 17 have chunks with deaths ignored and 14 are
+routes, 78 are pattern strings, 4 have chunks with deaths ignored and 27 are
 Dissonance victories. The sprite sheet comes from each group's first level
 with the background switched off through the PPU mask copy at `$0B`: the build
 writes each game mode to `$7A` and captures the player. The flipped-gravity
-row is the same sprite turned upside down. The 109 maps take about 63 seconds
+row is the same sprite turned upside down. The 109 maps take about 65 seconds
 of CPU time.
 
 `tools/build-famidash-music.mjs` reads the four pinned music metadata files
