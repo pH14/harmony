@@ -8,7 +8,7 @@ const errors = [];
 async function ready(page, step) {
   await page.waitForFunction((step) => {
     const tour = document.querySelector('#guided-tour');
-    return tour.open && Number(tour.dataset.step) === step && tour.querySelector('.tour-card').getAttribute('aria-busy') === 'false' && document.querySelector('#tour-next').textContent !== 'Try again';
+    return tour?.open && Number(tour.dataset.step) === step && tour.querySelector('.tour-card').getAttribute('aria-busy') === 'false' && document.querySelector('#tour-next').textContent !== 'Try again';
   }, step, {timeout: 60000});
   await page.waitForTimeout(100);
   const layout = await page.evaluate(() => {

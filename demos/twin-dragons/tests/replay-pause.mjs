@@ -41,7 +41,7 @@ try {
     };
   }, TOUR_KEY);
   await page.goto(`${(process.env.DEMO_URL || 'http://127.0.0.1:4173').replace(/\/$/, '')}/?level=0&workers=1&pace=0`);
-  await page.waitForFunction(() => !document.querySelector('#pause').disabled);
+  await page.waitForFunction(() => document.querySelector('#pause')?.disabled === false);
 
   await page.waitForFunction(() => document.querySelector('#inspector').hidden && document.querySelector('#play').textContent === 'Ⅱ Pause', null, {timeout: 60000});
   assert.equal(await page.locator('#pause').getAttribute('aria-label'), 'Pause Search', 'The automatic preview leaves the search running');

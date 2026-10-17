@@ -38,7 +38,7 @@ try {
       };
     },TOUR_KEY);
     await page.goto(`${(process.env.DEMO_URL||'http://127.0.0.1:4173').replace(/\/$/,'')}/?level=0&pace=0`);
-    await page.waitForFunction(()=>!document.querySelector('#new-search').disabled);
+    await page.waitForFunction(()=>document.querySelector('#new-search')?.disabled===false);
     let panned=0;
     for(const level of [0,1,2]) {
       await page.locator('#new-search').click();await page.locator(`.level-card[data-level="${level}"]`).click();

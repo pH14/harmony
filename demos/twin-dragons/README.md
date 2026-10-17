@@ -47,8 +47,9 @@ upstream release and zeroes its sound-effect data. The same script's pinned
 source archive supplies level data, tiles and tables for the maps. The build
 extracts only those files into the gitignored `.build/` directory and never
 publishes the archive. `workloads/nes/scripts/build-famidash-rom.sh` downloads
-the official Famidash 1.2.8 release ROM, its MIT license and its music credits
-and checks their SHA-256. The site ships the ROM unchanged.
+the four official Famidash 1.2.8 release ROMs, the MIT license, the music
+credits and the music metadata and checks their SHA-256. The site ships the
+ROMs unchanged.
 
 ## The game
 
@@ -78,7 +79,10 @@ game is complete when the third level is cleared.
 The search runs in one coordinator worker and a pool of rollout workers. Each
 rollout worker holds its own QuickNES instance. The page starts every worker and
 hands the coordinator a `MessageChannel` port to each rollout worker, because
-some browsers fail to load a worker started from inside another worker.
+some browsers fail to load a worker started from inside another worker. The
+workers import `emulator.js` dynamically and set their message handler first.
+The Famidash module waits for the Rust module when it loads, and a module
+worker drops messages that arrive before its handler is set.
 
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid run the
 same search as their native workloads. `rust/src/campaign.rs` holds `JsMachine`,
@@ -421,29 +425,52 @@ the pace is 120 rollouts per second.
 ### Famidash
 
 Famidash by TFDSoft is an unofficial fan demake of RobTop's Geometry Dash. The
-picker lists its 22 main levels. The 21 community levels in the ROM are left
-out of the picker. A level is complete when the game state reaches 3. The
-search plays the main levels in order and its goal is completing Dash, the last
-one. After an earlier level, the workload target presses A, Right and A
-through the win screen and level select to start the next level. Those presses
-are part of the history, so replay, forking and Play from here use them, and
-the map follows the search into the next level. The page
-decodes RAM through `famidash_observation`; the workload README in
+site ships the four official 1.2.8 ROMs unchanged: the main game and the
+B-Sides, C-Sides and D-Sides. The picker shows one Famidash entry. Its level
+selector lists all 109 levels in five groups: Main (22), Community (21),
+B-Sides (31), C-Sides (25) and D-Sides (10). The main game ROM holds the main
+and community levels. Each group is its own entry in `GAMES`, with the id
+`famidash`, `famidash-community`, `famidash-b`, `famidash-c` or `famidash-d`
+and the family `famidash`. A card of another group opens that group's page
+with `?game=` and `?level=`, and that page loads the group's ROM.
+
+`src/games/famidash.js` builds the five games from the `famidash_groups()`
+export. Level names, ROM files and checksums come from
+`workloads/nes-games/src/famidash/levels.rs`, and the map tops come from
+`workloads/nes-games/src/arcade/famidash.rs`. In Rust each group is the game
+type `Famidash<GROUP>`, where `GROUP` indexes `GROUPS` in `levels.rs`, so the
+static `ArcadeGame` functions know the group's side.
+
+A level is complete when the game state reaches 3. A search plays its group's
+levels in order and its goal is completing the group's last level. After an
+earlier level, the workload target presses A, Right and A through the win
+screen and level select to start the next level. Those presses are part of the
+history, so replay, forking and Play from here use them, and the map follows
+the search into the next level. The page decodes RAM through
+`famidash_observation(game, ram)`; the workload README in
 `workloads/nes/src/famidash` lists the addresses. The observation carries the
 level percent, the scroll divided by the level's length, and the Details pane
 shows it as Level progress. One A button is the whole controller.
 
 Map coordinates are the world x and the world y minus the level's map top.
-`MAP_TOPS` in `rust/src/famidash.rs` holds the top of each level, and
-`famidash_map_top(level)` exports it. Each map covers the rows the camera
-showed on the recorded route plus 16 lines above and below, from 257 lines
-for Jumper to 717 for Theory of Everything, and is as wide as the level's
-scroll plus one screen. The pose is the game mode (cube, ship, ball, UFO,
-robot, spider, wave, swing) times two plus flipped gravity.
+`MAIN_MAP_TOPS`, `B_MAP_TOPS`, `C_MAP_TOPS` and `D_MAP_TOPS` in
+`workloads/nes-games/src/arcade/famidash.rs` hold the top of each level on
+each ROM, and `famidash_groups()` exports them with the level names. Each map
+covers the rows the camera showed on the recorded route plus 16 lines above
+and below, from 256 lines for Oceane to 905 for Motion, and is as wide as the
+level's scroll plus one screen, from 3,843 pixels for The Challenge to 73,130
+for Every End. Map x is 16 bits, so a point past x 65,535 in Every End shows at
+that column.
+The pose is the game mode (cube, ship, ball, UFO, robot, spider, wave, swing)
+times two plus flipped gravity.
 
 `tools/build-famidash-maps.mjs` builds the maps when the runtime is built,
-because the site ships the ROM. `tools/famidash-routes.json` holds one
-clearing route per level as a string of 8-frame input patterns. The build
+because the site ships the ROMs. Each group's maps, `maps.json` and sprite
+sheet go to `public/famidash/<group>/`. `tools/famidash-routes/<side>.json`
+holds one clearing route per level of that side's ROM. A route is a string of
+8-frame input patterns, or `{"inputs": [[buttons, frames], ...]}`, the
+controller history of a Dissonance search that cleared the level. Each route
+starts from the level start of `boot(level)`. The build
 replays each route once on one thread and renders every 16th frame. Before
 each frame it sets the parallax phase at `$04A0` to 0 and copies the backdrop
 color at `$01A0` to the parallax colors at `$01A1` and `$01A9`, so the
@@ -453,19 +480,44 @@ pixels show the RAM of one frame earlier. Each map pixel keeps the frame where
 its column was nearest screen x 176, ahead of the player, so trails and the
 player stay out of the map. Pixels the camera never showed take their column's
 most common color. The build fails if a route no longer clears its level or
-a map top differs from `MAP_TOPS`, and prints the new tops.
-`node tools/build-famidash-maps.mjs --search [levels]` searches new routes:
-it plays the plain pattern until a death, then retries one or two other
-patterns a few chunks back, then a 12-wide beam search, and checks two chunks
-past the repair. The sprite sheet comes from Stereo Madness with the
-background switched off through the PPU mask copy at `$0B`: the build writes
-each game mode to `$7A` and captures the player. The flipped-gravity row is
-the same sprite turned upside down. The 22 maps take about 12 seconds of CPU
-time.
+a map top differs from the Rust tables, and prints the new tops.
 
-`boot(level)` for a later level runs the workload's level-select tape from the
-`famidash_level_select_tape` export, writes the level to `$047B`, presses A and
-waits 90 frames, the same wait as the Stereo Madness setup.
+`node tools/build-famidash-maps.mjs --search [group [levels]]` searches routes
+for the levels that have none, or for the given levels. The group is `main`,
+`community`, `b`, `c` or `d`. The search plays the plain pattern until a
+death, then retries one or two other patterns a few chunks back, then a
+12-wide beam search, and checks two chunks past the repair. Some levels need a
+press at a frame the patterns never use. For those the search runs again, and
+where no repair passes a death it plays one plain chunk with deaths ignored,
+written as `a` in the route. Before each frame of that chunk the build sets the
+game's debug mode at `$0595` to 3, which skips the death reset, and the
+invincibility counter at `$04A1` to 8, which skips wall and spike collisions.
+After each frame it clears the debug mode and the death bits. A route also
+ends once the level percent has stayed at 99 for 16 chunks, because on some
+levels a route that ignored a death runs under the end trigger and never shows
+it; the map is complete at that point.
+`node tools/build-famidash-maps.mjs --inputs <group> <level> <victory-input.json>`
+records the victory input of a Dissonance run as the level's route after
+checking that it clears the level. The build sets the parallax pokes for these
+routes too, unless the input clears the level only without them; then the
+route records `"parallax": true` and the map keeps the parallax art. Of the 109
+routes, 78 are pattern strings, 17 have chunks with deaths ignored and 14 are
+Dissonance victories. The sprite sheet comes from each group's first level
+with the background switched off through the PPU mask copy at `$0B`: the build
+writes each game mode to `$7A` and captures the player. The flipped-gravity
+row is the same sprite turned upside down. The 109 maps take about 63 seconds
+of CPU time.
+
+`tools/build-famidash-music.mjs` reads the four pinned music metadata files
+and writes `public/famidash/music.json`. The Credits dialog lists each side's
+songs with the original artist and the arranger the metadata names.
+
+`boot(0)` replays the campaign genesis, the target's own setup tape.
+`boot(level)` for any other level runs the group's level-select tape from
+`famidash_level_select_tape(game)`, writes the level to `$047B` when the menu
+shows another level and runs `famidash_start_level_tape()`, the workload's own
+A press and 40-frame wait. The community group and the side ROMs open the
+community menu, so their tape presses Right on the title menu.
 
 The native search with 16 workers clears Stereo Madness in 10,900 to 14,700
 executions on seeds 1 to 5, so at 120 rollouts per second the browser search
@@ -702,12 +754,15 @@ decoders, checks that the stage map is drawn when the first rollouts appear,
 and checks that the stage map and the top and bottom edge chevrons move the
 view.
 `tests/metroid.mjs` does the same for Metroid's five area maps.
-`tests/famidash.mjs` boots all 22 levels onto their maps, replays the deepest
-Stereo Madness and Clubstep states exactly, checks the picker order, starts a
-Stereo Madness search and waits for Level progress, pauses, selects the root's
-cell, then plays from it and branches, and replays the branch history to its
-endpoint checksum. On Dash it checks that the level strip and the top and
-bottom chevrons move the view up and down.
+`tests/famidash.mjs` boots all 109 levels and checks that each starts in the
+first screen of its map, runs a 2,000 execution search from one random level
+of each group with a random seed and replays its rightmost state exactly, checks the picker order and the grouped
+level selector, starts a Stereo Madness search and waits for Level progress,
+pauses, selects the root's cell, then plays from it and branches, and replays
+the branch history to its endpoint checksum. It picks a random B-Sides level
+from the selector, checks that its page searches the B-Sides ROM, and checks
+that the credits list the music of every side. On Dash it checks that the
+level strip and the top and bottom chevrons move the view up and down.
 `tests/arrow-pan.mjs` checks that the arrow keys pan the view in Twin Dragons,
 Famidash and Tobu Tobu Girl without taking control.
 `tests/replay-pause.mjs` checks that the path
@@ -752,4 +807,5 @@ dependency sources in `licenses/`.
 
 Famidash is by TFDSoft, copyright 2023-2024, under the MIT license. It is an
 unofficial fan demake of Geometry Dash by RobTop Games. The site ships the
-official release ROM unchanged with its license and music credits.
+four official release ROMs unchanged with their license, music credits and
+music metadata.

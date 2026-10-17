@@ -18,7 +18,7 @@ try {
     page.on("pageerror", (error) => errors.push(`${game}: ${error.message}`));
     await page.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
     await page.goto(`${url}/?game=${game}&level=${level}&pace=0`);
-    await page.waitForFunction(() => Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 30, null, { timeout: 60000 });
+    await page.waitForFunction(() => Number(document.querySelector("#hero-timelines")?.textContent.replace(/\D/g, "") ?? 0) > 30, null, { timeout: 60000 });
     await page.locator("#pause").click();
     const view = page.locator(".area-map").first();
     for (const key of keys) {

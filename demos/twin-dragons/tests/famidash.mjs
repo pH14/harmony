@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium } from "@playwright/test";
-import famidash, { LEVEL_NAMES } from "../src/games/famidash.js";
+import famidash, { FAMIDASH } from "../src/games/famidash.js";
 import { createEngine } from "../src/emulator.js";
 import { snapshotDigest, snapshotHash } from "../src/media.js";
 import { campaignSearch, campaignWorker, coreIdentity, runCampaign } from "../src/campaign.js";
@@ -11,44 +11,53 @@ import { TOUR_KEY } from "../src/tour.js";
 import { showOnMap } from "./map-point.mjs";
 
 const base = new URL("../public/", import.meta.url),
-  assets = new URL(famidash.assets, base);
-const engine = await createEngine(base, famidash, {
-  rom: await readFile(new URL(famidash.rom.file, base)),
-  wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
-});
-const catalog = JSON.parse(await readFile(new URL("maps.json", assets)));
-assert.deepEqual(catalog.maps.map((map) => map.name), LEVEL_NAMES);
-
-for (let level = 0; level < famidash.levelCount; level++) {
-  engine.boot(level);
-  const o = engine.observation(), map = catalog.maps[level];
-  assert.equal(o.level, level);
-  assert.equal(o.loading, false, `${LEVEL_NAMES[level]} boots into play`);
-  assert.equal(o.cleared, level);
-  assert.ok(isMapEvidence(o, catalog.levels));
-  assert.ok(o.x < 256 && o.y > map.height - 240 && o.y < map.height, `${LEVEL_NAMES[level]} starts at the bottom left of its map (${o.x}, ${o.y})`);
+  wasmBinary = await readFile(new URL("engine/quicknes.wasm", base)),
+  engines = new Map(),
+  catalogs = new Map(),
+  identity = coreIdentity("browser");
+for (const group of FAMIDASH) {
+  const engine = await createEngine(base, group, { rom: await readFile(new URL(group.rom.file, base)), wasmBinary });
+  engines.set(group.id, engine);
+  const catalog = JSON.parse(await readFile(new URL("maps.json", new URL(group.assets, base))));
+  catalogs.set(group.id, catalog);
+  assert.deepEqual(catalog.maps.map((map) => map.name), group.levels.map((level) => level.label), `${group.group} has one map per level`);
+  for (const { id: level, label } of group.levels) {
+    engine.boot(level);
+    const o = engine.observation(),
+      map = catalog.maps.find((entry) => entry.id === level);
+    assert.equal(o.level, level);
+    assert.equal(o.loading, false, `${label} boots into play`);
+    assert.equal(o.cleared, level);
+    assert.ok(isMapEvidence(o, catalog.levels));
+    assert.ok(o.x < 256 && o.y >= 0 && o.y < map.height, `${label} starts in the first screen of its map (${o.x}, ${o.y})`);
+  }
 }
-console.log("Each of the 22 main levels boots into play at the bottom left of its map.");
+const levelCount = FAMIDASH.reduce((sum, group) => sum + group.levels.length, 0);
+console.log(`Each of the ${levelCount} levels in ${FAMIDASH.map((group) => group.group).join(", ")} boots into play in the first screen of its map.`);
 
-const identity = coreIdentity("browser"),
-  worker = campaignWorker(engine, identity);
-for (const level of [0, 13]) {
-  const root = engine.boot(level),
-    search = campaignSearch(engine, identity, { seed: 1, executions: 2000, ...(level ? { root } : {}) });
+for (const group of FAMIDASH) {
+  const engine = engines.get(group.id),
+    worker = campaignWorker(engine, identity),
+    { id: level, label } = group.levels[Math.floor(Math.random() * group.levels.length)],
+    seed = Math.floor(Math.random() * 2 ** 32),
+    root = engine.boot(level),
+    search = campaignSearch(engine, identity, { seed, executions: 2000, ...(level ? { root } : {}) });
   let deepest = null;
   while (runCampaign(search, worker, { jobs: 16 }))
     for (const point of JSON.parse(search.take_batch()).points)
-      if (point.retained !== null && (!deepest || point.observation.percent > deepest.observation.percent)) deepest = point;
-  assert.ok(deepest?.observation.percent > 0, `The search makes progress in ${LEVEL_NAMES[level]}`);
+      if (point.retained !== null && (!deepest || point.observation.x > deepest.observation.x)) deepest = point;
+  assert.ok(deepest?.observation.x > 0, `The search with seed ${seed} moves forward in ${group.group} ${label}`);
   const state = JSON.parse(search.state(deepest.retained));
   engine.restore(root);
   for (const action of state.actions) engine.run(action.buttons, action.frames);
   assert.equal(snapshotDigest(engine.capture()), search.digest(deepest.retained), "The archived state replays exactly from its controller history");
   assert.deepEqual(engine.observation(), state.observation, "The replayed state decodes to the archived observation");
-  console.log(`${LEVEL_NAMES[level]}: deepest state at ${deepest.observation.percent}%; exact replay passed.`);
+  console.log(`${group.group} ${label} with seed ${seed}: deepest state at x ${deepest.observation.x}, ${deepest.observation.percent}%; exact replay passed.`);
   search.free();
 }
 
+const engine = engines.get(famidash.id),
+  worker = campaignWorker(engine, identity);
 {
   const root = engine.boot(0),
     search = campaignSearch(engine, identity, { seed: 1, executions: 30000 });
@@ -98,9 +107,13 @@ assert.deepEqual(homebrew.slice(0, 3), ["Twin Dragons", "Famidash", "Tobu Tobu G
 await page.locator("#homebrew-games button", { hasText: "Famidash" }).click();
 await page.locator("#level-grid:not([hidden]) button").first().waitFor({ timeout: 60000 });
 assert.equal(await page.locator("html").getAttribute("data-game"), "famidash");
-assert.deepEqual((await page.locator("#level-grid button").allInnerTexts()).map((text) => text.trim()), LEVEL_NAMES);
+assert.deepEqual(await page.locator("#level-grid h3").allInnerTexts(), FAMIDASH.map((group) => group.group.toUpperCase()), "The level selector groups Famidash levels by side");
+assert.deepEqual(
+  (await page.locator("#level-grid button").allInnerTexts()).map((text) => text.trim()),
+  FAMIDASH.flatMap((group) => group.levels.map((level) => level.label)),
+);
 await page.locator("#level-grid button").first().click();
-await page.waitForFunction(() => document.documentElement.dataset.game === "famidash" && Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 100, null, { timeout: 60000 });
+await page.waitForFunction(() => document.documentElement.dataset.game === "famidash" && Number(document.querySelector("#hero-timelines")?.textContent.replace(/\D/g, "") ?? 0) > 100, null, { timeout: 60000 });
 assert.equal(await page.locator('#level-strip [aria-pressed="true"]').textContent(), "Stereo Madness");
 assert.match(await page.locator(".game-attribution").innerText(), /^Famidash by TFDSoft, MIT$/);
 const progress = async () => {
@@ -139,11 +152,35 @@ assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= i
 assert.deepEqual(errors, []);
 console.log("Playing from the selected state and branching starts a search whose root replays exactly.");
 
+const sides = await browser.newPage({ viewport: { width: 1280, height: 900 } }),
+  bSides = FAMIDASH.find((group) => group.id === "famidash-b"),
+  pick = bSides.levels[Math.floor(Math.random() * bSides.levels.length)];
+sides.on("pageerror", (error) => errors.push(error.message));
+await sides.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
+await sides.goto(`${url}/?game=famidash`);
+await sides.locator("#level-picker[open]").waitFor({ timeout: 60000 });
+await sides.locator(`#level-grid [data-game="famidash-b"][data-level="${pick.id}"]`).click();
+await sides.waitForFunction(() => document.documentElement.dataset.game === "famidash-b" && Number(document.querySelector("#hero-timelines")?.textContent.replace(/\D/g, "") ?? 0) > 100, null, { timeout: 60000 });
+assert.equal(await sides.locator('#level-strip [aria-pressed="true"]').textContent(), pick.label);
+assert.equal(new URL(sides.url()).searchParams.get("level"), String(pick.id));
+await sides.locator("#credits").click();
+await sides.locator("#info[open]").waitFor();
+await sides.waitForFunction(() => document.querySelector("#info-content").innerText.includes("Xenogenesis: THEFATRAT"));
+assert.match(await sides.locator("#info-content").innerText(), /B-Sides[\s\S]*D-Sides/, "The credits list the music of every side");
+await sides.locator("#close-info").click();
+await sides.locator("#new-search").click();
+await sides.locator("#level-picker[open]").waitFor();
+assert.equal(await sides.locator(`#level-grid [data-game="famidash-b"][data-level="${pick.id}"]`).getAttribute("aria-current"), "true");
+assert.equal(await sides.locator("#homebrew-games button", { hasText: "Famidash" }).getAttribute("aria-pressed"), "true");
+assert.deepEqual(errors, []);
+await sides.close();
+console.log(`Picking the B-Sides level ${pick.label} loads the B-Sides ROM and searches it, and the credits name the music of every side.`);
+
 const dash = await browser.newPage({ viewport: { width: 1280, height: 900 } });
 dash.on("pageerror", (error) => errors.push(error.message));
 await dash.addInitScript((key) => localStorage.setItem(key, "seen"), TOUR_KEY);
 await dash.goto(`${url}/?game=famidash&level=21&pace=0`);
-await dash.waitForFunction(() => Number(document.querySelector("#hero-timelines").textContent.replace(/\D/g, "")) > 50, null, { timeout: 60000 });
+await dash.waitForFunction(() => Number(document.querySelector("#hero-timelines")?.textContent.replace(/\D/g, "") ?? 0) > 50, null, { timeout: 60000 });
 await dash.locator("#pause").click();
 const dashView = dash.locator('.area-map[data-map="21"]'), dashPart = dash.locator('.map-row[data-map="21"] .room-part');
 const dashStrip = await dash.locator('.level-overview[data-map="21"]').boundingBox();
