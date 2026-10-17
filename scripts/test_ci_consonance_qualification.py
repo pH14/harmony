@@ -100,6 +100,11 @@ class QualificationTests(unittest.TestCase):
             self.compare()
         self.assertEqual(Q.read(self.output)["outcome"], "diverged")
 
+    def test_libtest_prefix_does_not_hide_first_observation(self):
+        log = (self.receipts[0].parent / f"{Q.TESTS[0]}.log").read_text()
+        log = log.replace("X1_DIGEST=", f"test {Q.TESTS[0]} ... X1_DIGEST=")
+        self.assertEqual(Q.parse_evidence(log), Q.read(self.receipts[0])["evidence"])
+
     def test_vacuous_and_duplicate_observations_refuse(self):
         for text in ("", "X1_DIGEST=" + "b" * 64 + "\nX1_EVENTS=0\nX1_GUEST_DELIVERIES=2\nX1_CHECKPOINTS=3\n",
                      (self.receipts[0].parent / f"{Q.TESTS[0]}.log").read_text() * 2):
