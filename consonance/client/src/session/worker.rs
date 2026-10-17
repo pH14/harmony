@@ -13,15 +13,19 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     ptr::NonNull,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-use control_proto::{Reply, SnapId, StopReason, decode_reply, encode_reply};
+use control_proto::{
+    Answer, DecisionId, Moment, Reply, Resolution, SnapId, StopConditions, StopMask, StopReason,
+    decode_reply, encode_reply,
+};
 use environment::{
-    channel::Effect,
+    channel::{CoverageSchedule, Effect},
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
 
+use super::live::vmm_target_commitment;
 use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec};
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
@@ -31,6 +35,9 @@ const HEADER: usize = 16;
 const MAX_FDS: usize = 2 * ANCHOR_DEPTH as usize;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v1";
+const IMAGE_HELLO_LIMIT: usize = 512;
+const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
 const INIT: u8 = 1;
 const STATE_HASH: u8 = 2;
@@ -47,6 +54,7 @@ const BRANCH: u8 = 12;
 const RUN_UNTIL: u8 = 13;
 const SDK_EVENTS: u8 = 14;
 const STORE_BYTES: u8 = 15;
+const RUN_RESOLVING: u8 = 16;
 
 const OK: u8 = 0;
 const FAILED: u8 = 1;
@@ -105,8 +113,16 @@ pub trait SearchSession: std::fmt::Debug {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>>;
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>>;
+    fn run_resolving(
+        &mut self,
+        _deadline: u64,
+        _resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        Err("this session cannot resolve a service decision".into())
+    }
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>>;
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>>;
     fn abandoned(&self) -> bool;
@@ -186,12 +202,28 @@ impl SearchSession for Session {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        Session::branch_with_service(self, snapshot, config, payloads, effects)
+        Session::branch_with_service(self, snapshot, config, payloads, effects, coverage_schedule)
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         Session::run_until(self, deadline)
+    }
+
+    fn run_resolving(
+        &mut self,
+        deadline: u64,
+        resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        Session::run(
+            self,
+            StopConditions {
+                deadline: Some(Moment(deadline)),
+                on: StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+            },
+            Some(resolution),
+        )
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
@@ -386,7 +418,12 @@ fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> i
     }
 }
 
-fn recv_with_fds(stream: &UnixStream, buffer: &mut [u8]) -> io::Result<(usize, Vec<OwnedFd>)> {
+#[allow(clippy::disallowed_methods)]
+fn recv_with_fds(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<(usize, Vec<OwnedFd>)> {
     let space = control_space(MAX_FDS);
     let mut control = vec![0_u64; space.div_ceil(size_of::<u64>())];
     let mut iov = libc::iovec {
@@ -400,6 +437,13 @@ fn recv_with_fds(stream: &UnixStream, buffer: &mut [u8]) -> io::Result<(usize, V
     message.msg_control = control.as_mut_ptr().cast();
     message.msg_controllen = space as _;
     let received = loop {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            stream.set_read_timeout(Some(remaining))?;
+        }
         // SAFETY: message, its iovec and its control buffer stay alive and unmoved for the call.
         let received = unsafe { libc::recvmsg(stream.as_raw_fd(), &raw mut message, RECV_FLAGS) };
         if let Ok(received) = usize::try_from(received) {
@@ -460,24 +504,64 @@ fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
     writer.write_all(body)
 }
 
-fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+#[allow(clippy::disallowed_methods)]
+fn read_exact_until(
+    stream: &UnixStream,
+    mut buffer: &mut [u8],
+    deadline: Instant,
+) -> io::Result<()> {
+    while !buffer.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        stream.set_read_timeout(Some(remaining))?;
+        let size = (&*stream).read(buffer)?;
+        if size == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buffer = &mut buffer[size..];
+    }
+    Ok(())
+}
+
+fn recv_with_limit(
+    stream: &UnixStream,
+    limit: usize,
+    deadline: Option<Instant>,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut header = [0_u8; HEADER];
-    let (received, fds) = recv_with_fds(stream, &mut header)?;
+    let (received, fds) = recv_with_fds(stream, &mut header, deadline)?;
     if received == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
     let mut reader = stream;
-    reader.read_exact(&mut header[received..])?;
+    if let Some(deadline) = deadline {
+        read_exact_until(stream, &mut header[received..], deadline)?;
+    } else {
+        reader.read_exact(&mut header[received..])?;
+    }
     let len = usize::try_from(u64::from_le_bytes(
         header[..8].try_into().expect("eight bytes"),
     ))
     .map_err(|_| malformed("length overflows"))?;
+    if len > limit {
+        return Err(malformed("frame length exceeds limit"));
+    }
     if u64::from_le_bytes(header[8..].try_into().expect("eight bytes")) != fds.len() as u64 {
         return Err(malformed("descriptor count"));
     }
     let mut body = vec![0; len];
-    reader.read_exact(&mut body)?;
+    if let Some(deadline) = deadline {
+        read_exact_until(stream, &mut body, deadline)?;
+    } else {
+        reader.read_exact(&mut body)?;
+    }
     Ok((body, fds))
+}
+
+fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    recv_with_limit(stream, usize::MAX, None)
 }
 
 struct Mapping {
@@ -546,18 +630,39 @@ pub struct WorkerLauncher {
     program: PathBuf,
     args: Vec<OsString>,
     expected_image: String,
+    expected_main: String,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
 }
 
 impl WorkerLauncher {
     pub fn current_exe(args: Vec<OsString>) -> io::Result<Self> {
-        Ok(Self {
-            program: std::env::current_exe()?,
+        let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
+        #[cfg(target_os = "linux")]
+        let program = PathBuf::from("/proc/self/exe");
+        #[cfg(not(target_os = "linux"))]
+        let program = std::env::current_exe()?;
+        let launcher = Self {
+            program,
             args,
             expected_image: crate::image_identity::loaded_executable_identity_self()?,
-        })
+            expected_main: crate::image_identity::loaded_executable_identity_for_child(
+                std::process::id(),
+            )?,
+            loaded_image_guard,
+        };
+        loaded_image_guard.check()?;
+        Ok(launcher)
     }
 
+    #[allow(clippy::disallowed_methods)]
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
+        self.loaded_image_guard.check()?;
+        crate::image_identity::reject_loader_overrides()?;
+        if crate::image_identity::loaded_executable_identity_self()? != self.expected_image {
+            return Err(io::Error::other(
+                "launcher loaded image changed before worker spawn",
+            ));
+        }
         let (parent, child) = UnixStream::pair()?;
         let raw = child.as_raw_fd();
         let mut command = Command::new(&self.program);
@@ -574,7 +679,7 @@ impl WorkerLauncher {
         let mut process = command.spawn()?;
         let actual = crate::image_identity::loaded_executable_identity_for_child(process.id());
         let check = match actual {
-            Ok(actual) if actual == self.expected_image => Ok(()),
+            Ok(actual) if actual == self.expected_main => Ok(()),
             Ok(_) => Err(io::Error::other(
                 "session worker executable differs from launcher",
             )),
@@ -583,12 +688,33 @@ impl WorkerLauncher {
                 format!("cannot identify session worker executable: {error}"),
             )),
         };
+        drop(child);
+        let deadline = Instant::now() + IMAGE_HELLO_TIMEOUT;
+        let check = check.and_then(|()| {
+            let (body, fds) = recv_with_limit(&parent, IMAGE_HELLO_LIMIT, Some(deadline))?;
+            if !fds.is_empty() {
+                return Err(malformed("worker image hello carries descriptors"));
+            }
+            let mut input = In(&body);
+            if input.bytes()? != IMAGE_HELLO {
+                return Err(malformed("worker image hello has an unknown version"));
+            }
+            let actual = input.string()?;
+            input.finish()?;
+            if actual != self.expected_image {
+                return Err(io::Error::other(
+                    "session worker loaded image differs from launcher",
+                ));
+            }
+            Ok(())
+        });
+        let check = check.and_then(|()| self.loaded_image_guard.check());
+        let check = check.and(parent.set_read_timeout(None));
         if let Err(error) = check {
             let _ = process.kill();
             let _ = process.wait();
             return Err(error);
         }
-        drop(child);
         Ok((process, parent))
     }
 }
@@ -628,10 +754,17 @@ fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
     })
 }
 
+struct WorkerConnection {
+    stream: UnixStream,
+    process: Option<Child>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
+}
+
 #[derive(Debug)]
 pub struct WorkerSession {
     stream: UnixStream,
     process: Option<Child>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: (SnapId, u64),
     seed: u64,
     failed: Cell<bool>,
@@ -654,8 +787,11 @@ impl WorkerSession {
             ))
         })?;
         Self::connect(
-            stream,
-            Some(process),
+            WorkerConnection {
+                stream,
+                process: Some(process),
+                loaded_image_guard: launcher.loaded_image_guard,
+            },
             kernel,
             initramfs,
             config,
@@ -665,17 +801,23 @@ impl WorkerSession {
     }
 
     fn connect(
-        stream: UnixStream,
-        process: Option<Child>,
+        connection: WorkerConnection,
         kernel: &[u8],
         initramfs: &[u8],
         config: &SessionConfig,
         setup_payloads: &[Vec<u8>],
         service: &str,
     ) -> Result<Self, Box<dyn Error>> {
+        let WorkerConnection {
+            stream,
+            process,
+            loaded_image_guard,
+        } = connection;
+        loaded_image_guard.check()?;
         let mut session = Self {
             stream,
             process,
+            loaded_image_guard,
             setup: (SnapId(0), 0),
             seed: config.seed,
             failed: Cell::new(false),
@@ -695,6 +837,7 @@ impl WorkerSession {
         let mut input = In(&reply);
         session.setup = input.snap()?;
         input.finish()?;
+        session.check_loaded_image()?;
         Ok(session)
     }
 
@@ -703,10 +846,19 @@ impl WorkerSession {
         self.process.as_ref().map(Child::id)
     }
 
-    fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn check_loaded_image(&self) -> Result<(), Box<dyn Error>> {
         if self.failed.get() {
             return Err(SessionError::Abandoned.into());
         }
+        if let Err(error) = self.loaded_image_guard.check() {
+            self.failed.set(true);
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+        self.check_loaded_image()?;
         let reply = send(&self.stream, &request.0, fds).and_then(|()| recv(&self.stream));
         let body = match reply {
             Ok((body, _)) => body,
@@ -715,6 +867,7 @@ impl WorkerSession {
                 return Err(SessionError::Control(format!("session worker: {error}")).into());
             }
         };
+        self.check_loaded_image()?;
         let mut input = In(&body);
         match input.u8()? {
             OK => Ok(input.0.to_vec()),
@@ -823,6 +976,7 @@ impl SearchSession for WorkerSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.check_loaded_image()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let reply = self.call(
             Out::op(EXPORT)
@@ -833,11 +987,27 @@ impl SearchSession for WorkerSession {
         let mut input = In(&reply);
         let len = input.len()?;
         input.finish()?;
-        let extent = index.extent(len)?;
+        let mut extent = index.extent(len)?;
         let SharedRange { fd, offset, len } = extent.shared_range();
         let reply = self.call(Out::op(WRITE_EXTENT).len(offset).len(len), &[fd])?;
         In(&reply).finish()?;
-        Ok(index.publish(namespace, key, parent.map(|(_, lease)| lease), extent, cost)?)
+        let target_commitment = vmm_target_commitment(&mut extent)?;
+        self.check_loaded_image()?;
+        let lease = index.publish(
+            namespace,
+            key,
+            parent.map(|(_, lease)| lease),
+            extent,
+            target_commitment,
+            cost,
+        )?;
+        match self.loaded_image_guard.check_published(index, lease) {
+            Ok(lease) => Ok(lease),
+            Err(error) => {
+                self.failed.set(true);
+                Err(error.into())
+            }
+        }
     }
 
     fn import_cached(
@@ -876,13 +1046,34 @@ impl SearchSession for WorkerSession {
         config: ServiceConfig,
         payloads: Vec<Vec<u8>>,
         effects: Vec<(u64, Effect)>,
+        coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
-        let spec = service_branch_spec(self.seed, config, payloads, effects)?;
+        let spec = service_branch_spec(self.seed, config, payloads, effects, coverage_schedule)?;
         self.call_unit(Out::op(BRANCH).u64(snapshot.0).bytes(&spec.encode()))
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
         let reply = self.call(Out::op(RUN_UNTIL).u64(deadline), &[])?;
+        match decode_reply(&reply) {
+            Ok(Some((_, Ok(Reply::Stop(stop)), consumed))) if consumed == reply.len() => Ok(stop),
+            _ => Err(malformed("stop reason").into()),
+        }
+    }
+
+    fn run_resolving(
+        &mut self,
+        deadline: u64,
+        resolution: Resolution,
+    ) -> Result<StopReason, Box<dyn Error>> {
+        let reply = self.call(
+            Out::op(RUN_RESOLVING)
+                .u64(deadline)
+                .u64(resolution.vtime.0)
+                .u64(u64::from(resolution.service))
+                .u64(resolution.id.0)
+                .bytes(&resolution.answer.0),
+            &[],
+        )?;
         match decode_reply(&reply) {
             Ok(Some((_, Ok(Reply::Stop(stop)), consumed))) if consumed == reply.len() => Ok(stop),
             _ => Err(malformed("stop reason").into()),
@@ -1070,6 +1261,26 @@ impl Served {
                 encode_reply(0, &Ok(Reply::Stop(stop)), &mut out.0)
                     .map_err(|error| format!("encode stop reason: {error}"))?;
             }
+            RUN_RESOLVING => {
+                let deadline = input.u64()?;
+                let vtime = Moment(input.u64()?);
+                let service = u16::try_from(input.u64()?)
+                    .map_err(|_| malformed("service namespace overflows"))?;
+                let id = DecisionId(input.u64()?);
+                let answer = Answer(input.bytes()?.to_vec());
+                input.finish()?;
+                let stop = session.run_resolving(
+                    deadline,
+                    Resolution {
+                        vtime,
+                        service,
+                        id,
+                        answer,
+                    },
+                )?;
+                encode_reply(0, &Ok(Reply::Stop(stop)), &mut out.0)
+                    .map_err(|error| format!("encode stop reason: {error}"))?;
+            }
             SDK_EVENTS => {
                 input.finish()?;
                 let events = session.sdk_events()?;
@@ -1111,17 +1322,24 @@ fn status(result: Result<Out, Box<dyn Error>>) -> Vec<u8> {
     }
 }
 
-fn serve(stream: &UnixStream, open: &mut Open<'_>) -> Result<(), Box<dyn Error>> {
+fn serve(
+    stream: &UnixStream,
+    open: &mut Open<'_>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
+) -> Result<(), Box<dyn Error>> {
     let mut served = Served::default();
     loop {
+        loaded_image_guard.check()?;
         let (body, fds) = match recv(stream) {
             Ok(frame) => frame,
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error.into()),
         };
         let reply = status(served.handle(&body, &fds, open));
+        loaded_image_guard.check()?;
         drop(fds);
         send(stream, &reply, &[])?;
+        loaded_image_guard.check()?;
     }
 }
 
@@ -1136,7 +1354,7 @@ fn inherited_stream() -> Result<UnixStream, Box<dyn Error>> {
 pub fn serve_inherited(
     services: impl Fn(&str) -> Option<ServiceFactory>,
 ) -> Result<(), Box<dyn Error>> {
-    serve(&inherited_stream()?, &mut |init: Init| {
+    serve_inherited_with_open(&mut |init: Init| {
         let factory = services(&init.service)
             .ok_or_else(|| format!("unknown session service {}", init.service))?;
         let mut session = Session::new_with_config_and_payloads(
@@ -1148,6 +1366,17 @@ pub fn serve_inherited(
         session.set_service_factory(factory);
         Ok(Box::new(session) as Box<dyn ServedSession>)
     })
+}
+
+fn serve_inherited_with_open(open: &mut Open<'_>) -> Result<(), Box<dyn Error>> {
+    crate::image_identity::reject_loader_overrides()?;
+    let stream = inherited_stream()?;
+    let (identity, loaded_image_guard) = crate::image_identity::LoadedImageGuard::identity()?;
+    let mut hello = Out::default();
+    hello.bytes(IMAGE_HELLO).bytes(identity.as_bytes());
+    loaded_image_guard.check()?;
+    send(&stream, &hello.0, &[])?;
+    serve(&stream, open, loaded_image_guard)
 }
 
 #[cfg(test)]
@@ -1255,6 +1484,7 @@ mod tests {
             _: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, Effect)>,
+            _: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
             Err("a served session branches from an input".into())
         }
@@ -1264,6 +1494,27 @@ mod tests {
                 return Err(SessionError::Hung(Duration::from_secs(3)).into());
             }
             self.current = self.current.wrapping_add(1);
+            self.runs += 1;
+            Ok(StopReason::Deadline {
+                vtime: Moment(deadline),
+            })
+        }
+
+        fn run_resolving(
+            &mut self,
+            deadline: u64,
+            resolution: Resolution,
+        ) -> Result<StopReason, Box<dyn Error>> {
+            if resolution.vtime != Moment(12)
+                || resolution.service != 19
+                || resolution.id != DecisionId(7)
+            {
+                return Err("wrong service decision".into());
+            }
+            let [1, byte] = resolution.answer.0.as_slice() else {
+                return Err("wrong service answer".into());
+            };
+            self.current = *byte;
             self.runs += 1;
             Ok(StopReason::Deadline {
                 vtime: Moment(deadline),
@@ -1292,8 +1543,38 @@ mod tests {
             target: SnapId,
         ) -> Result<Vec<u8>, Box<dyn Error>> {
             let fill = self.state(target)?;
-            let mut out = vec![0; extent_len(1, 0, 1).unwrap()];
-            write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &[fill])?;
+            let policy = ServiceConfig::default().encode();
+            #[cfg(target_arch = "x86_64")]
+            let vm_state = {
+                let mut state = vm_state::VmState::default();
+                state.xsave.0 = vec![0; 576];
+                vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
+                state.regs.rax = u64::from(fill);
+                state.encode()?
+            };
+            #[cfg(target_arch = "aarch64")]
+            let vm_state = {
+                let mut state = vm_state::Arm64VmState::default();
+                state.regs.x[0] = u64::from(fill);
+                state.encode()?
+            };
+            let mut sidecar = Vec::new();
+            sidecar.extend_from_slice(b"HMSESS01");
+            sidecar.extend_from_slice(&[0; 32]);
+            sidecar.extend_from_slice(b"HMSSNAP1");
+            sidecar.extend_from_slice(&9u16.to_le_bytes());
+            sidecar.extend_from_slice(&4u16.to_le_bytes());
+            for len in [vm_state.len() as u64, 0, policy.len() as u64, 1, 0] {
+                sidecar.extend_from_slice(&len.to_le_bytes());
+            }
+            sidecar.extend_from_slice(&[0; 4 * 8]);
+            sidecar.extend_from_slice(&[0; 32]);
+            sidecar.extend_from_slice(&[fill; 32]);
+            sidecar.extend_from_slice(&vm_state);
+            sidecar.extend_from_slice(&policy);
+            sidecar.push(0);
+            let mut out = vec![0; extent_len(1, 0, sidecar.len()).unwrap()];
+            write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &sidecar)?;
             Ok(out)
         }
 
@@ -1324,6 +1605,54 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn worker_entry_and_launch_refuse_loader_overrides() {
+        const CHILD_ENV: &str = "HARMONY_LOADER_WORKER_TEST_CHILD";
+        #[cfg(target_os = "linux")]
+        let override_name = "LD_LIBRARY_PATH";
+        #[cfg(target_os = "macos")]
+        let override_name = "DYLD_LIBRARY_PATH";
+
+        if let Some(which) = std::env::var_os(CHILD_ENV) {
+            let error = if which == "launch" {
+                WorkerLauncher {
+                    program: std::env::current_exe().unwrap(),
+                    args: vec!["--version".into()],
+                    expected_image: String::new(),
+                    expected_main: String::new(),
+                    loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                }
+                .spawn()
+                .unwrap_err()
+                .to_string()
+            } else {
+                serve_inherited(|_| None).unwrap_err().to_string()
+            };
+            assert!(error.contains(override_name), "{error}");
+            return;
+        }
+
+        for which in ["launch", "entry"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg("session::worker::tests::worker_entry_and_launch_refuse_loader_overrides")
+                .env(CHILD_ENV, which)
+                .env(override_name, std::env::temp_dir())
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{which}: {}\nstdout: {stdout}\nstderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
     #[test]
     fn worker_config_carries_the_named_guest_contract_and_rejects_unknown_profiles() {
         let config = config().with_nested_host();
@@ -1337,9 +1666,27 @@ mod tests {
 
     fn threaded(start: u8) -> (WorkerSession, std::thread::JoinHandle<()>) {
         let (parent, child) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || serve(&child, &mut Fake::open).unwrap());
-        let session =
-            WorkerSession::connect(parent, None, &[start], b"i", &config(), &[], "fake").unwrap();
+        let server = std::thread::spawn(move || {
+            serve(
+                &child,
+                &mut Fake::open,
+                crate::image_identity::LoadedImageGuard::fixture(),
+            )
+            .unwrap()
+        });
+        let session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[start],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
         (session, server)
     }
 
@@ -1352,86 +1699,16 @@ mod tests {
         WorkerSession::spawn(&launcher, &[start], b"i", &config(), &[], "fake").unwrap()
     }
 
-    #[allow(clippy::disallowed_methods)]
     #[test]
-    fn worker_launcher_rejects_replaced_running_image() {
-        let child_directory = std::env::var_os("HARMONY_WORKER_IDENTITY_CHILD_DIRECTORY");
-        if let Some(directory) = child_directory {
-            let directory = PathBuf::from(directory);
-            let launcher = WorkerLauncher::current_exe(vec![
-                "--exact".into(),
-                "session::worker::tests::serve_fake_worker".into(),
-                "--nocapture".into(),
-            ])
-            .unwrap();
-            std::fs::write(directory.join("ready"), b"ready").unwrap();
-            let deadline = std::time::Instant::now() + Duration::from_secs(10);
-            while !directory.join("continue").exists() {
-                assert!(
-                    std::time::Instant::now() < deadline,
-                    "parent did not resume child"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            let error =
-                WorkerSession::spawn(&launcher, &[3], b"i", &config(), &[], "fake").unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains("session worker executable differs from launcher"),
-                "{error}"
-            );
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn sealed_host_reexecs_a_public_worker() {
+        if !crate::image_identity::strict_test_host_ready() {
             return;
         }
-
-        let directory = tempfile::tempdir().unwrap();
-        let running = directory.path().join("running-worker-test");
-        let replacement = directory.path().join("replacement-worker-test");
-        let original = std::env::current_exe().unwrap();
-        std::fs::copy(&original, &running).unwrap();
-        std::fs::copy(&original, &replacement).unwrap();
-        let marker = std::hint::black_box(b"harmony-worker-image-A-0001");
-        let mut bytes = std::fs::read(&replacement).unwrap();
-        let offset = bytes
-            .windows(marker.len())
-            .position(|window| window == marker)
-            .unwrap();
-        bytes[offset..offset + marker.len()].copy_from_slice(b"harmony-worker-image-B-0001");
-        std::fs::write(&replacement, bytes).unwrap();
-        #[cfg(target_os = "macos")]
-        assert!(
-            Command::new("codesign")
-                .args(["--force", "--sign", "-"])
-                .arg(&replacement)
-                .status()
-                .unwrap()
-                .success()
-        );
-        let child = Command::new(&running)
-            .args([
-                "--exact",
-                "session::worker::tests::worker_launcher_rejects_replaced_running_image",
-                "--nocapture",
-            ])
-            .env("HARMONY_WORKER_IDENTITY_CHILD_DIRECTORY", directory.path())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while !directory.path().join("ready").exists() {
-            assert!(std::time::Instant::now() < deadline, "child did not start");
-            std::thread::sleep(Duration::from_millis(10));
-        }
-        std::fs::rename(replacement, running).unwrap();
-        std::fs::write(directory.path().join("continue"), b"continue").unwrap();
-        let output = child.wait_with_output().unwrap();
-        assert!(
-            output.status.success(),
-            "stdout: {}\nstderr: {}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let mut session = spawned(3);
+        assert_eq!(session.setup_handle(), (SnapId(1), 10));
+        assert_eq!(session.state_hash().unwrap(), [3; 32]);
     }
 
     fn kill(session: &WorkerSession) {
@@ -1452,7 +1729,52 @@ mod tests {
         if std::env::var_os(WORKER_FD_ENV).is_none() {
             return;
         }
-        serve(&inherited_stream().unwrap(), &mut Fake::open).unwrap();
+        serve_inherited_with_open(&mut Fake::open).unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn worker_image_hello_has_a_deadline_and_size_limit() {
+        let (receiver, sender) = UnixStream::pair().unwrap();
+        let deadline = Instant::now() + Duration::from_millis(50);
+        let error = recv_with_limit(&receiver, IMAGE_HELLO_LIMIT, Some(deadline)).unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{error}"
+        );
+        receiver.set_read_timeout(None).unwrap();
+        let mut header = [0_u8; HEADER];
+        header[..8].copy_from_slice(&((IMAGE_HELLO_LIMIT + 1) as u64).to_le_bytes());
+        (&sender).write_all(&header).unwrap();
+        let error = recv_with_limit(
+            &receiver,
+            IMAGE_HELLO_LIMIT,
+            Some(Instant::now() + Duration::from_secs(1)),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("frame length exceeds limit"));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn worker_launcher_refuses_a_child_without_image_hello() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::worker_launcher_refuses_a_child_without_image_hello",
+        ) {
+            return;
+        }
+        let launcher = WorkerLauncher::current_exe(vec!["--help".into()]).unwrap();
+        let started = Instant::now();
+        let error = launcher.spawn().unwrap_err();
+        assert!(started.elapsed() < IMAGE_HELLO_TIMEOUT, "{error}");
     }
 
     #[test]
@@ -1494,7 +1816,13 @@ mod tests {
         assert!(held > 0);
         assert_eq!(session.console_tail().unwrap(), b"tail");
         session
-            .branch_with_service(SnapId(1), ServiceConfig::default(), Vec::new(), Vec::new())
+            .branch_with_service(
+                SnapId(1),
+                ServiceConfig::default(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
             .unwrap();
         assert_eq!(session.state_hash().unwrap(), [3; 32]);
         session.replay_snapshot(snap).unwrap();
@@ -1527,6 +1855,28 @@ mod tests {
     }
 
     #[test]
+    fn a_worker_forwards_explicit_service_resolution() {
+        let (mut session, server) = threaded(3);
+        assert_eq!(
+            session
+                .run_resolving(
+                    40,
+                    Resolution {
+                        vtime: Moment(12),
+                        service: 19,
+                        id: DecisionId(7),
+                        answer: Answer(vec![1, 0x42]),
+                    },
+                )
+                .unwrap(),
+            StopReason::Deadline { vtime: Moment(40) }
+        );
+        assert_eq!(session.state_hash().unwrap(), [0x42; 32]);
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn a_published_extent_imports_in_another_worker() {
         let index = LocalIndex::new(1 << 20);
         let (mut first, first_server) = threaded(3);
@@ -1549,6 +1899,31 @@ mod tests {
     }
 
     #[test]
+    fn worker_publication_rejects_a_divergent_duplicate_target() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut first, first_server) = threaded(3);
+        let (mut second, second_server) = threaded(4);
+        let (first_snap, _) = first.snapshot().unwrap();
+        let (second_snap, _) = second.snapshot().unwrap();
+        let first_lease = first
+            .publish_snapshot(&index, namespace(), b"key", None, first_snap, 1)
+            .unwrap();
+        let error = second
+            .publish_snapshot(&index, namespace(), b"key", None, second_snap, 1)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::cache::CacheError>(),
+            Some(crate::cache::CacheError::DivergentDuplicate { .. })
+        ));
+        assert_eq!(index.stats().entries, 1);
+        assert_eq!(index.stats().duplicates, 0);
+        index.release(first_lease);
+        drop((first, second));
+        first_server.join().unwrap();
+        second_server.join().unwrap();
+    }
+
+    #[test]
     fn a_worker_that_dies_before_acknowledging_a_write_publishes_nothing() {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
@@ -1562,8 +1937,19 @@ mod tests {
                 send(&child, &reply, &[]).unwrap();
             }
         });
-        let mut session =
-            WorkerSession::connect(parent, None, &[3], b"i", &config(), &[], "fake").unwrap();
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
         let index = LocalIndex::new(1 << 20);
         let (snap, _) = session.snapshot().unwrap();
         let error = session
@@ -1587,7 +1973,16 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn killed_worker_processes_release_their_leases_and_keep_the_cache_consistent() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
+        ) {
+            return;
+        }
         let index = Arc::new(LocalIndex::new(1 << 20));
         let mut owner = spawned(3);
         let mut reader = spawned(50);

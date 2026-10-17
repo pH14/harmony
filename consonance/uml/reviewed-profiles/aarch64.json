@@ -1,0 +1,24 @@
+{
+  "architecture": "aarch64",
+  "config": {
+    "name": "config",
+    "sha256": "30d69fb681faeee5b20079da90fa113b0a7b9fa8c93147cbfae6165691bd5d5d"
+  },
+  "executable": {
+    "name": "linux",
+    "sha256": "4085ef74f21ac95348d8df516a1e9b6876ae5ba21eeb2edd2dbfbeb07762156e"
+  },
+  "host_libraries": [],
+  "kernel_version": "7.2-rc4",
+  "patch_series_sha256": "78a51cfe10419a48a5b6e12a80421d79fafeae53ad49854b78e3211a006d01e5",
+  "rootfs": {
+    "name": "initramfs.cpio.gz",
+    "sha256": "ed8e8affb38db9d172ea83c901b7206326129ac0807cc4fe7a5d927392ecd69e"
+  },
+  "schema": 4,
+  "userspace": "seccomp",
+  "virtual_time": {
+    "clock_read_vns": 1,
+    "syscall_vns": 100000
+  }
+}

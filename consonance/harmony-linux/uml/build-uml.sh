@@ -60,7 +60,9 @@ bash "$LINUX_DIR/apply-patch-series.sh" "$uml_src" \
     "$LINUX_DIR/patches/common" "$LINUX_DIR/patches/$series"
 
 kmake() {
-    make -C "$uml_src" O="$uml_obj" ARCH=um SUBARCH="$subarch" LOCALVERSION= "$@"
+    make -C "$uml_src" O="$uml_obj" ARCH=um SUBARCH="$subarch" LOCALVERSION= \
+        PAHOLE="${HARMONY_UML_PAHOLE:-pahole}" \
+        RUSTC="${HARMONY_UML_RUSTC:-rustc}" "$@"
 }
 
 echo "== uml: defconfig + overlay (linux-$source_version, $arch)"

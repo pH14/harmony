@@ -18,6 +18,12 @@ from collections.abc import Iterable
 
 TARGETS = (
     {
+        "name": "host-code-identity",
+        "command": "-p host-code-identity --lib copied_loader_headers_and_generation_are_owned",
+        "whole_crate": "-p host-code-identity --lib",
+        "paths": ("consonance/host-code-identity/**",),
+    },
+    {
         "name": "nested-driver",
         "command": "-p nested-driver --lib composition_owns_the_loaded_mapping",
         "whole_crate": "-p nested-driver --lib",

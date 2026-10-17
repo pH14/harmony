@@ -12,6 +12,23 @@ const CLAIMED: u8 = 1;
 const EXPIRED: u8 = 2;
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
+#[cfg(not(miri))]
+struct PthreadOwner(libc::pthread_t);
+
+#[cfg(not(miri))]
+// SAFETY: pthread_t is an opaque process-local thread identifier. The Watchdog stays on its
+// owner thread and joins its sender before that owner can exit, so transferring the identifier
+// to the sender cannot outlive the thread it names.
+unsafe impl Send for PthreadOwner {}
+
+#[cfg(not(miri))]
+impl PthreadOwner {
+    fn interrupt(&self) {
+        // SAFETY: the owner thread remains alive until the Watchdog joins this sender.
+        let _ = unsafe { libc::pthread_kill(self.0, libc::SIGUSR1) };
+    }
+}
+
 pub struct Watchdog {
     done: mpsc::Sender<()>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -42,7 +59,7 @@ impl Watchdog {
     ) -> std::io::Result<Self> {
         install_signal()?;
         // SAFETY: pthread_self returns the calling thread's live identifier.
-        let owner = unsafe { libc::pthread_self() };
+        let owner = PthreadOwner(unsafe { libc::pthread_self() });
         let (done, receiver) = mpsc::channel();
         let outcome = Arc::new(AtomicU8::new(RUNNING));
         let watched = Arc::clone(&outcome);
@@ -55,10 +72,7 @@ impl Watchdog {
                     progress.as_deref(),
                     &watched,
                     &cancel,
-                    || {
-                        // SAFETY: owner stays alive until this sender has been joined.
-                        let _ = unsafe { libc::pthread_kill(owner, libc::SIGUSR1) };
-                    },
+                    || owner.interrupt(),
                 );
             })?;
         Ok(Self {

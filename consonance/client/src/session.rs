@@ -5,7 +5,7 @@ use std::{error::Error, fmt, sync::Arc, time::Duration};
 use crate::{Client, Transport};
 use control_proto::{Reply, SnapId, StopReason};
 use environment::{
-    channel::Effect,
+    channel::{CoverageSchedule, Effect},
     input_spec::{InputSpec, ServiceConfig},
 };
 use serde::{Deserialize, Serialize};
@@ -510,7 +510,7 @@ pub enum SessionError {
     Stop(StopReason),
     #[error("guest made no virtual-time progress for more than {0:?} of host time")]
     Hung(Duration),
-    #[error("session was abandoned after a guest hang and cannot run again")]
+    #[error("session was abandoned and cannot run again")]
     Abandoned,
     #[error("backend cannot provide cancellation and virtual-time progress for a host-time bound")]
     Unboundable,
@@ -559,10 +559,12 @@ fn service_branch_spec(
     config: ServiceConfig,
     payloads: Vec<Vec<u8>>,
     effects: Vec<(u64, Effect)>,
+    coverage_schedule: Option<CoverageSchedule>,
 ) -> Result<InputSpec, Box<dyn Error>> {
     let mut spec = InputSpec::seeded(seed);
     spec.set_config(config);
     spec.set_payloads(Some(payloads));
+    spec.set_coverage_schedule(coverage_schedule);
     for (at, effect) in effects {
         if spec.effects().contains_key(&at) {
             return Err(
@@ -832,20 +834,22 @@ pub fn identity_with_config_and_payloads(
     config: &SessionConfig,
     setup_payloads: &[Vec<u8>],
 ) -> Result<String, String> {
-    Ok(format!(
-        "consonance-session-v3;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
-        bytes_hex(&image_identity_with_config_and_payloads(
-            kernel,
-            initramfs,
-            config,
-            setup_payloads,
-        )?),
+    Ok(format_session_identity(
+        image_identity_with_config_and_payloads(kernel, initramfs, config, setup_payloads)?,
+        config,
+    ))
+}
+
+fn format_session_identity(image_identity: [u8; 32], config: &SessionConfig) -> String {
+    format!(
+        "consonance-session-v4;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
+        bytes_hex(&image_identity),
         config.ram_bytes,
         config.seed,
         config.run_budget,
         Sha256::digest(config.cmdline.as_bytes()),
         config.identity_tag,
-    ))
+    )
 }
 
 fn image_identity(kernel: &[u8], initramfs: &[u8]) -> Result<[u8; 32], String> {
@@ -866,15 +870,19 @@ fn image_identity_with_config_and_payloads(
     config: &SessionConfig,
     setup_payloads: &[Vec<u8>],
 ) -> Result<[u8; 32], String> {
-    let loaded_identity = crate::image_identity::loaded_executable_identity_self()
+    let (loaded_identity, loaded_image_guard) = crate::image_identity::LoadedImageGuard::identity()
         .map_err(|error| format!("cannot identify loaded Harmony executable: {error}"))?;
-    Ok(image_identity_with_loaded_executable(
+    let identity = image_identity_with_loaded_executable(
         kernel,
         initramfs,
         config,
         setup_payloads,
         &loaded_identity,
-    ))
+    );
+    loaded_image_guard
+        .check()
+        .map_err(|error| format!("host loader changed during image identity: {error}"))?;
+    Ok(identity)
 }
 
 fn image_identity_with_loaded_executable(
@@ -885,7 +893,7 @@ fn image_identity_with_loaded_executable(
     loaded_identity: &str,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"consonance-session-image-v3\0");
+    digest.update(b"consonance-session-image-v4\0");
     update_digest_field(&mut digest, loaded_identity.as_bytes());
     update_digest_field(&mut digest, kernel);
     update_digest_field(&mut digest, initramfs);
@@ -927,6 +935,83 @@ fn bytes_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::{collections::VecDeque, io};
+
+    const TEST_LOADED_EXECUTABLE: &str = "test-sealed-host-v1";
+
+    fn image_identity_with_config_and_payloads(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+        setup_payloads: &[Vec<u8>],
+    ) -> Result<[u8; 32], String> {
+        Ok(super::image_identity_with_loaded_executable(
+            kernel,
+            initramfs,
+            config,
+            setup_payloads,
+            TEST_LOADED_EXECUTABLE,
+        ))
+    }
+
+    fn image_identity(kernel: &[u8], initramfs: &[u8]) -> Result<[u8; 32], String> {
+        image_identity_with_config_and_payloads(kernel, initramfs, &SessionConfig::default(), &[])
+    }
+
+    fn image_identity_with_config(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+    ) -> Result<[u8; 32], String> {
+        image_identity_with_config_and_payloads(kernel, initramfs, config, &[])
+    }
+
+    fn image_identity_hex(kernel: &[u8], initramfs: &[u8]) -> Result<String, String> {
+        Ok(bytes_hex(&image_identity(kernel, initramfs)?))
+    }
+
+    fn identity_with_config_and_payloads(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+        setup_payloads: &[Vec<u8>],
+    ) -> Result<String, String> {
+        Ok(format_session_identity(
+            image_identity_with_config_and_payloads(kernel, initramfs, config, setup_payloads)?,
+            config,
+        ))
+    }
+
+    fn identity_with_config(
+        kernel: &[u8],
+        initramfs: &[u8],
+        config: &SessionConfig,
+    ) -> Result<String, String> {
+        identity_with_config_and_payloads(kernel, initramfs, config, &[])
+    }
+
+    fn identity(kernel: &[u8], initramfs: &[u8]) -> Result<String, String> {
+        identity_with_config(kernel, initramfs, &SessionConfig::default())
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn sealed_host_admits_public_session_identity() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let identity = super::identity(b"kernel", b"initramfs").unwrap();
+        assert!(identity.contains("consonance-session-v4"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn unsigned_macos_test_binary_cannot_claim_public_session_identity() {
+        if crate::image_identity::LoadedImageGuard::capture().is_ok() {
+            return;
+        }
+        assert!(Session::identity(b"kernel", b"initramfs").is_err());
+    }
 
     #[derive(Debug)]
     struct SnapshotTransport {
@@ -1144,7 +1229,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn deferred_checkpoint_hashing_stays_out_of_execution_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::deferred_checkpoint_hashing_stays_out_of_execution_identity",
+        ) {
+            return;
+        }
         let plain = SessionConfig::new(PAGE_SIZE, 1, 2, "cmdline");
         let deferred = plain.clone().with_deferred_virtual_time_checkpoint_hashes();
         assert_eq!(
@@ -1184,7 +1275,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::nested_host_identity_cannot_share_the_ordinary_or_tagged_snapshot_domain",
+        ) {
+            return;
+        }
         for ordinary in [
             SessionConfig::default(),
             SessionConfig::default().with_identity_tag("workload"),
@@ -1276,7 +1373,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn image_identity_is_ordered_and_hex_stable() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::image_identity_is_ordered_and_hex_stable",
+        ) {
+            return;
+        }
         assert_eq!(image_identity_hex(b"a", b"b").unwrap().len(), 64);
         assert_ne!(image_identity(b"a", b"b"), image_identity(b"b", b"a"));
         assert_eq!(image_identity(b"a", b"b"), image_identity(b"a", b"b"));
@@ -1287,21 +1390,27 @@ mod tests {
         assert!(
             identity(b"a", b"b")
                 .unwrap()
-                .contains("consonance-session-v3")
+                .contains("consonance-session-v4")
         );
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn loaded_executable_identity_separates_equal_setup_and_preboot_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::loaded_executable_identity_separates_equal_setup_and_preboot_identity",
+        ) {
+            return;
+        }
         let config = SessionConfig::default().with_identity_tag("same-workload");
         let payloads = vec![b"setup".to_vec()];
-        let loaded = crate::image_identity::loaded_executable_identity_self().unwrap();
+        let loaded = TEST_LOADED_EXECUTABLE;
         let current = image_identity_with_loaded_executable(
             b"kernel",
             b"initramfs",
             &config,
             &payloads,
-            &loaded,
+            loaded,
         );
         let foreign = image_identity_with_loaded_executable(
             b"kernel",
@@ -1324,7 +1433,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn session_config_is_validated_and_part_of_identity() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::session_config_is_validated_and_part_of_identity",
+        ) {
+            return;
+        }
         let default = SessionConfig::default();
         assert_eq!(default.ram_bytes, 128 * 1024 * 1024);
         assert_eq!(default.cmdline, default_cmdline());
@@ -1354,7 +1469,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn session_config_identity_tag_changes_domain_without_dropping_image_bytes() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::session_config_identity_tag_changes_domain_without_dropping_image_bytes",
+        ) {
+            return;
+        }
         let default = SessionConfig::default();
         let tagged = default.clone().with_identity_tag("subject-a");
         assert_eq!(tagged.identity_tag, "subject-a");
@@ -1369,7 +1490,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn tagged_image_identity_includes_execution_setup() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::tagged_image_identity_includes_execution_setup",
+        ) {
+            return;
+        }
         let base = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0")
             .with_identity_tag("same-workload");
         let identity = image_identity_with_config(b"kernel", b"initramfs", &base);
@@ -1404,7 +1531,13 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
     fn setup_payload_identity_preserves_order_and_boundaries() {
+        if crate::image_identity::rerun_clean_loader_test(
+            "session::tests::setup_payload_identity_preserves_order_and_boundaries",
+        ) {
+            return;
+        }
         let config = SessionConfig::default();
         let base = image_identity_with_config(b"kernel", b"initramfs", &config);
         let payloads = vec![b"a".to_vec(), b"bc".to_vec()];
@@ -1639,6 +1772,7 @@ mod tests {
                 (900, Effect::xor_memory(0x1000, vec![33]).unwrap()),
                 (100, Effect::xor_memory(0x1000, vec![32]).unwrap()),
             ],
+            None,
         )
         .expect("distinct moments");
         assert_eq!(spec.seed(), 7);
@@ -1667,6 +1801,7 @@ mod tests {
                 (100, Effect::xor_memory(0x1000, vec![32]).unwrap()),
                 (100, Effect::xor_memory(0x1000, vec![33]).unwrap()),
             ],
+            None,
         )
         .expect_err("one moment carries one effect");
         assert!(
@@ -1677,7 +1812,7 @@ mod tests {
 
     #[test]
     fn a_service_branch_without_effects_records_an_empty_schedule() {
-        let spec = service_branch_spec(0, service_config(b"package"), Vec::new(), Vec::new())
+        let spec = service_branch_spec(0, service_config(b"package"), Vec::new(), Vec::new(), None)
             .expect("no effects");
         assert!(spec.effects().is_empty());
         assert_eq!(spec.payloads(), Some([].as_slice()));

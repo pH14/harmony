@@ -172,7 +172,7 @@ impl LiveKvm {
         // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
         // input structure required by KVM_ENABLE_CAP. The kernel only reads it
         // for this ioctl; the reference remains live for the entire call.
-        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL as _, &cap) };
         if result == 0 {
             Ok(())
         } else {
@@ -196,7 +196,7 @@ impl LiveKvm {
         // SAFETY: `vm` is a live KVM VM fd and `cap` is the pinned 104-byte
         // input structure required by KVM_ENABLE_CAP. The kernel only reads it
         // for this ioctl; the reference remains live for the entire call.
-        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL, &cap) };
+        let result = unsafe { libc::ioctl(vm.as_raw_fd(), KVM_ENABLE_CAP_IOCTL as _, &cap) };
         if result == 0 {
             Ok(())
         } else {
@@ -223,6 +223,30 @@ impl LiveKvm {
             flags: 0,
         };
         let vgic = self._vm.create_device(&mut device).map_err(kvm_err)?;
+
+        let mut iidr = 0u32;
+        let mut iidr_attr = kvm_device_attr {
+            flags: 0,
+            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            attr: crate::arm64_kvm::GICD_IIDR,
+            addr: std::ptr::from_mut(&mut iidr) as u64,
+        };
+        // SAFETY: `addr` points to a live writable `u32` for the duration of
+        // this 32-bit distributor-register ioctl.
+        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
+        iidr = crate::arm64_kvm::pinned_vgic_iidr(iidr);
+        iidr_attr.addr = std::ptr::from_ref(&iidr) as u64;
+        vgic.set_device_attr(&iidr_attr).map_err(kvm_err)?;
+        let mut readback = 0u32;
+        iidr_attr.addr = std::ptr::from_mut(&mut readback) as u64;
+        // SAFETY: `addr` points to a live writable `u32` for the duration of
+        // this 32-bit distributor-register ioctl.
+        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
+        if readback != iidr {
+            return Err(BackendError::Unsupported {
+                what: "KVM VGIC GICD_IIDR revision 2 baseline",
+            });
+        }
 
         fn set_addr(vgic: &DeviceFd, attr: u64, value: &u64) -> Result<()> {
             vgic.set_device_attr(&kvm_device_attr {
@@ -252,21 +276,6 @@ impl LiveKvm {
             addr: std::ptr::from_ref(&nr_irqs) as u64,
         })
         .map_err(kvm_err)?;
-        let mut iidr = 0u32;
-        let mut iidr_attr = kvm_device_attr {
-            flags: 0,
-            group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
-            attr: 0x0008,
-            addr: std::ptr::from_mut(&mut iidr) as u64,
-        };
-        // SAFETY: `addr` points to a live writable `u32` for the duration of
-        // this 32-bit distributor-register ioctl.
-        unsafe { vgic.get_device_attr(&mut iidr_attr) }.map_err(kvm_err)?;
-        vgic.set_device_attr(&kvm_device_attr {
-            addr: std::ptr::from_ref(&iidr) as u64,
-            ..iidr_attr
-        })
-        .map_err(kvm_err)?;
         self.quarantine_host_vtimer()?;
         vgic.set_device_attr(&kvm_device_attr {
             flags: 0,
@@ -276,6 +285,7 @@ impl LiveKvm {
         })
         .map_err(kvm_err)?;
         self.vgic = Some(vgic);
+        crate::arm64_kvm::canonicalize_vgic_redist_bases(self)?;
         Ok(())
     }
 
@@ -387,7 +397,7 @@ impl Arm64Kvm for LiveKvm {
         let result = unsafe {
             libc::ioctl(
                 self._vm.as_raw_fd(),
-                KVM_CLEAR_DIRTY_LOG_IOCTL,
+                KVM_CLEAR_DIRTY_LOG_IOCTL as _,
                 std::ptr::from_ref(&clear),
             )
         };

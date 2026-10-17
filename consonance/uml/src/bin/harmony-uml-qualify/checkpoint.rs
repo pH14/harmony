@@ -109,7 +109,7 @@ fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {
         let factory = nominal_factory();
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        session.branch(SEED, handler, vec![vec![b'P']])?;
+        session.branch(SEED, handler, vec![vec![b'P']], None)?;
         let mut terminal = false;
         for _ in 0..4 {
             match session.run_until(u64::MAX)? {
@@ -165,7 +165,7 @@ fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value
         let factory = nominal_factory();
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        session.branch(SEED, handler, vec![vec![b'P']])?;
+        session.branch(SEED, handler, vec![vec![b'P']], None)?;
         if session.run_to(2)? != Stop::Event {
             return Ok(json!({"error": "the abandoned branch did not reach its event"}));
         }
@@ -175,7 +175,7 @@ fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value
         session.restore(&checkpoint)?;
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        session.branch(SEED, handler, vec![vec![b'S']])?;
+        session.branch(SEED, handler, vec![vec![b'S']], None)?;
         let restored = session.run()?;
 
         let other = Checkpoints::new();
@@ -185,7 +185,7 @@ fn console_branch_restore(options: &Options, profile: &VerifiedProfile) -> Value
         }
         let handler = factory(&ServiceConfig::default())
             .map_err(|error| SessionError::Protocol(error.to_string()))?;
-        fresh.branch(SEED, handler, vec![vec![b'S']])?;
+        fresh.branch(SEED, handler, vec![vec![b'S']], None)?;
         let reference = fresh.run()?;
         Ok(json!({
             "abandoned_contains_marker": abandoned_contains_marker,

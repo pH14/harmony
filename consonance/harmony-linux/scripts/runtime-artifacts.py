@@ -13,7 +13,7 @@ INPUTS = (
     "Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock",
     "consonance/harmony-linux", "consonance/hypercall-proto",
     "consonance/hypercall-doorbell", "consonance/execution-proto",
-    "consonance/process-proto",
+    "consonance/process-proto", "cli/src/oci/mod.rs", "cli/src/oci/runner.rs",
 )
 EXCLUDED = {".git", "target", "build", "dl", "__pycache__"}
 MANIFEST = "runtime-manifest.json"

@@ -32,6 +32,13 @@ impl BufferedInputs for environment::input_spec::InputSpec {
                 }
             }
         }
+        match self.coverage_schedule() {
+            None => out.push(0),
+            Some(schedule) => {
+                out.push(1);
+                put(&mut out, &schedule.encode());
+            }
+        }
         out.extend((self.answers().len() as u32).to_le_bytes());
         for ((at, service, request), answer) in self.answers() {
             out.extend(at.to_le_bytes());

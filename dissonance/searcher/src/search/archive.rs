@@ -62,6 +62,11 @@ pub type Position<K> = (<K as ArchiveKey>::Place, <K as ArchiveKey>::Identity);
 
 pub type Edge<K> = (Position<K>, Position<K>);
 
+type ReplayCertificates = Vec<Option<[u8; 32]>>;
+type ReplayPath<A> = (Vec<A>, ReplayCertificates);
+pub(crate) type JobOriginParts<A, S> = (Arc<S>, Vec<A>, ReplayCertificates);
+pub(crate) type PinnedJobOriginParts<A, S> = (Arc<S>, Vec<A>, ReplayCertificates, u64);
+
 #[must_use]
 pub fn cell_of<K: ArchiveKey>(key: K) -> Cell<K> {
     (key.progress(), key.place())
@@ -630,6 +635,7 @@ struct InputNode<A: Ord> {
     action: Option<A>,
     children: BTreeMap<A, usize>,
     owner: Option<u64>,
+    certificate: Option<[u8; 32]>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -648,6 +654,7 @@ impl<A: Ord> Default for InputIndex<A> {
                 action: None,
                 children: BTreeMap::new(),
                 owner: None,
+                certificate: None,
             })],
             free: Vec::new(),
             live_nodes: 1,
@@ -687,6 +694,7 @@ impl<A: Clone + Ord> InputIndex<A> {
                 action: Some(action.clone()),
                 children: BTreeMap::new(),
                 owner: None,
+                certificate: None,
             };
             let child = if let Some(free) = self.free.pop() {
                 self.nodes[free] = Some(child_node);
@@ -844,17 +852,85 @@ impl<A: Clone + Ord> InputIndex<A> {
         Ok(suffix)
     }
 
-    fn actions_between(&self, ancestor: usize, mut node: usize, distance: usize) -> Option<Vec<A>> {
+    fn actions_between(
+        &self,
+        ancestor: usize,
+        mut node: usize,
+        distance: usize,
+    ) -> Option<ReplayPath<A>> {
         let mut reversed = Vec::with_capacity(distance);
+        let mut certificates = Vec::with_capacity(distance);
         for _ in 0..distance {
             let current = self.nodes.get(node)?.as_ref()?;
             reversed.push(current.action.as_ref()?.clone());
+            certificates.push(current.certificate);
             node = current.parent?;
         }
         (node == ancestor).then(|| {
             reversed.reverse();
-            reversed
+            certificates.reverse();
+            (reversed, certificates)
         })
+    }
+
+    fn bind_certificates(
+        &mut self,
+        ancestor: usize,
+        actions: &[A],
+        certificates: &[Option<[u8; 32]>],
+    ) -> Result<(), &'static str> {
+        self.validate_certificate_conflicts(ancestor, actions, certificates)?;
+        let mut node = ancestor;
+        let mut path = Vec::with_capacity(actions.len());
+        for action in actions {
+            node = *self
+                .nodes
+                .get(node)
+                .and_then(Option::as_ref)
+                .and_then(|node| node.children.get(action))
+                .ok_or("replay certificate path is missing")?;
+            path.push(node);
+        }
+        for (node, certificate) in path.into_iter().zip(certificates) {
+            if certificate.is_some() {
+                self.nodes[node]
+                    .as_mut()
+                    .ok_or("replay certificate node disappeared")?
+                    .certificate = *certificate;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_certificate_conflicts(
+        &self,
+        ancestor: usize,
+        actions: &[A],
+        certificates: &[Option<[u8; 32]>],
+    ) -> Result<(), &'static str> {
+        if actions.len() != certificates.len() {
+            return Err("replay certificate count does not match the action suffix");
+        }
+        let mut node = ancestor;
+        for (action, certificate) in actions.iter().zip(certificates) {
+            let Some(child) = self
+                .nodes
+                .get(node)
+                .and_then(Option::as_ref)
+                .and_then(|node| node.children.get(action))
+            else {
+                break;
+            };
+            node = *child;
+            let previous = self.nodes[node]
+                .as_ref()
+                .ok_or("replay certificate node is missing")?
+                .certificate;
+            if previous.is_some() && *certificate != previous {
+                return Err("an archived replay prefix has a different endpoint certificate");
+            }
+        }
+        Ok(())
     }
 
     fn remove_owner_and_prune(&mut self, mut node: usize, owner: u64) -> usize {
@@ -1650,8 +1726,8 @@ where
     pub(crate) fn pin_job_origin(
         &mut self,
         id: usize,
-    ) -> Result<(Arc<S>, Vec<A>, u64), &'static str> {
-        let (snapshot, replay) = self.job_origin(id)?;
+    ) -> Result<PinnedJobOriginParts<A, S>, &'static str> {
+        let (snapshot, replay, certificates) = self.job_origin(id)?;
         let snapshot_id = if self.snapshot_selectable[id] {
             self.entries[id].id
         } else {
@@ -1661,7 +1737,7 @@ where
         *pins = pins
             .checked_add(1)
             .ok_or("archive snapshot pin count overflow")?;
-        Ok((snapshot, replay, snapshot_id))
+        Ok((snapshot, replay, certificates, snapshot_id))
     }
 
     pub(crate) fn unpin_job_origin(&mut self, id: u64) {
@@ -1683,14 +1759,14 @@ where
         }
     }
 
-    pub(crate) fn job_origin(&self, id: usize) -> Result<(Arc<S>, Vec<A>), &'static str> {
+    pub(crate) fn job_origin(&self, id: usize) -> Result<JobOriginParts<A, S>, &'static str> {
         let entry = self.entries.get(id).ok_or("job origin entry is missing")?;
         if self.snapshot_selectable[id] {
             let snapshot = entry
                 .snapshot
                 .clone()
                 .ok_or("job origin entry has no resident snapshot")?;
-            return Ok((snapshot, Vec::new()));
+            return Ok((snapshot, Vec::new(), Vec::new()));
         }
         let keyframe = self
             .index_of_id(self.keyframe_id[id])
@@ -1707,11 +1783,11 @@ where
             .input_len
             .checked_sub(keyframe_entry.input_len)
             .ok_or("job origin keyframe is longer than its dependent")?;
-        let replay = self
+        let (replay, certificates) = self
             .input_index
             .actions_between(keyframe_entry.input_node, entry.input_node, distance)
             .ok_or("job origin keyframe is not on the entry's input path")?;
-        Ok((snapshot, replay))
+        Ok((snapshot, replay, certificates))
     }
 
     fn existing_input_id(&self, parent_id: Option<usize>, suffix: &[A]) -> Option<usize> {
@@ -1738,6 +1814,7 @@ where
             .saturating_add(size_of::<Option<usize>>())
             .saturating_add(size_of::<A>())
             .saturating_add(size_of::<usize>())
+            .saturating_add(size_of::<Option<[u8; 32]>>())
             .saturating_add(64)
     }
 
@@ -2273,12 +2350,37 @@ where
         candidate: ArchiveCandidate<T, K, M>,
         snapshot: S,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
+        self.insert_after_certified(parent_id, previous, execution, candidate, snapshot, None)
+    }
+
+    pub(crate) fn insert_after_certified<T: AsRef<[A]> + Into<Vec<A>>>(
+        &mut self,
+        parent_id: Option<usize>,
+        previous: Option<K>,
+        execution: u64,
+        candidate: ArchiveCandidate<T, K, M>,
+        snapshot: S,
+        certificates: Option<&[Option<[u8; 32]>]>,
+    ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
             suffix,
             key,
             milestones,
         } = candidate;
+        if let Some(certificates) = certificates {
+            let ancestor = self.input_index_start(parent_id);
+            self.input_index.validate_certificate_conflicts(
+                ancestor,
+                suffix.as_ref(),
+                certificates,
+            )?;
+        }
         if let Some(existing) = self.existing_input_id(parent_id, suffix.as_ref()) {
+            if let Some(certificates) = certificates {
+                let ancestor = self.input_index_start(parent_id);
+                self.input_index
+                    .bind_certificates(ancestor, suffix.as_ref(), certificates)?;
+            }
             return Ok((Some(existing), self.entries[existing].key));
         }
         let key = self.complete_after(parent_id, previous, key)?;
@@ -2414,6 +2516,11 @@ where
             .saturating_add(suffix.as_ref().len());
         let (input_node, new_nodes) =
             self.index_retained_input(parent_id, suffix.as_ref(), stable_id)?;
+        if let Some(certificates) = certificates {
+            let ancestor = self.input_index_start(parent_id);
+            self.input_index
+                .bind_certificates(ancestor, suffix.as_ref(), certificates)?;
+        }
         let suffix_len = suffix.as_ref().len();
         self.entries.push(ArchiveEntry {
             id: stable_id,
@@ -4265,9 +4372,9 @@ mod tests {
                 .unwrap();
         }
         assert!(archive.pin_job_origin(99).is_err());
-        let (first, replay, id) = archive.pin_job_origin(1).unwrap();
+        let (first, replay, _, id) = archive.pin_job_origin(1).unwrap();
         assert!(replay.is_empty());
-        let (second, _, same_id) = archive.pin_job_origin(1).unwrap();
+        let (second, _, _, same_id) = archive.pin_job_origin(1).unwrap();
         assert_eq!(id, same_id);
         assert_eq!(archive.resident_snapshot_bytes(), 33);
         archive.deactivate(1);
@@ -6264,7 +6371,7 @@ mod tests {
         assert_eq!(archive.entry_drops(), 0);
         assert!(archive.entries[0].snapshot.is_some());
 
-        let (pinned, path, origin_id) = archive.pin_job_origin(3).unwrap();
+        let (pinned, path, _, origin_id) = archive.pin_job_origin(3).unwrap();
         assert_eq!(origin_id, archive.stable_id(0).unwrap());
         assert_eq!(path, vec![1, 2, 3]);
         assert_eq!(archive.inflight_snapshot_pins.get(&origin_id), Some(&1));
@@ -6272,7 +6379,7 @@ mod tests {
         archive.unpin_job_origin(origin_id);
         assert!(archive.inflight_snapshot_pins.is_empty());
 
-        let (origin, replay) = archive.job_origin(3).expect("replay from the keyframe");
+        let (origin, replay, _) = archive.job_origin(3).expect("replay from the keyframe");
         assert!(Arc::ptr_eq(
             &origin,
             archive.entries[0]
@@ -6282,7 +6389,7 @@ mod tests {
         ));
         assert_eq!(replay, vec![1, 2, 3]);
         drop(origin);
-        let (_, replay) = archive.job_origin(0).expect("keyframe is its own origin");
+        let (_, replay, _) = archive.job_origin(0).expect("keyframe is its own origin");
         assert!(replay.is_empty());
 
         let mut rand = RomuDuoJrRand::with_seed(1);
@@ -6294,7 +6401,7 @@ mod tests {
             seen.insert(selected);
         }
         assert_eq!(seen.len(), 4, "entries without a snapshot stay selectable");
-        let (held, _, keyframe_id) = archive.pin_job_origin(3).unwrap();
+        let (held, _, _, keyframe_id) = archive.pin_job_origin(3).unwrap();
         archive.release_snapshot(0);
         drop(held);
         assert_eq!(archive.resident_snapshot_bytes(), 1);
@@ -6303,6 +6410,88 @@ mod tests {
         archive.unpin_job_origin(keyframe_id);
         assert!(archive.entries[0].snapshot.is_none());
         assert_eq!(archive.resident_snapshot_bytes(), 0);
+    }
+
+    #[test]
+    fn replay_prefix_certificates_survive_eviction_compaction_and_checkpoint_restore() {
+        let mut archive = Archive::<u8, FlatKey, (), ()>::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 1);
+        archive
+            .insert_after_certified(
+                None,
+                None,
+                0,
+                ArchiveCandidate {
+                    suffix: vec![0],
+                    key: FlatKey([0, 0, 0, 0]),
+                    milestones: (),
+                },
+                (),
+                Some(&[Some([0; 32])]),
+            )
+            .unwrap()
+            .0
+            .expect("retain root");
+        let certificates = [Some([11; 32]), Some([22; 32]), Some([33; 32])];
+        archive
+            .insert_after_certified(
+                Some(0),
+                None,
+                1,
+                ArchiveCandidate {
+                    suffix: vec![1, 2, 3],
+                    key: FlatKey([3, 3, 0, 0]),
+                    milestones: (),
+                },
+                (),
+                Some(&certificates),
+            )
+            .unwrap()
+            .0
+            .expect("retain successor after skipped candidates");
+        let conflicting = archive.insert_after_certified(
+            Some(0),
+            None,
+            2,
+            ArchiveCandidate {
+                suffix: vec![1, 2, 3],
+                key: FlatKey([3, 3, 0, 0]),
+                milestones: (),
+            },
+            (),
+            Some(&[Some([11; 32]), Some([99; 32]), Some([33; 32])]),
+        );
+        assert!(
+            conflicting
+                .unwrap_err()
+                .to_string()
+                .contains("different endpoint certificate")
+        );
+        archive.memory_limit = Some(archive.history_memory_bytes().saturating_add(1));
+        archive.enforce_snapshot_memory_budget().unwrap();
+        assert!(archive.entries[1].snapshot.is_none());
+        archive.compact_history(true).unwrap();
+        let child = archive.index_of_id(1).expect("child survives compaction");
+        let (_, replay, restored_certificates) = archive.job_origin(child).unwrap();
+        assert_eq!(replay, vec![1, 2, 3]);
+        assert_eq!(restored_certificates, certificates);
+        let snapshots = archive
+            .resident_snapshot_entries()
+            .map(|(id, _)| (id, ()))
+            .collect();
+        let bytes = postcard::to_stdvec(&archive).unwrap();
+        let mut restored: Archive<u8, FlatKey, (), ()> = postcard::from_bytes(&bytes).unwrap();
+        restored
+            .restore_runtime(|_| 1, Some(|_| 1), snapshots)
+            .unwrap();
+        let child = restored.index_of_id(1).expect("child survives checkpoint");
+        let (pinned, replay, persisted_certificates, origin_id) =
+            restored.pin_job_origin(child).unwrap();
+        assert_eq!(origin_id, 0);
+        assert_eq!(replay, vec![1, 2, 3]);
+        assert_eq!(persisted_certificates, certificates);
+        drop(pinned);
+        restored.unpin_job_origin(origin_id);
     }
 
     #[test]
@@ -7686,6 +7875,7 @@ mod tests {
                     }),
                     children: BTreeMap::new(),
                     owner: None,
+                    certificate: None,
                 };
                 copied = archive.input_index.nodes.len();
                 archive.input_index.nodes.push(Some(node));

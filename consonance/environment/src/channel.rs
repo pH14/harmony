@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
+    any::Any,
     collections::BTreeMap,
     fmt,
     sync::{
@@ -17,7 +18,8 @@ use crate::Moment;
 pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
 const SNAPSHOT_MAGIC: u32 = u32::from_le_bytes(*b"EVC1");
-const SNAPSHOT_VERSION: u16 = 2;
+const SNAPSHOT_VERSION: u16 = 3;
+const COVERAGE_SCHEDULE_VERSION: u16 = 1;
 pub const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 
 pub const SERVICE_ENTROPY: u16 = 1;
@@ -25,6 +27,75 @@ pub const SERVICE_PAYLOAD: u16 = 2;
 pub const SERVICE_SCHEDULER: u16 = 3;
 pub const SERVICE_COVERAGE_QUANTUM: u16 = 4;
 pub const DEFAULT_COVERAGE_QUANTUM: u64 = 1024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoverageSchedule {
+    default_quantum: u64,
+    windows: Vec<(u64, u64, u64)>,
+}
+
+impl CoverageSchedule {
+    pub fn new(default_quantum: u64, windows: Vec<(u64, u64, u64)>) -> Result<Self, ChannelError> {
+        if default_quantum == 0 {
+            return Err(ChannelError::Malformed);
+        }
+        if windows.len() > (MAX_CHANNEL_BYTES - 14) / 24 {
+            return Err(ChannelError::TooLarge);
+        }
+        let mut previous_end = None;
+        for &(start, end, quantum) in &windows {
+            if start >= end || quantum == 0 || previous_end.is_some_and(|prev| prev > start) {
+                return Err(ChannelError::Malformed);
+            }
+            previous_end = Some(end);
+        }
+        Ok(Self {
+            default_quantum,
+            windows,
+        })
+    }
+
+    pub fn quantum_at(&self, moment: Moment) -> u64 {
+        let index = self
+            .windows
+            .partition_point(|(start, _, _)| *start <= moment);
+        self.windows
+            .get(index.saturating_sub(1))
+            .filter(|(start, end, _)| *start <= moment && moment < *end)
+            .map_or(self.default_quantum, |(_, _, quantum)| *quantum)
+    }
+
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(14 + self.windows.len() * 24);
+        put_u16(&mut out, COVERAGE_SCHEDULE_VERSION);
+        put_u64(&mut out, self.default_quantum);
+        put_len(&mut out, self.windows.len());
+        for &(start, end, quantum) in &self.windows {
+            put_u64(&mut out, start);
+            put_u64(&mut out, end);
+            put_u64(&mut out, quantum);
+        }
+        out
+    }
+
+    pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
+        if bytes.len() > MAX_CHANNEL_BYTES {
+            return Err(ChannelError::TooLarge);
+        }
+        let mut reader = Reader::new(bytes);
+        if reader.u16()? != COVERAGE_SCHEDULE_VERSION {
+            return Err(ChannelError::Malformed);
+        }
+        let default_quantum = reader.u64()?;
+        let count = reader.count(24)?;
+        let mut windows = Vec::with_capacity(count);
+        for _ in 0..count {
+            windows.push((reader.u64()?, reader.u64()?, reader.u64()?));
+        }
+        reader.finish()?;
+        Self::new(default_quantum, windows)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Question {
@@ -210,7 +281,7 @@ pub enum ChannelError {
     Poisoned,
 }
 
-pub trait ServiceHandler: Send {
+pub trait ServiceHandler: Send + Any {
     fn identity(&self) -> &[u8];
 
     fn configuration(&self) -> &[u8];
@@ -286,6 +357,29 @@ pub struct HandlerSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HandlerFingerprint([u8; 32]);
 
+fn capture_handler_fingerprint(
+    handler: &dyn ServiceHandler,
+) -> Result<HandlerFingerprint, ChannelError> {
+    let mut hasher = Sha256::new();
+    hasher.update(b"consonance-handler-fingerprint-v1\0");
+    for bytes in [handler.identity(), handler.configuration()] {
+        hasher.update(
+            u64::try_from(bytes.len())
+                .map_err(|_| ChannelError::TooLarge)?
+                .to_le_bytes(),
+        );
+        hasher.update(bytes);
+    }
+    let state = handler.snapshot_state()?;
+    hasher.update(
+        u64::try_from(state.len())
+            .map_err(|_| ChannelError::TooLarge)?
+            .to_le_bytes(),
+    );
+    hasher.update(&state);
+    Ok(HandlerFingerprint(hasher.finalize().into()))
+}
+
 fn check_handler_contract(
     handler: &dyn ServiceHandler,
     identity: &[u8],
@@ -357,6 +451,7 @@ pub struct RecordedState {
     moment: Moment,
     overrides: BTreeMap<DecisionKey, RecordedAnswer>,
     payloads: Option<Vec<Vec<u8>>>,
+    coverage_schedule: Option<CoverageSchedule>,
     handler: HandlerSnapshot,
 }
 
@@ -387,6 +482,7 @@ impl RecordedState {
             moment: environment.moment,
             overrides: environment.overrides.clone(),
             payloads: environment.remaining_payloads(),
+            coverage_schedule: environment.coverage_schedule.as_deref().cloned(),
             handler: HandlerSnapshot::capture(&environment.handler)?,
         };
         if state.encoded_len() > MAX_RECORDED_STATE_BYTES {
@@ -397,7 +493,7 @@ impl RecordedState {
     }
 
     fn encoded_len(&self) -> usize {
-        let mut size = 39usize;
+        let mut size = 40usize;
         for record in self.overrides.values() {
             size = size.saturating_add(19);
             if record.request_sha256.is_some() {
@@ -412,6 +508,11 @@ impl RecordedState {
             for entry in entries {
                 size = size.saturating_add(4).saturating_add(entry.len());
             }
+        }
+        if let Some(schedule) = &self.coverage_schedule {
+            size = size
+                .saturating_add(4)
+                .saturating_add(schedule.encode().len());
         }
         size.saturating_add(self.handler.identity.len())
             .saturating_add(self.handler.configuration.len())
@@ -444,6 +545,13 @@ impl RecordedState {
                 for entry in entries {
                     put_bytes(out, entry);
                 }
+            }
+        }
+        match &self.coverage_schedule {
+            None => out.push(0),
+            Some(schedule) => {
+                out.push(1);
+                put_bytes(out, &schedule.encode());
             }
         }
         put_bytes(out, &self.handler.identity);
@@ -498,6 +606,11 @@ impl RecordedState {
             }
             _ => return Err(ChannelError::Malformed),
         };
+        let coverage_schedule = match reader.u8()? {
+            0 => None,
+            1 => Some(CoverageSchedule::decode(reader.bytes()?)?),
+            _ => return Err(ChannelError::Malformed),
+        };
         let handler = HandlerSnapshot {
             identity: reader.bytes()?.to_vec(),
             configuration: reader.bytes()?.to_vec(),
@@ -509,6 +622,7 @@ impl RecordedState {
             moment,
             overrides,
             payloads,
+            coverage_schedule,
             handler,
         })
     }
@@ -524,7 +638,7 @@ impl RecordedState {
             &self.handler.configuration,
         )?;
         let before = HandlerSnapshot::capture(&environment.handler)?;
-        let mut handler = environment.handler.clone();
+        let mut handler = environment.checked_handler_clone()?;
         let restored = (|| {
             handler.restore_state(&self.handler.state)?;
             check_handler_contract(
@@ -541,6 +655,7 @@ impl RecordedState {
         environment.moment = self.moment;
         environment.overrides = self.overrides.clone();
         environment.restore_payloads(self.payloads.clone());
+        environment.set_coverage_schedule(self.coverage_schedule.clone());
         Ok(())
     }
 }
@@ -549,6 +664,15 @@ impl RecordedState {
 pub struct NominalHandler;
 
 const NOMINAL_IDENTITY: &[u8] = b"consonance.nominal-handler.v1";
+
+fn is_nominal_handler(handler: &dyn ServiceHandler) -> bool {
+    let any = handler as &dyn Any;
+    if any.is::<NominalHandler>() {
+        return true;
+    }
+    any.downcast_ref::<Box<dyn ServiceHandler>>()
+        .is_some_and(|inner| is_nominal_handler(inner.as_ref()))
+}
 
 impl ServiceHandler for NominalHandler {
     fn identity(&self) -> &[u8] {
@@ -592,6 +716,7 @@ pub struct RecordedEnv<H: ServiceHandler> {
     moment: Moment,
     payloads: Option<Vec<Vec<u8>>>,
     payload_cursor: usize,
+    coverage_schedule: Option<Arc<CoverageSchedule>>,
     handler: H,
     poisoned: Arc<AtomicBool>,
 }
@@ -601,13 +726,15 @@ where
     H: ServiceHandler + Clone,
 {
     fn clone(&self) -> Self {
+        let handler = self.clone_handler();
         Self {
             stream_state: self.stream_state,
             overrides: self.overrides.clone(),
             moment: self.moment,
             payloads: self.payloads.clone(),
             payload_cursor: self.payload_cursor,
-            handler: self.handler.clone(),
+            coverage_schedule: self.coverage_schedule.clone(),
+            handler,
             poisoned: Arc::clone(&self.poisoned),
         }
     }
@@ -621,6 +748,7 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
             .field("overrides", &self.overrides)
             .field("moment", &self.moment)
             .field("payload_cursor", &self.payload_cursor)
+            .field("coverage_schedule", &self.coverage_schedule)
             .field("handler_identity", &self.handler.identity())
             .field("poisoned", &self.poisoned.load(Ordering::Acquire))
             .finish_non_exhaustive()
@@ -628,6 +756,43 @@ impl<H: ServiceHandler> fmt::Debug for RecordedEnv<H> {
 }
 
 impl<H: ServiceHandler> RecordedEnv<H> {
+    fn clone_handler(&self) -> H
+    where
+        H: Clone,
+    {
+        let before = self.handler_fingerprint();
+        let handler = self.handler.clone();
+        let candidate = capture_handler_fingerprint(&handler);
+        let after = self.handler_fingerprint();
+        if !matches!(
+            (&before, &candidate, &after),
+            (Ok(before), Ok(candidate), Ok(after)) if before == candidate && before == after
+        ) {
+            self.poisoned.store(true, Ordering::Release);
+        }
+        handler
+    }
+
+    fn checked_handler_clone(&self) -> Result<H, ChannelError>
+    where
+        H: Clone,
+    {
+        self.ensure_healthy()?;
+        let handler = self.clone_handler();
+        self.ensure_healthy()?;
+        Ok(handler)
+    }
+
+    pub fn checked_clone(&self) -> Result<Self, ChannelError>
+    where
+        H: Clone,
+    {
+        self.ensure_healthy()?;
+        let candidate = self.clone();
+        self.ensure_healthy()?;
+        Ok(candidate)
+    }
+
     pub fn request_bindings(&self) -> impl Iterator<Item = ((Moment, u16, u64), [u8; 32])> + '_ {
         self.overrides.iter().filter_map(|(key, record)| {
             record
@@ -643,6 +808,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             moment: 0,
             payloads: None,
             payload_cursor: 0,
+            coverage_schedule: None,
             handler,
             poisoned: Arc::new(AtomicBool::new(false)),
         };
@@ -660,7 +826,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
     {
         self.ensure_healthy()?;
         let before = HandlerSnapshot::capture(&self.handler)?;
-        let mut candidate = self.handler.clone();
+        let mut candidate = self.checked_handler_clone()?;
         candidate.reseed(seed);
         self.verify_handler_unchanged(&before)?;
         let after = HandlerSnapshot::capture(&candidate)?;
@@ -746,6 +912,14 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(())
     }
 
+    pub fn set_coverage_schedule(&mut self, schedule: Option<CoverageSchedule>) {
+        self.coverage_schedule = schedule.map(Arc::new);
+    }
+
+    pub fn coverage_schedule(&self) -> Option<&CoverageSchedule> {
+        self.coverage_schedule.as_deref()
+    }
+
     #[must_use]
     pub fn payload_configured(&self) -> bool {
         self.payloads.is_some()
@@ -769,10 +943,26 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         Ok(Some(entry.clone()))
     }
 
-    pub fn decide(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError>
-    where
-        H: Clone,
-    {
+    pub fn decide_recorded(
+        &mut self,
+        question: &Question,
+    ) -> Result<ServiceResponse, ChannelError> {
+        if let Some(answer) = self.recorded_override(question)? {
+            return Ok(ServiceResponse::Answered(answer));
+        }
+        if let Some(answer) = self.decide_core_supply(question)? {
+            return Ok(ServiceResponse::Answered(answer));
+        }
+        if is_nominal_handler(&self.handler) {
+            return Ok(ServiceResponse::Answered(Answer::Nominal));
+        }
+        Ok(ServiceResponse::External)
+    }
+
+    pub(crate) fn recorded_override(
+        &mut self,
+        question: &Question,
+    ) -> Result<Option<Answer>, ChannelError> {
         self.ensure_healthy()?;
         let key = DecisionKey {
             moment: self.moment,
@@ -788,13 +978,20 @@ impl<H: ServiceHandler> RecordedEnv<H> {
                 Some(_) => {}
                 None => record.request_sha256 = Some(digest),
             }
-            return Ok(ServiceResponse::Answered(record.answer.clone()));
+            return Ok(Some(record.answer.clone()));
         }
-        if let Some(answer) = self.decide_core_supply(question)? {
-            return Ok(ServiceResponse::Answered(answer));
+        Ok(None)
+    }
+
+    pub fn decide(&mut self, question: &Question) -> Result<ServiceResponse, ChannelError>
+    where
+        H: Clone,
+    {
+        if let response @ ServiceResponse::Answered(_) = self.decide_recorded(question)? {
+            return Ok(response);
         }
         let before = HandlerSnapshot::capture(&self.handler)?;
-        let mut candidate = self.handler.clone();
+        let mut candidate = self.checked_handler_clone()?;
         let response = candidate.respond(self.moment, question);
         self.verify_handler_unchanged(&before)?;
         let response = response?;
@@ -844,25 +1041,9 @@ impl<H: ServiceHandler> RecordedEnv<H> {
 
     pub fn handler_fingerprint(&self) -> Result<HandlerFingerprint, ChannelError> {
         self.ensure_healthy()?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"consonance-handler-fingerprint-v1\0");
-        for bytes in [self.handler.identity(), self.handler.configuration()] {
-            hasher.update(
-                u64::try_from(bytes.len())
-                    .map_err(|_| ChannelError::TooLarge)?
-                    .to_le_bytes(),
-            );
-            hasher.update(bytes);
-        }
-        let state = self.handler.snapshot_state()?;
-        hasher.update(
-            u64::try_from(state.len())
-                .map_err(|_| ChannelError::TooLarge)?
-                .to_le_bytes(),
-        );
-        hasher.update(&state);
+        let fingerprint = capture_handler_fingerprint(&self.handler)?;
         self.ensure_healthy()?;
-        Ok(HandlerFingerprint(hasher.finalize().into()))
+        Ok(fingerprint)
     }
 
     pub fn verify_handler_fingerprint_unchanged(
@@ -1586,6 +1767,37 @@ mod tests {
     }
 
     #[test]
+    fn coverage_schedule_is_canonical_and_selects_window_boundaries() {
+        let schedule = CoverageSchedule::new(1024, vec![(10, 20, 1), (30, 40, 9)]).unwrap();
+        let decoded = CoverageSchedule::decode(&schedule.encode()).unwrap();
+        assert_eq!(decoded, schedule);
+        for (moment, expected) in [(9, 1024), (10, 1), (19, 1), (20, 1024), (30, 9), (40, 1024)] {
+            assert_eq!(schedule.quantum_at(moment), expected);
+        }
+        for windows in [
+            vec![(10, 10, 1)],
+            vec![(10, 20, 0)],
+            vec![(10, 20, 1), (19, 30, 2)],
+            vec![(10, 20, 1), (5, 9, 2)],
+        ] {
+            assert_eq!(
+                CoverageSchedule::new(1024, windows),
+                Err(ChannelError::Malformed)
+            );
+        }
+        assert_eq!(
+            CoverageSchedule::new(0, Vec::new()),
+            Err(ChannelError::Malformed)
+        );
+        let mut wrong_version = schedule.encode();
+        wrong_version[0] += 1;
+        assert_eq!(
+            CoverageSchedule::decode(&wrong_version),
+            Err(ChannelError::Malformed)
+        );
+    }
+
+    #[test]
     fn mechanical_effect_schedule_is_canonical_and_fault_agnostic() {
         let mut schedule = EffectSchedule::default();
         let write = Effect::write_memory(0x10, vec![1]).unwrap();
@@ -2089,6 +2301,7 @@ mod tests {
         state: std::sync::Arc<std::sync::atomic::AtomicU8>,
         response: SharedResponse,
         reseed_changes_state: bool,
+        clone_changes_state: bool,
     }
 
     impl SharedStateHandler {
@@ -2097,6 +2310,7 @@ mod tests {
                 state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(value)),
                 response,
                 reseed_changes_state: false,
+                clone_changes_state: false,
             }
         }
     }
@@ -2148,8 +2362,97 @@ mod tests {
         }
 
         fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            if self.clone_changes_state {
+                self.state.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
             Box::new(self.clone())
         }
+    }
+
+    struct DivergingCloneHandler(u8);
+
+    impl ServiceHandler for DivergingCloneHandler {
+        fn identity(&self) -> &[u8] {
+            b"diverging-clone-handler"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(&mut self, _: Moment, _: &Question) -> Result<ServiceResponse, ChannelError> {
+            Ok(ServiceResponse::Answered(Answer::Data(vec![self.0])))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.0])
+        }
+
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            let [value] = state else {
+                return Err(ChannelError::Malformed);
+            };
+            self.0 = *value;
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(Self(self.0 + 1))
+        }
+    }
+
+    #[test]
+    fn deciding_with_a_divergent_handler_clone_poisoned() {
+        let mut env = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        assert!(env.snapshot_state().is_ok());
+        assert_eq!(
+            env.decide(&Question::new(7, vec![]).unwrap()),
+            Err(ChannelError::Poisoned)
+        );
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn reseeding_with_a_divergent_handler_clone_poisoned() {
+        let mut env = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        assert!(env.snapshot_state().is_ok());
+        assert_eq!(env.reseed(2), Err(ChannelError::Poisoned));
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn restoring_with_a_divergent_handler_clone_poisoned() {
+        let source = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        let snapshot = source.snapshot_state().unwrap();
+        let mut target = RecordedEnv::new(
+            1,
+            Box::new(DivergingCloneHandler(0)) as Box<dyn ServiceHandler>,
+        );
+        assert_eq!(
+            snapshot.restore_into(&mut target),
+            Err(ChannelError::Poisoned)
+        );
+        assert_eq!(target.snapshot_state(), Err(ChannelError::Poisoned));
+    }
+
+    #[test]
+    fn cloning_a_recorded_environment_poisoned_if_it_changes_the_live_handler() {
+        let mut handler = SharedStateHandler::new(0, SharedResponse::External);
+        handler.clone_changes_state = true;
+        let env = RecordedEnv::new(1, Box::new(handler) as Box<dyn ServiceHandler>);
+        assert!(env.snapshot_state().is_ok());
+        let cloned = env.clone();
+        assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
+        assert_eq!(cloned.snapshot_state(), Err(ChannelError::Poisoned));
     }
 
     #[test]
@@ -2173,10 +2476,13 @@ mod tests {
     #[test]
     fn shared_handler_mutation_poison_reaches_transaction_parent() {
         let handler = SharedStateHandler::new(0, SharedResponse::External);
-        let mut env = RecordedEnv::new(1, handler);
-        let mut request = Vec::from(7u16.to_le_bytes());
-        request.extend_from_slice(&0u64.to_le_bytes());
-        assert!(crate::sdk::decide_service(&mut env, 0, &request).is_err());
+        let env = RecordedEnv::new(1, handler);
+        let mut candidate = env.clone();
+        candidate.set_moment(0);
+        assert_eq!(
+            candidate.decide(&Question::new(7, Vec::new()).unwrap()),
+            Err(ChannelError::Poisoned)
+        );
         assert_eq!(env.snapshot_state(), Err(ChannelError::Poisoned));
     }
 

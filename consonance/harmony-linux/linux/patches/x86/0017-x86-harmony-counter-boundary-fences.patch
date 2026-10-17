@@ -1,0 +1,106 @@
+x86: fence executable section tails before reviewed data
+
+A code section can fall through arbitrarily far into reviewed data or across
+page slack before reaching a counter opcode. A fixed post-section scan window
+cannot prove the absence of such execution. End susceptible x86 boot-image
+code sections with fifteen INT3 bytes. This prevents an instruction starting
+before the fence from spanning it in any x86 decoder mode. The setup boot
+header stays at its required offset, and init/replacement size symbols include
+the fences.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a diff under the Harmony
+repository's designated guest-kernel patch exception.
+
+--- a/arch/x86/boot/setup.ld
++++ b/arch/x86/boot/setup.ld
+@@ -12,17 +12,19 @@
+ 	. = 0;
+ 	.bstext	: {
+ 		*(.bstext)
++		. = 480;
++		FILL(0xcc)
+ 		. = 495;
+ 	} =0xffffffff
+ 
+ 	.header		: { *(.header) }
+ 	.entrytext	: { *(.entrytext) }
+-	.inittext	: { *(.inittext) }
++	.inittext	: { *(.inittext) FILL(0xcc) . += 15; }
+ 	.initdata	: { *(.initdata) }
+ 	__end_init = .;
+ 
+ 	.text		: { *(.text .text.*) }
+-	.text32		: { *(.text32) }
++	.text32		: { *(.text32) FILL(0xcc) . += 15; }
+ 
+ 	.pecompat	: { *(.pecompat) }
+ 	PROVIDE(pecompat_fsize = setup_size - pecompat_fstart);
+--- a/arch/x86/boot/compressed/vmlinux.lds.S
++++ b/arch/x86/boot/compressed/vmlinux.lds.S
+@@ -25,6 +25,8 @@
+ 	.head.text : {
+ 		_head = . ;
+ 		HEAD_TEXT
++		FILL(0xcc)
++		. += 15;
+ 		_ehead = . ;
+ 	}
+ 	.rodata..compressed : {
+@@ -35,6 +37,8 @@
+ 		*(.text)
+ 		*(.text.*)
+ 		*(.noinstr.text)
++		FILL(0xcc)
++		. += 15;
+ 		_etext = . ;
+ 	}
+ 	.rodata : {
+--- a/arch/x86/kernel/vmlinux.lds.S
++++ b/arch/x86/kernel/vmlinux.lds.S
+@@ -157,6 +157,8 @@
+ #endif
+ 		STATIC_CALL_TEXT
+ 		*(.gnu.warning)
++		FILL(0xcc)
++		. += 15;
+ 
+ 	} :text = 0xcccccccc
+ 
+@@ -222,6 +224,8 @@
+ 	 */
+ 	.altinstr_aux : AT(ADDR(.altinstr_aux) - LOAD_OFFSET) {
+ 		*(.altinstr_aux)
++		FILL(0xcc)
++		. += 15;
+ 		. = ALIGN(PAGE_SIZE);
+ 		__inittext_end = .;
+ 	}
+@@ -308,6 +312,8 @@
+ 	 */
+ 	.altinstr_replacement : AT(ADDR(.altinstr_replacement) - LOAD_OFFSET) {
+ 		*(.altinstr_replacement)
++		FILL(0xcc)
++		. += 15;
+ 	}
+ 
+ 	. = ALIGN(8);
+@@ -324,6 +330,8 @@
+ 	 */
+ 	.exit.text : AT(ADDR(.exit.text) - LOAD_OFFSET) {
+ 		EXIT_TEXT
++		FILL(0xcc)
++		. += 15;
+ 	}
+ 
+ 	.exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) {
+--- a/include/asm-generic/vmlinux.lds.h
++++ b/include/asm-generic/vmlinux.lds.h
+@@ -1137,6 +1137,8 @@
+ 	.init.text : AT(ADDR(.init.text) - LOAD_OFFSET) {		\
+ 		_sinittext = .;						\
+ 		INIT_TEXT						\
++		FILL(0xcc)						\
++		. += 15;						\
+ 		_einittext = .;						\
+ 	}
+ 

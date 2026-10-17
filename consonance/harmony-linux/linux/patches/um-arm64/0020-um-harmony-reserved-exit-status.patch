@@ -1,0 +1,120 @@
+Reserve distinct UML panic and host-failure exit statuses
+
+A kernel panic ends the UML host with status 86 after the existing process-group
+cleanup; fatal SIGSEGV traps retain their core dump. Guest writes to
+/proc/exitcode cannot choose either reserved status, including low-byte aliases.
+Host clone failure retains status 87.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository kernel-patch
+exception.
+
+---
+--- a/arch/um/include/shared/os.h
++++ b/arch/um/include/shared/os.h
+@@ -7,6 +7,9 @@
+ 
+ #ifndef __OS_H__
+ #define __OS_H__
++
++#define HARMONY_UML_PANIC_STATUS 86
++#define HARMONY_UML_HOST_FAILURE_STATUS 87
+ 
+ #include <irq_user.h>
+ #include <longjmp.h>
+@@ -259,7 +262,7 @@
+ extern void setup_machinename(char *machine_out);
+ extern void setup_hostinfo(char *buf, int len);
+ extern ssize_t os_getrandom(void *buf, size_t len, unsigned int flags);
+-extern void os_dump_core(void) __attribute__ ((noreturn));
++extern void os_dump_core(int exit_status) __attribute__ ((noreturn));
+ extern void um_early_printk(const char *s, unsigned int n);
+ extern void os_fix_helper_signals(void);
+ extern void os_info(const char *fmt, ...)
+--- a/arch/um/kernel/exitcode.c
++++ b/arch/um/kernel/exitcode.c
+@@ -11,6 +11,7 @@
+ #include <linux/seq_file.h>
+ #include <linux/types.h>
+ #include <linux/uaccess.h>
++#include <os.h>
+ 
+ /*
+  * If read and write race, the read will still atomically read a valid
+@@ -51,6 +52,10 @@
+ 	if ((*end != '\0') && !isspace(*end))
+ 		return -EINVAL;
+ 
++	if ((unsigned char)tmp == HARMONY_UML_PANIC_STATUS ||
++	    (unsigned char)tmp == HARMONY_UML_HOST_FAILURE_STATUS)
++		return -EINVAL;
++
+ 	uml_exitcode = tmp;
+ 	return count;
+ }
+--- a/arch/um/kernel/um_arch.c
++++ b/arch/um/kernel/um_arch.c
+@@ -235,8 +235,8 @@
+ 	kmsg_dump(KMSG_DUMP_PANIC);
+ 	bust_spinlocks(1);
+ 	bust_spinlocks(0);
+-	uml_exitcode = 1;
+-	os_dump_core();
++	uml_exitcode = HARMONY_UML_PANIC_STATUS;
++	os_dump_core(HARMONY_UML_PANIC_STATUS);
+ 
+ 	return NOTIFY_DONE;
+ }
+--- a/arch/um/kernel/trap.c
++++ b/arch/um/kernel/trap.c
+@@ -544,7 +544,7 @@
+ 	 * can, in general, return, but in this case, it's not, since
+ 	 * we just got a fatal SIGSEGV queued.
+ 	 */
+-	os_dump_core();
++	os_dump_core(-1);
+ }
+ 
+ /**
+--- a/arch/um/os-Linux/util.c
++++ b/arch/um/os-Linux/util.c
+@@ -111,7 +111,7 @@
+ 	signal(SIGTERM, SIG_DFL);
+ }
+ 
+-void os_dump_core(void)
++void os_dump_core(int exit_status)
+ {
+ 	int pid;
+ 
+@@ -152,6 +152,10 @@
+ 	while ((pid = waitpid(-1, NULL, WNOHANG | __WALL)) > 0)
+ 		os_kill_ptraced_process(pid, 0);
+ 
++	if (exit_status >= 0) {
++		fflush(NULL);
++		_exit(exit_status);
++	}
+ 	uml_abort();
+ }
+ 
+--- a/arch/um/os-Linux/skas/process.c
++++ b/arch/um/os-Linux/skas/process.c
+@@ -561,8 +561,6 @@
+ 
+ int using_seccomp;
+ 
+-#define HOST_CLONE_FAILED 87
+-
+ /*
+  * Assume the host has PTRACE_SYSEMU until check_sysemu() says otherwise. Every
+  * host that can run x86 UML has had it since 2.6, so this default is what that
+@@ -643,7 +641,7 @@
+ 		       __func__, errno);
+ 		write(STDERR_FILENO, "Harmony UML host clone failed\n",
+ 		      sizeof("Harmony UML host clone failed\n") - 1);
+-		_exit(HOST_CLONE_FAILED);
++		_exit(HARMONY_UML_HOST_FAILURE_STATUS);
+ 	}
+ 
+ 	if (using_seccomp) {

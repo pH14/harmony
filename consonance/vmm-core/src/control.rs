@@ -13,7 +13,8 @@ use control_proto::{
 };
 use environment::{
     channel::{
-        ChannelError, Effect, HandlerFingerprint, NominalHandler, RecordedEnv, ServiceHandler,
+        ChannelError, Effect, HandlerFingerprint, HandlerSnapshot, NominalHandler, RecordedEnv,
+        ServiceHandler,
     },
     input_spec::{InputSpec as EnvSpec, ServiceConfig, ServiceFactory, nominal_factory},
 };
@@ -34,7 +35,7 @@ use crate::portable_snapshot::{
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError};
-use crate::vmm::{SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{HostOperationGuard, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 #[cfg(all(target_os = "linux", any(test, not(miri))))]
 fn host_minor_faults_with(getrusage: impl FnOnce(*mut libc::rusage) -> i32) -> Option<u64> {
@@ -204,6 +205,7 @@ pub fn server_caps() -> Caps {
 pub struct ControlServer<B: Backend<A: Vendor>> {
     vmm: Option<Vmm<B>>,
     factory: VmmFactory<B>,
+    host_operation_guard: Option<HostOperationGuard>,
     service_factory: ServiceFactory,
     remap_factory: Option<RemapVmmFactory<B>>,
     restore_mode: RestoreMode,
@@ -372,6 +374,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         ControlServer {
             vmm: Some(vmm),
             factory,
+            host_operation_guard: None,
             service_factory: nominal_factory(),
             remap_factory: None,
             restore_mode: RestoreMode::Memcpy,
@@ -404,6 +407,26 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     pub fn set_service_factory(&mut self, factory: ServiceFactory) {
         self.service_factory = factory;
+    }
+
+    pub fn set_host_operation_guard(&mut self, guard: HostOperationGuard) {
+        if let Some(vmm) = self.vmm.as_mut() {
+            vmm.set_host_operation_guard(Arc::clone(&guard));
+        }
+        self.host_operation_guard = Some(guard);
+    }
+
+    fn check_host_operation_guard(&self) -> Result<(), ServeError> {
+        if let Some(guard) = &self.host_operation_guard {
+            guard().map_err(VmmError::ContractViolation)?;
+        }
+        Ok(())
+    }
+
+    fn attach_host_operation_guard(&self, vmm: &mut Vmm<B>) {
+        if let Some(guard) = &self.host_operation_guard {
+            vmm.set_host_operation_guard(Arc::clone(guard));
+        }
     }
 
     pub fn recorded_env(&self) -> &EnvSpec {
@@ -1074,6 +1097,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     #[allow(clippy::result_large_err)]
     pub fn handle(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
+        self.check_host_operation_guard()?;
+        let result = self.handle_inner(req);
+        self.check_host_operation_guard()?;
+        result
+    }
+
+    #[allow(clippy::result_large_err)]
+    fn handle_inner(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
         if !self.hello_done && !matches!(req, Request::Hello(_)) {
             return Ok(Err(ControlError::Unsupported));
         }
@@ -1103,6 +1134,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 {
                     return Ok(Err(ControlError::Unsupported));
                 }
+                if let Some(error) = self.poison_pending_sdk_stop_schedule() {
+                    return Ok(Err(error));
+                }
                 if let Some(resolution) = resolve {
                     let Some((at, question)) = self
                         .vmm
@@ -1118,6 +1152,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         || resolution.id.0 != question.request_id()
                     {
                         return Ok(Err(ControlError::ResolveWithoutDecision));
+                    }
+                    if until.deadline.is_some_and(|deadline| at >= deadline.0) {
+                        return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(at) })));
                     }
                     if resolution.answer.0.len() > hypercall_proto::MAX_PAYLOAD {
                         return Ok(Err(ControlError::MalformedEnvironment));
@@ -1262,6 +1299,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .and_then(|v| v.effective_vns())
             .unwrap_or(0);
         self.validate_host_fault(&decoded, at.0, floor)?;
+        if at.0 == floor
+            && self
+                .vmm
+                .as_ref()
+                .and_then(Vmm::pending_sdk_stop_moment)
+                .is_some()
+        {
+            return Err(ControlError::ScheduleUnsatisfiable {
+                moment: at.0,
+                vtime: floor,
+            });
+        }
         let mut projected = self.project_pending_recorded(&self.recorded);
         projected.record_effect(at.0, decoded.clone());
         if projected
@@ -1555,7 +1604,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
     }
 
-    fn install_recovery_boot(&mut self, fresh: Vmm<B>) {
+    fn install_recovery_boot(&mut self, mut fresh: Vmm<B>) {
+        self.attach_host_operation_guard(&mut fresh);
         self.vmm = Some(fresh);
         self.derive_parent = None;
         self.set_current_image(None);
@@ -1598,6 +1648,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut host: Vec<(u64, Effect)> = Vec::new();
         let mut reseeds: BTreeMap<u64, u64> = BTreeMap::new();
         let mut payloads: Option<Vec<Vec<u8>>> = None;
+        let mut coverage_schedule = None;
         let mut answers = BTreeMap::new();
         let mut answer_bindings = BTreeMap::new();
         let mut env_policy: Option<ServiceConfig> = None;
@@ -1620,6 +1671,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .collect();
                 reseeds = spec.reseeds().clone();
                 payloads = spec.payloads().map(<[Vec<u8>]>::to_vec);
+                coverage_schedule = spec.coverage_schedule().cloned();
                 env_policy = Some(spec.config().clone());
                 answers = spec.answers().clone();
                 answer_bindings = spec.request_bindings().clone();
@@ -1640,10 +1692,29 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             _ => return Ok(Err(ControlError::Unsupported)),
         };
         if seed.is_some() {
-            let decode_env = RecordedEnv::new(0, prepared_handler.clone());
+            let Ok(before_clone) = HandlerSnapshot::capture(prepared_handler.as_ref()) else {
+                return Ok(Err(ControlError::Unsupported));
+            };
+            let decode_handler = prepared_handler.clone();
+            if !matches!(
+                (
+                    HandlerSnapshot::capture(decode_handler.as_ref()),
+                    HandlerSnapshot::capture(prepared_handler.as_ref()),
+                ),
+                (Ok(candidate), Ok(original)) if candidate == before_clone && original == before_clone
+            ) {
+                return Ok(Err(ControlError::Unsupported));
+            }
+            let decode_env = RecordedEnv::new(0, decode_handler);
             if decode_env.handler().identity() != restore_config.identity
                 || decode_env.handler().configuration() != restore_config.configuration
             {
+                return Ok(Err(ControlError::Unsupported));
+            }
+            if !matches!(
+                HandlerSnapshot::capture(prepared_handler.as_ref()),
+                Ok(original) if original == before_clone
+            ) {
                 return Ok(Err(ControlError::Unsupported));
             }
         }
@@ -1665,6 +1736,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         }
         if seed.is_some() && prepared_env.set_payloads(payloads.clone()).is_err() {
             return Ok(Err(ControlError::MalformedEnvironment));
+        }
+        if seed.is_some() {
+            prepared_env.set_coverage_schedule(coverage_schedule.clone());
         }
         for (&(at, service, request), answer) in &answers {
             match answer_bindings.get(&(at, service, request)) {
@@ -1813,12 +1887,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     .as_mut()
                     .expect("use_remap checked is_some");
                 let mut fresh = factory(mapping)?;
+                self.attach_host_operation_guard(&mut fresh);
                 let result = fresh
                     .restore_vm_state(&vm_state)
                     .and_then(|()| fresh.prepare_snapshot());
                 (fresh, result)
             } else {
                 let mut fresh = (self.factory)()?;
+                self.attach_host_operation_guard(&mut fresh);
                 let result = fresh.restore_snapshot(mapping.as_slice(), &vm_state);
                 (fresh, result)
             }
@@ -1829,6 +1905,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 if use_remap {
                     drop(fresh);
                     fresh = (self.factory)()?;
+                    self.attach_host_operation_guard(&mut fresh);
                 }
                 self.install_recovery_boot(fresh);
                 return Ok(Err(ControlError::RestoreFailed));
@@ -1855,6 +1932,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let restore_policy = env_policy.or_else(|| sdk_snap.as_ref().map(|s| s.policy.clone()));
         if let Some(policy) = restore_policy {
             self.recorded.set_config(policy);
+        }
+        if seed.is_some() {
+            self.recorded.set_coverage_schedule(coverage_schedule);
         }
         let active_payloads = if seed.is_some() {
             payloads
@@ -2018,6 +2098,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         Some(error)
     }
 
+    fn poison_pending_sdk_stop_schedule(&mut self) -> Option<ControlError> {
+        let vns = self.vmm.as_ref().and_then(|vmm| {
+            vmm.pending_sdk_stop_moment()
+                .map(|_| vmm.effective_vns().unwrap_or(0))
+        })?;
+        self.poison_crossed_schedule(vns)
+    }
+
     fn run_inner(
         &mut self,
         until: &control_proto::StopConditions,
@@ -2026,12 +2114,20 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             return Ok(Err(err.reply()));
         }
         loop {
+            if let Some(error) = self.poison_pending_sdk_stop_schedule() {
+                return Ok(Err(error));
+            }
             if let Some((moment, question)) = self
                 .vmm
                 .as_ref()
                 .ok_or(ServeError::Poisoned)?
                 .pending_service_question()
             {
+                if until.deadline.is_some_and(|deadline| moment >= deadline.0) {
+                    return Ok(Ok(Reply::Stop(StopReason::Deadline {
+                        vtime: Moment(moment),
+                    })));
+                }
                 let mut ctx = question.service().to_le_bytes().to_vec();
                 ctx.extend(question.payload());
                 return Ok(Ok(Reply::Stop(StopReason::Decision {
@@ -2097,7 +2193,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .min();
             vmm.set_idle_wake_vns(next_wake);
 
-            let step = vmm.step()?;
+            let step = vmm.step_until(until.deadline.map(|deadline| deadline.0))?;
             if until.deadline.is_some_and(|deadline| {
                 scheduled_wake.is_none_or(|scheduled| deadline.0 < scheduled)
                     && vmm.last_step_control_idle_landing_vns.is_some()
@@ -2109,9 +2205,23 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 Step::SdkStop => {
                     let vns = vmm.effective_vns().unwrap_or(0);
                     let stop = vmm.take_sdk_stop();
-                    if matches!(stop, Some(SdkStop::Decision { .. })) {
+                    if matches!(stop, Some(SdkStop::DeferredDoorbell { .. })) {
                         if let Some(error) = self.poison_crossed_schedule(vns) {
                             return Ok(Err(error));
+                        }
+                        return Ok(Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(vns) })));
+                    }
+                    if matches!(
+                        stop,
+                        Some(SdkStop::Decision { .. } | SdkStop::CoverageDecision { .. })
+                    ) {
+                        if let Some(error) = self.poison_crossed_schedule(vns) {
+                            return Ok(Err(error));
+                        }
+                        if until.deadline.is_some_and(|deadline| vns >= deadline.0) {
+                            return Ok(Ok(Reply::Stop(StopReason::Deadline {
+                                vtime: Moment(vns),
+                            })));
                         }
                         return Ok(Ok(Reply::Stop(sdk_stop_to_reason(
                             stop.expect("decision is present"),
@@ -2304,6 +2414,9 @@ fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
         SdkStop::Quiescent => StopReason::Quiescent { vtime },
         SdkStop::Decision {
             moment, question, ..
+        }
+        | SdkStop::CoverageDecision {
+            moment, question, ..
         } => {
             let mut ctx = question.service().to_le_bytes().to_vec();
             ctx.extend(question.payload());
@@ -2317,6 +2430,9 @@ fn sdk_stop_to_reason(stop: SdkStop, vns: u64) -> StopReason {
             vtime,
             ev: EventRef { id, data },
         },
+        SdkStop::DeferredDoorbell { .. } => {
+            unreachable!("a deferred doorbell is reported as a deadline")
+        }
     }
 }
 
@@ -2353,6 +2469,7 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 mod tests {
 
     use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use control_proto::{
         Answer, CapFlags, ControlError, CrashKind, HashScope, HostFault, Moment, READ_CAP, Reply,
@@ -2431,9 +2548,9 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::host_minor_faults_with;
     use super::{
-        ControlServer, ServeError, page_console, page_sdk_events, reseed_marker_requires_arrival,
-        restore_defers_materialization, restore_error_is_precommit, server_caps,
-        sparse_page_order_error,
+        ControlServer, RestoreMode, ServeError, page_console, page_sdk_events,
+        reseed_marker_requires_arrival, restore_defers_materialization, restore_error_is_precommit,
+        server_caps, sparse_page_order_error,
     };
     use crate::control_state::ScheduleFailure;
     use crate::portable_snapshot::PortableSnapshotError;
@@ -2526,6 +2643,36 @@ mod tests {
             Ok(v)
         });
         with_test_service(ControlServer::new(live, factory))
+    }
+
+    #[test]
+    fn host_operation_guard_follows_fresh_restore_vmm() {
+        let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let signal = Arc::clone(&changed);
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        server.set_host_operation_guard(Arc::new(move || {
+            if signal.load(std::sync::atomic::Ordering::SeqCst) {
+                Err("host loader changed".into())
+            } else {
+                Ok(())
+            }
+        }));
+        server.set_restore_mode(RestoreMode::Memcpy);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        assert_eq!(
+            server.handle(&Request::Replay(origin)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        changed.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(
+            server.vmm_mut().unwrap().service_doorbell(0),
+            Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
+        ));
+        assert!(matches!(
+            server.handle(&Request::RecordedEnv),
+            Err(ServeError::Vmm(VmmError::ContractViolation(reason))) if reason == "host loader changed"
+        ));
     }
 
     #[test]
@@ -2756,7 +2903,7 @@ mod tests {
         assert_eq!(reply, Ok(Reply::Hello(server_caps())));
     }
 
-    fn snap(server: &mut ControlServer<MockBackend>) -> SnapId {
+    fn snap<B: Backend<A: Vendor>>(server: &mut ControlServer<B>) -> SnapId {
         match server.handle(&Request::Snapshot).unwrap() {
             Ok(Reply::Snapshot { id, .. }) => id,
             other => panic!("snapshot reply: {other:?}"),
@@ -2874,6 +3021,60 @@ mod tests {
     }
 
     #[derive(Clone)]
+    struct ArmedCloneService {
+        state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        armed: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl environment::channel::ServiceHandler for ArmedCloneService {
+        fn identity(&self) -> &[u8] {
+            b"test-armed-clone-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            use std::sync::atomic::Ordering;
+            Ok(vec![
+                self.state.load(Ordering::SeqCst),
+                u8::from(self.armed.load(Ordering::SeqCst)),
+            ])
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            use std::sync::atomic::Ordering;
+            let [value, armed] = state else {
+                return Err(environment::channel::ChannelError::Malformed);
+            };
+            self.state.store(*value, Ordering::SeqCst);
+            self.armed.store(*armed != 0, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            use std::sync::atomic::Ordering;
+            if self.armed.load(Ordering::SeqCst) {
+                self.state.fetch_add(1, Ordering::SeqCst);
+            }
+            Box::new(self.clone())
+        }
+    }
+
+    #[derive(Clone)]
     struct MaxStateExternalService(Vec<u8>);
     impl environment::channel::ServiceHandler for MaxStateExternalService {
         fn identity(&self) -> &[u8] {
@@ -2906,6 +3107,96 @@ mod tests {
         fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
             Box::new(self.clone())
         }
+    }
+
+    #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "mock VMM setup uses guest memory mappings unavailable under Miri"
+    )]
+    fn resolving_a_public_service_decision_rejects_a_clone_that_changes_the_live_handler() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+        let mut server = payload_server();
+        hello(&mut server);
+        let state = Arc::new(AtomicU8::new(0));
+        let armed = Arc::new(AtomicBool::new(false));
+        let handler = ArmedCloneService {
+            state: Arc::clone(&state),
+            armed: Arc::clone(&armed),
+        };
+        let config = ServiceConfig {
+            identity: b"test-armed-clone-v1".to_vec(),
+            configuration: vec![],
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(handler)),
+            &config,
+        );
+
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let vmm = server.vmm.as_mut().unwrap();
+        vmm.guest_slice_mut(0xe000, len)
+            .unwrap()
+            .copy_from_slice(&frame[..len]);
+        assert_eq!(
+            vmm.service_doorbell(len as u32).unwrap(),
+            crate::vmm::Step::SdkStop
+        );
+
+        let at = server.vmm().unwrap().effective_vns().unwrap();
+        let until = StopConditions {
+            deadline: None,
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision {
+                vtime: Moment(at),
+                id: control_proto::DecisionId(77),
+                ctx: [19_u16.to_le_bytes().as_slice(), b"choose"].concat(),
+            }))
+        );
+
+        armed.store(true, Ordering::SeqCst);
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(Resolution {
+                        vtime: Moment(at),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(environment::channel::Answer::Nominal.encode()),
+                    }),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(state.load(Ordering::SeqCst), 1);
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
+        assert!(matches!(
+            server.vmm().unwrap().sdk_snapshot(),
+            Err(ChannelError::Poisoned)
+        ));
     }
 
     #[test]
@@ -2957,7 +3248,11 @@ mod tests {
         assert_eq!(ring(&mut s), crate::vmm::Step::SdkStop);
         let at = s.vmm().unwrap().effective_vns().unwrap();
         let until = StopConditions {
-            deadline: Some(Moment(at)),
+            deadline: None,
+            on: StopMask::NONE,
+        };
+        let resolve_until = StopConditions {
+            deadline: Some(Moment(at + 1)),
             on: StopMask::NONE,
         };
         let request = Request::Run {
@@ -2984,7 +3279,7 @@ mod tests {
         assert_eq!(hash(&mut s), stopped_hash);
         assert_eq!(
             s.handle(&Request::Run {
-                until,
+                until: resolve_until,
                 resolve: Some(Resolution {
                     vtime: Moment(at),
                     service: 19,
@@ -2999,7 +3294,7 @@ mod tests {
         for (vtime, service, id) in [(at + 1, 19, 77), (at, 20, 77), (at, 19, 78)] {
             assert_eq!(
                 s.handle(&Request::Run {
-                    until,
+                    until: resolve_until,
                     resolve: Some(Resolution {
                         vtime: Moment(vtime),
                         service,
@@ -3015,7 +3310,7 @@ mod tests {
         let oversized = ServiceAnswer::Data(vec![0; hypercall_proto::MAX_PAYLOAD]).encode();
         assert_eq!(
             s.handle(&Request::Run {
-                until,
+                until: resolve_until,
                 resolve: Some(Resolution {
                     vtime: Moment(at),
                     service: 19,
@@ -3028,9 +3323,13 @@ mod tests {
         );
         assert_eq!(hash(&mut s), stopped_hash);
         let answer = ServiceAnswer::Data(vec![0x5a; hypercall_proto::MAX_PAYLOAD - 1]);
+        s.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
         assert!(matches!(
             s.handle(&Request::Run {
-                until,
+                until: resolve_until,
                 resolve: Some(Resolution {
                     vtime: Moment(at),
                     service: 19,
@@ -3039,7 +3338,7 @@ mod tests {
                 }),
             })
             .unwrap(),
-            Ok(Reply::Stop(StopReason::Deadline { .. }))
+            Ok(Reply::Stop(_))
         ));
         assert!(s.vmm().unwrap().pending_service_question().is_none());
         let expected_hash = hash(&mut s);
@@ -3061,9 +3360,13 @@ mod tests {
         assert_eq!(hash(&mut cold), stopped_hash);
         assert_eq!(cold.handle(&request).unwrap(), Ok(expected));
         assert_eq!(cold.vmm().unwrap().effective_vns(), Some(at));
+        cold.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
         assert!(matches!(
             cold.handle(&Request::Run {
-                until,
+                until: resolve_until,
                 resolve: Some(Resolution {
                     vtime: Moment(at),
                     service: 19,
@@ -3072,7 +3375,7 @@ mod tests {
                 }),
             })
             .unwrap(),
-            Ok(Reply::Stop(StopReason::Deadline { .. }))
+            Ok(Reply::Stop(_))
         ));
         assert_eq!(
             cold.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
@@ -3128,6 +3431,18 @@ mod tests {
             s.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
             response
         );
+        s.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
+        assert!(matches!(
+            s.handle(&Request::Run {
+                until: resolve_until,
+                resolve: None,
+            })
+            .unwrap(),
+            Ok(Reply::Stop(_))
+        ));
         assert_eq!(hash(&mut s), expected_hash);
 
         let mut unbound = recorded.clone();
@@ -3143,13 +3458,17 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(ring(&mut s), crate::vmm::Step::Continued);
+        s.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
         assert!(matches!(
             s.handle(&Request::Run {
-                until,
+                until: resolve_until,
                 resolve: None,
             })
             .unwrap(),
-            Ok(Reply::Stop(StopReason::Deadline { .. }))
+            Ok(Reply::Stop(_))
         ));
         let exported = match s.handle(&Request::RecordedEnv).unwrap() {
             Ok(Reply::Recorded(reproducer)) => reproducer,
@@ -3201,6 +3520,347 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FixedServiceAnswer<const VALUE: u8>;
+
+    impl<const VALUE: u8> environment::channel::ServiceHandler for FixedServiceAnswer<VALUE> {
+        fn identity(&self) -> &[u8] {
+            b"fixed-service-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::Answered(
+                environment::channel::Answer::Data(vec![VALUE]),
+            ))
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(Vec::new())
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            if state.is_empty() {
+                Ok(())
+            } else {
+                Err(environment::channel::ChannelError::Malformed)
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn changing_service_factory_under_same_recorded_contract_stops_for_input() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let config = ServiceConfig {
+            identity: b"fixed-service-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        let mut spec = EnvSpec::seeded(1);
+        spec.set_config(config.clone());
+        let env = Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        };
+        let mut before = Vec::new();
+        let mut questions = Vec::new();
+        let mut answers = Vec::new();
+        let mut recorded = Vec::new();
+        let mut after = Vec::new();
+        for value in [0x13, 0x14] {
+            let expected = config.clone();
+            server.set_service_factory(std::sync::Arc::new(move |actual| {
+                if actual != &expected {
+                    return Err(environment::channel::ChannelError::Malformed);
+                }
+                let handler: Box<dyn environment::channel::ServiceHandler> = match value {
+                    0x13 => Box::new(FixedServiceAnswer::<0x13>),
+                    0x14 => Box::new(FixedServiceAnswer::<0x14>),
+                    _ => unreachable!(),
+                };
+                Ok(handler)
+            }));
+            assert_eq!(
+                server
+                    .handle(&Request::Branch {
+                        snap: origin,
+                        env: env.clone(),
+                    })
+                    .unwrap(),
+                Ok(Reply::Unit)
+            );
+            before.push(hash(&mut server));
+
+            let mut payload = 19_u16.to_le_bytes().to_vec();
+            payload.extend(77_u64.to_le_bytes());
+            payload.extend(b"choose");
+            let mut frame = [0; 4096];
+            let len = hypercall_proto::encode_request(
+                hypercall_proto::ServiceId::Sdk,
+                3,
+                12,
+                &payload,
+                &mut frame,
+            )
+            .unwrap();
+            let (moment, question) = {
+                let vmm = server.vmm_mut().unwrap();
+                vmm.guest_slice_mut(0xe000, len)
+                    .unwrap()
+                    .copy_from_slice(&frame[..len]);
+                assert_eq!(
+                    vmm.service_doorbell(len as u32).unwrap(),
+                    crate::vmm::Step::SdkStop
+                );
+                let (moment, question) = vmm.pending_service_question().unwrap();
+                assert!(
+                    vmm.guest_slice(0xf000, 4096)
+                        .unwrap()
+                        .iter()
+                        .all(|byte| *byte == 0)
+                );
+                (moment, question.clone())
+            };
+            questions.push((moment, question.clone()));
+            server
+                .vmm_mut()
+                .unwrap()
+                .backend
+                .push_exit(Exit::Common(CommonExit::Idle));
+            assert!(matches!(
+                server
+                    .handle(&Request::Run {
+                        until: StopConditions {
+                            deadline: Some(Moment(moment + 1)),
+                            on: StopMask::NONE,
+                        },
+                        resolve: Some(Resolution {
+                            vtime: Moment(moment),
+                            service: question.service(),
+                            id: control_proto::DecisionId(question.request_id()),
+                            answer: Answer(vec![1, 0x42]),
+                        }),
+                    })
+                    .unwrap(),
+                Ok(Reply::Stop(_))
+            ));
+            let response = server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap();
+            let (_, body) = hypercall_proto::decode(response).unwrap();
+            answers.push(body.to_vec());
+            let reply = server.handle(&Request::RecordedEnv).unwrap().unwrap();
+            let Reply::Recorded(tape) = reply else {
+                panic!("expected recorded input");
+            };
+            let tape = EnvSpec::decode_reproducer(&tape.bytes).unwrap();
+            assert_eq!(
+                tape.answers()
+                    .get(&(moment, question.service(), question.request_id())),
+                Some(&environment::channel::Answer::Data(vec![0x42]))
+            );
+            recorded.push(tape.encode());
+            after.push(hash(&mut server));
+        }
+        assert_eq!(before[0], before[1]);
+        assert_eq!(questions[0], questions[1]);
+        assert_eq!(answers, [vec![1, 0x42], vec![1, 0x42]]);
+        assert_eq!(recorded[0], recorded[1]);
+        assert_eq!(after[0], after[1]);
+    }
+
+    #[test]
+    fn branch_coverage_schedule_is_the_recorded_source_of_guest_quantum() {
+        let mut server = payload_server();
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let config = ServiceConfig {
+            identity: b"fixed-service-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        let expected = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |actual| {
+            if actual != &expected {
+                return Err(environment::channel::ChannelError::Malformed);
+            }
+            Ok(Box::new(FixedServiceAnswer::<0x13>))
+        }));
+        let mut hashes = Vec::new();
+        for quantum in [1_u64, 2] {
+            let schedule =
+                environment::channel::CoverageSchedule::new(1024, vec![(0, 100, quantum)]).unwrap();
+            let mut spec = EnvSpec::seeded(1);
+            spec.set_config(config.clone());
+            spec.set_coverage_schedule(Some(schedule.clone()));
+            assert_eq!(
+                server
+                    .handle(&Request::Branch {
+                        snap: origin,
+                        env: Reproducer {
+                            blob_version: EnvSpec::BLOB_VERSION,
+                            bytes: spec.encode(),
+                        },
+                    })
+                    .unwrap(),
+                Ok(Reply::Unit)
+            );
+            let mut payload = [0; hypercall_proto::SDK_COVERAGE_REQUEST_LEN];
+            payload[..4].copy_from_slice(&7_u32.to_le_bytes());
+            payload[4..12].copy_from_slice(&1_u64.to_le_bytes());
+            payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
+            let mut frame = [0; 4096];
+            let length = hypercall_proto::encode_request(
+                hypercall_proto::ServiceId::Sdk,
+                2,
+                12,
+                &payload,
+                &mut frame,
+            )
+            .unwrap();
+            let vmm = server.vmm_mut().unwrap();
+            vmm.guest_slice_mut(0xe000, length)
+                .unwrap()
+                .copy_from_slice(&frame[..length]);
+            assert_eq!(
+                vmm.service_doorbell(length as u32).unwrap(),
+                crate::vmm::Step::Continued
+            );
+            let (header, response) =
+                hypercall_proto::decode(vmm.guest_slice(0xf000, 4096).unwrap()).unwrap();
+            assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+            assert_eq!(
+                u64::from_le_bytes(response[..8].try_into().unwrap()),
+                1 + quantum
+            );
+            let Reply::Recorded(recorded) = server.handle(&Request::RecordedEnv).unwrap().unwrap()
+            else {
+                panic!("expected recorded input");
+            };
+            let recorded = EnvSpec::decode_reproducer(&recorded.bytes).unwrap();
+            assert_eq!(recorded.coverage_schedule(), Some(&schedule));
+            assert!(recorded.answers().is_empty());
+            hashes.push(hash(&mut server));
+        }
+        assert_ne!(hashes[0], hashes[1]);
+    }
+
+    #[test]
+    fn custom_coverage_resolution_records_before_reply_and_rejects_invalid_quantum() {
+        use environment::channel::RecordedEnv;
+
+        let mut server = payload_server();
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"fixed-service-v1".to_vec(),
+            configuration: Vec::new(),
+        };
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(7, Box::new(FixedServiceAnswer::<0x13>)),
+            &config,
+        );
+        let mut payload = [0_u8; hypercall_proto::SDK_COVERAGE_REQUEST_LEN];
+        payload[0..4].copy_from_slice(&7_u32.to_le_bytes());
+        payload[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        let mut frame = [0; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            2,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let (moment, question) = {
+            let vmm = server.vmm_mut().unwrap();
+            vmm.guest_slice_mut(0xe000, length)
+                .unwrap()
+                .copy_from_slice(&frame[..length]);
+            assert_eq!(
+                vmm.service_doorbell(length as u32).unwrap(),
+                crate::vmm::Step::SdkStop
+            );
+            let (moment, question) = vmm.pending_service_question().unwrap();
+            (moment, question.clone())
+        };
+        let stopped = hash(&mut server);
+        let until = StopConditions {
+            deadline: Some(Moment(moment + 1)),
+            on: StopMask::NONE,
+        };
+        let resolution = |answer: environment::channel::Answer| Resolution {
+            vtime: Moment(moment),
+            service: question.service(),
+            id: control_proto::DecisionId(question.request_id()),
+            answer: Answer(answer.encode()),
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(resolution(environment::channel::Answer::Data(
+                        0_u64.to_le_bytes().to_vec()
+                    ))),
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        assert_eq!(hash(&mut server), stopped);
+        assert_eq!(
+            server.vmm().unwrap().pending_service_question(),
+            Some((moment, &question))
+        );
+        server
+            .vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
+        let answered = server
+            .handle(&Request::Run {
+                until,
+                resolve: Some(resolution(environment::channel::Answer::Data(
+                    64_u64.to_le_bytes().to_vec(),
+                ))),
+            })
+            .unwrap();
+        assert!(
+            matches!(answered, Ok(Reply::Stop(StopReason::Quiescent { .. }))),
+            "{answered:?}"
+        );
+        let page = server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap();
+        let (header, body) = hypercall_proto::decode(page).unwrap();
+        assert_eq!((header.opcode, header.seq), (2, 12));
+        assert_eq!(u64::from_le_bytes(body[..8].try_into().unwrap()), 65);
+        let Reply::Recorded(recorded) = server.handle(&Request::RecordedEnv).unwrap().unwrap()
+        else {
+            panic!("expected recorded input");
+        };
+        let recorded = EnvSpec::decode_reproducer(&recorded.bytes).unwrap();
+        assert_eq!(
+            recorded
+                .answers()
+                .get(&(moment, question.service(), question.request_id())),
+            Some(&environment::channel::Answer::Data(
+                64_u64.to_le_bytes().to_vec()
+            ))
+        );
+    }
+
     #[test]
     fn stale_service_resolution_cannot_answer_a_later_decision() {
         use environment::channel::RecordedEnv;
@@ -3247,12 +3907,16 @@ mod tests {
         assert_eq!(ring(&mut s, 77, 12), crate::vmm::Step::SdkStop);
         let at = s.vmm().unwrap().effective_vns().unwrap();
         let until = StopConditions {
-            deadline: Some(Moment(at)),
+            deadline: Some(Moment(at + 1)),
+            on: StopMask::NONE,
+        };
+        let decision_until = StopConditions {
+            deadline: None,
             on: StopMask::NONE,
         };
         assert!(matches!(
             s.handle(&Request::Run {
-                until,
+                until: decision_until,
                 resolve: None,
             })
             .unwrap(),
@@ -3263,8 +3927,12 @@ mod tests {
         ));
 
         let first = environment::channel::Answer::Data(b"first".to_vec());
-        assert!(matches!(
-            s.handle(&Request::Run {
+        s.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
+        let answered = s
+            .handle(&Request::Run {
                 until,
                 resolve: Some(Resolution {
                     vtime: Moment(at),
@@ -3273,14 +3941,17 @@ mod tests {
                     answer: Answer(first.encode()),
                 }),
             })
-            .unwrap(),
-            Ok(Reply::Stop(StopReason::Deadline { .. }))
-        ));
+            .unwrap();
+        assert!(
+            matches!(answered, Ok(Reply::Stop(StopReason::Quiescent { .. }))),
+            "{answered:?}"
+        );
 
         assert_eq!(ring(&mut s, 88, 13), crate::vmm::Step::SdkStop);
+        let second_at = s.vmm().unwrap().effective_vns().unwrap();
         assert!(matches!(
             s.handle(&Request::Run {
-                until,
+                until: decision_until,
                 resolve: None,
             })
             .unwrap(),
@@ -3312,20 +3983,30 @@ mod tests {
         );
 
         let second = environment::channel::Answer::Data(b"second".to_vec());
+        s.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
         assert!(matches!(
             s.handle(&Request::Run {
-                until,
+                until: StopConditions {
+                    deadline: Some(Moment(second_at + 1)),
+                    on: StopMask::NONE,
+                },
                 resolve: Some(Resolution {
-                    vtime: Moment(at),
+                    vtime: Moment(second_at),
                     service: 19,
                     id: control_proto::DecisionId(88),
                     answer: Answer(second.encode()),
                 }),
             })
             .unwrap(),
-            Ok(Reply::Stop(StopReason::Deadline { .. }))
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
         ));
-        assert_eq!(s.recorded_env().answers().get(&(at, 19, 88)), Some(&second));
+        assert_eq!(
+            s.recorded_env().answers().get(&(second_at, 19, 88)),
+            Some(&second)
+        );
     }
 
     #[test]
@@ -5111,7 +5792,7 @@ mod tests {
             server
                 .handle(&Request::Run {
                     until: StopConditions {
-                        deadline: Some(Moment(at)),
+                        deadline: Some(Moment(at + 1)),
                         on: StopMask::NONE,
                     },
                     resolve: Some(Resolution {
@@ -5232,11 +5913,16 @@ mod tests {
             crate::vmm::Step::SdkStop
         );
         let at = server.vmm().unwrap().effective_vns().unwrap();
+        server
+            .vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
         assert!(matches!(
             server
                 .handle(&Request::Run {
                     until: StopConditions {
-                        deadline: Some(Moment(at)),
+                        deadline: Some(Moment(at + 1)),
                         on: StopMask::NONE,
                     },
                     resolve: Some(Resolution {
@@ -5598,6 +6284,149 @@ mod tests {
         );
         let _ = hash(&mut s);
         let _ = snap(&mut s);
+    }
+
+    #[derive(Clone, Copy)]
+    enum PreparedMutation {
+        CloneOriginal,
+        CloneCandidate,
+        DecodeSeed,
+    }
+
+    struct OneShotPreparedCloneService {
+        state: std::sync::Arc<std::sync::atomic::AtomicU8>,
+        mutation: PreparedMutation,
+    }
+
+    impl environment::channel::ServiceHandler for OneShotPreparedCloneService {
+        fn identity(&self) -> &[u8] {
+            b"one-shot-prepared-clone-v1"
+        }
+
+        fn configuration(&self) -> &[u8] {
+            b""
+        }
+
+        fn respond(
+            &mut self,
+            _: environment::Moment,
+            _: &environment::channel::Question,
+        ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
+        {
+            Ok(environment::channel::ServiceResponse::External)
+        }
+
+        fn snapshot_state(&self) -> Result<Vec<u8>, environment::channel::ChannelError> {
+            Ok(vec![self.state.load(std::sync::atomic::Ordering::SeqCst)])
+        }
+
+        fn restore_state(
+            &mut self,
+            state: &[u8],
+        ) -> Result<(), environment::channel::ChannelError> {
+            let [value] = state else {
+                return Err(environment::channel::ChannelError::Malformed);
+            };
+            self.state
+                .store(*value, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn reseed(&mut self, seed: u64) {
+            match (self.mutation, seed) {
+                (PreparedMutation::DecodeSeed, 0) => {
+                    let _ = self.state.compare_exchange(
+                        0,
+                        1,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                }
+                (PreparedMutation::CloneCandidate, 1..) => {
+                    self.state.store(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                _ => {}
+            }
+        }
+
+        fn clone_box(&self) -> Box<dyn environment::channel::ServiceHandler> {
+            let state = match self.mutation {
+                PreparedMutation::CloneOriginal => {
+                    let _ = self.state.compare_exchange(
+                        0,
+                        1,
+                        std::sync::atomic::Ordering::SeqCst,
+                        std::sync::atomic::Ordering::SeqCst,
+                    );
+                    std::sync::Arc::clone(&self.state)
+                }
+                PreparedMutation::CloneCandidate
+                    if self.state.load(std::sync::atomic::Ordering::SeqCst) == 0 =>
+                {
+                    std::sync::Arc::new(std::sync::atomic::AtomicU8::new(1))
+                }
+                _ => std::sync::Arc::clone(&self.state),
+            };
+            Box::new(Self {
+                state,
+                mutation: self.mutation,
+            })
+        }
+    }
+
+    fn branch_rejects_a_prepared_handler_change(mutation: PreparedMutation) {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let base = snap(&mut server);
+        let before = hash(&mut server);
+        let nominal = nominal_factory();
+        server.set_service_factory(std::sync::Arc::new(move |config| {
+            if config.identity == b"one-shot-prepared-clone-v1" {
+                Ok(Box::new(OneShotPreparedCloneService {
+                    state: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+                    mutation,
+                })
+                    as Box<dyn environment::channel::ServiceHandler>)
+            } else {
+                nominal(config)
+            }
+        }));
+        let mut spec = EnvSpec::seeded(7);
+        spec.set_config(ServiceConfig {
+            identity: b"one-shot-prepared-clone-v1".to_vec(),
+            configuration: vec![],
+        });
+        let env = Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: spec.encode(),
+        };
+        assert_eq!(
+            server.handle(&Request::Branch { snap: base, env }).unwrap(),
+            Err(ControlError::Unsupported)
+        );
+        assert_eq!(hash(&mut server), before);
+        assert!(matches!(
+            server.handle(&Request::Snapshot).unwrap(),
+            Ok(Reply::Snapshot { .. })
+        ));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "branch restore materializes snapshot-store mappings")]
+    fn branch_rejects_a_prepared_handler_clone_that_changes_its_state() {
+        branch_rejects_a_prepared_handler_change(PreparedMutation::CloneOriginal);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "branch restore materializes snapshot-store mappings")]
+    fn branch_rejects_a_prepared_handler_clone_with_different_state() {
+        branch_rejects_a_prepared_handler_change(PreparedMutation::CloneCandidate);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "branch restore materializes snapshot-store mappings")]
+    fn branch_rejects_decode_seed_that_changes_the_prepared_handler() {
+        branch_rejects_a_prepared_handler_change(PreparedMutation::DecodeSeed);
     }
 
     #[derive(Clone)]
@@ -6785,6 +7614,53 @@ mod tests {
                 })
             ))
         ));
+    }
+
+    #[test]
+    fn sparse_delta_sidecar_commits_target_independent_of_parent_layout() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let backend = source.vmm_mut().unwrap().backend_mut();
+        let mut cpu = backend.save().unwrap();
+        cpu.xsave = vec![0; 576];
+        vmm_backend::arch::x86::canonicalize_xsave(&mut cpu.xsave);
+        backend.set_state(cpu);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        let setup_page = image[4096..8192].to_vec();
+        image[4096..8192].fill(0xa5);
+        image[3 * 4096..4 * 4096].fill(0x5a);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        image[4096..8192].copy_from_slice(&setup_page);
+        image[2 * 4096..3 * 4096].fill(0x77);
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let anchor = source.export_sparse_delta(setup, None, target).unwrap();
+        let anchor_pages = anchor.pages.iter().map(|page| page.0).collect::<Vec<_>>();
+        let anchor_sidecar = anchor.sidecar;
+        let delta = source
+            .export_sparse_delta(setup, Some(parent), target)
+            .unwrap();
+        let delta_pages = delta.pages.iter().map(|page| page.0).collect::<Vec<_>>();
+        assert_eq!(anchor_pages, vec![2, 3]);
+        assert_eq!(delta_pages, vec![2]);
+        assert_eq!(delta.reverted, vec![1]);
+        assert_eq!(anchor_sidecar, delta.sidecar);
+        assert_eq!(
+            crate::portable_snapshot::sparse_delta_target_commitment(&anchor_sidecar).unwrap(),
+            crate::portable_snapshot::sparse_delta_target_commitment(&delta.sidecar).unwrap()
+        );
     }
 
     #[test]
@@ -8939,6 +9815,681 @@ mod tests {
         }
     }
 
+    fn deadline_chain_server(frame: &[u8], spec: EnvSpec) -> ControlServer<CompletionChainBackend> {
+        let mut backend = MockBackend::with_exits(vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x3f8,
+                size: 1,
+                write: Some(u32::from(b'x')),
+            }),
+            Exit::Arch(X86Exit::Io {
+                port: 0x0ca1,
+                size: 4,
+                write: Some(frame.len() as u32),
+            }),
+            Exit::Common(CommonExit::Idle),
+        ]);
+        backend
+            .set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })
+            .unwrap();
+        let mut vmm = Vmm::new(
+            CompletionChainBackend(backend, true),
+            GuestRam::new(BIG_RAM).unwrap(),
+        );
+        vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
+        vmm.wire_snapshot_hashing();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[0xe000..0xe000 + frame.len()].copy_from_slice(frame);
+        vmm.restore_guest_memory(&ram).unwrap();
+
+        let factory = Box::new(|| {
+            let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Idle)]);
+            backend.set_policy(&X86Policy {
+                cpuid: vmm_backend::CpuidModel::default(),
+                msr_filter: vmm_backend::MsrFilter::default(),
+            })?;
+            let mut vmm = Vmm::new(
+                CompletionChainBackend(backend, false),
+                GuestRam::new(BIG_RAM)?,
+            );
+            vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9)?);
+            vmm.wire_snapshot_hashing();
+            Ok(vmm)
+        });
+        let mut server = with_test_service(ControlServer::new(vmm, factory));
+        server
+            .handle(&Request::Hello(server_caps()))
+            .unwrap()
+            .unwrap();
+        let env = spec.materialize(&server.service_factory).unwrap();
+        server.vmm.as_mut().unwrap().enable_sdk(env, spec.config());
+        server.recorded = spec;
+        server
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn chained_payload_at_deadline_waits_for_the_next_branch_tape() {
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Payload,
+            1,
+            12,
+            &1_u32.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut old = EnvSpec::seeded(9);
+        old.set_payloads(Some(vec![vec![0x11]]));
+        let mut server = deadline_chain_server(&frame[..length], old);
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .remaining_payloads(),
+            Some(vec![vec![0x11]])
+        );
+
+        let pending = snap(&mut server);
+        let mut next = EnvSpec::seeded(9);
+        next.set_payloads(Some(vec![vec![0x22]]));
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let _ = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(20_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap();
+        let (header, payload) =
+            hypercall_proto::decode(&server.vmm().unwrap().guest_memory()[0xf000..0xf020]).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+        assert_eq!(payload, &[0x22]);
+    }
+
+    #[test]
+    fn a_resolution_at_its_run_deadline_keeps_the_question_pending() {
+        use environment::channel::Answer as ServiceAnswer;
+
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let mut old = EnvSpec::seeded(9);
+        old.set_config(ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: vec![0x11],
+        });
+        let mut server = deadline_chain_server(&frame[..length], old);
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: Some(Resolution {
+                        vtime: Moment(10_000),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: Answer(ServiceAnswer::Data(vec![0x11]).encode()),
+                    }),
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert!(server.recorded_env().answers().is_empty());
+    }
+
+    #[test]
+    fn a_malformed_sdk_question_at_deadline_leaves_the_response_unwritten() {
+        for opcode in [2, 3] {
+            let mut frame = [0_u8; 4096];
+            let length = hypercall_proto::encode_request(
+                hypercall_proto::ServiceId::Sdk,
+                opcode,
+                12,
+                &[],
+                &mut frame,
+            )
+            .unwrap();
+            let mut server = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+            let until = StopConditions {
+                deadline: Some(Moment(10_000)),
+                on: StopMask::NONE,
+            };
+            assert_eq!(
+                server
+                    .handle(&Request::Run {
+                        until,
+                        resolve: None
+                    })
+                    .unwrap(),
+                Ok(Reply::Stop(StopReason::Deadline {
+                    vtime: Moment(10_000),
+                }))
+            );
+            assert_eq!(
+                &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+                &[0; 32]
+            );
+            assert!(matches!(
+                server.vmm_mut().unwrap().take_sdk_stop(),
+                Some(crate::vmm::SdkStop::DeferredDoorbell { .. })
+            ));
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn chained_event_at_deadline_is_recorded_only_after_the_next_branch() {
+        let id = (u32::from(environment::sdk::NAMESPACE_ASSERT) << 24) | 20;
+        let mut payload = id.to_le_bytes().to_vec();
+        payload.extend([1, 0, 0]);
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Event,
+            1,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert!(server.vmm().unwrap().sdk_events().is_empty());
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+
+        let pending = snap(&mut server);
+        let next = EnvSpec::seeded(9);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(20_000)),
+                        on: StopMask::NONE.arm(control_proto::class_bit::ASSERTION),
+                    },
+                    resolve: None,
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Assertion {
+                vtime: Moment(10_000),
+                ..
+            }))
+        ));
+        assert_eq!(server.vmm().unwrap().sdk_events().len(), 1);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn chained_entropy_at_deadline_uses_the_next_branch_seed() {
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Entropy,
+            1,
+            12,
+            &8_u32.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        let before = server.vmm().unwrap().entropy_state();
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(server.vmm().unwrap().entropy_state(), before);
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+
+        let pending = snap(&mut server);
+        let next = EnvSpec::seeded(37);
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let _ = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(20_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap();
+        let (header, response) =
+            hypercall_proto::decode(&server.vmm().unwrap().guest_memory()[0xf000..0xf040]).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+        let mut expected = [0_u8; 8];
+        let (status, n) = hypercall_proto::Service::handle(
+            &mut hypercall_proto::SeededEntropy::new(37),
+            1,
+            &8_u32.to_le_bytes(),
+            &mut expected,
+        );
+        assert_eq!((status, n), (hypercall_proto::Status::Ok, 8));
+        assert_eq!(response, &expected);
+    }
+
+    #[test]
+    fn chained_pvclock_registration_waits_at_the_deadline() {
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Pvclock,
+            1,
+            12,
+            &0x1000_u64.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        server.vmm_mut().unwrap().enable_pvclock();
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(server.vmm().unwrap().pvclock_registration(), None);
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert_eq!(
+            server.vmm_mut().unwrap().step().unwrap(),
+            crate::vmm::Step::Continued
+        );
+        assert_eq!(server.vmm().unwrap().pvclock_registration(), Some(0x1000));
+        assert!(server.vmm().unwrap().pvclock_snapshot().unwrap().armed);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn chained_coverage_at_deadline_uses_the_next_branch_quantum() {
+        use environment::channel::{Answer as ServiceAnswer, CoverageSchedule};
+
+        let mut payload = [0_u8; hypercall_proto::SDK_COVERAGE_REQUEST_LEN];
+        payload[..4].copy_from_slice(&7_u32.to_le_bytes());
+        payload[4..12].copy_from_slice(&1_u64.to_le_bytes());
+        payload[12..16].copy_from_slice(&2_u32.to_le_bytes());
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            2,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let mut old = EnvSpec::seeded(9);
+        old.set_coverage_schedule(Some(
+            CoverageSchedule::new(1024, vec![(0, 10_000, 64)]).unwrap(),
+        ));
+        let mut server = deadline_chain_server(&frame[..length], old);
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        let vmm = server.vmm().unwrap();
+        assert_eq!(
+            vmm.pending_service_question().map(|(at, question)| (
+                at,
+                question.service(),
+                question.request_id(),
+            )),
+            Some((10_000, environment::channel::SERVICE_COVERAGE_QUANTUM, 7))
+        );
+        assert!(vmm.sdk_coverage().is_empty());
+        assert!(
+            vmm.sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .coverage_thresholds
+                .is_empty()
+        );
+        assert_eq!(&vmm.guest_memory()[0xf000..0xf020], &[0_u8; 32]);
+        assert!(server.recorded_env().answers().is_empty());
+
+        let pending = snap(&mut server);
+        let mut next = EnvSpec::seeded(9);
+        next.set_coverage_schedule(Some(
+            CoverageSchedule::new(1024, vec![(10_000, 20_000, 1)]).unwrap(),
+        ));
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0_u8; 32]
+        );
+        assert!(server.vmm().unwrap().sdk_coverage().is_empty());
+        let next_until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: next_until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision {
+                vtime: Moment(10_000),
+                id: control_proto::DecisionId(7),
+                ..
+            }))
+        ));
+        let quantum = server
+            .recorded_env()
+            .coverage_schedule()
+            .unwrap()
+            .quantum_at(10_000);
+        assert_eq!(quantum, 1);
+        let answered = server
+            .handle(&Request::Run {
+                until: next_until,
+                resolve: Some(Resolution {
+                    vtime: Moment(10_000),
+                    service: environment::channel::SERVICE_COVERAGE_QUANTUM,
+                    id: control_proto::DecisionId(7),
+                    answer: Answer(ServiceAnswer::Data(quantum.to_le_bytes().to_vec()).encode()),
+                }),
+            })
+            .unwrap();
+        assert!(matches!(answered, Ok(Reply::Stop(_))), "{answered:?}");
+        let vmm = server.vmm().unwrap();
+        let (header, response) =
+            hypercall_proto::decode(&vmm.guest_memory()[0xf000..0xf100]).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+        assert_eq!(u64::from_le_bytes(response[..8].try_into().unwrap()), 2);
+        assert_eq!(
+            vmm.sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .coverage_thresholds
+                .get(&7),
+            Some(&2)
+        );
+        assert_eq!(
+            server.recorded_env().answers().get(&(
+                10_000,
+                environment::channel::SERVICE_COVERAGE_QUANTUM,
+                7,
+            )),
+            Some(&ServiceAnswer::Data(1_u64.to_le_bytes().to_vec()))
+        );
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn chained_custom_decision_at_deadline_uses_the_next_branch_service() {
+        use environment::channel::{Answer as ServiceAnswer, ServiceResponse};
+
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let mut old = EnvSpec::seeded(9);
+        old.set_config(ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: vec![0x11],
+        });
+        let mut server = deadline_chain_server(&frame[..length], old);
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000),
+            }))
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0_u8; 32]
+        );
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(at, question)| (at, question.service(), question.request_id(),)),
+            Some((10_000, 19, 77))
+        );
+        assert!(server.recorded_env().answers().is_empty());
+
+        let pending = snap(&mut server);
+        let mut next = EnvSpec::seeded(9);
+        next.set_config(ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: vec![0x22],
+        });
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        let next_until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until: next_until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision {
+                vtime: Moment(10_000),
+                id: control_proto::DecisionId(77),
+                ..
+            }))
+        ));
+        let question = server
+            .vmm()
+            .unwrap()
+            .pending_service_question()
+            .unwrap()
+            .1
+            .clone();
+        let mut handler = (server.service_factory)(next.config()).unwrap();
+        let ServiceResponse::Answered(answer) = handler.respond(10_000, &question).unwrap() else {
+            panic!("the next service must answer");
+        };
+        assert_eq!(answer, ServiceAnswer::Data(vec![0x22]));
+        let answered = server
+            .handle(&Request::Run {
+                until: next_until,
+                resolve: Some(Resolution {
+                    vtime: Moment(10_000),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(answer.encode()),
+                }),
+            })
+            .unwrap();
+        assert!(matches!(answered, Ok(Reply::Stop(_))), "{answered:?}");
+        let vmm = server.vmm().unwrap();
+        let (header, response) =
+            hypercall_proto::decode(&vmm.guest_memory()[0xf000..0xf100]).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+        assert_eq!(
+            ServiceAnswer::decode(response).unwrap(),
+            ServiceAnswer::Data(vec![0x22])
+        );
+        assert_eq!(
+            server.recorded_env().answers().get(&(10_000, 19, 77)),
+            Some(&answer)
+        );
+    }
+
     #[test]
     fn chained_decision_cannot_skip_a_crossed_fault() {
         let mut payload = 19_u16.to_le_bytes().to_vec();
@@ -9083,6 +10634,366 @@ mod tests {
             Err(ControlError::ScheduleUnsatisfiable { moment: 1, .. })
         ));
         server.vmm.as_mut().unwrap().map_doorbell_pages().unwrap();
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn same_moment_perturb_after_decision_is_rejected_and_replay_stays_equal() {
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(b"choose");
+        let mut frame = [0u8; 4096];
+        let len = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        let payload_offset = frame[..len]
+            .windows(b"choose".len())
+            .position(|bytes| bytes == b"choose")
+            .unwrap();
+        let exits = vec![
+            Exit::Arch(X86Exit::Io {
+                port: 0x0ca1,
+                size: 4,
+                write: Some(len as u32),
+            }),
+            Exit::Common(CommonExit::Idle),
+        ];
+        let make_vm = move || {
+            let mut backend = MockBackend::with_exits(exits.clone());
+            backend
+                .set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })
+                .unwrap();
+            let mut vm = Vmm::new(backend, GuestRam::new(BIG_RAM).unwrap());
+            vm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9).unwrap());
+            vm.wire_snapshot_hashing();
+            Ok(vm)
+        };
+        let mut vm = make_vm().unwrap();
+        let mut ram = vec![0u8; BIG_RAM];
+        ram[0xe000..0xe000 + len].copy_from_slice(&frame[..len]);
+        vm.restore_guest_memory(&ram).unwrap();
+        let mut server = ControlServer::new(vm, Box::new(make_vm));
+        hello(&mut server);
+        let config = ServiceConfig {
+            identity: b"test-external-v1".to_vec(),
+            configuration: vec![],
+        };
+        let expected_config = config.clone();
+        server.set_service_factory(std::sync::Arc::new(move |config| {
+            if config != &expected_config {
+                return Err(ChannelError::Malformed);
+            }
+            Ok(Box::new(ExternalService(0)))
+        }));
+        server.recorded.set_config(config.clone());
+        server.vmm.as_mut().unwrap().enable_sdk(
+            RecordedEnv::new(server.recorded.seed(), Box::new(ExternalService(0))),
+            &config,
+        );
+        let before = snap(&mut server);
+        let moment = server.vmm().unwrap().effective_vns().unwrap();
+        let run = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert!(matches!(
+            server.handle(&run).unwrap(),
+            Ok(Reply::Stop(StopReason::Decision { vtime: Moment(at), .. })) if at == moment
+        ));
+        let pending = snap(&mut server);
+        let stopped_response = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        let effect = EnvHostEffect::XorMemory {
+            gpa: 0xe000 + payload_offset as u64,
+            bytes: vec![1],
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(effect.encode()),
+                    at: Moment(moment),
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert!(server.schedule.is_empty());
+        assert_eq!(server.schedule_poisoned, None);
+        assert_eq!(
+            server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            stopped_response
+        );
+        let answered = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: None,
+                    on: StopMask::NONE,
+                },
+                resolve: Some(Resolution {
+                    vtime: Moment(moment),
+                    service: 19,
+                    id: control_proto::DecisionId(77),
+                    answer: Answer(environment::channel::Answer::Nominal.encode()),
+                }),
+            })
+            .unwrap();
+        assert!(matches!(
+            answered,
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
+        let live_response = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        let recorded = match server.handle(&Request::RecordedEnv).unwrap() {
+            Ok(Reply::Recorded(recorded)) => recorded,
+            other => panic!("recorded environment: {other:?}"),
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: before,
+                    env: recorded,
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert!(matches!(
+            server.handle(&run).unwrap(),
+            Ok(Reply::Stop(StopReason::Quiescent { .. }))
+        ));
+        let replay_response = server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap();
+        assert_eq!(replay_response, live_response);
+
+        let mut plan = EnvSpec::seeded(9);
+        plan.set_config(config);
+        plan.record_effect(moment, effect);
+        let branch = Request::Branch {
+            snap: pending,
+            env: Reproducer {
+                blob_version: EnvSpec::BLOB_VERSION,
+                bytes: plan.encode(),
+            },
+        };
+        assert_eq!(server.handle(&branch).unwrap(), Ok(Reply::Unit));
+        let response_before_resolution = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        let resolve = Request::Run {
+            until: StopConditions {
+                deadline: None,
+                on: StopMask::NONE,
+            },
+            resolve: Some(Resolution {
+                vtime: Moment(moment),
+                service: 19,
+                id: control_proto::DecisionId(77),
+                answer: Answer(environment::channel::Answer::Nominal.encode()),
+            }),
+        };
+        assert_eq!(
+            server.handle(&resolve).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            response_before_resolution
+        );
+        assert!(server.recorded.answers().is_empty());
+        assert!(server.vmm().unwrap().pending_service_question().is_some());
+
+        assert_eq!(server.handle(&branch).unwrap(), Ok(Reply::Unit));
+        assert_eq!(
+            server.handle(&run).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+
+        assert_eq!(server.handle(&branch).unwrap(), Ok(Reply::Unit));
+        server.schedule.clear();
+        server.reseed_schedule.insert(moment, 123);
+        let response_before_resolution = server
+            .vmm()
+            .unwrap()
+            .guest_slice(0xf000, 4096)
+            .unwrap()
+            .to_vec();
+        assert_eq!(
+            server.handle(&resolve).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            server.vmm().unwrap().guest_slice(0xf000, 4096).unwrap(),
+            response_before_resolution
+        );
+        assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn same_moment_perturb_after_deferred_doorbell_is_rejected_and_replay_stays_equal() {
+        let mut frame = [0_u8; 4096];
+        let length = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Entropy,
+            1,
+            12,
+            &8_u32.to_le_bytes(),
+            &mut frame,
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        let moment = 10_000;
+        let split = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(moment)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        let unsplit = Request::Run {
+            until: StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            },
+            resolve: None,
+        };
+        assert_eq!(
+            server.handle(&split).unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(moment),
+            }))
+        );
+        assert!(matches!(
+            server.vmm_mut().unwrap().take_sdk_stop(),
+            Some(crate::vmm::SdkStop::DeferredDoorbell { moment: at, .. }) if at == moment
+        ));
+        let pending = snap(&mut server);
+        let effect = EnvHostEffect::WriteMemory {
+            gpa: 0xf000,
+            bytes: vec![0xa5],
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Perturb {
+                    fault: HostFault(effect.encode()),
+                    at: Moment(moment),
+                })
+                .unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert!(server.schedule.is_empty());
+        assert_eq!(server.schedule_poisoned, None);
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert!(server.handle(&unsplit).unwrap().is_ok());
+        let live_response = server.vmm().unwrap().guest_memory()[0xf000..0xf020].to_vec();
+        let (header, _) = hypercall_proto::decode(&live_response).unwrap();
+        assert_eq!(header.status, hypercall_proto::Status::Ok as u16);
+        let mut replay = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        assert!(replay.handle(&unsplit).unwrap().is_ok());
+        assert_eq!(
+            &replay.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            live_response
+        );
+
+        let mut plan = EnvSpec::seeded(9);
+        plan.record_effect(moment, effect.clone());
+        let with_effect = Reproducer {
+            blob_version: EnvSpec::BLOB_VERSION,
+            bytes: plan.encode(),
+        };
+        let mut replay_with_effect = deadline_chain_server(&frame[..length], EnvSpec::seeded(9));
+        replay_with_effect.schedule.insert(moment, effect);
+        assert!(replay_with_effect.handle(&unsplit).unwrap().is_ok());
+        assert_eq!(
+            replay_with_effect.vmm().unwrap().guest_memory()[0xf000],
+            0xa5
+        );
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: with_effect
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(
+            server.handle(&unsplit).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
+        assert!(matches!(
+            server.vmm_mut().unwrap().take_sdk_stop(),
+            Some(crate::vmm::SdkStop::DeferredDoorbell { moment: at, .. }) if at == moment
+        ));
+
+        assert_eq!(
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: EnvSpec::seeded(9).encode(),
+                    },
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        server.reseed_schedule.insert(moment, 37);
+        assert_eq!(
+            server.handle(&unsplit).unwrap(),
+            Err(ControlError::ScheduleUnsatisfiable {
+                moment,
+                vtime: moment,
+            })
+        );
+        assert_eq!(
+            &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+            &[0; 32]
+        );
     }
 
     #[test]
@@ -11809,10 +13720,14 @@ mod tests {
                 .map(|(_, question)| question.request_id()),
             Some(77)
         );
-        assert_eq!(
+        s.vmm_mut()
+            .unwrap()
+            .backend
+            .push_exit(Exit::Common(CommonExit::Idle));
+        assert!(matches!(
             s.handle(&Request::Run {
                 until: StopConditions {
-                    deadline: Some(Moment(at)),
+                    deadline: Some(Moment(at + 1)),
                     on: StopMask::NONE,
                 },
                 resolve: Some(Resolution {
@@ -11823,8 +13738,8 @@ mod tests {
                 }),
             })
             .unwrap(),
-            Ok(Reply::Stop(StopReason::Deadline { vtime: Moment(at) }))
-        );
+            Ok(Reply::Stop(_))
+        ));
         assert!(s.vmm().unwrap().pending_service_question().is_none());
         assert_eq!(s.vmm().unwrap().devices().uart.pending_input(), queued);
     }

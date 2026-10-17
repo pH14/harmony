@@ -18,7 +18,7 @@ pub const CNTV_CTL_ENABLE: u64 = 1;
 
 pub const CNTV_CTL_IMASK: u64 = 1 << 1;
 
-pub const GIC_STATE_VERSION: u32 = 7;
+pub const GIC_STATE_VERSION: u32 = 8;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct GicState {
@@ -27,6 +27,8 @@ pub struct GicState {
     pub timer_hz: u64,
     pub timer_intid: u32,
     pub gicd_ctlr: u32,
+    pub gicr_propbaser: u64,
+    pub gicr_pendbaser: u64,
     pub group: [u32; BITMAP_WORDS],
     pub enable: [u32; BITMAP_WORDS],
     pub pending: [u32; BITMAP_WORDS],

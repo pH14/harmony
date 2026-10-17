@@ -87,11 +87,16 @@ pub fn locate(name: &str) -> Result<PathBuf> {
 
 impl Manifest {
     pub fn new(config: Config, mode: &str) -> Result<Self> {
+        let binary_identity = if config.runner.kind == "consonance" {
+            crate::host_boundary::strict_identity()?
+        } else {
+            consonance_client::image_identity::native_loaded_executable_diagnostic_identity_self()?
+        };
         let runner_identity = crate::runners::identity(&config.runner)?;
         let checkpoint_owner = (mode == "search").then(new_checkpoint_owner).transpose()?;
         Ok(Self {
-            format: "harmony-run-v3".into(),
-            binary_identity: consonance_client::image_identity::loaded_executable_identity_self()?,
+            format: "harmony-run-v4".into(),
+            binary_identity,
             architecture: std::env::consts::ARCH.into(),
             mode: mode.into(),
             status: "running".into(),
@@ -108,7 +113,7 @@ impl Manifest {
 
     pub fn read(path: &Path) -> Result<Self> {
         let manifest: Self = serde_json::from_slice(&fs::read(path.join("manifest.json"))?)?;
-        if manifest.format != "harmony-run-v3" {
+        if manifest.format != "harmony-run-v4" {
             return Err("unsupported run format".into());
         }
         Ok(manifest)
@@ -147,12 +152,15 @@ impl Manifest {
     }
 
     pub fn verify(&self, path: &Path) -> Result<()> {
+        let binary_identity = if self.config.runner.kind == "consonance" {
+            crate::host_boundary::strict_identity()?
+        } else {
+            consonance_client::image_identity::native_loaded_executable_diagnostic_identity_self()?
+        };
         if self.architecture != std::env::consts::ARCH {
             return Err("run architecture differs from this host".into());
         }
-        if self.binary_identity
-            != consonance_client::image_identity::loaded_executable_identity_self()?
-        {
+        if self.binary_identity != binary_identity {
             return Err("this run requires the exact Harmony executable that recorded it".into());
         }
         crate::runners::verify(&self.config.runner, &self.runner_identity)?;
@@ -257,10 +265,34 @@ pub fn store_tree(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dynamic_host_cannot_issue_consonance_manifest() {
+        let mut config = Config::default();
+        config.runner.kind = "consonance".into();
+        assert!(Manifest::new(config, "run").is_err());
+    }
+    #[test]
+    fn native_quicknes_manifest_uses_loaded_image_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workload.package = "nes".into();
+        config.runner.kind = "quicknes".into();
+        let manifest = Manifest::new(config, "search").unwrap();
+        assert_eq!(manifest.runner_identity["kind"], "quicknes");
+        assert_eq!(
+            manifest.binary_identity,
+            consonance_client::image_identity::native_loaded_executable_diagnostic_identity_self()
+                .unwrap()
+        );
+        manifest.verify(directory.path()).unwrap();
+    }
+
     #[cfg(not(miri))]
     #[allow(clippy::disallowed_methods)]
     #[test]
-    fn manifest_identity_follows_loaded_executable_after_path_replacement() {
+    fn quicknes_manifest_identity_follows_loaded_executable_after_path_replacement() {
         let child_directory = std::env::var_os("HARMONY_IDENTITY_CHILD_DIRECTORY");
         if let Some(directory) = child_directory {
             let directory = PathBuf::from(directory);
@@ -274,7 +306,8 @@ mod tests {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
             let mut config = Config::default();
-            config.runner.kind = "test".into();
+            config.runner.kind = "quicknes".into();
+            config.workload.package = "nes".into();
             let manifest = Manifest::new(config, "search").unwrap();
             assert_eq!(
                 manifest.binary_identity,
@@ -302,7 +335,8 @@ mod tests {
         }
         let before = file_digest(&running).unwrap();
         let expected_identity =
-            consonance_client::image_identity::loaded_executable_identity_self().unwrap();
+            consonance_client::image_identity::native_loaded_executable_diagnostic_identity_self()
+                .unwrap();
         #[cfg(target_os = "macos")]
         {
             let signed = std::process::Command::new("codesign")
@@ -340,7 +374,7 @@ mod tests {
         let mut child = std::process::Command::new(&running)
             .args([
                 "--exact",
-                "runs::tests::manifest_identity_follows_loaded_executable_after_path_replacement",
+                "runs::tests::quicknes_manifest_identity_follows_loaded_executable_after_path_replacement",
                 "--nocapture",
             ])
             .env("HARMONY_IDENTITY_CHILD_DIRECTORY", directory.path())

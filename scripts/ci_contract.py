@@ -61,14 +61,22 @@ PR_ARTIFACT_BUILD_BUDGETS = {
     (f"{WORKFLOW_DIR}/consonance-uml.yml", "UML Artifacts — <Architecture>"): 45,
     (f"{WORKFLOW_DIR}/consonance-checks.yml", "Exact Runtime Artifacts"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "Exact Runtime Artifacts"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-oci-checks.yml", "PostgreSQL CLI Package"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Guest Runtime"): 45,
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language CLI Tools"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language UML Profile"): 45,
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "Language Image — <Language>"): 45,
+}
+PR_EXTENDED_CHECK_BUDGETS = {
+    (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
 }
 
 
 def pull_request_budget(workflow_path: str, job_name: str) -> int:
-    return PR_ARTIFACT_BUILD_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES)
+    return PR_ARTIFACT_BUILD_BUDGETS.get(
+        (workflow_path, job_name),
+        PR_EXTENDED_CHECK_BUDGETS.get((workflow_path, job_name), PR_BOUNDED_MINUTES),
+    )
 
 
 # Trigger classes. `pr` jobs run on pull requests and on pushes to main and
@@ -89,7 +97,7 @@ class Job(NamedTuple):
     trigger: str
     timeout_minutes: int
     # Why full work lives inside Checks, or why a separately registered
-    # artifact prerequisite needs a longer build budget.
+    # pull-request job needs a longer budget.
     exception: str = ""
     # Cargo packages whose lint and unit tests this job owns.
     crates: tuple[str, ...] = ()
@@ -153,6 +161,7 @@ CARGO_MANIFESTS = (
     "consonance/harmony-linux/sdk/Cargo.toml",
     "consonance/harmony-linux/supervisor/Cargo.toml",
     "consonance/harmony-linux/runtime-fixture/Cargo.toml",
+    "consonance/host-code-identity/tests/witness/Cargo.toml",
     "dissonance/Cargo.toml",
     "workloads/fault-policy/Cargo.toml",
     "workloads/faults/Cargo.toml",
@@ -249,15 +258,19 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_actlr_state_refuses_capture_and_clean_restore_resets_it",
         "vmm-backend::arm64_sysreg_snapshot guest_pauth_keys_refuse_capture_and_clean_restore_resets_them",
+        "vmm-core::arm64_hvf_mdccint guest_mdccint_el1_survives_a_cold_public_snapshot_restore",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
     "linux-aarch64": (
+        "vmm-core::arm64_executable_restore live::executable_ram_restores_match_guest_continuations",
         ARM64_BASELINE_TEST,
         "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",
         "vmm-backend::arm64_sysreg_snapshot guest_system_registers_survive_reused_and_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_mdccint_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_cpu_interface_survives_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_gic_spi_trigger_survives_fresh_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_gicr_bases_survive_reused_and_fresh_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_nonzero_spi_route_rejects_capture_and_zero_route_restores",
         "vmm-backend::arm64_sysreg_snapshot guest_physical_timer_state_refuses_capture_and_legacy_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore",
@@ -291,7 +304,7 @@ OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform 
 def _consonance_crates() -> tuple[str, ...]:
     return (
         "consonance-client", "control-proto", "environment", "execution-proto",
-        "gicv3", "guest-image", "hypercall-doorbell", "hypercall-proto",
+        "gicv3", "guest-image", "host-code-identity", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
     )
@@ -315,6 +328,7 @@ CONSONANCE_CHECKS = Workflow(
         Job("CPU State", "pr", 15,
             crates=("vm-state", "vmm-backend"),
             test_targets=("vmm-core:x86_cpu_snapshots", "vmm-core:arm64_skeleton",
+                          "vmm-core:arm64_hvf_mdccint",
                           "vmm-backend:kvm_smoke"),
             ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
@@ -345,6 +359,7 @@ CONSONANCE_CHECKS = Workflow(
         Job("Snapshot and Restore", "pr", 15,
             crates=("snapshot-store", "unison"),
             test_targets=("vmm-core:snapshot_branch", "vmm-core:event_loop",
+                          "vmm-core:arm64_executable_restore",
                           "vmm-core:x86_kvm_pcide_preflight"),
             ignored_tests=("vmm-backend::kvm_smoke save_restore_round_trips_on_real_kvm",
                            "vmm-backend::kvm_smoke sysenter_restore_rejects_values_kvm_cannot_preserve",
@@ -540,6 +555,9 @@ HARMONY_CHECKS = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("CLI", "pr", 15, crates=("harmony-cli",), test_targets=("harmony-cli:staging",), select="rust_checks"),
+        Job("Consonance Host", "pr", 15, select="rust_checks"),
+        Job("Consonance Host Arm64", "pr", 15, select="rust_checks"),
+        Job("Consonance Host Public API", "pr", 15, select="rust_checks"),
         Job("NES Adapter", "pr", 15, select="rust_checks"),
         Job("Fault Injection", "pr", 15, select="rust_checks"),
     ),
@@ -584,7 +602,9 @@ HARMONY_HOST_COMPATIBILITY = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
         Job("macOS Arm64", "pr", 15, select="rust_checks"),
+        Job("macOS Consonance Host Package", "pr", 15, select="rust_checks"),
         Job("Linux Arm64", "pr", 15, select="rust_checks"),
+        Job("Linux Arm64 Dissonance", "pr", 15, select="rust_checks"),
         Job("Linux Arm64 Qualification", "pr", 15, select="rust_checks"),
     ),
 )
@@ -620,10 +640,16 @@ HARMONY_LANGUAGES_CHECKS = Workflow(
         Job("Language Guest Runtime", "pr", 45,
             exception="A guest runtime missing from the cache is built from source once before bounded consumers.",
             select="harmony_languages"),
+        Job("Language CLI Tools", "pr", 45,
+            exception="The paired native frontend and static musl host are built once before bounded language consumers.",
+            select="harmony_languages"),
         Job("Language Image — <Language>", "pr", 45,
             exception="A language layer missing from the cache is built from source, including CPython and OpenJDK.",
             select="harmony_languages"),
         Job("Check — <Language>", "pr", 15, select="harmony_languages"),
+        Job("C Investigation", "pr", 35,
+            exception="The bounded C branch and search investigation takes longer under live sealed-host code checks; it runs separately from the 15-minute language smokes.",
+            select="harmony_languages"),
         Job("Language UML Profile", "pr", 45,
             exception="The pinned UML runtime is built before its bounded command replay consumer.",
             select="harmony_languages"),
@@ -642,6 +668,9 @@ HARMONY_OCI_CHECKS = Workflow(
             exception="A cold build of the exact guest kernel and runtime exceeds "
                       "the pull request check budget.",
             select="rust_checks"),
+        Job("PostgreSQL CLI Package", "pr", 45,
+            exception="The paired native frontend and static musl host are built before the bounded PostgreSQL smoke.",
+            scope="harmony_oci", select="rust_checks"),
         Job("Container Execution", "pr", 15,
             test_targets=("oci-support:platform", "oci-support:process_platform"),
             ignored_tests=OCI_PLATFORM_TESTS,
@@ -719,10 +748,18 @@ CONSONANCE_UML = Workflow(
     triggers=("pull_request", "push", "workflow_dispatch"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("rust_checks",)),
-        Job("UML Launcher", "pr", 15, crates=("uml",), select="rust_checks"),
+        Job("UML Launcher", "pr", 15, crates=("host-code-identity", "uml"), select="rust_checks"),
         Job("UML Artifacts — <Architecture>", "pr", 45,
             exception="Two cold compilations of the pinned UML kernel and locked "
                       "toolchain exceed the pull request check budget.",
+            ignored_tests=(
+                "uml profile::tests::reviewed_ci_bundle_admits_only_its_approved_bytes",
+                "harmony-cli::bin/harmony adapters::faults::runs::tests::loaded_reviewed_uml_profile_binds_the_recorded_kernel",
+                "consonance-client session::uml::tests::reviewed_kernel_panic_is_a_public_client_crash",
+                "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
+                "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
+                "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
+            ),
             select="rust_checks"),
         Job("UML Qualification — <Target>", "pr", 15, select="rust_checks"),
     ),
@@ -791,6 +828,7 @@ MEDIA_REQUIRED = {
 
 # Component ownership of the Miri targets declared in `miri_scope.py`.
 MIRI_OWNERS = {
+    "host-code-identity": "Consonance",
     "vmm-core": "Consonance",
     "nested-driver": "Consonance",
     "hypercall-doorbell": "Consonance",

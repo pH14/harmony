@@ -36,6 +36,22 @@ pub(crate) const KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS: u32 = 6;
 pub(crate) const KVM_DEV_ARM_VGIC_GRP_LEVEL_INFO: u32 = 7;
 const GICR_SGI_BASE: u64 = 0x1_0000;
 const GICD_CTLR: u64 = 0x0000;
+pub(crate) const GICD_IIDR: u64 = 0x0008;
+const GICD_TYPER2: u64 = 0x000c;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
+const GICD_IIDR_REVISION_MASK: u32 = 0xf << 12;
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
+const GICD_IIDR_PINNED_REVISION: u32 = 2;
+const GICD_CTLR_REPRESENTED: u64 = 1 << 1;
+const GICD_CTLR_FIXED: u64 = (1 << 4) | (1 << 6);
 const GIC_IGROUPR: u64 = 0x0080;
 const GIC_ISENABLER: u64 = 0x0100;
 const GIC_ICENABLER: u64 = 0x0180;
@@ -45,6 +61,17 @@ const GIC_ICACTIVER: u64 = 0x0380;
 const GIC_IPRIORITYR: u64 = 0x0400;
 const GIC_ICFGR: u64 = 0x0c00;
 const GIC_IROUTER: u64 = 0x6000;
+const GICR_PROPBASER: u64 = 0x0070;
+const GICR_PENDBASER: u64 = 0x0078;
+const GICR_PROPBASER_RESERVED: u64 = (0b1_1111 << 59) | (0b1111 << 52) | (0b11 << 5);
+const GICR_PENDBASER_RESERVED: u64 =
+    (0b1_1111 << 59) | (0b1111 << 52) | (0b1111 << 12) | 0b111_1111;
+
+fn kvm_canonical_gicr_base(value: u64) -> bool {
+    (value >> 10) & 0b11 != 0b10
+        && matches!((value >> 7) & 0b111, 2..=7)
+        && matches!((value >> 56) & 0b111, 0..=1)
+}
 const GICR_ISACTIVER0: u64 = GICR_SGI_BASE + 0x0300;
 const VGIC_LEVEL_INFO_LINE_LEVEL: u64 = 0;
 const HARMONY_GIC_IMPL_SPIS: u32 = 64;
@@ -53,7 +80,7 @@ const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
 pub(crate) const KVM_VTIMER_PPI: u32 = 20;
 const KVM_PTIMER_PPI: u32 = 30;
-const GIC_STATE_VERSION: u32 = 7;
+const GIC_STATE_VERSION: u32 = 8;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -73,6 +100,15 @@ const ICC_IGRPEN0_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 6);
 const ICC_IGRPEN1_EL1: u64 = vgic_sysreg(3, 0, 12, 12, 7);
 const ICC_CTLR_GUEST_WRITABLE: u64 = 0b11;
 const ICC_CTLR_PRIBITS_SHIFT: u32 = 8;
+
+#[cfg(any(
+    all(target_os = "linux", target_arch = "aarch64"),
+    test,
+    feature = "mock"
+))]
+pub(crate) fn pinned_vgic_iidr(native: u32) -> u32 {
+    (native & !GICD_IIDR_REVISION_MASK) | (GICD_IIDR_PINNED_REVISION << 12)
+}
 
 fn vgic_apr_count(ctlr: u64) -> Result<usize> {
     match ((ctlr >> ICC_CTLR_PRIBITS_SHIFT) & 0b111) + 1 {
@@ -462,7 +498,9 @@ const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
 const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
 const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
+const MDCCINT_EL1: u64 = sysreg_id(2, 0, 0, 2, 0);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
+const MDCCINT_WRITABLE_BITS: u64 = (1 << 29) | (1 << 30);
 
 const CNTV_CTL_WRITABLE_BITS: u64 = 0b11;
 
@@ -615,6 +653,39 @@ fn vgic_router_attr(spi: usize, half: usize) -> u64 {
     GIC_IROUTER + ((32 + spi) as u64) * 8 + (half as u64) * 4
 }
 
+fn read_vgic_redist_u64<K: Arm64Kvm + ?Sized>(k: &K, offset: u64) -> Result<u64> {
+    let low = u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset, false)?)
+        .map_err(|_| BackendError::InvalidState)?;
+    let high =
+        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset + 4, false)?)
+            .map_err(|_| BackendError::InvalidState)?;
+    Ok(u64::from(low) | (u64::from(high) << 32))
+}
+
+fn write_vgic_redist_u64<K: Arm64Kvm + ?Sized>(k: &mut K, offset: u64, value: u64) -> Result<()> {
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+        offset,
+        false,
+        u64::from(value as u32),
+    )?;
+    k.set_vgic_attr(
+        KVM_DEV_ARM_VGIC_GRP_REDIST_REGS,
+        offset + 4,
+        false,
+        u64::from((value >> 32) as u32),
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+pub(crate) fn canonicalize_vgic_redist_bases<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
+    for offset in [GICR_PROPBASER, GICR_PENDBASER] {
+        let value = read_vgic_redist_u64(k, offset)?;
+        write_vgic_redist_u64(k, offset, value)?;
+    }
+    Ok(())
+}
+
 fn require_zero_vgic_routes<K: Arm64Kvm + ?Sized>(k: &K) -> Result<()> {
     for spi in 0..HARMONY_GIC_IMPL_SPIS as usize {
         for half in 0..2 {
@@ -729,9 +800,16 @@ fn read_vgic_state<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64GicState> {
         timer_intid: HARMONY_TIMER_INTID,
         ..Arm64GicState::default()
     };
-    s.gicd_ctlr =
-        u32::try_from(k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)? & 0b10)
-            .map_err(|_| BackendError::InvalidState)?;
+    let distributor_control = k.get_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_CTLR, false)?;
+    if distributor_control & !(GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED) != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save vGIC with untracked GICD_CTLR bits",
+        });
+    }
+    s.gicd_ctlr = u32::try_from(distributor_control & GICD_CTLR_REPRESENTED)
+        .map_err(|_| BackendError::InvalidState)?;
+    s.gicr_propbaser = read_vgic_redist_u64(k, GICR_PROPBASER)?;
+    s.gicr_pendbaser = read_vgic_redist_u64(k, GICR_PENDBASER)?;
     s.ctlr = vgic_cpu_sysreg(k, ICC_CTLR_EL1)?;
     if s.ctlr & 1 != 0 {
         return Err(BackendError::Unsupported {
@@ -821,7 +899,11 @@ fn validate_vgic_state(s: &Arm64GicState) -> Result<()> {
         || s.impl_spis != HARMONY_GIC_IMPL_SPIS
         || s.timer_hz != HARMONY_TIMER_HZ
         || s.timer_intid != HARMONY_TIMER_INTID
-        || s.gicd_ctlr & !0b10 != 0
+        || u64::from(s.gicd_ctlr) & !GICD_CTLR_REPRESENTED != 0
+        || s.gicr_propbaser & GICR_PROPBASER_RESERVED != 0
+        || s.gicr_pendbaser & GICR_PENDBASER_RESERVED != 0
+        || !kvm_canonical_gicr_base(s.gicr_propbaser)
+        || !kvm_canonical_gicr_base(s.gicr_pendbaser)
         || s.cntv_ctl != 0
         || s.cntv_cval != 0
         || s.timer_fired
@@ -882,6 +964,7 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&s.core)
         || s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
+        || s.debug.mdccint_el1 & !MDCCINT_WRITABLE_BITS != 0
         || !s.vtimer.masked
         || s.vtimer.cntv_ctl_el0 & !CNTV_CTL_WRITABLE_BITS != 0
         || s.vtimer.cntv_ctl_el0 & 1 != 0
@@ -897,6 +980,15 @@ pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
 
 fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()> {
     validate_vgic_host(k, s)?;
+    for (offset, value) in [
+        (GICR_PROPBASER, s.gicr_propbaser),
+        (GICR_PENDBASER, s.gicr_pendbaser),
+    ] {
+        write_vgic_redist_u64(k, offset, value)?;
+        if read_vgic_redist_u64(k, offset)? != value {
+            return Err(BackendError::InvalidState);
+        }
+    }
     clear_vgic_routes(k)?;
     for word in 2..(HARMONY_GIC_NR_IRQS as usize / 16) {
         let (group, attr) = vgic_config_attr(word);
@@ -1009,6 +1101,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
         s.debug.watchpoint_value[index as usize] = k.get_one_reg(dbgwvr(index))?;
         s.debug.watchpoint_control[index as usize] = k.get_one_reg(dbgwcr(index))?;
     }
+    s.debug.mdccint_el1 = k.get_one_reg(MDCCINT_EL1)?;
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
     s.vtimer.cntv_ctl_el0 = k.get_one_reg(CNTV_CTL_EL0)? & CNTV_CTL_WRITABLE_BITS;
     if s.vtimer.cntv_ctl_el0 & 1 != 0 {
@@ -1067,6 +1160,7 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwvr(index), s.debug.watchpoint_value[index as usize])?;
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
+    k.set_one_reg(MDCCINT_EL1, s.debug.mdccint_el1)?;
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
     k.set_one_reg(DISR_EL1, 0)?;
     k.set_one_reg(CNTP_CTL_EL0, 0)?;
@@ -1173,6 +1267,8 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     mmio_owed: bool,
     smccc_workaround_levels: [u64; 3],
     gic_ctlr_fixed_bits: u64,
+    gicd_iidr: u32,
+    gicd_typer2: u32,
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -1197,6 +1293,8 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             mmio_owed: false,
             smccc_workaround_levels: [u64::MAX; 3],
             gic_ctlr_fixed_bits: 0,
+            gicd_iidr: 0,
+            gicd_typer2: 0,
         }
     }
 
@@ -1390,6 +1488,18 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         self.gic_ctlr_fixed_bits =
             vgic_cpu_sysreg(&self.kvm, ICC_CTLR_EL1)? & !ICC_CTLR_GUEST_WRITABLE;
         vgic_apr_count(self.gic_ctlr_fixed_bits)?;
+        self.gicd_iidr = u32::try_from(self.kvm.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_IIDR,
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
+        self.gicd_typer2 = u32::try_from(self.kvm.get_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_TYPER2,
+            false,
+        )?)
+        .map_err(|_| BackendError::InvalidState)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
         self.kvm.set_one_reg(DISR_EL1, 0)?;
         self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
@@ -1665,6 +1775,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 smccc_workaround_levels: self.smccc_workaround_levels,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::KvmPsci10,
                 gic_ctlr_fixed_bits: self.gic_ctlr_fixed_bits,
+                gicd_iidr: self.gicd_iidr,
+                gicd_typer2: self.gicd_typer2,
             },
         }
     }
@@ -1726,6 +1838,14 @@ impl FakeKvm {
             (KVM_DEV_ARM_VGIC_GRP_CPU_SYSREGS, ICC_CTLR_EL1, true),
             0x8400,
         );
+        fake.vgic_attrs.insert(
+            (KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_IIDR, false),
+            pinned_vgic_iidr(0x4b00_343b) as u64,
+        );
+        for offset in [GICR_PROPBASER, GICR_PENDBASER] {
+            fake.vgic_attrs
+                .insert((KVM_DEV_ARM_VGIC_GRP_REDIST_REGS, offset, false), 0x180);
+        }
         fake
     }
 
@@ -2385,6 +2505,168 @@ mod tests {
             validate_vgic_state(&invalid_apr),
             Err(BackendError::InvalidState)
         ));
+    }
+
+    #[test]
+    fn redistributor_bases_round_trip_both_words_and_reject_reserved_bits() {
+        let mut source = FakeKvm::new();
+        let propbaser = 0x0001_0000_1234_5180;
+        let pendbaser = 0x0002_0000_1234_0580;
+        write_vgic_redist_u64(&mut source, GICR_PROPBASER, propbaser).unwrap();
+        write_vgic_redist_u64(&mut source, GICR_PENDBASER, pendbaser).unwrap();
+        let saved = save_vgic(&source).unwrap();
+        assert_eq!(saved.gicr_propbaser, propbaser);
+        assert_eq!(saved.gicr_pendbaser, pendbaser);
+
+        let mut target = FakeKvm::new();
+        write_vgic_redist_u64(&mut target, GICR_PROPBASER, 0x9999_0180).unwrap();
+        write_vgic_redist_u64(&mut target, GICR_PENDBASER, 0x8888_0580).unwrap();
+        restore_vgic(&mut target, &saved).unwrap();
+        assert_eq!(
+            read_vgic_redist_u64(&target, GICR_PROPBASER).unwrap(),
+            propbaser
+        );
+        assert_eq!(
+            read_vgic_redist_u64(&target, GICR_PENDBASER).unwrap(),
+            pendbaser
+        );
+        assert_eq!(save_vgic(&target).unwrap(), saved);
+
+        for invalid in [
+            Arm64GicState {
+                gicr_propbaser: propbaser | (1 << 6),
+                ..saved
+            },
+            Arm64GicState {
+                gicr_pendbaser: pendbaser | (1 << 12),
+                ..saved
+            },
+            Arm64GicState {
+                gicr_pendbaser: pendbaser | (1 << 62),
+                ..saved
+            },
+        ] {
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+        }
+    }
+
+    #[test]
+    fn redistributor_bases_reject_kvm_rewritten_fields_before_vcpu_mutation() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        let valid = save_vcpu(&source).unwrap();
+        for (name, propbaser, pendbaser) in [
+            ("zero property base", 0, 0x580),
+            ("property shareability", 0x180 | (2 << 10), 0x580),
+            ("property inner cacheability", 0x80, 0x580),
+            ("property outer cacheability", 0x180 | (2 << 56), 0x580),
+            ("zero pending base", 0x180, 0),
+            ("pending shareability", 0x180, 0x980),
+            ("pending inner cacheability", 0x180, 0x480),
+            ("pending outer cacheability", 0x180, 0x580 | (2 << 56)),
+        ] {
+            let mut invalid = valid;
+            let gic = invalid.gic.as_mut().unwrap();
+            gic.gicr_propbaser = propbaser;
+            gic.gicr_pendbaser = pendbaser;
+            let mut target = FakeKvm::new();
+            target.vcpu_init().unwrap();
+            let before = save_vcpu(&target).unwrap();
+            let before_attrs = target.vgic_attrs.clone();
+            target.calls.clear();
+            assert!(
+                matches!(
+                    restore_vcpu(&mut target, &invalid),
+                    Err(BackendError::InvalidState)
+                ),
+                "restore accepted {name}"
+            );
+            assert_eq!(
+                save_vcpu(&target).unwrap(),
+                before,
+                "restore mutated {name}"
+            );
+            assert!(target.calls.is_empty(), "restore wrote {name}");
+            assert_eq!(target.vgic_attrs, before_attrs, "restore wrote {name}");
+        }
+    }
+
+    #[test]
+    fn vgic_iidr_revision_pin_preserves_other_identity_bits() {
+        assert_eq!(pinned_vgic_iidr(0x4b00_343b), 0x4b00_243b);
+        assert_eq!(pinned_vgic_iidr(0xabcd_f123), 0xabcd_2123);
+    }
+
+    #[test]
+    fn capabilities_record_full_vgic_distributor_identity() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.set_vgic_attr(
+            KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+            GICD_IIDR,
+            false,
+            0x4b00_243b,
+        )
+        .unwrap();
+        fake.set_vgic_attr(KVM_DEV_ARM_VGIC_GRP_DIST_REGS, GICD_TYPER2, false, 1 << 8)
+            .unwrap();
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let caps = backend.capabilities().arch;
+        assert_eq!(caps.gicd_iidr, 0x4b00_243b);
+        assert_eq!(caps.gicd_typer2, 1 << 8);
+    }
+
+    #[test]
+    fn vgic_distributor_control_rejects_untracked_bits_before_snapshot_or_restore() {
+        let mut source = FakeKvm::new();
+        for untracked in [1u64 << 8, 1, 1 << 31] {
+            source
+                .set_vgic_attr(
+                    KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                    GICD_CTLR,
+                    false,
+                    GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED | untracked,
+                )
+                .unwrap();
+            assert!(matches!(
+                save_vgic(&source),
+                Err(BackendError::Unsupported {
+                    what: "save vGIC with untracked GICD_CTLR bits"
+                })
+            ));
+        }
+
+        source
+            .set_vgic_attr(
+                KVM_DEV_ARM_VGIC_GRP_DIST_REGS,
+                GICD_CTLR,
+                false,
+                GICD_CTLR_REPRESENTED | GICD_CTLR_FIXED,
+            )
+            .unwrap();
+        let saved = save_vgic(&source).unwrap();
+        for untracked in [1 << 8, 1] {
+            let invalid = Arm64GicState {
+                gicd_ctlr: saved.gicd_ctlr | untracked,
+                ..saved
+            };
+            assert!(matches!(
+                validate_vgic_state(&invalid),
+                Err(BackendError::InvalidState)
+            ));
+            let mut target = FakeKvm::new();
+            let before_attrs = target.vgic_attrs.clone();
+            assert!(matches!(
+                restore_vgic(&mut target, &invalid),
+                Err(BackendError::InvalidState)
+            ));
+            assert!(target.calls.is_empty());
+            assert_eq!(target.vgic_attrs, before_attrs);
+        }
     }
 
     #[test]
@@ -3110,6 +3392,7 @@ mod tests {
         s.debug.breakpoint_control[0] = 1;
         s.debug.watchpoint_value[15] = 0x5678;
         s.debug.watchpoint_control[15] = 1;
+        s.debug.mdccint_el1 = 1 << 30;
         s.debug.mdscr_el1 = 0x8000;
         s.vtimer.cntv_ctl_el0 = 2;
         s.vtimer.cntv_cval_el0 = 0x1234_5678;
@@ -3440,6 +3723,8 @@ mod tests {
         trap_debug_exceptions.debug.trap_debug_exceptions = true;
         let mut trap_debug_reg_accesses = valid;
         trap_debug_reg_accesses.debug.trap_debug_reg_accesses = true;
+        let mut mdccint_reserved = valid;
+        mdccint_reserved.debug.mdccint_el1 = 1;
         let mut timer_unmasked = valid;
         timer_unmasked.vtimer.masked = false;
         let mut timer_ctl_reserved = valid;
@@ -3454,6 +3739,7 @@ mod tests {
         for (name, invalid) in [
             ("trap-debug-exceptions", trap_debug_exceptions),
             ("trap-debug-register-accesses", trap_debug_reg_accesses),
+            ("mdccint-reserved", mdccint_reserved),
             ("host-timer-unmasked", timer_unmasked),
             ("host-timer-control-reserved", timer_ctl_reserved),
             ("host-timer-control-enabled", timer_ctl_enabled),

@@ -26,8 +26,47 @@ initramfs, RAM size, seed, setup run budget, command line, and guest contract.
 Sessions booted with setup payloads also bind their ordered, length-delimited
 payload bytes; the empty list keeps the ordinary session identity.
 `identity_with_config_and_payloads` computes the same identity before boot and
-returns an error if the loaded executable cannot be identified. A nonempty
-`identity_tag` adds a workload domain; it does not replace those setup inputs.
+returns an error if the loaded executable cannot be identified.
+
+Public identity admission requires a strict host in every build, including
+callers of the library API. On Linux, that host is a fully static ELF executed
+from a write-sealed memfd. Admission rejects a program interpreter, dependent
+libraries, writable executable segments, unsupported executable mappings, and
+ambient loader overrides. It binds the sealed executable to the kernel-loaded
+mapping and measures the complete executable-map census, including the vDSO,
+each time the guard is checked. The full sealed-file digest is measured at
+admission and reused only while the file identity and seals remain stable;
+each recheck still compares every live executable byte with that file. An
+ordinary GNU executable and a dynamic library whose constructor clears its
+loader variable are refused.
+
+On macOS, admission requires the kernel-loaded main executable's CDHash to
+match a strictly validated signed image with hardened runtime, the Hypervisor
+entitlement, and the exact OS-only library constraint. Its loaded-image census
+must stay within the permitted OS cache. In-process sessions, UML sessions,
+session workers, cache operations, and service exchanges recheck strict host
+identity at their operation boundaries. The macOS recheck uses kernel-loaded
+signing state and CDHash, dyld generation, and the shared-cache census;
+path-based worker launch repeats full static signature validation. A changed
+or unavailable identity fails the session before a result is accepted.
+
+Cache publication checks strict host identity after the index callback. If it
+changed, the index revokes the committed entry and any descendants before the
+session returns an error. Another thread can observe a published entry before
+that check completes, so this guard is not an atomic cross-thread publication
+fence; each consuming session checks its own host identity before using the cache.
+`Session::image_identity()` returns the identifier admitted at construction;
+artifact and guest-operation boundaries perform the live identity checks.
+
+A nonempty `identity_tag` adds a workload domain; it does not replace those
+setup inputs.
+
+On Linux, `cargo run` and an ordinary GNU executable cannot create sessions or
+workers. The product CLI routes Consonance work into its sealed static host.
+Native CLI manifests use
+`native_loaded_executable_diagnostic_identity_self` to measure their dynamic
+CLI process.
+
 Sparse snapshot pages are relative to setup RAM, so a session checks this
 identity before importing pages from another session. Cache extents carry the
 same identity. Snapshots made with the earlier image identity calculation do
@@ -46,6 +85,13 @@ A package that answers its own opaque service requests installs a resolver with
 carries the package's `ServiceConfig` into the branch so the control server
 builds that handler. The handler is built before the live VM changes, so an
 uninstalled configuration fails the branch and leaves the session untouched.
+An unrecorded custom answer now surfaces as `StopReason::Decision`. The package
+passes an encoded answer to `Session::run` with a `Resolution`; the control
+server records it before guest delivery. `SearchSession::run_resolving` carries
+the same operation through worker and User-mode Linux sessions for fault search.
+`branch_with_service` also accepts an optional recorded coverage schedule, so
+an action's quantum is selected from input bytes at each SDK coverage exchange
+without writing one answer per callback.
 
 The same call carries the host-plane effects the run after the branch applies,
 each against the virtual moment it lands at, so a package stages a machine-level
@@ -122,9 +168,10 @@ the same local number. `CacheIndex` is the interface workers use:
 |---|---|
 | `lookup(namespace, key)` | a lease on the longest cached prefix |
 | `extent(len)` | a writable region, after evicting entries to fit the budget |
-| `publish(namespace, key, parent, extent, cost)` | a lease on the committed entry; a duplicate key keeps the first entry and frees the new extent |
+| `publish(namespace, key, parent, extent, target_commitment, cost)` | a lease on the committed entry; an equal-target duplicate keeps the first entry and frees the new extent, while a divergent duplicate fails without returning a lease |
 | `chain(lease)` | the entry's extents, anchor first |
 | `release(lease)` | the entry can be evicted again |
+| `revoke(lease)` | removes the entry and descendants, invalidating any held leases after a failed post-publication guard |
 | `report_store(holder, bytes)` | records a worker's local store size, evicts to fit, and answers whether that worker should shrink |
 | `forget_store(holder)` | removes a finished worker's store from the budget |
 
@@ -136,6 +183,24 @@ that returned to the setup content, and the sparse sidecar, with a SHA-256
 checksum over everything except the page data. Every 32 entries along a chain
 the next entry stores its full page list over setup and becomes an anchor, so
 an import reads at most 32 extents.
+
+The target commitment identifies the resolved state, not the chosen delta
+layout. For VMM snapshots, it binds the cache image prefix to the sparse
+sidecar with only the established logical CPU-state projections: init-valued
+x86 XSAVE restore presence and the Arm virtual timer's captured counter.
+Every other sidecar field stays in the commitment, and the original sidecar
+bytes remain in the extent for restore. Sparse delta export derives the
+sidecar's target-pages digest from all target pages that differ from setup,
+independently of the selected parent;
+the sidecar also carries the setup RAM digest, canonical state suffix, VM
+state, SDK state, policy and control state. Publication rejects a sidecar
+without that target-pages digest. For UML checkpoints, the commitment binds
+the cache identity to the checkpoint digest, which covers logical memory and
+bridge/service state. The cache compares commitments while holding its index
+lock, before returning a duplicate lease.
+On a divergent publication, the cache error carries the namespace, key,
+and both logical target commitments so the conflicting executions can be
+identified without accepting either as a duplicate.
 
 Eviction takes, among entries with no lease and no children, the one with the
 lowest priority, using GreedyDual-Size (Cao and Irani, 1997). An entry's cost
@@ -184,11 +249,16 @@ Unix socket pair, named by `HARMONY_SESSION_WORKER_FD`, and the child serves it
 with `serve_inherited`. The child re-executes the same binary, so it carries the
 same HVF entitlement and inherits the calling thread's CPU affinity.
 `WorkerLauncher::current_exe` records the parent's loaded image identity and
-checks the spawned child's loaded image before sending the initialization request.
-Linux hashes the parent through `/proc/self/exe` and checks procfs's PID
-namespace before reading `/proc/<child-pid>/exe`; macOS reads each process's
-code-directory hash. A replacement of the executable pathname cannot cause a
-different worker image to run under the parent's recorded identity. Each call is
+checks the spawned child's main executable. The child then measures its own
+loaded image and sends that identity before the parent sends initialization;
+the parent refuses a different identity before guest setup.
+The launcher checks loader overrides again immediately before spawn, and the
+worker rejects them on entry before accepting initialization.
+Linux checks procfs's PID namespace before reading `/proc/<child-pid>/exe` and
+compares the parent's and child's admission-time executable mappings. macOS
+reads each process's main code-directory hash. A replacement of the executable
+pathname cannot cause a different worker image to run under the parent's
+recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
@@ -223,9 +293,14 @@ recheck the same admitted processor and host identity. A publish exports the
 checkpoint into one extent,
 and an import reads it back with the session's service factory. Branches
 refuse mechanical effects, because the UML backend cannot write guest memory
-or inject interrupts. `store_bytes` is the allocated size of every held
-checkpoint, and telemetry reports the count and host time of captures,
-restores, fresh restores and imports.
+or inject interrupts. If handler or payload validation rejects a branch after
+its checkpoint has been restored, the client abandons the guest so a caller
+cannot continue from the rewound state after receiving an error. The client
+also checks the active service handler around branch factory calls and cached
+imports, abandoning the guest if a factory, clone, reseed, or restore changes
+the live handler through shared state. `store_bytes`
+is the allocated size of every held checkpoint, and telemetry reports the
+count and host time of captures, restores, fresh restores and imports.
 
 `SearchSession` is the set of calls a search worker makes, implemented by
 `Session`, `WorkerSession` and `UmlSession`.
@@ -264,9 +339,12 @@ Session console diagnostics return the most recent 64 KiB. The VM reader pages
 from the tail offset reported by the guest, so long boot output does not hide
 later failure evidence. UML uses the same bounded-tail contract. Repeated reads
 are snapshots and may overlap; reading diagnostics does not advance execution.
-UML terminal classification waits for the host console collector to finish, so
-the final kernel output cannot race the panic decision. Crash diagnostics report
-the settled exit status whether the bridge closure or process exit was seen first.
+UML terminal settlement waits for the host process to exit and the console
+collector to finish before reporting the diagnostic tail. The kernel-owned exit
+status decides a panic; console text does not. Crash diagnostics report the
+settled ordinary exit status whether the bridge closure or process exit was
+seen first. A signaled host exit abandons the session instead of producing a
+guest crash or shutdown.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic

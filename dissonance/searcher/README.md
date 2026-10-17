@@ -40,9 +40,22 @@ restoration metadata that their existing job-result identity also excludes.
 Before an archive checkpoint restores any state, live import and replay check
 each checkpoint entry's ID and snapshot against that source-bound digest.
 Duplicate or unknown checkpoint IDs, and source entries without a bound digest,
-are rejected. Older archive reports without snapshot identities remain usable for
-whole-tree import without a checkpoint, but cannot authorize checkpoint restore.
+are rejected. Whole-tree import also compares every present source-entry digest,
+including genesis, with its newly reconstructed logical snapshot identity before
+admitting that entry or inheriting source evidence. A source entry that had a
+digest but no longer reconstructs to a runnable endpoint fails import. Older
+archive reports without snapshot identities remain usable for whole-tree import
+without a checkpoint, but cannot authorize checkpoint restore or certify a
+source endpoint across imports. Their actions are reconstructed under the current
+executor; the source progress watermark remains inherited historical evidence
+bound to the source file bytes, not evidence produced by that reconstruction.
 Snapshot-root origins use their separate checkpoint contract.
+For a workload with endpoint certificates, whole-tree import reconstructs each
+action between a parent and its imported candidate, including candidates loaded
+from source snapshots. It compares a checkpointed endpoint with the rebuilt
+endpoint before binding any certificates to the archive path. A later snapshot
+eviction can therefore replay the imported path with the same checks as a live
+campaign.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
@@ -58,7 +71,11 @@ rule applies when cumulative work reaches the recorded work budget. Schema versi
 requires the loaded executable identity and records the reservation that owns each
 duplicate skip. Replay checks that skips follow
 selection order, stay within the admission window, and do not exceed the live
-limit of 1,024 attempts for one reservation. A terminal record follows only
+limit of 1,024 attempts for one reservation. Each skip must occur during the
+initial window fill or immediately after the admission that opens its later
+reservation slot. A reservation that takes a continuation cannot record a
+duplicate skip because continuation dispatch bypasses ordinary selection. A
+terminal record follows only
 after the campaign has drained its jobs and finished
 successfully. Replay requires that record and checks its job, skip, and
 admission totals. Without a wall-time limit, it also requires every reservation
@@ -159,6 +176,15 @@ archive's resident bytes are not checked against the whole budget during the
 campaign.
 
 Prefix-tree compaction remaps a single surviving child in its existing map.
+The same prefix nodes can hold optional workload endpoint certificates. A
+retained candidate binds the certificate for each action since its parent,
+including intermediate actions that were not themselves retained. A job
+origin returns the replay actions and certificates from the same node walk,
+and in-flight checkpoints preserve both vectors. Shared prefixes reject a
+conflicting binding; compaction and snapshot eviction keep nodes on any
+selectable entry's path. Workloads without endpoint certificates leave these
+certificate slots absent, while workloads that require them reject missing values during
+replay.
 Branching maps are rebuilt so compaction still releases their unused storage;
 missing children follow the same rebuilding path. This preserves node order,
 parent links, owners, and serialized state while avoiding a map allocation and
@@ -747,7 +773,7 @@ When that origin carries a selected SHA-256, replay compares it with the exact
 checkpoint bytes opened for resume before restoring state.
 The admission window, limits, workload identity, loaded executable identity,
 and the workload policies that give stored inputs and keys their meaning must
-match. The search checkpoint format is version 7; a checkpoint from another
+match. The search checkpoint format is version 8; a checkpoint from another
 executable is refused before the new stream is written. Within that same
 executable, the generic campaign configuration may change mixture, retention
 and either objective-stop setting at runtime. The selector and continuation

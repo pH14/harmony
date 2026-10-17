@@ -206,8 +206,7 @@ fn init_exit(options: &Options, profile: &VerifiedProfile) -> io::Result<Value> 
     let exit = Guest::spawn(&launch(options, "exit"), profile)
         .map_err(io::Error::other)?
         .wait()?;
-    let passed = !matches!(exit.reason, ExitReason::Exited(0) | ExitReason::WallLimit)
-        && contains(&exit, "Kernel panic")
-        && clean(&exit);
+    let passed =
+        exit.reason == ExitReason::GuestPanic && contains(&exit, "Kernel panic") && clean(&exit);
     Ok(check("guest_panic", passed, summary(&exit)))
 }

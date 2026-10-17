@@ -89,6 +89,7 @@ impl ControlState {
         if pending.seed() != 0
             || pending.config() != &ServiceConfig::default()
             || pending.payloads().is_some()
+            || pending.coverage_schedule().is_some()
             || !pending.answers().is_empty()
         {
             return Err("pending control plan contains SDK inputs");
@@ -146,7 +147,7 @@ fn number(input: &mut &[u8]) -> Result<u64, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use environment::channel::{Effect, MAX_CHANNEL_BYTES};
+    use environment::channel::{CoverageSchedule, Effect, MAX_CHANNEL_BYTES};
 
     fn state() -> ControlState {
         let mut recorded = InputSpec::seeded(9);
@@ -282,6 +283,9 @@ mod tests {
             .record_answer(1, 19, 7, ServiceAnswer::Nominal)
             .unwrap();
         plans.push(answered);
+        let mut coverage = InputSpec::seeded(0);
+        coverage.set_coverage_schedule(Some(CoverageSchedule::new(1024, vec![]).unwrap()));
+        plans.push(coverage);
         for pending in plans {
             let invalid = ControlState {
                 pending,

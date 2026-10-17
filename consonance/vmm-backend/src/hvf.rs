@@ -44,6 +44,7 @@ const HV_SYS_REG_DBGBVR0_EL1: u16 = 0x8004;
 const HV_SYS_REG_DBGBCR0_EL1: u16 = 0x8005;
 const HV_SYS_REG_DBGWVR0_EL1: u16 = 0x8006;
 const HV_SYS_REG_DBGWCR0_EL1: u16 = 0x8007;
+const HV_SYS_REG_MDCCINT_EL1: u16 = 0x8010;
 const HV_SYS_REG_MDSCR_EL1: u16 = 0x8012;
 const HV_SYS_REG_CPACR_EL1: u16 = 0xc082;
 const HV_SYS_REG_TTBR0_EL1: u16 = 0xc100;
@@ -91,6 +92,7 @@ const PSTATE_SSBS: u64 = 1 << 12;
 const PSTATE_PAN: u64 = 1 << 22;
 const PSTATE_DIT: u64 = 1 << 24;
 const PSTATE_NZCV: u64 = 0xf << 28;
+const MDCCINT_WRITABLE_BITS: u64 = (1 << 29) | (1 << 30);
 const SCTLR_SPAN: u64 = 1 << 23;
 const SCTLR_DSSBS: u64 = 1 << 44;
 const ESR_IL: u64 = 1 << 25;
@@ -411,6 +413,7 @@ fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
         || state.vtimer.cntv_ctl_el0 & !0b10 != 0
         || u32::try_from(state.simd_fp.fpcr).is_err()
         || u32::try_from(state.simd_fp.fpsr).is_err()
+        || state.debug.mdccint_el1 & !MDCCINT_WRITABLE_BITS != 0
     {
         return Err(BackendError::InvalidState);
     }
@@ -1248,6 +1251,7 @@ impl Backend for HvfBackend {
             state.debug.watchpoint_control[index as usize] =
                 self.sysreg(HV_SYS_REG_DBGWCR0_EL1 + index * 8)?;
         }
+        state.debug.mdccint_el1 = self.sysreg(HV_SYS_REG_MDCCINT_EL1)?;
         state.debug.mdscr_el1 = self.sysreg(HV_SYS_REG_MDSCR_EL1)?;
         // SAFETY: outputs are live bools and this is the owning thread.
         hv("hv_vcpu_get_trap_debug_exceptions", unsafe {
@@ -1371,6 +1375,7 @@ impl Backend for HvfBackend {
                 state.debug.watchpoint_control[index as usize],
             )?;
         }
+        self.set_sysreg(HV_SYS_REG_MDCCINT_EL1, state.debug.mdccint_el1)?;
         self.set_sysreg(HV_SYS_REG_MDSCR_EL1, state.debug.mdscr_el1)?;
         // SAFETY: the vCPU is live and this is the owning thread.
         hv("hv_vcpu_set_trap_debug_exceptions", unsafe {
@@ -1421,6 +1426,8 @@ impl Backend for HvfBackend {
                 smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
                 psci_profile: crate::arch::arm64::Arm64PsciProfile::HvfSingleVcpu,
                 gic_ctlr_fixed_bits: 0,
+                gicd_iidr: 0,
+                gicd_typer2: 0,
             },
         }
     }

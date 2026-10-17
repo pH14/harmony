@@ -310,20 +310,30 @@ pub fn compare_portable_execution_state(
     })
 }
 
-#[cfg(target_arch = "x86_64")]
 pub fn logical_x86_sparse_sidecar(bytes: &[u8]) -> Result<Vec<u8>, PortableSnapshotError> {
     let sidecar = decode_sparse_sidecar(bytes)?;
-    let mut state = vm_state::VmState::decode(&sidecar.vm_state)
+    let state = vm_state::VmState::decode(&sidecar.vm_state)
         .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+    let vm_state = logical_x86_vm_state(state)?;
+    encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state)
+}
+
+fn logical_x86_vm_state(mut state: vm_state::VmState) -> Result<Vec<u8>, PortableSnapshotError> {
     state.xsave_restore_bv =
         vmm_backend::logical_xsave_restore_bv(&state.xsave.0, state.xsave_restore_bv)
             .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse XSAVE state"))?;
-    let vm_state = state
+    state
         .encode()
-        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))?;
+        .map_err(|_| PortableSnapshotError::Malformed("invalid x86 sparse CPU state"))
+}
+
+fn encode_sparse_sidecar_with_vm_state(
+    sidecar: &SparsePortableSidecar,
+    vm_state: &[u8],
+) -> Result<Vec<u8>, PortableSnapshotError> {
     encode_sparse_sidecar_with_target_pages(
         &SparsePortableSidecarRef {
-            vm_state: &vm_state,
+            vm_state,
             sdk: sidecar.sdk.as_ref(),
             policy: &sidecar.policy,
             at: sidecar.at,
@@ -455,6 +465,30 @@ pub(crate) fn decode_sparse_sidecar(
     })
 }
 
+pub fn sparse_delta_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], PortableSnapshotError> {
+    let decoded = decode_sparse_sidecar(sidecar)?;
+    if decoded.target_pages_digest.is_none() {
+        return Err(PortableSnapshotError::Malformed(
+            "sparse delta sidecar lacks target pages digest",
+        ));
+    }
+    let vm_state = match vm_state::VmState::decode(&decoded.vm_state) {
+        Ok(state) => logical_x86_vm_state(state)?,
+        Err(vm_state::VmStateError::UnsupportedArch(vm_state::ARCH_AARCH64)) => {
+            let state = vm_state::Arm64VmState::decode(&decoded.vm_state)
+                .map_err(|_| PortableSnapshotError::Malformed("invalid Arm64 sparse CPU state"))?;
+            vm_state::SnapshotRecords::encode_for_hash(&state)
+                .map_err(|_| PortableSnapshotError::Malformed("invalid Arm64 sparse CPU state"))?
+        }
+        Err(_) => return Err(PortableSnapshotError::Malformed("invalid sparse CPU state")),
+    };
+    let logical_sidecar = encode_sparse_sidecar_with_vm_state(&decoded, &vm_state)?;
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-sparse-delta-target-commitment-v2\0");
+    digest.update(&logical_sidecar);
+    Ok(digest.finalize().into())
+}
+
 fn encode_sdk(sdk: &SdkSnapshot) -> Result<Vec<u8>, PortableSnapshotError> {
     let mut out = Vec::new();
     let recorded = sdk.recorded.encode();
@@ -552,6 +586,32 @@ fn encode_pending_stop(out: &mut Vec<u8>, stop: Option<&SdkStop>) {
             put_vec_len(out, question.payload().len());
             out.extend_from_slice(question.payload());
         }
+        Some(SdkStop::CoverageDecision {
+            moment,
+            seq,
+            question,
+            ready,
+        }) => {
+            out.push(4);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&seq.to_le_bytes());
+            out.extend_from_slice(&question.service().to_le_bytes());
+            out.extend_from_slice(&question.request_id().to_le_bytes());
+            put_vec_len(out, question.payload().len());
+            out.extend_from_slice(question.payload());
+            out.extend_from_slice(&ready.to_le_bytes());
+        }
+        Some(SdkStop::DeferredDoorbell {
+            moment,
+            requested_len,
+            request,
+        }) => {
+            out.push(5);
+            out.extend_from_slice(&moment.to_le_bytes());
+            out.extend_from_slice(&requested_len.to_le_bytes());
+            put_vec_len(out, request.len());
+            out.extend_from_slice(request);
+        }
     }
 }
 
@@ -577,6 +637,47 @@ fn decode_pending_stop(
                 moment,
                 seq,
                 question,
+            })
+        }
+        4 => {
+            let moment = input.u64()?;
+            let seq = input.u32()?;
+            let service = input.u16()?;
+            let request = input.u64()?;
+            let payload = input.bytes()?;
+            let ready = input.u32()?;
+            if service != channel::SERVICE_COVERAGE_QUANTUM
+                || u32::try_from(request).is_err()
+                || payload.len() != 8
+                || ready == 0
+            {
+                return Err(PortableSnapshotError::Malformed("SDK coverage decision"));
+            }
+            let question = channel::Question::with_request_id(request, service, payload)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK coverage decision"))?;
+            Some(SdkStop::CoverageDecision {
+                moment,
+                seq,
+                question,
+                ready,
+            })
+        }
+        5 => {
+            let moment = input.u64()?;
+            let requested_len = input.u32()?;
+            let frame_len = usize::try_from(input.u64()?)
+                .map_err(|_| PortableSnapshotError::Malformed("SDK deferred doorbell"))?;
+            if frame_len > PAGE_SIZE
+                || (requested_len as usize <= PAGE_SIZE && frame_len != requested_len as usize)
+                || (requested_len as usize > PAGE_SIZE && frame_len != 0)
+            {
+                return Err(PortableSnapshotError::Malformed("SDK deferred doorbell"));
+            }
+            let request = input.section(frame_len)?;
+            Some(SdkStop::DeferredDoorbell {
+                moment,
+                requested_len,
+                request,
             })
         }
         _ => return Err(PortableSnapshotError::Malformed("SDK pending stop")),
@@ -860,6 +961,54 @@ mod tests {
         .unwrap()
     }
 
+    fn arm64_sidecar(state: &vm_state::Arm64VmState) -> Vec<u8> {
+        encode_sparse_sidecar_with_target_pages(
+            &SparsePortableSidecarRef {
+                vm_state: &state.encode().unwrap(),
+                sdk: None,
+                policy: &ServiceConfig::default(),
+                at: 23,
+                sdk_events: 0,
+                trace_events: 17,
+                trace_schedules: 5,
+                tainted: false,
+                base_ram_digest: [0xa5; 32],
+                state_blob_suffix: b"state-suffix",
+                control_state: b"control-state",
+            },
+            Some([0x3c; 32]),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sparse_target_commitment_deduplicates_equal_logical_arm_counter() {
+        let mut state = vm_state::Arm64VmState::default();
+        state.vtimer.counter = 10;
+        let first = arm64_sidecar(&state);
+        let first_commitment = sparse_delta_target_commitment(&first).unwrap();
+        state.vtimer.counter = 20;
+        let second = arm64_sidecar(&state);
+        assert_ne!(first, second);
+        assert_eq!(
+            sparse_delta_target_commitment(&second).unwrap(),
+            first_commitment
+        );
+        state.regs.x[0] = 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&arm64_sidecar(&state)).unwrap(),
+            first_commitment
+        );
+        state.regs.x[0] = 0;
+        let mut changed = decode_sparse_sidecar(&arm64_sidecar(&state)).unwrap();
+        changed.control_state.push(1);
+        let changed = encode_sparse_sidecar_with_vm_state(&changed, &changed.vm_state).unwrap();
+        assert_ne!(
+            sparse_delta_target_commitment(&changed).unwrap(),
+            first_commitment
+        );
+    }
+
     #[test]
     #[cfg(target_arch = "x86_64")]
     fn sparse_logical_x86_identity_normalizes_only_init_presence_without_mutating_restore_bytes() {
@@ -904,6 +1053,56 @@ mod tests {
         state.xsave_restore_bv = Some(0);
         assert!(logical_x86_sparse_sidecar(&x86_sidecar(&state)).is_err());
         assert!(logical_x86_sparse_sidecar(&active[..83]).is_err());
+    }
+
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn sparse_target_commitment_deduplicates_equal_logical_xsave_state() {
+        let mut state = vm_state::VmState::default();
+        state.xsave.0 = vec![0; 576];
+        vmm_backend::arch::x86::canonicalize_xsave(&mut state.xsave.0);
+        let mut expected = None;
+        for raw in [0, 2, 3] {
+            state.xsave_restore_bv = Some(raw);
+            let sidecar = x86_sidecar(&state);
+            let commitment = sparse_delta_target_commitment(&sidecar).unwrap();
+            if let Some(first) = expected {
+                assert_eq!(commitment, first);
+            } else {
+                expected = Some(commitment);
+            }
+        }
+        state.regs.rbx = 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap(),
+            expected.unwrap()
+        );
+        state.regs.rbx = 0;
+        state.xsave.0[160] = 0x79;
+        state.xsave.0[512] = 2;
+        state.xsave_restore_bv = Some(2);
+        let active = sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap();
+        state.xsave.0[160] ^= 1;
+        assert_ne!(
+            sparse_delta_target_commitment(&x86_sidecar(&state)).unwrap(),
+            active
+        );
+    }
+
+    #[test]
+    fn sparse_target_commitment_rejects_unknown_or_invalid_cpu_architecture() {
+        let sidecar =
+            decode_sparse_sidecar(&arm64_sidecar(&vm_state::Arm64VmState::default())).unwrap();
+        for arch in [0u16, 3, u16::MAX] {
+            let mut vm_state = sidecar.vm_state.clone();
+            vm_state[6..8].copy_from_slice(&arch.to_le_bytes());
+            let encoded = encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state).unwrap();
+            assert!(sparse_delta_target_commitment(&encoded).is_err());
+        }
+        let mut vm_state = sidecar.vm_state.clone();
+        vm_state[0] ^= 1;
+        let encoded = encode_sparse_sidecar_with_vm_state(&sidecar, &vm_state).unwrap();
+        assert!(sparse_delta_target_commitment(&encoded).is_err());
     }
 
     #[test]
@@ -1576,7 +1775,8 @@ mod tests {
 
     #[test]
     fn sparse_sidecar_target_page_digest_is_optional_and_bounded() {
-        let (_, vm_state, _, policy) = fixture();
+        let vm_state = vm_state::Arm64VmState::default().encode().unwrap();
+        let policy = ServiceConfig::default();
         let sidecar = SparsePortableSidecarRef {
             vm_state: &vm_state,
             sdk: None,
@@ -1591,11 +1791,18 @@ mod tests {
             control_state: &[],
         };
         let without = encode_sparse_sidecar(&sidecar).unwrap();
+        assert!(matches!(
+            sparse_delta_target_commitment(&without),
+            Err(PortableSnapshotError::Malformed(
+                "sparse delta sidecar lacks target pages digest"
+            ))
+        ));
         assert_eq!(
             decode_sparse_sidecar(&without).unwrap().target_pages_digest,
             None
         );
         let with = encode_sparse_sidecar_with_target_pages(&sidecar, Some([0x3c; 32])).unwrap();
+        assert_ne!(sparse_delta_target_commitment(&with).unwrap(), [0; 32]);
         assert_eq!(with.len(), without.len() + 32);
         assert_eq!(
             decode_sparse_sidecar(&with).unwrap().target_pages_digest,
@@ -2263,6 +2470,22 @@ mod tests {
                 seq: 42,
                 question: channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap(),
             }),
+            Some(SdkStop::CoverageDecision {
+                moment: 31,
+                seq: 42,
+                question: channel::Question::with_request_id(
+                    7,
+                    channel::SERVICE_COVERAGE_QUANTUM,
+                    1_u64.to_le_bytes().to_vec(),
+                )
+                .unwrap(),
+                ready: 2,
+            }),
+            Some(SdkStop::DeferredDoorbell {
+                moment: 31,
+                requested_len: 3,
+                request: vec![8, 9, 10],
+            }),
         ];
         for stop in stops {
             let (memory, vm_state, mut sdk, policy) = fixture();
@@ -2319,10 +2542,31 @@ mod tests {
                 assert!(decode_pending_stop(&mut SliceReader::new(&bytes[..end])).is_err());
             }
         }
-        assert!(decode_pending_stop(&mut SliceReader::new(&[4])).is_err());
+        assert!(decode_pending_stop(&mut SliceReader::new(&[6])).is_err());
         let mut bytes = vec![3];
         bytes.extend_from_slice(&[0; 22]);
         bytes.extend_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_pending_stop(&mut SliceReader::new(&bytes)).is_err());
+
+        let mut deferred = Vec::new();
+        encode_pending_stop(
+            &mut deferred,
+            Some(&SdkStop::DeferredDoorbell {
+                moment: 31,
+                requested_len: 3,
+                request: vec![8, 9, 10],
+            }),
+        );
+        deferred[9..13].copy_from_slice(&4_u32.to_le_bytes());
+        assert!(matches!(
+            decode_pending_stop(&mut SliceReader::new(&deferred)),
+            Err(PortableSnapshotError::Malformed("SDK deferred doorbell"))
+        ));
+        deferred[9..13].copy_from_slice(&3_u32.to_le_bytes());
+        deferred[13..21].copy_from_slice(&((PAGE_SIZE as u64) + 1).to_le_bytes());
+        assert!(matches!(
+            decode_pending_stop(&mut SliceReader::new(&deferred)),
+            Err(PortableSnapshotError::Malformed("SDK deferred doorbell"))
+        ));
     }
 }

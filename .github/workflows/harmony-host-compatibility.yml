@@ -26,8 +26,9 @@ env:
   # portable tests; they are not evidence that HVF or Arm KVM executes a guest
   # correctly. That evidence comes from a host with a real hypervisor.
   # A host whose portable suite silently stopped selecting tests must fail
-  # rather than report a green skip, so each run checks this floor.
+  # rather than report a green skip, so each suite checks its floor.
   PORTABLE_TEST_FLOOR: 1000
+  DISSONANCE_PORTABLE_TEST_FLOOR: 300
 
 jobs:
   scope:
@@ -100,15 +101,44 @@ jobs:
           python3 consonance/vmm-core/qualification/qualify-restore.py --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
-      - name: Start the assembled CLI on this host
+  macos-consonance-host-package:
+    name: macOS Consonance Host Package
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: macos-14
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-host-compatibility-macos-package
+      - name: Build and constrain the paired executables
         run: |
           set -euo pipefail
-          cargo run -q -p harmony-cli -- --help
-          # Preflight exits non-zero on a host that cannot run a guest, and
-          # a hosted runner has no nested hypervisor. This job checks that the CLI
-          # runs and identifies the host, so the readiness verdict is reported.
+          cargo build --locked -p harmony-cli --bin harmony
+          cargo build --locked -p harmony-cli --no-default-features \
+            --features consonance-host --bin harmony-consonance-host
+          codesign --force --sign - --identifier org.harmony.consonance-host \
+            --options runtime,hard,kill \
+            --entitlements consonance/vmm-backend/hvf.entitlements.plist \
+            --library-constraint scripts/macos-os-only-library-constraint.coderequirement \
+            target/debug/harmony-consonance-host
+      - name: Prove signed host admission and native QuickNES routing
+        run: |
+          python3 scripts/test-consonance-host-package.py \
+            --frontend target/debug/harmony \
+            --host target/debug/harmony-consonance-host \
+            --platform macos
+      - name: Report strict host readiness on macOS
+        run: |
+          set -euo pipefail
           status=0
-          cargo run -q -p harmony-cli -- check --offline --json >check.json || status=$?
+          target/debug/harmony check --offline --json >check.json || status=$?
           cat check.json
           test "$(jq -r .os check.json)" = macos
           test "$(jq -r .architecture check.json)" = aarch64
@@ -143,13 +173,39 @@ jobs:
           set -euo pipefail
           # The CLI builds the Arm64 KVM ioctl surface only on this host.
           cargo build -p harmony-cli
-      - name: Run the portable Consonance, Harmony and Dissonance tests
+      - name: Run the portable Consonance and Harmony tests
         run: |
           set -euo pipefail
           cargo nextest run --workspace --no-fail-fast 2>&1 | tee host-tests.log
-          cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
-            --no-fail-fast 2>&1 | tee -a host-tests.log
           scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+
+  linux-arm64-dissonance:
+    name: Linux Arm64 Dissonance
+    needs: scope
+    if: needs.scope.outputs.rust_checks == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          shared-key: harmony-host-compatibility-linux-arm64-dissonance
+          workspaces: |
+            dissonance -> target
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run the portable Dissonance tests
+        run: |
+          set -euo pipefail
+          cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
+            --no-fail-fast 2>&1 | tee host-dissonance-tests.log
+          scripts/check-portable-tests.sh host-dissonance-tests.log "$DISSONANCE_PORTABLE_TEST_FLOOR"
 
   linux-arm64-qualification:
     name: Linux Arm64 Qualification
@@ -186,18 +242,3 @@ jobs:
           python3 consonance/vmm-core/qualification/qualify-restore.py --check
           cargo fetch --locked --manifest-path dissonance/Cargo.toml
           python3 scripts/qualify-host-sha256.py --check
-      - name: Start the assembled CLI on this host
-        run: |
-          set -euo pipefail
-          cargo run -q -p harmony-cli -- --help
-          # Preflight exits non-zero on a host that cannot run a guest, and
-          # a hosted runner has no usable /dev/kvm. This job checks that the CLI
-          # runs and identifies the host, so the readiness verdict is reported.
-          status=0
-          cargo run -q -p harmony-cli -- check --offline --json >check.json || status=$?
-          cat check.json
-          test "$(jq -r .os check.json)" = linux
-          test "$(jq -r .architecture check.json)" = aarch64
-          jq -e 'has("ready") and has("blockers")' check.json >/dev/null
-          jq -r '"backend: \(.backend); ready: \(.ready)"' check.json
-          echo "check exit: ${status}"

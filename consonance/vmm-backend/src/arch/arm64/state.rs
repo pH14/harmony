@@ -40,6 +40,8 @@ pub struct Arm64GicState {
     pub timer_hz: u64,
     pub timer_intid: u32,
     pub gicd_ctlr: u32,
+    pub gicr_propbaser: u64,
+    pub gicr_pendbaser: u64,
     pub group: [u32; ARM64_GIC_BITMAP_WORDS],
     pub enable: [u32; ARM64_GIC_BITMAP_WORDS],
     pub pending: [u32; ARM64_GIC_BITMAP_WORDS],
@@ -100,11 +102,13 @@ impl Arm64GicIdleState {
 impl Default for Arm64GicState {
     fn default() -> Self {
         Self {
-            version: 7,
+            version: 8,
             impl_spis: 0,
             timer_hz: 0,
             timer_intid: 0,
             gicd_ctlr: 0,
+            gicr_propbaser: 0,
+            gicr_pendbaser: 0,
             group: [0; ARM64_GIC_BITMAP_WORDS],
             enable: [0; ARM64_GIC_BITMAP_WORDS],
             pending: [0; ARM64_GIC_BITMAP_WORDS],
@@ -174,6 +178,7 @@ pub struct Arm64DebugState {
     pub breakpoint_control: [u64; 16],
     pub watchpoint_value: [u64; 16],
     pub watchpoint_control: [u64; 16],
+    pub mdccint_el1: u64,
     pub mdscr_el1: u64,
     pub trap_debug_exceptions: bool,
     pub trap_debug_reg_accesses: bool,

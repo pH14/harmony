@@ -95,6 +95,12 @@ pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
         .ok_or_else(|| format!("unknown workload package {:?}", workload.package).into())
 }
 pub fn dispatch(request: Request) -> Result<u8> {
+    if !matches!(
+        request.operation,
+        Operation::Inspect | Operation::Timeline | Operation::Logs
+    ) {
+        crate::host_boundary::admit_execution(&request.config.runner.kind)?;
+    }
     let package = select(&request.config.workload)?;
     if !package.supports(request.operation) {
         return Err(format!(
@@ -172,6 +178,19 @@ mod tests {
             Ok(0)
         }
     }
+    #[test]
+    fn dynamic_dispatch_cannot_execute_a_changed_consonance_recipe() {
+        let mut config = Config::default();
+        config.runner.kind = "consonance".into();
+        let error = dispatch(Request {
+            operation: Operation::Check,
+            config,
+            ..Default::default()
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("packaged strict host"));
+    }
+
     #[test]
     fn third_package_uses_shared_preparation_search_replay_and_branch_dispatch() {
         let root = tempfile::tempdir().unwrap();

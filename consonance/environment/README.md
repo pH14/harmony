@@ -6,13 +6,21 @@ requests and responses, and the versioned input reproducer. Workload packages
 supply service handlers and interpret their request and response bytes.
 
 `channel::RecordedEnv` records overrides by virtual moment, service namespace,
-and request identity. A handler can answer immediately or return `External` to
-stop the guest for a host-selected answer. The channel commits a candidate
-handler only after a valid answer. Before and after each handler response, it
+and request identity. Guest-facing SDK requests use recorded, payload-bound
+answers, deterministic core supplies, or the built-in nominal handler. A custom
+handler's unrecorded answer is `External`: the VMM stops before delivering guest
+bytes, and `Run { resolve }` records the host's answer before resuming. A custom
+handler cannot claim the nominal fast path by declaring the nominal identity.
+The standalone `RecordedEnv::decide` API can still consult a handler; its
+answer does not certify a guest-facing continuation. The channel commits a
+candidate handler only after a valid answer. Before and after each handler response, it
 captures the live handler's identity, configuration, and state. If a shallow
 clone changes that live state during an answer, external request, or error,
 the channel and its transaction clones become poisoned. They reject later
-requests and cannot produce a snapshot or state hash. Handler implementations
+requests and cannot produce a snapshot or state hash. Public environment clones
+and internal handler clones compare both copies with the live state before use;
+guest-facing SDK and VMM transactions reject a poisoned clone before accepting
+a decision or answer. Handler implementations
 must expose all mutable replay state through `snapshot_state` and keep it from
 changing outside the channel. Capturing and restoring handler state is fallible, so failed
 capture cannot produce a usable snapshot or state hash. A handler's identity
@@ -49,12 +57,13 @@ write nested records directly into their destination instead of allocating and
 copying an intermediate buffer. Neither method changes the captured state.
 
 `ServiceHandler::respond` receives the virtual moment the question surfaced at
-alongside the question, so a handler whose answer depends on the guest's
-position in virtual time reads it from the environment rather than keeping a
-count of its own.
+alongside the question. A client may use it to propose an explicit recorded
+resolution, but guest execution does not call it for an unrecorded custom
+answer.
 
 `input_spec::InputSpec` combines the seed, service configuration, ordered
-payloads, recorded answers, reseed points, and mechanical effects. Its versioned
+payloads, recorded answers, an optional piecewise coverage-quantum schedule,
+reseed points, and mechanical effects. Its versioned
 codec bounds lengths and validates ordering. Mechanical effects describe memory
 writes and memory XOR; packages choose when and why to use them. The VMM validates their machine addresses before applying them.
 
@@ -82,8 +91,10 @@ Individual channel values remain capped at `MAX_CHANNEL_BYTES`.
 
 `sdk` holds the SDK request rules every backend shares: the event classes,
 service questions and answers, payload pulls, and coverage requests and
-replies. The KVM and HVF VMM and the User-mode Linux bridge both call it, so a
-guest gets the same answers on either backend.
+replies. The KVM and HVF VMM and the User-mode Linux bridge both call it for
+recorded and nominal answers. Both execution paths pause before an unrecorded
+custom answer is sent to the guest and resume after the client supplies a
+payload-bound resolution.
 
 The fault catalog and fault-selection policies live in
 [`workloads/fault-policy`](../../workloads/fault-policy/README.md). An ordinary
@@ -98,5 +109,11 @@ cargo clippy -p environment --all-features --all-targets -- -D warnings
 The coverage-quantum service (ID 4) takes a thread ID as the request ID and
 the current threshold as eight little-endian bytes. It answers with a positive
 eight-byte quantum: the number of coverage callbacks before that thread's next
-exchange. The nominal answer is 1024. A workload handler answers from its own
-recorded configuration, so quantum answers add nothing to the recorded state.
+exchange. The nominal answer is 1024. A branch may record a versioned schedule
+with a positive default and ordered half-open windows. The SDK opcode-2 path
+selects the exact recorded answer first, then the schedule at the request's
+virtual moment. The schedule is part of reproducer, snapshot, and state hash,
+so repeated callbacks do not grow the answer tape. A custom contract without
+either answer stops as an explicit decision before the scheduler selection,
+threshold, or guest response commits. Generic opcode-3 service questions with
+numeric service ID 4 do not consult the coverage schedule.

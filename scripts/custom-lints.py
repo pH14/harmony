@@ -122,7 +122,7 @@ NUMBERED_NAME_ALLOWLIST = re.compile(
     # Bit-width suffixes (u8, u32, i64, f64, ...).
     r"(?:u|i|f)(?:8|16|32|64|128)$"
     # Architecture and hardware names.
-    r"|(?:x86|arm64|Arm64|X86|Gicv3|gicv3)$"
+    r"|(?:x86|arm64|aarch64|Arm64|X86|Gicv3|gicv3)$"
     # Architectural x86 control register names.
     r"|(?:cr[02348])$"
     # Hardware device names (Pl011, Uart8250, ...).
@@ -1076,14 +1076,21 @@ def check_job_ignored_tests(rel_path: str, job_id: str, job: dict, registered) -
     violations = []
     for pattern in registered.ignored_tests:
         binary_id, test = pattern.split(" ", 1)
-        names = [binary_id.split("::")[-1]]
+        binary = binary_id.split("::")[-1]
+        if binary.startswith("bin/"):
+            executable = binary.removeprefix("bin/")
+            names = [] if re.search(r"(?<!\S)--bin\s+" + re.escape(executable) + r"(?![\w-])",
+                                     commands) else [f"--bin {executable}"]
+        else:
+            names = [] if _names_word(commands, binary) else [binary]
         if test != "*":
-            names.append(test.split("::")[-1])
-        missing = [name for name in names if not _names_word(commands, name)]
-        if missing:
+            name = test.split("::")[-1]
+            if not _names_word(commands, name):
+                names.append(name)
+        if names:
             violations.append(Violation("ci-ignored-tests", rel_path, 0,
                 f"job '{job_id}' registers '{pattern}' but its steps never name "
-                f"{', '.join(missing)}"))
+                f"{', '.join(names)}"))
     return violations
 
 

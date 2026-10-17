@@ -143,6 +143,17 @@ the same quantum, so busy-loop scheduling replays along with fault timing:
 | `Restart(node, ticks)` | the node is killed and comes back after a quarter of the window, at least one tick |
 | `Hook(id, ticks)` | the supervisor runs that hook once |
 
+Unrecorded standing-service questions stop at an explicit decision. The fault
+client derives an answer from the action's configuration and resumes through a
+recorded resolution before the guest sees it. Worker and UML sessions carry
+the same resolution. Each branch also records a compact schedule of coverage
+quantums from its action windows. The SDK selects that quantum directly, so a
+small quantum does not create one answer-tape entry per callback.
+When reconstructing an earlier prefix, the resolver uses that prefix's installed
+service configuration for requests before its deadline. A request at or beyond
+the deadline remains pending at the action snapshot. The next action's branch
+installs its service configuration before resolving that request.
+
 Each fault action becomes a standing-fault window on the shared
 [`fault-policy`](../fault-policy) wire form. The package answers the platform supervisor's
 standing poll with the windows whose half-open span contains the polling
@@ -165,6 +176,8 @@ be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
 most 32 past the setup snapshot. Every sealed prefix is published to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
+Publishing an action prefix already cached with a different target state fails
+before the fault controller seals a link to the cached lease.
 A prefix that the chain does not hold is imported from the longest cached
 prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a
@@ -359,6 +372,52 @@ and whether hooks, workload, checks, or event faults have progressed. Site
 identities and workload-specific concepts do not enter the duration policy.
 Choices and feedback state are recorded in the campaign stream; input replay
 executes the recorded durations directly.
+The archive key's 128-bit assertion digest is a decimal string in JSON
+campaign streams, archive reports, and progress records. This lets the tagged
+job and skip records decode. The binary campaign result hash and checkpoints
+retain the native 128-bit encoding.
+
+Each campaign job's recorded result digest binds its logical result to a tagged
+final endpoint certificate. Every runnable KVM snapshot carries an action-aligned
+certificate for each prefix in its portable history. Each runnable KVM action
+captures its whole-state hash and action-local observation before the next
+action. Restoring a KVM snapshot visits each prefix, including cached prefixes,
+and checks its certificate before continuing. This also covers a resident
+keyframe whose first action diverges and later reconverges at its final
+endpoint. When a candidate is retained, the archive binds the certificates for
+its action suffix, including actions whose own candidates were rejected or
+deduplicated. Jobs restored from an older keyframe compare each replayed KVM
+endpoint and observation with that archive certificate before the next action.
+Missing, malformed, or conflicting KVM certificates stop the campaign.
+Restoring a KVM source snapshot checks its recorded prefix certificates before
+using its logical observation. Importing a KVM tree rebuilds each imported
+action, including paths with source snapshots, and compares each checkpointed
+endpoint before admitting it. A source entry digest covers the snapshot's
+prefix certificates when present. Reconstructed certificates without a
+source-bound digest describe the current executor; they do not establish the
+source run's intermediate states. Restoring either backend also
+reconstructs the SDK observation from the restored session,
+including the current action's park and read reports, and rejects a failed,
+terminal, or inconsistent saved observation. KVM
+certificates hash the current worker session's whole state, including RAM and
+device state. Action and candidate capture and final certification fail if that session is
+missing, foreign, abandoned, or unhashable; restore may rebuild the prefix in a
+new session but rejects an unhashable or mismatched endpoint. A failed KVM job
+records an explicit final whole-state-unavailable tag:
+its action observations and failure result remain checked, but the stream makes
+no claim about its final whole state. A whole-state hash scans guest RAM after
+each runnable action, for each candidate snapshot, at every restored KVM
+prefix, and for each action replayed from an evicted KVM parent. This extra
+work can be material for 1 GiB guests. A healthy job whose
+last action is runnable reuses that candidate's hash as its final certificate;
+zero-action and terminal jobs hash their final endpoint separately. Thus
+certification cost grows with configured RAM and the number of actions and
+jobs. UML records a distinct whole-state-unavailable tag for its candidates
+and final endpoints because that backend does not provide a whole-state hash;
+its restored candidate snapshots and replayed prefixes therefore have no
+physical-state check. The
+KVM and UML campaign stream and snapshot checkpoint formats are versioned
+separately for these certificates.
 
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose

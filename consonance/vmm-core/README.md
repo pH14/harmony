@@ -28,6 +28,15 @@ clock is consulted. A guest idling in its polling loop writes the idle register
 Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
+
+The composition layer can inject a host-operation guard into `ControlServer`.
+The server checks it before and after each control request, including before
+the request's reply is encoded, and attaches it to every fresh or recovery VM.
+The VMM checks the same guard before servicing a doorbell and immediately
+before writing any service answer to guest memory. Consonance uses this hook
+to reject host loader changes without making the execution core depend on a
+particular process-loader implementation.
+
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
 refuses `RecordedEnv`: the operator's deadline is absent from the input tape,
 so that tape alone cannot replay the continuation from genesis. This includes
@@ -42,11 +51,34 @@ rejects either request before resolving a pending service answer, injecting a
 command, or entering the guest; it cannot treat a missing clock as time zero.
 An `Exec` request made while an external SDK service answer is pending is
 rejected before its command reaches serial input or changes the control state.
+Custom service and coverage-quantum requests stop as decisions before guest
+response bytes are written. A coverage stop retains the thread, observation,
+ready count, and doorbell sequence in the SDK snapshot and whole-state hash.
+`Run { resolve }` binds the answer to the request payload, then completes the
+original coverage exchange. Invalid quantum answers leave the pending stop and
+coverage threshold unchanged.
+If an SDK request reaches a `Run` deadline during a chained guest step, control
+reports the deadline before answering it. Valid custom service and coverage
+requests remain pending decisions. Other doorbells retain their raw request
+frame, including malformed requests, without writing a response or changing the
+payload cursor, entropy stream, event log, or pvclock registration. The pending
+request is part of the whole-state hash and portable snapshot. A later `Run`
+dispatches it under the branch's service plan before resuming the guest.
+Resolving a pending decision at or after the `Run` deadline leaves its answer
+unrecorded and its response page untouched for the next action.
 If a backend completion chains a later SDK decision into the same guest step
 after virtual time crosses a staged host effect or reseed, control rejects the
 decision as an unsatisfiable schedule instead of exposing it before the input.
 Further `Run` requests reject that poisoned schedule before resolving the
 pending service answer.
+An x86 SDK doorbell does not advance virtual time. An effect added at the
+moment of an already surfaced decision would run after its live answer but
+before that request when replayed from an earlier snapshot. At a deferred raw
+doorbell, the effect would run before its response live but after the response
+in an unsplit run. `Perturb` rejects either same-moment input without changing
+the pending request. A restored pending decision or raw doorbell with an effect
+or reseed already due rejects `Run` before consuming the request or writing
+response bytes.
 If a backend step or scheduled-input application fails after `Run` begins,
 control retires the live VM. A failed step can already have advanced virtual
 time or changed guest state, so the session cannot mint a reproducer or accept
@@ -112,6 +144,10 @@ The branch preparation also checks the service identity and configuration after
 the decode seed zero and both branch handler reseeds. A handler that changes its
 advertised contract is rejected before CPU or RAM restore, leaving the live
 execution intact.
+Before the decode-seed probe, branch preparation checks that cloning the new
+handler preserves both the original and clone state. It checks the original
+again after the decode seed, rejecting shared-state changes before installing
+the branch.
 Branch and import preparation also compare a handler-only fingerprint of the
 live SDK handler's identity, configuration, and state before and after calling
 a service factory or restoring a prepared handler. If a factory or shallow
@@ -207,7 +243,7 @@ recoverable refusal without retiring the VM.
 Pvclock-bearing device records explicitly preserve the registered page GPA,
 registration capability, and pending-versus-armed handshake state. The current
 x86 device format is version 7 and the current arm64 device format is version
-14; each uses presence fields so optional devices retain their state without
+17; each uses presence fields so optional devices retain their state without
 selecting historical layouts. Both device records preserve unread serial input
 in FIFO order. Restore replaces any residual input, and state identity includes
 the unread queue even when full snapshot hashing is disabled. The x86 device
@@ -320,6 +356,13 @@ CPU records and applies the existing logical XSAVE restore-bitmap rule: presence
 bits for init-valued x87/SSE components normalize, while active components remain
 bound. Every other sidecar field remains encoded. The original portable bytes
 retain the host restore bitmap and remain the input used for restore.
+
+Sparse-delta cache publication commits to the complete sidecar and target-pages
+digest after projecting only that x86 XSAVE metadata or the Arm virtual timer's
+captured counter, according to the validated VM-state architecture. Unknown or
+invalid CPU records cannot publish. The image prefix and every other sidecar
+field remain bound, including SDK, policy, control and trace state; the extent
+keeps its original restore bytes.
 
 The non-default `harmony_omit_nested_state` compiler configuration is the qualification negative
 control. Snapshot publication replaces captured VMX state with a valid inactive
@@ -726,3 +769,48 @@ next quantum. The next threshold is part of the SDK snapshot. A thread whose
 count restarts at the first threshold gets a fresh entry, because Linux reuses
 thread IDs. A zero, malformed or overflowing quantum leaves the environment and
 every threshold unchanged.
+
+## ARM executable RAM restore qualification
+
+`tests/arm64_executable_restore.rs` promotes the public-VMM experiment in
+[issue #633](https://github.com/pH14/harmony/issues/633) into a registered Linux
+ARM hardware test. It compares guest-authored PL011 bytes for cold A/B,
+uninterrupted B, capture-only B, fresh-restored B, and a warmed reused VM
+alternating A/B executable page contents. A separate RAM-only restoration
+control avoids CPU restoration as a cache-maintenance confounder. Every
+transition checks that only executable page 0 differs, that full restored RAM
+matches, and that the guest RAM allocation stays in place. The guest loops back
+to the same instruction address; no RAM remapping is requested. A portable
+negative control rejects stale, missing and extra observation bytes.
+
+Before any guest entry, the fixture sets `SCTLR_EL1.I` through the public state
+restore API and checks the captured control value, including after warmup and
+restoration. Stage-1 translation stays disabled. The four-instruction guest
+loops directly to the variant instruction, without a cache-enabling prologue or
+cache-maintenance instruction. Thus the RAM-only control never re-enables the
+cache between the host write and guest fetch. The test pins its thread to its
+current allowed CPU before constructing any VM, verifies placement during the
+restore loops, and restores the original affinity on exit. External `taskset`
+selects which core class it exercises; ordinary registered invocation also
+remains pinned. Output records CPU number, available sysfs MIDR and raw host
+MMFR2, and observed guest SCTLR. Missing sysfs register information is reported
+as unavailable; the test does not infer host stage-2 FWB or CTR cache-coherence
+features from virtualized guest IDs. Guest instruction-cache enablement and CPU
+placement are controls, not proof that a particular host retains stale lines.
+A passing result remains specific to its actual host/kernel/cache behavior.
+
+Run on a Linux ARM host with accessible KVM, pinning each qualified core class:
+
+```sh
+taskset -c 0 cargo test --locked -p vmm-core --test arm64_executable_restore live::executable_ram_restores_match_guest_continuations -- --ignored --exact --nocapture
+```
+
+Require exactly one passed test. An unavailable KVM device fails the requested
+hardware test; an empty test selection on another platform is not qualification.
+Record source revision, kernel, CPU/core placement and output with the result.
+The earlier public-path experiment passed on Linux 6.18.43-current-arm64 on
+Cortex-A720 and Cortex-A520 cores; those negative observations do not establish
+cache coherence on other hosts or kernels. ARM KVM still inherits the default
+instruction-cache hook, and #633 remains an investigation without a confirmed
+stale-instruction witness. This fixture does not qualify cross-host restore,
+arbitrary code mutation, or continuously enforced executable admission.

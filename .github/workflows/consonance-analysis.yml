@@ -21,7 +21,7 @@ on:
       crate:
         description: Whole-crate Miri target to interpret
         type: choice
-        options: [every, nested-driver, vmm-core, hypercall-doorbell, consonance-client, vm-state, vmm-backend, snapshot-store, harmony-supervisor, uml]
+        options: [every, host-code-identity, nested-driver, vmm-core, hypercall-doorbell, consonance-client, vm-state, vmm-backend, snapshot-store, harmony-supervisor, uml]
         default: every
       shard:
         description: Mutation testing shard to run
@@ -108,6 +108,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - name: host-code-identity
+            command: -p host-code-identity --lib
+            miriflags: -Zmiri-permissive-provenance
           - name: nested-driver
             command: -p nested-driver --lib
             miriflags: -Zmiri-permissive-provenance

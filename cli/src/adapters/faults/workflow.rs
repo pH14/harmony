@@ -83,16 +83,31 @@ fn configure(mut c: Config, offline: bool) -> Result<Config> {
 }
 
 fn capture_runtime(manifest: &mut Manifest, path: &Path, artifacts: &Artifacts) -> Result<()> {
-    manifest.store(path, "kernel", &artifacts.kernel)?;
-    manifest.store(path, "initramfs", &artifacts.initramfs)?;
-    if let Some(profile) = manifest.config.uml_profile.clone() {
-        crate::runs::store_tree(&mut manifest.record, path, &profile, "uml")?;
-    }
+    store_runtime_artifacts(
+        &mut manifest.record,
+        path,
+        artifacts,
+        manifest.config.uml_profile.as_deref(),
+    )?;
     manifest.save(path)
 }
 
+fn store_runtime_artifacts(
+    record: &mut crate::runs::Manifest,
+    path: &Path,
+    artifacts: &Artifacts,
+    uml_profile: Option<&Path>,
+) -> Result<()> {
+    record.store(path, "kernel", &artifacts.kernel)?;
+    record.store(path, "initramfs", &artifacts.initramfs)?;
+    if let Some(profile) = uml_profile {
+        crate::runs::store_tree(record, path, profile, "uml")?;
+    }
+    Ok(())
+}
+
 fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
-    let base = fs::read(c.base_initramfs.as_ref().ok_or("missing base initramfs")?)?;
+    let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
     let generated = c.bundle()?;
     let prepared = faults_workload::prepare::prepare_oci_with_bundle(
         c.image.as_deref().ok_or("application image missing")?,
@@ -102,7 +117,7 @@ fn prepare_faults(c: &Config) -> Result<(Artifacts, String, FaultVocabulary)> {
     )?;
     Ok((
         Artifacts {
-            kernel: fs::read(c.kernel.as_ref().ok_or("missing kernel")?)?,
+            kernel,
             initramfs: prepared.initramfs,
         },
         prepared.bundle,
@@ -328,12 +343,9 @@ pub fn run(
         &oci_support::bundle::LaunchRequest::new(c.command.clone()),
         super::execution_mode(c.backend),
     )?;
-    let initramfs =
-        prepared.initramfs(&fs::read(c.base_initramfs.as_ref().ok_or("missing base")?)?);
-    let artifacts = Artifacts {
-        kernel: fs::read(c.kernel.as_ref().ok_or("missing kernel")?)?,
-        initramfs,
-    };
+    let (kernel, base) = crate::runtime::read_pair(&c.runtime())?;
+    let initramfs = prepared.initramfs(&base);
+    let artifacts = Artifacts { kernel, initramfs };
     let out = destination.create()?;
     let mut manifest = Manifest::new(c, "run", None, true)?;
     capture_runtime(&mut manifest, &out, &artifacts)?;
@@ -479,21 +491,19 @@ mod tests {
             initramfs: b"prepared initramfs".to_vec(),
         };
         fs::write(&source, b"later kernel").unwrap();
-        let config = Config {
-            backend: Backend::Kvm,
-            kernel: Some(source),
-            ..Config::default()
-        };
-        let mut manifest = Manifest::new(config, "run", None, true).unwrap();
+        let mut config = crate::config::Config::default();
+        config.runner.kind = "test".into();
+        let mut record = crate::runs::Manifest::new(config, "run").unwrap();
 
-        capture_runtime(&mut manifest, directory.path(), &artifacts).unwrap();
+        store_runtime_artifacts(&mut record, directory.path(), &artifacts, None).unwrap();
+        record.save(directory.path()).unwrap();
 
         assert_eq!(
             fs::read(directory.path().join("artifacts/kernel")).unwrap(),
             artifacts.kernel
         );
         assert_eq!(
-            manifest.artifacts["kernel"],
+            record.artifacts["kernel"],
             crate::runtime::digest(&artifacts.kernel)
         );
     }

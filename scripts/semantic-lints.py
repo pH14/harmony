@@ -88,7 +88,7 @@ WORKLOAD_SCOPE_RULE_NAMES = (
 
 # The CI architecture questions and the policy they are asked against. Raise
 # this when either changes: it invalidates every cached workflow judgment.
-CI_POLICY_VERSION = 1
+CI_POLICY_VERSION = 2
 
 # Documentation that can direct how CI is organized or how a historical bug is
 # reproduced. Every README is included; loose prose elsewhere is not.
@@ -478,6 +478,10 @@ def _ci_policy() -> dict:
         "artifact_build_budgets": [
             {"workflow": path, "job": name, "minutes": minutes}
             for (path, name), minutes in ci_contract.PR_ARTIFACT_BUILD_BUDGETS.items()
+        ],
+        "extended_check_budgets": [
+            {"workflow": path, "job": name, "minutes": minutes}
+            for (path, name), minutes in ci_contract.PR_EXTENDED_CHECK_BUDGETS.items()
         ],
         "trigger_classes": list(ci_contract.TRIGGER_CLASSES),
         "nes_compositions": ci_contract.NES_COMPOSITIONS,
