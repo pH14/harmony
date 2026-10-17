@@ -332,7 +332,12 @@ impl Session {
             target_commitment,
             cost,
         )?;
-        Ok(self.loaded_image_guard.check_published(index, lease)?)
+        let lease = self.loaded_image_guard.check_published(index, lease)?;
+        if let Err(error) = index.verify_lease(&lease) {
+            index.release(lease);
+            return Err(error.into());
+        }
+        Ok(lease)
     }
 
     pub(super) fn write_delta<T>(
@@ -387,7 +392,12 @@ impl Session {
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
         let chain = index.chain(lease)?;
         let extents: Vec<&[u8]> = chain.iter().map(CommittedExtent::bytes).collect();
-        self.import_extents(&extents, near)
+        let imported = self.import_extents(&extents, near)?;
+        if let Err(error) = index.verify_lease(lease) {
+            let _ = self.drop_snapshot(imported.0);
+            return Err(error.into());
+        }
+        Ok(imported)
     }
 
     pub(super) fn import_extents(
