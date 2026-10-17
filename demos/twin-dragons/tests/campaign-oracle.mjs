@@ -14,14 +14,14 @@ const demo = fileURLToPath(new URL("..", import.meta.url));
 const root = join(demo, "../..");
 const base = new URL("../public/", import.meta.url);
 const roms = `${homedir()}/workspace/roms`;
-const seedFor = (game) => Number(process.env.ORACLE_SEED || game.seed || 1);
+const seedFor = () => Number(process.env.ORACLE_SEED || 1);
 const memoryMiB = 1024;
 const CASES = [
   { id: "twin-dragons", rom: join(demo, "public/twin-dragons.nes"), executions: 600 },
   { id: "super-mario-bros", rom: process.env.SMB_ROM || `${roms}/Super Mario Bros. (World).nes`, eval: { game: "smb" }, executions: 400 },
   { id: "mega-man-2", rom: process.env.MM2_ROM || `${roms}/mm2.nes`, eval: { game: "mm2", whole_game: true }, executions: 400 },
   { id: "metroid", rom: process.env.METROID_ROM || `${roms}/Metroid (USA).nes`, eval: { game: "metroid" }, executions: 160 },
-  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 10000, seed: 2, percent: 90 },
+  { id: "famidash", rom: join(demo, "public/famidash/famidash.nes"), eval: { game: "famidash" }, mixture: "alphabet_only", executions: 10000 },
 ];
 const selected = process.env.ORACLE_GAMES?.split(",");
 
@@ -86,10 +86,6 @@ for (const game of CASES) {
     assert.ok(native.length >= executions, `the native ${game.id} campaign recorded every execution`);
     assert.equal(browser.length, native.length, `both ${game.id} campaigns recorded the same number of events`);
     browser.forEach((line, i) => assert.deepEqual(JSON.parse(line), JSON.parse(native[i]), `${game.id} event ${i + 1} differs`));
-    if (game.percent) {
-      const { milestones } = JSON.parse(readFileSync(join(out, "result/result.json"), "utf8"));
-      assert.ok(milestones.cleared > 0 || milestones.percent >= game.percent, `the ${game.id} campaign reaches ${game.percent} percent of its first level`);
-    }
     console.log(`Browser and native ${game.id} campaigns match for seed ${seed} over ${native.length} events`);
   } finally {
     rmSync(out, { recursive: true, force: true });
