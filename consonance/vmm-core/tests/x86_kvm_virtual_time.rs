@@ -136,7 +136,12 @@ fn deliver(
 
 fn checkpoint_hash(backend: &mut KvmBackend, checkpoint: VirtualTimeCheckpoint) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(b"x1-live-state-v2\0");
+    hasher.update(b"x1-live-state-v3\0");
+    let mut ram = vec![0; RAM_LEN];
+    backend
+        .read_guest(Gpa(0), &mut ram)
+        .expect("checkpoint RAM");
+    hasher.update(&ram);
     hasher.update(checkpoint.vns.to_le_bytes());
     hasher.update(checkpoint.pending_interrupts.to_le_bytes());
     hasher.update(checkpoint.event_index.to_le_bytes());
@@ -272,6 +277,14 @@ fn x1_ten_same_seed_runs_produce_one_normalized_log() {
     println!("X1_DIGEST={hex}");
     println!("X1_GUEST_DELIVERIES={}", first.guest_deliveries);
     println!("X1_EVENTS={}", first.log.events.len());
+    let checkpoints = first
+        .log
+        .events
+        .iter()
+        .filter(|event| event.state_hash.is_some())
+        .count();
+    assert_eq!(checkpoints, 3);
+    println!("X1_CHECKPOINTS={checkpoints}");
 }
 
 #[test]

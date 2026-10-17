@@ -58,9 +58,23 @@ definitions of identity.
 
 ## Corpus
 
-The acceptance manifest registers each test as a cell with a workload, corpus
-kind, oracle set, eligible host class, and virtualization level. A cell that
-cannot run on the selected host is unrun rather than passed.
+`scripts/qualification/consonance.json` registers the production X1 cross-host
+cell, its exact oracle set, host/backend class, instruction surface, state scope,
+and restore mode. `scripts/qualify-consonance.py` builds one static test
+executable containing the guest, runs that retained artifact on both hosts,
+and compares required execution receipts. Missing replicas, missing oracle
+logs, differing artifact identities, empty oracle sets and zero-work evidence
+prevent qualification. The hardware workflow's Results job depends on every
+hardware job and requires the cross-host comparison.
+
+The X1 cell covers normalized events, guest RAM, backend CPU save state and
+virtual-time checkpoints for its embedded real-mode microprogram. It does not
+establish whole-VMM identity, Linux workload portability, snapshot migration,
+cross-ISA conformance, or UML whole-state identity. The other hardware jobs
+retain their own local-repeatability and continuation evidence; they do not
+inherit X1's cross-host result. O1/O2/O3 describe separate acceptance obligations;
+there is not yet a production registry covering all three for every backend.
+UML `state_hash` remains unavailable and cannot satisfy whole-state O1.
 
 The corpus has three families:
 
