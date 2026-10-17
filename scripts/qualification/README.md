@@ -22,7 +22,7 @@ are not a measurement of whole-campaign throughput.
 The compiler checks cover all independent dependency owners. Native NES and
 other compositions inherit acceleration through these libraries, while VMM
 compositions retain their existing explicit selection. The client's image hashes
-are checkd by its in-process feature, which already brings in the VMM, so the
+are checked by its in-process feature, which already brings in the VMM, so the
 client needs no additional acceleration declaration. Root and standalone
 workspace lockfiles keep the same SHA version. No CPU policy exposed to a guest
 changes.
@@ -40,7 +40,11 @@ streaming, alignment, and full-state checks.
 runs that retained artifact on two hosts, then requires every oracle log and
 compares the execution digests. The binary embeds the guest bytes; identity
 records bind it to source, instruction contract and registry. Receipts retain
-host CPU/kernel identity and exact test logs. Unknown fields, duplicate JSON
+host CPU/kernel identity, the DMI product UUID, and exact test logs. The runner
+reads the firmware UUID into the required `--host-id-file`; duplicate instance
+UUIDs are refused even if hostnames differ. Cloned runner images may reuse a
+hostname. Distinct VM UUIDs establish separate virtual host instances, not
+physical CPU diversity. Unknown fields, duplicate JSON
 keys, missing oracles, repeated hosts, mismatched artifacts and contradictory
 digests fail the check. A failed comparison records an inconclusive or divergent
 verdict rather than a passing cell.
