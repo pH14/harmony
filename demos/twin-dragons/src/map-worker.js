@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-import { createEngine, GAMES } from "./emulator.js";
+const emulator = import("./emulator.js");
 let engine;
 onmessage = async ({ data }) => {
   try {
     if (data.type === "init") {
+      const { createEngine, GAMES } = await emulator;
       engine = await createEngine(data.base, GAMES.get(data.game), { rom: data.rom });
       if (!data.sprites) return postMessage({ type: "ready" });
       const sheet = engine.game.buildSprites(engine);

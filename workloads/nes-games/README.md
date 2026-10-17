@@ -27,7 +27,7 @@ test constructors and the scripted Super Tilt Bro machine to the tests of
 
 Twin Dragons, Famidash, Super Mario Bros., Mega Man 2 and Metroid also have a
 `campaign` module with their `Workload` implementation. `TwinDragonsGame<M>`,
-`FamidashGame<M>`, `SmbGame<M, P>`, `Mm2Game<M>` and `MetroidGame<M>` are
+`FamidashGame<M, GROUP>`, `SmbGame<M, P>`, `Mm2Game<M>` and `MetroidGame<M>` are
 generic over the backend and build each target from a boxed factory, so the
 native workload and the browser demo share every trait implementation: the
 native one passes a QuickNES or Consonance factory, and `demos/twin-dragons`
@@ -51,7 +51,10 @@ native live campaign. `ArcadeGame` extends `Workload` with a view of each
 observation, the four-number motion sample of a frame, the cleared-level count
 and the emulator state of a snapshot. The `smb`, `metroid`, `mm2`, `famidash`
 and `twin_dragons` submodules implement it for each campaign game over any
-backend. `trail::Traced` wraps a machine and records each job's motion trail
+backend. `ArcadeGame` decodes RAM in static functions, so `FamidashGame` takes
+the index of a level group in `famidash::levels::GROUPS` as the const
+parameter `GROUP`. Each group is its own game type, with that group's side,
+levels and map tops. `trail::Traced` wraps a machine and records each job's motion trail
 every four frames and at every chord end, and every controller action it runs. `feed::run_noted` runs a job inside
 that recorder and returns a `Note` with the trail, the view of every step and
 each candidate's snapshot digest. `feed::Feed` joins notes with the

@@ -55,13 +55,13 @@ const TERMINAL_POLICY_IDENTIFIER: &str = "dash_complete_win_or_death_bit_v1";
 
 pub type FamidashTargets<M> = Box<dyn Fn() -> Result<FamidashTarget<M>, String> + Send + Sync>;
 
-pub struct FamidashGame<M: NesBackend<Vec<u8>>> {
+pub struct FamidashGame<M: NesBackend<Vec<u8>>, const GROUP: usize = 0> {
     rom_sha256: String,
     identity: String,
     targets: FamidashTargets<M>,
 }
 
-impl<M: NesBackend<Vec<u8>>> FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> FamidashGame<M, GROUP> {
     #[must_use]
     pub fn with_targets(
         rom: &[u8],
@@ -143,8 +143,9 @@ pub type FamidashCampaignCheckpoint = CampaignCheckpoint<FamidashSnapshot>;
 pub type FamidashSnapshotCheckpoint = SnapshotCheckpoint<FamidashSnapshot>;
 pub type FamidashCampaignStreamHeader = CampaignStreamHeader<DrawTableHeader>;
 pub type FamidashCampaignModeReport = CampaignModeReport<ButtonChord, FamidashArchiveReport>;
-type FamidashCampaignActionResult<M> = CampaignActionResult<FamidashGame<M>>;
-type FamidashCampaignJobResult<M> = CampaignJobResult<FamidashGame<M>>;
+type FamidashCampaignActionResult<M, const GROUP: usize> =
+    CampaignActionResult<FamidashGame<M, GROUP>>;
+type FamidashCampaignJobResult<M, const GROUP: usize> = CampaignJobResult<FamidashGame<M, GROUP>>;
 
 fn recorded<'a>(policies: &'a WorkloadPolicies, field: &str) -> Result<&'a str, Box<dyn Error>> {
     policies
@@ -166,13 +167,13 @@ fn merge_action_milestones<M: NesBackend<Vec<u8>>>(
     Ok(())
 }
 
-fn execute_suffix<M: NesBackend<Vec<u8>>>(
+fn execute_suffix<M: NesBackend<Vec<u8>>, const GROUP: usize>(
     target: &mut FamidashTarget<M>,
     parent_milestones: FamidashMilestones,
     suffix: &[ButtonChord],
     retention: RetentionPolicy,
     stop_rollout_on_objective: bool,
-) -> Result<FamidashCampaignJobResult<M>, Box<dyn Error>> {
+) -> Result<FamidashCampaignJobResult<M, GROUP>, Box<dyn Error>> {
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
     let parent_outcome = Outcome {
@@ -294,7 +295,7 @@ fn action_champion_key(observations: &[FamidashObservations]) -> Option<Famidash
     })
 }
 
-impl<M: NesBackend<Vec<u8>>> CampaignTypes for FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> CampaignTypes for FamidashGame<M, GROUP> {
     type Target = FamidashTarget<M>;
     type Action = ButtonChord;
     type Key = FamidashArchiveKey;
@@ -307,7 +308,7 @@ impl<M: NesBackend<Vec<u8>>> CampaignTypes for FamidashGame<M> {
     type Run = FamidashCampaignRun;
 }
 
-impl<M: NesBackend<Vec<u8>>> Reporting for FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Reporting for FamidashGame<M, GROUP> {
     fn stream_format(&self) -> &'static str {
         CAMPAIGN_STREAM_FORMAT
     }
@@ -328,7 +329,7 @@ impl<M: NesBackend<Vec<u8>>> Reporting for FamidashGame<M> {
 
     fn result_sha256(
         &self,
-        result: &FamidashCampaignJobResult<M>,
+        result: &FamidashCampaignJobResult<M, GROUP>,
     ) -> Result<String, Box<dyn Error>> {
         postcard_semantic_result_sha256(result)
     }
@@ -365,7 +366,7 @@ impl<M: NesBackend<Vec<u8>>> Reporting for FamidashGame<M> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>>> InputPolicy for FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> InputPolicy for FamidashGame<M, GROUP> {
     fn policies(&self, _run: &FamidashCampaignRun) -> WorkloadPolicies {
         [
             (
@@ -413,7 +414,7 @@ impl<M: NesBackend<Vec<u8>>> InputPolicy for FamidashGame<M> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>>> TargetExecution for FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> TargetExecution for FamidashGame<M, GROUP> {
     fn action_cost_fn(&self) -> fn(&ButtonChord) -> u64 {
         chord_time
     }
@@ -484,7 +485,7 @@ impl<M: NesBackend<Vec<u8>>> TargetExecution for FamidashGame<M> {
     }
 }
 
-impl<M: NesBackend<Vec<u8>>> Evaluation for FamidashGame<M> {
+impl<M: NesBackend<Vec<u8>>, const GROUP: usize> Evaluation for FamidashGame<M, GROUP> {
     fn execution_disposition(&self, target: &FamidashTarget<M>) -> ExecutionDisposition {
         if target.exit_kind() != ExitKind::Ok {
             ExecutionDisposition::Failed
@@ -576,7 +577,7 @@ impl<M: NesBackend<Vec<u8>>> Evaluation for FamidashGame<M> {
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut FamidashCampaignEvidence,
-        action: &FamidashCampaignActionResult<M>,
+        action: &FamidashCampaignActionResult<M, GROUP>,
         sequence: u64,
         input: F,
     ) -> Result<(), Box<dyn Error>>

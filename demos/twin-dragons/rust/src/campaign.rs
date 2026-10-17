@@ -667,7 +667,13 @@ impl CampaignSearch {
             "super-mario-bros" => Box::new(Search::<Smb>::new(options).map_err(js_error)?),
             "mega-man-2" => Box::new(Search::<MegaMan>::new(options).map_err(js_error)?),
             "metroid" => Box::new(Search::<Metroid>::new(options).map_err(js_error)?),
-            "famidash" => Box::new(Search::<Famidash>::new(options).map_err(js_error)?),
+            "famidash" => Box::new(Search::<Famidash<0>>::new(options).map_err(js_error)?),
+            "famidash-community" => {
+                Box::new(Search::<Famidash<1>>::new(options).map_err(js_error)?)
+            }
+            "famidash-b" => Box::new(Search::<Famidash<2>>::new(options).map_err(js_error)?),
+            "famidash-c" => Box::new(Search::<Famidash<3>>::new(options).map_err(js_error)?),
+            "famidash-d" => Box::new(Search::<Famidash<4>>::new(options).map_err(js_error)?),
             _ => return Err(unknown(game)),
         };
         Ok(Self(search))
@@ -742,7 +748,24 @@ impl CampaignWorker {
                 Worker::<Metroid>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
             ),
             "famidash" => Box::new(
-                Worker::<Famidash>::new(core, rom, identity, identity_sha256).map_err(js_error)?,
+                Worker::<Famidash<0>>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
+            "famidash-community" => Box::new(
+                Worker::<Famidash<1>>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
+            "famidash-b" => Box::new(
+                Worker::<Famidash<2>>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
+            "famidash-c" => Box::new(
+                Worker::<Famidash<3>>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
+            ),
+            "famidash-d" => Box::new(
+                Worker::<Famidash<4>>::new(core, rom, identity, identity_sha256)
+                    .map_err(js_error)?,
             ),
             _ => return Err(unknown(game)),
         };
@@ -779,7 +802,11 @@ pub fn campaign_genesis(game: &str, core: u32, rom: &[u8]) -> Result<String, JsV
         "super-mario-bros" => genesis_of::<Smb>(core, rom),
         "mega-man-2" => genesis_of::<MegaMan>(core, rom),
         "metroid" => genesis_of::<Metroid>(core, rom),
-        "famidash" => genesis_of::<Famidash>(core, rom),
+        "famidash" => genesis_of::<Famidash<0>>(core, rom),
+        "famidash-community" => genesis_of::<Famidash<1>>(core, rom),
+        "famidash-b" => genesis_of::<Famidash<2>>(core, rom),
+        "famidash-c" => genesis_of::<Famidash<3>>(core, rom),
+        "famidash-d" => genesis_of::<Famidash<4>>(core, rom),
         _ => return Err(unknown(game)),
     }
     .map_err(js_error)

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import init, { Explorer } from "../rust/pkg/twin_dragons_browser.js";
-import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { parsePlan, rolloutBytes, stepBytes, ROUND_PATHS, ROUNDS_AHEAD } from "./rollout.js";
 import { validateTape } from "./heat.js";
 import { branchInfo } from "./branch.js";
 import { snapshotHash } from "./media.js";
 import { campaignSearch, coreIdentity } from "./campaign.js";
+const emulator = import("./emulator.js");
 let initialized = false,
   wasm,
   budget,
@@ -293,7 +293,7 @@ function addSearch(id, search) {
 async function startPool(ports, base) {
   const rom = engine.rom,
     wasm = new Uint8Array(await (await fetch(new URL(`engine/${engine.game.core}.wasm`, base))).arrayBuffer());
-  identity = coreIdentity(await sha256Hex(wasm));
+  identity = coreIdentity(await (await emulator).sha256Hex(wasm));
   await Promise.all(ports.map((worker) => new Promise((resolve) => {
     const slot = { worker, cache: new Map(), chunks: 0, ready: false };
     worker.onmessage = ({ data }) => {
@@ -331,6 +331,7 @@ onmessage = async ({ data }) => {
       const gen = ++generation;
       pause();
       initialized = false;
+      const { createEngine, GAMES } = await emulator;
       engine = await createEngine(data.base, GAMES.get(data.game), data.rom ? { rom: data.rom } : {});
       budget = data.budget;
       pace = data.pace ?? 0;

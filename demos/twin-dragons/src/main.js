@@ -2461,8 +2461,8 @@ $("close-info").onclick = () => $("info").close();
 $("info").onclick = (e) => {
   if (e.target === $("info")) $("info").close();
 };
-$("credits").onclick = () =>
-  showInfo(game.credits);
+$("credits").onclick = async () =>
+  showInfo(typeof game.credits === "function" ? await game.credits(base) : game.credits);
 function hideHistoryRail() {
   $("history-rail").hidden = true;
   $("workspace").classList.remove("history-collapsed");
@@ -3316,7 +3316,9 @@ $("tour-open").onclick = beginTour;
 $("new-search").onclick = () => {
   const wasPlaying = playing;
   if (wasPlaying) { playing = false; music.stop(); $("play").textContent = "▶ Replay"; }
-  const buttons = [...GAMES.values()].map((choice) => {
+  const games = [...GAMES.values()].filter((choice) => !choice.family || choice.id === choice.family),
+    family = game.family ? [...GAMES.values()].filter((choice) => choice.family === game.family) : [game];
+  const buttons = games.map((choice) => {
     const button = document.createElement("button");
     button.textContent = choice.title;
     button.setAttribute("aria-pressed", choice === game);
@@ -3327,44 +3329,61 @@ $("new-search").onclick = () => {
     };
     button.onclick = () => {
       if (choice.rom.upload && !bundled.has(choice.id) && (choice !== requested || missingRom)) showRomPanel(choice, play);
-      else if (choice === game) showLevelGrid();
+      else if (choice === game || (choice.family && choice.family === game.family)) showLevelGrid();
       else play();
     };
     return button;
   });
-  const games = [...GAMES.values()];
   $("homebrew-games").replaceChildren(...buttons.filter((_, i) => !games[i].rom.upload));
   $("rom-games").replaceChildren(...buttons.filter((_, i) => games[i].rom.upload));
   const shown = missingRom && [...GAMES.values()].find((choice) => choice === missingRom);
   if (shown) showRomPanel(shown, () => location.reload());
   else showLevelGrid();
   $("level-grid").replaceChildren();
-  for (const level of catalog.levels) {
-    const card = document.createElement("button"), caption = document.createElement("span");
-    let image = document.createElement("img");
-    card.className = "level-card";
-    card.dataset.level = level.id;
-    card.setAttribute("aria-label", level.label);
-    card.setAttribute("aria-current", level.id === bootLevel ? "true" : "false");
-    if (game.buildMap) {
-      image = document.createElement("canvas");
-      Object.assign(image, { width: 256, height: 96, className: "level-preview" });
-      image.dataset.level = level.rooms[0];
-      const bitmap = panorama(level.rooms[0]);
-      if (bitmap) drawLevelPreview(image, bitmap);
-    } else {
-      image.src = new URL(`maps/${level.rooms[0]}-preview.png`, assets).href; image.loading = "lazy"; image.alt = "";
+  for (const member of family) {
+    if (family.length > 1) {
+      const heading = document.createElement("h3");
+      heading.className = "level-group";
+      heading.textContent = member.group;
+      $("level-grid").append(heading);
     }
-    caption.textContent = level.label;
-    card.append(image, caption);
-    card.onclick = () => {
-      $("level-picker").close();
-      tour.finish();
-      ++seed;
-      startSearch(level.id);
-      $("new-search").focus({ preventScroll: true });
-    };
-    $("level-grid").append(card);
+    const current = member === game,
+      memberAssets = current ? assets : new URL(member.assets, base);
+    for (const level of current ? catalog.levels : member.levels) {
+      const card = document.createElement("button"), caption = document.createElement("span");
+      let image = document.createElement("img");
+      card.className = "level-card";
+      card.dataset.game = member.id;
+      card.dataset.level = level.id;
+      card.setAttribute("aria-label", family.length > 1 ? `${member.group}: ${level.label}` : level.label);
+      card.setAttribute("aria-current", current && level.id === bootLevel ? "true" : "false");
+      if (current && game.buildMap) {
+        image = document.createElement("canvas");
+        Object.assign(image, { width: 256, height: 96, className: "level-preview" });
+        image.dataset.level = level.rooms[0];
+        const bitmap = panorama(level.rooms[0]);
+        if (bitmap) drawLevelPreview(image, bitmap);
+      } else {
+        image.src = new URL(`maps/${level.rooms[0]}-preview.png`, memberAssets).href; image.loading = "lazy"; image.alt = "";
+      }
+      caption.textContent = level.label;
+      card.append(image, caption);
+      card.onclick = current
+        ? () => {
+            $("level-picker").close();
+            tour.finish();
+            ++seed;
+            startSearch(level.id);
+            $("new-search").focus({ preventScroll: true });
+          }
+        : () => {
+            const url = new URL(location.href);
+            url.searchParams.set("game", member.id);
+            url.searchParams.set("level", level.id);
+            location.assign(url);
+          };
+      $("level-grid").append(card);
+    }
   }
   if (game.buildMap) builtMaps.wanted = catalog.levels[0].rooms[0];
   $("level-picker").showModal();
