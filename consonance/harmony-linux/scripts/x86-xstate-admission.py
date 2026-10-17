@@ -17,8 +17,12 @@ import tempfile
 
 MAX_FILE = 128 * 1024 * 1024
 MAX_TREE = 2 * 1024 * 1024 * 1024
-SAVE = {"xsave", "xsave64", "xsavec", "xsavec64", "xsaveopt", "xsaveopt64", "xsaves", "xsaves64"}
-RESTORE = {"xrstor", "xrstor64", "xrstors", "xrstors64", "fxsave", "fxsave64", "fxrstor", "fxrstor64"}
+SAVE = {"fxsave", "fxsave64", "xsave", "xsave64", "xsavec", "xsavec64", "xsaveopt", "xsaveopt64", "xsaves", "xsaves64"}
+RESTORE = {"xrstor", "xrstor64", "xrstors", "xrstors64", "fxrstor", "fxrstor64"}
+APPROXIMATE = {"rcpps", "rcpss", "rsqrtps", "rsqrtss", "vrcpps", "vrcpss", "vrsqrtps", "vrsqrtss",
+               "vrcp14pd", "vrcp14ps", "vrcp14sd", "vrcp14ss", "vrcp28pd", "vrcp28ps", "vrcp28sd", "vrcp28ss",
+               "vrsqrt14pd", "vrsqrt14ps", "vrsqrt14sd", "vrsqrt14ss", "vrsqrt28pd", "vrsqrt28ps", "vrsqrt28sd", "vrsqrt28ss",
+               "fsin", "fcos", "fsincos", "fptan", "fpatan", "f2xm1", "fyl2x", "fyl2xp1"}
 SCOPE = {
     "startup_binding": "LD_BIND_NOW=1-before-every-exec",
     "generated_code": "forbidden",
@@ -181,6 +185,26 @@ def elf(data):
             raise Rejected("relocations are not file-backed")
         raw = span(data, matches[0]["offset"] + address - matches[0]["address"], size)
         tlsdesc |= any(struct.unpack_from("<Q", raw, off + 8)[0] & 0xffffffff in (34, 35, 36) for off in range(0, size, stride))
+    anchors = {h[4]}
+    if h[6] or h[12]:
+        if h[11] != 64 or not h[6] or not 0 < h[12] < 65535:
+            raise Rejected("unsupported ELF section table")
+        span(data, h[6], h[11] * h[12])
+        for index in range(h[12]):
+            section = struct.unpack_from("<IIQQQQIIQQ", data, h[6] + index * h[11])
+            _, kind, flags, address, offset, size, _, _, _, stride = section
+            if flags & 2 and size:
+                anchors.update((address, address + size))
+            if kind in (2, 11):
+                if stride != 24 or size % stride:
+                    raise Rejected("unsupported ELF symbol table")
+                symbols = span(data, offset, size)
+                for position in range(0, size, stride):
+                    _, info, _, shndx, value, _ = struct.unpack_from("<IBBHQQ", symbols, position)
+                    if shndx and info & 15 in (2, 10):
+                        anchors.add(value)
+    for segment in segments:
+        segment["anchors"] = sorted(anchors)
     return {
         "segments": segments, "interpreter": interpreter,
         "executable_stack": executable_stack,
@@ -275,43 +299,123 @@ def loader_trampoline(instructions, index, targets):
     return None
 
 
-def disassemble(data, segments, objdump):
-    """Disassemble every file-backed executable load segment, including stripped ELFs."""
-    instructions = []
+def executable_coverage(data, segments, objdump):
+    """Cover mapped executable pages, ELF entries/edges and direct transfers.
+
+    Indirect targets still require review of the controlled image. Decode streams
+    may overlap: a direct target is an entry even when linear decoding put it in
+    an immediate. Keep all those instructions so no proof can skip that path.
+    """
     line_re = re.compile(r"^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2}\s+)+)\s*([a-z][a-z0-9]*)\s*(.*)$")
+    views = []
     for segment in segments:
         if not segment["flags"] & 1 or not segment["size"]:
             continue
+        address, offset, size = (segment[key] for key in ("address", "offset", "size"))
+        if address % 4096 != offset % 4096:
+            raise Rejected("executable ELF segment page offset mismatch")
+        head = address % 4096
+        start = address - head
+        length = (head + size + 4095) // 4096 * 4096
+        if offset < head or length > MAX_FILE:
+            raise Rejected("invalid executable ELF mapping")
+        raw = data[offset - head:offset - head + length]
+        raw += bytes(length - len(raw))
+        anchors = {start, address, address + size}
+        anchors.update(a for a in segment.get("anchors", []) if start <= a < start + length)
+        views.append((start, raw, anchors))
+    views.sort(key=lambda view: view[0])
+    for left, right in zip(views, views[1:]):
+        if left[0] + len(left[1]) > right[0]:
+            raise Rejected("overlapping executable ELF mappings")
+    for start, raw, _ in views:
+        for segment in segments:
+            if segment["flags"] & 1 or not segment["memory_size"]:
+                continue
+            other_start = segment["address"] // 4096 * 4096
+            other_end = (segment["address"] + segment["memory_size"] + 4095) // 4096 * 4096
+            if start < other_end and other_start < start + len(raw):
+                raise Rejected("executable ELF memory-page alias")
+    groups = []
+    boundaries = set()
+    for start, raw, anchors in views:
+        boundaries.update(anchors)
+        if groups and groups[-1][0] + len(groups[-1][1]) == start:
+            previous, code, entries = groups.pop()
+            groups.append((previous, code + raw, entries | anchors))
+        else:
+            groups.append((start, raw, anchors))
+    special_names = SAVE | RESTORE | APPROXIMATE | {"xgetbv"}
+    special_re = re.compile(r"\b(" + "|".join(sorted(special_names, key=len, reverse=True)) + r")\b")
+    instructions, targets, visited = {}, set(), set()
+    pending = {entry for _, _, entries in groups for entry in entries}
+    count = 0
+
+    def decode(code, address):
         with tempfile.NamedTemporaryFile() as binary, tempfile.TemporaryFile(mode="w+") as output:
-            binary.write(span(data, segment["offset"], segment["size"]))
+            binary.write(code)
             binary.flush()
-            result = subprocess.run([objdump, "-D", "-w", "-z", "-b", "binary", "-m", "i386:x86-64", f"--adjust-vma={segment['address']}", binary.name], stdout=output, stderr=subprocess.PIPE, text=True, timeout=60)
+            result = subprocess.run([objdump, "-D", "-w", "-z", "-b", "binary", "-m", "i386:x86-64", f"--adjust-vma={address}", binary.name], stdout=output, stderr=subprocess.PIPE, text=True, timeout=60)
             if result.returncode:
-                raise Rejected(f"GNU objdump failed: {result.stderr.strip()}")
+                raise Rejected(f"GNU objdump failed (status {result.returncode}): {result.stderr.strip()}")
             output.seek(0)
-            count = 0
             for line in output:
                 match = line_re.match(line)
                 if not match:
                     continue
-                count += 1
-                if count > 2_000_000:
-                    raise Rejected("objdump instruction limit exceeded")
-                address, raw, mnemonic, operands = match.groups()
-                special = re.search(r"\b(" + "|".join(sorted(SAVE | RESTORE | {"xgetbv"}, key=len, reverse=True)) + r")\b", mnemonic + " " + operands)
+                ip, raw, mnemonic, operands = match.groups()
+                special = special_re.search(mnemonic + " " + operands)
                 if special:
                     mnemonic = special[1]
-                instructions.append({"address": int(address, 16), "bytes": bytes.fromhex(raw).hex(), "mnemonic": mnemonic, "operands": operands.strip()})
-            if not count:
-                raise Rejected("objdump decoded no instructions")
-    targets = set()
-    for item in instructions:
-        target = re.search(r"\b(?:j[a-z]*|call[a-z]*|loop[a-z]*)\s+(?:0x)?([0-9a-f]+)(?:\s|$)", item["mnemonic"] + " " + item["operands"])
-        if target:
-            targets.add(int(target[1], 16))
+                yield {"address": int(ip, 16), "bytes": bytes.fromhex(raw).hex(), "mnemonic": mnemonic, "operands": operands.strip()}
+
+    while pending:
+        entry = min(pending)
+        pending.remove(entry)
+        if entry in visited:
+            continue
+        view = next(((start, code) for start, code, _ in groups if start <= entry < start + len(code)), None)
+        if view is None:
+            continue
+        start, code = view
+        for item in decode(code[entry - start:], entry):
+            ip = item["address"]
+            if ip in visited:
+                break
+            visited.add(ip)
+            instructions[ip] = item
+            count += 1
+            if count > 2_000_000:
+                raise Rejected("objdump instruction limit exceeded")
+            target = re.search(r"\b(?:j[a-z]*|call[a-z]*|loop[a-z]*)\s+(?:0x)?([0-9a-f]+)(?:\s|$)", item["mnemonic"] + " " + item["operands"])
+            if target:
+                target = int(target[1], 16)
+                targets.add(target)
+                pending.add(target)
+    # Inspect instructions crossing every independently decoded ELF edge. A
+    # section ending mid-instruction must not hide its final opcode bytes.
+    for boundary in sorted(boundaries):
+        view = next(((start, code) for start, code, _ in groups if start < boundary < start + len(code)), None)
+        if view is None:
+            continue
+        start, code = view
+        for ip in range(max(start, boundary - 14), boundary):
+            candidate = code[ip - start:ip - start + 15]
+            if not any(byte in candidate for byte in (0x0f, 0xd9, 0xc4, 0xc5, 0x62)):
+                continue
+            first = next(decode(candidate, ip), None)
+            if first and first["mnemonic"] in special_names and ip + len(bytes.fromhex(first["bytes"])) > boundary:
+                instructions[ip] = first
+    if not instructions:
+        raise Rejected("objdump decoded no instructions")
+    return sorted(instructions.values(), key=lambda item: item["address"]), targets
+
+
+def disassemble(data, segments, objdump):
+    instructions, targets = executable_coverage(data, segments, objdump)
     sites = []
     for index, item in enumerate(instructions):
-        if item["mnemonic"] not in SAVE | RESTORE | {"xgetbv"}:
+        if item["mnemonic"] not in SAVE | RESTORE | APPROXIMATE | {"xgetbv"}:
             continue
         item = dict(item)
         if item["mnemonic"] == "xgetbv":
@@ -342,7 +446,8 @@ def disassemble(data, segments, objdump):
             item["selector_proof_instructions"] = chain if zero else []
             item["requires_reviewed_control_flow_proof"] = True
         if item["mnemonic"] in SAVE:
-            item["loader_trampoline"] = loader_trampoline(instructions, index, targets)
+            item["loader_trampoline"] = (loader_trampoline(instructions, index, targets)
+                                         if item["mnemonic"] in {"xsave", "xsave64", "xsavec", "xsavec64"} else None)
         sites.append(item)
     return sites
 
@@ -586,6 +691,8 @@ def verify(report):
             if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
                 raise Rejected(f"unproved XGETBV selector: {name}")
             for site in record["sites"]:
+                if site["mnemonic"] in APPROXIMATE:
+                    raise Rejected(f"implementation-dependent arithmetic: {name}:{site['address']:#x} {site['mnemonic']}")
                 if site["mnemonic"] in SAVE and not site.get("loader_trampoline"):
                     raise Rejected(f"save instruction outside a loader trampoline: {name}:{site['address']:#x} {site['mnemonic']}")
     except (Rejected, OSError, TypeError, KeyError, ValueError, AttributeError) as error:

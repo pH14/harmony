@@ -60,6 +60,71 @@ def newc(entries):
     return bytes(output)
 
 
+class ExecutableCoverageTests(unittest.TestCase):
+    def inspect(self, data):
+        record = a.elf(bytes(data))
+        record.update(sites=a.disassemble(bytes(data), record["segments"], os.environ.get("OBJDUMP", "objdump")),
+                      writable_executable_segments=[])
+        report = {"artifacts": {"/fixture": record}}
+        return report, a.verify(report)
+
+    def assert_rejected(self, data, mnemonic):
+        report, accepted = self.inspect(data)
+        self.assertFalse(accepted, report)
+        self.assertIn(mnemonic, [site["mnemonic"] for site in report["artifacts"]["/fixture"]["sites"]])
+
+    def test_direct_transfer_into_an_immediate_restarts_decoding(self):
+        self.assert_rejected(fixture(bytes.fromhex("eb01 b8 0fae27 c3 c3")), "xsave")
+
+    def test_elf_entry_into_an_immediate_restarts_decoding(self):
+        data = bytearray(fixture(bytes.fromhex("b8 0fae27 c3 c3")))
+        struct.pack_into("<Q", data, 24, 0x400001)
+        self.assert_rejected(data, "xsave")
+
+    def test_executable_page_tail_and_head_are_scanned(self):
+        self.assert_rejected(fixture() + bytes.fromhex("0fae27 c3"), "xsave")
+        data = bytearray(fixture(bytes.fromhex("0fae27 c3")))
+        struct.pack_into("<QQ", data, 72, 0x1003, 0x400003)
+        struct.pack_into("<QQ", data, 96, 1, 1)
+        self.assert_rejected(data, "xsave")
+
+    def test_instruction_split_across_adjacent_executable_mappings(self):
+        data = bytearray(fixture(bytes(4095) + b"\x0f"))
+        data.extend(bytes.fromhex("ae27 c3"))
+        struct.pack_into("<H", data, 56, 2)
+        struct.pack_into("<IIQQQQQQ", data, 120, 1, 5, 0x2000, 0x401000, 0, 3, 3, 0x1000)
+        self.assert_rejected(data, "xsave")
+
+    def test_legacy_save_is_not_a_restore_or_loader_exemption(self):
+        for opcode in (bytes.fromhex("0fae07"), bytes.fromhex("480fae07")):
+            report, accepted = self.inspect(fixture(opcode + b"\xc3"))
+            self.assertFalse(accepted, report)
+            self.assertTrue(report["artifacts"]["/fixture"]["sites"][0]["mnemonic"] in a.SAVE)
+        self.assert_rejected(fixture(resolver_trampoline(bytes.fromhex("0fae442440"))), "fxsave")
+
+    def test_native_approximation_is_refused_with_exact_arithmetic_control(self):
+        for raw, name in [("0f53c0", "rcpps"), ("0f52c0", "rsqrtps"),
+                          ("f30f53c0", "rcpss"), ("f30f52c0", "rsqrtss"),
+                          ("d9fe", "fsin"), ("d9ff", "fcos"), ("c5f853c0", "vrcpps"),
+                          ("62f27d484cc0", "vrcp14ps")]:
+            self.assert_rejected(fixture(bytes.fromhex(raw) + b"\xc3"), name)
+        self.assert_rejected(fixture(bytes.fromhex("eb01 b8 0f53c0 c3 c3")), "rcpps")
+        report, accepted = self.inspect(fixture(bytes.fromhex("0f51c0 c3")))
+        self.assertTrue(accepted, report)
+
+    def test_alternate_entry_invalidates_selector_dominance(self):
+        # Main decoding sees MOV ECX,0; the branch enters its last immediate
+        # byte, skips the zeroing write and reaches XGETBV with unknown ECX.
+        self.assert_rejected(fixture(bytes.fromhex("eb04 b900000090 0f01d0 c3")), "xgetbv")
+
+    def test_executable_page_alias_is_refused(self):
+        data = bytearray(fixture())
+        struct.pack_into("<H", data, 56, 2)
+        struct.pack_into("<IIQQQQQQ", data, 120, 1, 4, 0x1000, 0x400100, 0, 1, 1, 0x1000)
+        with self.assertRaisesRegex(a.Rejected, "memory-page alias"):
+            self.inspect(data)
+
+
 class AdmissionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

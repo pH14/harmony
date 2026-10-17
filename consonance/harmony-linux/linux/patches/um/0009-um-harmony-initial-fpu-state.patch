@@ -7,8 +7,8 @@ command line and the binary's path, so a new guest program could see host
 bytes that differ between two runs of the same profile. x86 Linux starts
 every program in the initial FPU state: an empty x87 stack with control word
 0x37f, MXCSR 0x1f80 and zeroed vector registers. The sampled state is now
-reset the same way. The protection-key register keeps the sampled value,
-which is the host's default for new programs.
+reset the same way. The protection-key component is absent in the restored
+XSAVE header, so XRSTOR initializes PKRU to zero instead of importing host policy.
 
 This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
 consonance/harmony-linux/linux/patches/ per the repository's kernel-patch
@@ -17,7 +17,7 @@ exception.
 ---
 --- a/arch/um/os-Linux/start_up.c
 +++ b/arch/um/os-Linux/start_up.c
-@@ -163,6 +163,30 @@
+@@ -163,6 +163,26 @@
  		exec_fp_regs = malloc(host_fp_size);
  		memcpy(exec_regs, regs->gp, sizeof(exec_regs));
  		memcpy(exec_fp_regs, regs->fp, host_fp_size);
@@ -32,17 +32,13 @@ exception.
 +			unsigned char *fx = (unsigned char *)exec_fp_regs;
 +			unsigned short cwd = 0x37f;
 +			unsigned int mxcsr = 0x1f80;
-+			unsigned long long components;
 +
 +			memset(fx, 0, 24);
 +			memcpy(fx, &cwd, sizeof(cwd));
 +			memcpy(fx + 24, &mxcsr, sizeof(mxcsr));
 +			memset(fx + 32, 0, 464 - 32);
-+			if (host_fp_size >= 512 + sizeof(components)) {
-+				memcpy(&components, fx + 512, sizeof(components));
-+				components &= 1ULL << 9;
-+				memcpy(fx + 512, &components, sizeof(components));
-+			}
++			if (host_fp_size > 512)
++				memset(fx + 512, 0, host_fp_size - 512);
 +		}
 +#endif
  

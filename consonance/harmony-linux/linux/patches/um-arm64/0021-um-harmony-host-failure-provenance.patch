@@ -1,0 +1,485 @@
+Preserve UML host-failure provenance at the substrate boundary
+
+Lost stubs, host termination signals, address-space setup failures and failed
+stub handoffs abandon execution with the reserved infrastructure status. The
+host-failure primitive is async-signal-safe and deliberately bypasses guest
+panic notifiers and cleanup that could emit guest events. The launcher owns
+process-group cleanup after observing the status. Guest-generated traps retain
+their guest signal path; a failed host transport does not.
+
+This patch is Linux-kernel code (GPL-2.0), carried as a kernel diff under
+consonance/harmony-linux/linux/patches/ per the repository kernel-patch
+exception.
+
+---
+--- a/arch/um/include/shared/os.h
++++ b/arch/um/include/shared/os.h
+@@ -10,6 +10,7 @@
+ 
+ #define HARMONY_UML_PANIC_STATUS 86
+ #define HARMONY_UML_HOST_FAILURE_STATUS 87
++extern void os_host_failure(void) __attribute__((noreturn));
+ 
+ #include <irq_user.h>
+ #include <longjmp.h>
+--- a/arch/um/kernel/skas/mmu.c
++++ b/arch/um/kernel/skas/mmu.c
+@@ -140,7 +140,7 @@
+ 		*/
+ 		list_for_each_entry(mm_context, &mm_list, list) {
+ 			if (mm_context->id.pid == pid)
+-				panic("Lost the host process of a guest address space\n");
++				os_host_failure();
+ 		}
+ 	}
+ 
+--- a/arch/um/os-Linux/main.c
++++ b/arch/um/os-Linux/main.c
+@@ -35,7 +35,7 @@
+ 	if (snprintf(actual, sizeof(actual), "%lu", value) >= sizeof(actual) ||
+ 	    expected == NULL || strcmp(expected, actual) != 0) {
+ 		fprintf(stderr, "Harmony host auxiliary vector mismatch: %s\n", name);
+-		exit(1);
++		os_host_failure();
+ 	}
+ }
+ 
+@@ -72,7 +72,7 @@
+ 	if (expected == NULL || platform == NULL ||
+ 	    strcmp(expected, platform) != 0) {
+ 		fprintf(stderr, "Harmony host auxiliary vector mismatch: AT_PLATFORM\n");
+-		exit(1);
++		os_host_failure();
+ 	}
+ }
+ 
+@@ -82,21 +82,20 @@
+ 
+ 	if (getrlimit(RLIMIT_STACK, &lim) < 0) {
+ 		perror("getrlimit");
+-		exit(1);
++		os_host_failure();
+ 	}
+ 	if ((lim.rlim_cur == RLIM_INFINITY) || (lim.rlim_cur > STACKSIZE)) {
+ 		lim.rlim_cur = STACKSIZE;
+ 		if (setrlimit(RLIMIT_STACK, &lim) < 0) {
+ 			perror("setrlimit");
+-			exit(1);
++			os_host_failure();
+ 		}
+ 	}
+ }
+ 
+ static void last_ditch_exit(int sig)
+ {
+-	uml_cleanup();
+-	exit(1);
++	os_host_failure();
+ }
+ 
+ static void __init install_fatal_handler(int sig)
+@@ -118,7 +117,7 @@
+ 	if (sigaction(sig, &action, NULL) < 0) {
+ 		os_warn("failed to install handler for signal %d "
+ 			"- errno = %d\n", sig, errno);
+-		exit(1);
++		os_host_failure();
+ 	}
+ }
+ 
+@@ -170,7 +169,7 @@
+ 		ret = readlink("/proc/self/exe", buf, sizeof(buf));
+ 		if (ret < 0 || ret >= sizeof(buf)) {
+ 			perror("readlink failure");
+-			exit(1);
++			os_host_failure();
+ 		}
+ 		execve(buf, argv, envp);
+ 	}
+@@ -184,13 +183,13 @@
+ 	new_argv = malloc((argc + 1) * sizeof(char *));
+ 	if (new_argv == NULL) {
+ 		perror("Mallocing argv");
+-		exit(1);
++		os_host_failure();
+ 	}
+ 	for (i = 0; i < argc; i++) {
+ 		new_argv[i] = strdup(argv[i]);
+ 		if (new_argv[i] == NULL) {
+ 			perror("Mallocing an arg");
+-			exit(1);
++			os_host_failure();
+ 		}
+ 	}
+ 	new_argv[argc] = NULL;
+--- a/arch/um/os-Linux/skas/process.c
++++ b/arch/um/os-Linux/skas/process.c
+@@ -103,7 +103,7 @@
+ 		if (err) {
+ 			printk(UM_KERN_ERR "%s : continue failed, errno = %d\n",
+ 			       __func__, errno);
+-			fatal_sigsegv();
++			os_host_failure();
+ 		}
+ 	}
+ 
+@@ -117,7 +117,7 @@
+ 		       -err);
+ 	printk(UM_KERN_ERR "%s : failed to wait for SIGTRAP, pid = %d, n = %d, errno = %d, status = 0x%x\n",
+ 	       __func__, pid, n, errno, status);
+-	fatal_sigsegv();
++	os_host_failure();
+ }
+ 
+ /*
+@@ -320,9 +320,7 @@
+ 		printk(UM_KERN_ERR
+ 		       "%s : failed to wait for stub, pid = %d, errno = %d\n",
+ 		       __func__, mm_idp->pid, errno);
+-	/* This is not true inside start_userspace */
+-	if (current_mm_id() == mm_idp)
+-		fatal_sigsegv();
++	os_host_failure();
+ }
+ 
+ extern unsigned long current_stub_stack(void);
+@@ -335,7 +333,7 @@
+ 	if (err) {
+ 		printk(UM_KERN_ERR "Failed to continue stub, pid = %d, "
+ 		       "errno = %d\n", pid, errno);
+-		fatal_sigsegv();
++		os_host_failure();
+ 	}
+ 	wait_stub_done(pid);
+ 
+@@ -479,8 +477,7 @@
+ 	if (stub_exe_path) {
+ 		stub_exe_fd = open(stub_exe_path, O_RDONLY | O_CLOEXEC);
+ 		if (stub_exe_fd < 0)
+-			panic("Could not open stub binary '%s': %d",
+-			      stub_exe_path, -errno);
++			os_host_failure();
+ 		return 0;
+ 	}
+ 
+@@ -509,15 +506,14 @@
+ 		tmpfile = malloc(strlen(tempdir) +
+ 				  strlen(STUB_EXE_NAME_TEMPLATE) + 1);
+ 		if (tmpfile == NULL)
+-			panic("Failed to allocate memory for stub binary name");
++			os_host_failure();
+ 
+ 		strcpy(tmpfile, tempdir);
+ 		strcat(tmpfile, STUB_EXE_NAME_TEMPLATE);
+ 
+ 		stub_exe_fd = mkstemp(tmpfile);
+ 		if (stub_exe_fd < 0)
+-			panic("Could not create temporary file for stub binary: %d",
+-			      -errno);
++			os_host_failure();
+ 	}
+ 
+ 	while (written < stub_exe_end - stub_exe_start) {
+@@ -529,7 +525,7 @@
+ 
+ 			if (tmpfile)
+ 				unlink(tmpfile);
+-			panic("Failed write stub binary: %d", -errno);
++			os_host_failure();
+ 		}
+ 
+ 		written += res;
+@@ -541,15 +537,14 @@
+ 	} else {
+ 		if (fchmod(stub_exe_fd, 00500) < 0) {
+ 			unlink(tmpfile);
+-			panic("Could not make stub binary executable: %d",
+-			      -errno);
++			os_host_failure();
+ 		}
+ 
+ 		close(stub_exe_fd);
+ 		stub_exe_fd = open(tmpfile, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+ 		if (stub_exe_fd < 0) {
+ 			unlink(tmpfile);
+-			panic("Could not reopen stub binary: %d", -errno);
++			os_host_failure();
+ 		}
+ 
+ 		unlink(tmpfile);
+@@ -590,17 +585,16 @@
+ 	};
+ 	void *stack;
+ 	unsigned long sp;
+-	int status, n, err;
++	int status, n;
+ 
+ 	/* setup a temporary stack page */
+ 	stack = mmap(NULL, UM_KERN_PAGE_SIZE,
+ 		     PROT_READ | PROT_WRITE | PROT_EXEC,
+ 		     MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+ 	if (stack == MAP_FAILED) {
+-		err = -errno;
+ 		printk(UM_KERN_ERR "%s : mmap failed, errno = %d\n",
+ 		       __func__, errno);
+-		return err;
++		os_host_failure();
+ 	}
+ 
+ 	/* set stack pointer to the end of the stack page, so it can grow downwards */
+@@ -608,10 +602,9 @@
+ 
+ 	/* socket pair for init data and SECCOMP FD passing (no CLOEXEC here) */
+ 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, tramp_data.sockpair)) {
+-		err = -errno;
+ 		printk(UM_KERN_ERR "%s : socketpair failed, errno = %d\n",
+ 		       __func__, errno);
+-		return err;
++		os_host_failure();
+ 	}
+ 
+ 	if (using_seccomp) {
+@@ -637,12 +630,11 @@
+ 		    CLONE_VFORK | CLONE_VM | SIGCHLD,
+ 		    (void *)&tramp_data);
+ 	if (mm_id->pid < 0) {
+-		err = -errno;
+ 		printk(UM_KERN_ERR "%s : clone failed, errno = %d\n",
+ 		       __func__, errno);
+ 		write(STDERR_FILENO, "Harmony UML host clone failed\n",
+ 		      sizeof("Harmony UML host clone failed\n") - 1);
+-		_exit(HARMONY_UML_HOST_FAILURE_STATUS);
++		os_host_failure();
+ 	}
+ 
+ 	if (using_seccomp) {
+@@ -652,15 +644,13 @@
+ 			CATCH_EINTR(n = waitpid(mm_id->pid, &status,
+ 						WUNTRACED | __WALL));
+ 			if (n < 0) {
+-				err = -errno;
+ 				printk(UM_KERN_ERR "%s : wait failed, errno = %d\n",
+ 				       __func__, errno);
+-				goto out_kill;
++				os_host_failure();
+ 			}
+ 		} while (WIFSTOPPED(status) && (WSTOPSIG(status) == SIGALRM));
+ 
+ 		if (!WIFSTOPPED(status) || (WSTOPSIG(status) != SIGSTOP)) {
+-			err = -EINVAL;
+ 			/*
+ 			 * userspace_tramp() exits 5 on the line after its
+ 			 * execveat, so that status means the stub was never
+@@ -680,23 +670,21 @@
+ 				printk(UM_KERN_ERR
+ 				       "%s : expected SIGSTOP, got status = %d\n",
+ 				       __func__, status);
+-			goto out_kill;
++			os_host_failure();
+ 		}
+ 
+ 		if (ptrace(PTRACE_SETOPTIONS, mm_id->pid, NULL,
+ 			   (void *) PTRACE_O_TRACESYSGOOD) < 0) {
+-			err = -errno;
+ 			printk(UM_KERN_ERR "%s : PTRACE_SETOPTIONS failed, errno = %d\n",
+ 			       __func__, errno);
+-			goto out_kill;
++			os_host_failure();
+ 		}
+ 	}
+ 
+ 	if (munmap(stack, UM_KERN_PAGE_SIZE) < 0) {
+-		err = -errno;
+ 		printk(UM_KERN_ERR "%s : munmap failed, errno = %d\n",
+ 		       __func__, errno);
+-		goto out_kill;
++		os_host_failure();
+ 	}
+ 
+ 	close(tramp_data.sockpair[0]);
+@@ -706,16 +694,6 @@
+ 		close(tramp_data.sockpair[1]);
+ 
+ 	return 0;
+-
+-out_kill:
+-	os_kill_ptraced_process(mm_id->pid, 1);
+-out_close:
+-	close(tramp_data.sockpair[0]);
+-	close(tramp_data.sockpair[1]);
+-
+-	mm_id->pid = -1;
+-
+-	return err;
+ }
+ 
+ static int unscheduled_userspace_iterations;
+@@ -806,12 +784,12 @@
+ 			if (err) {
+ 				printk(UM_KERN_ERR "%s - failed to set regs: %d",
+ 				       __func__, err);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			/* Must have been reset by the syscall caller */
+ 			if (proc_data->restart_wait != 0)
+-				panic("Programming error: Flag to only run syscalls in child was not cleared!");
++				os_host_failure();
+ 
+ 			/* Mark pending syscalls for flushing */
+ 			proc_data->syscall_data_len = mm_id->syscall_data_len;
+@@ -825,7 +803,7 @@
+ 				       __func__);
+ 				syscall_stub_dump_error(mm_id);
+ 				mm_id->syscall_data_len = proc_data->err;
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			mm_id->syscall_data_len = 0;
+@@ -835,11 +813,11 @@
+ 			if (err) {
+ 				printk(UM_KERN_ERR "%s - failed to get regs: %d",
+ 				       __func__, err);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			if (proc_data->si_offset > sizeof(proc_data->sigstack) - sizeof(*si))
+-				panic("%s - Invalid siginfo offset from child", __func__);
++				os_host_failure();
+ 
+ 			si = &si_local;
+ 			memcpy(si, &proc_data->sigstack[proc_data->si_offset], sizeof(*si));
+@@ -864,7 +842,7 @@
+ 
+ 				printk(UM_KERN_ERR "%s - Error flushing stub syscalls: %d",
+ 					__func__, -err);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			/*
+@@ -884,7 +862,7 @@
+ 			if (put_fp_registers(pid, regs->fp)) {
+ 				printk(UM_KERN_ERR "%s - ptrace set fp regs failed, errno = %d\n",
+ 				       __func__, errno);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			/*
+@@ -918,27 +896,27 @@
+ 			if (ptrace(op, pid, 0, 0)) {
+ 				printk(UM_KERN_ERR "%s - ptrace continue failed, op = %d, errno = %d\n",
+ 				       __func__, op, errno);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			CATCH_EINTR(err = waitpid(pid, &status, WUNTRACED | __WALL));
+ 			if (err < 0) {
+ 				printk(UM_KERN_ERR "%s - wait failed, errno = %d\n",
+ 				       __func__, errno);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			regs->is_user = 1;
+ 			if (get_host_regs(pid, regs->gp)) {
+ 				printk(UM_KERN_ERR "%s - get_host_regs failed, errno = %d\n",
+ 				       __func__, errno);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ 			if (get_fp_registers(pid, regs->fp)) {
+ 				printk(UM_KERN_ERR "%s -  get_fp_registers failed, errno = %d\n",
+ 				       __func__, errno);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 
+ #ifdef UM_SYSCALL_STOP_HIDES_REG
+@@ -990,14 +968,14 @@
+ 				    ptrace_set_syscall_nr(pid, syscall_cancel_nr)) {
+ 					printk(UM_KERN_ERR "%s - failed to cancel a guest syscall, errno = %d\n",
+ 					       __func__, errno);
+-					fatal_sigsegv();
++					os_host_failure();
+ 				}
+ 
+ 				while (1) {
+ 					if (ptrace(PTRACE_SINGLESTEP, pid, 0, 0)) {
+ 						printk(UM_KERN_ERR "%s - failed to step off a syscall stop, errno = %d\n",
+ 						       __func__, errno);
+-						fatal_sigsegv();
++						os_host_failure();
+ 					}
+ 
+ 					CATCH_EINTR(err = waitpid(pid, &sstatus,
+@@ -1005,7 +983,7 @@
+ 					if (err < 0) {
+ 						printk(UM_KERN_ERR "%s - wait after step failed, errno = %d\n",
+ 						       __func__, errno);
+-						fatal_sigsegv();
++						os_host_failure();
+ 					}
+ 
+ 					if (WIFSTOPPED(sstatus) &&
+@@ -1035,13 +1013,13 @@
+ 					 */
+ 					printk(UM_KERN_ERR "%s - unexpected status 0x%x stepping off a syscall stop\n",
+ 					       __func__, sstatus);
+-					fatal_sigsegv();
++					os_host_failure();
+ 				}
+ 
+ 				if (get_host_regs(pid, hidden)) {
+ 					printk(UM_KERN_ERR "%s - get_host_regs after step failed, errno = %d\n",
+ 					       __func__, errno);
+-					fatal_sigsegv();
++					os_host_failure();
+ 				}
+ 
+ 				regs->gp[UM_SYSCALL_STOP_HIDDEN_REG] =
+@@ -1120,7 +1098,7 @@
+ 			default:
+ 				printk(UM_KERN_ERR "%s - child stopped with signal %d\n",
+ 				       __func__, sig);
+-				fatal_sigsegv();
++				os_host_failure();
+ 			}
+ 			interrupt_end();
+ 
+@@ -1195,13 +1173,13 @@
+ 	default:
+ 		printk(UM_KERN_ERR "Bad sigsetjmp return in %s - %d\n",
+ 		       __func__, n);
+-		fatal_sigsegv();
++		os_host_failure();
+ 	}
+ 	longjmp(*switch_buf, 1);
+ 
+ 	/* unreachable */
+ 	printk(UM_KERN_ERR "impossible long jump!");
+-	fatal_sigsegv();
++	os_host_failure();
+ 	return 0;
+ }
+ 
+--- a/arch/um/os-Linux/util.c
++++ b/arch/um/os-Linux/util.c
+@@ -111,6 +111,11 @@
+ 	signal(SIGTERM, SIG_DFL);
+ }
+ 
++void os_host_failure(void)
++{
++	_exit(HARMONY_UML_HOST_FAILURE_STATUS);
++}
++
+ void os_dump_core(int exit_status)
+ {
+ 	int pid;
