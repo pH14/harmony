@@ -31,6 +31,12 @@ all = { level = "deny", priority = -1 }
 [profile.release]
 debug = true
 
+# Run manifests hash the loaded executable on every create and verify. An
+# unoptimized SHA-256 takes seconds over a test binary, so tests and mutation
+# baselines optimize the digest crate.
+[profile.dev.package.sha2]
+opt-level = 3
+
 # Mutation builds inherit the test profile's assertions and panic behavior while
 # omitting debug information. Incremental compilation is enabled by the CI
 # mutation steps because each mutant is a small source change built in a
