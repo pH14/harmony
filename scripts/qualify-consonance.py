@@ -103,7 +103,7 @@ def identity(bundle_dir):
 def parse_evidence(log):
     evidence = {}
     for key, pattern in (("digest", "[0-9a-f]{64}"), ("events", "[0-9]+"), ("guest_deliveries", "[0-9]+"), ("checkpoints", "[0-9]+")):
-        matches = re.findall(rf"^X1_{key.upper()}=({pattern})$", log, re.MULTILINE)
+        matches = re.findall(rf"(?:^|\.\.\. )X1_{key.upper()}=({pattern})$", log, re.MULTILINE)
         if len(matches) != 1:
             raise ValueError(f"missing or duplicate X1 {key}")
         evidence[key] = matches[0] if key == "digest" else int(matches[0])
