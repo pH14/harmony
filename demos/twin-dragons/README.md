@@ -496,7 +496,9 @@ invincibility counter at `$04A1` to 8, which skips wall and spike collisions.
 After each frame it clears the debug mode and the death bits. A route also
 ends once the level percent has stayed at 99 for 16 chunks, because on some
 levels a route that ignored a death runs under the end trigger and never shows
-it; the map is complete at that point.
+it; the map is complete at that point. A death after the level percent reached
+99 also ends a route, because the workload counts a scroll past the level's
+length as a death.
 `node tools/build-famidash-maps.mjs --inputs <group> <level> <victory-input.json>`
 records the victory input of a Dissonance run as the level's route after
 checking that it clears the level. The build sets the parallax pokes for these

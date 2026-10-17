@@ -51,7 +51,8 @@ const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const EMULATOR_BACKEND_FIELD: &str = "emulator_backend";
 const CONTROLLER_VOCABULARY_IDENTIFIER: &str = "a_only_no_start_select_v1";
 const RELEASE: &str = "tfdsoft/famidash@1.2.8";
-const TERMINAL_POLICY_IDENTIFIER: &str = "dash_complete_win_or_death_bit_v1";
+const TERMINAL_POLICY_IDENTIFIER: &str =
+    "dash_complete_win_or_death_bit_or_scroll_past_level_end_v2";
 
 pub type FamidashTargets<M> = Box<dyn Fn() -> Result<FamidashTarget<M>, String> + Send + Sync>;
 

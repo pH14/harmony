@@ -93,7 +93,9 @@ identity names the side, the start and the goal.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
 6 to 40. A death bit is a terminal death once the player's screen x is past
-`$20`. The game clears death bits while the player is at screen x `$20` or
+`$20`. A scroll past the level's length, in hundredths, is also a terminal
+death. Every level's end trigger sits at or before that x, and a trigger
+fires only while it is on screen, so a run past it can never finish the level. The game clears death bits while the player is at screen x `$20` or
 less. Slaughterhouse on the D-Sides sets one 18 frames after the level start
 and the level goes on. The search plays the group's levels in order from the
 starting level, and the objective is game state 3 in the goal level. Frames

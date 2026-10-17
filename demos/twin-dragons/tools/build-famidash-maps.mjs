@@ -82,12 +82,17 @@ async function open(index) {
 }
 const scrollX = () => ram[SCROLL_X] | (ram[SCROLL_X + 1] << 8) | (ram[SCROLL_X + 2] << 16) | (ram[SCROLL_X + 3] << 24);
 const cameraY = () => ram[SCROLL_Y + 1] * SCREEN_ROWS + ram[SCROLL_Y];
-const dead = () => game.decode(engine.memory()).health === 0;
 const atEnd = () => game.decode(engine.memory()).percent >= 99;
+let alivePercent = 0;
+const restore = (state) => {
+  engine.restore(state);
+  const { health, percent } = game.decode(engine.memory());
+  alivePercent = health === 0 ? 0 : percent;
+};
 const velocity = () => ((ram[VELOCITY_Y] | (ram[VELOCITY_Y + 1] << 8)) << 16) >> 16;
 
 function boot(level) {
-  engine.restore(levelSelect);
+  restore(levelSelect);
   if (ram[LEVEL] !== level) ram[LEVEL] = level;
   for (const { buttons, frames } of START) engine.step(buttons, frames);
   if (ram[GAME_STATE] !== PLAYING || ram[LEVEL] !== level) throw new Error(`Setup did not reach ${names.get(level)}`);
@@ -110,7 +115,11 @@ function frame(buttons, render, assisted = false) {
     ram[CUBE_DATA + 1] &= ~1;
   }
   if (ram[GAME_STATE] === COMPLETE) return 1;
-  return ram[GAME_STATE] !== PLAYING || dead() ? -1 : 0;
+  if (ram[GAME_STATE] !== PLAYING) return -1;
+  const { health, percent } = game.decode(engine.memory());
+  if (health === 0) return alivePercent >= 99 ? 1 : -1;
+  alivePercent = percent;
+  return 0;
 }
 
 function chunk(pattern) {
@@ -128,7 +137,7 @@ function beam(start, steps) {
     const next = new Map();
     for (const node of nodes)
       for (let pattern = 0; pattern < CHUNK_PATTERNS.length; pattern++) {
-        engine.restore(node.state);
+        restore(node.state);
         const result = chunk(pattern);
         if (result < 0) continue;
         const path = [pattern];
@@ -156,7 +165,7 @@ function search(level, assist) {
   let assists = 0,
     pastEnd = 0;
   const reach = (from, plan, target) => {
-    engine.restore(states[from]);
+    restore(states[from]);
     let depth = from;
     for (let i = 0; depth < target; i++, depth++) {
       const result = chunk(plan[i] ?? 0);
@@ -167,7 +176,7 @@ function search(level, assist) {
   const commit = (from, plan) => {
     path.length = from;
     states.length = from + 1;
-    engine.restore(states[from]);
+    restore(states[from]);
     for (const pattern of plan) {
       const result = chunk(pattern);
       path.push(pattern);
@@ -178,7 +187,7 @@ function search(level, assist) {
     return false;
   };
   for (;;) {
-    engine.restore(states[path.length]);
+    restore(states[path.length]);
     const result = chunk(0);
     path.push(0);
     if (result > 0) return path;
@@ -301,11 +310,13 @@ function compose(level, route) {
     return 0;
   };
   steps: for (const [buttons, count, assisted] of plan)
-    for (let i = 0; i < count; i++)
-      if (onFrame(buttons, assisted)) {
-        complete = ram[GAME_STATE] === COMPLETE;
+    for (let i = 0; i < count; i++) {
+      const result = onFrame(buttons, assisted);
+      if (result) {
+        complete = result > 0;
         break steps;
       }
+    }
   const reached = complete || atEnd();
   parallax = false;
   if (!reached) throw new Error(`The recorded route for ${names.get(level)} no longer reaches its end; run with --search`);
@@ -343,7 +354,7 @@ function spriteSheet(level) {
   engine.step(0, SPRITE_FRAME);
   const start = engine.capture();
   for (let mode = 0; mode < MODES; mode++) {
-    engine.restore(start);
+    restore(start);
     ram[GAMEMODE] = mode;
     for (let i = 0; i < 4; i++) {
       ram[INVINCIBLE] = 8;

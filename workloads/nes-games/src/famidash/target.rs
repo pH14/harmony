@@ -42,6 +42,7 @@ const SCROLL_Y_SUBPIXEL: usize = 0x04a8;
 const PAUSED: usize = 0x05b5;
 const DEATH: u8 = 0x01;
 const DEATH_CHECK_SCREEN_X: u8 = 0x20;
+const LEVEL_LENGTH_UNIT: i32 = 100;
 const LEVEL_DONE_POLL_FRAMES: u32 = 15;
 const LEVEL_DONE_POLLS: u32 = 40;
 const MENU_SETTLE_FRAMES: u32 = 20;
@@ -853,11 +854,17 @@ pub fn decode_state(wram: &[u8], stage: Stage) -> Result<FamidashMechanicalState
     let level = byte(wram, LEVEL)?;
     let paused = byte(wram, PAUSED)? != 0;
     let playing = game_state == GAME_STATE_PLAYING;
+    let scroll_x = long(wram, SCROLL_X)?;
+    let past_end = stage
+        .side
+        .level_length(level)
+        .is_some_and(|length| scroll_x > i32::from(length) * LEVEL_LENGTH_UNIT);
     let dead = playing
-        && byte(wram, PLAYER_X + 1)? > DEATH_CHECK_SCREEN_X
-        && (byte(wram, CUBE_DATA)? & DEATH != 0 || byte(wram, CUBE_DATA + 1)? & DEATH != 0);
+        && (past_end
+            || byte(wram, PLAYER_X + 1)? > DEATH_CHECK_SCREEN_X
+                && (byte(wram, CUBE_DATA)? & DEATH != 0
+                    || byte(wram, CUBE_DATA + 1)? & DEATH != 0));
     let gameplay = if playing && !dead && !paused {
-        let scroll_x = long(wram, SCROLL_X)?;
         let [fine_y, screen_y] = word(wram, SCROLL_Y)?.to_le_bytes();
         let camera_y = i32::from(screen_y) * SCREEN_HEIGHT + i32::from(fine_y);
         Some(FamidashGameplayState {
@@ -1017,7 +1024,23 @@ mod tests {
         let stage = Stage::single(Side::C, 23).unwrap();
         assert_eq!(decode_state(&wram, stage).unwrap().percent(), 40);
         let stage = Stage::single(Side::Main, 23).unwrap();
-        assert_eq!(decode_state(&wram, stage).unwrap().percent(), 99);
+        assert!(decode_state(&wram, stage).unwrap().dead);
+    }
+
+    #[test]
+    fn a_scroll_past_the_level_length_is_a_dead_end() {
+        let mut wram = playing_wram();
+        wram[LEVEL] = 17;
+        let stage = Stage::single(Side::C, 17).unwrap();
+        wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&15_400_i32.to_le_bytes());
+        let state = decode_state(&wram, stage).unwrap();
+        assert!(!state.dead);
+        assert_eq!(state.percent(), 99);
+        wram[SCROLL_X..SCROLL_X + 4].copy_from_slice(&15_401_i32.to_le_bytes());
+        let state = decode_state(&wram, stage).unwrap();
+        assert!(state.dead);
+        assert!(state.terminal());
+        assert!(state.gameplay.is_none());
     }
 
     #[test]
