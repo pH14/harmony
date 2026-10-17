@@ -73,6 +73,8 @@ QUICKNES_OPTIONS = {
     b"quicknes_up_down_allowed": b"disabled",
 }
 
+QUICKNES_POWER_ON_RAM = {0x08: 0xF7, 0x09: 0xEF, 0x0A: 0xDF, 0x0F: 0xBF}
+
 GENESIS = re.compile(r"genesis=famidash-(main|b|c|d)-level-(\d+)-to-(\d+)-v1")
 
 
@@ -152,8 +154,12 @@ def core_options(core_path: Path) -> dict[bytes, bytes]:
     return QUICKNES_OPTIONS if "quicknes" in core_path.name.lower() else {}
 
 
-def open_core(core_path: Path, rom: Path, video: bool) -> Core:
-    return Core(core_path, rom, options=core_options(core_path), video=video)
+def open_core(core_path: Path, rom: Path, video: bool, quicknes_ram: bool = False) -> Core:
+    core = Core(core_path, rom, options=core_options(core_path), video=video)
+    if quicknes_ram:
+        for address in range(0x800):
+            core.poke(address, QUICKNES_POWER_ON_RAM.get(address, 0xFF))
+    return core
 
 
 def setup(core: Core, stage: Stage, boot_frames: int) -> bytes:
@@ -185,9 +191,11 @@ class ReplayResult:
     error: str | None = None
 
 
-def replay_one(core_path: Path, boot_frames: int, run: Run, screenshot_dir: Path | None) -> ReplayResult:
+def replay_one(
+    core_path: Path, boot_frames: int, quicknes_ram: bool, run: Run, screenshot_dir: Path | None
+) -> ReplayResult:
     try:
-        core = open_core(core_path, run.rom, video=screenshot_dir is not None)
+        core = open_core(core_path, run.rom, video=screenshot_dir is not None, quicknes_ram=quicknes_ram)
         setup(core, run.stage, boot_frames)
         complete_frame = death_frame = None
         frame = 0
@@ -245,7 +253,7 @@ def command_replay(args) -> int:
     screenshot_dir = args.screenshots
     if screenshot_dir is not None:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
-    tasks = [(args.core, args.boot_frames, run, screenshot_dir) for run in runs]
+    tasks = [(args.core, args.boot_frames, args.quicknes_power_on_ram, run, screenshot_dir) for run in runs]
     context = multiprocessing.get_context("spawn")
     with context.Pool(args.jobs, maxtasksperchild=1) as pool:
         results = pool.map(_replay_task, tasks, chunksize=1)
@@ -333,8 +341,8 @@ def command_diverge(args) -> int:
     stack page is excluded from every RAM comparison.
     """
     run = load_run(args.run, args.rom_dir)
-    left = open_core(args.core_a, run.rom, video=False)
-    right = open_core(args.core_b, run.rom, video=False)
+    left = open_core(args.core_a, run.rom, video=False, quicknes_ram=args.quicknes_power_on_ram)
+    right = open_core(args.core_b, run.rom, video=False, quicknes_ram=args.quicknes_power_on_ram)
     for _ in range(args.boot_frames_b):
         right.run_frame(0)
     report: dict = {"run": run.name, "recorded_frame": run.tape_frames}
@@ -387,7 +395,12 @@ def command_diverge(args) -> int:
 
 BOOT_FRAMES_HELP = (
     "idle frames to run before the level-start inputs, so the core's first "
-    "frame lines up with QuickNES's first frame (fceumm needs 1)"
+    "frame lines up with QuickNES's first frame (fceumm needs 1, Mesen 0)"
+)
+
+POWER_ON_RAM_HELP = (
+    "overwrite system RAM after load with QuickNES's power-on contents, so cores "
+    "with other power-on fills start from the same RAM"
 )
 
 
@@ -398,6 +411,7 @@ def main() -> int:
     replay.add_argument("--core", type=Path, required=True, help="libretro core library")
     replay.add_argument("--rom-dir", type=Path, required=True, help="directory holding the four Famidash 1.2.8 ROMs")
     replay.add_argument("--boot-frames", type=int, default=0, help=BOOT_FRAMES_HELP)
+    replay.add_argument("--quicknes-power-on-ram", action="store_true", help=POWER_ON_RAM_HELP)
     replay.add_argument(
         "--screenshots",
         type=Path,
@@ -412,6 +426,7 @@ def main() -> int:
     diverge.add_argument("--core-a", type=Path, required=True)
     diverge.add_argument("--core-b", type=Path, required=True)
     diverge.add_argument("--boot-frames-b", type=int, default=0, help=BOOT_FRAMES_HELP)
+    diverge.add_argument("--quicknes-power-on-ram", action="store_true", help=POWER_ON_RAM_HELP)
     diverge.add_argument("--rom-dir", type=Path, required=True)
     diverge.add_argument("run", type=Path, help="one run directory")
     diverge.set_defaults(handler=command_diverge)

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import tempfile
 from ctypes import (
     CFUNCTYPE,
     POINTER,
@@ -25,6 +26,8 @@ RETRO_DEVICE_ID_JOYPAD_MASK = 256
 
 ENV_EXPERIMENTAL = 1 << 16
 ENV_GET_CAN_DUPE = 3
+ENV_GET_SYSTEM_DIRECTORY = 9
+ENV_GET_SAVE_DIRECTORY = 31
 ENV_SET_PIXEL_FORMAT = 10
 ENV_GET_VARIABLE = 15
 ENV_GET_VARIABLE_UPDATE = 17
@@ -112,7 +115,9 @@ class Core:
     """One loaded libretro core with one loaded game.
 
     Libretro cores keep global state, so a process holds at most one instance
-    per core library. Two different cores can run side by side.
+    per core library. Two different cores can run side by side. Each core gets
+    an empty temporary system and save directory, so no saved game carries over
+    from an earlier run.
     """
 
     def __init__(
@@ -124,6 +129,8 @@ class Core:
         audio: bool = False,
     ):
         self.options = {key: value for key, value in (options or {}).items()}
+        self._directory = tempfile.TemporaryDirectory(prefix="nes-replay-")
+        self._directory_path = self._directory.name.encode()
         self.video = video
         self.audio = audio
         self.pixel_format = PIXEL_XRGB1555
@@ -142,12 +149,12 @@ class Core:
         )
         environment, video_cb, audio_cb, audio_batch, poll, state = self._callbacks
         self._lib.retro_set_environment(environment)
+        self._lib.retro_init()
         self._lib.retro_set_video_refresh(video_cb)
         self._lib.retro_set_audio_sample(audio_cb)
         self._lib.retro_set_audio_sample_batch(audio_batch)
         self._lib.retro_set_input_poll(poll)
         self._lib.retro_set_input_state(state)
-        self._lib.retro_init()
         self._rom_bytes = rom.read_bytes()
         self._rom_buffer = ctypes.create_string_buffer(self._rom_bytes, len(self._rom_bytes))
         self._rom_path = str(rom).encode()
@@ -185,6 +192,9 @@ class Core:
             function.restype = restype
 
     def _environment(self, command: int, data: int | None) -> bool:
+        if command in (ENV_GET_SYSTEM_DIRECTORY, ENV_GET_SAVE_DIRECTORY) and data:
+            ctypes.cast(data, POINTER(c_char_p))[0] = self._directory_path
+            return True
         if command == ENV_GET_CAN_DUPE and data:
             ctypes.cast(data, POINTER(c_bool))[0] = True
             return True

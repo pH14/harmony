@@ -16,7 +16,7 @@ The tool is a manual check. It is not part of CI.
 
 ## Inputs
 
-- A libretro core library. Two are useful:
+- A libretro core library. Three are useful:
   - QuickNES at the revision the workload pins, built with
     `scripts/build-quicknes-core.sh OUTPUT`. This core validates the host: every
     tape must complete at its recorded frame.
@@ -26,6 +26,14 @@ The tool is a manual check. It is not part of CI.
     git clone https://github.com/libretro/libretro-fceumm.git
     git -C libretro-fceumm checkout --detach 7a542dab1e87679921962a9f056186eca425c0c2
     make -C libretro-fceumm -j8 DEBUG=0
+    ```
+
+  - Mesen, from the libretro fork at a pinned commit:
+
+    ```sh
+    git clone https://github.com/libretro/Mesen.git
+    git -C Mesen checkout --detach 0102910c39ad1a62bc3f784466f3f67ca9eae335
+    make -C Mesen/Libretro -j8
     ```
 
 - The four Famidash 1.2.8 ROMs in one directory: `famidash.nes`,
@@ -39,12 +47,12 @@ The tool is a manual check. It is not part of CI.
 
 ```sh
 scripts/nes-replay/famidash_replay.py replay \
-    --core fceumm_libretro.dylib --boot-frames 1 \
+    --core fceumm_libretro.dylib --boot-frames 1 --quicknes-power-on-ram \
     --rom-dir ROMS --screenshots shots --output fceumm.jsonl --quiet RUNS_DIR
 
 scripts/nes-replay/famidash_replay.py diverge \
     --core-a quicknes_libretro.dylib \
-    --core-b fceumm_libretro.dylib --boot-frames-b 1 \
+    --core-b fceumm_libretro.dylib --boot-frames-b 1 --quicknes-power-on-ram \
     --rom-dir ROMS RUNS_DIR/d-l4-s2
 ```
 
@@ -55,6 +63,11 @@ first frame the workload's decoder would call a death, and whether the
 completion frame equals the recorded frame. With `--screenshots` it saves the
 completion frame as `RUN.png` and the level-complete banner 300 frames later as
 `RUN-banner.png`.
+
+The host calls `retro_init` before it sets the frame callbacks, because Mesen
+needs its console object before it accepts them. Each core gets an empty
+temporary system and save directory, so no saved game carries over between
+runs.
 
 ## How a tape is played
 
@@ -79,9 +92,14 @@ frames.
 QuickNES and fceumm number power-on frames differently. fceumm reaches each
 boot step one `retro_run` later than QuickNES, so without an offset the first A
 press lands before the title screen accepts it and the setup never reaches
-gameplay. `--boot-frames 1` runs one
-idle frame before step 2. After it, the two cores hold identical RAM through the
-boot except for the stack page.
+gameplay. `--boot-frames 1` runs one idle frame before step 2. Mesen needs no
+offset.
+
+Power-on RAM differs too. QuickNES fills it with `$FF` except `$08`, `$09`,
+`$0A` and `$0F`, fceumm fills it with `$FF`, and Mesen with `$00`. Famidash
+keeps some of those bytes into gameplay, so the fill changes which frames lag.
+`--quicknes-power-on-ram` writes QuickNES's contents into the core's RAM before
+the first frame, so the comparison does not depend on the fill.
 
 ## Divergence report
 
@@ -96,6 +114,12 @@ next 16 frames, which skips one-pixel scroll differences that resolve.
 `core_b_frames_ahead` is 1 or -1 when core B's horizontal scroll equals core A's
 from one frame later or earlier. Famidash scrolls a fixed distance per gameplay
 frame, so that offset means one emulator ran a lag frame the other did not.
+
+A lag frame is a frame where the game's work runs past the next vertical blank,
+so the game skips one gameplay update. Some Famidash frames finish within about
+one CPU cycle of that limit. Small differences in emulated CPU timing, such as
+sprite DMA taking 513 or 514 cycles, decide whether those frames lag, so a tape
+timed for one emulator can be a frame off in another.
 
 ## Metroid
 
