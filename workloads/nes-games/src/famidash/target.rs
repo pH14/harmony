@@ -41,6 +41,7 @@ const SCROLL_Y: usize = 0x04a6;
 const SCROLL_Y_SUBPIXEL: usize = 0x04a8;
 const PAUSED: usize = 0x05b5;
 const DEATH: u8 = 0x01;
+const DEATH_CHECK_SCREEN_X: u8 = 0x20;
 const LEVEL_DONE_POLL_FRAMES: u32 = 15;
 const LEVEL_DONE_POLLS: u32 = 40;
 const MENU_SETTLE_FRAMES: u32 = 20;
@@ -852,8 +853,9 @@ pub fn decode_state(wram: &[u8], stage: Stage) -> Result<FamidashMechanicalState
     let level = byte(wram, LEVEL)?;
     let paused = byte(wram, PAUSED)? != 0;
     let playing = game_state == GAME_STATE_PLAYING;
-    let dead =
-        playing && (byte(wram, CUBE_DATA)? & DEATH != 0 || byte(wram, CUBE_DATA + 1)? & DEATH != 0);
+    let dead = playing
+        && byte(wram, PLAYER_X + 1)? > DEATH_CHECK_SCREEN_X
+        && (byte(wram, CUBE_DATA)? & DEATH != 0 || byte(wram, CUBE_DATA + 1)? & DEATH != 0);
     let gameplay = if playing && !dead && !paused {
         let scroll_x = long(wram, SCROLL_X)?;
         let [fine_y, screen_y] = word(wram, SCROLL_Y)?.to_le_bytes();
@@ -967,6 +969,19 @@ mod tests {
             assert!(state.terminal());
             assert!(state.gameplay.is_none());
         }
+    }
+
+    #[test]
+    fn a_death_bit_left_of_the_death_check_column_is_not_a_death() {
+        let mut wram = playing_wram();
+        wram[PLAYER_X + 1] = DEATH_CHECK_SCREEN_X;
+        wram[CUBE_DATA] = DEATH;
+        let state = decode_state(&wram, main()).unwrap();
+        assert!(!state.dead);
+        assert!(!state.terminal());
+        assert!(state.gameplay.is_some());
+        wram[PLAYER_X + 1] = DEATH_CHECK_SCREEN_X + 1;
+        assert!(decode_state(&wram, main()).unwrap().dead);
     }
 
     #[test]

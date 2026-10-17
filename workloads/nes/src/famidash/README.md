@@ -83,8 +83,7 @@ select it writes the level number to `$047B` when the menu shows another
 level, as the browser demo does, then presses A and waits 40 frames. For Stereo Madness that is 1,091 frames. The
 genesis check requires gameplay at 0 percent in the chosen level. On all 109
 levels the level loads 30 frames after A and the player first moves 57 frames
-after A. An idle player dies as early as frame 59, so a longer wait can start
-a level after a death.
+after A.
 
 A `Stage` names the side, the starting level and the goal level, both in one
 group. A `nes-eval` request's `stage` alone runs that one level, and the goal
@@ -93,9 +92,12 @@ through the group's last level. The side comes from the ROM. The emulator
 identity names the side, the start and the goal.
 
 The controller vocabulary is A alone, with taps of 1 to 4 frames and holds of
-6 to 40. A death bit is a terminal death. The search plays the group's levels
-in order from the starting level, and the objective is game state 3 in the
-goal level. Frames outside gameplay are not archived.
+6 to 40. A death bit is a terminal death once the player's screen x is past
+`$20`. The game clears death bits while the player is at screen x `$20` or
+less. Slaughterhouse on the D-Sides sets one 18 frames after the level start
+and the level goes on. The search plays the group's levels in order from the
+starting level, and the objective is game state 3 in the goal level. Frames
+outside gameplay are not archived.
 
 Game state 3 in a level before the goal ends the action at that frame. The
 target then presses buttons to start the next level: A once every 16 frames
