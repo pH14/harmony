@@ -38,11 +38,11 @@ The tool is a manual check. It is not part of CI.
 ## Usage
 
 ```sh
-tools/nes-replay/famidash_replay.py replay \
+scripts/nes-replay/famidash_replay.py replay \
     --core fceumm_libretro.dylib --boot-frames 1 \
     --rom-dir ROMS --screenshots shots --output fceumm.jsonl --quiet RUNS_DIR
 
-tools/nes-replay/famidash_replay.py diverge \
+scripts/nes-replay/famidash_replay.py diverge \
     --core-a quicknes_libretro.dylib \
     --core-b fceumm_libretro.dylib --boot-frames-b 1 \
     --rom-dir ROMS RUNS_DIR/d-l4-s2
