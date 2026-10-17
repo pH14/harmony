@@ -2,8 +2,8 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { createEngine } from "../src/emulator.js";
-import famidash, { LEVEL_NAMES } from "../src/games/famidash.js";
-import { famidash_level_select_tape, famidash_map_top } from "../rust/pkg/twin_dragons_browser.js";
+import { FAMIDASH, GROUPS } from "../src/games/famidash.js";
+import { famidash_level_select_tape, famidash_start_level_tape } from "../rust/pkg/twin_dragons_browser.js";
 import { png } from "./png.mjs";
 import { creditPNG } from "../src/media.js";
 
@@ -33,7 +33,6 @@ const LEVEL = 0x47b,
   PALETTE = 0x1a0,
   PALETTE_UPDATE = 0x03,
   PARALLAX_COLORS = [0x1a1, 0x1a9],
-  A = 1,
   SCREEN_ROWS = 240,
   CROP = 8,
   MARGIN = 16,
@@ -48,52 +47,76 @@ const LEVEL = 0x47b,
   REPAIR_PAIR = 4,
   BEAM_WIDTH = 12,
   BEAM_BACKS = [8, 24, 64, Infinity],
-  SPRITE = famidash.sprite.width,
+  SPRITE = FAMIDASH[0].sprite.width,
   MODES = 8,
   SPRITE_FRAME = 30,
   INVINCIBLE = 0x4a1,
+  DEBUG_MODE = 0x595,
+  IGNORE_DEATHS = 3,
+  ASSIST = CHUNK_PATTERNS.length,
+  ASSIST_BEAM_BACKS = [8, 24, 64],
+  MAX_ASSISTS = 400,
+  MAX_CHUNKS = 5000,
+  END_CHUNKS = 16,
   PPU_MASK = 0x0b,
   SHOW_BACKGROUND = 0x0a,
-  ROUTES = new URL("famidash-routes.json", import.meta.url);
+  ROUTES = new URL("famidash-routes/", import.meta.url);
 
 const demo = pathToFileURL(process.cwd() + "/"),
   base = new URL("public/", demo),
-  out = new URL(famidash.assets, base);
-const engine = await createEngine(base, famidash, {
-  rom: new Uint8Array(await readFile(new URL(famidash.rom.file, base))),
-  wasmBinary: await readFile(new URL("engine/quicknes.wasm", base)),
-});
-const ram = engine.ramView();
+  wasmBinary = await readFile(new URL("engine/quicknes.wasm", base)),
+  engines = new Map(),
+  START = JSON.parse(famidash_start_level_tape());
+let game, engine, ram, levelSelect, names,
+  parallax = false;
+async function open(index) {
+  game = FAMIDASH[index];
+  if (!engines.has(game.rom.file))
+    engines.set(game.rom.file, await createEngine(base, game, { rom: new Uint8Array(await readFile(new URL(game.rom.file, base))), wasmBinary }));
+  engine = engines.get(game.rom.file);
+  engine.reset();
+  for (const { buttons, frames } of JSON.parse(famidash_level_select_tape(game.id))) engine.step(buttons, frames);
+  levelSelect = engine.capture();
+  ram = engine.ramView();
+  names = new Map(GROUPS[index].levels.map((level) => [level.id, level.name]));
+}
 const scrollX = () => ram[SCROLL_X] | (ram[SCROLL_X + 1] << 8) | (ram[SCROLL_X + 2] << 16) | (ram[SCROLL_X + 3] << 24);
 const cameraY = () => ram[SCROLL_Y + 1] * SCREEN_ROWS + ram[SCROLL_Y];
 const dead = () => ((ram[CUBE_DATA] | ram[CUBE_DATA + 1]) & 1) !== 0;
+const atEnd = () => game.decode(engine.memory()).percent >= 99;
 const velocity = () => ((ram[VELOCITY_Y] | (ram[VELOCITY_Y + 1] << 8)) << 16) >> 16;
-
-engine.reset();
-for (const { buttons, frames } of JSON.parse(famidash_level_select_tape())) engine.step(buttons, frames);
-const levelSelect = engine.capture();
 
 function boot(level) {
   engine.restore(levelSelect);
-  ram[LEVEL] = level;
-  engine.step(A, 1);
-  engine.step(0, 90);
-  if (ram[GAME_STATE] !== PLAYING || ram[LEVEL] !== level) throw new Error(`Setup did not reach ${LEVEL_NAMES[level]}`);
+  if (ram[LEVEL] !== level) ram[LEVEL] = level;
+  for (const { buttons, frames } of START) engine.step(buttons, frames);
+  if (ram[GAME_STATE] !== PLAYING || ram[LEVEL] !== level) throw new Error(`Setup did not reach ${names.get(level)}`);
 }
 
-function frame(buttons, render) {
-  ram[PARALLAX_SCROLL_X] = 0;
-  for (const color of PARALLAX_COLORS) ram[color] = ram[PALETTE];
-  ram[PALETTE_UPDATE] = 1;
+function frame(buttons, render, assisted = false) {
+  if (!parallax) {
+    ram[PARALLAX_SCROLL_X] = 0;
+    for (const color of PARALLAX_COLORS) ram[color] = ram[PALETTE];
+    ram[PALETTE_UPDATE] = 1;
+  }
+  if (assisted) {
+    ram[DEBUG_MODE] = IGNORE_DEATHS;
+    ram[INVINCIBLE] = 8;
+  }
   engine.run(buttons, 1, render);
+  if (assisted) {
+    ram[DEBUG_MODE] = 0;
+    ram[CUBE_DATA] &= ~1;
+    ram[CUBE_DATA + 1] &= ~1;
+  }
   if (ram[GAME_STATE] === COMPLETE) return 1;
   return ram[GAME_STATE] !== PLAYING || dead() ? -1 : 0;
 }
 
-function chunk(pattern, onFrame) {
-  for (const [buttons, frames] of CHUNK_PATTERNS[pattern])
+function chunk(pattern) {
+  for (const [buttons, frames] of CHUNK_PATTERNS[pattern % ASSIST])
     for (let i = 0; i < frames; i++) {
-      const result = onFrame ? onFrame(buttons) : frame(buttons, false);
+      const result = frame(buttons, false, pattern >= ASSIST);
       if (result) return result;
     }
   return 0;
@@ -126,10 +149,12 @@ function beam(start, steps) {
   return path;
 }
 
-function search(level) {
+function search(level, assist) {
   boot(level);
   const states = [engine.capture()],
     path = [];
+  let assists = 0,
+    pastEnd = 0;
   const reach = (from, plan, target) => {
     engine.restore(states[from]);
     let depth = from;
@@ -147,7 +172,7 @@ function search(level) {
       const result = chunk(pattern);
       path.push(pattern);
       if (result > 0) return true;
-      if (result < 0) throw new Error(`The repaired route for ${LEVEL_NAMES[level]} diverged`);
+      if (result < 0) throw new Error(`The repaired route for ${names.get(level)} diverged`);
       states.push(engine.capture());
     }
     return false;
@@ -158,6 +183,9 @@ function search(level) {
     path.push(0);
     if (result > 0) return path;
     if (result === 0) {
+      pastEnd = atEnd() ? pastEnd + 1 : 0;
+      if (pastEnd > END_CHUNKS) return path;
+      if (path.length > MAX_CHUNKS) throw new Error(`The route for ${names.get(level)} runs past ${MAX_CHUNKS} chunks`);
       states.push(engine.capture());
       continue;
     }
@@ -185,23 +213,55 @@ function search(level) {
               break pairs;
             }
           }
-    for (const back of BEAM_BACKS) {
+    for (const back of assist ? ASSIST_BEAM_BACKS : BEAM_BACKS) {
       if (plan) break;
       from = Math.max(0, depth - back);
       plan = beam(states[from], depth - from + REPAIR_AHEAD + 2);
       if (from === 0) break;
     }
-    if (!plan) throw new Error(`Could not clear ${LEVEL_NAMES[level]}`);
-    if (commit(from, plan)) return path;
+    if (!plan && (!assist || ++assists > MAX_ASSISTS)) throw new Error(`Could not clear ${names.get(level)}`);
+    if (commit(plan ? from : depth, plan || [ASSIST])) return path;
   }
 }
+
+function inputsRoute(level, actions) {
+  const inputs = [];
+  for (const { buttons, hold_frames: frames } of actions)
+    if (inputs.at(-1)?.[0] === buttons) inputs.at(-1)[1] += frames;
+    else inputs.push([buttons, frames]);
+  const clears = () => {
+    boot(level);
+    for (const [buttons, frames] of inputs)
+      for (let i = 0; i < frames; i++) {
+        const result = frame(buttons, false);
+        if (result) return result > 0;
+      }
+    return false;
+  };
+  for (const kept of [false, true]) {
+    parallax = kept;
+    const cleared = clears();
+    parallax = false;
+    if (cleared) return kept ? { parallax: true, inputs } : { inputs };
+  }
+  throw new Error(`The inputs do not clear ${names.get(level)}`);
+}
+
+const encode = (path) => path.map((pattern) => (pattern < ASSIST ? String(pattern) : String.fromCharCode(97 + pattern - ASSIST))).join("");
+const decode = (code) => (code >= "a" ? ASSIST + code.charCodeAt(0) - 97 : Number(code));
+const steps = (route) =>
+  typeof route === "string"
+    ? [...route].flatMap((code) => CHUNK_PATTERNS[decode(code) % ASSIST].map(([buttons, frames]) => [buttons, frames, decode(code) >= ASSIST]))
+    : route.inputs;
 
 const COLUMN_QUALITY = Uint8Array.from({ length: 256 }, (_, x) => Math.abs(x - PREFERRED_COLUMN));
 let buffers = { pixels: new Uint32Array(0) };
 
 function compose(level, route) {
+  parallax = route.parallax === true;
   boot(level);
-  const width = scrollX() + route.length * 8 * 8 + 256;
+  const plan = steps(route),
+    width = scrollX() + plan.reduce((sum, [, frames]) => sum + frames, 0) * 8 + 256;
   if (buffers.pixels.length < width * WORLD_ROWS)
     buffers = { pixels: new Uint32Array(width * WORLD_ROWS), quality: new Uint8Array(width * WORLD_ROWS) };
   const { pixels, quality } = buffers;
@@ -211,17 +271,17 @@ function compose(level, route) {
     lowest = Infinity,
     highest = -Infinity,
     complete = false;
-  const onFrame = (buttons) => {
+  const onFrame = (buttons, assisted) => {
     const left = scrollX(),
       camera = cameraY(),
       playerX = ram[PLAYER_X],
       playerY = ram[PLAYER_Y] - CROP,
       render = frames++ % RENDER_EVERY === 0;
-    const result = frame(buttons, render);
+    const result = frame(buttons, render, assisted);
     if (result) return result;
     if (!render || camera <= 0) return 0;
     const top = camera + CROP;
-    if (top + 224 > WORLD_ROWS) throw new Error(`${LEVEL_NAMES[level]} scrolls below the map buffer`);
+    if (top + 224 > WORLD_ROWS) throw new Error(`${names.get(level)} scrolls below the map buffer`);
     lowest = Math.min(lowest, top);
     highest = Math.max(highest, top + 224);
     right = Math.max(right, left + 256);
@@ -240,12 +300,15 @@ function compose(level, route) {
     }
     return 0;
   };
-  for (const pattern of route)
-    if (chunk(pattern, onFrame)) {
-      complete = ram[GAME_STATE] === COMPLETE;
-      break;
-    }
-  if (!complete) throw new Error(`The recorded route for ${LEVEL_NAMES[level]} no longer clears it; run with --search`);
+  steps: for (const [buttons, count, assisted] of plan)
+    for (let i = 0; i < count; i++)
+      if (onFrame(buttons, assisted)) {
+        complete = ram[GAME_STATE] === COMPLETE;
+        break steps;
+      }
+  const reached = complete || atEnd();
+  parallax = false;
+  if (!reached) throw new Error(`The recorded route for ${names.get(level)} no longer reaches its end; run with --search`);
   const top = Math.max(0, lowest - MARGIN),
     height = highest + MARGIN - top,
     mapWidth = right,
@@ -274,9 +337,9 @@ function compose(level, route) {
   return { width: mapWidth, height, top, pixels: map, frames };
 }
 
-function spriteSheet() {
+function spriteSheet(level) {
   const sheet = new Uint32Array(SPRITE * MODES * SPRITE * 2);
-  boot(0);
+  boot(level);
   engine.step(0, SPRITE_FRAME);
   const start = engine.capture();
   for (let mode = 0; mode < MODES; mode++) {
@@ -289,8 +352,8 @@ function spriteSheet() {
     }
     const view = engine.pixelView(),
       screen = new Uint32Array(view.buffer, view.byteOffset, 256 * 224),
-      left = ram[PLAYER_X] - famidash.sprite.originX,
-      top = ram[PLAYER_Y] - CROP - famidash.sprite.originY,
+      left = ram[PLAYER_X] - game.sprite.originX,
+      top = ram[PLAYER_Y] - CROP - game.sprite.originY,
       counts = new Map(),
       patch = [];
     for (let y = 0; y < SPRITE; y++)
@@ -316,9 +379,8 @@ const image = (width, height, pixels, frame) =>
     async (blob) => new Uint8Array(await blob.arrayBuffer()),
   );
 
-async function buildLevel(level, route) {
-  const map = compose(level, route),
-    expected = famidash_map_top(level);
+async function buildLevel(out, level, route) {
+  const map = compose(level, route);
   await writeFile(new URL(`maps/${level}.png`, out), await image(map.width, map.height, map.pixels, "Level map: the screens of one cleared run composed into the level"));
   const preview = new Uint32Array(256 * 96),
     scale = Math.min(4, map.height / 96),
@@ -326,33 +388,92 @@ async function buildLevel(level, route) {
   for (let y = 0; y < 96; y++)
     for (let x = 0; x < 256; x++) preview[y * 256 + x] = map.pixels[Math.floor(previewTop + y * scale) * map.width + Math.floor(x * scale)];
   await writeFile(new URL(`maps/${level}-preview.png`, out), await image(256, 96, preview, "Level selector thumbnail from the level map"));
-  console.log("Composed", level, LEVEL_NAMES[level], `${map.width}x${map.height}`, `top ${map.top}`, `${map.frames} frames`);
-  return { id: level, name: LEVEL_NAMES[level], label: LEVEL_NAMES[level], width: map.width, height: map.height, file: `maps/${level}.png`, top: map.top, expected };
+  console.log("Composed", game.group, level, names.get(level), `${map.width}x${map.height}`, `top ${map.top}`, `${map.frames} frames`);
+  return { id: level, name: names.get(level), label: names.get(level), width: map.width, height: map.height, file: `maps/${level}.png`, top: map.top };
 }
 
-const levels = Array.from({ length: famidash.levelCount }, (_, level) => level);
-if (process.argv.includes("--search")) {
-  const routes = await readFile(ROUTES, "utf8").then(JSON.parse, () => ({ routes: [] }));
-  const only = process.argv.slice(process.argv.indexOf("--search") + 1).filter((arg) => /^\d+$/.test(arg)).map(Number);
-  for (const level of only.length ? only : levels) {
-    const started = performance.now();
-    routes.routes[level] = search(level).join("");
-    await writeFile(ROUTES, JSON.stringify(routes, null, 1) + "\n");
-    console.log("Cleared", level, LEVEL_NAMES[level], `${routes.routes[level].length} chunks`, `${((performance.now() - started) / 1000).toFixed(1)} s`);
-  }
+const routeFile = (side) => new URL(`${side}.json`, ROUTES);
+const readRoutes = (side) => readFile(routeFile(side), "utf8").then(JSON.parse, () => ({ routes: [] }));
+const writeRoute = async (entry, level, route) => {
+  const latest = await readRoutes(entry.side);
+  latest.routes[level] = route;
+  const lines = Array.from(latest.routes, (r) => `  ${JSON.stringify(r ?? null)}`);
+  await mkdir(ROUTES, { recursive: true });
+  await writeFile(routeFile(entry.side), `{\n "routes": [\n${lines.join(",\n")}\n ]\n}\n`);
+};
+const args = process.argv.slice(2),
+  mode = args.find((arg) => arg.startsWith("--")),
+  [groupId, ...rest] = args.filter((arg) => !arg.startsWith("--")),
+  chosen = groupId ? GROUPS.filter((entry) => entry.id === groupId) : GROUPS;
+if (groupId && !chosen.length) throw new Error(`Famidash has no level group ${groupId}`);
+if (mode === "--inputs") {
+  const [entry] = chosen,
+    level = Number(rest[0]);
+  if (!entry || !entry.levels.some((l) => l.id === level) || !rest[1]) throw new Error("Usage: --inputs <group> <level> <victory-input.json>");
+  await open(GROUPS.indexOf(entry));
+  await writeRoute(entry, level, inputsRoute(level, JSON.parse(await readFile(rest[1], "utf8")).actions));
+  console.log("Recorded inputs for", entry.name, level, names.get(level));
+  process.exit(0);
 }
-const { routes } = JSON.parse(await readFile(ROUTES, "utf8"));
-await mkdir(new URL("maps/", out), { recursive: true });
-const maps = [];
-for (const level of levels) maps.push(await buildLevel(level, [...routes[level]].map(Number)));
-const moved = maps.filter((map) => map.top !== map.expected);
+if (mode === "--search") {
+  const asked = rest.map(Number);
+  for (const entry of chosen) {
+    await open(GROUPS.indexOf(entry));
+    for (const { id: level } of entry.levels) {
+      const routes = await readRoutes(entry.side);
+      if (asked.length ? !asked.includes(level) : routes.routes[level]) continue;
+      const started = performance.now();
+      let route;
+      try {
+        route = encode(search(level, false));
+      } catch {
+        try {
+          route = encode(search(level, true));
+        } catch (error) {
+          console.log("Failed", entry.name, level, names.get(level), error.message);
+          continue;
+        }
+      }
+      await writeRoute(entry, level, route);
+      const assisted = [...route].filter((code) => decode(code) >= ASSIST).length,
+        kind = `${route.length} chunks${assisted ? `, ${assisted} with deaths ignored` : ""}`;
+      console.log("Cleared", entry.name, level, names.get(level), kind, `${((performance.now() - started) / 1000).toFixed(1)} s`);
+    }
+  }
+  process.exit(0);
+}
+const moved = [],
+  tops = new Map();
+for (const entry of GROUPS) {
+  if (!tops.has(entry.side)) tops.set(entry.side, []);
+  for (const level of entry.levels) tops.get(entry.side)[level.id] = level.top;
+}
+for (const entry of chosen) {
+  const index = GROUPS.indexOf(entry),
+    out = new URL(FAMIDASH[index].assets, base),
+    { routes } = await readRoutes(entry.side);
+  await open(index);
+  await mkdir(new URL("maps/", out), { recursive: true });
+  const maps = [];
+  for (const level of entry.levels) {
+    if (!routes[level.id]) throw new Error(`${entry.name} has no recorded route for ${level.name}; run with --search ${entry.id} ${level.id}`);
+    const map = await buildLevel(out, level.id, routes[level.id]);
+    maps.push(map);
+    tops.get(entry.side)[level.id] = map.top;
+    if (map.top !== level.top) moved.push(`${entry.name} ${level.name}`);
+  }
+  await writeFile(new URL("sprites.png", out), await image(SPRITE * MODES, SPRITE * 2, spriteSheet(entry.levels[0].id), "Player sprite sheet captured from the game's screens"));
+  await writeFile(
+    new URL("maps.json", out),
+    JSON.stringify({
+      maps: maps.map(({ id, name, label, width, height, file }) => ({ id, name, label, width, height, file })),
+      levels: maps.map((map) => ({ id: map.id, label: map.label, rooms: [map.id] })),
+    }),
+  );
+}
 if (moved.length)
-  throw new Error(`The map tops changed for ${moved.map((map) => map.name).join(", ")}. Set MAP_TOPS in rust/src/famidash.rs to [${maps.map((map) => map.top).join(", ")}]`);
-await writeFile(new URL("sprites.png", out), await image(SPRITE * MODES, SPRITE * 2, spriteSheet(), "Player sprite sheet captured from the game's screens"));
-await writeFile(
-  new URL("maps.json", out),
-  JSON.stringify({
-    maps: maps.map(({ id, name, label, width, height, file }) => ({ id, name, label, width, height, file })),
-    levels: maps.map((map) => ({ id: map.id, label: map.label, rooms: [map.id] })),
-  }),
-);
+  throw new Error(
+    `The map tops changed for ${moved.join(", ")}. Set the map tops in workloads/nes-games/src/arcade/famidash.rs to ${[...tops]
+      .map(([side, values]) => `${side}: [${values.join(", ")}]`)
+      .join("; ")}`,
+  );
