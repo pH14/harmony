@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import uuid
 
 ROOT = Path(__file__).resolve().parent.parent
 REGISTRY = ROOT / "scripts/qualification/consonance.json"
@@ -18,6 +19,13 @@ TESTS = (
     "x1_comparator_catches_one_exit_late_delivery_on_this_workload",
     "x1_placement_checker_catches_consistently_late_twins",
 )
+
+
+def host_instance_id(value):
+    parsed = uuid.UUID(value)
+    if parsed.int in (0, (1 << 128) - 1) or str(parsed) != value:
+        raise ValueError("invalid host instance identity")
+    return value
 
 
 def digest(path):
@@ -112,7 +120,7 @@ def parse_evidence(log):
     return evidence
 
 
-def run(bundle_dir, output, replica):
+def run(bundle_dir, output, replica, host_id_file):
     cells = registry()["cells"]
     artifact = identity(bundle_dir)
     if platform.system() != "Linux" or platform.machine() != "x86_64":
@@ -131,7 +139,7 @@ def run(bundle_dir, output, replica):
     evidence = parse_evidence(log)
     write(output / "receipt.json", {
         "version": 1, "cell": cells[0], "artifact": artifact, "replica": replica,
-        "host": {"hostname": platform.node(), "kernel": platform.release(), "cpuinfo": Path("/proc/cpuinfo").read_text()},
+        "host": {"instance_id": host_instance_id(host_id_file.read_text().strip()), "hostname": platform.node(), "kernel": platform.release(), "cpuinfo": Path("/proc/cpuinfo").read_text()},
         "tests": results, "evidence": evidence,
     })
 
@@ -147,9 +155,10 @@ def compare(bundle_dir, receipts, output):
             fields(record, "version cell artifact replica host tests evidence")
             if record["version"] != 1 or record["artifact"] != artifact or record["cell"] not in manifest["cells"]:
                 raise ValueError("unregistered cell or mismatched retained artifacts")
-            fields(record["host"], "hostname kernel cpuinfo")
+            fields(record["host"], "instance_id hostname kernel cpuinfo")
             if any(not isinstance(value, str) or not value for value in record["host"].values()):
                 raise ValueError("missing host identity")
+            host_instance_id(record["host"]["instance_id"])
             fields(record["evidence"], "digest events guest_deliveries checkpoints")
             if not re.fullmatch("[0-9a-f]{64}", str(record["evidence"]["digest"])) or record["evidence"]["events"] != 6 or record["evidence"]["guest_deliveries"] != 2 or record["evidence"]["checkpoints"] != 3:
                 raise ValueError("vacuous or malformed checkpoint evidence")
@@ -164,7 +173,7 @@ def compare(bundle_dir, receipts, output):
                 raise ValueError("receipt does not match execution log")
         for cell in manifest["cells"]:
             matches = [record for record in records if record["cell"] == cell]
-            if len(matches) != cell["replicas"] or len({record["replica"] for record in matches}) != cell["replicas"] or len({record["host"]["hostname"] for record in matches}) != cell["replicas"]:
+            if len(matches) != cell["replicas"] or len({record["replica"] for record in matches}) != cell["replicas"] or len({record["host"]["instance_id"] for record in matches}) != cell["replicas"]:
                 raise ValueError(f"missing or duplicate required replicas for {cell['id']}")
             if any(record["evidence"] != matches[0]["evidence"] for record in matches):
                 verdict["outcome"] = "diverged"
@@ -187,6 +196,7 @@ def main():
     execute.add_argument("executable", type=Path)
     execute.add_argument("output", type=Path)
     execute.add_argument("--replica", required=True)
+    execute.add_argument("--host-id-file", type=Path, required=True)
     execute.add_argument("--ignored", action="store_true", required=True)
     check = commands.add_parser("compare")
     check.add_argument("bundle", type=Path)
@@ -199,7 +209,7 @@ def main():
         elif args.command == "run":
             if args.executable.name != "x86_kvm_virtual_time":
                 raise ValueError("unregistered production executable")
-            run(args.executable.parent, args.output, args.replica)
+            run(args.executable.parent, args.output, args.replica, args.host_id_file)
         else:
             compare(args.bundle, args.receipts, args.output)
     except (ValueError, OSError, subprocess.SubprocessError) as error:
