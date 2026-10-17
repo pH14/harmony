@@ -82,7 +82,7 @@ async function open(index) {
 }
 const scrollX = () => ram[SCROLL_X] | (ram[SCROLL_X + 1] << 8) | (ram[SCROLL_X + 2] << 16) | (ram[SCROLL_X + 3] << 24);
 const cameraY = () => ram[SCROLL_Y + 1] * SCREEN_ROWS + ram[SCROLL_Y];
-const dead = () => ((ram[CUBE_DATA] | ram[CUBE_DATA + 1]) & 1) !== 0;
+const dead = () => game.decode(engine.memory()).health === 0;
 const atEnd = () => game.decode(engine.memory()).percent >= 99;
 const velocity = () => ((ram[VELOCITY_Y] | (ram[VELOCITY_Y + 1] << 8)) << 16) >> 16;
 

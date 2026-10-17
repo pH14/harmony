@@ -484,8 +484,9 @@ a map top differs from the Rust tables, and prints the new tops.
 
 `node tools/build-famidash-maps.mjs --search [group [levels]]` searches routes
 for the levels that have none, or for the given levels. The group is `main`,
-`community`, `b`, `c` or `d`. The search plays the plain pattern until a
-death, then retries one or two other patterns a few chunks back, then a
+`community`, `b`, `c` or `d`. A death is a frame where the workload decoder,
+through `game.decode`, reports no gameplay. The search plays the plain pattern
+until a death, then retries one or two other patterns a few chunks back, then a
 12-wide beam search, and checks two chunks past the repair. Some levels need a
 press at a frame the patterns never use. For those the search runs again, and
 where no repair passes a death it plays one plain chunk with deaths ignored,
