@@ -44,7 +44,7 @@ const DEATH: u8 = 0x01;
 const LEVEL_DONE_POLL_FRAMES: u32 = 15;
 const LEVEL_DONE_POLLS: u32 = 40;
 const MENU_SETTLE_FRAMES: u32 = 20;
-const LEVEL_START_FRAMES: u32 = 90;
+const LEVEL_START_FRAMES: u32 = 40;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct FamidashGameplayState {
@@ -185,7 +185,9 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> FamidashTarget<M> {
         )?;
         run_setup(&mut machine)?;
         machine.drop_snapshot(power_on)?;
-        machine.poke_wram(LEVEL, stage.level)?;
+        if byte(&read_wram(&machine)?, LEVEL)? != stage.level {
+            machine.poke_wram(LEVEL, stage.level)?;
+        }
         let level_select = machine.snapshot()?;
         machine.branch(level_select, &nes::reproducer(&start_level_tape()))?;
         run_setup(&mut machine)?;
@@ -812,7 +814,7 @@ pub fn level_select_tape(menu: Menu) -> Vec<ButtonChord> {
 #[must_use]
 pub fn start_level_tape() -> Vec<ButtonChord> {
     let mut tape = vec![ButtonChord::new(A_BUTTON, 1)];
-    wait(&mut tape, 90);
+    wait(&mut tape, LEVEL_START_FRAMES);
     tape
 }
 
@@ -1033,7 +1035,7 @@ mod tests {
             .iter()
             .map(|chord| u32::from(chord.bounded_hold_frames()))
             .sum();
-        assert_eq!(frames, 1_141);
+        assert_eq!(frames, 1_091);
         assert!(tape.starts_with(&level_select_tape(Menu::MainLevels)));
     }
 

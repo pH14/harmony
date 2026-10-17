@@ -79,9 +79,12 @@ table, and stops at 99 until the level is complete.
 
 Setup presses A at the title, waits for the menu and presses A for the main
 levels, or Right, 20 idle frames and A for the community levels. At level
-select it writes the level number to `$047B`, as the browser demo does, then
-presses A and waits 90 frames. For Stereo Madness that is 1,141 frames. The
-genesis check requires gameplay at 0 percent in the chosen level.
+select it writes the level number to `$047B` when the menu shows another
+level, as the browser demo does, then presses A and waits 40 frames. For Stereo Madness that is 1,091 frames. The
+genesis check requires gameplay at 0 percent in the chosen level. On all 109
+levels the level loads 30 frames after A and the player first moves 57 frames
+after A. An idle player dies as early as frame 59, so a longer wait can start
+a level after a death.
 
 A `Stage` names the side, the starting level and the goal level, both in one
 group. A `nes-eval` request's `stage` alone runs that one level, and the goal
@@ -97,9 +100,9 @@ goal level. Frames outside gameplay are not archived.
 Game state 3 in a level before the goal ends the action at that frame. The
 target then presses buttons to start the next level: A once every 16 frames
 until the level-select state 6 appears, 20 idle frames, Right, 20 idle frames,
-A, and the 90-frame wait from setup. Level select keeps the menu the setup
+A, and the 40-frame wait from setup. Level select keeps the menu the setup
 chose, so Right stays within the group. It checks that the level number went up by one
-and that gameplay is running. The advance takes about 290 frames. Its presses
+and that gameplay is running. The advance takes about 240 frames. Its presses
 are part of the recorded input, so replays and films follow the same path.
 The action's observation list ends with the arrival in the next level.
 
