@@ -123,8 +123,13 @@
   or `settle_terminal_console` to classify the final process reason;
   settlement probes the current process state and refuses host limits and
   signaled host exits after process cleanup; callers cannot supply an earlier
-  exit reason. A host signal such as SIGKILL is an infrastructure failure, not
-  a guest shutdown or crash, and the client abandons the session. A
+  exit reason. Host SIGINT/SIGTERM handlers and unexpected stub death use the same reserved
+  infrastructure status as failed host address-space setup and stub transport.
+  The primitive exits directly without invoking guest panic notifiers or guest
+  cleanup; the launcher then reaps the process group. Host mmap, socketpair,
+  clone, futex, ptrace and register-transport failures in that substrate abandon
+  execution. Guest-generated invalid traps retain their guest signal path.
+  The client abandons host failures without publishing a guest shutdown or crash. A
   guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
   limit is supplied when the session starts, so a fresh process restoring a
@@ -243,3 +248,13 @@ explicit setup checkpoint. This distinction makes durable investigation roots
 portable across launches without treating volatile host-private boot memory as
 an interchangeable baseline. Profile and launch identity checks belong to the
 client that persists the root.
+
+The x86 startup FPU patch clears all extended XSAVE components and their raw
+bytes instead of preserving sampled PKRU policy. The absent PKRU component
+restores its architectural initial value, zero. Host identity is still a
+native-execution compatibility boundary; this normalization does not supply
+canonical whole-state UML identity. The reviewed-kernel host-failure regression
+sends SIGTERM/SIGINT to the ready kernel and SIGKILL to a live `uml-userspace`
+stub. Compiled boundary probes separately plant mmap/socketpair/clone failures;
+they exercise the production patch statements but do not substitute for a live
+post-boot resource-injection qualification.
