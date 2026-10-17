@@ -142,7 +142,7 @@ pub fn retention_policy_from_identifier(
 }
 
 pub const SELECTOR_IDENTIFIER: &str =
-    "tier_progress_cascade_pace_stale_rank_floor_yield_cell_recent_count_decay_v3";
+    "tier_progress_cascade_pace_stale_step_rank_floor_yield_cell_recent_count_decay_v3";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -178,9 +178,13 @@ fn rank_floor(floor_weight: u64, rank: usize, accounting: &SelectorAccounting) -
             .saturating_add(1)
             .saturating_pow(COUNT_DECAY_EXPONENT),
     );
-    let numerator = u128::from(floor_weight) * u128::from(stale) * u128::from(rises);
-    let denominator =
-        (u128::from(stale) * u128::from(rises) + u128::from(draws)).saturating_mul(decay);
+    let below = u128::from(accounting.upward_steps_below_leader.saturating_add(1));
+    let steps = u128::from(accounting.upward_steps.saturating_add(2));
+    let numerator =
+        (u128::from(floor_weight) * u128::from(stale) * u128::from(rises)).saturating_mul(below);
+    let denominator = (u128::from(stale) * u128::from(rises) + u128::from(draws))
+        .saturating_mul(decay)
+        .saturating_mul(steps);
     numerator
         .checked_div(denominator)
         .map_or(0, |floor| u64::try_from(floor).unwrap_or(u64::MAX))
@@ -264,6 +268,10 @@ pub struct SelectorAccounting {
     pub frontier_rises: u64,
     #[serde(default)]
     pub frontier_mark: u64,
+    #[serde(default)]
+    pub upward_steps: u64,
+    #[serde(default)]
+    pub upward_steps_below_leader: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
 }
@@ -2598,6 +2606,7 @@ where
         self.cost_in_group.push(candidate_cost_in_group);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
+        let leader = self.live_progress.map(|(deepest, _)| deepest.progress());
         let frontier_rose = match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
@@ -2658,6 +2667,12 @@ where
             .map(|parent| self.entries[parent].key.progress())
             .filter(|from| new_cell && *from < key.progress())
         {
+            let accounting = &mut self.selector_accounting;
+            accounting.upward_steps = accounting.upward_steps.saturating_add(1);
+            if leader.is_some_and(|leader| from < leader) {
+                accounting.upward_steps_below_leader =
+                    accounting.upward_steps_below_leader.saturating_add(1);
+            }
             self.restart_tier_run(from);
         }
         if replacement_preferences != 0 && carried_in {
@@ -8548,6 +8563,34 @@ mod tests {
         archive.record_selection(1, &draw);
         let counts = unrecorded_draw_counts(&mut archive, 0x7ea1_000e, 6144);
         assert!(counts[1] + counts[3] > counts[0] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn upward_steps_count_the_parents_below_the_leading_tier() {
+        let mut archive = tier_archive(&[(1, 1, 0), (2, 1, 0)]);
+        let mut admit = |parent: usize, major: u8, progress: u16, fingerprint: u8| {
+            let mut key = probe_key(major, 1, progress, 0);
+            key.state_fingerprint = fingerprint;
+            archive
+                .insert(
+                    Some(parent),
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![fingerprint],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert a stepped entry")
+                .expect("retain a stepped entry");
+            let report = archive.selector_report();
+            (report.upward_steps, report.upward_steps_below_leader)
+        };
+        assert_eq!(admit(0, 1, 5, 7), (0, 0));
+        assert_eq!(admit(0, 2, 6, 8), (1, 1));
+        assert_eq!(admit(1, 3, 6, 9), (2, 1));
+        assert_eq!(admit(1, 3, 7, 10), (3, 2));
     }
 
     #[test]

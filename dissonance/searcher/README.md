@@ -425,7 +425,7 @@ Tier selection iterates rank weights and reads the selected progress value from
 the ordered tier map. This avoids two temporary vectors per parent selection;
 weights, traversal order, saturating totals, and RNG consumption stay identical.
 
-One selector exists, `tier_progress_cascade_pace_stale_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
+One selector exists, `tier_progress_cascade_pace_stale_step_rank_floor_yield_cell_recent_count_decay_v3`, and the stream header names
 it as `parent_scheduler`. A draw walks three levels. The tiers are the distinct
 progress values held by selectable entries, ranked from the deepest; a tier at
 rank `r` weighs `1 << ((8 - min(r, 8)) * 3)`, an eighth of the rank ahead, so
@@ -485,7 +485,7 @@ the rank below it, and so on down. Every rank down to the first one still short
 of its full halvings shares that rank's halved weight. This lets the search
 fall back past several stalled tiers at once, which matters when the states
 that decide a later death lie several tiers back. Every rank below that block
-then weighs at least `b * s / (k + 1)^2`, where `b` is the block's per-rank
+then weighs at least `b * s * q / (k + 1)^2`, where `b` is the block's per-rank
 weight, `k` is the rank's index from the top, and 2 is the exponent the cell
 weights use. The staleness `s = D / (D + G)` measures how long the deepest
 progress value has gone without rising: `D` is the tier draws since it last
@@ -497,7 +497,18 @@ factor of eight per rank, while the leading tier keeps at least `6 / pi^2`,
 about 61%, of tier draws when nothing has fallen. A live branch many ranks
 under a dead end therefore keeps drawing without any rank having to fall
 first. `SelectorAccounting` keeps `frontier_rises` and `frontier_mark`, the
-tier draw count at the last rise, so checkpoints and replay rebuild `s`. Within the tier each cell
+tier draw count at the last rise, so checkpoints and replay rebuild `s`. The
+factor `q = (U + 1) / (A + 2)` measures how often lower tiers have led deeper
+so far. `A` counts upward steps, admissions where a parent opens a new cell at
+a deeper progress value than its own, and `U` counts the steps whose parent sat
+below the deepest progress value held at the time. A frontier rise from the
+leading tier counts in `A` only. A workload whose deeper progress values come
+only from the leading tier drives `q` toward zero, so a long fight at the
+frontier keeps most tier draws on the leading tier while `s` grows. A workload
+whose lower tiers keep opening deeper cells holds `q` near their share of the
+steps, and its deep ranks keep most of the floor. `SelectorAccounting` keeps
+`upward_steps` and `upward_steps_below_leader`, so checkpoints and replay
+rebuild `q`. Within the tier each cell
 weighs `1 / (1 + draws)^2` over the draws it has received since it was last
 reset, so an untried or freshly reset cell takes most of the tier's draws
 until it catches up and every cell keeps a share. Within the cell, a quarter
