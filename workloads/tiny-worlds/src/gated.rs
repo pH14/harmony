@@ -8,6 +8,7 @@ const BOSS: u8 = 1;
 const CORRIDOR: u8 = 2;
 const BOSS_PLACES: u16 = 128;
 const CORRIDOR_PLACES: u16 = 256;
+const ROOM_PLACES: u16 = 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +26,12 @@ pub struct Config {
     pub shortcut: u8,
     #[serde(default)]
     pub shortcut_run: u8,
+    #[serde(default)]
+    pub hard_run: u8,
+    #[serde(default)]
+    pub rooms: u8,
+    #[serde(default)]
+    pub room_run: u8,
     pub dense: bool,
     pub pattern: u64,
 }
@@ -40,6 +47,10 @@ pub struct State {
     pub run: u8,
     pub aim: u8,
     pub side: u8,
+    #[serde(default)]
+    pub room: u8,
+    #[serde(default)]
+    pub explore: u8,
     pub health: u8,
     pub dead: bool,
     pub goal: bool,
@@ -58,10 +69,12 @@ impl Config {
             || self.hit_odds > 16
             || self.shortcut >= self.items
             || self.shortcut_run > 8
+            || self.hard_run > 12
+            || self.room_run > 8
         {
             return Err(
                 "gated needs items 1..=6, leg 1..=16, walk 2..=48, barrier 1..walk, step_run 1..=8, \
-                 fight 1..=16, fight_odds 1..=16, health 1..=15, hit_odds 0..=16, shortcut below items and shortcut_run 0..=8"
+                 fight 1..=16, fight_odds 1..=16, health 1..=15, hit_odds 0..=16, shortcut below items, shortcut_run 0..=8, hard_run 0..=12 and room_run 0..=8"
                     .into(),
             );
         }
@@ -77,6 +90,8 @@ impl Config {
             run: 0,
             aim: 0,
             side: 0,
+            room: 0,
+            explore: 0,
             health: self.health,
             dead: false,
             goal: false,
@@ -103,10 +118,13 @@ impl Config {
     }
     pub fn state_is_bounded(&self, s: State) -> bool {
         self.validate().is_ok()
-            && s.run < self.step_run
+            && s.run < self.presses(s)
             && s.aim < self.fight_odds
             && s.side < self.shortcut_presses()
             && (s.side == 0 || self.shortcut_door(s))
+            && ((s.room == 0 && s.explore == 0) || self.hard_position(s))
+            && s.room <= self.rooms
+            && s.explore < self.room_presses()
             && s.health <= self.health
             && s.items <= self.items
             && s.hits < self.fight
@@ -162,6 +180,22 @@ impl Config {
     pub fn shortcut_door(&self, s: State) -> bool {
         self.shortcut > 0 && s.zone == LEGS && s.position == self.shortcut * self.leg
     }
+    pub fn hard_position(&self, s: State) -> bool {
+        s.zone == LEGS && s.position + 1 == self.legs_end()
+    }
+    pub fn presses(&self, s: State) -> u8 {
+        if self.hard_position(s) {
+            self.step_run.max(self.hard_run)
+        } else {
+            self.step_run
+        }
+    }
+    pub fn room_presses(&self) -> u8 {
+        self.room_run.max(1)
+    }
+    pub fn explore_action(&self, s: State) -> u8 {
+        (self.action(s) + 3) % 4
+    }
     pub fn shortcut_presses(&self) -> u8 {
         self.shortcut_run.max(1)
     }
@@ -190,21 +224,46 @@ impl Config {
             aim: (s.aim + action + 1) % self.fight_odds,
             ..s
         };
+        if self.rooms > 0 && self.hard_position(s) && action == self.explore_action(s) {
+            if s.explore + 1 < self.room_presses() {
+                return State {
+                    run: 0,
+                    explore: s.explore + 1,
+                    ..s
+                };
+            }
+            return State {
+                run: 0,
+                explore: 0,
+                room: (s.room + 1).min(self.rooms),
+                ..s
+            };
+        }
         if action != self.action(s) {
-            let reset = State { run: 0, ..s };
+            let reset = State {
+                run: 0,
+                explore: 0,
+                ..s
+            };
             return if self.hit(s, action) {
                 self.hurt(reset)
             } else {
                 reset
             };
         }
-        if s.run + 1 < self.step_run {
+        if s.run + 1 < self.presses(s) {
             return State {
                 run: s.run + 1,
+                explore: 0,
                 ..s
             };
         }
-        let s = State { run: 0, ..s };
+        let s = State {
+            run: 0,
+            room: 0,
+            explore: 0,
+            ..s
+        };
         if s.zone == CORRIDOR {
             if s.position + 1 == self.barrier && !s.killed {
                 return s;
@@ -298,6 +357,7 @@ impl Config {
     }
     pub fn key(&self, s: State, broken: bool) -> Key {
         let place = match s.zone {
+            LEGS if s.room > 0 => ROOM_PLACES + u16::from(s.items) * 256 + u16::from(s.room),
             LEGS => u16::from(s.position),
             BOSS => BOSS_PLACES + u16::from(s.hits) + 32 * u16::from(s.killed),
             _ => CORRIDOR_PLACES + u16::from(s.position),
@@ -379,6 +439,9 @@ mod tests {
             hit_odds: 3,
             shortcut: 0,
             shortcut_run: 0,
+            hard_run: 0,
+            rooms: 0,
+            room_run: 0,
             dense: false,
             pattern: 0x1b2d_4e87_a5c3_96f0,
         }
@@ -411,6 +474,66 @@ mod tests {
         let boss = walk_to_boss(&w);
         assert_eq!((boss.zone, boss.items), (BOSS, w.items));
         assert_eq!(w.key(boss, false).tier, 4);
+    }
+
+    #[test]
+    fn a_hard_run_makes_the_step_into_the_boss_room_need_that_many_hidden_presses() {
+        let w = Config {
+            hard_run: 5,
+            hit_odds: 0,
+            ..config()
+        };
+        let mut s = w.initial();
+        while !w.hard_position(s) {
+            assert_eq!(w.presses(s), w.step_run);
+            s = w.step(s, w.action(s));
+        }
+        assert_eq!((s.position, s.items), (w.items * w.leg - 1, w.items - 1));
+        assert_eq!(w.presses(s), 5);
+        let tier = w.key(s, false).tier;
+        for run in 1..5 {
+            s = w.step(s, w.action(s));
+            assert_eq!(s.run, run);
+            assert_eq!(w.key(s, false).tier, tier);
+        }
+        s = w.step(s, w.action(s));
+        assert_eq!(s.zone, BOSS);
+        assert!(w.reachable().unwrap());
+        assert!(Config { hard_run: 13, ..w }.validate().is_err());
+    }
+
+    #[test]
+    fn rooms_at_the_hard_step_add_places_in_the_same_tier() {
+        let w = Config {
+            hard_run: 3,
+            rooms: 2,
+            room_run: 2,
+            hit_odds: 0,
+            ..config()
+        };
+        let mut s = w.initial();
+        while !w.hard_position(s) {
+            s = w.step(s, w.action(s));
+        }
+        let tier = w.key(s, false).tier;
+        let half = w.step(s, w.explore_action(s));
+        assert_eq!((half.room, half.explore), (0, 1));
+        let room = w.step(half, w.explore_action(half));
+        assert_eq!((room.room, room.explore), (1, 0));
+        assert_ne!(w.key(room, false).place, w.key(s, false).place);
+        assert_eq!(w.key(room, false).tier, tier);
+        let mut full = room;
+        for _ in 0..4 {
+            full = w.step(full, w.explore_action(full));
+        }
+        assert_eq!(full.room, 2);
+        let mut next = full;
+        for _ in 0..3 {
+            next = w.step(next, w.action(next));
+        }
+        assert_eq!((next.zone, next.room), (BOSS, 0));
+        assert!(w.reachable().unwrap());
+        assert!(Config { room_run: 9, ..w }.validate().is_err());
     }
 
     #[test]
