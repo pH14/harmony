@@ -124,6 +124,7 @@ representation or action choice affects the same world transitions.
 | `passive_clock` | Every sampled hold advances a clock; only specified event boundaries change the archive key. | Hide all intermediate events. |
 | `targets` | Cross a shut boss room and destroy cannons, some behind barriers, with a fixed number of bombs while live cannons drain health. | Hide cannons destroyed from the key. |
 | `fork` | Take the fork action that leads to the goal while the other route, easier to walk, runs further and keeps opening side rooms before it dead-ends. | Hide the side rooms from the key. |
+| `gated` | Collect items along hidden-press legs, kill a boss, and walk a corridor whose barrier opens only after the kill, while a shortcut door skips the boss with fewer items. | Hide the kill from the tier. |
 
 Resource keys retain charge-first and health-first preferences. Deadline keys
 retain the partial fast-route phase and prefer remaining time. Exact payment of
@@ -421,9 +422,55 @@ live route until the live route passes them. The control keys every side room
 as its position. `evidence.fork_first` gives the first work on the live route,
 past the dead route's last position, and at the goal.
 
+Optional fields fit the world to a measured stall:
+
+- `step_run` makes each shared position need `step_run` pattern presses in a
+  row, and each live position `max(2, step_run)`.
+- `shared_rooms` opens side rooms beside each shared position, as on the dead
+  route, so the corridor below the dead end keeps yielding cells.
+- `grades` gives every move to a new position or room a hashed grade from 0 to
+  `grades`, kept as the key's health. Equal places with different grades are
+  separate preference values, like Famidash identities within a band.
+- `room_ramp` lowers the presses per room by one for every `room_ramp`
+  positions below the dead tip, down to one.
+- `goal_at_fork` puts the goal at the live route's entry, so `length` must be
+  `fork + 1`.
+- `run_on` lets the dead tip keep rising: each `run_on_action` step adds one to
+  a distance counter, up to `run_on`, and the tier is the position plus that
+  distance. Each step needs `run_on_run` presses in a row. With `run_on` set,
+  the pattern action at the dead tip no longer returns to the start. This is Famidash C 17 Hi
+  (#728): x keeps rising past the level's last column while the end trigger
+  sits off the camera.
+
+## Resource-gated shortcut
+
+The gated world reproduces Metroid seed 301 under the F2 rank floor. Before
+Ridley, F2's floor sent draws to a line that had skipped Kraid and reached
+Ridley's area with 10 missiles but could not open the red doors.
+
+The walk has `items` legs of `leg` positions. Each position needs `step_run`
+pattern presses in a row, hidden from the key. A wrong press resets the run
+and, one time in `hit_odds` by hash, costs one health; at zero health the run
+dies. Each leg's end gives an item and refills health. After the last leg the
+boss room needs `fight` hits from the shot action. A shot lands only when the
+aim counter is 0; a missed shot costs health. The door action leaves the room
+for the corridor, with or without the kill. The corridor's goal is position
+`walk`, and an unkilled run stops at `barrier - 1`.
+
+A nonzero `shortcut` opens a door at the end of leg `shortcut`: `shortcut_run`
+presses of the shortcut action enter the corridor with fewer items. That line
+never passes the barrier. The sparse tier is `2 * items`, plus 1 while engaged
+with the boss, and `2 * items + 2` after the kill. With `dense`, every leg
+position, the boss room, the kill and every corridor position after the kill
+each get their own tier, so the same layout reports progress at every step.
+The key's place is the leg position, the boss hits, or the corridor position;
+its health is the run's health. `evidence.gated_first` gives the first work
+past the legs, at the kill, at the barrier unkilled, and at or past the barrier
+after the kill.
+
 ## Configuration bounds
 
-Every parameter is required except the optional map and fork fields. Bounds keep
+Every parameter is required except the optional map, fork and gated fields. Bounds keep
 exhaustive enumeration below 200,000 states; requests exceeding the reachability limit are rejected. The graph
 family's and passive clock's reachability hold by construction.
 
@@ -440,14 +487,15 @@ family's and passive clock's reachability hold by construction.
 | Trap | `length` 1–16; `pattern` encodes two-bit actions per position and its first action differs from 3; `trap_len` 1–8; `rooms` 1–16. |
 | Map | `width` and `height` 2–8; any `layout`; `loops` 0–16; `corridor` and `shaft` 1–4; `inner` from 2 to two fewer than the room count; `items` 1–9, and above 1 only with two outer rooms to spare and without farms unless `gauntlet`; `farms` 0–8 with `farm_cap` 1–63, and `farm_cap` only with farms; `boss_stock` 0–`farm_cap`, 1–8 with `boss_hits_back`, and not in chain stages; `approach_drain` needs `boss_hits_back`; `boss_by_door` needs `boss_stock`; `late_item` needs `boss_hits_back` and neither `approach_drain` nor `boss_by_door`; `item_at_entry` needs `late_item`; `tanks` 0–8 and only with `boss_hits_back`; `shield` 0–32, above 0 only with `boss_stock` and `shield_odds` above 0, and `shield_odds` only with a shield; `boss_stock` plus `shield` at most `farm_cap`; `hit_tier` needs `boss_stock`, one item and no lock; `arena` 0–8, above 0 only with a shield; `rooted` needs an arena; `tail_slots` needs `gauntlet`, `approach_drain`, `late_item` or `shield`; `timing` 0 or 2–16; `item_optional` needs one item and no boss; `locked` needs one item, no optional item, no boss, and an outer room for the key besides the start and the door room; `gauntlet` needs `items` 2 or more and farms. |
 | Graph | `nodes` 16–4,194,304; `places` 1–`nodes` with at most 65,536 nodes per place; `levels` 1–16; any `layout`. |
-| Fork | `length` 2–31; `dead_len` at least 1; `fork + dead_len` below `length`; `rooms` 0–16, or 0–255 with `room_run` set; optional `room_run` and `entry_run` 0–8; `pattern` encodes two-bit actions per position. |
+| Fork | `length` 2–63; `dead_len` at least 1; `fork + dead_len` below `length`, or with `goal_at_fork` `length = fork + 1` and `fork + dead_len` at most 63; `rooms` and `shared_rooms` 0–16, or 0–255 with `room_run` set; optional `room_run`, `entry_run`, `step_run` and `run_on_run` 0–8, `grades` 0–15, `room_ramp` 0–16, `run_on` 0–60,000; `pattern` encodes two-bit actions per position, read modulo 32. |
+| Gated | `items` 1–6; `leg` 1–16; `walk` 2–48; `barrier` 1 to `walk - 1`; `step_run` 1–8; `fight` 1–16; `fight_odds` 1–16; `health` 1–15; `hit_odds` 0–16; optional `shortcut` below `items` and `shortcut_run` 0–8; boolean `dense`; `pattern` encodes two-bit actions per route position, read modulo 32. |
 | Passive clock | `events` has 1–64 positive, strictly increasing `u16` readings; `holds` has 1–16 bands, each with `minimum` and `maximum` 1–255, `minimum` ≤ `maximum`, and `weight` 1–65,535. |
 | Targets | `width` 4–16; any `layout`; `cannons` 1–5; `guarded` at most `cannons`; `decoys` 0–3; `guarded` plus `decoys` at most 6; `cannons` plus `decoys` at most `width` minus 3; `bombs` 1–15; `health` 1–63; `aims` 1–64; `double_aims` at most `aims`; `drain_odds` 0–255; `posture_actions` 0–2. Reachability is an exact search that keeps the most health for each position, history, cannon set, guard set and bomb count, and stops exploring a state whose bombs cannot cover the shots still needed. It expands states with the most cannons down first and rejects a layout once it keeps more than 200,000 states. |
 
 ## Scenario chains
 
 A chain has one to sixteen `stages`, each containing a leaf `world` and
-`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, and `fork` is a supported leaf. Completion enters the next stage in the same
+`refill_available`. Every family except `chain`, `graph`, `crossing`, `passive_clock`, `targets`, `fork`, and `gated` is a supported leaf. Completion enters the next stage in the same
 action. The final stage's goal is the campaign objective. Snapshots contain the
 active stage, local state, and carried charge. Health, history, and clocks reset
 on stage entry; archived snapshots allow exploration from earlier stages.
@@ -541,6 +589,7 @@ executable instead of the fresh build.
 | Growing gaps | Eight-by-eight map with the item ranked or hidden, one layout per seed; the return trip is shorter than the first trip, and per room of path the walk from the door to the goal takes longer than the return trip. |
 | Farm loop | Eight-by-eight map with `inner` 20 and 4 farms against the same layout and seed without farms, 200,000 work each. The median ratio of the trip from leaving the item region to the goal stays under 10x, which six-seed medians on the current searcher stayed below in 20,000 resamples of 300 pairs. The current searcher measures 5.87x. Resetting a cell's draw count only on its 1st, 2nd, 4th, 8th and later carried-in preference win measures 2.50x, with six-seed medians up to 4.47x in 20,000 resamples. That change is clearly bad on the gauntlet worlds: net extra goal misses are 9.0% of layouts, and 12.9% with hidden timing. |
 | Boss damage as a tier | Twelve layouts of the boss behind a shield, each with `hit_tier` on and off on the same seed, 600,000 work each. Damage as a tier loses more kills than it gains. On the current searcher it loses 41% of 32 layouts and gains none, the loss seen in Metroid, where every engaged Mother Brain state descended from one drained first hit. |
+| Calibrated stalls | Six layouts each of four worlds fitted to measured game stalls, 2,000,000 work each and 1,000,000 for the off-axis goal; see [Calibrated stall worlds](#calibrated-stall-worlds). The resource-gated shortcut costs under 1.5x the same layout without the shortcut. Dense progress is no slower than the sparse shortcut world. Two in three dead-end runs reach the goal. Over 20 seeds the current searcher measures 1.01x in tries and half the sparse world's tries, and over 80 seeds 74 dead-end runs reach the goal. A tier that keeps rising past the goal leaves at least two in three off-axis runs unsolved, and with the rise capped five in six solve. |
 | Boobeam Trap arena | Eighteen layouts of the calibrated arena, each from room 0 with 250,000 work and `rooted` with 20,000 work on the same seed. The median ratio of the first full-stock arrival to the first boss-room arrival stays within 1.5–3x, and fewer runs from room 0 kill within 2.5 times the median first arrival than rooted runs kill within 0.2 times it. Mega Man 2 shows both: the first full-stock arrival at the Boobeam door comes 1.8–2.8 times after the first drained arrival, and power-on runs kill less often than rooted segments at those budgets. A layout that the reachability check rejects as unwinnable is replaced by a fresh one. The kill rule fails as undecided when 2.5 times the median first arrival passes 250,000 work or 0.2 times it passes 20,000, because runs censored inside the window would count as misses. On the current searcher, 50 repeats with fresh seeds failed neither rule, and 18-layout resamples of their 900 layouts fail either rule in 0.5% of 20,000. The room-0 runs use 250,000 work because at 200,000 work the first full-stock arrival falls past the budget on enough layouts that the ratio rule fails in 3.9% of resamples. |
 
 Timing rules compare medians in which an unsolved run counts as the work
@@ -596,6 +645,10 @@ layouts.
 | Boss past an item at the entry | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 8, `boss_hits_back`, `late_item`, `item_at_entry`, `tail_slots`; 600,000 work | Tourian: drained states raise the statue, and a kill needs stock carried past rooms that drain it | As above |
 | Boss behind a shield with damage as a tier | `inner` 20, 4 farms with `farm_cap` 63, `boss_stock` 24, `shield` 8, `shield_odds` 4, `hit_tier`, `tail_slots`; 600,000 work | Mother Brain: the first hit raises the tier from a state that spent its missiles on the Zebetites, and the stocked states below that tier stop getting draws | To the item, to the stocked arrival, to the first hit |
 | Dead-end fork | `length` 14, `fork` 2, `dead_len` 6, `rooms` 4 | Famidash Clubstep: a dead-end route that keeps opening cells in the top tier holds its weight over the route to the goal | To the live route, past the dead end |
+| Resource-gated shortcut | Gated world, 4 items of 10 positions, `step_run` 4, `fight` 4, `shortcut` 1 with `shortcut_run` 3; 2,000,000 work | Metroid seed 301 under F2: a line that skipped a boss reaches the last area and takes draws from the stocked line | To the kill, past the barrier |
+| Dense progress | The same layout with `dense` | The same stall when every step reports progress | As above |
+| Dead end below the leading tier | Fork world, `length` 40, `fork` 24, `dead_len` 10, 255 rooms with `room_run` 4, `entry_run` 2, `step_run` 2, 32 shared rooms, `grades` 15; 2,000,000 work | Famidash level 19 seed 2: the way out sits ten ranks below a dead end | To the live route, past the dead end |
+| Goal off the progress axis | Fork world with `goal_at_fork`, `fork` 24, `entry_run` 2, a run-on of 3-press steps up to 60,000, 255 one-press rooms; 1,000,000 work | Famidash C 17 Hi (#728): the tier keeps rising past the goal | To the goal |
 
 The passive-clock worlds use `energy_splice:6`. The rare crossing worlds use `energy_splice:6` and scaled low-memory reports; the other worlds retain their default settings. Clocks count `clock_ticks`, whereas crossing work counts actions. The rare crossing entry legs count executions. Compare arms within a world, not absolute work across families. Older binaries without these families or options cannot run them: use a baseline built with the same world implementation and the unchanged engine, and record that source explicitly.
 
@@ -661,6 +714,32 @@ The map world is the calibrated world for the return trip. In recorded
 Metroid campaigns, climbing out of Kraid's hideout after the kill takes
 0.55–0.72 of the first trip from the hideout entry to Kraid's room. The map
 rule asserts only that the return trip is shorter than the first trip.
+
+## Calibrated stall worlds
+
+Four worlds reproduce measured game stalls. Each was fitted to the stall's
+tier count, draw share per rank, yields per draw at the top tier, gap between
+rises and the rank of the way out before any rule was scored on it. The
+attempts log records each fit and where it misses.
+
+| World | Game stall | Fit |
+| --- | --- | --- |
+| Resource-gated shortcut | Metroid seed 301, F2: top tier 70.7% against current's 87.5% | Top tier 67.2% under F2, 80.5% under current; 7 tiers in both |
+| Dead end below the leading tier | Famidash level 19 seed 2, F2: 35 tiers, ranks 10-11 at about 0.3%, way out from rank 10 | 35 tiers; ranks 0-3 at 38 / 18 / 9 / 5% against 40 / 28 / 15 / 8%; ranks 10-11 at 0.9%, about 3x the game |
+| Goal off the progress axis | Famidash C 17 Hi, F2: 79 / 11 / 3% on ranks 0-2, a new tier every ~100 tries | 70 / 16 / 4%, a new tier every ~50 tries |
+| Dense progress | The resource-gated layout with a tier for every step | Solves in about half the sparse world's tries |
+
+`survival.py` runs paired seeds on several builds and compares tries to the
+goal with Kaplan-Meier curves and a log-rank test against the first build. A
+run that ends at its budget counts as censored at its tries:
+
+```sh
+uv run workloads/tiny-worlds/survival.py --arm current=BASELINE --arm candidate=CANDIDATE --seeds 20
+```
+
+Every world and build uses the same runtime seeds and layouts. `--world` limits
+the run to named worlds, and `--curves FILE` writes each build's curve as JSON.
+The tool is not a CI check.
 
 ## Scale measurements
 

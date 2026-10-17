@@ -32,6 +32,13 @@ SHIELDED_BOSS = {"inner": 20, "farms": 4, "farm_cap": 63, "boss_stock": 24, "shi
 ARENA = {"loops": 0, "corridor": 4, "shaft": 4, "inner": 48, "farms": 8, "farm_cap": 16, "boss_stock": 6, "shield": 6,
          "shield_odds": 4, "tail_slots": True, "arena": 8}
 ARENA_BUDGET, ROOTED_ARENA_BUDGET = 250_000, 20_000
+GATED = {"items": 4, "leg": 10, "walk": 44, "barrier": 40, "step_run": 4, "fight": 4, "fight_odds": 4, "health": 8,
+         "hit_odds": 8, "shortcut": 1, "shortcut_run": 3, "dense": False}
+DEAD_END = {"length": 40, "fork": 24, "dead_len": 10, "rooms": 255, "room_run": 4, "entry_run": 2, "step_run": 2,
+            "shared_rooms": 32, "grades": 15}
+OFF_AXIS = {"length": 25, "fork": 24, "dead_len": 10, "rooms": 255, "room_run": 1, "entry_run": 2, "step_run": 2,
+            "goal_at_fork": True, "run_on": 60_000, "run_on_run": 3}
+STALL_BUDGET, OFF_AXIS_BUDGET = 2_000_000, 1_000_000
 WORLDS = {
     "flat archive crossing": ({"cells": 1024, "length": 4, "rooted": False}, 1),
     "fresh crossing": ({"cells": 1024, "length": 4, "rooted": True}, 1),
@@ -64,8 +71,14 @@ WORLDS = {
                                         "tail_slots": True}, 1),
     "boss behind a shield with damage as a tier": (SHIELDED_BOSS, 1),
     "dead-end fork": ({"fork": {"length": 14, "fork": 2, "dead_len": 6, "rooms": 4}}, 1),
+    "resource-gated shortcut": ({"gated": GATED}, 1),
+    "dense progress": ({"gated": {**GATED, "dense": True}}, 1),
+    "dead end below the leading tier": ({"fork": DEAD_END}, 1),
+    "goal off the progress axis": ({"fork": OFF_AXIS}, 1),
 }
-BUDGETS = {"boss by the door": 600_000, "boss beside a late item": 600_000, "boss past an item at the entry": 600_000,
+BUDGETS = {"resource-gated shortcut": STALL_BUDGET, "dense progress": STALL_BUDGET,
+           "dead end below the leading tier": STALL_BUDGET, "goal off the progress axis": OFF_AXIS_BUDGET,
+           "boss by the door": 600_000, "boss beside a late item": 600_000, "boss past an item at the entry": 600_000,
            "boss behind a shield with damage as a tier": 600_000}
 
 
@@ -151,6 +164,16 @@ def requests(seeds: int) -> list[dict]:
             shield_seed = secrets.randbits(64)
             rows.append(request("shield/tier", shielded, shield_seed, budget=600_000))
             rows.append(request("shield/hidden", hidden, shield_seed, budget=600_000))
+        gated, fork = secrets.randbits(64), secrets.randbits(64)
+        for arm, parameters in (("shortcut", GATED), ("no_shortcut", {**GATED, "shortcut": 0, "shortcut_run": 0}),
+                                ("dense", {**GATED, "dense": True})):
+            rows.append(request(f"gated/{arm}", {"family": "gated", "parameters": {**parameters, "pattern": gated}},
+                                seed, budget=STALL_BUDGET))
+        rows.append(request("dead_end", {"family": "fork", "parameters": {**DEAD_END, "pattern": fork}}, seed,
+                            budget=STALL_BUDGET))
+        for arm, parameters in (("run_on", OFF_AXIS), ("capped", {**OFF_AXIS, "run_on": 0, "run_on_run": 0})):
+            rows.append(request(f"off_axis/{arm}", {"family": "fork", "parameters": {**parameters, "pattern": fork}},
+                                seed, budget=OFF_AXIS_BUDGET))
         layout = secrets.randbits(64)
         for arm, farms in (("farms", 4), ("none", 0)):
             rows.append(request(f"farm/{arm}", {"family": "map", "parameters": {
@@ -168,7 +191,9 @@ def world_requests(world: str, count: int) -> list[dict]:
             "shaft": 3, **fields}}
         if "fork" in fields:
             config = {"family": "fork", "parameters": {
-                **fields["fork"], "pattern": secrets.randbits(2 * fields["fork"]["length"])}}
+                **fields["fork"], "pattern": secrets.randbits(min(64, 2 * fields["fork"]["length"]))}}
+        if "gated" in fields:
+            config = {"family": "gated", "parameters": {**fields["gated"], "pattern": secrets.randbits(64)}}
         if "cells" in fields:
             config = {"family": "crossing", "parameters": {
                 **fields, "layout": secrets.randbits(64), "pattern": secrets.randbits(2 * fields["length"])}}
@@ -230,6 +255,10 @@ def legs(report: dict) -> tuple[dict, dict]:
         entry = within(evidence["passive_clock"]["first_event_work"][1])
         return ({"to the goal": budget if goal is None else goal, "to wait entry": entry},
                 {"wait entry to goal": None if entry is None or goal is None else goal - entry})
+    if report["config"]["family"] == "gated":
+        _, kill, _, past = (within(w) for w in (evidence.get("gated_first", []) + [None] * 4)[:4])
+        return ({"to the kill": kill, "past the barrier": past, "to the goal": budget if goal is None else goal},
+                {"kill to past the barrier": None if kill is None or past is None else past - kill})
     if report["config"]["family"] == "fork":
         live, past = (within(w) for w in (evidence.get("fork_first", []) + [None, None])[:2])
         return ({"to the live route": live, "past the dead end": past, "to the goal": budget if goal is None else goal},
@@ -418,7 +447,7 @@ def execute(binary: Path, job: dict) -> dict:
         raise error(f"{job['arm']} seed {job['request']['seed']}: {process.stderr.strip()[-400:]}")
     report = {key: value for key, value in json.loads(process.stdout).items() if key in REPORT_FIELDS}
     report["evidence"] = {key: value for key, value in report.get("evidence", {}).items()
-                          if key.startswith(("map_", "crossing_", "passive_clock", "fork_"))}
+                          if key.startswith(("map_", "crossing_", "passive_clock", "fork_", "gated_"))}
     report["arm"] = job["arm"]
     return report
 
@@ -442,6 +471,18 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
 
     def shown(arm):
         return f"{low(arm):.0f}" if low(arm) == high(arm) else f"{low(arm):.0f}+"
+
+    def work(arm, unsolved):
+        return statistics.median(r["first_objective_work"] if r["success"] else unsolved(r) for r in by[arm])
+
+    def work_low(arm):
+        return work(arm, lambda r: r["work_budget"])
+
+    def work_high(arm):
+        return work(arm, lambda r: float("inf"))
+
+    def work_shown(arm):
+        return f"{work_low(arm):.0f}" if work_low(arm) == work_high(arm) else f"{work_low(arm):.0f}+"
 
     def slow(arm):
         return sum(not r["success"] or r["first_objective_work"] > 1000 for r in by[arm])
@@ -531,6 +572,20 @@ def evaluate(rows: list[dict]) -> list[tuple[str, str, bool]]:
         ("farm loop: farms off the route slow the trip out under 10x", f"{farm_cost():.2f}", farm_cost() < 10),
         ("shield: damage as a tier loses more kills than it gains against hidden damage",
          f"{shield_losses()} vs {shield_gains()}", shield_losses() > shield_gains()),
+        ("resource-gated shortcut: the shortcut costs under 1.5x the no-shortcut control's median work",
+         f"{work_shown('gated/shortcut')} vs {work_shown('gated/no_shortcut')}",
+         work_high("gated/shortcut") < 1.5 * work_low("gated/no_shortcut")),
+        ("dense progress: no slower than the sparse shortcut world's median work",
+         f"{work_shown('gated/dense')} vs {work_shown('gated/shortcut')}",
+         work_high("gated/dense") <= work_low("gated/shortcut")),
+        ("dead end below the leading tier: two in three runs reach the goal",
+         f"{solved('dead_end')}/{len(by['dead_end'])}", 3 * solved("dead_end") >= 2 * len(by["dead_end"])),
+        ("goal off the progress axis: a tier that keeps rising past the goal leaves two in three runs unsolved",
+         f"{solved('off_axis/run_on')}/{len(by['off_axis/run_on'])}",
+         3 * solved("off_axis/run_on") <= len(by["off_axis/run_on"])),
+        ("goal off the progress axis: with the rise capped, five in six runs reach the goal",
+         f"{solved('off_axis/capped')}/{len(by['off_axis/capped'])}",
+         6 * solved("off_axis/capped") >= 5 * len(by["off_axis/capped"])),
         ("arena: the first full-stock arrival comes 1.5-3x after the first boss-room arrival",
          f"{lag:.2f}", 1.5 <= lag <= 3),
         ("arena: power-on kills within 2.5x the first arrival fewer than rooted kills within 0.2x",
