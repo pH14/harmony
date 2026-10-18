@@ -120,11 +120,12 @@ int main(void) {
         repository = guest.parents[1]
         flake = (repository / "flake.nix").read_text()
         self.assertRegex(flake, r"guest-images\s*=\s*platformBuilder;")
-        for binding in ("platformBuilder", "workloadBuilder"):
+        for binding, explicit_compiler in (("platformBuilder", False), ("workloadBuilder", False),
+                                           ("platformBuilder", True), ("workloadBuilder", True)):
             entry = re.search(re.escape(binding) + r" = pkgs\.writeShellApplication \{.*?exec \$\{\./([^}]+)\}", flake, re.S)
             self.assertIsNotNone(entry)
             wrapper = repository / entry[1]
-            with self.subTest(builder=binding), tempfile.TemporaryDirectory() as temporary:
+            with self.subTest(builder=binding, explicit_compiler=explicit_compiler), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 source = root / "source"
                 linux = source / "consonance/harmony-linux/linux"
@@ -142,8 +143,14 @@ ART_DIR=$HARMONY_ARTIFACT_DIR
 ARM64_ART_DIR=$ART_DIR/aarch64
 LINUX_DIR=$PWD
 KSRC=$BUILD_ROOT/kernel-source
+X86_MUSL_PREFIX=$BUILD_ROOT/musl-x86-prefix
 require_tools() { for tool in "$@"; do command -v "$tool" >/dev/null; done; }
 extract_kernel() { mkdir -p "$KSRC/usr"; }
+build_x86_musl() {
+    mkdir -p "$X86_MUSL_PREFIX/bin"
+    ln -s "$HARMONY_TEST_N6_CC" "$X86_MUSL_PREFIX/bin/musl-gcc"
+    echo PINNED_X86_MUSL_SELECTED
+}
 ''')
                 for name in ("build-kernel.sh", "build-go-runtime-image.sh", "build-initramfs.sh"):
                     path = linux / name
@@ -169,6 +176,8 @@ from pathlib import Path
 import shutil
 import sys
 arguments = sys.argv[1:]
+with (Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / "compiler-log").open("a") as log:
+    log.write(Path(sys.argv[0]).name + "\\n")
 output = Path(arguments[arguments.index("-o") + 1])
 name = {"n6-entropy-negative": "negative", "n6-entropy-displacement": "displacement", "n6-instruction-guest": "rejected"}[output.name]
 shutil.copyfile(Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / name, output)
@@ -197,9 +206,12 @@ shutil.copyfile(Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / name, output)
                     "HARMONY_NIX_BUSYBOX_SOURCE": str(tarball),
                     "HARMONY_NIX_MUSL_SOURCE": str(tarball),
                     "HARMONY_NIX_KEEP_WORK": "0",
-                    "HARMONY_N6_CC": str(tools / "cc"),
+                    "HARMONY_TEST_N6_CC": str(tools / "cc"),
                     "HARMONY_TEST_CC_FIXTURES": str(fixtures),
                 })
+                environment.pop("HARMONY_N6_CC", None)
+                if explicit_compiler:
+                    environment["HARMONY_N6_CC"] = str(tools / "cc")
                 result = subprocess.run(["bash", str(wrapper), "--output", str(output), "--n6"],
                                         cwd=root, env=environment, capture_output=True, text=True)
                 self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
@@ -208,6 +220,9 @@ shutil.copyfile(Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / name, output)
                 self.assertIn("N6 failed-build diagnostics preserved:", result.stderr)
                 self.assertNotIn("UNEXPECTED_POST_N6_BUILD", result.stdout)
                 self.assertNotIn("PASS: Nix-locked", result.stdout)
+                self.assertEqual("PINNED_X86_MUSL_SELECTED" in result.stdout, not explicit_compiler)
+                compiler = "cc" if explicit_compiler else "musl-gcc"
+                self.assertEqual((fixtures / "compiler-log").read_text().splitlines(), [compiler] * 3)
                 self.assertEqual(list(temporary_work.glob("harmony-nix-guest.*")), [])
                 diagnostics = output / "diagnostics/n6"
                 self.assertEqual((diagnostics / "n6-instruction-guest").read_bytes(), images["rejected"])
