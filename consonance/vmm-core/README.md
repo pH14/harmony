@@ -173,8 +173,15 @@ and the first base-RAM commitment calculation. Each distinct resident page is
 integrity-hashed once within that export; subsequent exports start fresh
 verification even when the base-RAM digest is cached. BLAKE3 resident integrity
 checks and the flat SHA-256 base/target commitments retain their separate
-purposes and existing encodings. Import keeps its existing operation boundaries;
-no verified-slot state crosses a mutable derive or import.
+purposes and existing encodings. Sparse delta import shares one immutable read
+transaction across target comparison and setup/base verification, including a
+cached base digest. Metadata and RAM validation still precede service preflight.
+That transaction ends before any user service callback. Rebase analysis then
+starts fresh resident verification after preflight; the subsequent mutable derive
+also retains its own resident/incoming-page checks. No verified-slot set crosses
+those boundaries. Thus a retained page can still be checked again after the
+callback or during derive; import does not promise one check per page over the
+whole operation.
 
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,

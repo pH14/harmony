@@ -78,12 +78,6 @@ fn restore_defers_materialization(mode: RestoreMode) -> bool {
     mode == RestoreMode::InPlace
 }
 
-#[derive(Clone, Copy)]
-enum SparsePageVerification {
-    Base,
-    BaseAndTarget(SnapshotId),
-}
-
 fn restore_error_is_precommit(error: &VmmError) -> bool {
     matches!(
         error,
@@ -607,7 +601,6 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             base,
             target,
             target_id,
-            SparsePageVerification::BaseAndTarget(target_id),
             Some(sparse_target_pages_digest(
                 &pages,
                 &self.hash_telemetry,
@@ -666,16 +659,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
     fn sparse_base_ram_digest(
         &self,
         base: SnapId,
-        verification: SparsePageVerification,
+        target_id: SnapshotId,
     ) -> Result<[u8; 32], PortableSnapshotError> {
         let base_id = self.store_id(base)?;
         let mut transaction = self.engine.read_transaction();
-        match verification {
-            SparsePageVerification::Base => {}
-            SparsePageVerification::BaseAndTarget(target_id) => {
-                transaction.verify_snapshots(&[base_id, target_id])?;
-            }
-        }
+        transaction.verify_snapshots(&[base_id, target_id])?;
         self.sparse_base_ram_digest_in(base, &mut transaction)
     }
 
@@ -724,10 +712,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         base: SnapId,
         target: SnapId,
         target_id: snapshot_store::SnapshotId,
-        verification: SparsePageVerification,
         target_pages_digest: Option<[u8; 32]>,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
-        let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
+        let base_ram_digest = self.sparse_base_ram_digest(base, target_id)?;
         self.sparse_sidecar_with_base_digest(
             target,
             target_id,
@@ -793,11 +780,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
-            Some(sparse_target_pages_digest(
-                pages,
-                &self.hash_telemetry,
-                HashSite::PortableImport,
-            )),
+            |_transaction, telemetry| {
+                Ok(Some(sparse_target_pages_digest(
+                    pages,
+                    telemetry,
+                    HashSite::PortableImport,
+                )))
+            },
             |engine, base_id, vm_state| {
                 let mut owned_pages = Vec::new();
                 owned_pages
@@ -827,20 +816,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         #[allow(clippy::disallowed_methods)]
         let started = std::time::Instant::now();
         let setup_id = self.store_id(setup)?;
-        let target_pages_digest = sparse_delta_target_pages_digest(
-            &mut self.engine.read_transaction(),
-            setup_id,
-            pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
-            &self.hash_telemetry,
-            HashSite::PortableImport,
-        )?;
         let mut written = 0usize;
         let receipt = self.import_sparse_untimed(
             setup,
             near,
             pages.iter().map(|(gfn, _, _)| *gfn),
             sidecar,
-            Some(target_pages_digest),
+            |transaction, telemetry| {
+                Ok(Some(sparse_delta_target_pages_digest(
+                    transaction,
+                    setup_id,
+                    pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
+                    telemetry,
+                    HashSite::PortableImport,
+                )?))
+            },
             |engine, near_id, vm_state| {
                 let near_id = if engine
                     .stats(near_id)
@@ -890,13 +880,18 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         base: SnapId,
         gfns: impl Iterator<Item = u64>,
         sidecar: &[u8],
-        target_pages_digest: Option<[u8; 32]>,
+        target_pages_digest: impl FnOnce(
+            &mut SnapshotReadTransaction<'_>,
+            &std::cell::Cell<HashTelemetry>,
+        ) -> Result<Option<[u8; 32]>, PortableSnapshotError>,
         derive: impl FnOnce(
             &mut SnapshotEngine,
             snapshot_store::SnapshotId,
             &[u8],
         ) -> Result<snapshot_store::SnapshotId, PortableSnapshotError>,
     ) -> Result<SparsePortableSnapshotReceipt, PortableSnapshotError> {
+        let mut transaction = self.engine.read_transaction();
+        let target_pages_digest = target_pages_digest(&mut transaction, &self.hash_telemetry)?;
         let base_id = self.store_id(base)?;
         let mut previous = None;
         for gfn in gfns {
@@ -960,11 +955,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse state hash preimage",
             ));
         }
-        if self.sparse_base_ram_digest(setup, SparsePageVerification::Base)?
-            != portable.base_ram_digest
-        {
+        if self.sparse_base_ram_digest_in(setup, &mut transaction)? != portable.base_ram_digest {
             return Err(PortableSnapshotError::Malformed("sparse base RAM differs"));
         }
+        drop(transaction);
         self.preflight_imported_service(sdk, &portable.policy)?;
         let id = self.next_snap;
         let next_snap = self
@@ -8062,6 +8056,167 @@ mod tests {
                 })
             ))
         ));
+    }
+
+    #[test]
+    fn sparse_import_shares_resident_verification_only_before_service_preflight() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let mut image = vec![0; RAM];
+        image[..8192].fill(7);
+        image[8192..12288].fill(9);
+        server
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let setup = snap(&mut server);
+        let sidecar = server
+            .export_sparse_delta(setup, None, setup)
+            .unwrap()
+            .sidecar;
+        let page = [7; 4096];
+        let hash = *blake3::hash(&page).as_bytes();
+        let rows = [(0, &hash, &page), (1, &hash, &page)];
+        let calls = Arc::new(AtomicU64::new(0));
+        let observed = calls.clone();
+        let factory = server.service_factory.clone();
+        server.set_service_factory(Arc::new(move |policy| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            factory(policy)
+        }));
+        server.snapshot_meta[&setup.0].base_ram_digest.set(None);
+        let mut imported_for_cap = setup;
+        for (input, cold) in [
+            (rows.as_slice(), true),
+            (rows.as_slice(), false),
+            (&[][..], false),
+        ] {
+            let before = server.host_telemetry();
+            let imported = server
+                .import_sparse_delta(setup, setup, input, &sidecar)
+                .unwrap();
+            let after = server.host_telemetry();
+            assert_eq!(
+                after.verification.resident_hashes - before.verification.resident_hashes,
+                4
+            );
+            assert_eq!(
+                after.verification.resident_bytes - before.verification.resident_bytes,
+                4 * 4096
+            );
+            assert_eq!(after.verification.errors, before.verification.errors);
+            assert_eq!(
+                after.hashes.cost(HashSite::SparseBase).calls
+                    - before.hashes.cost(HashSite::SparseBase).calls,
+                u64::from(cold)
+            );
+            assert_eq!(
+                after.hashes.cost(HashSite::PortableImport).ram_bytes
+                    - before.hashes.cost(HashSite::PortableImport).ram_bytes,
+                0
+            );
+            assert_eq!(server.snapshot_chain_len(imported.id), Some(2));
+            imported_for_cap = imported.id;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let mut near_image = image.clone();
+        near_image[..4096].fill(11);
+        near_image[12288..].fill(5);
+        server
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&near_image)
+            .unwrap();
+        let near = snap(&mut server);
+        let before_near = server.host_telemetry().verification;
+        server
+            .import_sparse_delta(setup, near, &rows, &sidecar)
+            .unwrap();
+        let after_near = server.host_telemetry().verification;
+        assert_eq!(after_near.resident_hashes - before_near.resident_hashes, 6);
+        assert_eq!(
+            after_near.resident_bytes - before_near.resident_bytes,
+            6 * 4096
+        );
+        server.set_max_chain_len(2);
+        let before_cap = server.host_telemetry().verification;
+        server
+            .import_sparse_delta(setup, imported_for_cap, &rows, &sidecar)
+            .unwrap();
+        let after_cap = server.host_telemetry().verification;
+        assert_eq!(after_cap.resident_hashes - before_cap.resident_hashes, 4);
+        let successful_calls = calls.load(Ordering::SeqCst);
+        assert_eq!(successful_calls, 5);
+        let before = server.snapshot_store_stats();
+        let latest = server.latest_snapshot();
+        let next = server.next_snap;
+        let mut malformed = sidecar.clone();
+        malformed[0] ^= 1;
+        assert!(matches!(
+            server.import_sparse_delta(setup, setup, &[(0, &[0; 32], &page)], &malformed),
+            Err(PortableSnapshotError::BadMagic)
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls);
+        let changed = [8; 4096];
+        assert!(matches!(
+            server.import_sparse_delta(setup, setup, &[(0, &hash, &changed)], &sidecar),
+            Err(PortableSnapshotError::Malformed(
+                "sparse target pages differ"
+            ))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls);
+        let wrong_hash = [0; 32];
+        assert!(
+            server
+                .import_sparse_delta(setup, setup, &[(0, &wrong_hash, &page)], &sidecar)
+                .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 1);
+        assert_eq!(server.next_snap, next);
+        assert_eq!(server.snapshot_store_stats(), before);
+        assert_eq!(server.latest_snapshot(), latest);
+        let near_id = server.store_id(near).unwrap();
+        server
+            .engine
+            .corrupt_page_for_test(near_id, 3, 0, 1)
+            .unwrap();
+        let before_near_error = server.host_telemetry().verification;
+        assert!(
+            server
+                .import_sparse_delta(setup, near, &rows, &sidecar)
+                .is_err()
+        );
+        let after_near_error = server.host_telemetry().verification;
+        assert_eq!(
+            after_near_error.resident_hashes - before_near_error.resident_hashes,
+            6
+        );
+        assert_eq!(after_near_error.errors - before_near_error.errors, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 2);
+        assert_eq!(server.next_snap, next);
+        assert_eq!(server.latest_snapshot(), latest);
+        let setup_id = server.store_id(setup).unwrap();
+        server
+            .engine
+            .corrupt_page_for_test(setup_id, 2, 0, 1)
+            .unwrap();
+        let verification = server.host_telemetry().verification;
+        assert!(
+            server
+                .import_sparse_delta(setup, setup, &rows, &sidecar)
+                .is_err()
+        );
+        let after = server.host_telemetry().verification;
+        assert_eq!(after.resident_hashes - verification.resident_hashes, 2);
+        assert_eq!(after.errors - verification.errors, 1);
+        assert_eq!(calls.load(Ordering::SeqCst), successful_calls + 2);
+        assert_eq!(server.next_snap, next);
+        assert_eq!(server.latest_snapshot(), latest);
     }
 
     #[test]
