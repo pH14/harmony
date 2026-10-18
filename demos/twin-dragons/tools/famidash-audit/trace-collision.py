@@ -38,7 +38,8 @@ def run(args):
                  ["temp_x", "temp_y", "Generic", "currplayer", "currplayer_mini", "gamemode"]}
     assert all(0 <= value < 2044 for value in locations.values())
     core = SymbolFceumm(args.core, args.rom, witness["target_layout"]) if "target_layout" in witness else Fceumm(args.core, args.rom)
-    core.boot(witness["options"]["side"], witness["boot_level"])
+    core.startup_frames = witness["options"].get("fceumm_startup_released_frames", 180)
+    core.boot(witness["options"]["side"], witness["boot_level"], witness["options"].get("menu_delay", 0))
     lib, ram = core.lib, core.ram
     cpu = CPU.in_dll(lib, "X")
     lib.GetReadHandler.argtypes, lib.GetReadHandler.restype = [C.c_int32], C.c_void_p

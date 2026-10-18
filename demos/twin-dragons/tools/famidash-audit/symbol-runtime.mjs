@@ -62,14 +62,19 @@ export async function symbolMachine(rom, runtime, debugFile) {
         x: v.getInt32(a.scroll_x, true) + r[a.player_relx + 3], y: primary.camera + r[a.player_rely + 3],
         vy: v.getInt16(a.player_vel_y + 2, true), gravity: r[a.player_gravity + 1], mini: r[a.player_mini + 1] }];
     },
-    boot(side, level) {
+    boot(side, level, menuDelay = 0, startupFrames = 180) {
+      if (!Number.isSafeInteger(menuDelay) || menuDelay < 0 || menuDelay > 3600)
+        throw new Error("menu delay must be between 0 and 3600 frames");
+      if (!Number.isSafeInteger(startupFrames) || startupFrames < 1 || startupFrames > 3600)
+        throw new Error("startup wait must be between 1 and 3600 frames");
       m.core.restore(powerOn);
-      const menu = [[0, 180], [1, 1], [0, 936]];
+      const menu = [[0, startupFrames], [1, 1], [0, 936]];
       if (side !== "main" || level >= 22) menu.push([128, 1], [0, 20]);
       menu.push([1, 1], [0, 90]);
       for (const [buttons, frames] of menu) m.core.step(buttons, frames);
       if (m.ram()[locations.gameState] !== 6) throw new Error("symbol-based boot did not reach level select");
       m.ram()[locations.level] = level;
+      if (menuDelay) m.core.step(0, menuDelay);
       m.core.step(1, 1); m.core.step(0, 40);
       const o = observe();
       if (o.state !== 2 || o.level !== level || o.dead || o.debug) throw new Error("symbol-based boot did not reach gameplay");

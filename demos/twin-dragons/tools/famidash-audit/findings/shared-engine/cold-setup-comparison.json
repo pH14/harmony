@@ -1,0 +1,73 @@
+{
+  "status": "repeated-cold-setup-verified",
+  "samples": [
+    {
+      "menu_delay": 0,
+      "startup_released_frames": 180,
+      "rng_after_100_frames": [
+        69,
+        255,
+        129,
+        199,
+        255
+      ],
+      "mode_after_100_frames": 7,
+      "intro_difference_frames": [
+        1
+      ],
+      "comparison_start_frame": 41,
+      "gameplay_matches": true
+    },
+    {
+      "menu_delay": 1,
+      "startup_released_frames": 180,
+      "rng_after_100_frames": [
+        155,
+        20,
+        255,
+        129,
+        255
+      ],
+      "mode_after_100_frames": 1,
+      "intro_difference_frames": [
+        1
+      ],
+      "comparison_start_frame": 41,
+      "gameplay_matches": true
+    },
+    {
+      "menu_delay": 3,
+      "startup_released_frames": 180,
+      "rng_after_100_frames": [
+        67,
+        6,
+        249,
+        20,
+        255
+      ],
+      "mode_after_100_frames": 0,
+      "intro_difference_frames": [
+        1
+      ],
+      "comparison_start_frame": 41,
+      "gameplay_matches": true
+    },
+    {
+      "menu_delay": 0,
+      "startup_released_frames": 180,
+      "rng_after_100_frames": [
+        69,
+        255,
+        129,
+        199,
+        255
+      ],
+      "mode_after_100_frames": 7,
+      "intro_difference_frames": [
+        1
+      ],
+      "comparison_start_frame": 41,
+      "gameplay_matches": true
+    }
+  ]
+}

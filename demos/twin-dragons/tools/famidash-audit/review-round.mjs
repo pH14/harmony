@@ -12,7 +12,7 @@ await mkdir(output, { recursive: true });
 let ledger;
 try { ledger = JSON.parse(await readFile(join(output, "review.json"))); }
 catch { ledger = { schema: 1, cases: {}, entries: {}, mismatches: [], reviewed_candidates: 0, status: "review-in-progress" }; }
-if (ledger.detector_revision !== 3) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 3; }
+if (ledger.detector_revision !== 4) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 4; }
 ledger.status = "replay-in-progress";
 ledger.source_review_complete = false;
 const machines = new Map();
@@ -82,12 +82,16 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
   const layout = index.levels.find(l => l.side === report.side && l.level === report.level); if (!layout) continue;
   if (!machines.has(layout.rom)) machines.set(layout.rom, await machine(join(roms, layout.rom), runtime));
   const m = machines.get(layout.rom);
-  m.boot(layout.side, layout.level);
+  m.boot(layout.side, layout.level, report.setup?.menu_delay ?? 0, report.setup?.startup_released_frames);
   const rootState = m.core.capture(), prefixes = new Map();
   for (const summary of report.candidates) {
     const path = join(root, summary.file), bytes = await readFile(path), sha = hash(bytes);
     if (ledger.cases[sha]) continue;
     const candidate = JSON.parse(gunzipSync(bytes));
+    if ((candidate.setup?.menu_delay ?? 0) !== (report.setup?.menu_delay ?? 0))
+      throw new Error("candidate and report use different menu setups");
+    if (candidate.setup?.startup_released_frames !== report.setup?.startup_released_frames)
+      throw new Error("candidate and report use different startup waits");
     const keys = []; let key = "root", prefix = null;
     for (let i = 0; i < candidate.actions.length; i++) {
       const action = candidate.actions[i]; key = hash(`${key}:${action.buttons}:${action.frames}`); keys.push(key);
@@ -146,7 +150,7 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
           addEntry(key, { path, sha, frame: frame + 1, player, tile: solid, observation: o, previous,
             requires_wave_dblock_review: o.mode === 6 }, 1, Math.min(trace.length - frame, 512));
         }
-        if (survives && o.x > layout.width * 16 + 256) {
+        if (survives && o.x > layout.width * 16 + 64) {
           const key = `${layout.side}:${layout.level}:outside:right:${player}`;
           addEntry(key, { path, sha, frame: frame + 1, player, observation: o, previous }, 1, Math.min(trace.length - frame, 512));
         }

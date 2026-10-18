@@ -39,6 +39,20 @@ python3 demos/twin-dragons/tools/famidash-audit/full-round.py \
 Each level starts with 50,000 genesis executions and 5,000 per 1,024-frame
 checkpoint. `FAMIDASH_MIXTURE=energy_splice:6` selects another Dissonance draw
 mixture; `FAMIDASH_PREVIOUS_ROUND` adds earlier frontier and clearing inputs.
+`FAMIDASH_MENU_DELAY=3` waits three ordinary released frames in level select
+before entering the level. This varies the game's RNG without writing its
+state: changing only the search seed does not vary a fixed genesis RNG.
+Reports, candidate inputs and replay witnesses retain that setup.
+Use `FAMIDASH_STARTUP_FRAMES=180` for new random-mode coverage: both cores
+then use the same cold-start wait. The original release QuickNES witnesses
+use a legacy 22-frame wait and their independent FCEUmm profile uses 180;
+those profiles do not establish RNG equality in random-mode levels.
+New witnesses record their waits explicitly. FCEUmm restores its serialized
+cold power-on state before every replay, so SRAM and RNG left by an earlier
+replay cannot change a later control. The randomized setup regression checks
+a newly discovered Dissonance input in both cores. In Lucky Draw, different menu waits expose different
+random modes and death sequences. Rotate these setups across full rounds;
+a fixed menu timing leaves reachable random-mode coverage gaps.
 Reference routes are freshly replayed. Only their ordinary prefix before
 assistance, death or completion can seed a search. New victory inputs add
 checkpoints even when the reference route is unusable. `FAMIDASH_ROOT_PLAN`
@@ -51,6 +65,11 @@ endpoints and inventories entry signals, including both players in dual
 mode, partial hazards, persistent solid overlap and horizontal escapes.
 `components.py` groups decorative-fill components for source review. Detector
 signals never automatically become bug reports or tile edits.
+The standard Famidash target bounds rollouts after the level-length table;
+the missed-finish signal therefore begins 64 pixels past the source edge,
+before that search cutoff. Review extends ordinary input in the real core to
+check whether the player bypassed the finish trigger. The search cutoff is
+not a game death or a successful clear.
 
 The current investigation's stopping goal is all 109 installed levels
 assessed, every candidate disposition recorded, and three consecutive full

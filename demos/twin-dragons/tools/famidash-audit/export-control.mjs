@@ -16,13 +16,15 @@ const m = process.env.FAMIDASH_SYMBOLS
   ? await symbolMachine(rom, runtime, process.env.FAMIDASH_SYMBOLS) : await machine(rom, runtime);
 assert.equal(m.rom_sha256, report.rom_sha256);
 assert.equal(m.core_sha256, report.core_sha256);
-const trace = await replay(m, report.side, report.level, expand(input.actions));
+assert.deepEqual(input.setup ?? { menu_delay: 0 }, report.setup ?? { menu_delay: 0 });
+const trace = await replay(m, report.side, report.level, expand(input.actions), report.setup?.menu_delay ?? 0, report.setup?.startup_released_frames);
 assert.equal(trace.at(-1).state, 3, "control must complete in a fresh ordinary-input replay");
 assert.ok(!trace.some(o => o.dead || o.debug || o.paused));
 const witness = { schema: 1, engine: "dissonance-campaign", purpose: "clearing-control",
   discovery_engine: input.engine, discovery: { input_sha256: hash(inputBytes), report_sha256: hash(reportBytes),
     seed: input.seed, executions: input.executions, root: input.root, search_wasm_sha256: report.search_wasm_sha256 },
-  options: { side: report.side }, boot_level: report.level, target_level: report.level,
+  options: { side: report.side, menu_delay: report.setup?.menu_delay ?? 0, startup_released_frames: report.setup?.startup_released_frames,
+    fceumm_startup_released_frames: report.setup?.startup_released_frames === 22 ? 180 : report.setup?.startup_released_frames }, boot_level: report.level, target_level: report.level,
   rom_sha256: m.rom_sha256, core_sha256: m.core_sha256, actions: compress(expand(input.actions).slice(0, trace.length)), trace };
 if (m.symbols) witness.target_layout = { kind: "symbol-based linear coordinates", symbols: m.symbols,
   debug_sha256: m.debug_sha256, startup_released_frames: 180 };

@@ -5,11 +5,18 @@ import { compress, expand, routeTape, suspect, tileAt } from "./runtime.mjs";
 import { collisionPoint } from "./signals.mjs";
 
 test("centre estimates match independently traced Theory of Everything collision reads", () => {
-  const previous = { x: 3891, y: 883, mode: 3, mini: 0 };
-  const current = { x: 3894, y: 886, mode: 3, mini: 0 };
+  const previous = { x: 3891, y: 883, camera: 662, mode: 3, mini: 0 };
+  const current = { x: 3894, y: 886, camera: 662, mode: 3, mini: 0 };
   assert.deepEqual(collisionPoint(previous, current), { x: 3897, y: 893 });
   assert.equal(collisionPoint(previous, { ...current, mode: 6 }), null);
   assert.equal(collisionPoint(previous, { ...current, mini: 1 }), null);
+});
+
+test("release centre uses the traced eight-bit relative-Y addition before camera translation", () => {
+  const previous = { x: 9249, y: 866, camera: 614, mode: 1, mini: 1 };
+  const current = { ...previous, x: 9251, y: 867 };
+  assert.deepEqual(collisionPoint(previous, current), { x: 9252, y: 618 });
+  assert.deepEqual(collisionPoint(previous, current, true), { x: 9252, y: 874 });
 });
 
 test("map-builder assistance cannot become an upstream gameplay witness", () => {

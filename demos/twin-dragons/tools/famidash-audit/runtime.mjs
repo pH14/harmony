@@ -41,14 +41,19 @@ export async function machine(romPath, runtimePath) {
     ram = () => core.mod.HEAPU8.subarray(core.mod._nes_ram(), core.mod._nes_ram() + 2048);
   return {
     core, ram, rom_sha256: hash(rom), core_sha256: hash(wasm),
-    boot(side, level) {
+    boot(side, level, menuDelay = 0, startupFrames = 22) {
+      if (!Number.isSafeInteger(menuDelay) || menuDelay < 0 || menuDelay > 3600)
+        throw new Error("menu delay must be between 0 and 3600 frames");
+      if (!Number.isSafeInteger(startupFrames) || startupFrames < 1 || startupFrames > 3600)
+        throw new Error("startup wait must be between 1 and 3600 frames");
       core.restore(powerOn);
-      const menu = [[0, 22], [1, 1], [0, 936]];
+      const menu = [[0, startupFrames], [1, 1], [0, 936]];
       if (side !== "main" || level >= 22) menu.push([128, 1], [0, 20]);
       menu.push([1, 1], [0, 90]);
       for (const [buttons, frames] of menu) core.step(buttons, frames);
       if (ram()[0x498] !== 6) throw new Error("setup did not reach level select");
       ram()[0x47b] = level;
+      if (menuDelay) core.step(0, menuDelay);
       core.step(1, 1);
       core.step(0, 40);
       const o = this.observe();
@@ -89,8 +94,8 @@ export function suspect(o, layout, metatiles, bands) {
   return { kind: "below-route-decoration", ...tile, tile_name: definition.name, route_floor: floor };
 }
 
-export async function replay(m, side, level, tape) {
-  m.boot(side, level);
+export async function replay(m, side, level, tape, menuDelay = 0, startupFrames) {
+  m.boot(side, level, menuDelay, startupFrames);
   const trace = [];
   for (const buttons of tape) {
     m.core.step(buttons, 1);

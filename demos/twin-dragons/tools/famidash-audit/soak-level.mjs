@@ -17,6 +17,14 @@ const rom = await readFile(join(romDirectory, layout.rom));
 const m = process.env.FAMIDASH_SYMBOLS
   ? await symbolMachine(join(romDirectory, layout.rom), runtime, process.env.FAMIDASH_SYMBOLS)
   : await machine(join(romDirectory, layout.rom), runtime);
+const menuDelay = Number(process.env.FAMIDASH_MENU_DELAY || 0);
+if (!Number.isSafeInteger(menuDelay) || menuDelay < 0 || menuDelay > 3600)
+  throw new Error("invalid menu delay");
+const startupFrames = Number(process.env.FAMIDASH_STARTUP_FRAMES || (process.env.FAMIDASH_SYMBOLS ? 180 : 22));
+if (!Number.isSafeInteger(startupFrames) || startupFrames < 1 || startupFrames > 3600)
+  throw new Error("invalid startup wait");
+const boot = m.boot.bind(m);
+m.boot = (side, level) => boot(side, level, menuDelay, startupFrames);
 const powerOn = m.core.capture();
 if (m.rom_sha256 !== layout.rom_sha256) throw new Error("release ROM identity mismatch");
 const bindings = await import(pathToFileURL(resolve(bindingsPath)));
@@ -31,10 +39,14 @@ globalThis.harmonyCores = { 0: { ...m.core, rom, reset: () => m.core.restore(pow
 if (m.adapter) Object.assign(globalThis.harmonyCores[0], m.adapter);
 const game = side === "main" ? level >= 22 ? "famidash-community" : "famidash" : `famidash-${side}`;
 const identity = `quicknes-browser:${m.core.revision}`, seen = new Set(), cells = new Set(), modes = new Set();
+const toolHashes = Object.fromEntries(await Promise.all(
+  ["soak-level.mjs", "runtime.mjs", "signals.mjs", "symbol-runtime.mjs"].map(async name =>
+    [name, hash(await readFile(new URL(name, import.meta.url)))])));
 const report = { schema: 1, engine: "dissonance-wasm-single-level", side, level, name: layout.name, round,
   rom_sha256: m.rom_sha256, core_sha256: m.core_sha256, search_wasm_sha256: hash(wasm),
   bindings_sha256: hash(await readFile(bindingsPath)), runner_sha256: hash(await readFile(new URL(import.meta.url))),
-  source_index_sha256: hash(indexBytes), mixture, roots: [], candidates: [], inspected: 0, unavailable: 0,
+  source_index_sha256: hash(indexBytes), tool_sha256: toolHashes, runtime_loader_sha256: hash(await readFile(join(runtime, "engine/quicknes.js"))),
+  mixture, setup: { menu_delay: menuDelay, startup_released_frames: startupFrames }, roots: [], candidates: [], inspected: 0, unavailable: 0,
   max_x: 0, dual_inspected: 0, cleared: false, coverage_cells: 0, modes: [], status: "running" };
 if (m.adapter) report.target_layout = { kind: "symbol-based linear coordinates normalized for the release target",
   debug_sha256: m.debug_sha256, symbols: m.symbols, startup_released_frames: 180 };
@@ -140,7 +152,7 @@ for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
     if (search.won() && !report.cleared) {
       const actions = JSON.parse(search.victory());
       const tape = actions.flatMap(a => Array(a.frames).fill(a.buttons));
-      await writeFile(join(out, "clearing-input.json"), JSON.stringify({ engine: report.engine, actions, seed: record.seed, executions: execution, root: root.frame }));
+      await writeFile(join(out, "clearing-input.json"), JSON.stringify({ engine: report.engine, setup: report.setup, actions, seed: record.seed, executions: execution, root: root.frame }));
       report.cleared = true; record.cleared = true;
       schedule(tape);
     }
@@ -156,7 +168,7 @@ for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
         cells.add(`${o.player}:${Math.floor(o.x / 32)}:${Math.floor(o.y / 16)}:${o.mode}:${o.gravity}`);
         modes.add(o.mode); record.max_x = Math.max(record.max_x, o.x);
         if (o.x > (frontier?.observation.x ?? 0) + 64) {
-          frontier = { engine: report.engine, side, level, round, root: root.frame, seed: record.seed,
+          frontier = { engine: report.engine, setup: report.setup, tool_sha256: toolHashes, side, level, round, root: root.frame, seed: record.seed,
             executions: execution, archive_id: point.retained, actions: JSON.parse(search.state(point.retained)).actions,
             observation: o, rom_sha256: m.rom_sha256, core_sha256: m.core_sha256,
             search_wasm_sha256: report.search_wasm_sha256 };
@@ -166,7 +178,7 @@ for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
           const key = `${o.player}:${signal.kind}:${signal.column ?? Math.floor(o.x / 16)}:${signal.row ?? Math.floor(o.y / 16)}`;
           if (seen.has(key)) continue;
           const state = JSON.parse(search.state(point.retained));
-          const candidate = { schema: 1, engine: report.engine, side, level, round, root: root.frame, seed: record.seed,
+          const candidate = { schema: 1, engine: report.engine, setup: report.setup, tool_sha256: toolHashes, side, level, round, root: root.frame, seed: record.seed,
             executions: execution, archive_id: point.retained, signal, player: o.player, observation: o,
             actions: state.actions, rom_sha256: m.rom_sha256, core_sha256: m.core_sha256, search_wasm_sha256: report.search_wasm_sha256 };
           const file = `candidate-${report.candidates.length}.json.gz`;

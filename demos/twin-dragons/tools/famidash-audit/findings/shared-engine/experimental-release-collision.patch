@@ -1,0 +1,499 @@
+diff --git a/METATILES/metatiles.h b/METATILES/metatiles.h
+index db03cd1..512a12b 100644
+--- a/METATILES/metatiles.h
++++ b/METATILES/metatiles.h
+@@ -1,3 +1,4 @@
++#define COL_PIT 0x3e
+ #define COL_TOP_CENTER_SPIKE 0x3d
+ #define COL_BOTTOM_CENTER_SPIKE 0x3c
+ 
+@@ -69,4 +70,4 @@ extern const unsigned char metatiles_top2[];
+ extern const unsigned char metatiles_bot1[];
+ extern const unsigned char metatiles_bot2[];
+ extern const unsigned char metatiles_attr[];
+-extern const unsigned char is_solid[];
+\ No newline at end of file
++extern const unsigned char is_solid[];
+diff --git a/METATILES/metatiles.inc b/METATILES/metatiles.inc
+index b6138b8..c09f67a 100644
+--- a/METATILES/metatiles.inc
++++ b/METATILES/metatiles.inc
+@@ -25,7 +25,7 @@ Metatile "HALF_SPIKE_BACKGROUND_TOP", 								$64, $65, $1E, $1F, PAL_2, COL_DEA
+ Metatile "PLATFORM_SPIKE", 											$3A, $3B, $3C, $3D, PAL_0, COL_ALL
+ Metatile "PLATFORM_PITSPIKES",										$3A, $3B, $16, $17, PAL_0, COL_ALL
+ Metatile "PITSPIKES_TOP", 											$06, $07, $00, $00, PAL_0, COL_DEATH_TOP
+-Metatile "PITSPIKES", 												$00, $00, $16, $17, PAL_0, COL_DEATH_BOTTOM
++Metatile "PITSPIKES", 												$00, $00, $16, $17, PAL_0, COL_PIT
+ Metatile "PLATFORM", 												$3A, $3B, $00, $00, PAL_0, COL_TOP
+ Metatile "SPIKE_LEFT", 												$26, $27, $36, $37, PAL_0, COL_DEATH
+ Metatile "SPIKE_TOP", 												$24, $25, $34, $35, PAL_0, COL_DEATH
+@@ -97,7 +97,7 @@ Metatile "BOTTOM_WAVY_PLATFORM_LEFT", 								$00, $00, $12, $13, PAL_0, COL_BOT
+ Metatile "BOTTOM_WAVY_PLATFORM_MIDDLE", 							$00, $00, $13, $13, PAL_0, COL_BOTTOM
+ Metatile "BOTTOM_WAVY_PLATFORM_RIGHT", 								$00, $00, $13, $14, PAL_0, COL_BOTTOM
+ Metatile "BOTTOM_WAVY_PLATFORM_STANDALONE", 						$00, $00, $11, $14, PAL_0, COL_DEATH
+-Metatile "BOTTOM_WAVYPIT", 											$00, $00, $6E, $6E, PAL_0, COL_DEATH_BOTTOM
++Metatile "BOTTOM_WAVYPIT", 											$00, $00, $6E, $6E, PAL_0, COL_PIT
+ Metatile "TOP_WAVYPIT", 											$7E, $7E, $00, $00, PAL_0, COL_DEATH_TOP
+ Metatile "PITSPIKES_RIGHT", 										$00, $09, $00, $19, PAL_0, COL_DEATH_RIGHT
+ Metatile "PITSPIKES_LEFT", 											$08, $00, $18, $00, PAL_0, COL_DEATH_LEFT
+diff --git a/METATILES/metatiles_macro.inc b/METATILES/metatiles_macro.inc
+index b5357fa..beff4dd 100644
+--- a/METATILES/metatiles_macro.inc
++++ b/METATILES/metatiles_macro.inc
+@@ -20,6 +20,7 @@ PAL_0 = (0)
+ PAL_1 = (1)
+ PAL_2 = (2)
+ PAL_3 = (3)
++COL_PIT = $3e
+ COL_TOP_CENTER_SPIKE = $3d
+ COL_BOTTOM_CENTER_SPIKE = $3c
+ 
+@@ -110,4 +111,4 @@ MetatileReserve .sprintf("%s", name)
+ 
+ .endmacro
+ 
+-.endif
+\ No newline at end of file
++.endif
+diff --git a/SAUCE/famidash.h b/SAUCE/famidash.h
+index 1baed52..f8ea7fd 100644
+--- a/SAUCE/famidash.h
++++ b/SAUCE/famidash.h
+@@ -575,3 +575,4 @@ struct Base {
+ 
+ struct Base Generic;
+ struct Base Generic2;
++extern uint8_t pit_previous_room[2];
+diff --git a/SAUCE/functions/collision.h b/SAUCE/functions/collision.h
+index e076b2c..1f4f14e 100644
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -45,6 +45,9 @@ void tmp20f();
+ 	Out:
+ 	A
+ */
++#include "pit_crossing.h"
++#include "ejection.h"
++
+ char bg_coll_sides() {
+ 	switch (collision) {
+ 		case COL_ALL: 
+@@ -125,6 +128,7 @@ char bg_coll_spikes() {
+ 		case COL_TOP_CENTER_SPIKE:
+ 		case COL_TOP_SPIKES:
+ 		case COL_DEATH_BOTTOM:
++		case COL_PIT:
+ 			return col_death_bottom_routine();	
+ 			
+ 		case COL_DEATH_BOTTOM_LEFT:
+@@ -1044,6 +1048,8 @@ void bg_coll_death() {
+ 		}
+ 	}
+ 
++	check_pit_crossing();
++
+ //	if(!DEBUG_MODE && cube_data[0] & 0x01) {
+ //		reset_level();
+ //	}
+@@ -1071,4 +1077,4 @@ void commonly_used_death_check() {
+ 
+ 
+ CODE_BANK_POP()
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/SAUCE/functions/ejection.h b/SAUCE/functions/ejection.h
+new file mode 100644
+index 0000000..a544f2a
+--- /dev/null
++++ b/SAUCE/functions/ejection.h
+@@ -0,0 +1,23 @@
++CODE_BANK_PUSH("XCD_BANK_05")
++
++void eject_down_underflow_banked(void) {
++    if (!wrap_mode && !dual && !twoplayer) {
++        high_byte(currplayer_y) = 6;
++        cube_data[currplayer] |= 1;
++    }
++}
++
++CODE_BANK_POP()
++CODE_BANK_PUSH("CODE")
++
++void eject_down_underflow(void) {
++    crossPRGBankJump0(eject_down_underflow_banked);
++}
++
++CODE_BANK_POP()
++
++#define EJECT_DOWN_CHECKED(done) do { \
++    __asm__("lda %v+1\n sec\n sbc %v\n sta %v+1\n bcs %g", currplayer_y, eject_D, currplayer_y, done); \
++    eject_down_underflow(); \
++    done:; \
++} while (0)
+diff --git a/SAUCE/functions/pit_crossing.h b/SAUCE/functions/pit_crossing.h
+new file mode 100644
+index 0000000..f5186c8
+--- /dev/null
++++ b/SAUCE/functions/pit_crossing.h
+@@ -0,0 +1,87 @@
++CODE_BANK_PUSH("CODE")
++
++static unsigned char pit_x, pit_y, pit_room, pit_collision, pit_player, pit_delta;
++static unsigned char pit_previous_x[2], pit_previous_y[2], pit_previous_collision[2];
++unsigned char pit_previous_room[2];
++static unsigned char pit_old_x, pit_old, pit_current, pit_cross, pit_in_current;
++static unsigned char pit_low_y, pit_low_room, pit_high_x, pit_high_y;
++static signed char pit_dx;
++
++CODE_BANK_POP()
++#include "spike_sweep.h"
++CODE_BANK_PUSH("XCD_BANK_05")
++
++void check_pit_column(void) {
++    pit_dx = (signed char)(pit_high_x - pit_old_x);
++    if (pit_dx < -16 || pit_dx > 16) return;
++    pit_x = temp_x; pit_y = temp_y; pit_room = temp_room; pit_collision = collision;
++    temp_x = pit_high_x; temp_y = pit_low_y; temp_room = pit_low_room;
++    bg_collision_sub();
++    pit_current = collision == COL_PIT;
++    if (pit_current == pit_old) {
++        if (pit_old) cube_data[pit_player] |= 1;
++        goto restore;
++    }
++    pit_cross = pit_delta - (pit_high_y & 15);
++    if (pit_current) {
++        if (pit_dx > 0)
++            pit_in_current = (unsigned int)(unsigned char)pit_dx * pit_cross > (unsigned int)(16 - (pit_old_x & 15)) * pit_delta;
++        else
++            pit_in_current = (unsigned int)(unsigned char)-pit_dx * pit_cross > (unsigned int)(pit_old_x & 15) * pit_delta;
++    } else {
++        pit_cross--;
++        if (pit_dx > 0)
++            pit_in_current = (unsigned int)(unsigned char)pit_dx * pit_cross < (unsigned int)(16 - (pit_old_x & 15)) * pit_delta;
++        else
++            pit_in_current = (unsigned int)(unsigned char)-pit_dx * pit_cross <= (unsigned int)(pit_old_x & 15) * pit_delta;
++    }
++    if (pit_in_current) cube_data[pit_player] |= 1;
++restore:
++    temp_x = pit_x; temp_y = pit_y; temp_room = pit_room; collision = pit_collision;
++}
++
++void check_pit_motion(void) {
++    pit_player = currplayer;
++    if (temp_room > 3 || pit_previous_room[pit_player] > 3) return;
++    pit_delta = temp_y - pit_previous_y[pit_player];
++    pit_room = temp_room - pit_previous_room[pit_player];
++    if (pit_room == 1) pit_delta -= 16;
++    else if (pit_room == 255) pit_delta += 16;
++    else if (pit_room) return;
++    if (!pit_delta || (pit_delta > 16 && pit_delta < 240)) return;
++    if (wrap_mode || (cube_data[pit_player] & 1)) return;
++    if (!(pit_delta & 128)) {
++        pit_old = pit_previous_collision[pit_player] == COL_PIT;
++        pit_old_x = pit_previous_x[pit_player];
++        pit_low_y = pit_previous_y[pit_player]; pit_low_room = pit_previous_room[pit_player];
++        pit_high_x = temp_x; pit_high_y = temp_y;
++    } else {
++        pit_delta = -pit_delta;
++        pit_old = collision == COL_PIT; pit_old_x = temp_x;
++        pit_low_y = temp_y; pit_low_room = temp_room;
++        pit_high_x = pit_previous_x[pit_player]; pit_high_y = pit_previous_y[pit_player];
++    }
++    if ((pit_high_y & 15) >= pit_delta) return;
++    if ((pit_high_x & 240) == (pit_old_x & 240)) {
++        if (pit_old) cube_data[pit_player] |= 1;
++    } else check_pit_column();
++}
++
++CODE_BANK_POP()
++CODE_BANK_PUSH("CODE")
++
++void check_pit_crossing(void) {
++    __asm__("ldx %v\n lda %v\n ora %v,x\n beq %g", currplayer, collision, pit_previous_collision, empty);
++    __asm__("ldy %v\n lda %v,y\n bne %g\n ldy %v,x\n lda %v,y\n bne %g", collision, ss_shapes, query, pit_previous_collision, ss_shapes, query);
++empty:
++    __asm__("lda %v\n eor %v,x\n and #$f0\n beq %g", temp_x, pit_previous_x, remember);
++    __asm__("lda %v\n eor %v,x\n and #$f0\n beq %g", temp_y, pit_previous_y, remember);
++query:
++    crossPRGBankJump0(check_spike_motion);
++remember:
++    __asm__("ldx %v\n lda %v\n sta %v,x\n lda %v\n sta %v,x", currplayer,
++        temp_y, pit_previous_y, temp_room, pit_previous_room);
++    __asm__("lda %v\n sta %v,x\n lda %v\n sta %v,x", temp_x, pit_previous_x, collision, pit_previous_collision);
++}
++
++CODE_BANK_POP()
+diff --git a/SAUCE/functions/reset_level.h b/SAUCE/functions/reset_level.h
+index 86f3e05..d34144b 100644
+--- a/SAUCE/functions/reset_level.h
++++ b/SAUCE/functions/reset_level.h
+@@ -49,6 +49,9 @@ void death_animation() {
+ 
+ CODE_BANK_PUSH(RESETLEVEL_BANK)
+ void reset_level() {
++#if !__THE_ALBUM
++    pit_previous_room[0] = pit_previous_room[1] = 255;
++#endif
+ 	nmi_fs_updates_on();
+ 
+ 	#if !__VS_SYSTEM
+@@ -145,4 +148,4 @@ void reset_level() {
+ 	nmi_fs_updates_off();
+ }
+ 
+-CODE_BANK_POP()
+\ No newline at end of file
++CODE_BANK_POP()
+diff --git a/SAUCE/functions/spike_sweep.h b/SAUCE/functions/spike_sweep.h
+new file mode 100644
+index 0000000..0a5d8bc
+--- /dev/null
++++ b/SAUCE/functions/spike_sweep.h
+@@ -0,0 +1,92 @@
++CODE_BANK_PUSH("CODE")
++
++static unsigned char ss_player, ss_x, ss_y, ss_room, ss_type;
++static unsigned char ss_old_x, ss_old_y, ss_old_room, ss_old_type;
++static unsigned char ss_primitive, ss_descriptor;
++static signed char ss_dx, ss_dy, ss_origin_x, ss_origin_y;
++static signed char ss_x0, ss_x1, ss_y0, ss_y1;
++static int ss_low, ss_high, ss_span;
++
++CODE_BANK_POP()
++CODE_BANK_PUSH("CODE_2")
++
++static const unsigned char ss_shapes[64] = {
++    0, 1, 2, 3, 4, 0, 0, 0, 5, 0, 0, 0, 0, 0, 0, 0,
++    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
++    0, 0, 0, 0, 0, 0, 0, 0, 6, 7, 0x68, 9, 10, 9, 10, 0x9B,
++    9, 10, 0x9B, 0x13, 0x23, 0x14, 0x24, 0, 0, 0, 0, 4, 12, 4, 4, 0
++};
++static const unsigned char ss_rect_x[] = {0, 0xAF, 0x05, 0x57, 0x57, 0x48, 0x25, 0xAC, 0xAD, 0x25, 0xAC, 0xAD, 0x7A};
++static const unsigned char ss_rect_y[] = {0, 0x68, 0x68, 0x05, 0xBF, 0x4B, 0x8F, 0x8F, 0x8F, 0x07, 0x07, 0x07, 0x07};
++
++unsigned char ss_test_primitive(void) {
++    if (!ss_primitive) return 0;
++    ss_x0 = ss_origin_x + (ss_rect_x[ss_primitive] >> 4);
++    ss_x1 = ss_origin_x + (ss_rect_x[ss_primitive] & 15);
++    ss_y0 = ss_origin_y + (ss_rect_y[ss_primitive] >> 4);
++    ss_y1 = ss_origin_y + (ss_rect_y[ss_primitive] & 15);
++    if (ss_x0 > (ss_dx > 0 ? ss_dx : 0) || ss_x1 < (ss_dx < 0 ? ss_dx : 0)) return 0;
++    if (ss_y0 > (ss_dy > 0 ? ss_dy : 0) || ss_y1 < (ss_dy < 0 ? ss_dy : 0)) return 0;
++    ss_low = (int)ss_dx * ss_y0 - (int)ss_dy * ss_x0;
++    ss_high = ss_low;
++    ss_span = -(int)ss_dy * (ss_x1 - ss_x0);
++    if (ss_span < 0) ss_low += ss_span; else ss_high += ss_span;
++    ss_span = (int)ss_dx * (ss_y1 - ss_y0);
++    if (ss_span < 0) ss_low += ss_span; else ss_high += ss_span;
++    return ss_low <= 0 && ss_high >= 0;
++}
++
++void ss_test_tile(void) {
++    ss_descriptor = ss_shapes[ss_type];
++    ss_primitive = ss_descriptor & 15;
++    if (ss_test_primitive()) cube_data[ss_player] |= 1;
++    else {
++        ss_primitive = ss_descriptor >> 4;
++        if (ss_test_primitive()) cube_data[ss_player] |= 1;
++    }
++}
++
++CODE_BANK_POP()
++CODE_BANK_PUSH("XCD_BANK_05")
++
++void check_pit_motion(void);
++
++void check_spike_motion(void) {
++    ss_player = currplayer;
++    ss_old_room = pit_previous_room[ss_player];
++    if (ss_old_room > 3 || temp_room > 3 || wrap_mode) return;
++    if (cube_data[ss_player] & 1) return;
++    ss_old_x = pit_previous_x[ss_player]; ss_old_y = pit_previous_y[ss_player];
++    ss_dx = (signed char)(temp_x - ss_old_x);
++    if (ss_dx < -16 || ss_dx > 16) return;
++    ss_dy = temp_y - ss_old_y;
++    ss_room = temp_room - ss_old_room;
++    if (ss_room == 1) ss_dy -= 16;
++    else if (ss_room == 255) ss_dy += 16;
++    else if (ss_room) return;
++    if (ss_dy < -16 || ss_dy > 16) return;
++    if (!ss_dx && !ss_dy) return;
++    ss_x = temp_x; ss_y = temp_y; ss_room = temp_room; ss_old_type = collision;
++    ss_type = pit_previous_collision[ss_player];
++    ss_origin_x = -(ss_old_x & 15); ss_origin_y = -(ss_old_y & 15);
++    ss_test_tile();
++    if ((ss_x & 240) != (ss_old_x & 240) || (ss_y & 240) != (ss_old_y & 240)) {
++        ss_type = ss_old_type;
++        ss_origin_x = ss_dx - (ss_x & 15); ss_origin_y = ss_dy - (ss_y & 15);
++        ss_test_tile();
++        if ((ss_x & 240) != (ss_old_x & 240) && (ss_y & 240) != (ss_old_y & 240)) {
++            temp_x = ss_old_x;
++            bg_collision_sub(); ss_type = collision;
++            ss_origin_x = -(ss_old_x & 15); ss_origin_y = ss_dy - (ss_y & 15);
++            ss_test_tile();
++            temp_x = ss_x; temp_y = ss_old_y; temp_room = ss_old_room;
++            bg_collision_sub(); ss_type = collision;
++            ss_origin_x = ss_dx - (ss_x & 15); ss_origin_y = -(ss_old_y & 15);
++            ss_test_tile();
++        }
++    }
++    temp_x = ss_x; temp_y = ss_y; temp_room = ss_room; collision = ss_old_type;
++    if ((ss_y & 240) != (ss_old_y & 240)) check_pit_motion();
++}
++
++CODE_BANK_POP()
+diff --git a/SAUCE/functions/sprite_loading.h b/SAUCE/functions/sprite_loading.h
+index 470f0b2..3f8f49c 100644
+--- a/SAUCE/functions/sprite_loading.h
++++ b/SAUCE/functions/sprite_loading.h
+@@ -725,6 +725,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 	
+ 	spcl_cube:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		orbactive = 0;
+ 		exitPortalTimer = 10;
+ 		if (gamemode == GAMEMODE_WAVE) currplayer_vel_y = 0;
+@@ -736,6 +737,7 @@ void sprite_collide_lookup() {
+ 		settrailstuff();
+ 		// intentional leak
+ 	spcl_ball:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		if (!dual || twoplayer) target_scroll_y = (lohi_arr16_load(activesprites_y, index) - PORTAL_TO_TOP_DIFF);
+ 		if (gamemode != collided) currplayer_vel_y /= 2;
+ 		gamemode = collided;
+@@ -744,6 +746,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_robot:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		exitPortalTimer = 10;
+ 		if (gamemode == GAMEMODE_WAVE) currplayer_vel_y /= 2;
+ 		gamemode = GAMEMODE_ROBOT;
+@@ -751,6 +754,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_spider:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		if (gamemode == GAMEMODE_WAVE) currplayer_vel_y = 0;
+ 		gamemode = GAMEMODE_SPIDER;
+ 		retrofireballclear();		
+@@ -758,6 +762,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_wave:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		settrailstuff();		
+ 		gamemode = GAMEMODE_WAVE;
+ 		retrofireballclear();		
+@@ -765,6 +770,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_swing:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		settrailstuff();
+ 		if (gamemode == GAMEMODE_WAVE) currplayer_vel_y = 0;
+ 		gamemode = GAMEMODE_SWING;
+@@ -773,6 +779,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_ninja:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		#ifdef FLAG_KANDO_FUN_STUFF
+ 			if (gamemode == GAMEMODE_WAVE) currplayer_vel_y = 0;		
+ 			gamemode = GAMEMODE_NINJA;
+@@ -780,6 +787,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_rndmode:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		#ifdef FLAG_KANDO_FUN_STUFF
+ 			if (!dual || twoplayer) target_scroll_y = (lohi_arr16_load(activesprites_y, index) - PORTAL_TO_TOP_DIFF);
+ 			if (gamemode == GAMEMODE_WAVE) currplayer_vel_y = 0;		
+@@ -855,6 +863,7 @@ void sprite_collide_lookup() {
+ 
+ 	// - Size portals
+ 	spcl_mini_pt:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		currplayer_mini = 1;
+ 		player_mini[0] = 1;
+ 		player_mini[1] = 1;
+@@ -862,6 +871,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 
+ 	spcl_grow_pt:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		currplayer_mini = 0;
+ 		player_mini[0] = 0;
+ 		player_mini[1] = 0;
+@@ -889,6 +899,7 @@ void sprite_collide_lookup() {
+ 
+ 	// - Doubling portals
+ 	spcl_dual_pt:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		if (!activesprites_activated[index]) {
+ 			dual = 1;
+ 			target_scroll_y = (lohi_arr16_load(activesprites_y, index) - PORTAL_TO_TOP_DIFF);
+@@ -904,6 +915,7 @@ void sprite_collide_lookup() {
+ 		return;
+ 	
+ 	spcl_sngl_pt:
++		pit_previous_room[0] = pit_previous_room[1] = 255;
+ 		if (!activesprites_activated[index]) {
+ 			if (!twoplayer) { dual = 0; player_y[0] = currplayer_y; player_gravity[0] = currplayer_gravity; player_vel_y[0] = currplayer_vel_y; }
+ 			else { player_gravity[1] = player_gravity[0]; }
+@@ -924,6 +936,7 @@ void sprite_collide_lookup() {
+ 			orbed[currplayer] = 1;
+ 			idx8_store(cube_data, currplayer, cube_data[currplayer] & 1);
+ 	spcl_tlpt_pt:
++			pit_previous_room[currplayer] = 255;
+ 			high_byte(currplayer_y) = teleport_output;
+ 		}
+ 		return;
+diff --git a/SAUCE/gamemodes/gamemode_ship.h b/SAUCE/gamemodes/gamemode_ship.h
+index a31193b..9367f6d 100644
+--- a/SAUCE/gamemodes/gamemode_ship.h
++++ b/SAUCE/gamemodes/gamemode_ship.h
+@@ -66,7 +66,7 @@ void ufo_ship_eject() {
+ 	//}
+ 	//if (!currplayer_was_on_slope_counter || !(currplayer_slope_type & SLOPE_UPSIDEDOWN)) {
+ 		if(bg_coll_D()){ // check collision below
+-			high_byte(currplayer_y) = high_byte(currplayer_y) - eject_D;
++			EJECT_DOWN_CHECKED(ship_eject_down_valid);
+ 			currplayer_vel_y = 0;
+ 		}
+ 	//}
+diff --git a/SAUCE/gamemodes/gamemode_spider.h b/SAUCE/gamemodes/gamemode_spider.h
+index b40797f..455d985 100644
+--- a/SAUCE/gamemodes/gamemode_spider.h
++++ b/SAUCE/gamemodes/gamemode_spider.h
+@@ -89,6 +89,7 @@ void spider_eject() {
+ #define LEFT_POS tmp7
+ #define RIGHT_POS tmp9
+ void spider_up_wait() {
++	pit_previous_room[currplayer] = 255;
+ 	LEFT_POS = Generic.x + low_word(scroll_x) + 3;
+ 	RIGHT_POS = Generic.x + low_word(scroll_x) + Generic.width - 3;
+ 	do {
+@@ -103,6 +104,7 @@ void spider_up_wait() {
+ }			
+ 
+ void spider_down_wait() {
++	pit_previous_room[currplayer] = 255;
+ 	LEFT_POS = Generic.x + low_word(scroll_x) + 3;
+ 	RIGHT_POS = Generic.x + low_word(scroll_x) + Generic.width - 3;
+ 	do {
+diff --git a/SAUCE/gamemodes/gamemode_wave.h b/SAUCE/gamemodes/gamemode_wave.h
+index e20f3bb..c2355e0 100644
+--- a/SAUCE/gamemodes/gamemode_wave.h
++++ b/SAUCE/gamemodes/gamemode_wave.h
+@@ -86,7 +86,7 @@ void wave_eject() {
+ 	else{
+ 		if(bg_coll_D()){ // check collision below
+ 			if (dblocked[currplayer]) {
+-				high_byte(currplayer_y) = high_byte(currplayer_y) - eject_D;
++				EJECT_DOWN_CHECKED(wave_eject_down_valid);
+ 				currplayer_vel_y = 0;
+ 				idx8_store(cube_data, currplayer, cube_data[currplayer] & 1);		    
+ 			} else {

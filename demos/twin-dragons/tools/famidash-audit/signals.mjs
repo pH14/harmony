@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import { tileAt } from "./runtime.mjs";
 
-export function collisionPoint(previous, current) {
+export function collisionPoint(previous, current, linearCoordinates = false) {
   if (!previous || !current || previous.mode !== current.mode || previous.mini !== current.mini) return null;
   const width = current.mode === 6 || current.mini ? 8 : 15;
   const height = current.mode === 6 ? 8 : current.mini ? 7 : 15;
+  const offset = (height >> 1) + (current.mini ? (16 - height) >> 1 : 0);
   return { x: previous.x + (width >> 1) - 1,
-    y: current.y + (height >> 1) + (current.mini ? (16 - height) >> 1 : 0) };
+    y: linearCoordinates ? current.y + offset : current.camera + ((current.y - current.camera + offset) & 255) };
 }
 
 export function players(m) {
@@ -24,6 +25,7 @@ export function signals(o, layout, metatiles) {
   const result = [], tile = tileAt(layout, o.x + 8, o.y + 8);
   const definition = tile && metatiles[tile.id];
   const add = (kind, t = tile, extra = {}) => result.push({ kind, ...t, ...extra });
+  if (o.x > layout.width * 16 + 64) add("missed-finish", null);
   if (definition) {
     const x = (o.x + 8) % 16, y = (o.y + 8) % 16;
     if (definition.collision === "COL_NONE" && ["CHECKERBOARD_15", "X_NO_OUTLINE", "BLACK_NONE"].includes(definition.name))

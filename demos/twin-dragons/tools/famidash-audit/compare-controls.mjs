@@ -8,16 +8,21 @@ const [indexPath, originalDirectory, patchedDirectory, runtime, inputs, output] 
 if (!output) throw new Error("compare-controls.mjs INDEX ORIGINAL_ROMS PATCHED_ROMS RUNTIME ROUND OUTPUT");
 const index = JSON.parse(await readFile(indexPath)), machines = new Map();
 const result = { schema: 1, purpose: "paired ordinary-input reference and control replays; completion recorded per input", levels: [] };
+function horizontalStalls(trace) {
+  return trace.flatMap((o, i) => i && o.x > 128 && !o.dead && o.state === 2 &&
+    trace[i - 1].state === 2 && o.x === trace[i - 1].x ? [i + 1] : []);
+}
 const coinInputs = [];
 for (const name of await readdir(new URL("findings/dissonance/coin-routes/", import.meta.url))) {
   if (!name.endsWith(".json.gz")) continue;
   const path = new URL(`findings/dissonance/coin-routes/${name}`, import.meta.url);
   const witness = JSON.parse(gunzipSync(await readFile(path)));
   coinInputs.push({ side: witness.side ?? witness.options?.side, level: witness.level ?? witness.boot_level,
-    path: path.pathname, tape: expand(witness.actions) });
+    path: path.pathname, tape: expand(witness.actions), menuDelay: witness.setup?.menu_delay ?? witness.options?.menu_delay ?? 0,
+    startupFrames: witness.setup?.startup_released_frames ?? witness.options?.startup_released_frames });
 }
-async function play(m, side, level, tape) {
-  m.boot(side, level);
+async function play(m, side, level, tape, menuDelay = 0, startupFrames) {
+  m.boot(side, level, menuDelay, startupFrames);
   const trace = [], coins = [];
   let previous = [0, 0, 0];
   for (const button of tape) {
@@ -39,7 +44,9 @@ for (const layout of index.levels) {
   const sources = [];
   try {
     const path = join(inputs, `${layout.side}-${layout.level}`, "clearing-input.json");
-    sources.push({ path, tape: expand(JSON.parse(await readFile(path)).actions) });
+    const input = JSON.parse(await readFile(path));
+    sources.push({ path, tape: expand(input.actions), menuDelay: input.setup?.menu_delay ?? 0,
+      startupFrames: input.setup?.startup_released_frames });
   } catch {}
   sources.push(...coinInputs.filter(input => input.side === layout.side && input.level === layout.level));
   try {
@@ -50,13 +57,16 @@ for (const layout of index.levels) {
   const entry = { side: layout.side, level: layout.level, name: layout.name,
     original_rom_sha256: original.rom_sha256, patched_rom_sha256: patched.rom_sha256, controls: [] };
   for (const source of sources) {
-    const originalRun = await play(original, layout.side, layout.level, source.tape);
-    const patchedRun = await play(patched, layout.side, layout.level, source.tape);
+    const originalRun = await play(original, layout.side, layout.level, source.tape, source.menuDelay, source.startupFrames);
+    const patchedRun = await play(patched, layout.side, layout.level, source.tape, source.menuDelay, source.startupFrames);
     const a = originalRun.trace, b = patchedRun.trace;
     const first = a.findIndex((o, i) => JSON.stringify(o) !== JSON.stringify(b[i]));
     entry.controls.push({ source: source.path, input_sha256: hash(JSON.stringify(source.tape)),
+      menu_delay: source.menuDelay ?? 0,
+      startup_released_frames: source.startupFrames ?? 22,
       original_frames: a.length, patched_frames: b.length, original_endpoint: a.at(-1), patched_endpoint: b.at(-1),
       original_coins: originalRun.coins, patched_coins: patchedRun.coins,
+      original_horizontal_stall_frames: horizontalStalls(a), patched_horizontal_stall_frames: horizontalStalls(b),
       identical: first === -1 && a.length === b.length,
       first_difference: first === -1 ? null : { frame: first + 1, original: a[first], patched: b[first] },
       original_trace_sha256: hash(JSON.stringify(a)), patched_trace_sha256: hash(JSON.stringify(b)) });

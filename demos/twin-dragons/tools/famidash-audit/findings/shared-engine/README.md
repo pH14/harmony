@@ -67,6 +67,53 @@ However, it adds frame-budget pressure and changes many old clearing tapes.
 It remains experimental and is being searched across all 109 levels.
 No pit-engine proposal is represented here as ready to merge.
 
+The ordinary upward spike in Every Madness (C-Sides 6) also tunnels:
+frame 3,075 samples `(6,3)` and 3,076 samples `(9,7)`, skipping the lethal
+x 4–8, y 4–11 rectangle. Hell (C-Sides 8) tunnels through a ceiling spike:
+frame 1,084 samples `(4,1)` and 1,085 samples `(8,5)`, skipping the lethal
+x 5–7, y 0–5 rectangle. Both new ordinary Dissonance witnesses have original
+CPU-read traces. The broader experimental sweep stops them at 3,076 and
+1,085 with unchanged approaches in QuickNES and independent FCEUmm.
+
+`experimental-release-collision.patch` retains the broader prototype,
+including the arithmetic repair and pit-base guard. It preserves all
+original point kernels and adds exact segment tests for every spike kernel,
+including unions of two rectangles. Teleports, mode/size transitions and
+new dual-player positions invalidate history. The actual proposed C code
+matches the original C point predicates at all 16,384 collision-class/pixel
+combinations. Its 16 distinct shape unions pass 692,224 independent exact
+rational segment-intersection checks. All four release variants build.
+This is an engine-only experimental source patch: the combined search build
+also uses the separate Fofii tile repair and corrected D continuation cache.
+Timing and complete-level review are outstanding. Do not treat it as a
+validated production patch.
+
+## Reproducible random setups and detector correction
+
+Changing only the Dissonance seed leaves a fixed genesis game RNG. Lucky
+Draw contains 800 deliberate chance-of-death triggers, so repeatedly
+searching one fixed startup timing provides poor coverage. The runner now
+records ordinary menu waits and startup waits. New random-mode runs use a
+180-frame cold startup in both cores. The old release QuickNES witnesses use
+22 frames while their FCEUmm boot profile uses 180; those legacy profiles do
+not establish RNG equality for random-mode levels.
+
+FCEUmm now restores a serialized cold power-on state before each replay.
+`cold-setup-comparison.json` verifies identical RNG bytes and active gameplay
+in QuickNES and FCEUmm after menu waits 0, 1 and 3, then repeats wait 0 to
+check that a previous replay cannot change the result. Only entry frame 1
+differs. `luckydraw-cold-setup-proof.json.gz` is a Dissonance setup regression,
+not a failing bug witness; its independent replay matches after entry.
+
+One apparent Bloodbath solid-overlap signal was a detector error. In the
+release, the centre calculation truncates relative Y to eight bits before
+adding the camera. At frame 3,369, relative Y 253 plus centre offset 7 wraps
+to 4; camera 614 therefore gives sample Y 618, not 874. Original-ROM CPU
+reads confirm noncolliding tile 111 at Y 618. The new detector revision 4
+and regression case use that observed calculation. The current upstream
+linear-coordinate calculation is a separate explicitly selected model.
+Older detector inventories remain exploratory and are not clean rounds.
+
 ## Stale split-level compression cache
 
 The 28-byte difference between the checked-in release D-Sides assets and the

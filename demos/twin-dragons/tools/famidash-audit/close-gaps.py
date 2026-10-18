@@ -24,8 +24,9 @@ async def run(args):
         if not frontier.exists():
             raise RuntimeError(f"missing reachable frontier: {frontier}")
         plan = args.output / f"{name}-plan.json"
+        frames = sum(action["frames"] for action in json.loads(frontier.read_text())["actions"])
         plan.write_text(json.dumps([{"input": str(frontier), "trim": trim, "budget": args.budget}
-                                    for trim in (128, 384, 768)]))
+                                    for trim in sorted({min(value, frames) for value in (128, 384, 768)})]))
         queue.put_nowait((side, number, name, plan))
 
     async def worker():

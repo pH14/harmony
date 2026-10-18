@@ -52,6 +52,15 @@ class Fceumm:
         self.lib.retro_get_memory_data.argtypes = [C.c_uint]
         self.lib.retro_get_memory_data.restype = C.c_void_p
         self.ram = (C.c_ubyte * 2048).from_address(self.lib.retro_get_memory_data(2))
+        self.lib.retro_serialize_size.restype = C.c_size_t
+        self.state_size = self.lib.retro_serialize_size()
+        assert 0 < self.state_size < 32 * 1024 * 1024
+        self.lib.retro_serialize.argtypes = [C.c_void_p, C.c_size_t]
+        self.lib.retro_serialize.restype = C.c_bool
+        self.lib.retro_unserialize.argtypes = [C.c_void_p, C.c_size_t]
+        self.lib.retro_unserialize.restype = C.c_bool
+        self.power_on = C.create_string_buffer(self.state_size)
+        assert self.lib.retro_serialize(self.power_on, self.state_size), "cannot retain cold power-on state"
 
     @staticmethod
     def environment(command, data):
@@ -67,8 +76,9 @@ class Fceumm:
         for _ in range(frames):
             self.lib.retro_run()
 
-    def boot(self, side, level):
-        self.lib.retro_reset()
+    def boot(self, side, level, menu_delay=0):
+        assert isinstance(menu_delay, int) and 0 <= menu_delay <= 3600
+        assert self.lib.retro_unserialize(self.power_on, self.state_size), "cannot restore cold power-on state"
         menu = [(0, self.startup_frames), (1, 1), (0, 936)]
         if side != "main" or level >= 22:
             menu += [(128, 1), (0, 20)]
@@ -77,6 +87,7 @@ class Fceumm:
             self.step(buttons, frames)
         assert self.ram[0x498] == 6, "setup did not reach level select"
         self.ram[0x47B] = level
+        self.step(0, menu_delay)
         self.step(1)
         self.step(0, 40)
         assert self.observe()["state"] == 2 and self.observe()["level"] == level
@@ -118,9 +129,10 @@ class SymbolFceumm(Fceumm):
             assert isinstance(self.symbols[name], int) and 0 <= self.symbols[name] < 2045
         super().__init__(core_path, rom_path)
 
-    def boot(self, side, level):
-        self.lib.retro_reset()
-        menu = [(0, 180), (1, 1), (0, 936)]
+    def boot(self, side, level, menu_delay=0):
+        assert isinstance(menu_delay, int) and 0 <= menu_delay <= 3600
+        assert self.lib.retro_unserialize(self.power_on, self.state_size), "cannot restore cold power-on state"
+        menu = [(0, self.startup_frames), (1, 1), (0, 936)]
         if side != "main" or level >= 22:
             menu += [(128, 1), (0, 20)]
         menu += [(1, 1), (0, 90)]
@@ -128,6 +140,7 @@ class SymbolFceumm(Fceumm):
             self.step(buttons, frames)
         assert self.ram[self.symbols["gameState"]] == 6
         self.ram[self.symbols["level"]] = level
+        self.step(0, menu_delay)
         self.step(1)
         self.step(0, 40)
         assert self.observe()["state"] == 2 and self.observe()["level"] == level
@@ -183,9 +196,14 @@ def verify(core, witness, fixed, intro_frames=0):
 
 
 def verify_campaign(core, witness, fixed, intro_frames):
+    if fixed:
+        assert isinstance(witness.get("first_suspect_frame"), int), "--fixed requires a reviewed failing witness"
+    if "fceumm_startup_released_frames" in witness["options"]:
+        core.startup_frames = witness["options"]["fceumm_startup_released_frames"]
+        assert isinstance(core.startup_frames, int) and 0 < core.startup_frames <= 3600
     if not fixed:
         assert hashlib.sha256(core.rom).hexdigest() == witness["rom_sha256"]
-    core.boot(witness["options"]["side"], witness["boot_level"])
+    core.boot(witness["options"]["side"], witness["boot_level"], witness["options"].get("menu_delay", 0))
     trace = []
     for action in witness["actions"]:
         assert action["buttons"] in (0, 1, 128) and 0 < action["frames"] <= 200000
