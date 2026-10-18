@@ -14,6 +14,10 @@ with a memory cap, and forwards the live port back over SSH. The page watches a
 run at `/runs/<id>/?game=<game>&live`, which serves the same site and proxies
 `/runs/<id>/live/` to that run.
 
+Every `nes-eval` campaign writes `live.json` to its output directory while it
+runs. The launcher also lists the campaigns it finds under each machine's
+`runs` directories, so any run can be watched the same way.
+
 Machines and the ROM directory come from a TOML file outside the repository,
 by default `~/.config/harmony/arcade-machines.toml`. See
 `arcade-machines.example.toml`.
@@ -47,6 +51,7 @@ MEMORY_HEADROOM_MIB = 1024
 LISTEN_PATTERN = re.compile(r"live view listening on 127\.0\.0\.1:(\d+)")
 RUN_ID = re.compile(r"^[0-9]{8}-[0-9]{6}-[a-z0-9-]+$")
 STATUS_SECONDS = 10.0
+SCAN_SECONDS = 30.0
 LAUNCHER_HEADER = "X-Harmony-Launcher"
 
 
@@ -77,6 +82,7 @@ class Machine:
     dir: str
     workers: int
     memory_mib: int
+    runs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -98,27 +104,31 @@ class Settings:
 @dataclass
 class Run:
     id: str
-    settings: Settings
+    game: str
+    machine: str
+    settings: Settings | None = None
+    directory: str = ""
     state: str = "starting"
     message: str = ""
     started: float = field(default_factory=time.time)
     local_port: int | None = None
     tunnel: subprocess.Popen[bytes] | None = None
 
+    @classmethod
+    def launched(cls, run_id: str, settings: Settings, **fields: Any) -> Run:
+        return cls(run_id, settings.game, settings.machine, settings, **fields)
+
     def describe(self) -> dict[str, Any]:
-        s = self.settings
         return {
             "id": self.id,
-            "game": s.game,
-            "machine": s.machine,
-            "workers": s.workers,
-            "memory_mib": s.memory_mib,
-            "seed": s.seed,
-            "hours": s.hours,
+            "game": self.game,
+            "machine": self.machine,
+            **(self.settings.__dict__ if self.settings else {"directory": self.directory}),
+            "external": self.settings is None,
             "state": self.state,
             "message": self.message,
             "started": self.started,
-            "watch": f"/runs/{self.id}/?game={s.game}&live" if self.local_port else None,
+            "watch": f"/runs/{self.id}/?game={self.game}&live" if self.local_port else None,
         }
 
 
@@ -132,6 +142,7 @@ def load_config(path: Path) -> Config:
             dir=str(entry["dir"]),
             workers=int(entry["workers"]),
             memory_mib=int(entry["memory_mib"]),
+            runs=tuple(str(directory) for directory in entry.get("runs", [])),
         )
     if not machines:
         raise ValueError(f"{path} lists no [machines.NAME] tables")
@@ -296,6 +307,37 @@ done
 """
 )
 
+SCAN = """own=$1/runs/; shift
+for dir in "$@"; do
+  [ -d "$dir" ] && find "$dir" -maxdepth 5 -name live.json 2>/dev/null
+done | while read -r file; do
+  case $file in "$own"*) continue ;; esac
+  pid=$(grep -o '"pid":[0-9]*' "$file" | cut -d : -f 2)
+  case $(cat "/proc/${pid:-0}/comm" 2>/dev/null) in nes-eval*) ;; *) continue ;; esac
+  printf '%s\\t%s\\t%s\\n' "$file" "$(stat -c %Y "$file")" "$(cat "$file")"
+done
+"""
+
+
+def external_runs(machine: Machine, listing: str) -> list[Run]:
+    runs = []
+    for row in listing.splitlines():
+        path, modified, record = (row.split("\t") + ["", ""])[:3]
+        try:
+            live = json.loads(record)
+            game, address = str(live["game"]), str(live["address"])
+        except (ValueError, KeyError):
+            continue
+        if game not in GAMES:
+            continue
+        digest = hashlib.sha256(f"{path}:{live.get('pid')}".encode()).hexdigest()[:10]
+        directory = str(Path(path).parent)
+        run = Run(f"found-{digest}", game, machine.name, directory=directory)
+        run.started = float(modified or 0)
+        run.message = f"live view listening on {address}"
+        runs.append(run)
+    return runs
+
 
 def free_port() -> int:
     with socket.socket() as probe:
@@ -319,7 +361,7 @@ class Launcher:
         ).stdout.strip()
 
     def start(self, settings: Settings) -> Run:
-        run = Run(f"{time.strftime('%Y%m%d-%H%M%S')}-{settings.game}", settings)
+        run = Run.launched(f"{time.strftime('%Y%m%d-%H%M%S')}-{settings.game}", settings)
         with self.lock:
             self.runs[run.id] = run
         threading.Thread(target=self.deploy, args=(run,), daemon=True).start()
@@ -327,6 +369,7 @@ class Launcher:
 
     def deploy(self, run: Run) -> None:
         settings = run.settings
+        assert settings is not None
         machine = self.config.machines[settings.machine]
         try:
             commit = self.commit()
@@ -398,7 +441,9 @@ class Launcher:
         run.local_port, run.state, run.message = port, "running", ""
 
     def stop(self, run: Run) -> None:
-        machine = self.config.machines[run.settings.machine]
+        if run.settings is None:
+            raise ValueError("the launcher stops only the runs it started")
+        machine = self.config.machines[run.machine]
         ssh(machine, STOP, UNIT_PREFIX + run.id)
         run.state = "stopped"
         self.close_tunnel(run)
@@ -421,7 +466,7 @@ class Launcher:
                     continue
                 settings = Settings(**json.loads(launch))
                 started = time.mktime(time.strptime(run_id[:15], "%Y%m%d-%H%M%S"))
-                run = Run(run_id, settings, state="running", started=started)
+                run = Run.launched(run_id, settings, state="running", started=started)
                 with self.lock:
                     self.runs[run_id] = run
                 try:
@@ -429,13 +474,49 @@ class Launcher:
                 except RuntimeError as error:
                     run.state, run.message = "failed", str(error)
 
+    def scan(self) -> None:
+        while True:
+            for machine in self.config.machines.values():
+                if machine.runs:
+                    self.scan_machine(machine)
+            time.sleep(SCAN_SECONDS)
+
+    def scan_machine(self, machine: Machine) -> None:
+        try:
+            found = external_runs(machine, ssh(machine, SCAN, machine.dir, *machine.runs))
+        except RuntimeError as error:
+            print(error, file=sys.stderr)
+            return
+        live = {run.id for run in found}
+        with self.lock:
+            known = dict(self.runs)
+        for run in known.values():
+            if run.settings is None and run.machine == machine.name and run.id not in live:
+                if run.state == "running":
+                    run.state = "finished"
+                    self.close_tunnel(run)
+        for run in found:
+            if run.id in known and known[run.id].state == "running":
+                continue
+            run.state = "running"
+            with self.lock:
+                self.runs[run.id] = run
+            try:
+                self.attach(run, machine, run.message)
+            except RuntimeError as error:
+                run.state, run.message = "failed", str(error)
+
     def refresh(self) -> None:
         while True:
             time.sleep(STATUS_SECONDS)
             with self.lock:
-                running = [run for run in self.runs.values() if run.state == "running"]
+                running = [
+                    run
+                    for run in self.runs.values()
+                    if run.state == "running" and run.settings is not None
+                ]
             for name, machine in self.config.machines.items():
-                mine = [run for run in running if run.settings.machine == name]
+                mine = [run for run in running if run.machine == name]
                 if not mine:
                     continue
                 try:
@@ -582,6 +663,7 @@ def main() -> int:
     launcher = Launcher(config, args.site)
     threading.Thread(target=launcher.discover, daemon=True).start()
     threading.Thread(target=launcher.refresh, daemon=True).start()
+    threading.Thread(target=launcher.scan, daemon=True).start()
     Handler.launcher, Handler.port = launcher, args.port
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     print(f"Open http://127.0.0.1:{args.port}/")

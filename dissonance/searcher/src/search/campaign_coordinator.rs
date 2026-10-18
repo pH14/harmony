@@ -475,6 +475,10 @@ where
         self.admissions.get_or_insert_with(Vec::new);
     }
 
+    pub fn unwatch_admissions(&mut self) {
+        self.admissions = None;
+    }
+
     pub fn take_admissions(&mut self) -> Vec<CampaignAdmission> {
         self.admissions
             .as_mut()

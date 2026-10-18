@@ -61,6 +61,28 @@ class LauncherTest(unittest.TestCase):
             games = launcher.available_games(root / "site", config)
             self.assertEqual(games, ["famidash", "famidash-community", "metroid"])
 
+    def test_found_runs_come_from_live_records(self) -> None:
+        machine = self.config().machines["example"]
+        record = '{"address":"127.0.0.1:4100","game":"metroid","pid":42}'
+        listing = "\n".join(
+            [
+                f"/srv/runs/a/campaign/live.json\t1700000000\t{record}",
+                '/srv/runs/b/live.json\t1700000000\t{"address":"127.0.0.1:1","game":"stb"}',
+                "/srv/runs/c/live.json\t1700000000\tnot json",
+            ]
+        )
+        (run,) = launcher.external_runs(machine, listing)
+        self.assertEqual((run.game, run.machine), ("metroid", "example"))
+        self.assertEqual(run.directory, "/srv/runs/a/campaign")
+        self.assertEqual(run.started, 1700000000.0)
+        self.assertRegex(run.id, r"^found-[0-9a-f]{10}$")
+        self.assertEqual(launcher.external_runs(machine, listing)[0].id, run.id)
+        described = run.describe()
+        self.assertTrue(described["external"])
+        self.assertNotIn("workers", described)
+        with self.assertRaises(ValueError):
+            launcher.Launcher(self.config(), Path(".")).stop(run)
+
     def test_site_files_stay_inside_the_site(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

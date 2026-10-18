@@ -159,8 +159,12 @@ there once per commit, uploads the ROM, and starts `nes-eval` with
 reads the port `nes-eval` printed, forwards it with `ssh -L`, and serves the
 page at `/runs/<id>/?game=<game>&live` with `/runs/<id>/live/` proxied to that
 port. A restarted launcher finds the running units on each machine and
-reattaches. The launcher answers only requests whose `Host` and `Origin` are its
-own loopback address, and starting or stopping a run takes a JSON POST.
+reattaches. A machine's optional `runs` list names directories that hold other
+campaigns. Every 30 seconds the launcher finds the `live.json` files under them
+whose `nes-eval` process is alive, lists those campaigns in the dialog with
+their directory, and forwards and proxies them the same way. It does not stop
+them. The launcher answers only requests whose `Host` and `Origin` are its own
+loopback address, and starting or stopping a run takes a JSON POST.
 
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside

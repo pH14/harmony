@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+use nes_games::arcade::{ArcadeGame, famidash};
 use nes_workload::{
     eval::{Request, Result, evaluate, run_cli},
     famidash::{
         campaign::{FamidashCampaignRun, FamidashGame},
-        levels::{Side, Stage},
+        levels::{GROUPS, Side, Stage},
     },
-    live::{NativeMachine, evaluate_live},
+    live::{MemoryView, NativeMachine, evaluate_live, evaluate_watching},
     metroid::{
         campaign::{MetroidCampaignRun, MetroidGame},
         target::{GenesisDepth, MetroidInput, MetroidTerminalPolicy},
@@ -107,6 +108,25 @@ fn live(request: &Request, rom: &[u8], out: &Path, started: Instant) -> Result<(
     }
 }
 
+fn famidash_live(stage: Stage) -> (String, MemoryView<famidash::View>) {
+    let group = GROUPS
+        .iter()
+        .position(|group| group.contains(stage.side, stage.level))
+        .unwrap_or(0);
+    let id = match GROUPS[group].id {
+        "main" => "famidash".to_owned(),
+        id => format!("famidash-{id}"),
+    };
+    let view = match group {
+        1 => <LiveFamidash<1>>::memory_view,
+        2 => <LiveFamidash<2>>::memory_view,
+        3 => <LiveFamidash<3>>::memory_view,
+        4 => <LiveFamidash<4>>::memory_view,
+        _ => <LiveFamidash<0>>::memory_view,
+    };
+    (id, view)
+}
+
 fn famidash_stage(rom: &[u8], stage: Option<u8>, whole_game: bool) -> Result<Stage> {
     let side = Side::from_rom(rom).ok_or("the ROM is not a pinned Famidash 1.2.8 release")?;
     let level = stage.unwrap_or(0);
@@ -155,18 +175,21 @@ fn main() -> Result<()> {
         let h = &request.core_sha256;
         let execution_sha256 = machine::quicknes::prepared_execution_sha256(p, h)?;
         match request.game.as_str() {
-            "smb" => evaluate(
+            "smb" => evaluate_watching(
                 SmbGame::new(&rom, p, h, &execution_sha256),
                 SmbCampaignRun {
                     vocabulary: Default::default(),
                     terminal: Some(SmbTerminalPredicate::GameVictory),
                 },
+                &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
+                "super-mario-bros",
+                <SmbGame>::memory_view,
             ),
-            "mm2" if request.whole_game => evaluate(
+            "mm2" if request.whole_game => evaluate_watching(
                 Mm2Game::new_whole_game(
                     &rom,
                     p,
@@ -178,12 +201,15 @@ fn main() -> Result<()> {
                 )
                 .with_milestone_input_dir(out.join("milestone-inputs")),
                 Mm2CampaignRun,
+                &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
+                "mega-man-2",
+                <Mm2Game>::memory_view,
             ),
-            "mm2" => evaluate(
+            "mm2" => evaluate_watching(
                 Mm2Game::new_at_stage(
                     &rom,
                     p,
@@ -192,12 +218,15 @@ fn main() -> Result<()> {
                     Mm2Stage::from_number(request.stage.unwrap_or(0))?,
                 ),
                 Mm2CampaignRun,
+                &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
+                "mega-man-2",
+                <Mm2Game>::memory_view,
             ),
-            "metroid" => evaluate(
+            "metroid" => evaluate_watching(
                 metroid_game(&rom, p, h, &execution_sha256, request.root_input.as_deref())?
                     .with_milestone_input_dir(out.join("milestone-inputs"))
                     .with_terminal_policy(match request.metroid_terminal.as_deref() {
@@ -205,10 +234,13 @@ fn main() -> Result<()> {
                         None => MetroidTerminalPolicy::default(),
                     }),
                 MetroidCampaignRun,
+                &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
+                "metroid",
+                <MetroidGame>::memory_view,
             ),
             "stb" => {
                 let ai = match request.ai.as_deref().unwrap_or("hard") {
@@ -226,28 +258,32 @@ fn main() -> Result<()> {
                     started,
                 )
             }
-            "twin-dragons" => evaluate(
+            "twin-dragons" => evaluate_watching(
                 TwinDragonsGame::new(&rom, p, h, &execution_sha256),
                 TwinDragonsCampaignRun,
+                &rom,
                 &request,
                 &execution_sha256,
                 &out,
                 started,
+                "twin-dragons",
+                <TwinDragonsGame>::memory_view,
             ),
-            "famidash" => evaluate(
-                FamidashGame::new(
+            "famidash" => {
+                let stage = famidash_stage(&rom, request.stage, request.whole_game)?;
+                let (id, view) = famidash_live(stage);
+                evaluate_watching(
+                    FamidashGame::new(&rom, p, h, &execution_sha256, stage),
+                    FamidashCampaignRun,
                     &rom,
-                    p,
-                    h,
+                    &request,
                     &execution_sha256,
-                    famidash_stage(&rom, request.stage, request.whole_game)?,
-                ),
-                FamidashCampaignRun,
-                &request,
-                &execution_sha256,
-                &out,
-                started,
-            ),
+                    &out,
+                    started,
+                    &id,
+                    view,
+                )
+            }
             _ => Err("unsupported game".into()),
         }
     })
