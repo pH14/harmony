@@ -1630,6 +1630,10 @@ where
         self.doorbell_exits
     }
 
+    pub(crate) fn physical_telemetry(&self) -> vmm_backend::PhysicalTelemetry {
+        self.backend.physical_telemetry()
+    }
+
     pub fn exit_telemetry(&self) -> crate::host_telemetry::ExitTelemetry {
         let mut telemetry = self.exit_telemetry.clone();
         telemetry.store_completions = self.backend.store_completions();

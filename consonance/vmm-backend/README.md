@@ -8,6 +8,15 @@ read/write operations, injects events, and saves/restores vCPU state. It is
 generic over an architecture type, so the upper VMM does not name KVM, HVF, or
 an ISA-specific exit enum.
 
+`Backend::physical_telemetry` exposes runtime physical-entry accounting separately
+from normalized `ExitCounts`. `PhysicalTelemetry` uses fixed platform and purpose
+slots, with raw reason buckets 0 through 63 and one `other` bucket. Its measured
+boundary records attempts, successful OS returns, interrupted calls, other OS
+errors and host elapsed time; it does not append normalized events or enter vCPU
+state. Sites with no attempts are omitted from exported counters. The generic
+mock backend has no OS entries; its explicit test setter supplies only fixture
+data for aggregation tests.
+
 ## Implementations
 
 - `MockBackend` and `MockArm64Backend` provide scripted, deterministic
