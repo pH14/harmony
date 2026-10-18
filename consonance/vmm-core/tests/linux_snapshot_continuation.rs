@@ -2,6 +2,7 @@
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use vmm_backend::{Backend, BackendError, X86};
 use vmm_core::vendor::x86::bringup::{
@@ -197,6 +198,8 @@ fn until(vmm: &mut Machine, marker: &[u8], pressure: bool) {
 }
 
 fn observation(vmm: &mut Machine, pressure: bool) -> Observation {
+    static ORDINAL: AtomicUsize = AtomicUsize::new(0);
+    let ordinal = ORDINAL.fetch_add(1, Ordering::Relaxed);
     let start = vmm.event_history().unwrap().count;
     let start_vns = vmm.effective_vns().unwrap();
     vmm.inject_serial_input(b"A\n");
@@ -215,6 +218,7 @@ fn observation(vmm: &mut Machine, pressure: bool) -> Observation {
     }
     let readback = records[0].to_owned();
     let done = checkpoint(vmm);
+    diagnostic(vmm, ordinal, "done", &readback, &done);
     let events = done.history.count.checked_sub(start).unwrap();
     let elapsed_vns = vmm.effective_vns().unwrap().checked_sub(start_vns).unwrap();
     assert!(
@@ -225,12 +229,14 @@ fn observation(vmm: &mut Machine, pressure: bool) -> Observation {
         match vmm.step().expect("complete guest shutdown") {
             Step::Continued => {}
             Step::Terminal(TerminalReason::Idle) => {
+                let terminal = checkpoint(vmm);
+                diagnostic(vmm, ordinal, "terminal", &readback, &terminal);
                 return Observation {
                     readback,
                     checkpoint: done,
                     events,
                     elapsed_vns,
-                    terminal_state: checkpoint(vmm).state,
+                    terminal_state: terminal.state,
                 };
             }
             other => panic!("unexpected continuation termination: {other:?}"),
@@ -238,6 +244,61 @@ fn observation(vmm: &mut Machine, pressure: bool) -> Observation {
         assert_ne!(steps, 999_999, "guest must terminate within the work bound");
     }
     unreachable!()
+}
+
+fn diagnostic(vmm: &mut Machine, ordinal: usize, phase: &str, readback: &str, cut: &Checkpoint) {
+    let Some(root) = std::env::var_os("X3_DIAGNOSTICS_DIR") else {
+        return;
+    };
+    let limit = std::env::var("X3_DIAGNOSTICS_LIMIT").map_or(1, |value| {
+        value.parse().expect("diagnostic observation limit")
+    });
+    if ordinal >= limit {
+        return;
+    }
+    let directory = PathBuf::from(root).join(format!("observation-{ordinal:03}-{phase}"));
+    std::fs::create_dir_all(directory.parent().unwrap()).unwrap();
+    std::fs::create_dir(&directory).expect("new diagnostic directory");
+    let components = vmm.state_components().expect("diagnostic components");
+    let components = components
+        .iter()
+        .map(|(name, digest)| format!("{name} {}\n", hex(digest)))
+        .collect::<String>();
+    std::fs::write(directory.join("components.txt"), components).unwrap();
+    std::fs::write(
+        directory.join("vcpu.txt"),
+        format!("{:#?}\n", vmm.vcpu_record().expect("diagnostic vCPU")),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("state.bin"),
+        vmm.save_vm_state()
+            .expect("diagnostic VM state")
+            .encode()
+            .expect("diagnostic VM state encoding"),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("blob.bin"),
+        vmm.state_blob().expect("diagnostic exact state blob"),
+    )
+    .unwrap();
+    std::fs::write(
+        directory.join("checkpoint.txt"),
+        format!("{}\n{readback}\n", cut.encode()),
+    )
+    .unwrap();
+    assert_eq!(
+        vmm.state_hash().unwrap(),
+        cut.state,
+        "diagnostics preserve state"
+    );
+    assert_eq!(
+        vmm.event_history().unwrap(),
+        cut.history,
+        "diagnostics preserve history"
+    );
+    println!("X3_DIAGNOSTIC={}", directory.display());
 }
 
 struct Cut {
