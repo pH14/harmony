@@ -139,7 +139,7 @@ fn host_dirty_page_failure(options: &Options, profile: &VerifiedProfile) -> Valu
             && exit.events == before
             && crate::linux::contains(
                 &exit,
-                "Harmony checkpoint host memory failed: unprotect dirty page",
+                "Harmony checkpoint host failure: unprotect dirty page",
             )
             && !crate::linux::contains(&exit, "Kernel panic")
             && crate::linux::clean(&exit);

@@ -305,7 +305,7 @@ int main(void) {
 }'''
         self.compile_run(source.replace("BODY", block))
 
-    def test_uml_checkpoint_host_memory_failures_never_become_guest_panics(self):
+    def test_uml_checkpoint_host_checkpoint_failures_never_become_guest_panics(self):
         for series, provenance in [("um", "0016-um-harmony-host-failure-provenance.patch"),
                                    ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
             with self.subTest(series=series):
@@ -316,7 +316,7 @@ int main(void) {
                     "os_host_failure": "static void os_host_failure(void) __attribute__((noreturn));\nstatic void os_host_failure(void)",
                     "page_size": "static unsigned long page_size(void)",
                     "round_up": "static unsigned long round_up(unsigned long value, unsigned long page)",
-                    "memory_failure": "static void memory_failure(const char *operation)",
+                    "checkpoint_failure": "static void checkpoint_failure(const char *operation)",
                     "os_track_init": "void os_track_init(unsigned long base, unsigned long start, unsigned long end)",
                     "set_page": "static void set_page(unsigned long pfn)",
                     "os_track_mark": "void os_track_mark(unsigned long long phys, unsigned long length)",
@@ -422,11 +422,12 @@ int main(int argc, char **argv) {
 #define NUM_IRQ_TYPES 3
 enum um_irq_type { READ, WRITE, OTHER };
 struct reg { int events; };
-struct irq_entry { struct irq_entry *next; int fd; struct reg reg[NUM_IRQ_TYPES]; };
+struct irq_entry { struct irq_entry *next; int fd; struct reg reg[NUM_IRQ_TYPES]; bool epoll_registered; };
 static struct irq_entry entries[] = {
- { .next=&entries[1], .fd=10, .reg={{1},{4},{16}} },
- { .next=&entries[2], .fd=20, .reg={{2},{8},{32}} },
- { .next=NULL, .fd=30, .reg={{0},{0},{0}} },
+ { .next=&entries[1], .fd=10, .reg={{1},{4},{16}}, .epoll_registered=true },
+ { .next=&entries[2], .fd=20, .reg={{2},{8},{32}}, .epoll_registered=true },
+ { .next=&entries[3], .fd=30, .reg={{0},{0},{0}} },
+ { .next=NULL, .fd=40, .reg={{1},{4},{16}} },
 };
 static struct irq_entry *active_fds=entries;
 #define list_for_each_entry(entry, head, member) for(entry=*(head);entry;entry=entry->next)
@@ -436,7 +437,7 @@ static int os_add_epoll_fd(int events, int fd, void *data) {
  struct irq_entry *entry=data;
  assert(entry->fd==fd);
  assert(events==(fd==10 ? 21 : 42)); adds++;
- return failure==2 && fd==20 ? -1 : 0;
+ return (failure==2 && fd==20) || (failure==3 && fd==10) ? -1 : 0;
 }
 static int os_del_epoll_fd(int fd) { assert(fd==30); deletes++; return -1; }
 static void os_host_failure(void) HELPER
@@ -445,11 +446,20 @@ static bool update_irq_entry(struct irq_entry *entry) WRAPPER
 void um_irq_checkpoint_attach(void) ATTACH
 int main(int argc, char **argv) {
  assert(argc==2); failure=atoi(argv[1]);
+ if(failure==3) {
+  assert(update_irq_entry(&entries[0]));
+  assert(!entries[0].epoll_registered);
+  um_irq_checkpoint_attach();
+  assert(async_calls==4 && adds==2 && deletes==0);
+  return 0;
+ }
  um_irq_checkpoint_attach();
  if(failure) return 0;
- assert(async_calls==3 && adds==2 && deletes==1);
+ assert(async_calls==4 && adds==2 && deletes==0);
  assert(update_irq_entry(&entries[0]));
+ assert(entries[0].epoll_registered);
  assert(!update_irq_entry(&entries[2]));
+ assert(!entries[2].epoll_registered && deletes==1);
  return 0;
 }
 '''
@@ -459,6 +469,7 @@ int main(int argc, char **argv) {
                                    ("ATTACH", function(irq, "um_irq_checkpoint_attach"))]:
                     source = source.replace(key, value)
                 self.compile_run(source, ("0",))
+                self.compile_run(source, ("3",))
                 for failure in (1, 2):
                     self.compile_run(source, (str(failure),), expected=87)
                 # Removing either checkpoint check must permit the bad restore
@@ -470,6 +481,216 @@ int main(int argc, char **argv) {
                     self.assertNotEqual(old, source)
                     with self.assertRaises(AssertionError):
                         self.compile_run(old, (str(failure),), expected=87)
+
+    def test_uml_checkpoint_reconstruction_checks_host_calls_and_expected_absence(self):
+        for series, provenance in [("um", "0016-um-harmony-host-failure-provenance.patch"),
+                                   ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
+            with self.subTest(series=series):
+                patch = PATCHES / series / "0008-um-harmony-checkpoint.patch"
+                checkpoint = postimage(patch, "arch/um/os-Linux/skas/checkpoint.c")
+                primitive = function(postimage(PATCHES / series / provenance,
+                                               "arch/um/os-Linux/util.c"), "os_host_failure")
+                source = r'''#define _GNU_SOURCE
+#include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/types.h>
+#include <time.h>
+#include <unistd.h>
+#ifndef __WALL
+#define __WALL 0x40000000
+#endif
+#define HARMONY_UML_HOST_FAILURE_STATUS 87
+static int mode, closes, waits, signals;
+static int injected_close(int fd) {
+ assert(fd==7); closes++;
+ if(mode==1 || mode==2) { errno=mode==1?EPERM:EINTR; return -1; }
+ return 0;
+}
+static int os_del_epoll_fd(int fd) {
+ assert(fd==7 && mode!=13);
+ if(mode==3 || mode==4) { errno=mode==3?EPERM:ENOENT; return -1; }
+ return 0;
+}
+static int injected_sigprocmask(int how,const sigset_t *set,sigset_t *old) {
+ assert(how==SIG_BLOCK || how==SIG_SETMASK); assert(set);
+ if(mode==5) { errno=EPERM; return -1; } return 0;
+}
+static int injected_sigtimedwait(const sigset_t *set,void *info,const struct timespec *zero) {
+ assert(sigismember(set,SIGCHLD)==1); assert(!zero->tv_sec && !zero->tv_nsec); signals++;
+ if(mode==6) { errno=EPERM; return -1; }
+ if(mode==7 && signals==1) { errno=EINTR; return -1; }
+ if(mode==7 && signals==2) return SIGCHLD;
+ errno=EAGAIN; return -1;
+}
+static int injected_kill(int pid,int signal) {
+ assert(pid==7 && signal==SIGKILL);
+ if(mode==8 || mode==9) { errno=mode==8?EPERM:ESRCH; return -1; }
+ return 0;
+}
+static pid_t injected_waitpid(int pid,int *status,int flags) {
+ assert(pid==7 && flags==__WALL); waits++;
+ if(mode==10) { errno=ECHILD; return -1; }
+ if(mode==11 && waits==1) { errno=EINTR; return -1; }
+ return mode==12 ? 8 : pid;
+}
+#define close injected_close
+#define sigprocmask injected_sigprocmask
+#define sigtimedwait injected_sigtimedwait
+#define kill injected_kill
+#define waitpid injected_waitpid
+struct irq_entry { struct irq_entry *next; int fd,epoll_registered; };
+static struct irq_entry entry={NULL,7,1};
+static struct irq_entry *active_fds=&entry;
+#define list_for_each_entry(entry, head, member) for(entry=*(head);entry;entry=entry->next)
+static void os_host_failure(void) __attribute__((noreturn));
+static void os_host_failure(void) PRIMITIVE
+static void checkpoint_failure(const char *operation) FAILURE_HELPER
+void os_checkpoint_close_fd(int fd) CLOSE_HELPER
+int os_checkpoint_delete_irq(int fd) DELETE_HELPER
+static void checkpoint_signal_mask(int how,const sigset_t *set,sigset_t *old) MASK_HELPER
+static void drain_child_signals(void) DRAIN_HELPER
+void os_checkpoint_kill(int pid) KILL_HELPER
+void um_irq_checkpoint_detach(void) DETACH_HELPER
+int main(int argc,char **argv) {
+ assert(argc==2); mode=atoi(argv[1]);
+ if(mode==13) { entry.epoll_registered=0; um_irq_checkpoint_detach(); return 0; }
+ if(mode<=2) { errno=EACCES; os_checkpoint_close_fd(7); assert(errno==EACCES && closes==1); }
+ if(mode==0 || mode==3 || mode==4) um_irq_checkpoint_detach();
+ if(mode==0 || mode==5) {
+  sigset_t set,old; sigfillset(&set);
+  checkpoint_signal_mask(SIG_BLOCK,&set,&old); checkpoint_signal_mask(SIG_SETMASK,&set,NULL);
+ }
+ if(mode==0 || mode==6 || mode==7) {
+  drain_child_signals(); assert(signals==(mode==7?3:1));
+ }
+ if(mode==0 || mode>=8) {
+  os_checkpoint_kill(0); assert(waits==0); os_checkpoint_kill(7); assert(waits==(mode==11?2:1));
+ }
+ return 0;
+}
+'''
+                helpers = [("PRIMITIVE", primitive),
+                           ("DETACH_HELPER", function(postimage(patch, "arch/um/kernel/irq.c"), "um_irq_checkpoint_detach"))]
+                for key, name in [("FAILURE_HELPER", "checkpoint_failure"),
+                                  ("CLOSE_HELPER", "os_checkpoint_close_fd"),
+                                  ("DELETE_HELPER", "os_checkpoint_delete_irq"),
+                                  ("MASK_HELPER", "checkpoint_signal_mask"),
+                                  ("DRAIN_HELPER", "drain_child_signals"),
+                                  ("KILL_HELPER", "os_checkpoint_kill")]:
+                    helpers.append((key, function(checkpoint, name)))
+                for key, value in helpers:
+                    source = source.replace(key, value)
+                for mode in (0, 2, 4, 7, 9, 11, 13):
+                    self.compile_run(source, (str(mode),))
+                for mode in (1, 3, 5, 6, 8, 10, 12):
+                    self.compile_run(source, (str(mode),), expected=87)
+                for operation, mode in [("close host descriptor", 1), ("set host signal mask", 5),
+                                        ("drain host child signals", 6), ("kill host stub", 8),
+                                        ("reap host stub", 10)]:
+                    old = source.replace('checkpoint_failure("' + operation + '");', '(void)0;')
+                    self.assertNotEqual(old, source)
+                    with self.assertRaises(AssertionError):
+                        self.compile_run(old, (str(mode),), expected=87)
+                old = source.replace("if (entry->epoll_registered &&\n\t\t    os_checkpoint_delete_irq(entry->fd) < 0)\n\t\t\tos_host_failure();",
+                                     "(void)os_checkpoint_delete_irq(entry->fd);")
+                self.assertNotEqual(old, source)
+                with self.assertRaises(AssertionError):
+                    self.compile_run(old, ("3",), expected=87)
+
+    def test_uml_checkpoint_checks_x86_tls_heap_and_boot_restore(self):
+        for series, provenance in [("um", "0016-um-harmony-host-failure-provenance.patch"),
+                                   ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
+            with self.subTest(series=series):
+                patch = PATCHES / series / "0008-um-harmony-checkpoint.patch"
+                checkpoint = postimage(patch, "arch/um/os-Linux/skas/checkpoint.c")
+                kernel = postimage(patch, "arch/um/kernel/skas/checkpoint.c")
+                primitive = function(postimage(PATCHES / series / provenance,
+                                               "arch/um/os-Linux/util.c"), "os_host_failure")
+                source = r'''#include <assert.h>
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/mman.h>
+#include <unistd.h>
+#define HARMONY_UML_HOST_FAILURE_STATUS 87
+#define SYS_arch_prctl 158
+#define SYS_brk 12
+#define ARCH_GET_FS 0x1003
+#define ARCH_SET_FS 0x1002
+#define KERN_ERR ""
+#define printk printf
+enum { KIND_PRIVATE=1, KIND_HEAP, KIND_RESERVE };
+struct image_region { unsigned long start,end,offset; unsigned int prot,kind; };
+struct mapping { unsigned long start,end; };
+static int mode,brks,mapped,restore_at_boot;
+static long injected_syscall(long number,...) {
+ va_list ap; va_start(ap,number);
+ if(number==SYS_arch_prctl) {
+  int operation=va_arg(ap,int);
+  if(operation==ARCH_GET_FS) {
+   unsigned long *tls=va_arg(ap,unsigned long *); *tls=0x1234; va_end(ap);
+   return mode==1 ? -1 : 0;
+  }
+  assert(operation==ARCH_SET_FS); assert(va_arg(ap,unsigned long)==0x1234); va_end(ap);
+  return mode==2 ? -1 : 0;
+ }
+ assert(number==SYS_brk); unsigned long end=va_arg(ap,unsigned long); va_end(ap); brks++;
+ return mode==3 ? 0x3000 : mode==4 ? -1 : (long)end;
+}
+#define syscall injected_syscall
+static int os_harmony_available(void) { return mode!=6; }
+static unsigned long long time_travel_read(void) { return 7; }
+static int os_harmony_exchange(unsigned long long moment,const void *request,unsigned long length,void *response,unsigned long capacity) {
+ assert(moment==7 && !request && !length && !response && !capacity); return mode==7?-EPIPE:0;
+}
+static void ensure_mapped(unsigned long start,unsigned long end,int prot) {
+ assert(start==0x2000 && end==0x4000 && prot==(PROT_READ|PROT_WRITE)); mapped++;
+}
+static int read_all(int fd,void *data,unsigned long length,unsigned long offset) { return 0; }
+static void fatal(const char *what,int error) __attribute__((noreturn));
+static void fatal(const char *what,int error) { _exit(87); }
+static void os_host_failure(void) __attribute__((noreturn));
+static void os_host_failure(void) PRIMITIVE
+static void checkpoint_failure(const char *operation) FAILURE_HELPER
+static unsigned long get_tls(void) GET_HELPER
+static void set_tls(unsigned long tls) SET_HELPER
+static void restore_region(int image,const struct image_region *region,const struct mapping *heap) REGION_HELPER
+static int harmony_restore_at_boot(void) BOOT_HELPER
+int main(int argc,char **argv) {
+ assert(argc==2); mode=atoi(argv[1]);
+ if(mode<=2) { assert(get_tls()==0x1234); set_tls(0x1234); }
+ if(mode==0 || (mode>=3 && mode<=5)) {
+  struct image_region region={.start=0x2000,.end=0x4000,.prot=PROT_READ|PROT_WRITE,.kind=KIND_HEAP};
+  struct mapping heap={.start=0x2000,.end=mode==5?0x5000:0x3000};
+  restore_region(7,&region,&heap); assert(mapped==1 && brks==(mode==5?0:1));
+ }
+ if(mode>=6) { restore_at_boot=mode!=9; assert(harmony_restore_at_boot()==0); }
+ return 0;
+}
+'''
+                for key, value in [("PRIMITIVE", primitive),
+                                   ("FAILURE_HELPER", function(checkpoint, "checkpoint_failure")),
+                                   ("GET_HELPER", function(checkpoint, "get_tls")),
+                                   ("SET_HELPER", function(checkpoint, "set_tls")),
+                                   ("REGION_HELPER", function(checkpoint, "restore_region")),
+                                   ("BOOT_HELPER", function(kernel, "harmony_restore_at_boot"))]:
+                    source = source.replace(key, value)
+                for mode in (0, 5, 9):
+                    self.compile_run(source, (str(mode),))
+                for mode in (1, 2, 3, 4, 6, 7, 8):
+                    self.compile_run(source, (str(mode),), expected=87)
+                for operation, mode in [("read host thread pointer", 1),
+                                        ("restore host thread pointer", 2), ("extend host heap", 3)]:
+                    old = source.replace('checkpoint_failure("' + operation + '");', '(void)0;')
+                    self.assertNotEqual(old, source)
+                    with self.assertRaises(AssertionError):
+                        self.compile_run(old, (str(mode),), expected=87)
 
     def test_uml_substrate_failures_have_reserved_host_status_on_both_architectures(self):
         for series, filename in [("um", "0016-um-harmony-host-failure-provenance.patch"),

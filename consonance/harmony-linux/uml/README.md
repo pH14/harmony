@@ -87,8 +87,9 @@ The guest TASK_SIZE remains in the console for diagnosis.
   for UML until built without them. This does not trap an instruction supplied
   by dynamic code or hidden from the executable-load scan.
 - Host stops and continues of stub processes no longer raise guest
-  interrupts. A stub that dies without the kernel killing it panics the
-  guest. The panic path exits with reserved status 86 after cleaning up its
+  interrupts. A stub that dies without the kernel killing it abandons execution
+  with reserved host-failure status 87. The guest panic path exits with reserved
+  status 86 after cleaning up its
   host process group, so a real guest panic is distinct from a host signal
   trap. This replaces the panic core dump; a fatal UML SIGSEGV trap still
   produces one. If the host cannot clone a userspace stub, the UML process writes a
@@ -158,6 +159,31 @@ pending at the capture.
 On x86-64, a rebuilt stub restores the saved native FS and GS bases before
 guest execution resumes. The bases are sampled at guest stops, before the
 kernel processes a syscall or checkpoint.
+
+Host failures in checkpoint allocation, protection, descriptor cleanup, signal
+restoration, stub reconstruction, TLS/heap restoration, and interrupt
+registration/removal exit with reserved infrastructure status 87. They never
+invoke the guest panic notifier. Destructive restoration cannot safely return
+an ordinary error after changing host memory, so it abandons the process.
+Pre-mutation image validation still returns a control refusal. Close does not
+retry Linux EINTR; signal draining and child waits do retry interruption, and
+an absent epoll registration is a valid removal result. Each IRQ entry retains
+its actual successful-registration state in the checkpoint. Only those entries
+are removed and reconstructed; an unpollable null console remains unregistered,
+while failure to reconstruct a previously registered descriptor abandons.
+
+The compiled boundary regressions execute both carried patch postimages with
+injected host failures and successful/expected-absence controls. Qualification
+also denies one-page RWX protection changes to prove that the real dirty-page
+fault path abandons a first capture. A required native Linux test on both
+architectures continues those protection changes through a successful capture
+and restore, then arms a seccomp notification supervisor only after publication.
+The next protection change returns ENOMEM: the session must report HostFailure,
+publish no second checkpoint or additional guest event, preserve the first
+checkpoint, and clean up its process group. The helper itself does not request
+one-page RWX mappings; the notification filter is inherited by the test and UML
+processes. This native-only test requires seccomp user notifications; the static
+first-capture injection also runs inside the Docker qualification matrix.
 
 The host stores the image and the physical memory of every checkpoint as
 pages in one `snapshot-store` store, each checkpoint a delta on its parent.

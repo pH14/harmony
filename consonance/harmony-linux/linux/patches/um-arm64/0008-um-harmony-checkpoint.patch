@@ -28,7 +28,7 @@ exception.
 ---
 --- /dev/null
 +++ b/arch/um/include/shared/checkpoint.h
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,69 @@
 +/* SPDX-License-Identifier: GPL-2.0 */
 +#ifndef __UM_CHECKPOINT_H
 +#define __UM_CHECKPOINT_H
@@ -63,6 +63,8 @@ exception.
 +extern void os_checkpoint_validate(void *arg);
 +extern void os_checkpoint_restore(void *arg);
 +extern void os_checkpoint_kill(int pid);
++extern void os_checkpoint_close_fd(int fd);
++extern int os_checkpoint_delete_irq(int fd);
 +extern void *os_initial_jmpbuf(unsigned long *size);
 +extern void os_checkpoint_resume(void);
 +
@@ -98,7 +100,12 @@ exception.
 +#endif
 --- a/arch/um/kernel/irq.c
 +++ b/arch/um/kernel/irq.c
-@@ -16,6 +16,7 @@
+@@ -11,16 +11,17 @@
+ #include <linux/hardirq.h>
+ #include <linux/interrupt.h>
+ #include <linux/kernel_stat.h>
+ #include <linux/module.h>
+ #include <linux/sched.h>
  #include <linux/seq_file.h>
  #include <linux/slab.h>
  #include <as-layout.h>
@@ -106,7 +113,30 @@ exception.
  #include <kern_util.h>
  #include <os.h>
  #include <irq_user.h>
-@@ -266,32 +267,40 @@
+ #include <irq_kern.h>
+ #include <linux/time-internal.h>
+ 
+ DEFINE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat);
+ 
+@@ -48,16 +49,17 @@
+ };
+ 
+ struct irq_entry {
+ 	struct list_head list;
+ 	int fd;
+ 	struct irq_reg reg[NUM_IRQ_TYPES];
+ 	bool suspended;
+ 	bool sigio_workaround;
++	bool epoll_registered;
+ };
+ 
+ static DEFINE_RAW_SPINLOCK(irq_lock);
+ static LIST_HEAD(active_fds);
+ static DECLARE_BITMAP(irqs_allocated, UM_LAST_SIGNAL_IRQ);
+ static bool irqs_suspended;
+ #ifdef CONFIG_UML_TIME_TRAVEL_SUPPORT
+ static bool irqs_pending;
+@@ -266,32 +268,42 @@
  	if (!to_free)
  		return;
  
@@ -128,10 +158,12 @@ exception.
  		/* will modify (instead of add) if needed */
 -		os_add_epoll_fd(events, entry->fd, entry);
 +		*result = os_add_epoll_fd(events, entry->fd, entry);
++		entry->epoll_registered = *result == 0;
  		return true;
  	}
  
  	os_del_epoll_fd(entry->fd);
++	entry->epoll_registered = false;
 +	*result = 0;
  	return false;
 +}
@@ -149,16 +181,24 @@ exception.
  		return NULL;
  	remove_irq_entry(entry, false);
  	return entry;
-@@ -441,6 +450,29 @@ out:
+@@ -435,16 +447,43 @@
+ 	entry = update_or_remove_irq_entry(entry);
+ out:
+ 	raw_spin_unlock_irqrestore(&irq_lock, flags);
+ 	kfree(entry);
+ 
+ 	ignore_sigio_fd(fd);
  }
  EXPORT_SYMBOL(deactivate_fd);
- 
++
 +void um_irq_checkpoint_detach(void)
 +{
 +	struct irq_entry *entry;
 +
 +	list_for_each_entry(entry, &active_fds, list)
-+		os_del_epoll_fd(entry->fd);
++		if (entry->epoll_registered &&
++		    os_checkpoint_delete_irq(entry->fd) < 0)
++			os_host_failure();
 +}
 +
 +void um_irq_checkpoint_attach(void)
@@ -170,15 +210,21 @@ exception.
 +
 +		if (os_set_fd_async(entry->fd) < 0)
 +			os_host_failure();
++		if (!entry->epoll_registered)
++			continue;
 +		update_irq_entry_result(entry, &result);
 +		if (result < 0)
 +			os_host_failure();
 +	}
 +}
-+
+ 
  /*
   * Called just before shutdown in order to provide a clean exec
   * environment in case the system is rebooting.  No locking because
+  * that would cause a pointless shutdown hang if something hadn't
+  * released the lock.
+  */
+ int deactivate_all_fds(void)
 --- a/arch/um/kernel/physmem.c
 +++ b/arch/um/kernel/physmem.c
 @@ -10,6 +10,7 @@
@@ -214,7 +260,7 @@ exception.
  # Stub executable
 --- /dev/null
 +++ b/arch/um/kernel/skas/checkpoint.c
-@@ -0,0 +1,267 @@
+@@ -0,0 +1,270 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Checkpoints of a User-mode Linux kernel, requested by the Harmony host
@@ -394,14 +440,14 @@ exception.
 +	*ack = UM_CONTROL_CAPTURE;
 +	nskip = um_checkpoint_stub_fds(stub_fds, MAX_STUB_FDS);
 +	if (nskip < 0) {
-+		os_close_file(fd);
++		os_checkpoint_close_fd(fd);
 +		return nskip;
 +	}
 +	fill_args(&args, fd, flags, nskip);
 +	local_irq_save(irq);
 +	mark_untracked();
 +	initial_thread_cb(os_checkpoint_capture, &args);
-+	os_close_file(fd);
++	os_checkpoint_close_fd(fd);
 +	open_stacks();
 +	if (um_checkpoint_resumed) {
 +		um_checkpoint_resumed = 0;
@@ -424,13 +470,13 @@ exception.
 +	*ack = UM_CONTROL_RESTORE;
 +	nskip = um_checkpoint_stub_fds(stub_fds, MAX_STUB_FDS);
 +	if (nskip < 0) {
-+		os_close_file(fd);
++		os_checkpoint_close_fd(fd);
 +		return nskip;
 +	}
 +	fill_args(&args, fd, 0, nskip);
 +	initial_thread_cb(os_checkpoint_validate, &args);
 +	if (args.result) {
-+		os_close_file(fd);
++		os_checkpoint_close_fd(fd);
 +		return args.result;
 +	}
 +	local_irq_save(irq);
@@ -451,7 +497,7 @@ exception.
 +		return restore(fd, ack);
 +	}
 +	*ack = command;
-+	os_close_file(fd);
++	os_checkpoint_close_fd(fd);
 +	return -EINVAL;
 +}
 +
@@ -476,10 +522,13 @@ exception.
 +
 +	if (!restore_at_boot)
 +		return 0;
-+	if (!os_harmony_available())
-+		panic("harmony_restore needs harmony_fd\n");
++	if (!os_harmony_available()) {
++		printk(KERN_ERR "harmony_restore needs harmony_fd\n");
++		os_host_failure();
++	}
 +	ret = os_harmony_exchange(time_travel_read(), NULL, 0, NULL, 0);
-+	panic("The Harmony host did not restore a checkpoint: %d\n", ret);
++	printk(KERN_ERR "The Harmony host did not restore a checkpoint: %d\n", ret);
++	os_host_failure();
 +}
 +late_initcall_sync(harmony_restore_at_boot);
 --- a/arch/um/kernel/skas/mmu.c
@@ -521,7 +570,7 @@ exception.
 +		if (context->id.pid > 0)
 +			os_checkpoint_kill(context->id.pid);
 +		if (using_seccomp && context->id.sock > 0)
-+			os_close_file(context->id.sock);
++			os_checkpoint_close_fd(context->id.sock);
 +	}
 +}
 +
@@ -897,7 +946,7 @@ exception.
  include $(srctree)/arch/um/scripts/Makefile.rules
 --- /dev/null
 +++ b/arch/um/os-Linux/skas/checkpoint.c
-@@ -0,0 +1,997 @@
+@@ -0,0 +1,1040 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Host side of User-mode Linux checkpoints.
@@ -1033,14 +1082,52 @@ exception.
 +}
 +
 +/* This can run from the SIGSEGV dirty-page handler: use only signal-safe I/O. */
-+static void memory_failure(const char *operation)
++static void checkpoint_failure(const char *operation)
 +{
-+	static const char prefix[] = "Harmony checkpoint host memory failed: ";
++	static const char prefix[] = "Harmony checkpoint host failure: ";
 +
 +	write(2, prefix, sizeof(prefix) - 1);
 +	write(2, operation, strlen(operation));
 +	write(2, "\n", 1);
 +	os_host_failure();
++}
++
++void os_checkpoint_close_fd(int fd)
++{
++	int saved = errno;
++
++	/* Linux releases the descriptor even when close reports EINTR. */
++	if (close(fd) < 0 && errno != EINTR)
++		checkpoint_failure("close host descriptor");
++	errno = saved;
++}
++
++int os_checkpoint_delete_irq(int fd)
++{
++	if (os_del_epoll_fd(fd) < 0 && errno != ENOENT)
++		return -errno;
++	return 0;
++}
++
++static void checkpoint_signal_mask(int how, const sigset_t *set, sigset_t *old)
++{
++	if (sigprocmask(how, set, old) < 0)
++		checkpoint_failure("set host signal mask");
++}
++
++static void drain_child_signals(void)
++{
++	struct timespec zero = { 0, 0 };
++	sigset_t child;
++	int result;
++
++	sigemptyset(&child);
++	sigaddset(&child, SIGCHLD);
++	do {
++		result = sigtimedwait(&child, NULL, &zero);
++	} while (result > 0 || (result < 0 && errno == EINTR));
++	if (result < 0 && errno != EAGAIN)
++		checkpoint_failure("drain host child signals");
 +}
 +
 +void os_track_init(unsigned long base, unsigned long start, unsigned long end)
@@ -1052,7 +1139,7 @@ exception.
 +			  -1, 0);
 +
 +	if (bits == MAP_FAILED)
-+		memory_failure("allocate dirty bitmap");
++		checkpoint_failure("allocate dirty bitmap");
 +	track.base = base;
 +	track.start = start;
 +	track.end = end;
@@ -1096,7 +1183,7 @@ exception.
 +	track.all = 1;
 +	if (mprotect((void *)track.start, track.end - track.start,
 +		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
-+		memory_failure("unprotect direct map");
++		checkpoint_failure("unprotect direct map");
 +}
 +
 +static void open_range(unsigned long start, unsigned long end, const char *operation)
@@ -1109,7 +1196,7 @@ exception.
 +	os_track_mark(start - track.base, end - start);
 +	if (mprotect((void *)start, end - start,
 +		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
-+		memory_failure(operation);
++		checkpoint_failure(operation);
 +}
 +
 +void os_track_unprotect(unsigned long start, unsigned long end)
@@ -1141,7 +1228,7 @@ exception.
 +		return;
 +	if (mprotect((void *)track.start, track.end - track.start,
 +		     PROT_READ | PROT_EXEC) < 0)
-+		memory_failure("protect direct map");
++		checkpoint_failure("protect direct map");
 +}
 +
 +static void track_reset(void)
@@ -1166,13 +1253,15 @@ exception.
 +{
 +	unsigned long tls = 0;
 +
-+	syscall(SYS_arch_prctl, ARCH_GET_FS, &tls);
++	if (syscall(SYS_arch_prctl, ARCH_GET_FS, &tls) < 0)
++		checkpoint_failure("read host thread pointer");
 +	return tls;
 +}
 +
 +static void set_tls(unsigned long tls)
 +{
-+	syscall(SYS_arch_prctl, ARCH_SET_FS, tls);
++	if (syscall(SYS_arch_prctl, ARCH_SET_FS, tls) < 0)
++		checkpoint_failure("restore host thread pointer");
 +}
 +#elif defined(__aarch64__)
 +static unsigned long get_tls(void)
@@ -1219,11 +1308,11 @@ exception.
 +			break;
 +		length += n;
 +		if (length >= capacity - 1) {
-+			close(fd);
++			os_checkpoint_close_fd(fd);
 +			return -E2BIG;
 +		}
 +	}
-+	close(fd);
++	os_checkpoint_close_fd(fd);
 +	if (n < 0)
 +		return -errno;
 +	buffer[length] = '\0';
@@ -1327,12 +1416,12 @@ exception.
 +			if (skipped(fd, args, dir))
 +				continue;
 +			if (n >= MAX_FDS) {
-+				close(dir);
++				os_checkpoint_close_fd(dir);
 +				return -EMFILE;
 +			}
 +			if (fstat(fd, &file) < 0 ||
 +			    (flags = fcntl(fd, F_GETFL)) < 0) {
-+				close(dir);
++				os_checkpoint_close_fd(dir);
 +				return -errno;
 +			}
 +			fds[n].fd = fd;
@@ -1342,7 +1431,7 @@ exception.
 +			n++;
 +		}
 +	}
-+	close(dir);
++	os_checkpoint_close_fd(dir);
 +	if (got < 0)
 +		return -errno;
 +	for (i = 1; i < n; i++)
@@ -1524,7 +1613,7 @@ exception.
 +	long result;
 +
 +	sigfillset(&all);
-+	sigprocmask(SIG_BLOCK, &all, &old);
++	checkpoint_signal_mask(SIG_BLOCK, &all, &old);
 +	result = thread_count();
 +	if (result == 1)
 +		result = report_memory();
@@ -1534,7 +1623,7 @@ exception.
 +		track_reset();
 +		result = capture(args, &header, maps);
 +	}
-+	sigprocmask(SIG_SETMASK, &old, NULL);
++	checkpoint_signal_mask(SIG_SETMASK, &old, NULL);
 +	args->result = result;
 +}
 +
@@ -1714,10 +1803,10 @@ exception.
 +	long result;
 +
 +	sigfillset(&all);
-+	sigprocmask(SIG_BLOCK, &all, &old);
++	checkpoint_signal_mask(SIG_BLOCK, &all, &old);
 +	protect_all();
 +	result = validate(args, &header, maps, current);
-+	sigprocmask(SIG_SETMASK, &old, NULL);
++	checkpoint_signal_mask(SIG_SETMASK, &old, NULL);
 +	args->result = result;
 +}
 +
@@ -1776,8 +1865,9 @@ exception.
 +	int writable = region->prot & PROT_WRITE;
 +
 +	if (region->kind == KIND_HEAP && heap && heap->start == region->start &&
-+	    heap->end < region->end)
-+		syscall(SYS_brk, region->end);
++	    heap->end < region->end &&
++	    (unsigned long)syscall(SYS_brk, region->end) != region->end)
++		checkpoint_failure("extend host heap");
 +	ensure_mapped(region->start, region->end,
 +		      region->kind == KIND_RESERVE || writable ?
 +			      region->prot : PROT_READ | PROT_WRITE);
@@ -1811,17 +1901,13 @@ exception.
 +	unsigned long jmpbuf_size;
 +	void *initial = os_initial_jmpbuf(&jmpbuf_size);
 +	char **environment = environ;
-+	struct timespec zero = { 0, 0 };
-+	sigset_t all, old, child;
++	sigset_t all, old;
 +	unsigned int i;
 +	int n;
 +
 +	sigfillset(&all);
-+	sigprocmask(SIG_BLOCK, &all, &old);
-+	sigemptyset(&child);
-+	sigaddset(&child, SIGCHLD);
-+	while (sigtimedwait(&child, NULL, &zero) > 0)
-+		;
++	checkpoint_signal_mask(SIG_BLOCK, &all, &old);
++	drain_child_signals();
 +	protect_all();
 +	n = report_memory();
 +	if (n)
@@ -1882,18 +1968,24 @@ exception.
 +	memcpy(initial, jmpbuf, jmpbuf_size);
 +	environ = environment;
 +	um_checkpoint_resumed = 1;
-+	close(image);
-+	sigprocmask(SIG_SETMASK, &old, NULL);
++	os_checkpoint_close_fd(image);
++	checkpoint_signal_mask(SIG_SETMASK, &old, NULL);
 +	os_checkpoint_resume();
 +}
 +
 +void os_checkpoint_kill(int pid)
 +{
++	pid_t reaped;
++
 +	if (pid <= 0)
 +		return;
-+	kill(pid, SIGKILL);
-+	while (waitpid(pid, NULL, __WALL) < 0 && errno == EINTR)
-+		;
++	if (kill(pid, SIGKILL) < 0 && errno != ESRCH)
++		checkpoint_failure("kill host stub");
++	do {
++		reaped = waitpid(pid, NULL, __WALL);
++	} while (reaped < 0 && errno == EINTR);
++	if (reaped != pid)
++		checkpoint_failure("reap host stub");
 +}
 --- a/arch/um/os-Linux/skas/process.c
 +++ b/arch/um/os-Linux/skas/process.c
