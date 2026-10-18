@@ -264,6 +264,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn physical_inventory_is_exported_with_platform_and_purpose() {
+        let mut telemetry = HostTelemetry::default();
+        telemetry.physical.measure(
+            vmm_backend::RunPlatform::KvmX86,
+            vmm_backend::RunPurpose::Completion,
+            || ((), vmm_backend::RunReturn::Returned(6)),
+        );
+        let counters = telemetry.counters();
+        assert!(counters.contains(&("backend.kvm_x86.completion.entries".to_owned(), 1)));
+        assert!(counters.contains(&("backend.kvm_x86.completion.returns".to_owned(), 1)));
+        assert!(counters.contains(&("backend.kvm_x86.completion.raw_exit.6.count".to_owned(), 1)));
+        assert!(
+            !counters
+                .iter()
+                .any(|(key, _)| key.starts_with("backend.hvf_arm64"))
+        );
+    }
+
+    #[test]
     fn hash_totals_saturate_and_export_disjoint_site_names() {
         let mut telemetry = HashTelemetry::default();
         telemetry.costs[HashSite::WholeRequest as usize] = HashCost {
