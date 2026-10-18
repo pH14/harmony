@@ -845,11 +845,21 @@ supported inventory, or its explicit instruction-emulation inventory:
 | Contract feature word | Required capabilities |
 | --- | --- |
 | `1:ECX` | SSE3, PCLMULQDQ, SSSE3, FMA, CMPXCHG16B, PCID, SSE4.1, SSE4.2, MOVBE, POPCNT, AES, XSAVE, AVX, F16C |
-| `1:EDX` | FPU, VME, DE, PSE, TSC, MSR, PAE, CMPXCHG8B, APIC, SEP, MTRR, PGE, CMOV, PAT, PSE36, CLFLUSH, MMX, FXSR, SSE, SSE2, self-snoop |
-| `7:EBX` | FSGSBASE, BMI1, AVX2, SMEP, BMI2, ERMS, INVPCID, zero FCS/FDS, ADX, SMAP, CLFLUSHOPT |
+| `1:EDX` | FPU, VME, DE, PSE, TSC, MSR, PAE, CMPXCHG8B, APIC, SEP, MTRR, PGE, CMOV, PAT, PSE36, CLFLUSH, MMX, FXSR, SSE, SSE2 |
+| `7:EBX` | FSGSBASE, BMI1, AVX2, SMEP, BMI2, ERMS, INVPCID, ADX, SMAP, CLFLUSHOPT |
 | `80000001:ECX` | LAHF/SAHF in long mode, ABM/LZCNT, PREFETCHW |
 | `80000001:EDX` | SYSCALL/SYSRET, NX, 1-GiB pages, RDTSCP, long mode |
 | `D.0`, `D.2` | x87/SSE/YMM state; YMM component size 256 and standard offset 576 |
+
+Policy version 7 explicitly clears self-snoop (`1:EDX[27]`) on every host and
+changes the ordinary and nested contract fingerprints. The bit describes
+conflicting-memory-type cache behavior, not an instruction enable. AMD does
+not enumerate the Intel bit, and the stateful guest MTRR/PAT surface does not
+establish equivalent alias semantics. It is neither a host intersection nor a
+userspace-emulation exemption. Older snapshots are rejected by contract
+identity before restore. Standard instruction features are unchanged.
+KVM recommends always setting the inverse x87 absence flags `7:EBX[6,13]`;
+these describe unavailable legacy x87 fields rather than native capabilities.
 
 This checks the complete requested capability words, so newly requested bits
 in these words automatically require admission too. KVM may provide a feature

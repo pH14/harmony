@@ -37,12 +37,23 @@ The backend classifies capability words rather than embedding a guest profile:
 | --- | --- |
 | `1:ECX/EDX` | Require KVM capability bits; OSXSAVE (`ECX[27]`) is KVM runtime state derived from CR4 |
 | `6:EAX/ECX/EDX` | Require KVM capability bits or explicit userspace declarations |
-| `7.0:EBX/ECX/EDX`, `7.N:EAX/EBX/ECX/EDX` for N > 0 | Require KVM capability bits or explicit userspace declarations |
+| `7.0:EBX/ECX/EDX`, `7.N:EAX/EBX/ECX/EDX` for N > 0 | Require KVM capability bits or explicit userspace declarations; `7.0:EBX[6,13]` are inverse x87 absence flags |
 | `80000001:ECX/EDX`, `80000007:EDX`, `80000008:EBX`, `8000000a:EDX` | Require KVM capability bits or explicit userspace declarations; includes VMX/SVM requests |
 | `D.0:EAX/EDX`, `D.1:EAX/ECX/EDX` | Require supported XSAVE state/features; software declarations cannot supply them |
 | Nonzero `D.N` components, N >= 2 | Require exact supported size, standard offset, and component flags |
 | Vendor/signature, brand, cache descriptors, topology, frequency and address-width fields | Descriptive model values, not host feature masks |
 | Unclassified nonzero leaves | Refused until their fields receive a disposition |
+
+Indexed feature leaves 7 and D must carry KVM's significant-index flag;
+non-indexed feature leaves must use index zero. This prevents one entry from
+aliasing unchecked subleaves. Nonzero PMU and hypervisor capability leaves are
+unsupported rather than treated as CPU identity.
+
+KVM's [x87 errata](https://docs.kernel.org/virt/kvm/x86/errata.html) recommend
+always setting `FDP_EXCPTN_ONLY` and `ZERO_FCS_FDS` in guest CPUID. These are
+inverse absence flags, not required native instruction capabilities; they do
+not require the host's matching bit. This classification does not bypass XSAVE
+state or component-layout admission.
 
 Userspace declarations must be subsets of advertised bits in known feature
 words, cannot repeat a leaf/subleaf, and cannot exempt XSAVE or its state/layout

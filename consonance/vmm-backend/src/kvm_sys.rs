@@ -1339,11 +1339,15 @@ mod policy_diagnostic {
         let before_cpuid = backend.vcpu.get_cpuid2(256).unwrap();
         let supported = backend.supported_cpuid.clone();
         let emulated = backend.emulated_cpuid.clone();
+        println!(
+            "KVM_CPUID_INVENTORY supported={:?} emulated={:?}",
+            supported.entries, emulated.entries
+        );
         let mut cases = 0;
         for (leaf, register, bits) in [
             (1, "ecx", 0x36da_3203_u32),
-            (1, "edx", 0x0f8b_bb7f),
-            (7, "ebx", 0x0098_27a9),
+            (1, "edx", 0x078b_bb7f),
+            (7, "ebx", 0x0098_07a9),
             (0x8000_0001, "ecx", 0x121),
             (0x8000_0001, "edx", 0x2c10_0800),
             (0xd, "eax", 7),
@@ -1354,6 +1358,7 @@ mod policy_diagnostic {
                 }
                 let mut e = CpuidEntry {
                     leaf,
+                    subleaf_significant: matches!(leaf, 7 | 0xd),
                     ..Default::default()
                 };
                 match register {
@@ -2883,7 +2888,7 @@ mod xsave_diagnostic {
                         eax: 0x0009_06EC,
                         ebx: 0x0001_0800,
                         ecx: 0x36DA_3203,
-                        edx: 0x0F8B_BB7F,
+                        edx: 0x078B_BB7F,
                         ..Default::default()
                     },
                     CpuidEntry {
