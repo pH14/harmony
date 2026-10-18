@@ -2330,7 +2330,7 @@ mod tests {
     #[test]
     #[ignore = "live ARM KVM; run with --ignored on a /dev/kvm host"]
     fn live_in_kernel_preemption_matches_guest_acknowledgment() {
-        use vmm_backend::{Arm64KvmBackend, GicIntId, LiveKvm};
+        use vmm_backend::{Arm64Kvm, Arm64KvmBackend, GicIntId, LiveKvm};
 
         const RAM: u64 = 0x4000_0000;
         const OUTPUT: u64 = 0x0900_0000;
@@ -2382,7 +2382,13 @@ mod tests {
             let saved_gic = backend.save().unwrap().gic.unwrap();
             assert_eq!(saved_gic.bpr1, bpr1);
             assert_eq!(saved_gic.ap1r[0], 1 << active_index);
-            let model = gicv3::Gicv3::restore(&records::gic_from_backend(&saved_gic), 0).unwrap();
+            assert_eq!(backend.kvm().get_vgic_attr(5, 0, false).unwrap() & 1, 0);
+            assert_eq!(saved_gic.gicr_propbaser & !0xfff, 0);
+            assert_eq!(saved_gic.gicr_pendbaser & !0xffff, 0);
+            let mut projected = records::gic_from_backend(&saved_gic);
+            projected.gicr_propbaser = 0;
+            projected.gicr_pendbaser = 0;
+            let model = gicv3::Gicv3::restore(&projected, 0).unwrap();
             assert!(model.input_unmasked(PVCLOCK_PPI));
             assert!(model.input_deliverable(PVCLOCK_PPI));
             let idle_gic = Arm64GicIdleState::from_gic(&saved_gic, PVCLOCK_PPI).unwrap();
