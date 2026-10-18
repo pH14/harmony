@@ -69,6 +69,8 @@ impl Site {
 
 pub(super) trait Clock: std::fmt::Debug {
     fn now(&self) -> u64;
+    #[cfg(test)]
+    fn observe_unlock(&self) {}
 }
 
 #[derive(Debug)]
@@ -102,7 +104,7 @@ fn add(counter: &AtomicU64, value: u64) {
 #[derive(Debug)]
 pub(super) struct LockWork<C = WallClock> {
     clock: C,
-    sites: [Work; 15],
+    sites: [Work; Site::ALL.len()],
 }
 impl Default for LockWork {
     fn default() -> Self {
@@ -176,6 +178,8 @@ impl<T, C: Clock> Drop for Guard<'_, T, C> {
     fn drop(&mut self) {
         let held = self.owner.clock.now().saturating_sub(self.start);
         drop(self.guard.take());
+        #[cfg(test)]
+        self.owner.clock.observe_unlock();
         let work = &self.owner.sites[self.site as usize];
         add(&work.hold_ns, held);
         add(&work.completed, 1);
@@ -199,7 +203,8 @@ mod tests {
         let mutex = Mutex::new(0);
         let early = || {
             let _guard = owner.lock(&mutex, Site::Lookup);
-            None::<()>
+            None::<()>?;
+            Some(())
         };
         assert_eq!(early(), None);
         let result = std::panic::catch_unwind(|| {
@@ -217,48 +222,144 @@ mod tests {
         drop(owner.lock(&mutex, Site::Lookup));
         assert_eq!(work.completed.load(Ordering::Relaxed), 3);
     }
+    #[derive(Debug, Eq, PartialEq)]
+    struct Sample {
+        locked: bool,
+        attempts: u64,
+        acquired: u64,
+        completed: u64,
+        hold_ns: u64,
+    }
+    #[derive(Debug)]
+    struct ObservingClock {
+        mutex: Arc<Mutex<()>>,
+        owner: std::sync::Weak<LockWork<Self>>,
+        samples: Mutex<Vec<Sample>>,
+        unlocked: Mutex<Vec<Sample>>,
+        started: Option<std::sync::mpsc::Sender<()>>,
+    }
+    impl ObservingClock {
+        fn sample(&self) -> Sample {
+            let owner = self.owner.upgrade().unwrap();
+            let work = &owner.sites[Site::Lookup as usize];
+            Sample {
+                locked: self.mutex.try_lock().is_err(),
+                attempts: work.attempts.load(Ordering::Relaxed),
+                acquired: work.acquired.load(Ordering::Relaxed),
+                completed: work.completed.load(Ordering::Relaxed),
+                hold_ns: work.hold_ns.load(Ordering::Relaxed),
+            }
+        }
+    }
+    impl Clock for ObservingClock {
+        fn now(&self) -> u64 {
+            let mut samples = self.samples.lock().unwrap();
+            let next = samples.len() as u64 * 7;
+            samples.push(self.sample());
+            if next == 0
+                && let Some(started) = &self.started
+            {
+                let _ = started.send(());
+            }
+            next
+        }
+        fn observe_unlock(&self) {
+            self.unlocked.lock().unwrap().push(self.sample());
+        }
+    }
+    fn observing(
+        mutex: Arc<Mutex<()>>,
+        started: Option<std::sync::mpsc::Sender<()>>,
+    ) -> Arc<LockWork<ObservingClock>> {
+        Arc::new_cyclic(|owner| {
+            LockWork::new(ObservingClock {
+                mutex,
+                owner: owner.clone(),
+                samples: Mutex::new(Vec::new()),
+                unlocked: Mutex::new(Vec::new()),
+                started,
+            })
+        })
+    }
+    #[test]
+    fn timer_samples_attempts_before_wait_and_hold_before_unlock_then_publishes() {
+        let mutex = Arc::new(Mutex::new(()));
+        let owner = observing(mutex.clone(), None);
+        drop(owner.lock(&mutex, Site::Lookup));
+        assert_eq!(
+            *owner.clock.samples.lock().unwrap(),
+            vec![
+                Sample {
+                    locked: false,
+                    attempts: 1,
+                    acquired: 0,
+                    completed: 0,
+                    hold_ns: 0
+                },
+                Sample {
+                    locked: true,
+                    attempts: 1,
+                    acquired: 0,
+                    completed: 0,
+                    hold_ns: 0
+                },
+                Sample {
+                    locked: true,
+                    attempts: 1,
+                    acquired: 1,
+                    completed: 0,
+                    hold_ns: 0
+                },
+            ]
+        );
+        assert_eq!(
+            *owner.clock.unlocked.lock().unwrap(),
+            vec![Sample {
+                locked: false,
+                attempts: 1,
+                acquired: 1,
+                completed: 0,
+                hold_ns: 0
+            },]
+        );
+        let work = &owner.sites[Site::Lookup as usize];
+        assert_eq!(work.completed.load(Ordering::Relaxed), 1);
+        assert_eq!(work.wait_ns.load(Ordering::Relaxed), 7);
+        assert_eq!(work.hold_ns.load(Ordering::Relaxed), 7);
+    }
     #[test]
     fn contending_attempt_is_visible_before_acquisition() {
-        let owner = Arc::new(LockWork::default());
         let mutex = Arc::new(Mutex::new(()));
-        let guard = owner.lock(&mutex, Site::Lookup);
-        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let (started, receiver) = std::sync::mpsc::channel();
+        let owner = observing(mutex.clone(), Some(started));
+        let held = mutex.lock().unwrap();
         let thread = {
             let owner = owner.clone();
             let mutex = mutex.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                drop(owner.lock(&mutex, Site::Lookup));
-            })
+            std::thread::spawn(move || drop(owner.lock(&mutex, Site::Lookup)))
         };
-        barrier.wait();
-        while owner.sites[Site::Lookup as usize]
-            .attempts
-            .load(Ordering::Relaxed)
-            != 2
-        {
-            std::thread::yield_now();
-        }
+        let start = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        let before_unlock = owner.clock.samples.lock().unwrap().first().map(|sample| {
+            (
+                sample.locked,
+                sample.attempts,
+                sample.acquired,
+                sample.completed,
+            )
+        });
+        drop(held);
+        let joined = thread.join();
+        assert!(joined.is_ok());
+        assert!(
+            start.is_ok(),
+            "wait timestamp was not sampled while mutex was held"
+        );
+        assert_eq!(before_unlock, Some((true, 1, 0, 0)));
         assert_eq!(
             owner.sites[Site::Lookup as usize]
-                .acquired
+                .completed
                 .load(Ordering::Relaxed),
             1
-        );
-        assert_eq!(
-            owner.sites[Site::Lookup as usize]
-                .completed
-                .load(Ordering::Relaxed),
-            0
-        );
-        drop(guard);
-        thread.join().unwrap();
-        assert_eq!(
-            owner.sites[Site::Lookup as usize]
-                .completed
-                .load(Ordering::Relaxed),
-            2
         );
     }
 }
