@@ -288,6 +288,27 @@ contract excludes champion selection and input publication. Workloads must docum
 their scope and bound their memory; these observer allocations are reflected in
 RSS rather than the archive's logical memory budget.
 
+The archive memory budget covers retained snapshots and job-origin snapshots
+pinned until their ordered results are admitted. A workload reports exclusive
+snapshot bytes separately from a root-to-parent visitor over shared allocations.
+The visitor identifies actual live allocations, including their allocation
+headers; the archive charges each reachable allocation once plus its accounting
+entry. Acquiring or releasing a root follows only newly owned or finally released
+nodes, stopping at an already owned ancestor. Clones of an existing root cost one
+lookup; budget queries do not traverse ancestry. Allocation identities and the
+ownership ledger are runtime-only and never enter deterministic evidence.
+
+Worker target-private state, including independently retained inner history
+handles after a reply, remains outside this archive budget. Job-origin outer
+snapshot handles are dropped before the reply releases their ordered pins.
+Thus legal worker drop timing before unpin cannot change budget decisions.
+Checkpoint restoration and imported snapshot batches call the workload's
+canonicalization hook before rebuilding the ledger. This must restore actual
+sharing of validated expected histories, rather than merely treating equal
+content digests as shared storage. An import seeds canonicalization with the
+existing bootstrap root. Temporary canonicalization indexes are discarded before
+accounting; independent execution receipts retain their own validation authority.
+
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
 
