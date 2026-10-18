@@ -54,10 +54,10 @@ use crate::{
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v9";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v7";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v6";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v10";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v8";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v7";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v4";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -70,7 +70,7 @@ const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
 const HOST_FAILURE_POLICY: &str = "watchdog_incomplete_v1";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-coverage-v4";
+const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -153,11 +153,16 @@ type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 fn endpoint_result_sha256(
     result: &FaultCampaignJobResult,
     endpoint: FaultEndpointCertificate,
+    history: Option<(u64, [u8; 32])>,
 ) -> Result<String, Box<dyn Error>> {
+    if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) != history.is_some() {
+        return Err("fault result event history does not match its endpoint availability".into());
+    }
     postcard_value_sha256(&(
-        "fault-campaign-result-endpoint-v1",
+        "fault-campaign-result-endpoint-v2",
         postcard_result_sha256(result)?,
         endpoint,
+        history.map(|history| (control_proto::EventHistory::VERSION, history)),
     ))
 }
 
@@ -456,7 +461,12 @@ impl Reporting for FaultWorkload {
                 target.state_hash_current()
             })?
         };
-        endpoint_result_sha256(result, endpoint)
+        let history = if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) {
+            Some(target.event_history_current()?)
+        } else {
+            None
+        };
+        endpoint_result_sha256(result, endpoint, history)
     }
 
     fn snapshot_identity_sha256(
@@ -784,9 +794,16 @@ impl TargetExecution for FaultWorkload {
         }
         validate_snapshot_prefix_certificates(snapshot, self.config.uml().is_some())?;
         match (self.config.uml().is_some(), snapshot.endpoint) {
-            (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => Ok(Some(
-                replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?,
-            )),
+            (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => {
+                Ok(Some(replay_endpoint_certificate(
+                    hash,
+                    snapshot
+                        .event_history
+                        .ok_or("KVM snapshot lacks ordered event history")?,
+                    &snapshot.observation,
+                    snapshot.failed,
+                )?))
+            }
             (true, Some(FaultEndpointCertificate::UmlWholeStateUnavailable)) => Ok(None),
             _ => Err("fault replay candidate lacks a certificate for its backend".into()),
         }
@@ -804,6 +821,7 @@ impl TargetExecution for FaultWorkload {
         }
         Ok(Some(replay_endpoint_certificate(
             target.state_hash_current()?,
+            target.event_history_current()?,
             target.observation(),
             target.failed(),
         )?))
@@ -1111,25 +1129,51 @@ mod tests {
             preparation_failure: None,
             actions: Vec::new(),
         };
-        let first =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([1; 32]))
-                .unwrap();
-        let second =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([2; 32]))
-                .unwrap();
+        let first = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([1; 32]),
+            Some((0, [0; 32])),
+        )
+        .unwrap();
+        let second = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([2; 32]),
+            Some((0, [0; 32])),
+        )
+        .unwrap();
         let failed = endpoint_result_sha256(
             &result,
             FaultEndpointCertificate::KvmUnavailableAfterFailure,
+            None,
         )
         .unwrap();
-        let uml =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::UmlWholeStateUnavailable)
-                .unwrap();
+        let uml = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::UmlWholeStateUnavailable,
+            None,
+        )
+        .unwrap();
         assert_ne!(first, second);
         assert_ne!(first, failed);
         assert_ne!(first, uml);
         assert_ne!(failed, uml);
         assert_ne!(first, postcard_result_sha256(&result).unwrap());
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::KvmWholeState([1; 32]),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::UmlWholeStateUnavailable,
+                Some((0, [0; 32]))
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1141,10 +1185,16 @@ mod tests {
         let snapshot = FaultSnapshot {
             actions: vec![action],
             prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
-                    .unwrap(),
+                replay_endpoint_certificate(
+                    [17; 32],
+                    (0, [0; 32]),
+                    &FaultObservations::default(),
+                    false,
+                )
+                .unwrap(),
             )],
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
         let result = FaultCampaignJobResult {
@@ -1187,8 +1237,8 @@ mod tests {
         assert_eq!(fresh_calls, 1);
         assert_eq!(reused, fresh);
         assert_eq!(
-            endpoint_result_sha256(&result, reused).unwrap(),
-            endpoint_result_sha256(&result, fresh).unwrap()
+            endpoint_result_sha256(&result, reused, Some((0, [0; 32]))).unwrap(),
+            endpoint_result_sha256(&result, fresh, Some((0, [0; 32]))).unwrap()
         );
         let mut malformed = result.clone();
         malformed.actions[0]
@@ -1218,13 +1268,14 @@ mod tests {
         let observation = FaultObservations::default();
         let endpoint_hash = [17; 32];
         let final_certificate =
-            replay_endpoint_certificate(endpoint_hash, &observation, false).unwrap();
+            replay_endpoint_certificate(endpoint_hash, (0, [0; 32]), &observation, false).unwrap();
         let snapshot = FaultSnapshot {
             actions: vec![action, action],
             prefix_certificates: vec![Some([11; 32]), Some(final_certificate)],
             observation,
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
+            event_history: Some((0, [0; 32])),
         };
         let game = game();
         let identity = game.snapshot_identity_sha256(&snapshot).unwrap();
@@ -1674,8 +1725,10 @@ mod tests {
         let tuned = fixture_workload(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
         let mut older = policies.clone();
-        older.insert(ACTION_FORMAT_FIELD.to_owned(), "500000000".to_owned());
-        assert!(game.resolve_recorded(&older).is_err());
+        for legacy in ["500000000", "fault-action-duration-coverage-v4"] {
+            older.insert(ACTION_FORMAT_FIELD.to_owned(), legacy.to_owned());
+            assert!(game.resolve_recorded(&older).is_err());
+        }
         assert_eq!(
             policies.get(ACTION_FORMAT_FIELD).map(String::as_str),
             Some(ACTION_FORMAT)

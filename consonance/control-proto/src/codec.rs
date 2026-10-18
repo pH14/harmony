@@ -2,9 +2,9 @@
 
 use crate::error::ProtocolError;
 use crate::types::{
-    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventRef,
-    HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution, SnapId,
-    StopConditions, StopMask, StopReason,
+    Answer, CapFlags, Caps, CoverageGeometry, CrashInfo, CrashKind, DecisionId, EventHistory,
+    EventRef, HashScope, HostFault, Moment, RegsView, Reply, Reproducer, Request, Resolution,
+    SnapId, StopConditions, StopMask, StopReason,
 };
 use crate::{MAX_FRAME_LEN, PROTO_VERSION};
 
@@ -25,6 +25,7 @@ const REQ_REGS: u8 = 11;
 const REQ_EXEC: u8 = 12;
 const REQ_RECORDED_ENV: u8 = 13;
 const REQ_CONSOLE: u8 = 14;
+const REQ_EVENT_HISTORY: u8 = 15;
 
 const RESULT_OK: u8 = 0;
 const RESULT_ERR: u8 = 1;
@@ -40,6 +41,7 @@ const REPLY_EXEC_RESULT: u8 = 9;
 const REPLY_SNAPSHOT: u8 = 10;
 const REPLY_RECORDED: u8 = 11;
 const REPLY_CONSOLE: u8 = 12;
+const REPLY_EVENT_HISTORY: u8 = 13;
 
 const SR_DEADLINE: u8 = 1;
 const SR_QUIESCENT: u8 = 2;
@@ -215,6 +217,7 @@ fn write_request(w: &mut Vec<u8>, req: &Request) {
             put_u64(w, deadline.0);
         }
         Request::RecordedEnv => w.push(REQ_RECORDED_ENV),
+        Request::EventHistory => w.push(REQ_EVENT_HISTORY),
     }
 }
 
@@ -251,6 +254,7 @@ fn read_request(r: &mut Reader) -> Result<Request, ProtocolError> {
             deadline: Moment(r.u64()?),
         },
         REQ_RECORDED_ENV => Request::RecordedEnv,
+        REQ_EVENT_HISTORY => Request::EventHistory,
         _ => return Err(ProtocolError::ShortFrame),
     })
 }
@@ -288,6 +292,11 @@ fn write_reply(w: &mut Vec<u8>, reply: &Reply) {
         Reply::Stop(reason) => {
             w.push(REPLY_STOP);
             write_stop_reason(w, reason);
+        }
+        Reply::EventHistory(history) => {
+            w.push(REPLY_EVENT_HISTORY);
+            put_u64(w, history.count);
+            w.extend_from_slice(&history.digest);
         }
         Reply::Hash(digest) => {
             w.push(REPLY_HASH);
@@ -345,6 +354,10 @@ fn read_reply(r: &mut Reader) -> Result<Reply, ProtocolError> {
         REPLY_UNIT => Reply::Unit,
         REPLY_STOP => Reply::Stop(read_stop_reason(r)?),
         REPLY_HASH => Reply::Hash(read_array32(r)?),
+        REPLY_EVENT_HISTORY => Reply::EventHistory(EventHistory {
+            count: r.u64()?,
+            digest: read_array32(r)?,
+        }),
         REPLY_SDK_EVENTS => {
             let count = r.u32()?;
             let mut events = Vec::new();

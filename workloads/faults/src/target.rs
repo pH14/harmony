@@ -259,6 +259,7 @@ pub struct FaultSnapshot {
     pub observation: FaultObservations,
     pub failed: bool,
     pub endpoint: Option<FaultEndpointCertificate>,
+    pub event_history: Option<(u64, [u8; 32])>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -932,6 +933,7 @@ mod tests {
                     NonZeroU16::new(256).unwrap(),
                 )],
                 prefix_certificates: vec![Some([17; 32])],
+                event_history: Some((0, [0; 32])),
                 ..FaultSnapshot::default()
             };
             let bytes = postcard::to_allocvec(&snapshot).unwrap();
