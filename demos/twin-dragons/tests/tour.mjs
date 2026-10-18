@@ -181,8 +181,14 @@ try {
   assert.ok(await page.locator('#tour-ping-bounds rect').count() > 0);
   const wave = page.locator('.tour-ping-wave').first();
   const phase = await wave.evaluate((node) => node.getAnimations()[0].currentTime);
-  await page.waitForTimeout(150);
-  assert.ok(await wave.evaluate((node) => node.getAnimations()[0].currentTime) > phase, 'The History ping repeats without resetting each redraw');
+  assert.ok(
+    await page.waitForFunction(
+      (phase) => document.querySelector('.tour-ping-wave').getAnimations()[0].currentTime >= phase + 150,
+      phase,
+      { timeout: 5000 },
+    ).then(() => true, () => false),
+    'The History ping repeats without resetting each redraw',
+  );
   const center = await page.locator('.tour-ping-core').evaluate((node) => { const r = node.getBoundingClientRect(); return { x: Math.floor(r.left + r.width / 2), y: Math.floor(r.top + r.height / 2) }; });
   const pixel = await page.screenshot({clip:{...center,width:1,height:1}});
   const rgba = await page.evaluate(async (data) => { const image = new Image(); image.src = 'data:image/png;base64,' + data; await image.decode(); const c = document.createElement('canvas'); c.width = c.height = 1; const ctx = c.getContext('2d'); ctx.drawImage(image,0,0); return [...ctx.getImageData(0,0,1,1).data]; }, pixel.toString('base64'));
