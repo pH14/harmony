@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::cache::WritableExtent;
+#[cfg(feature = "in-process")]
+use std::sync::OnceLock;
 use std::{
     collections::VecDeque,
     io,
     process::Child,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, Mutex},
 };
 
 pub(crate) struct ExportDestination<'a> {
@@ -86,6 +88,7 @@ struct RetainedWorker {
     extents: Vec<WritableExtent>,
     ambiguous: bool,
     signalled: bool,
+    signal_eligible: bool,
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +121,7 @@ impl Quarantine {
             extents,
             ambiguous: false,
             signalled: false,
+            signal_eligible: false,
         });
         id
     }
@@ -131,11 +135,11 @@ impl Quarantine {
             return ExitPoll::Exited;
         };
         let worker = &mut self.workers[position];
-        let previously_ambiguous = worker.ambiguous;
-        if !previously_ambiguous {
-            worker.ambiguous = true;
-            self.stats.ambiguous_workers = self.stats.ambiguous_workers.saturating_add(1);
+        if worker.ambiguous {
+            return ExitPoll::Ambiguous;
         }
+        worker.ambiguous = true;
+        self.stats.ambiguous_workers = self.stats.ambiguous_workers.saturating_add(1);
         match worker.owner.try_exited() {
             Ok(true) => {
                 let worker = self
@@ -157,11 +161,9 @@ impl Quarantine {
                 ExitPoll::Ambiguous
             }
             Ok(false) => {
-                if !previously_ambiguous {
-                    worker.ambiguous = false;
-                    self.stats.ambiguous_workers -= 1;
-                }
-                if signal && !worker.ambiguous && !worker.signalled {
+                worker.ambiguous = false;
+                self.stats.ambiguous_workers -= 1;
+                if signal && worker.signal_eligible && !worker.signalled {
                     worker.ambiguous = true;
                     self.stats.ambiguous_workers = self.stats.ambiguous_workers.saturating_add(1);
                     match worker.owner.terminate() {
@@ -185,6 +187,16 @@ impl Quarantine {
         }
     }
 
+    fn allow_signal(&mut self, id: &WorkerId) {
+        if let Some(worker) = self
+            .workers
+            .iter_mut()
+            .find(|worker| Arc::ptr_eq(&worker.id.0, &id.0))
+        {
+            worker.signal_eligible = true;
+        }
+    }
+
     fn reap(&mut self, limit: usize) {
         for _ in 0..limit.min(64).min(self.workers.len()) {
             let id = self.workers.front().expect("retained worker").id.clone();
@@ -195,30 +207,56 @@ impl Quarantine {
     }
 }
 
+#[cfg(feature = "in-process")]
 fn registry() -> &'static Mutex<Quarantine> {
     static REGISTRY: OnceLock<Mutex<Quarantine>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(Quarantine::default()))
 }
 
+#[cfg(feature = "in-process")]
 fn locked() -> std::sync::MutexGuard<'static, Quarantine> {
     registry()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(feature = "in-process")]
 pub(crate) fn retain_worker(
     owner: Option<Box<dyn ExitOwner>>,
     extents: Vec<WritableExtent>,
 ) -> WorkerId {
     locked().insert(owner, extents)
 }
+#[cfg(feature = "in-process")]
 pub(crate) fn poll_worker(id: &WorkerId, signal: bool) -> ExitPoll {
     locked().poll(id, signal)
 }
 
+#[cfg(feature = "in-process")]
+pub(crate) fn allow_worker_signal(id: &WorkerId) {
+    locked().allow_signal(id);
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn retained_worker(id: &WorkerId) -> Option<(usize, usize, bool)> {
+    locked()
+        .workers
+        .iter()
+        .find(|worker| Arc::ptr_eq(&worker.id.0, &id.0))
+        .map(|worker| {
+            (
+                worker.extents.len(),
+                worker.extents.iter().map(WritableExtent::len).sum(),
+                worker.ambiguous,
+            )
+        })
+}
+
+#[cfg(feature = "in-process")]
 pub fn worker_quarantine_stats() -> WorkerQuarantineStats {
     locked().stats
 }
+#[cfg(feature = "in-process")]
 pub fn reap_worker_quarantine(limit: usize) -> WorkerQuarantineStats {
     let mut registry = locked();
     registry.reap(limit);
@@ -312,6 +350,7 @@ mod tests {
         let (owner, _, signals) = owner(&[Step::Running, Step::Exited], false);
         let mut registry = Quarantine::default();
         let id = registry.insert(Some(owner), vec![extent]);
+        registry.allow_signal(&id);
         assert_eq!(registry.poll(&id, true), ExitPoll::Running);
         assert_eq!(signals.load(Ordering::SeqCst), 1);
         assert_eq!(registry.stats.retained_bytes, 8192);
@@ -325,35 +364,40 @@ mod tests {
         assert_eq!(signals.load(Ordering::SeqCst), 1);
     }
     #[test]
-    fn ambiguous_wait_permanently_forbids_signalling_but_allows_confirmed_cleanup() {
+    fn ambiguous_wait_permanently_forbids_further_waits_or_signals() {
         let index = LocalIndex::new(4096);
-        let (owner, _, signals) = owner(&[Step::Error, Step::Running, Step::Exited], false);
+        let (owner, polls, signals) = owner(&[Step::Error, Step::Exited], false);
         let mut registry = Quarantine::default();
         let id = registry.insert(Some(owner), vec![index.extent(4096).unwrap()]);
-        assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
-        assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
+        registry.allow_signal(&id);
+        for _ in 0..3 {
+            assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
+            registry.reap(64);
+        }
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
         assert_eq!(signals.load(Ordering::SeqCst), 0);
         assert_eq!(index.stats().charged, 4096);
         assert_eq!(registry.stats.ambiguous_workers, 1);
-        assert_eq!(registry.poll(&id, true), ExitPoll::Exited);
-        assert_eq!(registry.stats.ambiguous_workers, 0);
         assert_eq!(registry.stats.wait_errors, 1);
-        assert_eq!(index.stats().charged, 0);
+        assert_eq!(registry.stats.confirmed_exits, 0);
+        assert_eq!(registry.stats.retained_bytes, 4096);
     }
     #[test]
-    fn failed_signal_does_not_release_or_signal_a_potentially_reused_pid_again() {
+    fn failed_signal_permanently_forbids_further_waits_or_signals() {
         let index = LocalIndex::new(4096);
-        let (owner, _, signals) = owner(&[Step::Running, Step::Running, Step::Exited], true);
+        let (owner, polls, signals) = owner(&[Step::Running, Step::Exited], true);
         let mut registry = Quarantine::default();
         let id = registry.insert(Some(owner), vec![index.extent(4096).unwrap()]);
-        assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
-        assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
+        registry.allow_signal(&id);
+        for _ in 0..3 {
+            assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
+        }
         assert_eq!(index.stats().charged, 4096);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
         assert_eq!(signals.load(Ordering::SeqCst), 1);
         assert_eq!(registry.stats.signal_errors, 1);
         assert_eq!(registry.stats.signals_sent, 0);
-        assert_eq!(registry.poll(&id, true), ExitPoll::Exited);
-        assert_eq!(index.stats().charged, 0);
+        assert_eq!(registry.stats.confirmed_exits, 0);
     }
     #[test]
     fn reap_work_is_capped_and_round_robin() {
@@ -362,7 +406,8 @@ mod tests {
         let mut signals = Vec::new();
         for _ in 0..100 {
             let (owner, p, s) = owner(&[], false);
-            registry.insert(Some(owner), Vec::new());
+            let id = registry.insert(Some(owner), Vec::new());
+            registry.allow_signal(&id);
             polls.push(p);
             signals.push(s);
         }
@@ -395,7 +440,7 @@ mod tests {
     #[test]
     fn an_owner_panic_does_not_take_storage_out_of_the_registry() {
         let index = LocalIndex::new(4096);
-        let (owner, _, signals) = owner(&[Step::Panic, Step::Running, Step::Exited], false);
+        let (owner, polls, signals) = owner(&[Step::Panic, Step::Exited], false);
         let mut registry = Quarantine::default();
         let id = registry.insert(Some(owner), vec![index.extent(4096).unwrap()]);
         assert!(
@@ -406,8 +451,10 @@ mod tests {
         assert_eq!(registry.stats.retained_extents, 1);
         assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
         assert_eq!(signals.load(Ordering::SeqCst), 0);
-        assert_eq!(registry.poll(&id, false), ExitPoll::Exited);
-        assert_eq!(index.stats().charged, 0);
+        assert_eq!(registry.poll(&id, false), ExitPoll::Ambiguous);
+        assert_eq!(polls.load(Ordering::SeqCst), 1);
+        assert_eq!(registry.stats.confirmed_exits, 0);
+        assert_eq!(index.stats().charged, 4096);
     }
     #[test]
     fn unknown_ownership_is_observable_and_never_treated_as_exit() {
@@ -417,8 +464,58 @@ mod tests {
         assert_eq!(registry.poll(&id, true), ExitPoll::Ambiguous);
         assert_eq!(registry.stats.retained_workers, 1);
         assert_eq!(registry.stats.signals_sent, 0);
-        assert_eq!(registry.stats.wait_errors, 2);
-        let _ = worker_quarantine_stats();
-        let _ = reap_worker_quarantine(0);
+        assert_eq!(registry.stats.wait_errors, 1);
+        assert_eq!(registry.stats.ambiguous_workers, 1);
+    }
+    #[test]
+    fn concurrent_background_reaping_cannot_signal_until_grace_is_released() {
+        let index = LocalIndex::new(4096);
+        let (owner, polls, signals) = owner(
+            &[
+                Step::Running,
+                Step::Running,
+                Step::Running,
+                Step::Running,
+                Step::Exited,
+            ],
+            false,
+        );
+        let mut registry = Quarantine::default();
+        let id = registry.insert(Some(owner), vec![index.extent(4096).unwrap()]);
+        let registry = Arc::new(Mutex::new(registry));
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let reaper = {
+            let registry = registry.clone();
+            std::thread::spawn(move || {
+                registry.lock().unwrap().reap(64);
+                registry.lock().unwrap().reap(64);
+                registry.lock().unwrap().reap(64);
+                done_tx.send(()).unwrap();
+                if continue_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
+                    .is_ok()
+                {
+                    registry.lock().unwrap().reap(64);
+                    registry.lock().unwrap().reap(64);
+                }
+            })
+        };
+        let reached = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+        let before = (
+            polls.load(Ordering::SeqCst),
+            signals.load(Ordering::SeqCst),
+            index.stats().charged,
+        );
+        registry.lock().unwrap().allow_signal(&id);
+        let _ = continue_tx.send(());
+        let joined = reaper.join();
+        assert!(joined.is_ok());
+        assert!(reached.is_ok());
+        assert_eq!(before, (3, 0, 4096));
+        assert_eq!(polls.load(Ordering::SeqCst), 5);
+        assert_eq!(signals.load(Ordering::SeqCst), 1);
+        assert_eq!(index.stats().charged, 0);
+        assert_eq!(registry.lock().unwrap().stats.confirmed_exits, 1);
     }
 }
