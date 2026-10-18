@@ -410,14 +410,27 @@ retain the native 128-bit encoding.
 Each campaign job's recorded result digest binds its logical result to a tagged
 final endpoint certificate. Every runnable KVM snapshot carries an action-aligned
 certificate for each prefix in its portable history. Each runnable KVM action
-captures its whole-state hash and action-local observation before the next
-action. Restoring a KVM snapshot visits each prefix, including cached prefixes,
+captures its whole-state hash, cumulative ordered normalized-event commitment
+and count, and action-local observation before the next action. The v2 replay
+certificate binds the v1 history format separately from logical endpoint state.
+Changing an intermediate event with equal endpoint, observations, event count
+and final virtual time still changes this certificate. Restoring a KVM snapshot visits each prefix, including cached prefixes,
 and checks its certificate before continuing. This also covers a resident
 keyframe whose first action diverges and later reconverges at its final
 endpoint. When a candidate is retained, the archive binds the certificates for
 its action suffix, including actions whose own candidates were rejected or
 deduplicated. Jobs restored from an older keyframe compare each replayed KVM
-endpoint and observation with that archive certificate before the next action.
+endpoint, ordered history and observation with that archive certificate before the next action.
+Fresh setup begins with the boot's event prefix; snapshots, including the root,
+retain that prefix. Replay and branch inherit captured history; reconstructed
+prefixes rebuild it, while resident keyframes and portable/cache imports restore
+it. Snapshot capture and diagnostic trace segmentation add no semantic events,
+and snapshot or schedule IDs never enter the commitment. Missing normalized
+history cannot be replaced by an empty commitment. UML snapshots explicitly
+carry no normalized-event commitment and remain uncertified for whole state.
+The VM stream/snapshot formats are v10/v8, UML formats v7/v4, and the action
+policy is `fault-action-duration-coverage-v5-event-history`; older contracts are
+refused.
 Missing, malformed, or conflicting KVM certificates stop the campaign.
 Restoring a KVM source snapshot checks its recorded prefix certificates before
 using its logical observation. Importing a KVM tree rebuilds each imported
