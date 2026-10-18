@@ -25,7 +25,8 @@ use environment::{
     input_spec::{InputSpec, ServiceConfig, ServiceFactory},
 };
 
-use super::live::vmm_target_commitment;
+use super::live::{checked_cached_attachment, vmm_target_commitment};
+use super::{CachedSnapshotReceipt, SnapshotAttachment};
 use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec};
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
@@ -105,6 +106,30 @@ pub trait SearchSession: std::fmt::Debug {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>>;
+    #[expect(clippy::too_many_arguments)]
+    fn publish_snapshot_attached(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        cost: u64,
+    ) -> Result<Lease, Box<dyn Error>> {
+        if attachment != &SnapshotAttachment::default() {
+            return Err("session does not support snapshot attachments".into());
+        }
+        self.publish_snapshot(index, namespace, key, parent, target, cost)
+    }
+    fn import_cached_receipt(
+        &mut self,
+        _index: &dyn CacheIndex,
+        _lease: &Lease,
+        _near: SnapId,
+    ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
+        Err("session does not support snapshot attachment receipts".into())
+    }
     fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>>;
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>>;
     fn branch_with_service(
@@ -134,6 +159,26 @@ trait ServedSession: SearchSession {
         parent: Option<SnapId>,
         target: SnapId,
     ) -> Result<Vec<u8>, Box<dyn Error>>;
+    fn export_delta_attached(
+        &self,
+        parent: Option<SnapId>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let raw = self.export_delta(parent, target)?;
+        let delta = crate::cache::extent::read_extent(&raw)?;
+        let machine = super::live::raw_target_commitment(delta.sidecar)?;
+        let sidecar = super::attachment::encode(delta.sidecar, machine, attachment)?;
+        let len = crate::cache::extent::extent_len(
+            delta.pages.len(),
+            delta.reverted.len(),
+            sidecar.len(),
+        )
+        .ok_or("extent size overflows")?;
+        let mut out = vec![0; len];
+        crate::cache::extent::write_extent(&mut out, &delta.pages, &delta.reverted, &sidecar)?;
+        Ok(out)
+    }
     fn import_extents(
         &mut self,
         extents: &[&[u8]],
@@ -188,6 +233,28 @@ impl SearchSession for Session {
         Session::import_cached(self, index, lease, near)
     }
 
+    fn publish_snapshot_attached(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        cost: u64,
+    ) -> Result<Lease, Box<dyn Error>> {
+        Session::publish_snapshot_attached(
+            self, index, namespace, key, parent, target, attachment, cost,
+        )
+    }
+    fn import_cached_receipt(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
+        Session::import_cached_receipt(self, index, lease, near)
+    }
     fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
         Session::replay_snapshot(self, snapshot)
     }
@@ -248,6 +315,20 @@ impl ServedSession for Session {
         self.write_delta(parent, target, |len| Ok(vec![0; len]), Vec::as_mut_slice)
     }
 
+    fn export_delta_attached(
+        &self,
+        parent: Option<SnapId>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        self.write_delta_attached(
+            parent,
+            target,
+            attachment,
+            |len| Ok(vec![0; len]),
+            Vec::as_mut_slice,
+        )
+    }
     fn import_extents(
         &mut self,
         extents: &[&[u8]],
@@ -977,11 +1058,35 @@ impl SearchSession for WorkerSession {
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
         self.check_loaded_image()?;
+        self.publish_snapshot_attached(
+            index,
+            namespace,
+            key,
+            parent,
+            target,
+            &SnapshotAttachment::default(),
+            cost,
+        )
+    }
+
+    fn publish_snapshot_attached(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        cost: u64,
+    ) -> Result<Lease, Box<dyn Error>> {
+        self.check_loaded_image()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let reply = self.call(
             Out::op(EXPORT)
                 .option(parent.map(|(snap, _)| snap.0))
-                .u64(target.0),
+                .u64(target.0)
+                .bytes(&attachment.domain)
+                .bytes(&attachment.bytes),
             &[],
         )?;
         let mut input = In(&reply);
@@ -1022,7 +1127,20 @@ impl SearchSession for WorkerSession {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let receipt = self.import_cached_receipt(index, lease, near)?;
+        Ok((receipt.snapshot, receipt.moment))
+    }
+
+    fn import_cached_receipt(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
         let chain = index.chain(lease)?;
+        let extents: Vec<&[u8]> = chain.iter().map(CommittedExtent::bytes).collect();
+        let (machine_commitment, attachment, object_commitment) =
+            checked_cached_attachment(&extents, index.target_commitment(lease)?)?;
         let ranges: Vec<SharedRange<'_>> =
             chain.iter().map(CommittedExtent::shared_range).collect();
         let mut request = Out::op(IMPORT);
@@ -1039,7 +1157,13 @@ impl SearchSession for WorkerSession {
             let _ = self.drop_snapshot(snap.0);
             return Err(error.into());
         }
-        Ok(snap)
+        Ok(CachedSnapshotReceipt {
+            snapshot: snap.0,
+            moment: snap.1,
+            machine_commitment,
+            attachment,
+            object_commitment,
+        })
     }
 
     fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
@@ -1222,8 +1346,12 @@ impl Served {
             EXPORT => {
                 let parent = input.option()?.map(SnapId);
                 let target = SnapId(input.u64()?);
+                let attachment = SnapshotAttachment {
+                    domain: input.bytes()?.to_vec(),
+                    bytes: input.bytes()?.to_vec(),
+                };
                 input.finish()?;
-                let delta = session.export_delta(parent, target)?;
+                let delta = session.export_delta_attached(parent, target, &attachment)?;
                 out.len(delta.len());
                 self.pending = Some(delta);
             }
@@ -1930,6 +2058,139 @@ mod tests {
         drop((first, second));
         first_server.join().unwrap();
         second_server.join().unwrap();
+    }
+
+    #[test]
+    fn worker_import_selects_target_attachment_and_rejects_independent_digest_mismatch() {
+        use crate::cache::extent::{extent_len, read_extent, write_extent};
+        let index = LocalIndex::new(1 << 20);
+        let (mut source, server) = threaded(3);
+        let (mut destination, other_server) = threaded(50);
+        let first = SnapshotAttachment {
+            domain: b"opaque-v1".to_vec(),
+            bytes: b"parent".to_vec(),
+        };
+        let second = SnapshotAttachment {
+            domain: b"opaque-v1".to_vec(),
+            bytes: b"target".to_vec(),
+        };
+        let (parent, _) = source.snapshot().unwrap();
+        let parent_lease = source
+            .publish_snapshot_attached(&index, namespace(), b"a", None, parent, &first, 1)
+            .unwrap();
+        source.run_until(40).unwrap();
+        let (child, _) = source.snapshot().unwrap();
+        let lease = source
+            .publish_snapshot_attached(
+                &index,
+                namespace(),
+                b"ab",
+                Some((parent, &parent_lease)),
+                child,
+                &second,
+                1,
+            )
+            .unwrap();
+        let receipt = destination
+            .import_cached_receipt(&index, &lease, SnapId(1))
+            .unwrap();
+        assert_eq!(receipt.attachment, second);
+        assert_eq!(
+            receipt.object_commitment,
+            index.target_commitment(&lease).unwrap()
+        );
+        assert_eq!(
+            destination.state_hash().unwrap(),
+            source.state_hash().unwrap()
+        );
+        let chain = index.chain(&lease).unwrap();
+        let target = read_extent(chain.last().unwrap().bytes()).unwrap();
+        let envelope = super::super::attachment::decode(target.sidecar).unwrap();
+        let forged =
+            super::super::attachment::encode(envelope.raw, envelope.machine_commitment, &first)
+                .unwrap();
+        let len = extent_len(target.pages.len(), target.reverted.len(), forged.len()).unwrap();
+        let mut extent = index.extent(len).unwrap();
+        write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
+        let bad = index
+            .publish(
+                namespace(),
+                b"ac",
+                Some(&parent_lease),
+                extent,
+                receipt.object_commitment,
+                1,
+            )
+            .unwrap();
+        let before = destination.store_bytes();
+        let error = destination
+            .import_cached_receipt(&index, &bad, SnapId(1))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached object commitment differs")
+        );
+        assert_eq!(destination.store_bytes(), before);
+        let forged = super::super::attachment::encode(envelope.raw, [0xee; 32], &second).unwrap();
+        let len = extent_len(target.pages.len(), target.reverted.len(), forged.len()).unwrap();
+        let mut extent = index.extent(len).unwrap();
+        write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
+        let digest = super::super::attachment::commitment([0xee; 32], &second);
+        let wrong_machine = index
+            .publish(namespace(), b"ad", Some(&parent_lease), extent, digest, 1)
+            .unwrap();
+        let error = destination
+            .import_cached_receipt(&index, &wrong_machine, SnapId(1))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached machine commitment differs")
+        );
+        assert_eq!(destination.store_bytes(), before);
+        index.release(wrong_machine);
+        index.release(bad);
+        index.release(lease);
+        index.release(parent_lease);
+        drop((source, destination));
+        server.join().unwrap();
+        other_server.join().unwrap();
+    }
+
+    #[test]
+    fn identical_machine_with_different_attachment_quarantines_publication() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut source, server) = threaded(3);
+        let (snap, _) = source.snapshot().unwrap();
+        let a = SnapshotAttachment {
+            domain: b"opaque-v1".to_vec(),
+            bytes: vec![1],
+        };
+        let b = SnapshotAttachment {
+            domain: b"opaque-v1".to_vec(),
+            bytes: vec![2],
+        };
+        let lease = source
+            .publish_snapshot_attached(&index, namespace(), b"key", None, snap, &a, 1)
+            .unwrap();
+        let error = source
+            .publish_snapshot_attached(&index, namespace(), b"key", None, snap, &b, 1)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::cache::CacheError>(),
+            Some(crate::cache::CacheError::DivergentDuplicate { .. })
+        ));
+        let witnesses = index.divergences();
+        assert_eq!(witnesses.len(), 1);
+        assert_ne!(
+            witnesses[0].existing.target_commitment,
+            witnesses[0].published.target_commitment
+        );
+        assert!(index.target_commitment(&lease).is_err());
+        index.release(lease);
+        drop(source);
+        server.join().unwrap();
     }
 
     #[test]

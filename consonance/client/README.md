@@ -370,3 +370,29 @@ memory, arguments and seed. They can be
 imported over a fresh launch whose host-private setup bytes differ. Cache deltas
 still require their original setup identity. Neither interface interprets
 workload commands.
+
+Search sessions can publish a `SnapshotAttachment` containing an opaque domain
+and payload alongside a cached snapshot. The client assigns no workload meaning
+to those bytes. `publish_snapshot_attached` carries them through both direct and
+process-worker exports; `import_cached_receipt` returns the target attachment,
+its machine commitment, and its independently verified object commitment.
+Existing attachment-free calls use an empty attachment.
+
+The `HMSESS02` cache envelope contains checked lengths for backend metadata,
+attachment domain, and payload, together with the machine commitment. The
+version-two object commitment binds that machine commitment and both
+length-delimited attachment fields. The VM machine commitment already binds the
+admitted image identity and portable target state; UML binds its admitted root
+and setup domain plus the checkpoint digest. Imports compare the object digest
+against the pinned index record and verify the backend machine commitment before
+accepting the imported handle. Each delta carries its complete target attachment;
+resolving a chain never substitutes an ancestor's attachment. Older envelopes
+are refused. UML's separate imported-root format remains distinct from ordinary
+session-cache envelopes.
+
+A duplicate cache key with different attachment evidence follows the existing
+determinism contradiction path, preserving both witnesses and quarantining the
+namespace. Attachments preserve existing page validation, leases, revocation,
+and host-image guards. They are composition-produced provenance protected by
+immutable cache ownership, not signatures against a malicious producer or a
+replacement for checking the actual imported machine state.
