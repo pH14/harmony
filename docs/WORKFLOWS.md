@@ -35,6 +35,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Native Math Qualification` | `consonance-native-math-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Nested Host Qualification` | `consonance-nested-host-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
@@ -69,11 +70,11 @@ separate 15-minute pull-request jobs. Both package jobs prove that a
 disk-backed host is refused, the paired frontend enters the sealed host, and
 native QuickNES remains on the frontend. The package fixture uses the Faults
 runner on both Linux architectures. A separate x86-64 musl job runs the public
-Session, worker reexec and failure recovery, UML shutdown, timeout, branch and
-handler tests, executable-map rejection and cache revocation, Recording, and
-terminal console limits through
+Session, worker reexec and failure recovery, UML shutdown, timeout, branch,
+handler, and root-import commitment tests, executable-map rejection and cache
+revocation, Recording, and terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
-fully sealed executable memfd before execution. All 15 exact tests require
+fully sealed executable memfd before execution. All 16 exact tests require
 one test to start and pass. The musl positive tests fail if strict host
 admission is unavailable, so a missing runner cannot produce a green skip.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
@@ -143,7 +144,9 @@ production identity admission or Miri execution.
 `harmony-uml-qualify` in sequence as the runner's ordinary UID. The qualifier
 copies itself into a fully sealed executable memfd before using the public
 Recording and Session APIs, both natively and under Docker's default seccomp
-profile with every capability dropped. A failing suite does not stop the
+profile with every capability dropped. Its checkpoint suite injects a host
+one-page unprotection failure after reaching a normal guest event and requires
+infrastructure abandonment without a checkpoint or additional guest events. A failing suite does not stop the
 others, and the job fails if any suite fails. The qualifier denies ptrace and
 KVM ioctls to itself and every guest, and fails when the host is root or has
 effective capabilities.
@@ -419,6 +422,16 @@ builds on that host and fails on one with no runner. A test that no job or
 machine runs is deleted.
 
 ## Cross-host execution qualification
+
+The separate `Native Math Qualification` workflow builds one static baseline
+x86-64 executable and runs three pinned repetitions on each of six hosts. Its
+comparator requires AMD/Intel diversity and retains exact input/result/status
+bits for every differing pair, plus matching subsets by operation and floating
+point mode. Successful evidence collection may include numerical differences;
+missing diversity, instability, or artifact mismatch fails. The bounded scope,
+compiler/library provenance, and exclusions are documented beside the
+[corpus](../scripts/qualification/native-math/README.md). This does not alter
+standard-library admission or advisory CPU replay warnings.
 
 The hardware workflow builds `x86_kvm_virtual_time` once as a static musl test
 executable and distributes the exact retained bytes to both X1 replicas. Each

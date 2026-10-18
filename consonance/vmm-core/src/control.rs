@@ -34,7 +34,7 @@ use crate::portable_snapshot::{
     decode_sparse_sidecar, encode_sparse_sidecar_with_target_pages,
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
-use crate::snapshot::{SnapshotEngine, SnapshotError};
+use crate::snapshot::{SnapshotEngine, SnapshotError, SnapshotReadTransaction};
 use crate::vmm::{HostOperationGuard, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 #[cfg(all(target_os = "linux", any(test, not(miri))))]
@@ -82,7 +82,6 @@ fn restore_defers_materialization(mode: RestoreMode) -> bool {
 enum SparsePageVerification {
     Base,
     BaseAndTarget(SnapshotId),
-    AlreadyVerified,
 }
 
 fn restore_error_is_precommit(error: &VmmError) -> bool {
@@ -122,13 +121,13 @@ fn sparse_target_pages_digest(pages: &[(u64, Arc<[u8; 4096]>)]) -> [u8; 32] {
 }
 
 fn sparse_delta_target_pages_digest<'a>(
-    engine: &SnapshotEngine,
+    transaction: &mut SnapshotReadTransaction<'_>,
     setup: snapshot_store::SnapshotId,
     pages: impl IntoIterator<Item = (u64, &'a [u8; 4096])>,
 ) -> Result<[u8; 32], PortableSnapshotError> {
     let mut changed = Vec::new();
     for (gfn, page) in pages {
-        if engine.read_page(setup, gfn)? != *page {
+        if transaction.read_page(setup, gfn)? != page {
             changed.push((gfn, page));
         }
     }
@@ -185,6 +184,7 @@ pub struct PortableSnapshotReceipt {
     pub sdk_events: u64,
     pub trace_events: u64,
     pub trace_schedules: u64,
+    pub event_history: Option<control_proto::EventHistory>,
     pub tainted: bool,
     pub state_hash: [u8; 32],
 }
@@ -251,6 +251,7 @@ struct SnapshotMeta {
     sdk_events: u64,
     trace_events: u64,
     trace_schedules: u64,
+    event_history: Option<control_proto::EventHistory>,
     tainted: bool,
     state_hash: Option<[u8; 32]>,
     base_ram_digest: std::cell::Cell<Option<[u8; 32]>>,
@@ -596,15 +597,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
-        let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
-        let target_pages = self.engine.diff_pages(Some(setup_id), target_id)?;
+        let mut transaction = self.engine.read_transaction();
+        let delta = transaction.page_delta(setup_id, parent_id, target_id)?;
+        let target_pages = transaction.diff_pages(Some(setup_id), target_id)?;
         let target_pages_digest =
-            sparse_delta_target_pages_digest(&self.engine, setup_id, target_pages)?;
-        let sidecar = self.sparse_sidecar(
-            setup,
+            sparse_delta_target_pages_digest(&mut transaction, setup_id, target_pages)?;
+        let base_ram_digest = self.sparse_base_ram_digest_in(setup, &mut transaction)?;
+        let sidecar = self.sparse_sidecar_with_base_digest(
             target,
             target_id,
-            SparsePageVerification::AlreadyVerified,
+            base_ram_digest,
             Some(target_pages_digest),
         )?;
         let (mut cost, pages) = self.export_telemetry.get();
@@ -631,18 +633,28 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         verification: SparsePageVerification,
     ) -> Result<[u8; 32], PortableSnapshotError> {
         let base_id = self.store_id(base)?;
+        let mut transaction = self.engine.read_transaction();
+        match verification {
+            SparsePageVerification::Base => {}
+            SparsePageVerification::BaseAndTarget(target_id) => {
+                transaction.verify_snapshots(&[base_id, target_id])?;
+            }
+        }
+        self.sparse_base_ram_digest_in(base, &mut transaction)
+    }
+
+    fn sparse_base_ram_digest_in(
+        &self,
+        base: SnapId,
+        transaction: &mut SnapshotReadTransaction<'_>,
+    ) -> Result<[u8; 32], PortableSnapshotError> {
+        let base_id = self.store_id(base)?;
+        transaction.verify_snapshots(&[base_id])?;
         let meta = self
             .snapshot_meta
             .get(&base.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
         if let Some(digest) = meta.base_ram_digest.get() {
-            match verification {
-                SparsePageVerification::Base => self.engine.verify_snapshot_pages(base_id)?,
-                SparsePageVerification::BaseAndTarget(target_id) => {
-                    self.engine.verify_snapshots(&[base_id, target_id])?;
-                }
-                SparsePageVerification::AlreadyVerified => {}
-            }
             return Ok(digest);
         }
         let memory_len = self
@@ -656,14 +668,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         hasher.update(b"consonance-sparse-base-ram-v1\0");
         hasher.update(memory_len.to_le_bytes());
         for gfn in 0..self.engine.mem_pages() {
-            hasher.update(self.engine.read_page(base_id, gfn)?);
+            hasher.update(transaction.read_page(base_id, gfn)?);
         }
         let digest = hasher.finalize().into();
-        if let SparsePageVerification::BaseAndTarget(target_id) = verification
-            && target_id != base_id
-        {
-            self.engine.verify_snapshot_pages(target_id)?;
-        }
         meta.base_ram_digest.set(Some(digest));
         Ok(digest)
     }
@@ -677,6 +684,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         target_pages_digest: Option<[u8; 32]>,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
         let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
+        self.sparse_sidecar_with_base_digest(
+            target,
+            target_id,
+            base_ram_digest,
+            target_pages_digest,
+        )
+    }
+
+    fn sparse_sidecar_with_base_digest(
+        &self,
+        target: SnapId,
+        target_id: snapshot_store::SnapshotId,
+        base_ram_digest: [u8; 32],
+        target_pages_digest: Option<[u8; 32]>,
+    ) -> Result<Vec<u8>, PortableSnapshotError> {
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -697,6 +719,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events: meta.sdk_events,
                 trace_events: meta.trace_events,
                 trace_schedules: meta.trace_schedules,
+                event_history: meta.event_history,
                 tainted: meta.tainted,
                 base_ram_digest,
                 state_blob_suffix: &meta.state_blob_suffix,
@@ -757,7 +780,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let started = std::time::Instant::now();
         let setup_id = self.store_id(setup)?;
         let target_pages_digest = sparse_delta_target_pages_digest(
-            &self.engine,
+            &mut self.engine.read_transaction(),
             setup_id,
             pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
         )?;
@@ -847,6 +870,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse target pages differ",
             ));
         }
+        let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
+            "portable VM state restore validation unavailable",
+        ))?;
+        if live.event_history().is_some() != portable.event_history.is_some() {
+            return Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability",
+            ));
+        }
         let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
@@ -913,6 +944,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events: portable.sdk_events,
                 trace_events: portable.trace_events,
                 trace_schedules: portable.trace_schedules,
+                event_history: portable.event_history,
                 tainted: portable.tainted,
                 state_hash: None,
                 base_ram_digest: std::cell::Cell::new(None),
@@ -936,6 +968,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .snapshot_meta
                 .get(&id)
                 .map_or(0, |meta| meta.trace_schedules),
+            event_history: self
+                .snapshot_meta
+                .get(&id)
+                .and_then(|meta| meta.event_history),
             tainted: self.tainted_snaps.contains(&id),
         })
     }
@@ -968,6 +1004,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_events: meta.sdk_events,
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
+            event_history: meta.event_history,
             tainted: meta.tainted,
             state_hash,
         }
@@ -978,6 +1015,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_events: meta.sdk_events,
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
+            event_history: meta.event_history,
             tainted: meta.tainted,
             state_hash,
         })
@@ -997,6 +1035,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         )
         .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
         let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
+        let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
+            "portable VM state restore validation unavailable",
+        ))?;
+        if live.event_history().is_some() != portable.event_history.is_some() {
+            return Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability",
+            ));
+        }
         let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
@@ -1051,6 +1097,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events: portable.sdk_events,
                 trace_events: portable.trace_events,
                 trace_schedules: portable.trace_schedules,
+                event_history: portable.event_history,
                 tainted: portable.tainted,
                 state_hash: Some(portable.state_hash),
                 base_ram_digest: std::cell::Cell::new(None),
@@ -1065,6 +1112,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         })
@@ -1200,6 +1248,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     self.recorded = recorded;
                 }
                 self.run(until)
+            }
+            Request::EventHistory => {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(vmm
+                    .event_history()
+                    .map(Reply::EventHistory)
+                    .ok_or(ControlError::Unsupported))
             }
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
@@ -1483,6 +1538,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace.schedule().len() as u64,
             )
         });
+        let event_history = vmm.event_history();
         let control = self.capture_control_state();
         let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
         append_taint_hash(&mut state_blob_suffix, self.timeline_tainted);
@@ -1529,6 +1585,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events,
                 trace_events,
                 trace_schedules,
+                event_history,
                 tainted: self.timeline_tainted,
                 state_hash: None,
                 base_ram_digest: std::cell::Cell::new(None),
@@ -1918,6 +1975,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             } else if let Some(&s0) = reseeds.get(&restored_floor) {
                 fresh.reseed_entropy(s0)?;
             }
+        }
+        let history = self
+            .snapshot_meta
+            .get(&snap.0)
+            .and_then(|meta| meta.event_history);
+        if history.is_some() != fresh.event_history().is_some() {
+            return Err(VmmError::ContractViolation(
+                "restored event history availability differs".into(),
+            )
+            .into());
+        }
+        if let Some(history) = history {
+            fresh.restore_event_history(history)?;
         }
         self.vmm = Some(fresh);
         self.session_trace_start = if seed.is_some() {
@@ -5085,7 +5155,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 12,
+            caps.protocol_version, 13,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -7175,6 +7245,7 @@ mod tests {
             sdk_events: 0,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -7204,6 +7275,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -7246,6 +7318,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
@@ -7505,6 +7578,90 @@ mod tests {
             Ok(Reply::Unit)
         );
         assert_eq!(hash(&mut matched), source_hash);
+    }
+
+    #[test]
+    fn sparse_delta_export_verifies_each_slot_once_with_cold_and_cached_base_digest() {
+        use super::decode_sparse_sidecar;
+        use sha2::{Digest, Sha256};
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xa5);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        image[4096..8192].fill(0);
+        image[8192..12288].fill(0xb6);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let setup_id = source.store_id(setup).unwrap();
+        let parent_id = source.store_id(parent).unwrap();
+        let target_id = source.store_id(target).unwrap();
+        let store = source.engine.store();
+        let before = store.page_verifications_for_test();
+        store
+            .verify_snapshots(&[setup_id, parent_id, target_id])
+            .unwrap();
+        let distinct = store.page_verifications_for_test() - before;
+        assert!(distinct > 0);
+        assert!(
+            source.snapshot_meta[&setup.0]
+                .base_ram_digest
+                .get()
+                .is_none()
+        );
+        let mut exported = Vec::new();
+        for _ in 0..2 {
+            let before = store.page_verifications_for_test();
+            let delta = source
+                .export_sparse_delta(setup, Some(parent), target)
+                .unwrap();
+            assert_eq!(store.page_verifications_for_test() - before, distinct);
+            exported.push((
+                delta
+                    .pages
+                    .iter()
+                    .map(|(gfn, hash, page)| (*gfn, **hash, **page))
+                    .collect::<Vec<_>>(),
+                delta.reverted,
+                delta.sidecar,
+            ));
+        }
+        assert_eq!(exported[0], exported[1]);
+        let target_pages = source.engine.diff_pages(Some(setup_id), target_id).unwrap();
+        let mut changed = Vec::new();
+        for (gfn, page) in target_pages {
+            if source.engine.read_page(setup_id, gfn).unwrap() != *page {
+                changed.push((gfn, page));
+            }
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"consonance-sparse-delta-target-pages-v1\0");
+        digest.update((changed.len() as u64).to_le_bytes());
+        for (gfn, page) in changed {
+            digest.update(gfn.to_le_bytes());
+            digest.update(page);
+        }
+        let reference_target_digest: [u8; 32] = digest.finalize().into();
+        let mut digest = Sha256::new();
+        digest.update(b"consonance-sparse-base-ram-v1\0");
+        digest.update((source.engine.mem_pages() * snapshot_store::PAGE_SIZE as u64).to_le_bytes());
+        for gfn in 0..source.engine.mem_pages() {
+            digest.update(source.engine.read_page(setup_id, gfn).unwrap());
+        }
+        let reference_base_digest: [u8; 32] = digest.finalize().into();
+        let portable = decode_sparse_sidecar(&exported[0].2).unwrap();
+        assert_eq!(portable.target_pages_digest, Some(reference_target_digest));
+        assert_eq!(portable.base_ram_digest, reference_base_digest);
     }
 
     #[test]
@@ -7867,6 +8024,7 @@ mod tests {
                 sdk_events: 1,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
@@ -7939,6 +8097,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -7981,6 +8140,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: sidecar.tainted,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -8042,6 +8202,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -8086,6 +8247,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: sidecar.tainted,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -8155,6 +8317,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: false,
             state_hash: portable.state_hash,
         }
@@ -8200,6 +8363,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: false,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -8359,6 +8523,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -8412,6 +8577,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
             control_state: &portable.control_state,
@@ -8441,6 +8607,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: sidecar.tainted,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -14326,5 +14493,152 @@ mod tests {
         assert_eq!(sparse_state.load(Ordering::SeqCst), 7);
         assert_eq!(*sparse_reseeds.lock().unwrap(), vec![5, 0]);
         assert_aliased_service_cannot_certify(&mut sparse_dest);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
+    fn ordered_history_survives_capture_retirement_restore_and_portable_import() {
+        let history = |server: &mut ControlServer<MockBackend>| match server
+            .handle(&Request::EventHistory)
+            .unwrap()
+            .unwrap()
+        {
+            Reply::EventHistory(history) => history,
+            other => panic!("unexpected history reply {other:?}"),
+        };
+        let mut source = server(vec![]);
+        hello(&mut source);
+        let original = history(&mut source);
+        assert_eq!(original.count, 1);
+        let endpoint = hash(&mut source);
+        let base = snap(&mut source);
+        assert_eq!(history(&mut source), original);
+        source.finish_session_trace_segment();
+        source.take_session_virtual_time_trace();
+        assert_eq!(history(&mut source), original);
+        let changed = control_proto::EventHistory {
+            digest: [99; 32],
+            ..original
+        };
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_event_history(changed)
+            .unwrap();
+        assert_eq!(hash(&mut source), endpoint);
+        let target = snap(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(target, &mut full).unwrap();
+        let sparse = source.export_sparse_snapshot(base, target).unwrap();
+        assert_eq!(
+            source.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut source), original);
+        assert_eq!(hash(&mut source), endpoint);
+        let mut destination = server(vec![]);
+        hello(&mut destination);
+        let near = snap(&mut destination);
+        let imported = destination
+            .import_portable_snapshot(full.as_slice())
+            .unwrap();
+        assert_eq!(imported.event_history, Some(changed));
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut destination), changed);
+        assert_eq!(hash(&mut destination), endpoint);
+        let imported = destination.import_sparse_snapshot(near, sparse).unwrap();
+        assert_eq!(imported.event_history, Some(changed));
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut destination), changed);
+        assert_eq!(hash(&mut destination), endpoint);
+        assert_eq!(
+            destination
+                .handle(&Request::Branch {
+                    snap: imported.id,
+                    env: seeded_env(7)
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut destination), changed);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
+    fn missing_ordered_history_is_rejected_before_importing_a_handle() {
+        let mut source = server(vec![]);
+        hello(&mut source);
+        let target = snap(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(target, &mut full).unwrap();
+        let portable = super::PortableSnapshot::read_from(full.as_slice(), RAM).unwrap();
+        let mut missing = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            event_history: None,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut missing)
+        .unwrap();
+        let mut destination = server(vec![]);
+        hello(&mut destination);
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_portable_snapshot(missing.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), None);
+        let mut sparse = source.export_sparse_snapshot(target, target).unwrap();
+        assert_eq!(sparse.sidecar[sparse.sidecar.len() - 41], 1);
+        sparse.sidecar.truncate(sparse.sidecar.len() - 41);
+        sparse.sidecar.push(0);
+        let base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_sparse_snapshot(base, sparse),
+            Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(base));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot restore uses mapped storage")]
+    fn restore_never_inherits_an_uncaptured_history() {
+        for mode in [RestoreMode::Memcpy, RestoreMode::InPlace] {
+            let mut server = server(vec![]);
+            hello(&mut server);
+            let base = snap(&mut server);
+            server.set_restore_mode(mode);
+            server.snapshot_meta.get_mut(&base.0).unwrap().event_history = None;
+            let error = server.handle(&Request::Replay(base)).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("restored event history availability differs"),
+                "{error}"
+            );
+            assert!(server.vmm().is_none());
+        }
     }
 }

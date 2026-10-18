@@ -7,11 +7,12 @@ use std::{
     collections::VecDeque,
     mem::size_of,
     num::NonZeroU64,
+    sync::Arc,
 };
 
 use serde::{Deserialize, Serialize};
 
-use super::{ActiveIds, Archive, ArchiveCandidate, ArchiveKey, InputIndex};
+use super::{ActiveIds, Archive, ArchiveCandidate, ArchiveKey, InputIndex, SharedSnapshotMemory};
 use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
 
 struct ThreadHeap;
@@ -115,15 +116,49 @@ impl ArchiveKey for LevelKey {
     fn record(_lineage: &mut Self::Lineage, _key: Self) {}
 }
 
+struct HistoryNode {
+    parent: Option<Arc<HistoryNode>>,
+    depth: u8,
+}
+
 #[derive(Clone)]
-struct Snapshot(Vec<u8>);
+struct Snapshot {
+    state: Vec<u8>,
+    history: Option<Arc<HistoryNode>>,
+}
 
 type LevelArchive = Archive<Chord, LevelKey, (), Snapshot>;
 
 const SNAPSHOT_BYTES: usize = 96;
 
+const HISTORY_DEPTH: u8 = 64;
+
 fn snapshot_charge(snapshot: &Snapshot) -> usize {
-    size_of::<Snapshot>() + usize::try_from(malloc_chunk(snapshot.0.len())).unwrap()
+    size_of::<Snapshot>() + usize::try_from(malloc_chunk(snapshot.state.len())).unwrap()
+}
+
+fn shared_history(snapshot: &Snapshot, visit: &mut dyn FnMut(usize, usize) -> bool) {
+    let mut node = snapshot.history.as_ref();
+    while let Some(current) = node {
+        if !visit(
+            Arc::as_ptr(current) as usize,
+            size_of::<(usize, usize, HistoryNode)>(),
+        ) {
+            break;
+        }
+        node = current.parent.as_ref();
+    }
+}
+
+fn extend_history(archive: &LevelArchive, parent: Option<usize>) -> Arc<HistoryNode> {
+    let parent = parent
+        .and_then(|parent| archive.entries[parent].snapshot.as_ref())
+        .and_then(|snapshot| snapshot.history.clone())
+        .filter(|node| node.depth < HISTORY_DEPTH);
+    Arc::new(HistoryNode {
+        depth: parent.as_ref().map_or(0, |node| node.depth + 1),
+        parent,
+    })
 }
 
 fn below(rand: &mut RomuDuoJrRand, bound: u64) -> u64 {
@@ -133,6 +168,7 @@ fn below(rand: &mut RomuDuoJrRand, bound: u64) -> u64 {
 struct Admissions {
     rand: RomuDuoJrRand,
     slots_per_cell: i32,
+    shared: bool,
     next: i32,
     execution: u64,
 }
@@ -170,6 +206,7 @@ impl Admissions {
                 frames: u32::try_from(below(rand, 1 << 20)).unwrap(),
             };
             self.execution += 1;
+            let history = self.shared.then(|| extend_history(archive, parent));
             let inserted = archive
                 .insert(
                     parent,
@@ -179,7 +216,10 @@ impl Admissions {
                         key,
                         milestones: (),
                     },
-                    Snapshot(vec![0_u8; SNAPSHOT_BYTES]),
+                    Snapshot {
+                        state: vec![0_u8; SNAPSHOT_BYTES],
+                        history,
+                    },
                 )
                 .unwrap();
             if let Some(parent) = parent {
@@ -229,6 +269,7 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
         for entry in &mut archive.entries {
             entry.snapshot = None;
         }
+        archive.shared_snapshot_memory = SharedSnapshotMemory::default();
     });
     let inputs = freed(&mut |archive| {
         for entry in &mut archive.entries {
@@ -284,16 +325,20 @@ fn measured(mut archive: LevelArchive, baseline: isize) -> Usage {
     }
 }
 
-fn assert_charges_cover_heap(slots_per_cell: i32, bounded: bool) {
+fn assert_charges_cover_heap(slots_per_cell: i32, bounded: bool, shared: bool) {
     let baseline = live_bytes();
     let mut admissions = Admissions {
         rand: RomuDuoJrRand::with_seed(0x729),
         slots_per_cell,
+        shared,
         next: 0,
         execution: 0,
     };
     let mut archive = LevelArchive::new(|chord| u64::from(chord.hold));
     archive.set_memory_budget(usize::MAX, snapshot_charge);
+    if shared {
+        archive.set_snapshot_shared_allocations(shared_history);
+    }
     archive.enable_continuations(usize::from(SUFFIX_DOUBLING_LIMIT));
     admissions.admit(&mut archive, 10_000);
     if bounded {
@@ -316,20 +361,30 @@ fn assert_charges_cover_heap(slots_per_cell: i32, bounded: bool) {
 
 #[test]
 fn charges_cover_a_growing_archive_with_a_cell_per_entry() {
-    assert_charges_cover_heap(1, false);
+    assert_charges_cover_heap(1, false, false);
 }
 
 #[test]
 fn charges_cover_a_growing_archive_with_shared_cells() {
-    assert_charges_cover_heap(8, false);
+    assert_charges_cover_heap(8, false, false);
 }
 
 #[test]
 fn charges_cover_a_bounded_archive_with_a_cell_per_entry() {
-    assert_charges_cover_heap(1, true);
+    assert_charges_cover_heap(1, true, false);
 }
 
 #[test]
 fn charges_cover_a_bounded_archive_with_shared_cells() {
-    assert_charges_cover_heap(8, true);
+    assert_charges_cover_heap(8, true, false);
+}
+
+#[test]
+fn charges_cover_a_growing_archive_with_shared_histories() {
+    assert_charges_cover_heap(8, false, true);
+}
+
+#[test]
+fn charges_cover_a_bounded_archive_with_shared_histories() {
+    assert_charges_cover_heap(8, true, true);
 }

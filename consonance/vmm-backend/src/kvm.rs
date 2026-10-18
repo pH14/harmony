@@ -477,6 +477,24 @@ where
     }
 }
 
+pub(crate) fn cpuid_model(entries: &[kvm_cpuid_entry2]) -> CpuidModel {
+    CpuidModel {
+        entries: entries
+            .iter()
+            .map(|e| crate::CpuidEntry {
+                leaf: e.function,
+                subleaf: e.index,
+                subleaf_significant: e.flags & KVM_CPUID_FLAG_SIGNIFCANT_INDEX != 0,
+                eax: e.eax,
+                ebx: e.ebx,
+                ecx: e.ecx,
+                edx: e.edx,
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
 pub(crate) fn cpuid_entries(model: &CpuidModel) -> Vec<kvm_cpuid_entry2> {
     model
         .entries

@@ -19,8 +19,7 @@ use searcher::{
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
             Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
-            default_window, postcard_result_sha256, postcard_value_sha256,
-            run_campaign_checkpointed_with_options,
+            default_window, postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -54,10 +53,10 @@ use crate::{
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v9";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v7";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v6";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v11";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v9";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v8";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v5";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -66,9 +65,11 @@ const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
+const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
+const HOST_FAILURE_POLICY: &str = "watchdog_incomplete_v1";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
-const ACTION_FORMAT: &str = "fault-action-duration-coverage-v4";
+const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultCampaignRun {
@@ -131,7 +132,6 @@ pub struct FaultCampaignEvidence {
     root_actions: Vec<FaultAction>,
     aggregate: FaultMilestones,
     watermark: FaultProgressWatermark,
-    watchdog_cutoffs: u64,
     champion_input: FaultInput,
     champion_milestones: FaultMilestones,
     bugs: Vec<FaultBugRecord>,
@@ -149,14 +149,64 @@ pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
 type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
+fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
+    postcard_value_sha256(&(
+        "fault-snapshot-identity-v2",
+        snapshot.history.receipt().root(),
+        &snapshot.observation,
+        snapshot.failed,
+        snapshot.endpoint,
+        snapshot
+            .event_history
+            .map(|history| (control_proto::EventHistory::VERSION, history)),
+    ))
+}
+
+fn fault_result_sha256(result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
+    let actions = result
+        .actions
+        .iter()
+        .map(|result| {
+            let candidate = result
+                .candidate
+                .as_ref()
+                .map(|candidate| {
+                    Ok::<_, Box<dyn Error>>((
+                        &candidate.key,
+                        candidate.viable,
+                        snapshot_digest(&candidate.snapshot)?,
+                    ))
+                })
+                .transpose()?;
+            Ok::<_, Box<dyn Error>>((
+                &result.action,
+                &result.observations,
+                &result.milestones,
+                &result.outcome,
+                candidate,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    postcard_value_sha256(&(
+        "fault-result-history-v1",
+        &result.preparation_failure,
+        actions,
+    ))
+}
+
 fn endpoint_result_sha256(
     result: &FaultCampaignJobResult,
     endpoint: FaultEndpointCertificate,
+    history: Option<(u64, [u8; 32])>,
 ) -> Result<String, Box<dyn Error>> {
+    if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) != history.is_some() {
+        return Err("fault result event history does not match its endpoint availability".into());
+    }
     postcard_value_sha256(&(
-        "fault-campaign-result-endpoint-v1",
-        postcard_result_sha256(result)?,
+        "fault-campaign-result-endpoint-v2",
+        fault_result_sha256(result)?,
         endpoint,
+        history.map(|history| (control_proto::EventHistory::VERSION, history)),
     ))
 }
 
@@ -176,7 +226,7 @@ fn kvm_result_endpoint(
         validate_snapshot_prefix_certificates(&candidate.snapshot, false)?;
         if !candidate.viable
             || candidate.snapshot.failed
-            || candidate.snapshot.actions != actions
+            || !candidate.snapshot.history.matches_actions(actions)
             || &candidate.snapshot.observation != observation
             || candidate.key != archive_key(observation)
         {
@@ -282,6 +332,33 @@ fn outcome(target: &FaultTarget) -> Outcome {
     }
 }
 
+#[derive(Debug)]
+struct WatchdogIncomplete {
+    phase: &'static str,
+}
+
+impl std::fmt::Display for WatchdogIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "fault campaign incomplete: host watchdog cutoff during {}; reservation not admitted",
+            self.phase
+        )
+    }
+}
+
+impl Error for WatchdogIncomplete {}
+
+pub(crate) fn require_completed_attempt(
+    target: &FaultTarget,
+    phase: &'static str,
+) -> Result<(), Box<dyn Error>> {
+    if target.watchdog_cutoffs() != 0 {
+        return Err(Box::new(WatchdogIncomplete { phase }));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
     target: &mut FaultTarget,
@@ -296,18 +373,14 @@ pub(crate) fn execute_job(
         return Err("fault replay certificate count does not match its action path".into());
     }
     target.restore(origin_snapshot)?;
+    require_completed_attempt(target, "parent reconstruction")?;
     for (action, certificate) in replay.iter().zip(replay_certificates) {
-        if target.failed() && target.watchdog_cutoffs() != 0 {
-            break;
-        }
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
         target.apply_replayed(*action);
         target.verify_integrity()?;
-        if target.failed() && target.watchdog_cutoffs() != 0 {
-            break;
-        }
+        require_completed_attempt(target, "parent replay")?;
         target.verify_replayed_endpoint(*certificate)?;
     }
     let mut aggregate = parent_milestones;
@@ -315,17 +388,13 @@ pub(crate) fn execute_job(
     let parent_outcome = outcome(target);
     let mut objective_seen = parent_outcome.objective_reached;
     if parent_outcome.disposition.is_terminal() {
-        return Ok(CampaignJobResult {
-            preparation_failure: parent_outcome
-                .disposition
-                .is_failed()
-                .then(|| target.last_action_observations().to_vec()),
-            actions,
-        });
+        return Err("fault parent reconstruction stopped before its archived endpoint".into());
     }
     for action in suffix {
-        target.apply(*action);
+        let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
+        require_completed_attempt(target, "suffix execution")?;
+        let captured = captured?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
         let raw_outcome = outcome(target);
@@ -335,7 +404,7 @@ pub(crate) fn execute_job(
             objective_reached,
             disposition: raw_outcome.disposition,
         };
-        let candidate = match target.snapshot()? {
+        let candidate = match captured {
             Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
                 Some(CampaignCandidate {
                     key: archive_key(target.observation()),
@@ -419,7 +488,7 @@ impl Reporting for FaultWorkload {
     }
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
-        postcard_result_sha256(result)
+        fault_result_sha256(result)
     }
 
     fn certified_result_sha256(
@@ -427,6 +496,7 @@ impl Reporting for FaultWorkload {
         result: &FaultCampaignJobResult,
         target: &Self::Target,
     ) -> Result<String, Box<dyn Error>> {
+        require_completed_attempt(target, "result certification")?;
         let endpoint = if self.config.uml().is_some() {
             FaultEndpointCertificate::UmlWholeStateUnavailable
         } else if target.failed() {
@@ -436,7 +506,12 @@ impl Reporting for FaultWorkload {
                 target.state_hash_current()
             })?
         };
-        endpoint_result_sha256(result, endpoint)
+        let history = if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) {
+            Some(target.event_history_current()?)
+        } else {
+            None
+        };
+        endpoint_result_sha256(result, endpoint, history)
     }
 
     fn snapshot_identity_sha256(
@@ -444,7 +519,7 @@ impl Reporting for FaultWorkload {
         snapshot: &Self::Snapshot,
     ) -> Result<String, Box<dyn Error>> {
         validate_snapshot_prefix_certificates(snapshot, self.config.uml().is_some())?;
-        postcard_value_sha256(snapshot)
+        snapshot_digest(snapshot)
     }
 
     fn archive_report(
@@ -466,7 +541,7 @@ impl Reporting for FaultWorkload {
             deaths: state
                 .terminal_endpoints
                 .saturating_sub(state.terminal_objectives),
-            watchdog_cutoffs: evidence.watchdog_cutoffs,
+            watchdog_cutoffs: 0,
             bugs: evidence.bugs.clone(),
             selector: state.selector,
             assertions: evidence.assertions.clone(),
@@ -484,6 +559,7 @@ impl InputPolicy for FaultWorkload {
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (HOST_FAILURE_POLICY_FIELD, HOST_FAILURE_POLICY),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -715,7 +791,8 @@ impl TargetExecution for FaultWorkload {
         target: &mut FaultTarget,
         snapshot: &FaultSnapshot,
     ) -> Result<(), Box<dyn Error>> {
-        target.restore(snapshot)
+        target.restore(snapshot)?;
+        require_completed_attempt(target, "parent reconstruction")
     }
 
     fn execution_work(&self, target: &FaultTarget) -> u64 {
@@ -730,6 +807,11 @@ impl TargetExecution for FaultWorkload {
         action_cost
     }
 
+    fn snapshot_retention()
+    -> Option<Box<dyn searcher::search::archive::SnapshotRetention<FaultSnapshot>>> {
+        Some(Box::new(crate::history::FaultHistoryRetention::default()))
+    }
+
     fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
         snapshot_memory_charge(snapshot)
     }
@@ -742,6 +824,7 @@ impl TargetExecution for FaultWorkload {
     ) -> Result<(), Box<dyn Error>> {
         target.apply(*action);
         target.verify_integrity()?;
+        require_completed_attempt(target, "imported prefix execution")?;
         merge_action_milestones(aggregate, target);
         Ok(())
     }
@@ -761,9 +844,16 @@ impl TargetExecution for FaultWorkload {
         }
         validate_snapshot_prefix_certificates(snapshot, self.config.uml().is_some())?;
         match (self.config.uml().is_some(), snapshot.endpoint) {
-            (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => Ok(Some(
-                replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?,
-            )),
+            (false, Some(FaultEndpointCertificate::KvmWholeState(hash))) => {
+                Ok(Some(replay_endpoint_certificate(
+                    hash,
+                    snapshot
+                        .event_history
+                        .ok_or("KVM snapshot lacks ordered event history")?,
+                    &snapshot.observation,
+                    snapshot.failed,
+                )?))
+            }
             (true, Some(FaultEndpointCertificate::UmlWholeStateUnavailable)) => Ok(None),
             _ => Err("fault replay candidate lacks a certificate for its backend".into()),
         }
@@ -781,6 +871,7 @@ impl TargetExecution for FaultWorkload {
         }
         Ok(Some(replay_endpoint_certificate(
             target.state_hash_current()?,
+            target.event_history_current()?,
             target.observation(),
             target.failed(),
         )?))
@@ -842,6 +933,7 @@ impl Evaluation for FaultWorkload {
         _run: &FaultCampaignRun,
         target: &FaultTarget,
     ) -> Result<bool, Box<dyn Error>> {
+        require_completed_attempt(target, "bootstrap or rollout evaluation")?;
         Ok(outcome(target).objective_reached)
     }
 
@@ -904,19 +996,6 @@ impl Evaluation for FaultWorkload {
         }
     }
 
-    fn merge_preparation_failure(
-        &self,
-        evidence: &mut FaultCampaignEvidence,
-        observations: &[FaultObservations],
-    ) {
-        evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
-            observations
-                .iter()
-                .filter(|observation| observation.watchdog_cutoff)
-                .count() as u64,
-        );
-    }
-
     fn merge_action_evidence<F>(
         &self,
         evidence: &mut FaultCampaignEvidence,
@@ -927,13 +1006,19 @@ impl Evaluation for FaultWorkload {
     where
         F: FnOnce() -> Result<FaultInput, Box<dyn Error>>,
     {
+        if action
+            .observations
+            .iter()
+            .any(|observation| observation.watchdog_cutoff)
+        {
+            return Err(Box::new(WatchdogIncomplete {
+                phase: "action evidence",
+            }));
+        }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
         merge_milestones(&mut evidence.aggregate, action.milestones);
         if let FaultOperation::EventPark { edges, .. } = action.action.operation
-            && action
-                .observations
-                .iter()
-                .any(|observation| !observation.watchdog_cutoff)
+            && !action.observations.is_empty()
         {
             evidence
                 .park_thresholds
@@ -955,13 +1040,6 @@ impl Evaluation for FaultWorkload {
                 *evidence.park_reads.entry(read.site).or_default() += 1;
             }
         }
-        evidence.watchdog_cutoffs = evidence.watchdog_cutoffs.saturating_add(
-            action
-                .observations
-                .iter()
-                .filter(|observation| observation.watchdog_cutoff)
-                .count() as u64,
-        );
         let bug = action
             .observations
             .iter()
@@ -1052,6 +1130,39 @@ pub fn run_fault_campaign_with_plan(
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_workload(
+    kernel: &[u8],
+    initramfs: &[u8],
+    config: &FaultConfig,
+) -> FaultWorkload {
+    let identity = if config.uml().is_some() {
+        identity(kernel, initramfs, config).unwrap()
+    } else {
+        let root = config
+            .root
+            .as_ref()
+            .map(|bytes| format!(";root-sha256={:x}", Sha256::digest(bytes.as_slice())))
+            .unwrap_or_default();
+        format!(
+            "test-admitted-vm;kernel-sha256={:x};initramfs-sha256={:x};ram-mib={};cmdline-sha256={:x}{root}",
+            Sha256::digest(kernel),
+            Sha256::digest(initramfs),
+            config.ram_mib,
+            Sha256::digest(config.cmdline()),
+        )
+    };
+    FaultWorkload {
+        kernel: kernel.to_vec(),
+        initramfs: initramfs.to_vec(),
+        config: config.clone(),
+        identity,
+        root_seal: OnceLock::new(),
+        snapshot_cache: None,
+        session_worker: None,
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::assertion::AssertionSet;
@@ -1068,25 +1179,66 @@ mod tests {
             preparation_failure: None,
             actions: Vec::new(),
         };
-        let first =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([1; 32]))
-                .unwrap();
-        let second =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([2; 32]))
-                .unwrap();
+        let first = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([1; 32]),
+            Some((0, [0; 32])),
+        )
+        .unwrap();
+        let second = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([2; 32]),
+            Some((0, [0; 32])),
+        )
+        .unwrap();
         let failed = endpoint_result_sha256(
             &result,
             FaultEndpointCertificate::KvmUnavailableAfterFailure,
+            None,
         )
         .unwrap();
-        let uml =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::UmlWholeStateUnavailable)
-                .unwrap();
+        let uml = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::UmlWholeStateUnavailable,
+            None,
+        )
+        .unwrap();
+        let different_history = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([1; 32]),
+            Some((0, [9; 32])),
+        )
+        .unwrap();
+        assert_ne!(first, different_history);
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::KvmUnavailableAfterFailure,
+                Some((0, [0; 32]))
+            )
+            .is_err()
+        );
         assert_ne!(first, second);
         assert_ne!(first, failed);
         assert_ne!(first, uml);
         assert_ne!(failed, uml);
-        assert_ne!(first, postcard_result_sha256(&result).unwrap());
+        assert_ne!(first, fault_result_sha256(&result).unwrap());
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::KvmWholeState([1; 32]),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::UmlWholeStateUnavailable,
+                Some((0, [0; 32]))
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1096,12 +1248,23 @@ mod tests {
             std::num::NonZeroU16::new(1).unwrap(),
         );
         let snapshot = FaultSnapshot {
-            actions: vec![action],
-            prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
+            history: crate::history::FaultHistory::fixture(
+                &[action],
+                &[Some(
+                    replay_endpoint_certificate(
+                        [17; 32],
+                        (0, [0; 32]),
+                        &FaultObservations::default(),
+                        false,
+                    )
                     .unwrap(),
-            )],
+                )],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &(FaultObservations::default()),
+            ),
+
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
         let result = FaultCampaignJobResult {
@@ -1144,8 +1307,8 @@ mod tests {
         assert_eq!(fresh_calls, 1);
         assert_eq!(reused, fresh);
         assert_eq!(
-            endpoint_result_sha256(&result, reused).unwrap(),
-            endpoint_result_sha256(&result, fresh).unwrap()
+            endpoint_result_sha256(&result, reused, Some((0, [0; 32]))).unwrap(),
+            endpoint_result_sha256(&result, fresh, Some((0, [0; 32]))).unwrap()
         );
         let mut malformed = result.clone();
         malformed.actions[0]
@@ -1175,30 +1338,52 @@ mod tests {
         let observation = FaultObservations::default();
         let endpoint_hash = [17; 32];
         let final_certificate =
-            replay_endpoint_certificate(endpoint_hash, &observation, false).unwrap();
+            replay_endpoint_certificate(endpoint_hash, (0, [0; 32]), &observation, false).unwrap();
         let snapshot = FaultSnapshot {
-            actions: vec![action, action],
-            prefix_certificates: vec![Some([11; 32]), Some(final_certificate)],
+            history: crate::history::FaultHistory::fixture(
+                &[action, action],
+                &[Some([11; 32]), Some(final_certificate)],
+                Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
+                &(observation.clone()),
+            ),
             observation,
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
+            event_history: Some((0, [0; 32])),
         };
         let game = game();
         let identity = game.snapshot_identity_sha256(&snapshot).unwrap();
 
+        let mut changed_events = snapshot.clone();
+        changed_events.event_history = Some((0, [19; 32]));
+        assert_ne!(
+            snapshot_digest(&changed_events).unwrap(),
+            snapshot_digest(&snapshot).unwrap()
+        );
+        assert!(game.snapshot_identity_sha256(&changed_events).is_err());
+        changed_events.event_history = None;
+        assert!(game.snapshot_identity_sha256(&changed_events).is_err());
+
+        let actions = snapshot.history.actions();
         let mut changed = snapshot.clone();
-        changed.prefix_certificates[0] = Some([23; 32]);
+        changed.history = crate::history::FaultHistory::fixture(
+            &actions,
+            &[Some([23; 32]), Some(final_certificate)],
+            snapshot.endpoint,
+            &snapshot.observation,
+        );
         assert_ne!(game.snapshot_identity_sha256(&changed).unwrap(), identity);
-
-        let mut missing = snapshot.clone();
-        missing.prefix_certificates.pop();
-        assert!(game.snapshot_identity_sha256(&missing).is_err());
-        missing.prefix_certificates.push(None);
-        assert!(game.snapshot_identity_sha256(&missing).is_err());
-
-        let mut wrong_final = snapshot;
-        wrong_final.prefix_certificates[1] = Some([23; 32]);
+        let mut wrong_final = snapshot.clone();
+        wrong_final.history = crate::history::FaultHistory::fixture(
+            &actions,
+            &[Some([11; 32]), Some([23; 32])],
+            snapshot.endpoint,
+            &snapshot.observation,
+        );
         assert!(game.snapshot_identity_sha256(&wrong_final).is_err());
+        let mut malformed = serde_json::to_value(&snapshot.history).unwrap();
+        malformed[1][1]["certificate"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<crate::history::FaultHistory>(malformed).is_err());
     }
 
     #[test]
@@ -1280,34 +1465,6 @@ mod tests {
         }
     }
 
-    fn fixture_workload(kernel: &[u8], initramfs: &[u8], config: &FaultConfig) -> FaultWorkload {
-        let identity = if config.uml().is_some() {
-            identity(kernel, initramfs, config).unwrap()
-        } else {
-            let root = config
-                .root
-                .as_ref()
-                .map(|bytes| format!(";root-sha256={:x}", Sha256::digest(bytes.as_slice())))
-                .unwrap_or_default();
-            format!(
-                "test-admitted-vm;kernel-sha256={:x};initramfs-sha256={:x};ram-mib={};cmdline-sha256={:x}{root}",
-                Sha256::digest(kernel),
-                Sha256::digest(initramfs),
-                config.ram_mib,
-                Sha256::digest(config.cmdline()),
-            )
-        };
-        FaultWorkload {
-            kernel: kernel.to_vec(),
-            initramfs: initramfs.to_vec(),
-            config: config.clone(),
-            identity,
-            root_seal: OnceLock::new(),
-            snapshot_cache: None,
-            session_worker: None,
-        }
-    }
-
     fn game() -> FaultWorkload {
         fixture_workload(b"kernel", b"initramfs", &config(&[]))
     }
@@ -1358,23 +1515,6 @@ mod tests {
         assert_eq!(evidence.published.target_commitment, [2; 32]);
         assert_eq!(evidence.existing.chain[0].bytes().len(), 4096);
         assert_eq!(evidence.published.chain[0].bytes().len(), 4096);
-    }
-
-    #[test]
-    fn preparation_failure_counts_cutoffs_without_importing_oracle_evidence() {
-        let game = game();
-        let mut evidence = FaultCampaignEvidence::default();
-        let observation = FaultObservations {
-            watchdog_cutoff: true,
-            stop: crate::target::FaultStop::Crash,
-            ticks: 123,
-            ..FaultObservations::default()
-        };
-        game.merge_preparation_failure(&mut evidence, &[observation]);
-        assert_eq!(evidence.watchdog_cutoffs, 1);
-        assert!(evidence.bugs.is_empty());
-        assert_eq!(evidence.aggregate, FaultMilestones::default());
-        assert_eq!(evidence.watermark, FaultProgressWatermark::default());
     }
 
     #[test]
@@ -1434,12 +1574,20 @@ mod tests {
             watchdog_cutoff: true,
             ..FaultObservations::default()
         };
-        for observations in [vec![landed], vec![cutoff], vec![]] {
+        for observations in [vec![landed], vec![]] {
             game.merge_action_evidence(&mut evidence, &result(observations), 0, || {
                 Err("no input".into())
             })
             .unwrap();
         }
+        let before = serde_json::to_vec(&evidence).unwrap();
+        let error = game
+            .merge_action_evidence(&mut evidence, &result(vec![cutoff]), 0, || {
+                Err("no input".into())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("campaign incomplete"), "{error}");
+        assert_eq!(serde_json::to_vec(&evidence).unwrap(), before);
         assert_eq!(
             evidence.park_thresholds.get(&2),
             Some(&ParkThresholds { armed: 1, fired: 1 })
@@ -1585,6 +1733,23 @@ mod tests {
     }
 
     #[test]
+    fn recorded_policies_require_watchdog_incompleteness() {
+        let game = game();
+        let mut policies = game.policies(&run(1, vec![1, 2]));
+        assert_eq!(
+            policies.get(HOST_FAILURE_POLICY_FIELD).unwrap(),
+            HOST_FAILURE_POLICY
+        );
+        policies.remove(HOST_FAILURE_POLICY_FIELD);
+        assert!(game.resolve_recorded(&policies).is_err());
+        policies.insert(
+            HOST_FAILURE_POLICY_FIELD.to_owned(),
+            "recoverable_cutoff".into(),
+        );
+        assert!(game.resolve_recorded(&policies).is_err());
+    }
+
+    #[test]
     fn the_stream_pins_the_bundle_alphabet() {
         let game = game();
         let etcd = game.policies(&run(1, vec![1, 2]));
@@ -1651,8 +1816,10 @@ mod tests {
         let tuned = fixture_workload(b"kernel", b"initramfs", &config(&["faultlab.puts=20"]));
         assert!(tuned.resolve_recorded(&policies).is_err());
         let mut older = policies.clone();
-        older.insert(ACTION_FORMAT_FIELD.to_owned(), "500000000".to_owned());
-        assert!(game.resolve_recorded(&older).is_err());
+        for legacy in ["500000000", "fault-action-duration-coverage-v4"] {
+            older.insert(ACTION_FORMAT_FIELD.to_owned(), legacy.to_owned());
+            assert!(game.resolve_recorded(&older).is_err());
+        }
         assert_eq!(
             policies.get(ACTION_FORMAT_FIELD).map(String::as_str),
             Some(ACTION_FORMAT)

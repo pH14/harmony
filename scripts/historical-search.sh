@@ -44,9 +44,8 @@ guest_arguments=()
 historical_backend "${report_dir}/${CASE_ID}.search.denial.json"
 
 # The outer bound covers a process that stops answering after the campaign's
-# own wall budget. A guest watchdog cutoff is a structured workload result and
-# is preserved as measured status; an outer CLI timeout is infrastructure
-# failure even when it left a partial report behind.
+# own wall budget. Guest watchdog cutoffs and outer CLI timeouts both make the
+# campaign infrastructure-incomplete, even if a partial report was written.
 status=0
 timeout -k 60 "$(( (WALL_MINUTES + 20) * 60 ))" \
     ${launcher[@]+"${launcher[@]}"} "${harmony}" search \
@@ -133,11 +132,11 @@ done
 snapshots=$(historical_snapshots "${out}/campaign-summary.json")
 
 outcome=pass
-if (( status > 2 || (status == 2 && (watchdog_cutoffs == 0 || execution_failures != watchdog_cutoffs)) )); then
+if (( status > 1 )); then
     outcome="fail: infra-failure (CLI exit ${status})"
     verdict=1
-elif (( execution_failures > watchdog_cutoffs )); then
-    outcome="fail: infra-failure (execution failures ${execution_failures} exceed watchdog cutoffs ${watchdog_cutoffs})"
+elif (( watchdog_cutoffs > 0 || execution_failures > 0 )); then
+    outcome="fail: infra-failure (watchdog cutoffs ${watchdog_cutoffs}; execution failures ${execution_failures})"
     verdict=1
 elif ! historical_snapshots_used "${snapshots}"; then
     outcome="fail: infra-failure (the ${BACKEND:-consonance} search restored no snapshot: ${snapshots})"
@@ -149,10 +148,8 @@ else
 fi
 
 execution_status=complete
-if (( status > 2 || (status == 2 && (watchdog_cutoffs == 0 || execution_failures != watchdog_cutoffs)) || execution_failures > watchdog_cutoffs )); then
+if (( status > 1 || watchdog_cutoffs > 0 || execution_failures > 0 )); then
     execution_status=infra_failure
-elif (( watchdog_cutoffs > 0 )); then
-    execution_status=completed_with_watchdog_cutoffs
 fi
 
 # Keep the manifest, configuration and selected current-build finding beside

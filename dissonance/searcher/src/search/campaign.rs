@@ -17,7 +17,8 @@ use sha2::{Digest, Sha256};
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, ContinuationAccounting, Edge, Input,
     Position, ProgressPoint, RetentionPolicy, SELECTOR_IDENTIFIER, SelectorAccounting,
-    SelectorDraw, SelectorPath, retention_policy_from_identifier, retention_policy_identifier,
+    SelectorDraw, SelectorPath, SnapshotRetention, retention_policy_from_identifier,
+    retention_policy_identifier,
 };
 use crate::search::checkpoint::{
     CheckpointHeader, CheckpointPlan, CheckpointReader, CheckpointWriter, SEARCH_CHECKPOINT_FORMAT,
@@ -462,6 +463,9 @@ pub trait TargetExecution: CampaignTypes {
     }
     fn action_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
+    fn snapshot_retention() -> Option<Box<dyn SnapshotRetention<Self::Snapshot>>> {
+        None
+    }
     fn apply_action(
         &self,
         target: &mut Self::Target,
@@ -1509,6 +1513,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::new(workload.action_cost_fn());
         archive.max_entries = archive_entry_limit;
+        archive.set_snapshot_retention(G::snapshot_retention());
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
             let draw_reserve = workload
@@ -1718,19 +1723,20 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         if let Some(checkpoint) = checkpoint {
             validate_archive_checkpoint_entries(workload, source, checkpoint)?;
         }
-        let checkpointed: BTreeMap<u64, &G::Snapshot> = checkpoint
-            .map(|checkpoint| {
-                checkpoint
-                    .entries
-                    .iter()
-                    .map(|entry| (entry.id, &entry.snapshot))
-                    .collect()
-            })
-            .unwrap_or_default();
         let preserve_inactive_snapshots = self.archive.preserves_inactive_snapshots();
         self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(workload, run, target)?;
         let genesis_id = 0;
+        let checkpointed = checkpoint
+            .map(|checkpoint| {
+                checkpoint
+                    .entries
+                    .iter()
+                    .map(|entry| (entry.id, entry.snapshot.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let checkpointed = checkpointed.into_iter().collect::<BTreeMap<_, _>>();
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
         let source_entries = workload.source_entries(source);
@@ -1788,7 +1794,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                 .get(parent_input_len..)
                 .ok_or("source archive input is shorter than its imported parent")?
                 .to_vec();
-            let checkpoint_snapshot = checkpointed.get(&entry.id).copied();
+            let checkpoint_snapshot = checkpointed.get(&entry.id);
             let checkpoint_certificate = checkpoint_snapshot
                 .map(|snapshot| workload.candidate_replay_certificate(snapshot))
                 .transpose()?
@@ -3604,6 +3610,7 @@ fn restore_search_checkpoint<G: Workload>(
     reader.finish()?;
     core.restore_state(state)?;
     core.archive = archive;
+    core.archive.set_snapshot_retention(G::snapshot_retention());
     let charge: fn(&G::Snapshot) -> usize = G::snapshot_memory_charge;
     core.archive
         .restore_runtime(workload.action_cost_fn(), Some(charge), snapshots)?;
@@ -8085,6 +8092,7 @@ mod tests {
         config.workers = 2;
         config.window = 2;
         config.execution_budget = 2;
+        config.mixture = DrawMixture::Energy { scale: 6 };
         let (baseline, earlier, later) = (0..32)
             .find_map(|seed| {
                 config.campaign_seed = seed;

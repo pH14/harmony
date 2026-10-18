@@ -185,22 +185,23 @@ campaign.
 
 The archive charges its own heap from logical counts: entries, stored suffix
 actions, live prefix nodes, slots, cells, active entries, tiers, pins, landing
-markers and continuation edges. A checkpoint restores those counts, so a resumed
-or replayed archive charges what the live one did. Each count is multiplied by a
-worst-case size under glibc malloc. An allocation of n bytes takes n plus an
-8-byte header, rounded up to 16 bytes, and at least 32 bytes. A vector grown by
-push holds at most twice its length and at least 4 elements, or 8 for bytes. A
-B-tree node holds 11 elements, and every node but the root holds at least 5, so
-a set of maps holding n elements uses at most n/5 nodes plus one per map. Each
-prefix node is charged one child-map node. The selector's weighted sets keep
-freed slots until the selector index is rebuilt, and compaction rebuilds it, so
-freed slots are charged as one per inactive entry. Compaction shrinks the entry
-columns to their length so the doubling bound holds afterwards. Each resident
-snapshot also charges its reference-count block. On synthetic archives these
-charges sit 15-50% above the measured heap; the `memory_tests` unit tests count
-the archive's allocations and fail when any part exceeds its charge. Allocator
-fragmentation and heap a workload's snapshot charge omits stay outside the
-archive's limit and show only in RSS.
+markers, continuation edges and shared snapshot allocations. A checkpoint
+restores those counts, so a resumed or replayed archive charges what the live
+one did. Each count is multiplied by a worst-case size under glibc malloc. An
+allocation of n bytes takes n plus an 8-byte header, rounded up to 16 bytes, and
+at least 32 bytes. A vector grown by push holds at most twice its length and at
+least 4 elements, or 8 for bytes. A B-tree node holds 11 elements, and every
+node but the root holds at least 5, so a set of maps holding n elements uses at
+most n/5 nodes plus one per map. Each prefix node is charged one child-map node.
+The selector's weighted sets keep freed slots until the selector index is
+rebuilt, and compaction rebuilds it, so freed slots are charged as one per
+inactive entry. Compaction shrinks the entry columns to their length so the
+doubling bound holds afterwards. Each resident snapshot also charges its
+reference-count block. On synthetic archives these charges sit 15-50% above the
+measured heap; the `memory_tests` unit tests count the archive's allocations and
+fail when any part exceeds its charge. Allocator fragmentation and heap a
+workload's snapshot charge omits stay outside the archive's limit and show only
+in RSS.
 
 Prefix-tree compaction remaps a single surviving child in its existing map.
 The same prefix nodes can hold optional workload endpoint certificates. A
@@ -309,6 +310,42 @@ the same observations through `Reporting::merge_witness_diagnostics`, whose
 contract excludes champion selection and input publication. Workloads must document
 their scope and bound their memory; these observer allocations are reflected in
 RSS rather than the archive's logical memory budget.
+
+The archive memory budget covers retained snapshots and job-origin snapshots
+pinned until their ordered results are admitted. A workload reports exclusive
+snapshot bytes separately from a root-to-parent visitor over shared allocations.
+The visitor identifies actual live allocations, including their reference-count
+headers. The archive charges each reachable allocation once as a malloc block
+and charges the ownership ledger as one B-tree map. Acquiring or releasing a
+root follows only newly owned or finally released nodes, stopping at an already
+owned ancestor. Clones of an existing root cost one lookup; budget queries do
+not traverse ancestry. Allocation identities and the ownership ledger are
+runtime-only and never enter deterministic evidence.
+
+Worker target-private state, including independently retained inner history
+handles after a reply, remains outside this archive budget. Job-origin outer
+snapshot handles are dropped before the reply releases their ordered pins.
+Thus legal worker drop timing before unpin cannot change budget decisions.
+The archive owns a typed workload retention adapter alongside the checked
+allocation ledger. After a candidate wins retention, the adapter normalizes its
+validated expected history against currently retained nodes, walking only the
+new tail to an indexed ancestor. The adapter registers nodes when the ledger
+first acquires them and removes registrations when the final root or parent
+edge releases them; its index storage is charged as well. The incoming root is
+acquired before population retirement or replacement releases old roots, so
+replacing the sole owner of a deep prefix still walks only the new tail. Candidates
+rejected or failing before installation cannot leave registrations. Input-prefix
+ownership and
+certificate bindings are committed only after normalization and population
+admission succeed. Retirement clears owners without pruning prefix nodes, so
+the validated prefix start remains available for that commit. Independently allocated worker
+histories therefore enter the archive with the same physical sharing as restored
+histories.
+Checkpoint restoration feeds roots through the same normalization and acquisition
+path in stable entry order. Imported snapshots use the already admitted bootstrap
+root in that index. Sharing changes actual allocations rather than treating equal
+content digests as shared storage. The index has no global lifetime and independent
+execution receipts retain their own validation authority.
 
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.

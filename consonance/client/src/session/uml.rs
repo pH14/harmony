@@ -16,7 +16,9 @@ use environment::{
 use sha2::{Digest, Sha256};
 use uml::{Bridge, Capture, Checkpoint, Checkpoints, Launch, Stop, VerifiedProfile};
 
-use super::{SdkEvent, SearchSession, SessionError, UmlLaunch};
+use super::{
+    CachedSnapshotReceipt, SdkEvent, SearchSession, SessionError, SnapshotAttachment, UmlLaunch,
+};
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
@@ -562,11 +564,21 @@ impl SearchSession for UmlSession {
             .import_full(near, &resolved.pages, sidecar, &self.factory);
         self.verify_live_service_fingerprint(before.as_ref())?;
         let checkpoint = imported?;
+        if target_commitment(self.root_identity, &checkpoint)? != index.target_commitment(lease)? {
+            return Err("root snapshot commitment differs".into());
+        }
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
-        self.loaded_image_guard.check()?;
+        if let Err(error) = self.loaded_image_guard.check() {
+            self.snapshots.remove(&id);
+            return Err(error.into());
+        }
+        if let Err(error) = index.verify_lease(lease) {
+            self.snapshots.remove(&id);
+            return Err(error.into());
+        }
         Ok((id, at))
     }
 
@@ -610,6 +622,27 @@ impl SearchSession for UmlSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.publish_snapshot_attached(
+            index,
+            namespace,
+            key,
+            parent,
+            target,
+            &SnapshotAttachment::default(),
+            cost,
+        )
+    }
+
+    fn publish_snapshot_attached(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        cost: u64,
+    ) -> Result<Lease, Box<dyn Error>> {
         self.loaded_image_guard.check()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let checkpoint = |id: SnapId| -> Result<&Checkpoint, Box<dyn Error>> {
@@ -622,6 +655,8 @@ impl SearchSession for UmlSession {
         let target_checkpoint = checkpoint(target)?;
         let target_commitment = target_commitment(self.cache_domain, target_checkpoint)?;
         let sidecar = cache_sidecar(self.cache_domain, &target_checkpoint.sidecar()?)?;
+        let sidecar = super::attachment::encode(&sidecar, target_commitment, attachment)?;
+        let target_commitment = super::attachment::commitment(target_commitment, attachment);
         let extent = self.checkpoints.delta(
             setup,
             parent_checkpoint,
@@ -659,6 +694,16 @@ impl SearchSession for UmlSession {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let receipt = self.import_cached_receipt(index, lease, near)?;
+        Ok((receipt.snapshot, receipt.moment))
+    }
+
+    fn import_cached_receipt(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
         self.loaded_image_guard.check()?;
         let begun = started();
         let chain = index.chain(lease)?;
@@ -666,8 +711,17 @@ impl SearchSession for UmlSession {
             .iter()
             .map(|extent| read_extent(CommittedExtent::bytes(extent)))
             .collect::<Result<Vec<_>, _>>()?;
+        let target =
+            super::attachment::decode(deltas.last().ok_or("empty snapshot chain")?.sidecar)?;
+        let machine_commitment = target.machine_commitment;
+        let attachment = target.attachment;
+        let object_commitment = super::attachment::commitment(machine_commitment, &attachment);
+        if object_commitment != index.target_commitment(lease)? {
+            return Err("cached object commitment differs".into());
+        }
         for delta in &mut deltas {
-            delta.sidecar = checked_cache_sidecar(self.cache_domain, delta.sidecar)?;
+            let envelope = super::attachment::decode(delta.sidecar)?;
+            delta.sidecar = checked_cache_sidecar(self.cache_domain, envelope.raw)?;
         }
         let resolved = resolve(&deltas)?;
         let before = self.import_service_fingerprint()?;
@@ -685,17 +739,29 @@ impl SearchSession for UmlSession {
         );
         self.verify_live_service_fingerprint(before.as_ref())?;
         let checkpoint = imported?;
+        if target_commitment(self.cache_domain, &checkpoint)? != machine_commitment {
+            return Err("cached machine commitment differs".into());
+        }
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
         self.counters.imports.since(begun);
-        self.loaded_image_guard.check()?;
+        if let Err(error) = self.loaded_image_guard.check() {
+            self.snapshots.remove(&id);
+            return Err(error.into());
+        }
         if let Err(error) = index.verify_lease(lease) {
             self.snapshots.remove(&id);
             return Err(error.into());
         }
-        Ok((id, at))
+        Ok(CachedSnapshotReceipt {
+            snapshot: id,
+            moment: at,
+            machine_commitment,
+            attachment,
+            object_commitment,
+        })
     }
 
     fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
@@ -1389,12 +1455,153 @@ mod tests {
 
     fn extent(index: &LocalIndex, key: &[u8], identity: [u8; 32]) -> Lease {
         let sidecar = cache_sidecar(identity, b"checkpoint").unwrap();
+        let sidecar = if key == b"delta" {
+            super::super::attachment::encode(&sidecar, [0; 32], &SnapshotAttachment::default())
+                .unwrap()
+        } else {
+            sidecar
+        };
+        let commitment = if key == b"delta" {
+            super::super::attachment::commitment([0; 32], &SnapshotAttachment::default())
+        } else {
+            [0; 32]
+        };
         let len = extent_len(0, 0, sidecar.len()).unwrap();
         let mut extent = index.extent(len).unwrap();
         write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
         index
-            .publish(Namespace::new(&[b"test"]), key, None, extent, [0; 32], 1)
+            .publish(Namespace::new(&[b"test"]), key, None, extent, commitment, 1)
             .unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn root_import_checks_the_independently_pinned_machine_commitment() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-c",
+                r#"import os,struct
+os.ftruncate(4,4*4096)
+os.write(3,struct.pack('<Q',100))
+def read_frame():
+    frame=b''
+    while len(frame)<16:
+        chunk=os.read(3,16-len(frame))
+        if not chunk: return None
+        frame+=chunk
+    return frame
+while True:
+    frame=read_frame()
+    if frame is None: break
+    command=struct.unpack('<I',frame[4:8])[0]
+    if command==1: os.write(3,struct.pack('<IIq',0x31435548,4,1))
+    elif command==5: os.write(3,struct.pack('<IIq',0x31435548,1,0))
+    else: raise RuntimeError(command)
+"#,
+            ])
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut guest = uml::Session::start(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(5)),
+        )
+        .unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let checkpoint = guest.capture(Capture::default()).unwrap();
+        let mut session = unbooted_session();
+        session.launch = launch;
+        session.checkpoints = checkpoints;
+        session.session = Some(guest);
+        session.snapshots.insert(SnapId(1), checkpoint);
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"root-test"]);
+        let lease = session.publish_root(&index, namespace, SnapId(1)).unwrap();
+        let expected =
+            target_commitment(session.root_identity, &session.snapshots[&SnapId(1)]).unwrap();
+        assert_eq!(index.target_commitment(&lease).unwrap(), expected);
+        let (imported, moment) = session.import_root(&index, &lease).unwrap();
+        assert_eq!(moment, 100);
+        assert_eq!(
+            target_commitment(session.root_identity, &session.snapshots[&imported]).unwrap(),
+            expected
+        );
+        let extents = index.chain(&lease).unwrap();
+        let mut altered = index.extent(extents[0].bytes().len()).unwrap();
+        altered.bytes_mut().copy_from_slice(extents[0].bytes());
+        let bad = index
+            .publish(
+                Namespace::new(&[b"bad-root-test"]),
+                b"root",
+                None,
+                altered,
+                [0; 32],
+                1,
+            )
+            .unwrap();
+        let handles = session.snapshots.len();
+        let next = session.next;
+        assert!(
+            session
+                .import_root(&index, &bad)
+                .unwrap_err()
+                .to_string()
+                .contains("root snapshot commitment differs")
+        );
+        assert_eq!(session.snapshots.len(), handles);
+        assert_eq!(session.next, next);
+        index.release(bad);
+        index.release(lease);
+    }
+
+    #[test]
+    fn uml_attachment_import_refuses_index_digest_mismatch_before_allocating_a_handle() {
+        let index = LocalIndex::new(1 << 20);
+        let mut session = unbooted_session();
+        let attachment = SnapshotAttachment {
+            domain: b"opaque-v1".to_vec(),
+            bytes: b"captured evidence".to_vec(),
+        };
+        let raw = cache_sidecar(session.cache_domain, b"checkpoint").unwrap();
+        let sidecar = super::super::attachment::encode(&raw, [7; 32], &attachment).unwrap();
+        let len = extent_len(0, 0, sidecar.len()).unwrap();
+        let mut extent = index.extent(len).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], &sidecar).unwrap();
+        let lease = index
+            .publish(
+                Namespace::new(&[b"test"]),
+                b"target",
+                None,
+                extent,
+                [0; 32],
+                1,
+            )
+            .unwrap();
+        let error = session
+            .import_cached_receipt(&index, &lease, SnapId(1))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("cached object commitment differs")
+        );
+        assert!(session.snapshots.is_empty());
+        assert_eq!(session.next, 1);
+        index.release(lease);
     }
 
     #[test]

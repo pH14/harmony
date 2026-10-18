@@ -279,6 +279,7 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot guest_physical_timer_state_refuses_capture_and_legacy_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_disr_state_refuses_capture_and_legacy_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_os_lock_refuses_capture_and_clean_restore_unlocks",
         "vmm-backend arm64_kvm::tests::routed_away_pending_spi_refuses_capture_and_restore",
         "vmm-backend::arm64_sysreg_snapshot kvm_irq_mask_read_matches_full_capture",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
@@ -337,6 +338,9 @@ CONSONANCE_CHECKS = Workflow(
             ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_msr_filter_retires_partly_reconfigured_vcpu",
+                "vmm-backend kvm_sys::policy_diagnostic::missing_cpuid_features_reject_before_policy_mutation",
+                "vmm-backend kvm_sys::policy_diagnostic::missing_nested_cpuid_feature_rejects_before_mutation",
+                "vmm-core::x86_cpu_snapshots live_kvm::production_cpuid_is_preserved_by_native_capability_admission",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_vmx_capability_read_retires_partly_initialized_vcpu",
                 "vmm-backend::contract_kvm *",
             ),
@@ -411,6 +415,18 @@ CONSONANCE_ANALYSIS = Workflow(
         Job("Mutation Testing — Shard <N>/16", "full", 320,
             exception="Mutation testing rebuilds the component once per mutant."),
         Job("Proofs", "pr", 15, select="kani"),
+    ),
+)
+
+CONSONANCE_NATIVE_MATH = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-native-math-qualification.yml",
+    name="Checks / Consonance / Native Math Qualification",
+    owner="Consonance",
+    triggers=("schedule", "workflow_dispatch"),
+    jobs=(
+        Job("Retained Native Math Executable", "full", 10),
+        Job("Pinned Native Math — Replica <N>", "full", 10),
+        Job("Bounded Native Math Results", "full", 10),
     ),
 )
 
@@ -764,6 +780,7 @@ CONSONANCE_UML = Workflow(
                 "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
                 "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
                 "uml::host_failure_provenance *",
+                "uml::checkpoint_host_failure dirty_page_failure_after_a_published_checkpoint_is_infrastructure",
                 "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
             ),
             select="rust_checks"),
@@ -799,6 +816,7 @@ WORKFLOWS = (
     CONSONANCE_CHECKS,
     CONSONANCE_ANALYSIS,
     CONSONANCE_HARDWARE,
+    CONSONANCE_NATIVE_MATH,
     CONSONANCE_RUNTIME,
     CONSONANCE_NESTED_HOST,
     CONSONANCE_XSAVE,

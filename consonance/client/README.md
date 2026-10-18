@@ -143,8 +143,15 @@ import its pages over a setup with different RAM.
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
-Embedded complete portable snapshots use format version 7; sparse sidecars use
-version 9. Older embedded versions are rejected. The outer sparse archive layout
+`Session::event_history` and `SearchSession::event_history` return the cumulative
+v1 normalized-event count and commitment through both in-process control and
+worker transport. Snapshot replay, portable imports and cache imports restore
+the captured history; diagnostic trace retirement does not reset it. A backend
+without normalized history returns an explicit unavailable error. UML does not
+supply this certificate.
+
+Embedded complete portable snapshots use format version 8; sparse sidecars use
+version 10. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -196,7 +203,9 @@ bytes remain in the extent for restore. Sparse delta export derives the
 sidecar's target-pages digest from all target pages that differ from setup,
 independently of the selected parent;
 the sidecar also carries the setup RAM digest, canonical state suffix, VM
-state, SDK state, policy and control state. Publication rejects a sidecar
+state, SDK state, policy, control state and the separate ordered event-history
+commitment/count. Equal logical endpoints reached through different normalized
+histories therefore conflict under the same cache key. Publication rejects a sidecar
 without that target-pages digest. For UML checkpoints, the commitment binds
 the cache identity to the checkpoint digest, which covers logical memory and
 bridge/service state. The cache compares commitments while holding its index
@@ -370,3 +379,46 @@ memory, arguments and seed. They can be
 imported over a fresh launch whose host-private setup bytes differ. Cache deltas
 still require their original setup identity. Neither interface interprets
 workload commands.
+
+Search sessions can publish a `SnapshotAttachment` containing an opaque domain
+and payload alongside a cached snapshot. The client assigns no workload meaning
+to those bytes. `publish_snapshot_attached` carries them through both direct and
+process-worker exports; `import_cached_receipt` returns the target attachment,
+its machine commitment, and its independently verified object commitment.
+Existing attachment-free calls use an empty attachment.
+
+The `HMSESS02` cache envelope contains checked lengths for backend metadata,
+attachment domain, and payload, together with the machine commitment. The
+version-two object commitment binds that machine commitment and both
+length-delimited attachment fields. The VM machine commitment already binds the
+admitted image identity and portable target state; UML binds its admitted root
+and setup domain plus the checkpoint digest. Imports compare the object digest
+against the pinned index record and verify the backend machine commitment before
+accepting the imported handle. Each delta carries its complete target attachment;
+resolving a chain never substitutes an ancestor's attachment. Older envelopes
+are refused. UML's separate imported-root format remains distinct from ordinary
+session-cache envelopes.
+
+A duplicate cache key with different attachment evidence follows the existing
+determinism contradiction path, preserving both witnesses and quarantining the
+namespace. Attachments preserve existing page validation, leases, revocation,
+and host-image guards. They are composition-produced provenance protected by
+immutable cache ownership, not signatures against a malicious producer or a
+replacement for checking the actual imported machine state.
+
+Cache namespaces select their key semantics at construction. `Namespace::new`
+uses action-prefix keys: lookup returns the longest retained prefix and a delta
+parent must have a strictly shorter prefix key. `Namespace::exact` uses opaque
+keys: lookup requires complete equality and a delta parent may have unrelated
+key bytes. The constructors use separate digest domains, so the same namespace
+parts cannot mix key modes. Exact mode retains parent ownership, namespace,
+existence, and commitment checks. Entries always link to already retained parent
+entries; equal duplicate publication returns the existing entry without changing
+its ancestry. A conflicting duplicate retains both witness chains and
+quarantines its namespace in either mode. Composition adapters using opaque path
+roots must search their own certified ancestor roots when an exact key is absent.
+
+UML imported roots also retain their source index commitment. After validating
+and importing the checkpoint, the session recomputes the root-domain machine
+commitment and compares it with the pinned index record before installing a
+handle. Final host-image and lease checks remove a temporary handle on failure.

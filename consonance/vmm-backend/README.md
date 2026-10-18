@@ -19,6 +19,57 @@ an ISA-specific exit enum.
 An x86 KVM entry failure retains the hardware failure reason and CPU reported by
 `KVM_EXIT_FAIL_ENTRY`. The structured error reaches the caller and workload
 failure trace, distinguishing invalid guest state from other entry failures.
+KVM retains both `KVM_GET_SUPPORTED_CPUID` and `KVM_GET_EMULATED_CPUID`
+inventories at construction. Either ioctl failure rejects construction. Before
+ordinary policy installation or nested initialization begins mutation, every
+requested capability bit must be supplied by one of those inventories or by an
+explicit caller declaration in `CpuidModel.emulated_features`. This declaration
+is admission metadata; it does not change the CPUID bytes installed in KVM.
+An absent leaf/subleaf supplies zero capability. A failed preflight preserves
+the previous CPUID, MSR filter, architectural state, and backend usability.
+Unsupported features produce `CpuidUnavailable` with leaf, subleaf, register,
+requested bits, and available bits; the requested model is never intersected
+with the host inventory.
+
+The backend classifies capability words rather than embedding a guest profile:
+
+| CPUID words | Admission rule |
+| --- | --- |
+| `1:ECX/EDX` | Require KVM capability bits; OSXSAVE (`ECX[27]`) is KVM runtime state derived from CR4 |
+| `6:EAX/ECX/EDX` | Require KVM capability bits or explicit userspace declarations |
+| `7.0:EBX/ECX/EDX`, `7.N:EAX/EBX/ECX/EDX` for N > 0 | Require KVM capability bits or explicit userspace declarations; `7.0:EBX[6,13]` are inverse x87 absence flags |
+| `80000001:ECX/EDX`, `80000007:EDX`, `80000008:EBX`, `8000000a:EDX` | Require KVM capability bits or explicit userspace declarations; includes VMX/SVM requests |
+| `D.0:EAX/EDX`, `D.1:EAX/ECX/EDX` | Require supported XSAVE state/features; software declarations cannot supply them |
+| Nonzero `D.N` components, N >= 2 | Require exact supported size, standard offset, and component flags |
+| Vendor/signature, brand, cache descriptors, topology, frequency and address-width fields | Descriptive model values, not host feature masks |
+| Unclassified nonzero leaves | Refused until their fields receive a disposition |
+
+Indexed feature leaves 7 and D must carry KVM's significant-index flag;
+non-indexed feature leaves must use index zero. This prevents one entry from
+aliasing unchecked subleaves. Nonzero PMU and hypervisor capability leaves are
+unsupported rather than treated as CPU identity.
+
+KVM's [x87 errata](https://docs.kernel.org/virt/kvm/x86/errata.html) recommend
+always setting `FDP_EXCPTN_ONLY` and `ZERO_FCS_FDS` in guest CPUID. These are
+inverse absence flags, not required native instruction capabilities; they do
+not require the host's matching bit. This classification does not bypass XSAVE
+state or component-layout admission.
+
+Userspace declarations must be subsets of advertised bits in known feature
+words, cannot repeat a leaf/subleaf, and cannot exempt XSAVE or its state/layout
+requirements. The caller owns the declared emulation implementation. KVM's
+emulated inventory handles instruction fallbacks such as MOVBE without
+requiring native MOVBE; efficiently virtualized features are already present
+in its supported inventory. No raw-host subset test replaces those APIs.
+
+The live `missing_cpuid_features_reject_before_policy_mutation` test removes
+each required bit from synthetic inventories on a real configured vCPU and
+requires unchanged CPUID, snapshot state, filter, and a healthy backend.
+`missing_nested_cpuid_feature_rejects_before_mutation` exercises the nested
+entry path. `production_cpuid_is_preserved_by_native_capability_admission`
+runs the actual VMM contract and compares ten guest CPUID queries against its
+fixed values and documented runtime fields. These run in the CPU State CI job.
+
 KVM policy installation changes the live CPUID before installing the VM-wide
 MSR filter. If either write fails, the vCPU is retired: a failed filter can
 leave new CPUID with the previous filter, which must not be captured or run as
@@ -415,6 +466,32 @@ to reject older snapshots that lacked proof of the ACTLR and key capture checks.
 The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
 covers all ten keys, capture refusal, and clean reused, fresh, and policy
 restores.
+
+ARM KVM handles `OSLAR_EL1` writes and `OSLSR_EL1` reads internally, bypassing
+userspace's unlock-only dispatcher rule. The portable debug record admits only
+an unlocked OS lock: capture reads `OSLSR_EL1` and refuses `OSLK` (bit 1), while
+policy installation and restore clear OSLK through KVM's writable `OSLSR_EL1`
+register API, preserving its required read-only feature bits. Failed reads or writes propagate as backend errors. Read-only
+OSLSR feature bits are excluded from the lock check. ARM GIC state version 9
+rejects older KVM snapshots that lacked this admission proof. The live
+`guest_os_lock_refuses_capture_and_clean_restore_unlocks` fixture sets the lock
+from guest EL1, checks readback at a completed MMIO boundary, verifies that
+capture refusal preserves the locked continuation, and checks unlocked
+capture-and-continue, fresh restore, reused restore after a locked detour, and
+policy reset. Removing the capture check or restore reset must fail this test.
+This synthetic guest qualifies the boundary; it does not establish a failure in
+an ordinary shipped application.
+
+The debug-register inventory for this boundary is:
+
+| Register or field | Disposition | ARM KVM enforcement |
+| --- | --- | --- |
+| `DBGBVRn_EL1`, `DBGBCRn_EL1`, `DBGWVRn_EL1`, `DBGWCRn_EL1` | Captured | All 16 slots read and restored through one-register ioctls |
+| `MDCCINT_EL1.RX/TX`, `MDSCR_EL1` | Captured | Read and restored; reserved MDCCINT bits rejected |
+| `OSLSR_EL1.OSLK` | Fixed unlocked | Capture refuses a lock; restore and policy clear it |
+| `OSLAR_EL1` | Emulated write alias | KVM changes OSLSR; checked at capture rather than relying on an exit |
+| Other `OSLSR_EL1` fields | Excluded feature description | Read-only KVM feature bits do not represent the OS lock |
+| Debug exception/register-access trap requests | Unsupported | Restore preflight rejects either enabled request |
 
 Both ARM KVM and HVF capture and restore guest-writable `MDCCINT_EL1.RX` and
 `MDCCINT_EL1.TX` as part of the debug state. A guest write to RX survives normal

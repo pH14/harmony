@@ -11,6 +11,9 @@ use environment::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod attachment;
+pub use attachment::{CachedSnapshotReceipt, SnapshotAttachment};
+
 const DEFAULT_RAM: usize = 128 * 1024 * 1024;
 
 #[cfg(target_arch = "x86_64")]

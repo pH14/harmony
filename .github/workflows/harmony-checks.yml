@@ -183,6 +183,7 @@ jobs:
           client_test session::uml::tests::paused_restore_timeout_abandons_with_a_typed_watchdog_error
           client_test session::uml::tests::rejected_service_branch_cannot_leave_a_usable_rewound_uml_session
           client_test session::uml::tests::service_factory_aliasing_the_live_handler_abandons_the_session
+          client_test session::uml::tests::root_import_checks_the_independently_pinned_machine_commitment
           client_test session::worker::tests::worker_launcher_refuses_a_child_without_image_hello
           client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent
           client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease
