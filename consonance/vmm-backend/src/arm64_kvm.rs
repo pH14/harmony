@@ -3322,9 +3322,9 @@ mod tests {
     fn vcpu_init_advertises_psci_0_2() {
         let f = vcpu_init_features();
         assert_eq!(
-            f[0] & (1 << KVM_ARM_VCPU_PSCI_0_2),
+            f[0],
             1 << KVM_ARM_VCPU_PSCI_0_2,
-            "PSCI 0.2 feature bit must be set"
+            "only PSCI 0.2 is enabled; EL1_32BIT must remain disabled"
         );
         assert_eq!(
             f[1..],
