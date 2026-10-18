@@ -169,8 +169,11 @@ separate from `StoreStats` and budget policy. `snapshot.verify.page_requests`
 counts resolved page-record checks, including zero and alias requests;
 `memo_hits` counts resident slots already verified in the current read
 transaction. `zero_requests` counts implicit zero checks, which hash no resident
-bytes. `resident_hashes`, `resident_bytes` and `ns` count actual BLAKE3 feeds
-and time at resident-page verification sites, including materialization and
+bytes. `resident_hashes` and `resident_bytes` count actual BLAKE3 feeds. `ns` measures
+resident verification envelopes: full verification and materialization use one
+timer per batch, including traversal and memo checks, while standalone checks
+time the individual digest. It is not pure BLAKE3 CPU time. Batches avoid clock
+reads per resident page and retain elapsed time on errors. This includes
 unchanged-page checks outside read transactions. Materialization keeps its
 existing per-frame checks; it does not acquire a new memoization policy.
 `errors` counts failed page-record integrity checks, including missing slots.
@@ -178,8 +181,9 @@ Invalid snapshot/range validation before a page-record check is not a page hash
 attempt. VM-state verification has separate `vm_state_hashes`, `vm_state_bytes`,
 `vm_state_ns` and `vm_state_errors` leaves. New-page interning/seal hashes and the
 initial implicit-zero digest are creation work, not resident verification.
-Per-hash host clock reads add measurement overhead, and their granularity is
-platform-dependent; aggregate nanoseconds are not cycle-accurate page costs.
+Standalone per-hash clock reads and batch clock reads add measurement overhead.
+Clock granularity is platform-dependent; aggregate nanoseconds are not
+cycle-accurate page costs.
 
 Distinctness is per read transaction. A later transaction verifies a resident
 slot again, and corrupted pages still reject before use. Diagnostic queries
