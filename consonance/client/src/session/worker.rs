@@ -2517,12 +2517,16 @@ mod tests {
                     send_with_fds(&sender, &[1], &rights, &mut work::Delta::default()).unwrap(),
                     1
                 );
+                let mut delta = work::Delta::default();
                 let received = recv_with_fds(
                     &receiver,
                     &mut [0; 1],
                     Some(Instant::now() + Duration::from_secs(1)),
-                    &mut work::Delta::default(),
+                    &mut delta,
                 );
+                assert_eq!(delta.header, 1);
+                assert_eq!(delta.body, 0);
+                assert_eq!(delta.fds, count as u64);
                 if count == MAX_FDS {
                     assert_eq!(received.unwrap().1.len(), MAX_FDS);
                 } else {
@@ -2921,6 +2925,369 @@ mod tests {
         }
     }
 
+    #[test]
+    fn transport_session_groups_cover_setup_run_sdk_export_import_and_parent_replies() {
+        let (mut source, server) = threaded(3);
+        let (mut destination, other) = threaded(5);
+        source.run_until(20).unwrap();
+        source.sdk_events_since(0).unwrap();
+        let (snapshot, _) = source.snapshot().unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let lease = source
+            .publish_snapshot(&index, namespace(), b"transport", None, snapshot, 1)
+            .unwrap();
+        destination
+            .import_cached(&index, &lease, SnapId(1))
+            .unwrap();
+        let source_values = source
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let destination_values = destination
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for (values, group, count) in [
+            (&source_values, "setup", 1),
+            (&source_values, "run", 1),
+            (&source_values, "observe", 1),
+            (&source_values, "export", 2),
+            (&destination_values, "import", 1),
+        ] {
+            for owner in ["transport.parent", "transport.child.loop"] {
+                for direction in ["send", "receive"] {
+                    assert_eq!(
+                        values[&format!("{owner}.{group}.{direction}.completed")],
+                        count
+                    );
+                    assert_eq!(
+                        values[&format!("{owner}.{group}.{direction}.header_bytes")],
+                        16 * count
+                    );
+                    assert_eq!(values[&format!("{owner}.{group}.{direction}.errors")], 0);
+                }
+            }
+        }
+        assert_eq!(source_values["transport.parent.export.send.fd_handles"], 1);
+        assert_eq!(
+            source_values["transport.child.loop.export.receive.fd_handles"],
+            1
+        );
+        assert_eq!(
+            destination_values["transport.parent.import.send.fd_handles"],
+            1
+        );
+        assert_eq!(
+            destination_values["transport.child.loop.import.receive.fd_handles"],
+            1
+        );
+        assert!(
+            !source_values
+                .keys()
+                .any(|key| key.starts_with("transport.parent.unknown.receive"))
+        );
+        assert!(
+            !destination_values
+                .keys()
+                .any(|key| key.starts_with("transport.parent.unknown.receive"))
+        );
+        index.release(lease);
+        drop(source);
+        drop(destination);
+        server.join().unwrap();
+        other.join().unwrap();
+    }
+
+    #[test]
+    fn hello_transport_owner_moves_into_connected_session() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let work = Arc::new(work::Work::default());
+            let mut hello = Out::default();
+            hello.bytes(IMAGE_HELLO).bytes(b"fixture");
+            send_measured(&child, &hello.0, &[], &work, work::Group::Hello).unwrap();
+            serve_measured(
+                &child,
+                &mut Fake::open,
+                crate::image_identity::LoadedImageGuard::fixture(),
+                work,
+            )
+            .unwrap();
+        });
+        let work = Arc::new(work::Work::default());
+        let (hello, fds) = receive_measured(
+            &parent,
+            IMAGE_HELLO_LIMIT,
+            None,
+            &work,
+            Some(work::Group::Hello),
+        )
+        .unwrap();
+        assert!(fds.is_empty());
+        let mut input = In(&hello);
+        assert_eq!(input.bytes().unwrap(), IMAGE_HELLO);
+        assert_eq!(input.string().unwrap(), "fixture");
+        input.finish().unwrap();
+        let session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: work,
+                owner: None,
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let values = session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(values["transport.parent.hello.receive.completed"], 1);
+        assert_eq!(values["transport.parent.hello.receive.header_bytes"], 16);
+        assert_eq!(
+            values["transport.parent.hello.receive.body_bytes"],
+            (8 + IMAGE_HELLO.len() + 8 + b"fixture".len()) as u64
+        );
+        assert_eq!(values["transport.child.loop.hello.send.completed"], 1);
+        assert_eq!(values["transport.child.loop.hello.send.header_bytes"], 16);
+        assert_eq!(
+            values["transport.child.loop.hello.send.body_bytes"],
+            values["transport.parent.hello.receive.body_bytes"]
+        );
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn transport_queries_replace_child_snapshot_without_duplicate_or_added_totals() {
+        let (mut session, server) = threaded(3);
+        for expected in [1, 2] {
+            let values = session.telemetry_counters();
+            let matches = values
+                .iter()
+                .filter(|(name, _)| name == "transport.child.loop.telemetry.receive.completed")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                matches.iter().map(|(_, value)| value).sum::<u64>(),
+                expected
+            );
+            assert_eq!(matches.len(), 1);
+            let transport = values
+                .iter()
+                .filter(|(name, _)| name.starts_with("transport.child.loop."))
+                .map(|(name, _)| name)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                transport.len(),
+                transport
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len()
+            );
+        }
+        assert!(session.run_until(u64::MAX).is_err());
+        let values = session.telemetry_counters();
+        assert_eq!(
+            values
+                .iter()
+                .filter(|(name, _)| name == "transport.child.loop.telemetry.receive.completed")
+                .map(|(_, value)| value)
+                .sum::<u64>(),
+            2
+        );
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn telemetry_query_decode_and_transport_errors_preserve_the_last_child_snapshot() {
+        for transport_failure in [false, true] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = FixtureThread::spawn(move || {
+                let mut served = Served::default();
+                let (body, fds) = recv(&child).unwrap();
+                send(
+                    &child,
+                    &status(
+                        served.handle(&body, &fds, &mut Fake::open, &mut |_| panic!("allocation")),
+                    ),
+                    &[],
+                )
+                .unwrap();
+                let (body, fds) = recv(&child).unwrap();
+                assert_eq!(body, [TELEMETRY]);
+                assert!(fds.is_empty());
+                let mut reply = Out::op(OK);
+                reply
+                    .len(1)
+                    .bytes(b"transport.child.loop.run.receive.completed")
+                    .u64(7);
+                send(&child, &reply.0, &[]).unwrap();
+                let (body, fds) = recv(&child).unwrap();
+                assert_eq!(body, [TELEMETRY]);
+                assert!(fds.is_empty());
+                if transport_failure {
+                    let mut header = [0; HEADER];
+                    header[..8].copy_from_slice(&8u64.to_le_bytes());
+                    (&child).write_all(&header).unwrap();
+                    (&child).write_all(&[OK]).unwrap();
+                } else {
+                    send(&child, &[OK], &[]).unwrap();
+                }
+            });
+            let session = WorkerSession::connect(
+                WorkerConnection {
+                    stream: parent,
+                    process: None,
+                    owner: Some(Box::new(server.clone())),
+                    loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                    transport: Arc::default(),
+                },
+                &[3],
+                b"i",
+                &config(),
+                &[],
+                "fake",
+            )
+            .unwrap();
+            let first = session.telemetry_counters();
+            assert_eq!(
+                first
+                    .iter()
+                    .filter(|(k, _)| k == "transport.child.loop.run.receive.completed")
+                    .map(|(_, v)| v)
+                    .copied()
+                    .collect::<Vec<_>>(),
+                [7]
+            );
+            assert!(!session.abandoned());
+            let next = session.telemetry_counters();
+            assert_eq!(
+                next.iter()
+                    .filter(|(k, _)| k == "transport.child.loop.run.receive.completed")
+                    .map(|(_, v)| v)
+                    .copied()
+                    .collect::<Vec<_>>(),
+                [7]
+            );
+            let values = next.into_iter().collect::<BTreeMap<_, _>>();
+            assert_eq!(values["guard.child.telemetry_query_failures"], 1);
+            assert_eq!(values["transport.parent.telemetry.send.completed"], 2);
+            assert_eq!(
+                values["transport.parent.telemetry.receive.errors"],
+                u64::from(transport_failure)
+            );
+            drop(session);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn truncated_ancillary_frames_keep_recovered_descriptor_counts() {
+        const CHILD: &str = "HARMONY_TRANSPORT_TRUNCATED_COUNTER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "session::worker::tests::truncated_ancillary_frames_keep_recovered_descriptor_counts",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (left, right) = UnixStream::pair().unwrap();
+        let (file, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let excess = tempfile::tempfile().unwrap();
+        let capacity = (control_space(MAX_FDS) - size_of::<libc::cmsghdr>()) / size_of::<RawFd>();
+        let mut fds = vec![file.as_fd(); capacity];
+        fds.push(excess.as_fd());
+        let mut header = [0; HEADER];
+        header[8..].copy_from_slice(&((capacity + 1) as u64).to_le_bytes());
+        assert_eq!(
+            send_with_fds(&left, &header, &fds, &mut work::Delta::default()).unwrap(),
+            HEADER
+        );
+        let owner = work::Work::default();
+        let mut delta = work::Delta::default();
+        let result = recv_with_fds_control_space(
+            &right,
+            &mut [0; HEADER],
+            None,
+            control_space(MAX_FDS),
+            &mut delta,
+        );
+        owner.record(work::Group::Unknown, true, delta, result.is_ok());
+        let error = result.unwrap_err();
+        assert!(
+            error.to_string().contains("descriptors were truncated"),
+            "{error}"
+        );
+        let values = owner.counters("t").into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(values["t.unknown.receive.header_bytes"], 16);
+        assert_eq!(values["t.unknown.receive.body_bytes"], 0);
+        assert_eq!(values["t.unknown.receive.fd_handles"], capacity as u64);
+        assert_eq!(values["t.unknown.receive.errors"], 1);
+        assert_eq!(values["t.unknown.receive.completed"], 0);
+        drop(fds);
+        drop(file);
+        drop(excess);
+        drop(left);
+        drop(right);
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap(),
+            0,
+            "all recovered socket rights must close on rejection"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)]
+    fn measured_hello_deadline_keeps_partial_frame_work() {
+        let (left, right) = UnixStream::pair().unwrap();
+        let mut header = [0; HEADER];
+        header[..8].copy_from_slice(&5u64.to_le_bytes());
+        (&left).write_all(&header).unwrap();
+        (&left).write_all(&[1, 2]).unwrap();
+        let owner = work::Work::default();
+        let error = receive_measured(
+            &right,
+            32,
+            Some(Instant::now() + Duration::from_millis(200)),
+            &owner,
+            Some(work::Group::Hello),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+            ),
+            "{error}"
+        );
+        let values = owner.counters("t").into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(values["t.hello.receive.header_bytes"], 16);
+        assert_eq!(values["t.hello.receive.body_bytes"], 2);
+        assert_eq!(values["t.hello.receive.errors"], 1);
+        assert_eq!(values["t.hello.receive.completed"], 0);
+    }
+
     fn config() -> SessionConfig {
         SessionConfig {
             wall_limit: Some(Duration::from_secs(9)),
@@ -3139,6 +3506,17 @@ mod tests {
         let mut first =
             WorkerSession::spawn(&launcher, &[3], b"i", &config(), &[], "fake").unwrap();
         first.state_hash().unwrap();
+        let hello = first
+            .transport
+            .counters("t")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(hello["t.hello.receive.completed"], 1);
+        let child = first
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(child["transport.child.loop.hello.send.completed"], 1);
         let first_before = first.loaded_image_guard.counters("test");
         let second = WorkerSession::spawn(&launcher, &[3], b"i", &config(), &[], "fake").unwrap();
         assert_eq!(first.loaded_image_guard.counters("test"), first_before);
@@ -4210,6 +4588,17 @@ mod tests {
         );
         assert!(!session.abandoned());
         assert_eq!(session.state_hash().unwrap(), [3; 32]);
+        let values = session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for owner in ["transport.parent", "transport.child.loop"] {
+            for direction in ["send", "receive"] {
+                assert_eq!(values[&format!("{owner}.export.{direction}.completed")], 1);
+                assert_eq!(values[&format!("{owner}.setup.{direction}.completed")], 1);
+            }
+        }
+
         let error = session
             .publish_snapshot(&refused, namespace(), b"refused", None, SnapId(1), 1)
             .unwrap_err();
@@ -4219,6 +4608,17 @@ mod tests {
         ));
         assert!(!session.abandoned());
         assert_eq!(session.state_hash().unwrap(), [3; 32]);
+        let values = session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for owner in ["transport.parent", "transport.child.loop"] {
+            for direction in ["send", "receive"] {
+                assert_eq!(values[&format!("{owner}.export.{direction}.completed")], 3);
+                assert_eq!(values[&format!("{owner}.setup.{direction}.completed")], 1);
+            }
+        }
+
         let exchange = session.begin_exchange().unwrap();
         assert!(
             session
