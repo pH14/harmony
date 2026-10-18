@@ -31,6 +31,8 @@ mod copy_work;
 mod guard_telemetry;
 pub mod image_identity;
 #[cfg(any(all(feature = "in-process", not(miri)), test))]
+mod import_layout;
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
 mod import_reuse;
 pub mod placement;
 
