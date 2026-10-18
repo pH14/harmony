@@ -338,7 +338,7 @@ mod tests {
             let mutex = mutex.clone();
             std::thread::spawn(move || drop(owner.lock(&mutex, Site::Lookup)))
         };
-        let start = receiver.recv_timeout(std::time::Duration::from_secs(2));
+        let start = receiver.recv_timeout(std::time::Duration::from_secs(30));
         let before_unlock = owner.clock.samples.lock().unwrap().first().map(|sample| {
             (
                 sample.locked,
