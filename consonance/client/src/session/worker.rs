@@ -2705,7 +2705,8 @@ mod tests {
                                 send_with_fds(
                                     &sender,
                                     &header[1..],
-                                    &vec![descriptor.as_fd(); count]
+                                    &vec![descriptor.as_fd(); count],
+                                    &mut work::Delta::default(),
                                 )
                                 .unwrap(),
                                 HEADER - 1
@@ -2714,14 +2715,23 @@ mod tests {
                             sender.write_all(&header).unwrap();
                             sender.write_all(&[1]).unwrap();
                             assert_eq!(
-                                send_with_fds(&sender, &[2], &vec![descriptor.as_fd(); count])
-                                    .unwrap(),
+                                send_with_fds(
+                                    &sender,
+                                    &[2],
+                                    &vec![descriptor.as_fd(); count],
+                                    &mut work::Delta::default()
+                                )
+                                .unwrap(),
                                 1
                             );
                         }
                         sender.shutdown(std::net::Shutdown::Write).unwrap();
                         let deadline = timed.then(|| Instant::now() + Duration::from_secs(1));
-                        let result = recv_with_limit(&receiver, 2, deadline);
+                        let mut delta = work::Delta::default();
+                        let result = recv_raw(&receiver, 2, deadline, &mut delta);
+                        assert_eq!(delta.header, HEADER as u64);
+                        assert_eq!(delta.body, if header_remainder { 0 } else { 2 });
+                        assert_eq!(delta.fds, count as u64);
                         assert_eq!(
                             live_task_descriptors(),
                             active,
@@ -2758,7 +2768,7 @@ mod tests {
         {
             let (mut sender, receiver) = UnixStream::pair().unwrap();
             assert_eq!(
-                read_frame_exact(&receiver, &mut [0; 1], Some(Instant::now()))
+                read_frame_exact(&receiver, &mut [0; 1], Some(Instant::now()), &mut 0, &mut 0)
                     .unwrap_err()
                     .kind(),
                 io::ErrorKind::TimedOut
@@ -2770,7 +2780,9 @@ mod tests {
                 read_frame_exact(
                     &receiver,
                     &mut body,
-                    Some(Instant::now() + Duration::from_secs(1))
+                    Some(Instant::now() + Duration::from_secs(1)),
+                    &mut 0,
+                    &mut 0,
                 )
                 .unwrap_err()
                 .kind(),
@@ -3770,6 +3782,7 @@ mod tests {
                 process: None,
                 owner: None,
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
             },
             &[3],
             b"i",
@@ -5393,6 +5406,7 @@ writer.close()
                 process: None,
                 owner: None,
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
             },
             &[3],
             b"i",
