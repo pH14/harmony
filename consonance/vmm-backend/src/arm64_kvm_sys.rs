@@ -25,6 +25,9 @@ const RUN_OFFSETS: RunOffsets = RunOffsets {
 
 const _UAPI_PIN: () = {
     assert!(crate::arm64_kvm::KVM_EXIT_MMIO == kvm_bindings::KVM_EXIT_MMIO);
+    assert!(crate::arm64_kvm::KVM_EXIT_MEMORY_FAULT == kvm_bindings::KVM_EXIT_MEMORY_FAULT);
+    assert!(crate::arm64_kvm::KVM_MEMORY_FAULT_ERRNOS[0] == libc::EFAULT);
+    assert!(crate::arm64_kvm::KVM_MEMORY_FAULT_ERRNOS[1] == libc::EHWPOISON);
     assert!(crate::arm64_kvm::KVM_EXIT_SYSTEM_EVENT == kvm_bindings::KVM_EXIT_SYSTEM_EVENT);
     assert!(crate::arm64_kvm::KVM_EXIT_INTR == kvm_bindings::KVM_EXIT_INTR);
     assert!(crate::arm64_kvm::KVM_EXIT_FAIL_ENTRY == kvm_bindings::KVM_EXIT_FAIL_ENTRY);
@@ -62,6 +65,8 @@ const fn ioc(dir: u64, typ: u64, nr: u64, size: u64) -> u64 {
     (dir << 30) | (size << 16) | (typ << 8) | nr
 }
 
+const KVM_RUN_IOCTL: libc::c_ulong = ioc(0, 0xAE, 0x80, 0) as libc::c_ulong;
+
 const KVM_ENABLE_CAP_IOCTL: libc::c_ulong = 0x4068_aea3;
 
 const KVM_CLEAR_DIRTY_LOG_IOCTL: libc::c_ulong =
@@ -87,6 +92,7 @@ pub struct LiveKvm {
     run: *mut kvm_run,
     mmap_size: usize,
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    physical: crate::PhysicalTelemetry,
 }
 
 impl LiveKvm {
@@ -136,6 +142,7 @@ impl LiveKvm {
             run,
             mmap_size,
             cancel_run: std::sync::Arc::default(),
+            physical: crate::PhysicalTelemetry::default(),
         };
         this.vcpu_init()?;
         let mmfr0 = this.get_one_reg(
@@ -294,6 +301,28 @@ impl LiveKvm {
         self.vgic
             .as_ref()
             .ok_or(BackendError::Internal("vGICv3 is not initialised"))
+    }
+
+    fn run_entry(&mut self, purpose: crate::RunPurpose) -> std::io::Result<()> {
+        let fd = self.vcpu.as_raw_fd();
+        let vcpu = &mut self.vcpu;
+        crate::arm64_kvm::measured_raw_kvm_entry(
+            &mut self.physical,
+            purpose,
+            || {
+                // SAFETY: this backend exclusively owns the stopped vCPU fd and its live kvm_run mapping; KVM_RUN takes no argument and completes before either mapping is read or another entry begins.
+                let code = unsafe { libc::ioctl(fd, KVM_RUN_IOCTL, 0) };
+                let errno = if code == 0 {
+                    0
+                } else {
+                    std::io::Error::last_os_error()
+                        .raw_os_error()
+                        .unwrap_or(libc::EIO)
+                };
+                (code, errno)
+            },
+            || vcpu.get_kvm_run().exit_reason,
+        )
     }
 
     fn read_run_view(&self) -> Result<KvmRunView> {
@@ -573,13 +602,13 @@ impl Arm64Kvm for LiveKvm {
         // SAFETY: `self.run` is this vCPU's live shared `kvm_run` mapping and
         // the vCPU is not concurrently running.
         unsafe { (*self.run).immediate_exit = 1 };
-        let result = self.vcpu.run();
+        let result = self.run_entry(crate::RunPurpose::Completion);
         // SAFETY: same exclusive mapping access as above; always clear the
         // one-shot flag before interpreting the ioctl result.
         unsafe { (*self.run).immediate_exit = 0 };
         match result {
-            Err(error) if error.errno() == libc::EINTR => Ok(()),
-            Err(error) => Err(kvm_err(error)),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Ok(()),
+            Err(error) => Err(BackendError::Io(error)),
             Ok(_) => Err(BackendError::Internal(
                 "KVM immediate-exit MMIO completion executed guest code",
             )),
@@ -590,8 +619,13 @@ impl Arm64Kvm for LiveKvm {
         if self.cancel_run.load(std::sync::atomic::Ordering::Acquire) {
             return Err(BackendError::Internal("KVM run canceled by host"));
         }
-        self.vcpu.run().map_err(kvm_err)?;
+        self.run_entry(crate::RunPurpose::Guest)
+            .map_err(BackendError::Io)?;
         self.read_run_view()
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
     }
 
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {

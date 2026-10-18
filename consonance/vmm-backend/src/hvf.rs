@@ -393,6 +393,20 @@ unsafe extern "C" {
     fn hv_vcpu_set_vtimer_offset(vcpu: u64, value: u64) -> i32;
 }
 
+fn measured_entry(
+    telemetry: &mut crate::PhysicalTelemetry,
+    purpose: crate::RunPurpose,
+    enter: impl FnOnce() -> Result<HvVcpuExit>,
+) -> Result<HvVcpuExit> {
+    telemetry.measure(crate::RunPlatform::HvfArm64, purpose, || {
+        let result = enter();
+        let outcome = result.as_ref().map_or(crate::RunReturn::Error, |raw| {
+            crate::RunReturn::Returned(raw.reason)
+        });
+        (result, outcome)
+    })
+}
+
 fn hv(operation: &'static str, status: i32) -> Result<()> {
     if status == 0 {
         Ok(())
@@ -610,6 +624,7 @@ pub struct HvfBackend {
     pending_irq: Option<GicIntId>,
     accepted_irq: Option<GicIntId>,
     counts: ExitCounts,
+    physical: crate::PhysicalTelemetry,
     regions: Vec<(u64, usize)>,
     writable: std::collections::BTreeSet<u64>,
     host_ranges: Vec<(usize, usize)>,
@@ -689,6 +704,7 @@ impl HvfBackend {
             pending_irq: None,
             accepted_irq: None,
             counts: ExitCounts::default(),
+            physical: crate::PhysicalTelemetry::default(),
             regions: Vec::new(),
             writable: std::collections::BTreeSet::new(),
             host_ranges: Vec::new(),
@@ -834,6 +850,17 @@ impl HvfBackend {
         Ok(gpa)
     }
 
+    fn run_entry(&mut self, purpose: crate::RunPurpose) -> Result<HvVcpuExit> {
+        let vcpu = self.vcpu;
+        let exit = self.exit;
+        measured_entry(&mut self.physical, purpose, || {
+            // SAFETY: the owning thread exclusively owns this live vCPU for the duration of the call.
+            hv("hv_vcpu_run", unsafe { hv_vcpu_run(vcpu) })?;
+            // SAFETY: HVF owns the live exit page; the successful run has completed writing it and the owner reads it before another entry.
+            Ok(unsafe { *exit.as_ptr() })
+        })
+    }
+
     fn flush_guest_translations(&mut self) -> Result<()> {
         let gpa = self.ensure_flush_stub()?;
         let sctlr = self.sysreg(HV_SYS_REG_SCTLR_EL1)?;
@@ -849,11 +876,7 @@ impl HvfBackend {
             return Err(BackendError::Internal("injected HVF flush failure"));
         }
         for _ in 0..2 {
-            // SAFETY: the vCPU is live and this call runs on its owning thread.
-            hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
-            // SAFETY: HVF owns this exit page for the vCPU lifetime and run has
-            // completed its write before returning.
-            let raw = unsafe { *self.exit.as_ptr() };
+            let raw = self.run_entry(crate::RunPurpose::Maintenance)?;
             if raw.reason == HV_EXIT_REASON_CANCELED {
                 continue;
             }
@@ -977,11 +1000,7 @@ impl HvfBackend {
     fn enter_guest(&mut self) -> Result<Exit<Arm64>> {
         loop {
             self.apply_pending_irq()?;
-            // SAFETY: the vCPU is live and this call runs on its owning thread.
-            hv("hv_vcpu_run", unsafe { hv_vcpu_run(self.vcpu) })?;
-            // SAFETY: HVF owns this exit page for the vCPU lifetime and run has
-            // completed its write before returning.
-            let raw = unsafe { *self.exit.as_ptr() };
+            let raw = self.run_entry(crate::RunPurpose::Guest)?;
             if raw.reason == HV_EXIT_REASON_EXCEPTION
                 && let Some(page) = tracked_write_fault(&raw.exception, &self.regions)
             {
@@ -1665,6 +1684,10 @@ impl Backend for HvfBackend {
         Ok(())
     }
 
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
+    }
+
     fn exit_counts(&self) -> ExitCounts {
         self.counts
     }
@@ -1794,6 +1817,39 @@ mod tests {
             assert_eq!(restored.simd_fp, baseline.simd_fp);
         }
         eprintln!("SME_ACTIVE_TEST=PASSED");
+    }
+
+    #[test]
+    fn physical_hvf_boundary_distinguishes_canceled_returns_maintenance_and_api_errors() {
+        use crate::{RunPlatform, RunPurpose};
+        let mut telemetry = crate::PhysicalTelemetry::default();
+        let mut canceled = raw_exit(0, 0);
+        canceled.reason = HV_EXIT_REASON_CANCELED;
+        measured_entry(&mut telemetry, RunPurpose::Maintenance, || Ok(canceled)).unwrap();
+        measured_entry(&mut telemetry, RunPurpose::Maintenance, || {
+            Ok(raw_exit(0, 0))
+        })
+        .unwrap();
+        assert!(
+            measured_entry(&mut telemetry, RunPurpose::Guest, || Err(
+                BackendError::Internal("scripted HVF API failure")
+            ))
+            .is_err()
+        );
+        let maintenance = telemetry.cost(RunPlatform::HvfArm64, RunPurpose::Maintenance);
+        assert_eq!(
+            (
+                maintenance.entries,
+                maintenance.returns,
+                maintenance.errors,
+                maintenance.interruptions
+            ),
+            (2, 2, 0, 0)
+        );
+        assert_eq!(maintenance.raw_exit_count(HV_EXIT_REASON_CANCELED), 1);
+        assert_eq!(maintenance.raw_exit_count(HV_EXIT_REASON_EXCEPTION), 1);
+        let guest = telemetry.cost(RunPlatform::HvfArm64, RunPurpose::Guest);
+        assert_eq!((guest.entries, guest.returns, guest.errors), (1, 0, 1));
     }
 
     #[test]

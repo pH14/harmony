@@ -82,6 +82,7 @@ pub struct KvmBackend {
     readiness_current: bool,
     accepted_irq: VecDeque<u8>,
     counts: ExitCounts,
+    physical: crate::PhysicalTelemetry,
     #[cfg(feature = "xsave-diagnostics")]
     diagnostic_rip: Option<u64>,
     #[cfg(feature = "xsave-diagnostics")]
@@ -170,6 +171,7 @@ impl KvmBackend {
             readiness_current: true,
             accepted_irq: VecDeque::new(),
             counts: ExitCounts::default(),
+            physical: crate::PhysicalTelemetry::default(),
             #[cfg(feature = "xsave-diagnostics")]
             diagnostic_rip: None,
             #[cfg(feature = "xsave-diagnostics")]
@@ -339,6 +341,7 @@ impl KvmBackend {
         self.state_mutation_guard.ensure_healthy()?;
         let page = self.run_page();
         let fd = self.vcpu.as_raw_fd();
+        let physical = &mut self.physical;
         let next = finish_staged_completion_guarded(
             page,
             &mut self.pending,
@@ -347,12 +350,21 @@ impl KvmBackend {
             || {
                 // SAFETY: the owned vCPU fd references the mapped run page and
                 // this entry is restricted to consuming its staged completion.
-                let rc = unsafe { raw_kvm_run(fd) };
-                if rc < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
+                physical.measure(
+                    crate::RunPlatform::KvmX86,
+                    crate::RunPurpose::Completion,
+                    || {
+                        // SAFETY: the owning backend keeps this vCPU fd and its run page live; staged completion is the only allowed entry here.
+                        let rc = unsafe { raw_kvm_run(fd) };
+                        let result = if rc < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        };
+                        let outcome = crate::RunReturn::from_io(&result, || page.exit_reason());
+                        (result, outcome)
+                    },
+                )
             },
         )?;
         if let Some(exit) = &next {
@@ -401,9 +413,22 @@ impl KvmBackend {
                 IrqEntry::Run => {}
             }
             self.guest_run_attempted = true;
-            let rc = unsafe { raw_kvm_run(self.vcpu.as_raw_fd()) };
-            if rc < 0 {
-                let err = std::io::Error::last_os_error();
+            let fd = self.vcpu.as_raw_fd();
+            let page = self.run_page();
+            let result =
+                self.physical
+                    .measure(crate::RunPlatform::KvmX86, crate::RunPurpose::Guest, || {
+                        // SAFETY: this stopped vCPU and its mapped run page are exclusively owned by this backend on its pinned thread.
+                        let rc = unsafe { raw_kvm_run(fd) };
+                        let result = if rc < 0 {
+                            Err(std::io::Error::last_os_error())
+                        } else {
+                            Ok(())
+                        };
+                        let outcome = crate::RunReturn::from_io(&result, || page.exit_reason());
+                        (result, outcome)
+                    });
+            if let Err(err) = result {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
@@ -837,8 +862,15 @@ impl KvmBackend {
         self.check_completion_clear()?;
         let sregs = self.read_sregs2_guarded()?;
         let fd = self.vcpu.as_raw_fd();
+        let page = self.run_page();
+        let purpose = if self.completion.staged {
+            crate::RunPurpose::Completion
+        } else {
+            crate::RunPurpose::Maintenance
+        };
+        let physical = &mut self.physical;
         let continuation = prepare_snapshot_run_guarded(
-            self.run_page(),
+            page,
             sregs.cr8,
             &mut self.pending,
             &mut self.completion,
@@ -846,12 +878,17 @@ impl KvmBackend {
             || {
                 // SAFETY: the owned vCPU has a run page requesting immediate exit and,
                 // when a completion was staged, no pending value left to supply.
-                let rc = unsafe { raw_kvm_run(fd) };
-                if rc < 0 {
-                    Err(std::io::Error::last_os_error())
-                } else {
-                    Ok(())
-                }
+                physical.measure(crate::RunPlatform::KvmX86, purpose, || {
+                    // SAFETY: the owned vCPU and its mapped run page are live; the guard has staged immediate exit before calling this closure.
+                    let rc = unsafe { raw_kvm_run(fd) };
+                    let result = if rc < 0 {
+                        Err(std::io::Error::last_os_error())
+                    } else {
+                        Ok(())
+                    };
+                    let outcome = crate::RunReturn::from_io(&result, || page.exit_reason());
+                    (result, outcome)
+                })
             },
         )?;
         if let Some(exit) = continuation {
@@ -1287,6 +1324,10 @@ impl Backend for KvmBackend {
         plan_irq_entry(self.run_page(), None, false, || Ok(false))?;
         self.guest_run_attempted = false;
         Ok(())
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical
     }
 
     fn exit_counts(&self) -> ExitCounts {

@@ -43,6 +43,17 @@ pub enum RunReturn {
     Error,
 }
 
+impl RunReturn {
+    #[cfg(any(target_os = "linux", test))]
+    pub(crate) fn from_io(result: &std::io::Result<()>, reason: impl FnOnce() -> u32) -> Self {
+        match result {
+            Ok(()) => Self::Returned(reason()),
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => Self::Interrupted,
+            Err(_) => Self::Error,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PhysicalRunCost {
     pub entries: u64,
@@ -174,6 +185,22 @@ impl PhysicalTelemetry {
 mod tests {
     use super::*;
     #[test]
+    fn interrupted_and_failed_io_never_read_stale_exit_reason() {
+        for (error, expected) in [
+            (std::io::ErrorKind::Interrupted, RunReturn::Interrupted),
+            (std::io::ErrorKind::PermissionDenied, RunReturn::Error),
+        ] {
+            assert_eq!(
+                RunReturn::from_io(&Err(std::io::Error::from(error)), || panic!(
+                    "stale exit read"
+                )),
+                expected
+            );
+        }
+        assert_eq!(RunReturn::from_io(&Ok(()), || 6), RunReturn::Returned(6));
+    }
+
+    #[test]
     fn internally_consumed_returns_and_os_failures_remain_separate() {
         let mut telemetry = PhysicalTelemetry::default();
         let mut surfaced = 0;
@@ -197,6 +224,23 @@ mod tests {
         assert_eq!(site.raw_exit_count(6), 1);
         assert_eq!(site.raw_exit_count(0), 0);
     }
+    #[test]
+    fn elapsed_error_and_interruption_work_accumulates_without_clock_assumptions() {
+        let mut telemetry = PhysicalTelemetry::default();
+        telemetry.finish(RunPlatform::KvmX86, RunPurpose::Guest, 17, RunReturn::Error);
+        telemetry.finish(
+            RunPlatform::KvmX86,
+            RunPurpose::Guest,
+            23,
+            RunReturn::Interrupted,
+        );
+        let cost = telemetry.cost(RunPlatform::KvmX86, RunPurpose::Guest);
+        assert_eq!(
+            (cost.nanos, cost.errors, cost.interruptions, cost.returns),
+            (40, 1, 1, 0)
+        );
+    }
+
     #[test]
     fn purpose_platform_and_retirement_merges_are_disjoint_and_saturating() {
         let mut live = PhysicalTelemetry::default();
