@@ -507,6 +507,8 @@ pub enum SessionError {
     },
     #[error("control session: {0}")]
     Control(String),
+    #[error("host infrastructure: {0}")]
+    Infrastructure(String),
     #[error("portable snapshot: {0}")]
     Portable(String),
     #[error("guest stopped before the expected snapshot point: {0:?}")]

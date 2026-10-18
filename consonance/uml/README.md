@@ -167,7 +167,10 @@
   finishes process cleanup, and joins the console collector before recording
   the diagnostic tail. The kernel-owned exit status classifies a panic. A closed
   bridge whose process does not exit within the progress limit fails instead
-  of guessing from partial output.
+  of guessing from partial output. Capture, restore and response sends also
+  resolve bridge hangups against the owned child's actual exit status, under
+  the same progress and launch limits. An empty packet from a live SEQPACKET
+  peer is a malformed frame, not evidence of an infrastructure exit.
   The host owns the guest's physical memory file and an image file, both
   memfds, and maps them side by side. A `Checkpoint` is a snapshot in the
   session's `Checkpoints` page store plus the services state at the capture.
