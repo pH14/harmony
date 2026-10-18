@@ -380,15 +380,20 @@ frames, guard refusal, or uncertain completion abandon the exchange and publish
 nothing. The 4096-byte bound includes failure diagnostics: an oversized diagnostic
 abandons the session rather than preserving recoverability or allocating an
 unbounded reply. Typed child Hung/Abandoned errors retain their types while
-abandoning the exchange after a destination has been allocated. The parent never accesses or commits a destination while a successful
+abandoning the exchange after a destination has been allocated. Any child failure
+after destination allocation abandons the session, including FAILED/OTHER; the
+same ordinary failure before allocation leaves the session usable.
+The parent never accesses or commits a destination while a successful
 child exchange still owns its writer mapping. A lost acknowledgement does not
 prove that the writer has exited: the current cache allocator uses append-only
 ranges and retires empty backing segments, so abandoned storage cannot alias a
 later allocation. Future range reuse would require a stronger writer-lifetime
-protocol. On Linux, hole punching an abandoned range can be followed by late
-writer refills that are outside cache accounting; the allocator's charge is not
-an inventory of those residual physical pages. The child checks offset arithmetic, slice length, exact required
-length, and current descriptor backing size before mapping. The size check
+protocol. A child mapping can keep a retired segment alive after its charge is
+removed on either platform. On Linux, hole punching an abandoned range can also
+be followed by late writer refills outside cache accounting. The allocator's
+charge is not an inventory of those residual physical pages. The child checks
+offset arithmetic, slice length, exact required length, and current descriptor
+backing size before mapping. The size check
 cannot prevent later truncation; the coordinator must keep its backing allocation
 alive and untruncated throughout the active exchange.
 
