@@ -1820,7 +1820,17 @@ mod tests {
     fn truncated_rights_preserve_unrelated_descriptors_and_close_received_handles() {
         const CHILD: &str = "HARMONY_TRUNCATED_RIGHTS_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let output=Command::new(std::env::current_exe().unwrap()).args(["--exact","session::worker::tests::truncated_rights_preserve_unrelated_descriptors_and_close_received_handles","--nocapture"]).env(CHILD,"1").output().unwrap();
+            const CASE: &str = concat!(
+                "session::worker::tests::",
+                "truncated_rights_preserve_unrelated_descriptors_and_close_received_handles"
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(CASE)
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
             let stdout = String::from_utf8_lossy(&output.stdout);
             assert!(
                 output.status.success()

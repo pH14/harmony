@@ -66,16 +66,22 @@ pub(crate) fn parse_control_rights(
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn native_space(count: usize) -> usize {
+    fn native_space_bytes(bytes: usize) -> usize {
         // SAFETY: CMSG_SPACE only computes native layout for this bounded test payload.
-        unsafe { libc::CMSG_SPACE((count * size_of::<RawFd>()) as u32) as usize }
+        unsafe { libc::CMSG_SPACE(bytes as u32) as usize }
     }
-    fn synthetic_rights(declared: usize, values: &[RawFd], capacity: usize) -> Vec<u8> {
+    fn synthetic_control(
+        declared: usize,
+        level: libc::c_int,
+        kind: libc::c_int,
+        payload: &[u8],
+        capacity: usize,
+    ) -> Vec<u8> {
         // SAFETY: cmsghdr contains integer fields; zero initializes all fields and native padding.
         let mut header: libc::cmsghdr = unsafe { std::mem::zeroed() };
         header.cmsg_len = declared as _;
-        header.cmsg_level = libc::SOL_SOCKET;
-        header.cmsg_type = libc::SCM_RIGHTS;
+        header.cmsg_level = level;
+        header.cmsg_type = kind;
         let mut bytes = vec![0; capacity];
         let mut put = |at: usize, field: &[u8]| bytes[at..at + field.len()].copy_from_slice(field);
         put(
@@ -92,10 +98,22 @@ mod tests {
         );
         // SAFETY: CMSG_LEN only computes the native payload offset for zero bytes.
         let offset = unsafe { libc::CMSG_LEN(0) as usize };
-        for (index, value) in values.iter().enumerate() {
-            put(offset + index * size_of::<RawFd>(), &value.to_ne_bytes());
-        }
+        put(offset, payload);
         bytes
+    }
+
+    fn synthetic_rights(declared: usize, values: &[RawFd], capacity: usize) -> Vec<u8> {
+        let payload = values
+            .iter()
+            .flat_map(|value| value.to_ne_bytes())
+            .collect::<Vec<_>>();
+        synthetic_control(
+            declared,
+            libc::SOL_SOCKET,
+            libc::SCM_RIGHTS,
+            &payload,
+            capacity,
+        )
     }
 
     #[test]
@@ -126,15 +144,54 @@ mod tests {
     }
 
     #[test]
-    fn bounded_control_parser_walks_native_aligned_messages() {
-        // SAFETY: CMSG_LEN only computes native layout for a bounded two-descriptor payload.
-        let first_len = unsafe { libc::CMSG_LEN((2 * size_of::<RawFd>()) as u32) as usize };
+    fn bounded_control_parser_walks_padded_nonrights_then_rights() {
+        // SAFETY: CMSG_LEN only computes native layout for this one-byte payload.
+        let first_len = unsafe { libc::CMSG_LEN(1) as usize };
         // SAFETY: CMSG_LEN only computes native layout for one descriptor.
         let second_len = unsafe { libc::CMSG_LEN(size_of::<RawFd>() as u32) as usize };
-        let mut bytes = synthetic_rights(first_len, &[41, 42], native_space(2));
+        let stride = native_space_bytes(1);
+        assert!(stride > first_len);
+        let mut bytes = synthetic_control(
+            first_len,
+            libc::SOL_SOCKET,
+            libc::SCM_RIGHTS.wrapping_add(1),
+            &[0x55],
+            stride,
+        );
         bytes.extend_from_slice(&synthetic_rights(second_len, &[43], second_len));
         let mut found = Vec::new();
         parse_control_rights(&bytes, bytes.len(), |fd| found.push(fd)).unwrap();
-        assert_eq!(found, [41, 42, 43]);
+        assert_eq!(found, [43]);
+    }
+
+    #[test]
+    fn bounded_control_parser_ignores_wrong_level_and_type() {
+        // SAFETY: CMSG_LEN only computes native layout for one descriptor.
+        let declared = unsafe { libc::CMSG_LEN(size_of::<RawFd>() as u32) as usize };
+        for (level, kind) in [
+            (libc::SOL_SOCKET.wrapping_add(1), libc::SCM_RIGHTS),
+            (libc::SOL_SOCKET, libc::SCM_RIGHTS.wrapping_add(1)),
+        ] {
+            let bytes = synthetic_control(declared, level, kind, &41i32.to_ne_bytes(), declared);
+            let mut found = Vec::new();
+            parse_control_rights(&bytes, bytes.len(), |fd| found.push(fd)).unwrap();
+            assert!(found.is_empty());
+        }
+    }
+
+    #[test]
+    fn bounded_control_parser_rejects_reported_overallocation_after_complete_header() {
+        // SAFETY: CMSG_LEN only computes native layout for one descriptor.
+        let declared = unsafe { libc::CMSG_LEN(size_of::<RawFd>() as u32) as usize };
+        let bytes = synthetic_rights(declared, &[43], declared);
+        let mut found = Vec::new();
+        let error = parse_control_rights(&bytes, bytes.len() + 1, |fd| found.push(fd)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("control extent exceeds allocation"),
+            "{error}"
+        );
+        assert_eq!(found, [43]);
     }
 }
