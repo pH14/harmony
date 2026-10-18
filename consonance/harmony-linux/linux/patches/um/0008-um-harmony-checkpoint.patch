@@ -1051,7 +1051,7 @@ exception.
 +		memory_failure("unprotect direct map");
 +}
 +
-+static void open_range(unsigned long start, unsigned long end)
++static void open_range(unsigned long start, unsigned long end, const char *operation)
 +{
 +	track.unprotects++;
 +	if (track.unprotects > UNPROTECT_LIMIT) {
@@ -1061,7 +1061,7 @@ exception.
 +	os_track_mark(start - track.base, end - start);
 +	if (mprotect((void *)start, end - start,
 +		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
-+		memory_failure("unprotect dirty page");
++		memory_failure(operation);
 +}
 +
 +void os_track_unprotect(unsigned long start, unsigned long end)
@@ -1073,7 +1073,7 @@ exception.
 +	if (end > track.end)
 +		end = track.end;
 +	if (start < end)
-+		open_range(start, end);
++		open_range(start, end, "unprotect direct range");
 +}
 +
 +int os_track_fault(unsigned long address)
@@ -1083,7 +1083,7 @@ exception.
 +	if (!track.tracking || track.all || address < track.start ||
 +	    address >= track.end)
 +		return 0;
-+	open_range(page, page + UM_KERN_PAGE_SIZE);
++	open_range(page, page + UM_KERN_PAGE_SIZE, "unprotect dirty page");
 +	return 1;
 +}
 +
