@@ -1183,6 +1183,17 @@ fn a_checkpoint_resumes_with_another_worker_count_and_repeats_the_run() {
         original.0.telemetry.admission.results_held > 0,
         "no result waited for admission"
     );
+    let buffered = original.0.telemetry.completed_buffer;
+    assert!(
+        buffered.results_peak >= 2,
+        "held results were not counted together"
+    );
+    assert!(buffered.actions_peak >= 2);
+    assert_eq!(buffered.candidates_peak, buffered.actions_peak);
+    assert_eq!(buffered.results_live, 0);
+    assert_eq!(buffered.actions_live, 0);
+    assert_eq!(buffered.candidates_live, 0);
+
     let freed: u64 = std::fs::read_to_string(directory.join("checkpoints.jsonl"))
         .unwrap()
         .lines()
