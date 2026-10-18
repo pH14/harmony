@@ -488,6 +488,19 @@ The measured Linux 6.18 ARM KVM inventory has 257 entries:
 | Excluded AArch32 | 8 | Four banked SPSRs, DBGVCR32, DACR32, IFSR32 and FPEXC32; capture and restore admit only AArch64 EL0/EL1 modes in both PSTATE and SPSR_EL1 |
 | Excluded physical counter | 1 | Native CNTPCT is external host time, outside the cooperative virtual-time interface; it is not replayed |
 
+The AArch32 exclusion also depends on the actual vCPU initialization, not just
+cut-time PSTATE checks. `vcpu_init_features` enables exactly PSCI, leaving
+`KVM_ARM_VCPU_EL1_32BIT` and nested EL2 disabled. KVM fixes EL1 to AArch64 via
+[HCR_EL2.RW](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/include/asm/kvm_emulate.h).
+Guest EL1 cannot change that hypervisor control. A transient AArch32 EL0
+execution cannot read or write privileged AArch32 banked SPSRs or those four
+EL2 views of EL1-only registers. Its shared GPR/SIMD state is captured normally;
+an AArch32 cut itself remains unsupported. In particular, KVM
+[skips FPEXC32 save/restore for AArch64 EL1](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kvm/hyp/include/hyp/switch.h),
+and Arm specifies that its enable bit applies only when EL1 is not AArch64.
+These controls prevent later AArch32 EL0 execution from observing omitted
+privileged banked state; masking the advertised ID alone would not suffice.
+
 The native physical counter exclusion is an explicit limit, not a claim that
 all EL1 timing instructions trap or that arbitrary counter-reading guests are
 deterministic. Standard libraries remain supported through the owned Linux
@@ -542,10 +555,13 @@ unmodified configuration's PFR1. Arm's
 [hardware feature detection guide](https://learn.arm.com/learning-paths/laptops-and-desktops/kleidicv-on-mac/build-1/)
 defines this native zero as SME unavailable. Missing, malformed or failed reads,
 partial symbols, and nonzero native features refuse admission. This older
-configuration fingerprints 12 feature fields rather than 14; schemas do not
-compare equal. Actual fixed-register access remains mandatory, including fields
-introduced in macOS 15.2. Older runtime admission and active-SME hardware have
-not been qualified by the current macOS 26.6 non-SME host receipt.
+preflight hashes 12 feature fields rather than 14; schemas do not compare
+equal. That preflight does not establish older-runtime admission: actual
+fixed-register access remains mandatory, including fields introduced in macOS
+15.2, and a framework rejecting those accesses refuses creation. The existing
+core baseline also requires ZFR0/SMFR0 register APIs introduced in macOS 15.2.
+Neither older-runtime admission nor active-SME hardware has been qualified by
+the current macOS 26.6 non-SME host receipt.
 
 The registered native inventory tests print each KVM disposition and exercise
 native identity drift, ACTLR reset, all six HVF fixed-register detours and the

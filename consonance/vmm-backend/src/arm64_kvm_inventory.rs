@@ -262,14 +262,14 @@ mod tests {
 
     #[test]
     fn excluded_aarch32_modes_are_rejected_without_mutation() {
+        let mut backend = Arm64KvmBackend::new(fake());
+        backend.set_policy(&crate::Arm64Policy::default()).unwrap();
+        let baseline = backend.save().unwrap();
         for mode in 0..32 {
             if matches!(mode, 0 | 4 | 5) {
                 continue;
             }
             for spsr in [false, true] {
-                let mut backend = Arm64KvmBackend::new(fake());
-                backend.set_policy(&crate::Arm64Policy::default()).unwrap();
-                let baseline = backend.save().unwrap();
                 let mut invalid = baseline;
                 if spsr {
                     invalid.core.spsr_el1 = mode;
@@ -281,7 +281,6 @@ mod tests {
                 assert!(backend.restore(&invalid).is_err());
                 assert_eq!(backend.kvm.calls, calls);
                 assert_eq!(backend.kvm.regs, regs);
-                assert_eq!(backend.save().unwrap(), baseline);
                 let id = core_reg(if spsr { CORE_SPSR_EL1 } else { CORE_PSTATE });
                 backend.kvm.regs.insert(id, mode);
                 assert!(matches!(
@@ -289,9 +288,26 @@ mod tests {
                     Err(BackendError::Unsupported { .. })
                 ));
                 assert_eq!(backend.kvm.regs[&id], mode);
-                backend.restore(&baseline).unwrap();
+                backend.kvm.regs.insert(
+                    id,
+                    if spsr {
+                        baseline.core.spsr_el1
+                    } else {
+                        baseline.core.pstate
+                    },
+                );
             }
         }
+        assert_eq!(backend.save().unwrap(), baseline);
+        backend.restore(&baseline).unwrap();
+        backend.kvm.push_run(KvmRunView {
+            exit_reason: KVM_EXIT_ARM_WFX_PLACEHOLDER,
+            ..Default::default()
+        });
+        assert!(matches!(
+            backend.run().unwrap(),
+            Exit::Common(CommonExit::Idle)
+        ));
     }
 
     #[test]

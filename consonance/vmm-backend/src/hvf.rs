@@ -1745,10 +1745,9 @@ mod tests {
             backend.set_sysreg(reg, value).unwrap();
             let observed = backend.sysreg(reg).unwrap();
             eprintln!("HVF fixed register {reg:#06x}: detour={observed:#x}");
-            if observed != 0 {
-                assert!(backend.save().is_err(), "capture accepted {reg:#06x}");
-                assert_eq!(backend.sysreg(reg).unwrap(), observed);
-            }
+            assert_ne!(observed, 0, "detour did not exercise {reg:#06x}");
+            assert!(backend.save().is_err(), "capture accepted {reg:#06x}");
+            assert_eq!(backend.sysreg(reg).unwrap(), observed);
             backend.restore(&baseline).unwrap();
             assert_eq!(backend.sysreg(reg).unwrap(), 0);
             drop(backend);

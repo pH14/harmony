@@ -39,7 +39,7 @@ hash. A schema or native identity mismatch fails with
 KVM enumerates and classifies its actual initialized-vCPU register IDs; HVF
 binds its public configuration API and enforces fixed/inactive native state.
 The complete measured dispositions and the limits of HVF's non-enumerable API
-are documented in [vmm-backend](../../../vmm-backend/README.md#arm-register-inventory-admission).
+are documented in [vmm-backend](../../../../vmm-backend/README.md#arm-register-inventory-admission).
 
 Both arm64 backends refuse a baseline field above the host when the policy is
 applied, so a baseline that over-claims fails at boot. The ignored test

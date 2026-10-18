@@ -4,7 +4,7 @@ pub type Result<T> = core::result::Result<T, BackendError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BackendError {
-    #[error("ARM KVM register {register:#018x}: {reason}")]
+    #[error("ARM register {register:#018x}: {reason}")]
     Arm64RegisterInventory { register: u64, reason: &'static str },
     #[error("backend does not support: {what}")]
     Unsupported { what: &'static str },
