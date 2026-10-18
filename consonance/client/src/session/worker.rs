@@ -3208,6 +3208,70 @@ mod tests {
     }
 
     #[test]
+    fn worker_copy_reports_bind_export_import_mappings_and_status_to_the_served_owner() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut session, server) = threaded(3);
+        let lease = session
+            .publish_snapshot(&index, namespace(), b"copies", None, SnapId(1), 1)
+            .unwrap();
+        let chain = index.chain(&lease).unwrap();
+        assert_eq!(chain.len(), 1);
+        let range = chain[0].shared_range();
+        assert_eq!(range.offset, 0);
+        let span = range.len;
+        session.import_cached(&index, &lease, SnapId(1)).unwrap();
+        let before = session
+            .copies
+            .counters("parent")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let config = config();
+        let encoded =
+            (config.cmdline.len() + config.identity_tag.len() + 1 + 1 + b"fake".len()) as u64;
+        assert_eq!(before["parent.encoded_payload_bytes"], encoded);
+        assert_eq!(before["parent.decoded_payload_bytes"], 32);
+        let counters = session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for direction in ["import", "export"] {
+            for (leaf, expected) in [
+                ("attempts", 1),
+                ("errors", 0),
+                ("range_bytes", range.len as u64),
+                ("span_bytes", span as u64),
+            ] {
+                assert_eq!(
+                    counters[&format!("copy.child.loop.{direction}_mapping.{leaf}")],
+                    expected
+                );
+                assert_eq!(
+                    counters[&format!("copy.parent.{direction}_mapping.{leaf}")],
+                    0
+                );
+            }
+        }
+        assert_eq!(counters["copy.child.loop.encoded_payload_bytes"], 0);
+        assert_eq!(counters["copy.child.loop.decoded_payload_bytes"], 2);
+        assert_eq!(counters["copy.child.loop.status_payload_bytes"], 32);
+        assert_eq!(counters["copy.parent.encoded_payload_bytes"], encoded);
+        assert_eq!(counters["copy.parent.status_payload_bytes"], 0);
+        let after = session
+            .copies
+            .counters("parent")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            counters["copy.parent.decoded_payload_bytes"],
+            after["parent.decoded_payload_bytes"]
+        );
+        assert!(after["parent.decoded_payload_bytes"] > before["parent.decoded_payload_bytes"]);
+        index.release(lease);
+        drop((chain, session));
+        server.join().unwrap();
+    }
+
+    #[test]
     fn sdk_worker_counts_actual_status_and_event_payload_copies() {
         let (mut session, server) = threaded(3);
         let before = session

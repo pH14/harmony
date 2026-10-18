@@ -694,7 +694,8 @@ Workload adapters own decoder checkpoints and lineage validation.
 
 Explicit worker copies use `copy.parent.*` and `copy.child.loop.*` with independent
 owners; internal serializer clones share their owner's counters. `encoded_payload_bytes`
-counts `Out::bytes` payload extensions (excluding scalar field encoding),
+counts measured `Out::bytes` payload extensions (excluding scalar field encoding
+and the worker hello, which precedes the copy owner),
 `status_payload_bytes` counts the successful reply-body copy into its status
 wrapper, and `decoded_payload_bytes` counts owned INIT/setup/attachment/answer
 payload fields, parent status stripping, and parent SDK-event payload decoding.
@@ -716,8 +717,9 @@ part of encoded length but not copied metadata. No E-byte temporary output buffe
 or temporary-to-extent copy exists in direct export, and no such charge is inferred.
 Sidecar/row allocations remain separate and are not estimated from output length.
 
-`snapshot.copy.*` is the Session's Store-owned cumulative page-copy work, forwarded
-once through core telemetry. `intern_calls` includes calls that later fail;
+`snapshot.copy.*` counts Store interning and read-into-buffer copies, forwarded
+once through core telemetry. Copies from `Store::materialize` into its tempfile
+mapping are excluded. `intern_calls` includes calls that later fail;
 `intern_hits` counts reused equal resident payloads with no new owned copy;
 `intern_copy_bytes` counts actual new owned page copies, including copies whose
 builder is later discarded. Zero or unchanged writes can bypass interning.

@@ -76,6 +76,10 @@ admission is unavailable, so a missing runner cannot produce a green skip.
 The list includes shared-launcher telemetry-owner isolation, exact executable
 read/hash/comparison bytes and their partial-failure accounting, and mapping
 refusal with publication revocation.
+`Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
+export regression explicitly with all client features on its macOS Arm64 test job.
+It requires exactly one test to run and pass, covering real Session extent-copy
+telemetry with the mock backend without requiring a guest hardware run.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
