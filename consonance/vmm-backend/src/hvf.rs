@@ -3,9 +3,11 @@
 use core::ffi::c_void;
 use std::ptr::{self, NonNull};
 
+use sha2::{Digest, Sha256};
+
 use crate::arch::arm64::{
     Arm64, Arm64AsidBits, Arm64Caps, Arm64Exit, Arm64Injection, Arm64Policy, Arm64VcpuState,
-    GicIntId, canonicalize_core_regs, has_noncanonical_core_regs,
+    GicIntId, canonicalize_core_regs, has_noncanonical_core_regs, has_unsupported_execution_mode,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
@@ -31,6 +33,9 @@ const HV_REG_CPSR: u32 = 34;
 
 const HV_SYS_REG_SCTLR_EL1: u16 = 0xc080;
 const HV_SYS_REG_ACTLR_EL1: u16 = 0xc081;
+const HV_FIXED_ZERO_SYSREGS: [u16; 6] =
+    [HV_SYS_REG_ACTLR_EL1, 0xc687, 0xde87, 0xde85, 0xc094, 0xc096];
+const HV_UNSUPPORTED: i32 = 0xfae9_400f_u32 as i32;
 const HV_PAUTH_KEY_SYSREGS: [u16; 10] = [
     0xc108, 0xc109, 0xc10a, 0xc10b, 0xc110, 0xc111, 0xc112, 0xc113, 0xc118, 0xc119,
 ];
@@ -194,12 +199,172 @@ core::arch::global_asm!(
     "b _hv_vcpu_set_simd_fp_reg",
 );
 
+#[repr(C)]
+#[derive(Default)]
+struct HvSmeState {
+    streaming: bool,
+    za: bool,
+}
+
+type GetSmeMaxVl = unsafe extern "C" fn(*mut usize) -> i32;
+type GetSmeState = unsafe extern "C" fn(u64, *mut HvSmeState) -> i32;
+type SetSmeState = unsafe extern "C" fn(u64, *const HvSmeState) -> i32;
+
+struct SmeApi {
+    get: GetSmeState,
+    set: SetSmeState,
+    max_vl: GetSmeMaxVl,
+}
+
+impl SmeApi {
+    fn load() -> Result<Option<Self>> {
+        // SAFETY: RTLD_DEFAULT is the documented macOS handle; names are static C strings.
+        let (get, set, max_vl) = unsafe {
+            (
+                dlsym((-2isize) as *mut c_void, c"hv_vcpu_get_sme_state".as_ptr()),
+                dlsym((-2isize) as *mut c_void, c"hv_vcpu_set_sme_state".as_ptr()),
+                dlsym(
+                    (-2isize) as *mut c_void,
+                    c"hv_sme_config_get_max_svl_bytes".as_ptr(),
+                ),
+            )
+        };
+        if !validate_sme_symbol_pair(!get.is_null(), !set.is_null(), !max_vl.is_null())? {
+            let mut value = -1i32;
+            let mut length = core::mem::size_of_val(&value);
+            // SAFETY: the name is static; value and length are writable; null requests a read.
+            let status = unsafe {
+                sysctlbyname(
+                    c"hw.optional.arm.FEAT_SME".as_ptr(),
+                    (&mut value as *mut i32).cast(),
+                    &mut length,
+                    ptr::null_mut(),
+                    0,
+                )
+            };
+            validate_missing_sme_api(status, value, length)?;
+            return Ok(None);
+        }
+        // SAFETY: nonnull symbols have the exact documented Hypervisor.framework ABI.
+        Ok(Some(unsafe {
+            Self {
+                get: core::mem::transmute::<*mut c_void, GetSmeState>(get),
+                set: core::mem::transmute::<*mut c_void, SetSmeState>(set),
+                max_vl: core::mem::transmute::<*mut c_void, GetSmeMaxVl>(max_vl),
+            }
+        }))
+    }
+}
+
+fn validate_sme_symbol_pair(get: bool, set: bool, max_vl: bool) -> Result<bool> {
+    if get != set || get != max_vl {
+        return Err(BackendError::Capability {
+            cap: "complete HVF SME state inspection and reset API",
+        });
+    }
+    Ok(get)
+}
+
+fn validate_sme_native_config(value: u64, api_available: bool) -> Result<()> {
+    if !api_available && value & (0xf << 24) != 0 {
+        return Err(BackendError::Capability {
+            cap: "HVF SME API for native SME configuration",
+        });
+    }
+    Ok(())
+}
+
+fn validate_missing_sme_api(status: i32, value: i32, length: usize) -> Result<()> {
+    if status != 0 || value != 0 || length != core::mem::size_of::<i32>() {
+        return Err(BackendError::Capability {
+            cap: "HVF SME API or independently verified native SME absence",
+        });
+    }
+    Ok(())
+}
+
+struct HvConfig(NonNull<c_void>);
+
+impl HvConfig {
+    fn new() -> Result<Self> {
+        // SAFETY: the returned configuration is retained and owned by this wrapper.
+        NonNull::new(unsafe { hv_vcpu_config_create() })
+            .map(Self)
+            .ok_or(BackendError::Internal(
+                "hv_vcpu_config_create returned null",
+            ))
+    }
+
+    fn identity(&self, sme_api_available: bool) -> Result<[u8; 32]> {
+        let mut hash = Sha256::new();
+        hash.update(b"harmony-arm64-hvf-configuration-v1\0");
+        let feature_count = if sme_api_available { 14u32 } else { 12 };
+        hash.update(feature_count.to_le_bytes());
+        for feature in 0..feature_count {
+            let mut value = 0;
+            // SAFETY: the configuration is live and value is writable.
+            hv("hv_vcpu_config_get_feature_reg", unsafe {
+                hv_vcpu_config_get_feature_reg(self.0.as_ptr(), feature, &mut value)
+            })?;
+            if feature == 7 && value & (0xf << 32) != 0 {
+                return Err(BackendError::Capability {
+                    cap: "HVF snapshot support without non-streaming SVE",
+                });
+            }
+            if feature == 8 {
+                validate_sme_native_config(value, sme_api_available)?;
+            }
+            hash.update(feature.to_le_bytes());
+            hash.update(value.to_le_bytes());
+        }
+        for cache_type in 0..2u32 {
+            let mut values = [0u64; 8];
+            // SAFETY: the configuration is live and values has eight writable entries.
+            hv("hv_vcpu_config_get_ccsidr_el1_sys_reg_values", unsafe {
+                hv_vcpu_config_get_ccsidr_el1_sys_reg_values(
+                    self.0.as_ptr(),
+                    cache_type,
+                    values.as_mut_ptr(),
+                )
+            })?;
+            hash.update(cache_type.to_le_bytes());
+            for value in values {
+                hash.update(value.to_le_bytes());
+            }
+        }
+        Ok(hash.finalize().into())
+    }
+}
+
+impl Drop for HvConfig {
+    fn drop(&mut self) {
+        // SAFETY: this wrapper owns the retained configuration and releases it once.
+        unsafe { os_release(self.0.as_ptr()) };
+    }
+}
+
 unsafe extern "C" {
+    fn sysctlbyname(
+        name: *const core::ffi::c_char,
+        old: *mut c_void,
+        length: *mut usize,
+        new: *mut c_void,
+        new_length: usize,
+    ) -> i32;
+    fn dlsym(handle: *mut c_void, name: *const core::ffi::c_char) -> *mut c_void;
+    fn os_release(object: *mut c_void);
     fn sys_icache_invalidate(start: *mut c_void, len: usize);
 }
 
 #[link(name = "Hypervisor", kind = "framework")]
 unsafe extern "C" {
+    fn hv_vcpu_config_create() -> *mut c_void;
+    fn hv_vcpu_config_get_feature_reg(config: *mut c_void, feature: u32, value: *mut u64) -> i32;
+    fn hv_vcpu_config_get_ccsidr_el1_sys_reg_values(
+        config: *mut c_void,
+        cache_type: u32,
+        values: *mut u64,
+    ) -> i32;
     fn hv_vm_create(config: *mut c_void) -> i32;
     fn hv_vm_destroy() -> i32;
     fn hv_vm_map(addr: *mut c_void, ipa: u64, size: usize, flags: u64) -> i32;
@@ -408,6 +573,7 @@ fn host_counter() -> u64 {
 
 fn validate_restore_vcpu_state(state: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&state.core)
+        || has_unsupported_execution_mode(&state.core)
         || state.mp_state != MpState::Runnable
         || !state.vtimer.masked
         || state.vtimer.cntv_ctl_el0 & !0b10 != 0
@@ -450,6 +616,8 @@ pub struct HvfBackend {
     cancel_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
     flush_stub: Option<FlushStub>,
     host_id_regs: std::collections::BTreeMap<u16, u64>,
+    register_identity: [u8; 32],
+    sme_api: Option<SmeApi>,
     state_poisoned: bool,
     #[cfg(test)]
     fail_flush_after_staging: bool,
@@ -469,13 +637,16 @@ struct FlushStub {
 
 impl HvfBackend {
     pub fn new() -> Result<Self> {
+        let sme_api = SmeApi::load()?;
+        let config = HvConfig::new()?;
+        let register_identity = config.identity(sme_api.is_some())?;
         // SAFETY: null selects the documented default VM configuration.
         hv("hv_vm_create", unsafe { hv_vm_create(ptr::null_mut()) })?;
         let mut vcpu = 0;
         let mut exit = ptr::null();
-        // SAFETY: output pointers are live and null selects the default config.
+        // SAFETY: output pointers and the retained configuration are live.
         if let Err(error) = hv("hv_vcpu_create", unsafe {
-            hv_vcpu_create(&mut vcpu, &mut exit, ptr::null_mut())
+            hv_vcpu_create(&mut vcpu, &mut exit, config.0.as_ptr())
         }) {
             // SAFETY: this constructor created the VM and no vCPU exists.
             let _ = unsafe { hv_vm_destroy() };
@@ -510,7 +681,7 @@ impl HvfBackend {
             let _ = unsafe { hv_vm_destroy() };
             return Err(error);
         }
-        let backend = Self {
+        let mut backend = Self {
             vcpu,
             exit,
             configured: false,
@@ -524,6 +695,8 @@ impl HvfBackend {
             cancel_run: std::sync::Arc::default(),
             flush_stub: None,
             host_id_regs: std::collections::BTreeMap::new(),
+            register_identity,
+            sme_api,
             state_poisoned: false,
             #[cfg(test)]
             fail_flush_after_staging: false,
@@ -534,21 +707,35 @@ impl HvfBackend {
             #[cfg(test)]
             fail_run_after_guest: false,
         };
-        let missing_actlr = || BackendError::Capability {
-            cap: "HVF ACTLR_EL1 read/write for deterministic snapshots",
-        };
-        backend
-            .sysreg(HV_SYS_REG_ACTLR_EL1)
-            .map_err(|_| missing_actlr())?;
-        backend
-            .set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)
-            .map_err(|_| missing_actlr())?;
-        if backend
-            .sysreg(HV_SYS_REG_ACTLR_EL1)
-            .map_err(|_| missing_actlr())?
-            != 0
-        {
-            return Err(missing_actlr());
+        backend.reset_sme_state()?;
+        let mut hash = Sha256::new();
+        hash.update(b"harmony-arm64-hvf-register-identity-v1\0");
+        hash.update(backend.register_identity);
+        let mut max_vl = 0usize;
+        if backend.sme_state()?.is_some() {
+            // SAFETY: max_vl is writable and the symbol has the documented API signature.
+            hv("hv_sme_config_get_max_svl_bytes", unsafe {
+                (backend
+                    .sme_api
+                    .as_ref()
+                    .ok_or(BackendError::InvalidState)?
+                    .max_vl)(&mut max_vl)
+            })?;
+            if !(16..=256).contains(&max_vl) || !max_vl.is_power_of_two() {
+                return Err(BackendError::InvalidState);
+            }
+        }
+        hash.update((max_vl as u64).to_le_bytes());
+        backend.register_identity = hash.finalize().into();
+        for reg in HV_FIXED_ZERO_SYSREGS {
+            backend.sysreg(reg)?;
+            backend.set_sysreg(reg, 0)?;
+            if backend.sysreg(reg)? != 0 {
+                return Err(BackendError::Arm64RegisterInventory {
+                    register: u64::from(reg),
+                    reason: "HVF fixed register did not reset to zero",
+                });
+            }
         }
         let missing_pauth_keys = || BackendError::Capability {
             cap: "HVF pointer-authentication key read/write for deterministic snapshots",
@@ -564,6 +751,39 @@ impl HvfBackend {
         }
         backend.set_sysreg(HV_SYS_REG_CNTV_CTL_EL0, 0)?;
         Ok(backend)
+    }
+
+    fn sme_state(&self) -> Result<Option<HvSmeState>> {
+        let Some(api) = &self.sme_api else {
+            return Ok(None);
+        };
+        let mut state = HvSmeState::default();
+        // SAFETY: the vCPU is owned by this thread and state is writable.
+        let status = unsafe { (api.get)(self.vcpu, &mut state) };
+        if status == HV_UNSUPPORTED {
+            return Ok(None);
+        }
+        hv("hv_vcpu_get_sme_state", status)?;
+        Ok(Some(state))
+    }
+
+    fn reset_sme_state(&self) -> Result<()> {
+        if self.sme_state()?.is_some() {
+            // SAFETY: the vCPU is owned by this thread and state is readable.
+            hv("hv_vcpu_set_sme_state", unsafe {
+                (self.sme_api.as_ref().ok_or(BackendError::InvalidState)?.set)(
+                    self.vcpu,
+                    &HvSmeState::default(),
+                )
+            })?;
+            if self
+                .sme_state()?
+                .is_none_or(|state| state.streaming || state.za)
+            {
+                return Err(BackendError::InvalidState);
+            }
+        }
+        Ok(())
     }
 
     fn ensure_healthy(&self) -> Result<()> {
@@ -927,6 +1147,15 @@ impl Backend for HvfBackend {
         self.ensure_healthy()?;
         let mut writes = Vec::new();
         for (&encoding, &value) in &policy.id_regs.regs {
+            if !matches!(
+                encoding,
+                0xc000 | 0xc005 | 0xc006 | 0xc008..=0xc03f | 0xc801 | 0xc807 | 0xd801 | 0xd807
+            ) {
+                return Err(BackendError::Arm64RegisterInventory {
+                    register: u64::from(encoding),
+                    reason: "HVF policy does not name a supported identity field",
+                });
+            }
             if let Some(measured) = hvf_implicit_identity_value(encoding) {
                 if value != measured {
                     return Err(BackendError::InvalidState);
@@ -952,7 +1181,10 @@ impl Backend for HvfBackend {
             writes.push((reg, value));
         }
         self.state_poisoned = true;
-        self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
+        self.reset_sme_state()?;
+        for reg in HV_FIXED_ZERO_SYSREGS {
+            self.set_sysreg(reg, 0)?;
+        }
         for reg in HV_PAUTH_KEY_SYSREGS {
             self.set_sysreg(reg, 0)?;
         }
@@ -1190,10 +1422,26 @@ impl Backend for HvfBackend {
         if self.pending != Pending::None {
             return Err(BackendError::PendingCompletion);
         }
-        if self.sysreg(HV_SYS_REG_ACTLR_EL1)? != 0 {
+        if self
+            .sme_state()?
+            .is_some_and(|state| state.streaming || state.za)
+        {
             return Err(BackendError::Unsupported {
-                what: "save HVF with noncanonical ACTLR_EL1",
+                what: "save HVF with active SME state",
             });
+        }
+        for reg in HV_FIXED_ZERO_SYSREGS {
+            if self.sysreg(reg)? != 0 {
+                if reg == HV_SYS_REG_ACTLR_EL1 {
+                    return Err(BackendError::Unsupported {
+                        what: "save HVF with noncanonical ACTLR_EL1",
+                    });
+                }
+                return Err(BackendError::Arm64RegisterInventory {
+                    register: u64::from(reg),
+                    reason: "HVF register must remain fixed at zero",
+                });
+            }
         }
         for reg in HV_PAUTH_KEY_SYSREGS {
             if self.sysreg(reg)? != 0 {
@@ -1212,6 +1460,11 @@ impl Backend for HvfBackend {
         state.core.sp_el1 = self.sysreg(HV_SYS_REG_SP_EL1)?;
         state.core.elr_el1 = self.sysreg(HV_SYS_REG_ELR_EL1)?;
         state.core.spsr_el1 = self.sysreg(HV_SYS_REG_SPSR_EL1)?;
+        if has_unsupported_execution_mode(&state.core) {
+            return Err(BackendError::Unsupported {
+                what: "HVF supports only EL0/EL1 AArch64 execution state",
+            });
+        }
         canonicalize_core_regs(&mut state.core);
         state.simd_fp.fpcr = self.reg(HV_REG_FPCR)?;
         state.simd_fp.fpsr = self.reg(HV_REG_FPSR)?;
@@ -1315,8 +1568,11 @@ impl Backend for HvfBackend {
         }
         self.validate_restore_state(state)?;
         self.state_poisoned = true;
+        self.reset_sme_state()?;
         self.flush_guest_translations()?;
-        self.set_sysreg(HV_SYS_REG_ACTLR_EL1, 0)?;
+        for reg in HV_FIXED_ZERO_SYSREGS {
+            self.set_sysreg(reg, 0)?;
+        }
         for reg in HV_PAUTH_KEY_SYSREGS {
             self.set_sysreg(reg, 0)?;
         }
@@ -1428,6 +1684,7 @@ impl Backend for HvfBackend {
                 gic_ctlr_fixed_bits: 0,
                 gicd_iidr: 0,
                 gicd_typer2: 0,
+                register_identity: self.register_identity,
             },
         }
     }
@@ -1447,6 +1704,97 @@ mod tests {
                 physical_address: ipa,
             },
         }
+    }
+
+    #[test]
+    fn missing_sme_api_requires_independent_exact_absence() {
+        for bits in 0..8 {
+            assert_eq!(
+                validate_sme_symbol_pair(bits & 1 != 0, bits & 2 != 0, bits & 4 != 0).is_ok(),
+                matches!(bits, 0 | 7),
+            );
+        }
+        for (status, value, length, accepted) in [
+            (0, 0, 4, true),
+            (0, 1, 4, false),
+            (0, -1, 4, false),
+            (-1, 0, 4, false),
+            (0, 0, 0, false),
+            (0, 0, 8, false),
+        ] {
+            assert_eq!(
+                validate_missing_sme_api(status, value, length).is_ok(),
+                accepted
+            );
+        }
+        assert!(validate_sme_native_config(0, false).is_ok());
+        for level in 1..16 {
+            assert!(validate_sme_native_config(level << 24, false).is_err());
+            assert!(validate_sme_native_config(level << 24, true).is_ok());
+        }
+    }
+
+    #[test]
+    #[ignore = "live HVF inventory boundary; registered in HOST_TESTS"]
+    fn fixed_register_inventory_refuses_capture_and_resets_restore() {
+        for reg in HV_FIXED_ZERO_SYSREGS {
+            let mut backend = HvfBackend::new().unwrap();
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            let baseline = backend.save().unwrap();
+            let value = if reg == HV_SYS_REG_ACTLR_EL1 { 2 } else { 1 };
+            backend.set_sysreg(reg, value).unwrap();
+            let observed = backend.sysreg(reg).unwrap();
+            eprintln!("HVF fixed register {reg:#06x}: detour={observed:#x}");
+            if observed != 0 {
+                assert!(backend.save().is_err(), "capture accepted {reg:#06x}");
+                assert_eq!(backend.sysreg(reg).unwrap(), observed);
+            }
+            backend.restore(&baseline).unwrap();
+            assert_eq!(backend.sysreg(reg).unwrap(), 0);
+            drop(backend);
+            let mut fresh = HvfBackend::new().unwrap();
+            fresh.set_policy(&Arm64Policy::default()).unwrap();
+            fresh.restore(&baseline).unwrap();
+            assert_eq!(fresh.sysreg(reg).unwrap(), 0);
+        }
+    }
+
+    #[test]
+    #[ignore = "live HVF SME boundary; registered in HOST_TESTS"]
+    fn sme_capture_requires_inactive_state_and_restore_clears_detour() {
+        let mut backend = HvfBackend::new().unwrap();
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        let Some(_) = backend.sme_state().unwrap() else {
+            eprintln!("SME_ACTIVE_TEST=UNSUPPORTED; explicit HV_UNSUPPORTED verified");
+            return;
+        };
+        let mut baseline = backend.save().unwrap();
+        baseline.simd_fp.q[3] = [0x73; 16];
+        baseline.simd_fp.fpsr = 0;
+        for (streaming, za) in [(true, false), (false, true), (true, true)] {
+            let state = HvSmeState { streaming, za };
+            // SAFETY: this test owns the live vCPU and state is readable.
+            hv("hv_vcpu_set_sme_state", unsafe {
+                (backend.sme_api.as_ref().unwrap().set)(backend.vcpu, &state)
+            })
+            .unwrap();
+            let observed = backend.sme_state().unwrap().unwrap();
+            assert_eq!((observed.streaming, observed.za), (streaming, za));
+            assert!(matches!(
+                backend.save(),
+                Err(BackendError::Unsupported {
+                    what: "save HVF with active SME state",
+                })
+            ));
+            let observed = backend.sme_state().unwrap().unwrap();
+            assert_eq!((observed.streaming, observed.za), (streaming, za));
+            backend.restore(&baseline).unwrap();
+            let observed = backend.sme_state().unwrap().unwrap();
+            assert!(!observed.streaming && !observed.za);
+            let restored = backend.save().unwrap();
+            assert_eq!(restored.simd_fp, baseline.simd_fp);
+        }
+        eprintln!("SME_ACTIVE_TEST=PASSED");
     }
 
     #[test]

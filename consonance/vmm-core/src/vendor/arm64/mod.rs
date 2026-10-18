@@ -831,6 +831,7 @@ mod comparator_tests {
                     gic_ctlr_fixed_bits: 0x8400,
                     gicd_iidr: 0x4b00_243b,
                     gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();

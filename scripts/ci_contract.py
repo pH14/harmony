@@ -249,6 +249,8 @@ ARM64_BASELINE_TEST = (
 HOST_TESTS = {
     "macos-aarch64": (
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
+        "vmm-backend hvf::tests::fixed_register_inventory_refuses_capture_and_resets_restore",
+        "vmm-backend hvf::tests::sme_capture_requires_inactive_state_and_restore_clears_detour",
         "vmm-backend hvf::tests::failed_translation_flush_retires_mutated_vcpu",
         "vmm-backend hvf::tests::restore_rejects_hvc_from_guest_exception_vector",
         "vmm-backend hvf::tests::failed_guest_run_retires_uncounted_progress",
@@ -263,6 +265,7 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
     "linux-aarch64": (
+        "vmm-backend arm64_kvm::inventory::tests::live_inventory_identity_and_fixed_state_are_enforced",
         "vmm-core::arm64_executable_restore live::executable_ram_restores_match_guest_continuations",
         ARM64_BASELINE_TEST,
         "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",

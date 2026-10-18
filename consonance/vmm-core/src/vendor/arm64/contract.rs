@@ -82,7 +82,7 @@ pub fn contract_hash(asid_bits: Arm64AsidBits) -> [u8; 32] {
 
 pub fn runtime_contract_hash(caps: Arm64Caps) -> [u8; 32] {
     let mut h = Sha256::new();
-    h.update(b"harmony-arm64-runtime-contract-v4\0");
+    h.update(b"harmony-arm64-runtime-contract-v5\0");
     h.update(contract_hash(caps.asid_bits));
     for level in caps.smccc_workaround_levels {
         h.update(level.to_le_bytes());
@@ -91,6 +91,7 @@ pub fn runtime_contract_hash(caps: Arm64Caps) -> [u8; 32] {
     h.update(caps.gic_ctlr_fixed_bits.to_le_bytes());
     h.update(caps.gicd_iidr.to_le_bytes());
     h.update(caps.gicd_typer2.to_le_bytes());
+    h.update(caps.register_identity);
     h.finalize().into()
 }
 

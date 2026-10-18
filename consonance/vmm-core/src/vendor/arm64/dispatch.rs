@@ -1780,6 +1780,7 @@ mod tests {
                 gic_ctlr_fixed_bits: 0x8400,
                 gicd_iidr: 0x4b00_243b,
                 gicd_typer2: 0,
+                register_identity: [0; 32],
             },
         });
         backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1813,6 +1814,47 @@ mod tests {
     }
 
     #[test]
+    fn register_inventory_identity_rejects_snapshot_and_import_before_mutation() {
+        use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
+        let machine = |identity| {
+            let mut backend = MockArm64Backend::with_capabilities(Capabilities {
+                name: "mock-arm64",
+                arch: Arm64Caps {
+                    in_kernel_gic: false,
+                    asid_bits: Arm64AsidBits::Eight,
+                    smccc_workaround_levels: Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS,
+                    psci_profile: vmm_backend::Arm64PsciProfile::HvfSingleVcpu,
+                    gic_ctlr_fixed_bits: 0,
+                    gicd_iidr: 0,
+                    gicd_typer2: 0,
+                    register_identity: identity,
+                },
+            });
+            backend.set_policy(&Arm64Policy::default()).unwrap();
+            Vmm::new(backend, GuestRam::new(0x4000).unwrap())
+        };
+        let mut source = machine([1; 32]);
+        let mut same = machine([1; 32]);
+        let mut different = machine([2; 32]);
+        let snapshot = source.save_vm_state().unwrap();
+        let snapshot = vm_state::Arm64VmState::decode(&snapshot.encode().unwrap()).unwrap();
+        let memory = source.guest_memory().to_vec();
+        same.restore_snapshot(&memory, &snapshot).unwrap();
+        assert_eq!(source.state_hash().unwrap(), same.state_hash().unwrap());
+        assert_ne!(
+            source.state_hash().unwrap(),
+            different.state_hash().unwrap()
+        );
+        let before = different.save_vm_state().unwrap();
+        assert!(matches!(
+            different.restore_snapshot(&memory, &snapshot),
+            Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+        ));
+        assert_eq!(different.save_vm_state().unwrap(), before);
+        assert_eq!(different.guest_memory(), memory);
+    }
+
+    #[test]
     fn firmware_workaround_levels_distinguish_restore_and_state_identity() {
         use vmm_backend::{Arm64AsidBits, Arm64Caps, Capabilities};
 
@@ -1827,6 +1869,7 @@ mod tests {
                     gic_ctlr_fixed_bits: 0,
                     gicd_iidr: 0,
                     gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -1905,6 +1948,7 @@ mod tests {
                     gic_ctlr_fixed_bits: 0x8400,
                     gicd_iidr: 0x4b00_243b,
                     gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -2183,6 +2227,7 @@ mod tests {
                     gic_ctlr_fixed_bits: 0x8400,
                     gicd_iidr: 0x4b00_243b,
                     gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
@@ -2373,6 +2418,7 @@ mod tests {
                     gic_ctlr_fixed_bits: 0,
                     gicd_iidr: 0,
                     gicd_typer2: 0,
+                    register_identity: [0; 32],
                 },
             });
             backend.set_policy(&Arm64Policy::default()).unwrap();
