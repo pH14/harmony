@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/fofii_fofii_fofii.tmx",
+      "before_sha256": "2cbff910a81a88578aba6ace8ab98a293f80bd5d5ced3f603e475d7f420e41ad",
+      "after_sha256": "cb3432d74bb9f959788cff48fc23ff142337ec09fbf0daa19c3c9923c1ea78d6",
+      "edits": [
+        {
+          "column": 233,
+          "row": 39,
+          "from_gid": 80,
+          "to_gid": 18
+        },
+        {
+          "column": 234,
+          "row": 39,
+          "from_gid": 80,
+          "to_gid": 18
+        },
+        {
+          "column": 235,
+          "row": 39,
+          "from_gid": 80,
+          "to_gid": 18
+        }
+      ]
+    }
+  ],
+  "status": "source-proposal-needs-export-build-and-replay",
+  "evidence": [
+    "Famidash 1.2.8: QuickNES and FCEUmm escape dies after the three-tile fix; original winning route unchanged.",
+    "Current upstream uses a shared HUGE source: these cells still have the same GIDs; current ROM replay is still required."
+  ]
+}

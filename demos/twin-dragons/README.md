@@ -456,6 +456,12 @@ the pace is 120 rollouts per second.
 
 ### Famidash
 
+The [escape audit tools](tools/famidash-audit/README.md) search deviations
+from normal clearing routes, retain portable witnesses, check independent
+FCEUmm replays, and prepare reviewed upstream tile patches. Their findings
+separate suspected decorative-fill escapes from intentional alternate paths
+and verified level-data bugs.
+
 Famidash by TFDSoft is an unofficial fan demake of RobTop's Geometry Dash. The
 site ships the four official 1.2.8 ROMs unchanged: the main game and the
 B-Sides, C-Sides and D-Sides. The picker shows one Famidash entry. Its level

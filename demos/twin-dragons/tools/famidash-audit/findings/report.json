@@ -1,0 +1,1379 @@
+{
+  "schema": 1,
+  "source_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "detector": "below-route-decoration-v1",
+  "options": {
+    "side": null,
+    "levels": null,
+    "trials": 150,
+    "seed": 1,
+    "maxFindings": 1
+  },
+  "results": [
+    {
+      "side": "main",
+      "level": 0,
+      "name": "stereomadness",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5124,
+      "control_sha256": "6573fd9bc940ea62862000c4182693d7e833a594d14b32617ee11fbc5e224544",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 1,
+      "name": "backontrack",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4846,
+      "control_sha256": "ca0364282894727dba5d249766bde022d182e851c1a219703d51e4299c53fa70",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 2,
+      "name": "polargeist",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5355,
+      "control_sha256": "515b5209a7fc760e4b88b8022646077545aba78ad9759792e31b2ee158f7e0ab",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 3,
+      "name": "dryout",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4823,
+      "control_sha256": "fbd4b8d4e2b39611f096939727d57670d8dbe034a84c6011e0b62813d4208ba1",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 4,
+      "name": "baseafterbase",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4973,
+      "control_sha256": "63cc589d389e925a0890bcd451e2a62d160c070098ee2e074a3a21bc14e1dfea",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 5,
+      "name": "cantletgo",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4788,
+      "control_sha256": "1258a2fd4f87e0c0cae99712a03876d6b40afa6d1e4015204bd525062ef130f6",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 6,
+      "name": "jumper",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5135,
+      "control_sha256": "fa24fdb394db887a0eb54c970a0327316ecf57caa8c69ccb16e3bcc2d5220973",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 7,
+      "name": "timemachine",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5714,
+      "control_sha256": "2a5686386b4ff7ff05b6370992c5f8943ff52cc2c6113e40655c974d276b5fe4",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 8,
+      "name": "cycles",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4702,
+      "control_sha256": "646c49d299c06f010bfc6f998d628cd773538bd303952b181330e3bdd0307474",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 9,
+      "name": "xstep",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "control fails at frame 4828"
+    },
+    {
+      "side": "main",
+      "level": 10,
+      "name": "clutterfunk",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5756,
+      "control_sha256": "fa87f9b78bc0d00ded58c97cc6c9beb5c4f70dd83064c273cd63c1e3732621e4",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 11,
+      "name": "theoryofeverything",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4968,
+      "control_sha256": "04f3c1c80c9c3daafcc53ddb59d05a1349faff48dbbcf8b6e309a051d5ccb12a",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 12,
+      "name": "electroman",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5037,
+      "control_sha256": "c8a4bad869fa7af08ea02717527e8e6daaea0c82058b552340da8cd037d13f1c",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 13,
+      "name": "clubstep",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5190,
+      "control_sha256": "2470c96a6fe6e6d63eb1047b7c9f8220b35060da4e37e9fba06f108c22026771",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 14,
+      "name": "electrodynamix",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4865,
+      "control_sha256": "48bf2c602920e0527d916487650ed98316976c25194abd47787802d54eb5bafb",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 15,
+      "name": "hexagonforce",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5326,
+      "control_sha256": "2c27a39c12f72f08381d67943dcbca7c6a90cc3faa8a2361372915948d7d7fc0",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 16,
+      "name": "blastprocessing",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5943,
+      "control_sha256": "a9dd6cc5e0dfef03d5cf033c97fa2ed5a8c303a5de4f8ad9d7ec1b80027f6272",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 17,
+      "name": "toe2",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5326,
+      "control_sha256": "bb9802f089f40875d2a38851ff2bd89363e095c8c8711e1ead76bfc8e34761d9",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 18,
+      "name": "geometricaldominator",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5717,
+      "control_sha256": "6cd86bea0225a1387532de6ea104c465357d0a12c0dc6bfa8246e3904531bea9",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 19,
+      "name": "deadlocked",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5800,
+      "control_sha256": "1d6420a3c21f54f02b9240f9f94fdb2bbd0d4516e72dc64905aab3467a3e76d9",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 20,
+      "name": "fingerdash",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5069,
+      "control_sha256": "3159b963c2a358a3b03538ead940a94960300e103d81026005868ab27f38afaf",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 21,
+      "name": "dash",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5410,
+      "control_sha256": "7a7438ecd1f3a7907e7328b9344d0ffade755d3e7d05def8c781319c151868c3",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 22,
+      "name": "retray",
+      "findings": [
+        {
+          "file": "main-22-1.json.gz",
+          "first_suspect_frame": 1365,
+          "endpoint": {
+            "level": 22,
+            "state": 2,
+            "x": 3343,
+            "y": 832,
+            "camera": 702,
+            "vy": 0,
+            "mode": 2,
+            "gravity": 0,
+            "mini": 0,
+            "dual": 0,
+            "dead": false,
+            "debug": 0,
+            "invincible": 0,
+            "paused": 0
+          },
+          "signal": {
+            "kind": "below-route-decoration",
+            "column": 188,
+            "row": 22,
+            "id": 111,
+            "tile_name": "BLACK_NONE",
+            "route_floor": 784
+          }
+        }
+      ],
+      "trials": 57,
+      "control_frames": 3633,
+      "control_sha256": "b33a8c079040077698a769b457565dca6322d58b9c8d9c620e490d5be33c0db7",
+      "status": "candidates"
+    },
+    {
+      "side": "main",
+      "level": 23,
+      "name": "leveleasy",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5124,
+      "control_sha256": "1eb7738c3320f6bd8890626b9c6b4753b88511af382c43abc2d359617515dc22",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 24,
+      "name": "thechallenge",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 1350,
+      "control_sha256": "a51412318183f52629390ec0ed498c4644d73f422b449d629355815a7b0c279e",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 25,
+      "name": "dorabaebasic4",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4893,
+      "control_sha256": "de888a53e699cfa154b08f922bbd557d9146f24e8c83166aa903c514396e8609",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 26,
+      "name": "dorabaebasic6",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5019,
+      "control_sha256": "49739ef2f7724b04a1bc1ead737c704840e897fea0914752f8fd507db94d2e35",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 27,
+      "name": "dreamer",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6515,
+      "control_sha256": "b2c36ee18e0b0984689fb457dd7bf8622e7486a35e74ab32b489067c1a3a0195",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 28,
+      "name": "groundtospace",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5919,
+      "control_sha256": "08c6a7fd3854283b5b0891ba4a412b92c0b36fc8193c6471873f8465b6df51eb",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 29,
+      "name": "subzero",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4866,
+      "control_sha256": "c0d6683fd7523dea98944f330f0d5a4381dd7d03a9736132444c6f2227f31400",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 30,
+      "name": "kappaclysm",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4840,
+      "control_sha256": "b2f65f65dbe3888b7a56400326e4e72053e23cb08d7b8ecea21a940dc09bb2d6",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 31,
+      "name": "sunshine",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4897,
+      "control_sha256": "a74ebb73427af734762f0ca7d246d7317fe8e9c02ae7824e3d6fd0788ca2f687",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 32,
+      "name": "revolution",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6117,
+      "control_sha256": "cfb54cede02eb296d9a47d358bec8236b815049053c8f0387f6cfc27566e6b41",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 33,
+      "name": "funnygameholiday",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5164,
+      "control_sha256": "c04964d63dd524682498d10970e29474388d4b0c07e30a9871caab40ac275590",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 34,
+      "name": "lostinthewoods",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3692,
+      "control_sha256": "4a60deaa08359ada6475ed060233a8d3420f1c3f63c79a91f0fb7f71f326f02b",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 35,
+      "name": "bloodbathbutno",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4905,
+      "control_sha256": "d2569b814ffe17e025f96ef45036835d06321c49f7246940b4f97c69006bfc59",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 36,
+      "name": "rainbowtylenol",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6494,
+      "control_sha256": "711f3f2cccdfeee8fd760885d594b6203705b8afcf659bb4eeed85019d6cbbb0",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 37,
+      "name": "greif",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3179,
+      "control_sha256": "4f2c3988660d535180a9156b485df952e8f79a3fef86aa2bb103117ceba1b3b9",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 38,
+      "name": "extraordinaryexcitement",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6066,
+      "control_sha256": "7ed799fbe80b2fd898a10e9003e13e333cd728fd7055f885d4b4109c4e52c144",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 39,
+      "name": "thelightningroad",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4823,
+      "control_sha256": "97433880797fce6fdb55e7aa9e2ecf0c8f3f7fe19b79f4b33ebde931908b670b",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 40,
+      "name": "nightmare",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5362,
+      "control_sha256": "71d176e6c69dfcfdb3aedddfe827fe2807ce130475a204e6a8ae466c7b8ac4b3",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 41,
+      "name": "demonpark",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5737,
+      "control_sha256": "97b6492260b96ce0884b8b17228a14bd5452efe5a42f9c01387e058c1fc60658",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "main",
+      "level": 42,
+      "name": "firetemple",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4969,
+      "control_sha256": "3620d8ebec39c2e0ca4c797e471b5d3c2380bfda72db33ebc0ca57d0e0d9667f",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 0,
+      "name": "sonar",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5090,
+      "control_sha256": "cf166e33c3a93b388b6c18886111186c8d9f2682ea4a24da7908ad4e8b26a271",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 1,
+      "name": "darkparadise",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3959,
+      "control_sha256": "5db61ed441e2cd0f1ba7b20c104b5eac6ce009b332403f3e68bd9cdb914f97ad",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 2,
+      "name": "ninox",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4348,
+      "control_sha256": "ab631f1807dacbcc976ca1a70b9cace74572e50370eeb1dbe9f76be4b9207e81",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 3,
+      "name": "lookatthislevel",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3470,
+      "control_sha256": "a31ea93a7fc35bbe30d0847fe166f29bd804f95bff8b1169c1656a012222fb07",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 4,
+      "name": "ultiatedestruction",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3851,
+      "control_sha256": "e53f94ef91676f7a825879d6d786ed6499b932362072e3216fe1691fd68e1124",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 5,
+      "name": "moonlight",
+      "findings": [
+        {
+          "file": "b-5-1.json.gz",
+          "first_suspect_frame": 3509,
+          "endpoint": {
+            "level": 5,
+            "state": 2,
+            "x": 10295,
+            "y": 897,
+            "camera": 719,
+            "vy": 0,
+            "mode": 0,
+            "gravity": 0,
+            "mini": 0,
+            "dual": 0,
+            "dead": false,
+            "debug": 0,
+            "invincible": 0,
+            "paused": 0
+          },
+          "signal": {
+            "kind": "below-route-decoration",
+            "column": 618,
+            "row": 19,
+            "id": 79,
+            "tile_name": "X_NO_OUTLINE",
+            "route_floor": 737
+          }
+        }
+      ],
+      "trials": 37,
+      "control_frames": 4237,
+      "control_sha256": "9dbed6d01e0570d1acf40b0702985a3fd5b7ac37a7bfc0078984bff343df767a",
+      "status": "candidates"
+    },
+    {
+      "side": "b",
+      "level": 6,
+      "name": "fofii_fofii_fofii",
+      "findings": [
+        {
+          "file": "b-6-1.json.gz",
+          "first_suspect_frame": 1309,
+          "endpoint": {
+            "level": 6,
+            "state": 2,
+            "x": 4254,
+            "y": 897,
+            "camera": 719,
+            "vy": 0,
+            "mode": 0,
+            "gravity": 0,
+            "mini": 0,
+            "dual": 0,
+            "dead": false,
+            "debug": 0,
+            "invincible": 0,
+            "paused": 0
+          },
+          "signal": {
+            "kind": "below-route-decoration",
+            "column": 234,
+            "row": 36,
+            "id": 111,
+            "tile_name": "BLACK_NONE",
+            "route_floor": 705
+          }
+        }
+      ],
+      "trials": 30,
+      "control_frames": 3764,
+      "control_sha256": "6669819d621d456d245afe1fc12e98287670d3009d009fec143be5176f5fd13c",
+      "status": "candidates"
+    },
+    {
+      "side": "b",
+      "level": 7,
+      "name": "selectpaymenttype",
+      "findings": [
+        {
+          "file": "b-7-1.json.gz",
+          "first_suspect_frame": 2890,
+          "endpoint": {
+            "level": 7,
+            "state": 2,
+            "x": 8976,
+            "y": 897,
+            "camera": 719,
+            "vy": 0,
+            "mode": 8,
+            "gravity": 0,
+            "mini": 0,
+            "dual": 0,
+            "dead": false,
+            "debug": 0,
+            "invincible": 0,
+            "paused": 0
+          },
+          "signal": {
+            "kind": "below-route-decoration",
+            "column": 529,
+            "row": 26,
+            "id": 111,
+            "tile_name": "BLACK_NONE",
+            "route_floor": 852
+          }
+        }
+      ],
+      "trials": 101,
+      "control_frames": 6340,
+      "control_sha256": "283c0805f9474727e115cdbc9deeffdc60fc755763f79abc060c2fe85097d2a8",
+      "status": "candidates"
+    },
+    {
+      "side": "b",
+      "level": 8,
+      "name": "pyrophoric",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 2611,
+      "control_sha256": "fb72c20797340373fc36e361e899085d337698306d273f9842ee0f65a6e45fb1",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 9,
+      "name": "cryogenic",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5279,
+      "control_sha256": "0b16726594fbec3147b9cc652bef2bc3c897b390d6b4ecf74cd1c6007f97ee3c",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 10,
+      "name": "oceane",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 2620,
+      "control_sha256": "e36a51753d56f67661f3acb7f770a22b3ff43558b924732d4333e3abcda986f6",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 11,
+      "name": "generationretro",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5990,
+      "control_sha256": "1778c8823aad8425964e9c707f72eb19f144be5b5fa2a38a2f2ea084199de0ce",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 12,
+      "name": "scarletsurge",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 8073,
+      "control_sha256": "99d659449db497bbc638425c411c6690559bf747559ae5dc1142a32e91d4dd4b",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 13,
+      "name": "tinytunes",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4370,
+      "control_sha256": "1232fb26efb26e42cc5a847f57b667383e8e6e50008d237bef8aeacd2f86bba4",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 14,
+      "name": "fireaura",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5335,
+      "control_sha256": "bd37554ab086c8a391c6150ccaaec6d5af1fcf6e1362f237493fa93ae2c05505",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 15,
+      "name": "rainbowdust",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5765,
+      "control_sha256": "683056d99fe79eadfa281d6c7edca0d5bc979b9214f95ed8727aa922fedc6376",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 16,
+      "name": "factorytime",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5072,
+      "control_sha256": "fd9d8e6ecb507ae2400de05cefa509e6a70e5d752b2f4e520e36a4769d10b8b7",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 17,
+      "name": "thesteamworks",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6417,
+      "control_sha256": "9b8739e7fefa9157d821b22062b0b8d24eee4bed2a326bb8704edd9cf38d0b5f",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 18,
+      "name": "rainingtacos",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5362,
+      "control_sha256": "179fa30e23d0cb33fe94b27b37bcd9cfe11df440a631a600f9d502075af6e136",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 19,
+      "name": "dorabaebasic10",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4036,
+      "control_sha256": "e34ed05a2d082ff71d56321b78f9d2b748612ce188e1d8cfd0dde63711d2d7b5",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 20,
+      "name": "subtleoddities",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5626,
+      "control_sha256": "051c241e821340e97d9a5345da5066dbeef999b698fae481893994bd12daeb33",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 21,
+      "name": "powertrip",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5414,
+      "control_sha256": "993d3adc671da7bac81984ebbdd268dc8095ba761c078a055f9658098d5e878e",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 22,
+      "name": "danceofviolins",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5119,
+      "control_sha256": "fa3b015de6a5d0bb9eb3a1d3693ce4ad205594975f785e7c439be40fd84c42c7",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 23,
+      "name": "aprettyeasylevel",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3938,
+      "control_sha256": "4a99c1344c49498aa4ead20a5be164968a43df5cc2d2ee92112176eae41344f1",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 24,
+      "name": "highlife",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 11460,
+      "control_sha256": "b84fef16651ec6b661008450628abe4f3eec0dec35124030f61f91d68c761c7c",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 25,
+      "name": "infinitecircles",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4284,
+      "control_sha256": "aa2538ffec3e767b365c330571cd649559dd5e06ceb56b8a5a165b6018021d59",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 26,
+      "name": "decode",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4305,
+      "control_sha256": "cf3a68d375f8ee5cbf8a7dad7a79e853de1a508aef927b5f9ff47f5ae33593a1",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 27,
+      "name": "deathmoon",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 9625,
+      "control_sha256": "891c28150e1b68d406f2f83c30451c4dcf9bf0145d1d424e8893f81ccffcb0c7",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 28,
+      "name": "clutterfunk2",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5799,
+      "control_sha256": "1f8a88877c8aeadf67fa6370a0c34b5662c15748d2d070b73020ac3138974ffe",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "b",
+      "level": 29,
+      "name": "speedracer",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "assisted route: not a normal-play control"
+    },
+    {
+      "side": "b",
+      "level": 30,
+      "name": "skeletalshenanigans",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6227,
+      "control_sha256": "1923df937ffe456d33afd99c41f324b509f7563e3ca9f4b54cdba7132c46e6a4",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 0,
+      "name": "supercycles",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "assisted route: not a normal-play control"
+    },
+    {
+      "side": "c",
+      "level": 1,
+      "name": "xx",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4080,
+      "control_sha256": "46926655b5c822353f3b2d4ffee4dadfe204c82363ad16f54ce9ed0553a86daf",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 2,
+      "name": "problematic",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3491,
+      "control_sha256": "4f4e371fcfa24aeda9a0d5645cf5ccb36e81910e75880c87d1f3b2efc569df60",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 3,
+      "name": "sonicblaster",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5067,
+      "control_sha256": "7958dbe0a41e7718bb74a865b16ae233269e18e07ab9b9a688ffb14cc91be290",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 4,
+      "name": "motion",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "control fails at frame 4656"
+    },
+    {
+      "side": "c",
+      "level": 5,
+      "name": "endorphinrush",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3856,
+      "control_sha256": "76c59e9a62a45c744d8c99636972aafb298d342ba049c991af86774a3d4e8357",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 6,
+      "name": "everymadness",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5124,
+      "control_sha256": "f47b4bd3469a695f22d70090d3bbda1aeaefd3d6e2cd69298ada12f0b9d1aae8",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 7,
+      "name": "trythisgd",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "route ends without a real level completion"
+    },
+    {
+      "side": "c",
+      "level": 8,
+      "name": "hell",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4077,
+      "control_sha256": "af951eb88c52fae418baad31f18b82af59be4da8f64575a75738276f3c90c827",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 9,
+      "name": "invisiblelight",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4679,
+      "control_sha256": "f2822bc05740c43870be5059cd9756c662e0c37c98ee7000c17fd060ca9bc8c7",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 10,
+      "name": "pgclubstep",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5256,
+      "control_sha256": "14fd2302658464dfacfee4e53995f84db54279ed108282b0f940a76c922d056d",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 11,
+      "name": "deadlyclubstep",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "control fails at frame 5183"
+    },
+    {
+      "side": "c",
+      "level": 12,
+      "name": "thermodynamix",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3811,
+      "control_sha256": "e3cd7c1afd84a56ab3790f7573ce0bb9b0ec7746b546be5f1b1ba047aee746fd",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 13,
+      "name": "ninecircles",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5461,
+      "control_sha256": "c55331fe2948a14aecd8ba48e1732e389823c432de76e229e4b24f23a30589a5",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 14,
+      "name": "fairydust",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3628,
+      "control_sha256": "0205df774c388bfcd5989ae31d6baf3cfcd9fedd799ce53370e255ae1af36b6f",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 15,
+      "name": "stalemate",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "control fails at frame 5218"
+    },
+    {
+      "side": "c",
+      "level": 16,
+      "name": "eighto",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4116,
+      "control_sha256": "3ad3319f33e259afb754f16595ad9d7d20dfe6b2722011bc433d9233d8985e7e",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 17,
+      "name": "hi",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "route ends without a real level completion"
+    },
+    {
+      "side": "c",
+      "level": 18,
+      "name": "eon",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 19257,
+      "control_sha256": "798ac127a8cc71d185691aa5a80cace149893e2fdfbb9f19dc89b5a85c79a3f8",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 19,
+      "name": "sonicwave",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 7187,
+      "control_sha256": "156334a19a878e3df14ac0c4efd3ba32de347e723c06a4f4bf460a701520c4e6",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 20,
+      "name": "bloodbath",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 6862,
+      "control_sha256": "bdf80e3560990ec21bc3b8befc1f849b562ee841a1528e984d5042b219aa1858",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 21,
+      "name": "cataclysm",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4721,
+      "control_sha256": "60fb7c82f3798ab4c565543696917e232dbfca80e5727a6f3492690ee7a6f054",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 22,
+      "name": "aftermath",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 3799,
+      "control_sha256": "5af5d6d8c6f7b38d193c4ce829938f23745ce64ff8f0974ac56c57bbe4fa992b",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 23,
+      "name": "everyend",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 26403,
+      "control_sha256": "d3b03742215a16592a56d9582031e73b6d302161f2579f04c75bef0886b75abb",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "c",
+      "level": 24,
+      "name": "luckydraw",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "assisted route: not a normal-play control"
+    },
+    {
+      "side": "d",
+      "level": 0,
+      "name": "goldenhaze",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4794,
+      "control_sha256": "3d2001714fcc71a264533e612f547dfde5004d5693ccdcb77f723464438db915",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 1,
+      "name": "demoncryogenic",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4672,
+      "control_sha256": "27f64bae9cf1ea4329f9250bfcf999c3cb98a4f1d542da59c492d1c7c895db63",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 2,
+      "name": "foresttemple",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5995,
+      "control_sha256": "0ab5e65f2f4ba52699df0610aae6cc72ef1a0eb9d83b88d4e3d27768c0de24a7",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 3,
+      "name": "windylandscape",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4977,
+      "control_sha256": "66deabfcd0d224d42d57def8c2079797373a6937b98b9e3a87123aaab57a9736",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 4,
+      "name": "silentclubstep",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5418,
+      "control_sha256": "e6a4a76da28cb480a2a163a491df89c6ae87aea835e31f0747c3cc739cf8028c",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 5,
+      "name": "aftercatabath",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 15304,
+      "control_sha256": "cf024f5b707c4e0e87b11b995bf624e6679b4c897d1a6de59717736063e0bede",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 6,
+      "name": "shardscapes",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4370,
+      "control_sha256": "0896525ec233004f4518db28e2b610466db6caf1291d2efeccc21f9e5d916222",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 7,
+      "name": "element111rg_with_secret_way",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 5795,
+      "control_sha256": "d56f9955c8628a11501cdea0781f5fe465a9099a96fd13dc944832cc5d8a58bf",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 8,
+      "name": "slaughterhouse",
+      "findings": [],
+      "trials": 150,
+      "control_frames": 4210,
+      "control_sha256": "d22086d60f9b66b61d6aa99eb454a8a917f15895a28710c2933cd7412fc45306",
+      "status": "no-candidate-in-budget"
+    },
+    {
+      "side": "d",
+      "level": 9,
+      "name": "kratos",
+      "findings": [],
+      "trials": 0,
+      "status": "unassessed",
+      "reason": "assisted route: not a normal-play control"
+    }
+  ],
+  "triage": {
+    "main-22-1": {
+      "classification": "rejected-lower-playable-corridor",
+      "reason": "The ball rests on the real BLACK_TOP floor at TMX row 23, world y 848. This is a lower playable corridor, not travel inside inaccessible fill. No patch proposed.",
+      "independent_replay": {
+        "schema": 1,
+        "status": "independent-replay-verified",
+        "side": "main",
+        "level": 22,
+        "frames": 1515,
+        "endpoint": {
+          "level": 22,
+          "state": 2,
+          "x": 3343,
+          "y": 832,
+          "camera": 702,
+          "vy": 0,
+          "mode": 2,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 0,
+          "paused": 0
+        },
+        "control_frames": 3633,
+        "comparison_start_frame": 41,
+        "intro_difference_frames": [
+          3
+        ],
+        "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+        "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+        "case_sha256": "c243636378ff49b0373e38c24c72a4b07df9bd0b7cc416287d0aaf0a756725e9"
+      }
+    },
+    "b-5-1": {
+      "classification": "reproduced-decorative-fill-escape",
+      "reason": "Falls into X_NO_OUTLINE/COL_NONE below the course and reaches the global ground at y 897. A level-data fix needs placement review and patched-ROM validation.",
+      "independent_replay": {
+        "schema": 1,
+        "status": "independent-replay-verified",
+        "side": "b",
+        "level": 5,
+        "frames": 3659,
+        "endpoint": {
+          "level": 5,
+          "state": 2,
+          "x": 10295,
+          "y": 897,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 0,
+          "paused": 0
+        },
+        "control_frames": 4237,
+        "comparison_start_frame": 1,
+        "intro_difference_frames": [],
+        "rom_sha256": "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
+        "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+        "case_sha256": "c3d787979f52f71b69b9ad0ca59d42e071112016a0d35a62f1401a144505d159"
+      }
+    },
+    "b-6-1": {
+      "classification": "confirmed-level-data-bug",
+      "reason": "Missing hazards beneath the Fofii pit; the existing three-spike patch rejects the input and preserves the control.",
+      "independent_replay": {
+        "schema": 1,
+        "status": "independent-replay-verified",
+        "side": "b",
+        "level": 6,
+        "frames": 1459,
+        "endpoint": {
+          "level": 6,
+          "state": 2,
+          "x": 4254,
+          "y": 897,
+          "camera": 719,
+          "vy": 0,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 0,
+          "paused": 0
+        },
+        "control_frames": 3764,
+        "comparison_start_frame": 1,
+        "intro_difference_frames": [],
+        "rom_sha256": "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
+        "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+        "case_sha256": "c5cdb1be3383e1634596d959111a51d4fdcbe0072f8839e881bf7c219c8b81ba"
+      },
+      "patched_independent_replay": {
+        "schema": 1,
+        "status": "patched-replay-verified",
+        "side": "b",
+        "level": 6,
+        "frames": 1317,
+        "endpoint": {
+          "level": 6,
+          "state": 2,
+          "x": 3766,
+          "y": 785,
+          "camera": 625,
+          "vy": 1498,
+          "mode": 0,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": true,
+          "debug": 0,
+          "invincible": 0,
+          "paused": 0
+        },
+        "control_frames": 3764,
+        "comparison_start_frame": 1,
+        "intro_difference_frames": [],
+        "rom_sha256": "713f1d426d2699200b755f423745aa02a78d431fa4608ceae179421790ae40da",
+        "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+        "case_sha256": "c5cdb1be3383e1634596d959111a51d4fdcbe0072f8839e881bf7c219c8b81ba"
+      }
+    },
+    "b-7-1": {
+      "classification": "reproduced-hazard-collision-escape",
+      "reason": "Passes a continuous row of BOTTOM_WAVYPIT/COL_DEATH_BOTTOM tiles at world y 864. Cartridge collision-map samples at frames 2883-2889 contain metatile 92 at the player columns. A missing decorative-floor patch does not address the cause; shared collision sampling needs a separate fix and regression suite.",
+      "independent_replay": {
+        "schema": 1,
+        "status": "independent-replay-verified",
+        "side": "b",
+        "level": 7,
+        "frames": 3040,
+        "endpoint": {
+          "level": 7,
+          "state": 2,
+          "x": 8976,
+          "y": 897,
+          "camera": 719,
+          "vy": 0,
+          "mode": 8,
+          "gravity": 0,
+          "mini": 0,
+          "dual": 0,
+          "dead": false,
+          "debug": 0,
+          "invincible": 0,
+          "paused": 0
+        },
+        "control_frames": 6340,
+        "comparison_start_frame": 41,
+        "intro_difference_frames": [
+          2,
+          6
+        ],
+        "rom_sha256": "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
+        "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+        "case_sha256": "0160f4ab6fd6b97880da6da0c96f4be4c183770d783361b4a2bdc4413d31f8fb"
+      }
+    }
+  },
+  "scope_note": "Bounded below-route decorative-fill search, not an all-glitch or exhaustive audit. Replay proves behavior; geometry review establishes whether it is a bug."
+}
