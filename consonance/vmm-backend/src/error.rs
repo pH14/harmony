@@ -52,6 +52,17 @@ pub enum BackendError {
         host: u64,
     },
 
+    #[error(
+        "KVM CPUID {leaf:#010x}.{subleaf:#x} {register} requires {requested:#010x}, available {available:#010x}"
+    )]
+    CpuidUnavailable {
+        leaf: u32,
+        subleaf: u32,
+        register: &'static str,
+        requested: u32,
+        available: u32,
+    },
+
     #[error("backend internal error: {0}")]
     Internal(&'static str),
 

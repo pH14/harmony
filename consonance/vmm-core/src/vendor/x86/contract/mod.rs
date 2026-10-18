@@ -135,7 +135,27 @@ pub fn cpuid_model() -> CpuidModel {
             edx: row.edx.base(),
         });
     }
-    CpuidModel { entries }
+    CpuidModel {
+        entries,
+        emulated_features: vec![
+            CpuidEntry {
+                leaf: 6,
+                eax: 1 << 2,
+                ..Default::default()
+            },
+            CpuidEntry {
+                leaf: 7,
+                ebx: 1 << 1,
+                edx: 1 << 29,
+                ..Default::default()
+            },
+            CpuidEntry {
+                leaf: 0x8000_0007,
+                edx: 1 << 8,
+                ..Default::default()
+            },
+        ],
+    }
 }
 
 pub fn resolve_cpuid(base: CpuidEntry, cr4: u64, xcr0: u64) -> CpuidEntry {

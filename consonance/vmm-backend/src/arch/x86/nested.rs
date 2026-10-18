@@ -426,7 +426,12 @@ mod tests {
             eax,
             ..Default::default()
         };
-        let bits = |entries| guest_physical_bits(&CpuidModel { entries });
+        let bits = |entries| {
+            guest_physical_bits(&CpuidModel {
+                entries,
+                ..Default::default()
+            })
+        };
         assert_eq!(bits(vec![]), 36);
         assert_eq!(
             bits(vec![

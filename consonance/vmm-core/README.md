@@ -823,3 +823,43 @@ cache coherence on other hosts or kernels. ARM KVM still inherits the default
 instruction-cache hook, and #633 remains an investigation without a confirmed
 stale-instruction witness. This fixture does not qualify cross-host restore,
 arbitrary code mutation, or continuously enforced executable admission.
+
+### x86 capability admission
+
+The contract adapter declares the following CPUID bits as supplied by the VMM
+when constructing `CpuidModel.emulated_features`. They remain in the frozen
+guest model; this metadata tells the KVM substrate which host bits are not
+required. Every other advertised capability word is checked against KVM's
+supported or emulated inventory, including all scalar/SIMD instruction flags.
+
+| Contract fields | Provider and implementation |
+| --- | --- |
+| `6:EAX[2]` ARAT | Userspace LAPIC timer scheduling uses virtual time, independent of host power states (`lapic`, x86 dispatch) |
+| `7:EBX[1]` TSC_ADJUST | `IA32_TSC_ADJUST` reads/writes use the virtual-clock state (`vendor/x86/dispatch.rs`) |
+| `7:EDX[29]` ARCH_CAPABILITIES | Contract MSR `0x10a` has an explicit fixed userspace read disposition, handled by MSR dispatch |
+| `80000007:EDX[8]` invariant TSC | Virtual TSC rate comes from the contract clock, independent of host frequency (`vtime`, x86 dispatch) |
+
+The current contract requires these remaining capabilities from KVM's
+supported inventory, or its explicit instruction-emulation inventory:
+
+| Contract feature word | Required capabilities |
+| --- | --- |
+| `1:ECX` | SSE3, PCLMULQDQ, SSSE3, FMA, CMPXCHG16B, PCID, SSE4.1, SSE4.2, MOVBE, POPCNT, AES, XSAVE, AVX, F16C |
+| `1:EDX` | FPU, VME, DE, PSE, TSC, MSR, PAE, CMPXCHG8B, APIC, SEP, MTRR, PGE, CMOV, PAT, PSE36, CLFLUSH, MMX, FXSR, SSE, SSE2, self-snoop |
+| `7:EBX` | FSGSBASE, BMI1, AVX2, SMEP, BMI2, ERMS, INVPCID, zero FCS/FDS, ADX, SMAP, CLFLUSHOPT |
+| `80000001:ECX` | LAHF/SAHF in long mode, ABM/LZCNT, PREFETCHW |
+| `80000001:EDX` | SYSCALL/SYSRET, NX, 1-GiB pages, RDTSCP, long mode |
+| `D.0`, `D.2` | x87/SSE/YMM state; YMM component size 256 and standard offset 576 |
+
+This checks the complete requested capability words, so newly requested bits
+in these words automatically require admission too. KVM may provide a feature
+through virtualization rather than native execution: 1-GiB pages can be
+provided through shadow paging, and MOVBE has explicit software emulation.
+The supported/emulated API results, not a raw hardware-only mask, decide.
+
+The generic backend contains no frozen-profile feature exemption mask. It
+validates the caller's declarations against the advertised model and never
+allows them to exempt XSAVE state or component layouts. CPUID identity, caches,
+topology, and frequency descriptions remain fixed guest values. Standard math
+libraries remain supported; admission is about execution capability, not a
+claim of identical arithmetic results across all admitted CPUs.

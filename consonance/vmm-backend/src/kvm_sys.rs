@@ -59,6 +59,8 @@ pub struct KvmBackend {
     nested_physical_bits: u32,
     sysenter_virtual_bits: u32,
     supported_xsave_bv: u64,
+    supported_cpuid: CpuidModel,
+    emulated_cpuid: CpuidModel,
     event_valid_flags: u32,
     host_amd_compatible: bool,
     guest_run_attempted: bool,
@@ -108,6 +110,9 @@ impl KvmBackend {
         let supported = kvm
             .get_supported_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
             .map_err(kvm_err)?;
+        let emulated = kvm
+            .get_emulated_cpuid(kvm_bindings::KVM_MAX_CPUID_ENTRIES)
+            .map_err(kvm_err)?;
         let host_vendor = supported
             .as_slice()
             .iter()
@@ -142,6 +147,8 @@ impl KvmBackend {
             nested_physical_bits: 0,
             sysenter_virtual_bits,
             supported_xsave_bv,
+            supported_cpuid: cpuid_model(supported.as_slice()),
+            emulated_cpuid: cpuid_model(emulated.as_slice()),
             event_valid_flags,
             host_amd_compatible,
             guest_run_attempted: false,
@@ -231,6 +238,8 @@ impl KvmBackend {
                 "nested initialization requires a fresh vCPU",
             ));
         }
+        self.state_mutation_guard.ensure_healthy()?;
+        self.validate_cpuid(cpuid)?;
         let kvm = Kvm::new().map_err(kvm_err)?;
         let nested_size = kvm.check_extension_int(Cap::NestedState);
         if nested_size < 128 || nested_size as usize > format.maximum_len() {
@@ -741,7 +750,12 @@ impl KvmBackend {
         }
     }
 
+    fn validate_cpuid(&self, model: &CpuidModel) -> Result<()> {
+        crate::kvm_cpuid::validate(model, &self.supported_cpuid, &self.emulated_cpuid)
+    }
+
     fn install_cpuid(&mut self, model: &CpuidModel) -> Result<()> {
+        self.validate_cpuid(model)?;
         let entries = cpuid_entries(model);
         let cpuid = CpuId::from_entries(&entries)
             .map_err(|_| BackendError::Internal("CPUID table too large for KVM"))?;
@@ -861,6 +875,8 @@ impl Backend for KvmBackend {
 
     fn set_policy(&mut self, policy: &X86Policy) -> Result<()> {
         self.ensure_host_affinity()?;
+        self.state_mutation_guard.ensure_healthy()?;
+        self.validate_cpuid(&policy.cpuid)?;
         self.state_mutation_guard.begin()?;
         self.install_cpuid(&policy.cpuid)?;
         self.install_msr_filter(&policy.msr_filter)?;
@@ -1300,6 +1316,130 @@ mod policy_diagnostic {
     use crate::arch::x86::MsrRange;
 
     #[test]
+    #[ignore = "live KVM CPUID admission boundary; requires /dev/kvm"]
+    fn missing_cpuid_features_reject_before_policy_mutation() {
+        let first = X86Policy {
+            cpuid: CpuidModel {
+                entries: vec![CpuidEntry {
+                    leaf: 1,
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            msr_filter: MsrFilter {
+                allow_inkernel: vec![MsrRange {
+                    base: 0x174,
+                    count: 3,
+                }],
+            },
+        };
+        let mut backend = KvmBackend::new().unwrap();
+        backend.set_policy(&first).unwrap();
+        let before = backend.save().unwrap();
+        let before_cpuid = backend.vcpu.get_cpuid2(256).unwrap();
+        let supported = backend.supported_cpuid.clone();
+        let emulated = backend.emulated_cpuid.clone();
+        let mut cases = 0;
+        for (leaf, register, bits) in [
+            (1, "ecx", 0x36da_3203_u32),
+            (1, "edx", 0x0f8b_bb7f),
+            (7, "ebx", 0x0098_27a9),
+            (0x8000_0001, "ecx", 0x121),
+            (0x8000_0001, "edx", 0x2c10_0800),
+            (0xd, "eax", 7),
+        ] {
+            for bit in 0..32 {
+                if bits & (1 << bit) == 0 {
+                    continue;
+                }
+                let mut e = CpuidEntry {
+                    leaf,
+                    ..Default::default()
+                };
+                match register {
+                    "eax" => e.eax = 1 << bit,
+                    "ecx" => e.ecx = 1 << bit,
+                    "edx" => e.edx = 1 << bit,
+                    _ => e.ebx = 1 << bit,
+                }
+                let mut rejected = first.clone();
+                rejected.cpuid.entries = vec![e];
+                for inventory in [&mut backend.supported_cpuid, &mut backend.emulated_cpuid] {
+                    for row in &mut inventory.entries {
+                        if row.leaf == leaf && row.subleaf == 0 {
+                            match register {
+                                "eax" => row.eax &= !(1 << bit),
+                                "ecx" => row.ecx &= !(1 << bit),
+                                "edx" => row.edx &= !(1 << bit),
+                                _ => row.ebx &= !(1 << bit),
+                            }
+                        }
+                    }
+                }
+                assert!(
+                    matches!(
+                        backend.set_policy(&rejected),
+                        Err(BackendError::CpuidUnavailable { .. })
+                    ),
+                    "{leaf:#x} {register}[{bit}]"
+                );
+                assert_eq!(
+                    backend.vcpu.get_cpuid2(256).unwrap().as_slice(),
+                    before_cpuid.as_slice()
+                );
+                assert_eq!(backend.save().unwrap(), before);
+                assert_eq!(backend.msr_filter.as_ref(), Some(&first.msr_filter));
+                backend.state_mutation_guard.ensure_healthy().unwrap();
+                backend.supported_cpuid = supported.clone();
+                backend.emulated_cpuid = emulated.clone();
+                cases += 1;
+            }
+        }
+        backend.set_policy(&first).unwrap();
+        assert_eq!(backend.save().unwrap(), before);
+        println!(
+            "KVM_CPUID_PREFLIGHT missing_feature_cases={cases} cpuid=unchanged state=unchanged policy=reusable"
+        );
+    }
+
+    #[test]
+    #[ignore = "live KVM nested CPUID admission; requires /dev/kvm"]
+    fn missing_nested_cpuid_feature_rejects_before_mutation() {
+        let mut backend = KvmBackend::new().unwrap();
+        let format = NestedFormat::Vmx;
+        let before = backend.vcpu.get_cpuid2(256).unwrap();
+        for inventory in [&mut backend.supported_cpuid, &mut backend.emulated_cpuid] {
+            for e in &mut inventory.entries {
+                if e.leaf == 1 {
+                    e.ecx &= !(1 << 12);
+                }
+            }
+        }
+        let cpuid = CpuidModel {
+            entries: vec![CpuidEntry {
+                leaf: 1,
+                ecx: 1 << 12,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(matches!(
+            backend.initialize_nested(format, &cpuid, &[], 5),
+            Err(BackendError::CpuidUnavailable { .. })
+        ));
+        assert_eq!(
+            backend.vcpu.get_cpuid2(256).unwrap().as_slice(),
+            before.as_slice()
+        );
+        assert!(!backend.cpuid_installed);
+        assert!(backend.nested_state_config.is_none());
+        backend.state_mutation_guard.ensure_healthy().unwrap();
+        backend.set_policy(&X86Policy::default()).unwrap();
+        backend.save().unwrap();
+        println!("KVM_CPUID_PREFLIGHT nested={format:?} rejected_before_mutation=pass");
+    }
+
+    #[test]
     #[ignore = "live KVM policy boundary; requires /dev/kvm"]
     fn rejected_msr_filter_retires_partly_reconfigured_vcpu() {
         let mut backend = KvmBackend::new().unwrap();
@@ -1310,6 +1450,7 @@ mod policy_diagnostic {
                     eax: 0,
                     ..Default::default()
                 }],
+                ..Default::default()
             },
             msr_filter: MsrFilter {
                 allow_inkernel: vec![MsrRange {
@@ -1379,6 +1520,7 @@ mod policy_diagnostic {
                 eax: 1,
                 ..Default::default()
             }],
+            ..Default::default()
         };
         assert!(
             backend
@@ -2751,6 +2893,7 @@ mod xsave_diagnostic {
                         ..Default::default()
                     },
                 ],
+                ..Default::default()
             },
             msr_filter: MsrFilter {
                 allow_inkernel: vec![MsrRange {

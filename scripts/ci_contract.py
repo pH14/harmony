@@ -334,6 +334,9 @@ CONSONANCE_CHECKS = Workflow(
             ignored_tests=KVM_EXIT_BOUNDARY_TESTS + (
                 "vmm-backend kvm_sys::xsave_diagnostic::changed_affinity_refuses_cpu_operations_without_mutation",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_msr_filter_retires_partly_reconfigured_vcpu",
+                "vmm-backend kvm_sys::policy_diagnostic::missing_cpuid_features_reject_before_policy_mutation",
+                "vmm-backend kvm_sys::policy_diagnostic::missing_nested_cpuid_feature_rejects_before_mutation",
+                "vmm-core::x86_cpu_snapshots live_kvm::production_cpuid_is_preserved_by_native_capability_admission",
                 "vmm-backend kvm_sys::policy_diagnostic::rejected_vmx_capability_read_retires_partly_initialized_vcpu",
                 "vmm-backend::contract_kvm *",
             ),
