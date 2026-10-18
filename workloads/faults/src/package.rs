@@ -505,6 +505,7 @@ mod live {
                     FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config)?;
                 for action in actions {
                     target.apply_replayed(*action);
+                    crate::campaign::require_completed_attempt(&target, "branch prefix replay")?;
                 }
                 if target.actions().len() != actions.len() {
                     return Err("branch prefix terminated before its selected point".into());

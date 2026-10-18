@@ -8903,6 +8903,7 @@ mod tests {
         config.workers = 2;
         config.window = 2;
         config.execution_budget = 2;
+        config.mixture = DrawMixture::Energy { scale: 6 };
         let (baseline, earlier, later) = (0..32)
             .find_map(|seed| {
                 config.campaign_seed = seed;

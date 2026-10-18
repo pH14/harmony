@@ -84,9 +84,11 @@ rerun the check after its image job publishes the handoff.
 
 The roster's CI column is `runnable` or `deferred: <reason>`. A search miss,
 an infrastructure failure, and a found-but-replay-unverified candidate are
-separate outcomes in the run summary and artifacts. Guest watchdog cutoffs come from the faults report and campaign
-summary; an outer CLI timeout remains an infrastructure failure even when a
-partial report was written.
+separate outcomes in the run summary and artifacts. A guest host-watchdog cutoff
+makes the faults campaign infrastructure-incomplete before its reservation is
+admitted. Earlier complete checkpoints and the admitted stream prefix remain
+available. An outer CLI timeout also remains an infrastructure failure even when
+a partial report was written.
 
 ## Notes
 

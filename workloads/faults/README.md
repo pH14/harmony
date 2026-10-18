@@ -373,17 +373,24 @@ the digest; readers default a missing marker to the legacy interpretation.
 Earlier UML `engine_digest` values covered only bridge state and cannot prove
 full-state replay equivalence.
 
-The search report and `campaign-summary.json` also record
-`watchdog_cutoffs`, the number of guest action runs and prefix reconstruction
-attempts ended by the session's host watchdog, including waits for a fresh or
-in-place UML restore. A reconstruction cutoff ends that preparation attempt,
-counts one execution failure and one watchdog cutoff, and leaves the worker
-available for later jobs. It
-produces no suffix action, retained candidate, oracle evidence, or duration
-feedback. Other reconstruction errors still fail the campaign. A completed CLI
-with such cutoffs remains a measured campaign;
-an outer CLI timeout is an infrastructure failure. The reports also expose
-`execution_failures`; the nightly check rejects non-watchdog failures. A supervisor
+The session records `watchdog_cutoffs` when a guest action or parent
+reconstruction exceeds its host progress bound, including fresh and in-place
+UML restores. A campaign treats any such cutoff as infrastructure incompleteness:
+the affected reservation returns an error before admission, result certification,
+selection accounting, mixture updates or duration feedback. If a suffix already
+completed some actions, none of that job's actions or candidates are admitted.
+Bootstrap, branch-prefix replay and shared-cache imports preserve the same
+infrastructure-failure classification.
+The campaign stops with an explicit incomplete error instead of writing a
+completed report. Previously admitted stream records are flushed and existing
+search checkpoints remain available; the incomplete stream has no successful
+completion record. A later search can resume an earlier complete checkpoint.
+The recorded `host_failure_policy = watchdog_incomplete_v1` binds this behavior;
+streams and checkpoints with an absent or different policy are refused. Ordinary
+guest terminal outcomes retain their existing meaning. An outer CLI timeout is
+also an infrastructure failure. Completed reports still expose
+`execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
+either counter in a successfully completed campaign. A supervisor
 runtime error has a separate SDK status and cannot turn a PID 1 exit into bug
 evidence.
 

@@ -856,6 +856,7 @@ impl FaultTarget {
                 eprintln!("fault target reset failed: {error}");
                 self.prefix_certificates.clear();
                 self.failed = true;
+                self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
             }
         }
     }
@@ -1457,7 +1458,7 @@ impl Live {
             Ok(imported) => imported,
             Err(error) => {
                 self.chain.release(lease);
-                return Err(format!("import snapshot: {error}"));
+                return Err(self.abandon("import snapshot", error.as_ref()));
             }
         };
         let dropped = self.chain.truncate(at.saturating_add(1));
@@ -1927,7 +1928,7 @@ mod tests {
             _: &Lease,
             _: SnapId,
         ) -> Result<(SnapId, u64), Box<dyn Error>> {
-            unreachable!()
+            Err(SessionError::Hung(WALL_LIMIT).into())
         }
 
         fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
@@ -1963,7 +1964,7 @@ mod tests {
         }
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
-            if self.run_hung {
+            if self.run_hung && self.run_hashes.as_ref().is_none_or(Vec::is_empty) {
                 return Err(SessionError::Hung(WALL_LIMIT).into());
             }
             if let Some(hashes) = &mut self.run_hashes {
@@ -2128,6 +2129,85 @@ mod tests {
             &2u64.to_le_bytes()
         );
         index.release(held);
+    }
+
+    #[test]
+    fn shared_cache_import_preserves_typed_watchdog_failure() {
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::new(&[b"fault-import-timeout"]);
+        let actions = [FaultOperation::Wait(std::num::NonZeroU16::MIN).into()];
+        let mut publisher = publishing_live(&index, namespace, SnapId(2), [17; 32]);
+        publisher.seal_link(&actions, SnapId(2), 10, 0).unwrap();
+        let mut importer = timed_out_live();
+        importer.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace,
+            }),
+        );
+        let error = importer.find(&actions).unwrap_err();
+        assert!(error.starts_with(WATCHDOG_CUTOFF), "{error}");
+        assert!(error.contains("import snapshot"), "{error}");
+        assert!(importer.abandoned);
+        assert_eq!(importer.chain.links(), 1);
+    }
+
+    #[test]
+    fn bootstrap_cutoffs_remain_incomplete_through_evaluation_and_certification() {
+        use searcher::search::campaign::{
+            CampaignJobResult, Evaluation, Reporting, TargetExecution,
+        };
+        let game = crate::campaign::fixture_workload(
+            b"kernel",
+            b"initramfs",
+            &FaultConfig {
+                knobs: Vec::new(),
+                ram_mib: DEFAULT_RAM_MIB,
+                backend: GuestBackend::Vm,
+                root: None,
+            },
+        );
+        let run = crate::campaign::FaultCampaignRun {
+            vocabulary: crate::bundle::FaultVocabulary::new(1, vec![1]).unwrap(),
+        };
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            ..FaultSnapshot::default()
+        };
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        let error = game.restore(&mut target, &snapshot).unwrap_err();
+        assert!(error.to_string().contains("campaign incomplete"), "{error}");
+        let result = CampaignJobResult {
+            preparation_failure: None,
+            actions: Vec::new(),
+        };
+        assert!(
+            game.certified_result_sha256(&result, &target)
+                .unwrap_err()
+                .to_string()
+                .contains("campaign incomplete")
+        );
+        assert!(
+            game.rollout_outcome(&run, &target)
+                .unwrap_err()
+                .to_string()
+                .contains("campaign incomplete")
+        );
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        target.reset();
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(
+            game.rollout_outcome(&run, &target)
+                .unwrap_err()
+                .to_string()
+                .contains("campaign incomplete")
+        );
+        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[derive(Debug)]
@@ -2569,7 +2649,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_job_replay_cutoff_is_a_preparation_failure() {
+    fn campaign_job_reconstruction_cutoff_is_incomplete() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             actions: Vec::new(),
@@ -2588,16 +2668,23 @@ mod tests {
             &[],
             false,
         )
-        .unwrap();
-        assert!(result.actions.is_empty());
-        let observations = result.preparation_failure.unwrap();
-        assert_eq!(observations.len(), 1);
-        assert!(observations[0].watchdog_cutoff);
+        .unwrap_err();
+        assert!(
+            result.to_string().contains("campaign incomplete"),
+            "{result}"
+        );
+        assert!(
+            result.to_string().contains("parent reconstruction"),
+            "{result}"
+        );
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(!target.found_bug());
+        assert!(target.snapshot().unwrap().is_none());
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]
-    fn campaign_job_replayed_action_cutoff_is_a_preparation_failure() {
+    fn campaign_job_replayed_action_cutoff_is_incomplete() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             actions: Vec::new(),
@@ -2627,11 +2714,15 @@ mod tests {
             &[],
             false,
         )
-        .unwrap();
-        assert!(result.actions.is_empty());
-        let observations = result.preparation_failure.unwrap();
-        assert_eq!(observations.len(), 1);
-        assert!(observations[0].watchdog_cutoff);
+        .unwrap_err();
+        assert!(
+            result.to_string().contains("campaign incomplete"),
+            "{result}"
+        );
+        assert!(result.to_string().contains("parent replay"), "{result}");
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(!target.found_bug());
+        assert!(target.snapshot().unwrap().is_none());
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
@@ -2669,6 +2760,43 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("replayed fault prefix stopped"), "{error}");
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn campaign_suffix_cutoff_discards_the_entire_unadmitted_job() {
+        let first = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
+        let second = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
+        let mut target = unbooted_target();
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(vec![[17; 32]]),
+            run_hung: true,
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let origin = target.snapshot().unwrap().unwrap();
+        let result = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[first, second],
+            false,
+        );
+        let error = result.expect_err("no partial job may be certified or admitted");
+        assert!(error.to_string().contains("campaign incomplete"), "{error}");
+        assert!(error.to_string().contains("suffix execution"), "{error}");
+        assert_eq!(target.actions(), &[first]);
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(target.snapshot().unwrap().is_none());
+        assert!(!target.found_bug());
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
