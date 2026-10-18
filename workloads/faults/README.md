@@ -56,23 +56,18 @@ The scan rejects:
 - a hardware entropy or CPU-identity instruction (RDRAND, RDSEED, RNDR,
   RNDRRS, RDPID, LSL) without a review in `/etc/harmony/instruction-allowlist`
   ([format](../languages/reviewed/README.md));
-- x86 reciprocal/reciprocal-square-root estimates (RCP/RSQRT and their
-  VEX/EVEX forms, including FP16 VRCPPH/VRCPSH/VRSQRTPH/VRSQRTSH) and x87
-  transcendental approximations (F2XM1, FSIN, FCOS,
-  FSINCOS, FPTAN, FPATAN, FYL2X, FYL2XP1), even if listed for review;
 - an arm64 monitor-based LL/SC instruction, even if listed for review;
 - an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
-The approximate-arithmetic refusal applies equally to VM and UML images.
-Architectural error bounds permit different result bits across native CPU
-implementations. A reviewed opcode cannot establish a common transition rule.
-Libraries containing these routines are rejected even when the chosen workload
-would not call them, so this rule can exclude existing glibc/libm images.
-Controlled builds must remove the sites before preparation. Ordinary exact
-SQRT operations remain allowed. This is a conservative known-family exclusion,
-not a qualification of every other native arithmetic operation or arbitrary
-VMM guest binaries.
+Native arithmetic and standard math libraries are admitted for both VM and UML
+images without instruction reviews. Reciprocal/reciprocal-square-root estimates
+and x87 transcendental operations may produce different result bits on different
+CPU implementations. Image admission does not prove a common numerical
+transition rule across CPUs. Saved CLI replay warns about changed or unknown CPU
+implementations through [CPU provenance](../../cli/README.md); exact agreement
+still needs evidence for the particular implementation
+pair, artifacts and inputs.
 
 For User-mode Linux, preparation rejects the scanned hardware entropy and
 CPU-identity instructions even when reviewed. UML runs guest user instructions

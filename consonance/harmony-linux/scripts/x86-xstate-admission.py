@@ -19,7 +19,7 @@ MAX_FILE = 128 * 1024 * 1024
 MAX_TREE = 2 * 1024 * 1024 * 1024
 SAVE = {"fxsave", "fxsave64", "xsave", "xsave64", "xsavec", "xsavec64", "xsaveopt", "xsaveopt64", "xsaves", "xsaves64"}
 RESTORE = {"xrstor", "xrstor64", "xrstors", "xrstors64", "fxrstor", "fxrstor64"}
-APPROXIMATE = {"rcpps", "rcpss", "rsqrtps", "rsqrtss", "vrcpps", "vrcpss", "vrsqrtps", "vrsqrtss",
+NATIVE_ARITHMETIC = {"rcpps", "rcpss", "rsqrtps", "rsqrtss", "vrcpps", "vrcpss", "vrsqrtps", "vrsqrtss",
                "vrcpph", "vrcpsh", "vrsqrtph", "vrsqrtsh", "vrcp14pd", "vrcp14ps", "vrcp14sd", "vrcp14ss", "vrcp28pd", "vrcp28ps", "vrcp28sd", "vrcp28ss",
                "vrsqrt14pd", "vrsqrt14ps", "vrsqrt14sd", "vrsqrt14ss", "vrsqrt28pd", "vrsqrt28ps", "vrsqrt28sd", "vrsqrt28ss",
                "fsin", "fcos", "fsincos", "fptan", "fpatan", "f2xm1", "fyl2x", "fyl2xp1"}
@@ -379,7 +379,7 @@ def executable_coverage(data, segments, objdump):
             groups.append((previous, code + raw, entries | anchors))
         else:
             groups.append((start, raw, anchors))
-    special_names = SAVE | RESTORE | APPROXIMATE | {"xgetbv"}
+    special_names = SAVE | RESTORE | NATIVE_ARITHMETIC | {"xgetbv"}
     special_re = re.compile(r"\b(" + "|".join(sorted(special_names, key=len, reverse=True)) + r")\b")
     pending = {entry for _, _, entries in groups for entry in entries}
     instructions, targets, visited = {}, set(pending), set()
@@ -456,7 +456,7 @@ def disassemble(data, segments, objdump):
     predecessors, overlapping = proof_edges(instructions)
     sites = []
     for index, item in enumerate(instructions):
-        if item["mnemonic"] not in SAVE | RESTORE | APPROXIMATE | {"xgetbv"}:
+        if item["mnemonic"] not in SAVE | RESTORE | NATIVE_ARITHMETIC | {"xgetbv"}:
             continue
         item = dict(item)
         if item["mnemonic"] == "xgetbv":
@@ -736,8 +736,6 @@ def verify(report):
             if any(s["mnemonic"] == "xgetbv" and not s["straightline_ecx_zero"] for s in record["sites"]):
                 raise Rejected(f"unproved XGETBV selector: {name}")
             for site in record["sites"]:
-                if site["mnemonic"] in APPROXIMATE:
-                    raise Rejected(f"implementation-dependent arithmetic: {name}:{site['address']:#x} {site['mnemonic']}")
                 if site["mnemonic"] in SAVE and not site.get("loader_trampoline"):
                     raise Rejected(f"save instruction outside a loader trampoline: {name}:{site['address']:#x} {site['mnemonic']}")
     except (Rejected, OSError, TypeError, KeyError, ValueError, AttributeError) as error:

@@ -119,19 +119,27 @@ class ExecutableCoverageTests(unittest.TestCase):
             self.assertTrue(report["artifacts"]["/fixture"]["sites"][0]["mnemonic"] in a.SAVE)
         self.assert_rejected(fixture(resolver_trampoline(bytes.fromhex("0fae442440"))), "fxsave")
 
-    def test_native_approximation_is_refused_with_exact_arithmetic_control(self):
+    def test_native_math_is_admitted_and_inventoried_with_exact_arithmetic_control(self):
         for raw, name in [("0f53c0", "rcpps"), ("0f52c0", "rsqrtps"),
                           ("f30f53c0", "rcpss"), ("f30f52c0", "rsqrtss"),
-                          ("d9fe", "fsin"), ("d9ff", "fcos"), ("c5f853c0", "vrcpps"),
+                          ("d9fe", "fsin"), ("d9ff", "fcos"), ("d9f9", "fyl2xp1"), ("c5f853c0", "vrcpps"),
                           ("62f27d484cc0", "vrcp14ps"),
                           ("62f67d484cc0", "vrcpph"), ("62f67d084dc0", "vrcpsh"),
                           ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh")]:
-            self.assert_rejected(fixture(bytes.fromhex(raw) + b"\xc3"), name)
+            report, accepted = self.inspect(fixture(bytes.fromhex(raw) + b"\xc3"))
+            self.assertTrue(accepted, report)
+            self.assertIn(name, [site["mnemonic"] for site in report["artifacts"]["/fixture"]["sites"]])
             if name in {"vrcpph", "vrcpsh", "vrsqrtph", "vrsqrtsh"}:
-                self.assert_rejected(fixture(bytes.fromhex("eb01b8" + raw) + b"\xc3"), name)
-        self.assert_rejected(fixture(bytes.fromhex("eb01 b8 0f53c0 c3 c3")), "rcpps")
+                report, accepted = self.inspect(fixture(bytes.fromhex("eb01b8" + raw) + b"\xc3"))
+                self.assertTrue(accepted, report)
+        report, accepted = self.inspect(fixture(bytes.fromhex("eb01 b8 0f53c0 c3 c3")))
+        self.assertTrue(accepted, report)
         report, accepted = self.inspect(fixture(bytes.fromhex("0f51c0 c3")))
         self.assertTrue(accepted, report)
+
+    def test_native_math_does_not_exempt_state_save_or_selector_checks(self):
+        self.assert_rejected(fixture(bytes.fromhex("d9f9 0f52c0 0fae27 c3")), "xsave")
+        self.assert_rejected(fixture(bytes.fromhex("d9f9 0f52c0 0f01d0 c3")), "xgetbv")
 
     def test_overlapping_predecessors_cannot_fake_selector_dominance(self):
         code = bytes.fromhex("7401 8031c9 0f01d0 c3")

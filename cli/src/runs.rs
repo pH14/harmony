@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::config::{Config, Result};
+use crate::cpu_replay::CpuIdentity;
 use crate::runtime::digest;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -24,6 +25,8 @@ pub struct Manifest {
     pub format: String,
     pub binary_identity: String,
     pub architecture: String,
+    #[serde(default)]
+    pub cpu_provenance: Vec<CpuIdentity>,
     pub mode: String,
     pub status: String,
     pub error: Option<String>,
@@ -98,6 +101,7 @@ impl Manifest {
             format: "harmony-run-v4".into(),
             binary_identity,
             architecture: std::env::consts::ARCH.into(),
+            cpu_provenance: vec![CpuIdentity::current()],
             mode: mode.into(),
             status: "running".into(),
             error: None,
@@ -187,6 +191,15 @@ impl Manifest {
 
     fn inherit_verified(&self, source: &Path, destination: &Path, mode: &str) -> Result<Self> {
         let mut child = self.clone();
+        if child.cpu_provenance.is_empty() {
+            child
+                .cpu_provenance
+                .push(CpuIdentity::unknown(&self.architecture));
+        }
+        let current = CpuIdentity::current();
+        if !child.cpu_provenance.contains(&current) {
+            child.cpu_provenance.push(current);
+        }
         child.mode = mode.into();
         child.status = "running".into();
         child.error = None;
@@ -439,6 +452,40 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("changed")
+        );
+    }
+
+    #[test]
+    fn missing_cpu_provenance_remains_unknown_after_inheritance() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.runner.kind = "test".into();
+        let manifest = Manifest::new(config, "run").unwrap();
+        let mut legacy = serde_json::to_value(&manifest).unwrap();
+        legacy.as_object_mut().unwrap().remove("cpu_provenance");
+        fs::write(
+            source.path().join("manifest.json"),
+            serde_json::to_vec(&legacy).unwrap(),
+        )
+        .unwrap();
+        let loaded = Manifest::read(source.path()).unwrap();
+        assert!(loaded.cpu_provenance.is_empty());
+        let child = loaded
+            .inherit(source.path(), destination.path(), "replay")
+            .unwrap();
+        assert!(
+            child
+                .cpu_provenance
+                .contains(&CpuIdentity::unknown(&manifest.architecture))
+        );
+        assert!(
+            crate::cpu_replay::warning(&child.cpu_provenance, &CpuIdentity::current()).is_some()
+        );
+        child.save(destination.path()).unwrap();
+        assert_eq!(
+            Manifest::read(destination.path()).unwrap().cpu_provenance,
+            child.cpu_provenance
         );
     }
 
