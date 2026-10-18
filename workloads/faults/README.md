@@ -712,6 +712,8 @@ merged into retired counters without a post-close RPC. It excludes teardown work
 telemetry failure does not prevent the owned shutdown attempt. Bootstrap scope
 acquisition refuses nesting atomically, preserving the outer scope's ownership.
 
-Standalone full and prefix replay own the coordinator thread's session for the
-whole operation, then explicitly finalize it on every result. macOS target Drop
-also defers to this active scope; session reuse inside a replay remains intact.
+The generic searcher's standalone full and prefix replay mechanism owns the
+coordinator thread's session for the whole operation and finalizes it on every
+result. macOS target Drop defers to that active scope, preserving session reuse
+inside it. The faults CLI's own replay commands use FaultTarget directly and do
+not enter this generic replay scope.
