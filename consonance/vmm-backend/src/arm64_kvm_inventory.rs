@@ -350,6 +350,30 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(miri))]
+    fn captured_sysreg_classification_matches_saved_registers() {
+        let actual = (0..=u16::MAX)
+            .map(sysreg)
+            .filter(|&id| disposition(id) == Some(Disposition::Captured))
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut expected = SYSREGS
+            .iter()
+            .map(|&(id, _)| id)
+            .collect::<std::collections::BTreeSet<_>>();
+        for index in 0..16 {
+            expected.extend([dbgbvr(index), dbgbcr(index), dbgwvr(index), dbgwcr(index)]);
+        }
+        expected.extend([
+            MDCCINT_EL1,
+            MDSCR_EL1,
+            CNTV_CTL_EL0,
+            CNTV_CVAL_EL0,
+            CNTVCT_EL0,
+        ]);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
     fn measured_kvm_register_inventory_has_explicit_dispositions() {
         let entries = validate(fake_registers()).unwrap();
         assert_eq!(entries.len(), 257);
