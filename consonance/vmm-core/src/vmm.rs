@@ -1241,9 +1241,9 @@ where
                 let reason = exit.reason();
                 let backend_debug = format!("{reason:?}");
                 trace
-                    .record_raw_only(reason, backend_debug)
+                    .begin_raw(reason, backend_debug)
                     .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
-                false
+                true
             }
         } else {
             false
@@ -1266,7 +1266,12 @@ where
         self.pvclock_refresh()?;
         <B::A as Vendor>::post_exit(self)?;
         let next = <B::A as Vendor>::finish_exit(self)?;
-        if trace_started {
+        if trace_started
+            && self
+                .virtual_time_trace
+                .as_ref()
+                .is_some_and(LiveVirtualTimeTrace::normalized_event_pending)
+        {
             let event_index = self
                 .virtual_time_trace
                 .as_ref()
@@ -1308,6 +1313,12 @@ where
                 .as_mut()
                 .expect("trace was started")
                 .finish(vns_after, state_hash)
+                .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
+        } else if trace_started {
+            self.virtual_time_trace
+                .as_mut()
+                .expect("raw trace was started")
+                .finish_raw()
                 .map_err(|message| VmmError::ContractViolation(message.to_string()))?;
         }
         Ok(ExitProgress {

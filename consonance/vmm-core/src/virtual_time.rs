@@ -64,6 +64,7 @@ pub enum NormalizedEventClass {
     DeviceMmio(DeviceClass),
     TimeRead,
     ArchitecturalControl,
+    InterruptDelivery,
     Idle,
     Terminal,
 }
@@ -77,6 +78,7 @@ impl NormalizedEventClass {
             Self::DeviceMmio(DeviceClass::Paravirtual) => "pv_mmio",
             Self::TimeRead => "time_read",
             Self::ArchitecturalControl => "arch_control",
+            Self::InterruptDelivery => "irq_delivery",
             Self::Idle => "idle",
             Self::Terminal => "terminal",
         }
@@ -92,6 +94,7 @@ impl NormalizedEventClass {
             Self::Idle => 5,
             Self::Terminal => 6,
             Self::ArchitecturalControl => 7,
+            Self::InterruptDelivery => 8,
         }
     }
 }
@@ -235,6 +238,7 @@ pub struct LiveVirtualTimeTrace {
     next_schedule_index: u64,
     active_clockevent_schedule: Option<u64>,
     pending: Option<PendingLiveEvent>,
+    raw_event_active: bool,
     current_interrupts: Vec<InterruptDelivery>,
 }
 
@@ -325,7 +329,7 @@ impl LiveVirtualTimeTrace {
         class: NormalizedEventClass,
         payload: Vec<u8>,
     ) -> Result<(), &'static str> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.raw_event_active {
             return Err("virtual_time trace began a second event before finishing the first");
         }
         let event_index = u64::try_from(self.raw.len()).unwrap_or(u64::MAX);
@@ -357,7 +361,7 @@ impl LiveVirtualTimeTrace {
         reason: ExitReason,
         backend_debug: String,
     ) -> Result<(), &'static str> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.raw_event_active {
             return Err("virtual_time trace recorded a raw-only exit during an active event");
         }
         self.raw.push(RawEvent {
@@ -366,6 +370,28 @@ impl LiveVirtualTimeTrace {
             reason,
             backend_debug,
         });
+        Ok(())
+    }
+
+    pub(crate) fn begin_raw(
+        &mut self,
+        reason: ExitReason,
+        backend_debug: String,
+    ) -> Result<(), &'static str> {
+        self.record_raw_only(reason, backend_debug)?;
+        self.raw_event_active = true;
+        Ok(())
+    }
+
+    pub(crate) fn normalized_event_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    pub(crate) fn finish_raw(&mut self) -> Result<(), &'static str> {
+        if !self.raw_event_active || self.pending.is_some() || !self.current_interrupts.is_empty() {
+            return Err("virtual_time raw event completion has inconsistent pending state");
+        }
+        self.raw_event_active = false;
         Ok(())
     }
 
@@ -396,7 +422,7 @@ impl LiveVirtualTimeTrace {
         &self,
         restored_schedule: bool,
     ) -> Result<(), &'static str> {
-        if self.pending.is_some() {
+        if self.pending.is_some() || self.raw_event_active {
             return Err("virtual_time trace restore occurred during an active event");
         }
         if let Some(schedule_index) = self.active_clockevent_schedule {
@@ -502,14 +528,13 @@ impl LiveVirtualTimeTrace {
     }
 
     pub(crate) fn deliver_clockevent(&mut self) -> Result<(), &'static str> {
-        if self.pending.is_none() {
+        if self.pending.is_none() && !self.raw_event_active {
             return Err("clockevent delivery has no active normalized event");
         }
         let schedule_index = self
             .active_clockevent_schedule
-            .take()
             .ok_or("clockevent delivery has no active virtual_time schedule")?;
-        let scheduled = self
+        let scheduled = *self
             .schedule
             .iter()
             .find(|scheduled| scheduled.schedule_index == schedule_index)
@@ -517,7 +542,23 @@ impl LiveVirtualTimeTrace {
         if scheduled.canceled_at_event.is_some() {
             return Err("canceled virtual_time clockevent was delivered");
         }
-        self.current_interrupts.push((*scheduled).into());
+        if self.pending.is_none() {
+            let mut raw = self
+                .raw
+                .pop()
+                .ok_or("interrupt delivery raw event is missing")?;
+            raw.portable_event_index = Some(
+                u64::try_from(self.normalized.events.len())
+                    .map_err(|_| "normalized event index exhausted")?,
+            );
+            self.pending = Some(PendingLiveEvent {
+                raw,
+                class: NormalizedEventClass::InterruptDelivery,
+                payload: Vec::new(),
+            });
+        }
+        self.active_clockevent_schedule = None;
+        self.current_interrupts.push(scheduled.into());
         Ok(())
     }
 
@@ -530,6 +571,7 @@ impl LiveVirtualTimeTrace {
             .pending
             .take()
             .ok_or("virtual_time trace finished with no active event")?;
+        self.raw_event_active = false;
         self.raw.push(pending.raw);
         let event = NormalizedEvent {
             event_index: u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
@@ -997,6 +1039,7 @@ mod live_trace_tests {
             ),
             (NormalizedEventClass::TimeRead, "time_read"),
             (NormalizedEventClass::ArchitecturalControl, "arch_control"),
+            (NormalizedEventClass::InterruptDelivery, "irq_delivery"),
             (NormalizedEventClass::Idle, "idle"),
             (NormalizedEventClass::Terminal, "terminal"),
         ] {
@@ -1425,5 +1468,29 @@ mod live_trace_tests {
         trace.deliver_clockevent().unwrap();
         trace.finish(10, None).unwrap();
         assert_eq!(trace.normalized_log().events[0].interrupts.len(), 1);
+    }
+
+    #[test]
+    fn only_semantic_delivery_promotes_a_raw_exit_to_a_normalized_event() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_clockevent_schedule(Some((10, 32))).unwrap();
+        trace.begin_raw(ExitReason::Sysreg, "raw".into()).unwrap();
+        assert!(trace.preflight_restore_clockevent_schedule(false).is_err());
+        trace.finish_raw().unwrap();
+        assert_eq!(trace.event_history().count, 0);
+        trace
+            .begin_raw(ExitReason::Mmio, "GIC read".into())
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(10, None).unwrap();
+        assert_eq!(trace.event_history().count, 1);
+        assert_eq!(trace.raw_log().len(), 2);
+        assert_eq!(trace.raw_log()[0].portable_event_index, None);
+        assert_eq!(trace.raw_log()[1].portable_event_index, Some(0));
+        let event = &trace.normalized_log().events[0];
+        assert_eq!(event.class, NormalizedEventClass::InterruptDelivery);
+        assert_eq!(event.vns_after, 10);
+        assert_eq!(event.interrupts.len(), 1);
+        check_delivery_placement(trace.schedule(), trace.normalized_log()).unwrap();
     }
 }

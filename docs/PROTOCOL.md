@@ -98,7 +98,9 @@ and commitment at zero. Each completed normalized event commits class, payload,
 virtual time and ordered interrupt deadline/vector association. Snapshot capture
 and diagnostic trace retirement are neutral; replay, branch, portable import
 and cache import restore the captured prefix. Local snapshot/schedule IDs and
-checkpoint hashes are excluded. A backend without history returns `Unsupported`.
+checkpoint hashes are excluded. A clockevent delivered during an otherwise
+raw-only ARM exit records a semantic delivery event at that actual boundary;
+it does not change interrupt timing. A backend without history returns `Unsupported`.
 The compact commitment does not retain event bytes or certify arbitrary guest
 instruction history. Faults compares it with source-bound replay certificates,
 including final terminal and zero-action job results; UML remains unavailable.
