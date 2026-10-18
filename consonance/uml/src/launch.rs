@@ -89,8 +89,8 @@ fn enforce_host_cpu(command: &mut Command, cpu: usize, shared: bool) -> Result<(
     if !shared && !processor_allowed(cpu)? {
         return Err(LaunchError::HostCpuUnavailable(cpu));
     }
-    // SAFETY: this is the final pre_exec callback installed by Guest. It only
-    // changes the forked child's affinity using a captured stack-sized mask;
+    // SAFETY: this callback only changes the forked child's affinity using
+    // a captured stack-sized mask;
     // every subsequent UML process inherits that single-CPU affinity.
     unsafe {
         command.pre_exec(move || {
@@ -914,10 +914,16 @@ fn pass_work_directory(command: &mut Command, path: &Path) -> io::Result<()> {
         .read(true)
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
         .open(path)?;
+    pass_open_work_directory(command, &directory)
+}
+
+#[cfg(target_os = "linux")]
+fn pass_open_work_directory(command: &mut Command, directory: &std::fs::File) -> io::Result<()> {
+    let directory = rustix::io::fcntl_dupfd_cloexec(directory, HIGH_FD)?;
     command.env("TMPDIR", "/proc/self/fd/243");
     // SAFETY: the closure owns the open directory through spawn and calls only
-    // dup2(2) and fcntl(2) on the child descriptor table before exec. The target
-    // is reserved in the parent, so it cannot alias the owned source.
+    // dup2(2) and fcntl(2) on the child descriptor table before exec. Its source
+    // is above stdio and bridge targets, and the reserved target cannot alias it.
     unsafe {
         command.pre_exec(move || {
             let target = crate::profile::WORK_DIRECTORY_FD;
@@ -1025,6 +1031,36 @@ mod tests {
             assert!(!path.exists());
         }
         assert!(!foreign.path().join("marker").exists());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn work_directory_source_survives_an_earlier_descriptor_replacement() {
+        crate::profile::reserved_child_fds().unwrap();
+        let root = tempfile::tempdir().unwrap();
+        let foreign = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("marker"), b"owned").unwrap();
+        std::fs::write(foreign.path().join("marker"), b"foreign").unwrap();
+        let directory = std::fs::File::open(root.path()).unwrap();
+        let original = directory.as_raw_fd();
+        let wrong = std::fs::File::open(foreign.path()).unwrap();
+        let mut command = Command::new("sh");
+        command.args(["-c", "cat /proc/self/fd/243/marker"]);
+        // SAFETY: both sources remain owned until spawn finishes. The callback
+        // replaces only the child's copy of the original source descriptor.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(wrong.as_raw_fd(), original) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        pass_open_work_directory(&mut command, &directory).unwrap();
+        let output = command.output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"owned");
     }
 
     #[cfg(target_os = "linux")]
