@@ -342,9 +342,10 @@ pub(crate) fn execute_job(
         return Err("fault parent reconstruction stopped before its archived endpoint".into());
     }
     for action in suffix {
-        target.apply(*action);
+        let captured = target.apply_and_snapshot(*action);
         target.verify_integrity()?;
         require_completed_attempt(target, "suffix execution")?;
+        let captured = captured?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
         let raw_outcome = outcome(target);
@@ -354,7 +355,7 @@ pub(crate) fn execute_job(
             objective_reached,
             disposition: raw_outcome.disposition,
         };
-        let candidate = match target.snapshot()? {
+        let candidate = match captured {
             Some(snapshot) if matches!(outcome.disposition, ExecutionDisposition::Runnable) => {
                 Some(CampaignCandidate {
                     key: archive_key(target.observation()),

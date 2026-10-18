@@ -411,7 +411,11 @@ Each campaign job's recorded result digest binds its logical result to a tagged
 final endpoint certificate. Every runnable KVM snapshot carries an action-aligned
 certificate for each prefix in its portable history. Each runnable KVM action
 captures its whole-state hash and action-local observation before the next
-action. Restoring a KVM snapshot visits each prefix, including cached prefixes,
+action. Campaign suffix execution captures its candidate from that same bounded
+operation, using one whole-state hash for both the prefix certificate and the
+candidate endpoint. No digest is cached across operations; standalone snapshot
+capture hashes the current live endpoint again and refuses missing, foreign, or
+abandoned sessions. Restoring a KVM snapshot visits each prefix, including cached prefixes,
 and checks its certificate before continuing. This also covers a resident
 keyframe whose first action diverges and later reconverges at its final
 endpoint. When a candidate is retained, the archive binds the certificates for
