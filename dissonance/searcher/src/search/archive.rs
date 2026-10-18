@@ -30,6 +30,72 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
         .collect()
 }
 
+type SnapshotSharedAllocations<S> = fn(&S, &mut dyn FnMut(usize, usize) -> bool);
+
+struct SharedAllocation {
+    owners: usize,
+    bytes: usize,
+}
+
+#[derive(Default)]
+struct SharedSnapshotMemory {
+    allocations: BTreeMap<usize, SharedAllocation>,
+    bytes: usize,
+}
+
+impl SharedSnapshotMemory {
+    fn entry_charge(bytes: usize) -> usize {
+        bytes
+            .checked_add(size_of::<(usize, SharedAllocation)>() + 64)
+            .expect("shared snapshot allocation charge overflow")
+    }
+
+    fn retain(&mut self, identity: usize, bytes: usize) -> bool {
+        if let Some(allocation) = self.allocations.get_mut(&identity) {
+            assert_eq!(
+                allocation.bytes, bytes,
+                "shared snapshot allocation changed size"
+            );
+            allocation.owners = allocation
+                .owners
+                .checked_add(1)
+                .expect("shared snapshot owner count overflow");
+            return false;
+        }
+        self.bytes = self
+            .bytes
+            .checked_add(Self::entry_charge(bytes))
+            .expect("shared snapshot memory charge overflow");
+        self.allocations
+            .insert(identity, SharedAllocation { owners: 1, bytes });
+        true
+    }
+
+    fn release(&mut self, identity: usize, bytes: usize) -> bool {
+        let allocation = self
+            .allocations
+            .get_mut(&identity)
+            .expect("released shared snapshot allocation has no owner");
+        assert_eq!(
+            allocation.bytes, bytes,
+            "released shared snapshot allocation changed size"
+        );
+        allocation.owners = allocation
+            .owners
+            .checked_sub(1)
+            .expect("shared snapshot owner count underflow");
+        if allocation.owners != 0 {
+            return false;
+        }
+        self.allocations.remove(&identity);
+        self.bytes = self
+            .bytes
+            .checked_sub(Self::entry_charge(bytes))
+            .expect("shared snapshot memory charge underflow");
+        true
+    }
+}
+
 pub trait ArchiveKey: Copy + Ord + Serialize + DeserializeOwned {
     type Place: Copy + Ord + Debug + Serialize + DeserializeOwned;
     type Progress: Copy + Ord + Debug + Serialize + DeserializeOwned;
@@ -530,6 +596,12 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     resident_snapshot_bytes: usize,
     #[serde(skip)]
     snapshot_memory_charge: Option<fn(&S) -> usize>,
+    #[serde(skip)]
+    snapshot_shared_allocations: Option<SnapshotSharedAllocations<S>>,
+    #[serde(skip)]
+    shared_snapshot_memory: SharedSnapshotMemory,
+    #[serde(skip)]
+    liveness_anchor_shared_bytes: Option<usize>,
     resident_snapshot_order: VecDeque<usize>,
     snapshot_evictions: u64,
     history_compactions: u64,
@@ -1135,6 +1207,9 @@ where
             liveness_anchor_reactivations: 0,
             resident_snapshot_bytes: 0,
             snapshot_memory_charge: None,
+            snapshot_shared_allocations: None,
+            shared_snapshot_memory: SharedSnapshotMemory::default(),
+            liveness_anchor_shared_bytes: None,
             resident_snapshot_order: VecDeque::new(),
             snapshot_evictions: 0,
             history_compactions: 0,
@@ -1152,6 +1227,54 @@ where
     pub(crate) fn set_memory_budget(&mut self, bytes: usize, charge: fn(&S) -> usize) {
         self.memory_limit = Some(bytes);
         self.snapshot_memory_charge = Some(charge);
+    }
+
+    pub(crate) fn set_snapshot_shared_allocations(&mut self, visit: SnapshotSharedAllocations<S>) {
+        self.snapshot_shared_allocations = Some(visit);
+        self.rebuild_shared_snapshot_memory();
+    }
+
+    fn rebuild_shared_snapshot_memory(&mut self) {
+        self.shared_snapshot_memory = SharedSnapshotMemory::default();
+        if let Some(visit) = self.snapshot_shared_allocations {
+            for entry in &self.entries {
+                if let Some(snapshot) = &entry.snapshot {
+                    visit(snapshot, &mut |identity, bytes| {
+                        self.shared_snapshot_memory.retain(identity, bytes)
+                    });
+                }
+            }
+        }
+        self.cache_liveness_anchor_shared_bytes();
+    }
+
+    fn cache_liveness_anchor_shared_bytes(&mut self) {
+        self.liveness_anchor_shared_bytes = self
+            .liveness_anchor
+            .and_then(|id| self.index_of_id(id))
+            .and_then(|index| self.entries[index].snapshot.as_deref())
+            .map(|snapshot| {
+                let mut memory = SharedSnapshotMemory::default();
+                if let Some(visit) = self.snapshot_shared_allocations {
+                    visit(snapshot, &mut |identity, bytes| {
+                        memory.retain(identity, bytes)
+                    });
+                }
+                memory.bytes
+            });
+    }
+
+    fn take_snapshot(&mut self, id: usize) -> Option<Arc<S>> {
+        let snapshot = self.entries[id].snapshot.take()?;
+        if self.liveness_anchor == Some(self.entries[id].id) {
+            self.liveness_anchor_shared_bytes = None;
+        }
+        if let Some(visit) = self.snapshot_shared_allocations {
+            visit(&snapshot, &mut |identity, bytes| {
+                self.shared_snapshot_memory.release(identity, bytes)
+            });
+        }
+        Some(snapshot)
     }
 
     pub(crate) fn establish_liveness_anchor(&mut self) {
@@ -1184,6 +1307,7 @@ where
                     && self.entries[*index].snapshot.is_some()
             })
             .map(|(_, entry)| entry.id);
+        self.cache_liveness_anchor_shared_bytes();
     }
 
     fn is_liveness_anchor(&self, id: usize) -> bool {
@@ -1224,7 +1348,7 @@ where
             .is_some_and(|snapshot| Arc::strong_count(snapshot) > 1);
         if !self.preserve_inactive_snapshots
             && !worker_holds_snapshot
-            && self.entries[id].snapshot.take().is_some()
+            && self.take_snapshot(id).is_some()
         {
             self.release_keep(2);
         }
@@ -1301,11 +1425,17 @@ where
         let stable_id = self.entries[id].id;
         if self.inflight_snapshot_pins.contains_key(&stable_id) {
             self.inflight_snapshot_charges.insert(stable_id, charge);
-            self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_add(charge);
+            self.inflight_snapshot_bytes = self
+                .inflight_snapshot_bytes
+                .checked_add(charge)
+                .expect("snapshot charge imbalance");
         }
         self.snapshot_selectable[id] = false;
         self.resident_snapshots = self.resident_snapshots.saturating_sub(1);
-        self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_sub(charge);
+        self.resident_snapshot_bytes = self
+            .resident_snapshot_bytes
+            .checked_sub(charge)
+            .expect("snapshot charge imbalance");
         self.reclaim_inactive_snapshot(id);
         true
     }
@@ -1361,6 +1491,7 @@ where
             .snapshot
             .as_deref()
             .map_or(0, |snapshot| self.snapshot_charge(snapshot))
+            .saturating_add(self.liveness_anchor_shared_bytes.unwrap_or(0))
             .saturating_add(Self::history_entry_memory_charge(
                 entry.input_suffix.len(),
                 0,
@@ -1523,6 +1654,11 @@ where
             }
         }
 
+        for (index, keep) in keep.iter().enumerate() {
+            if !keep {
+                self.take_snapshot(index);
+            }
+        }
         self.entries = retain_marked(std::mem::take(&mut self.entries), &keep);
         self.active = retain_marked(std::mem::take(&mut self.active), &keep);
         self.selected = retain_marked(std::mem::take(&mut self.selected), &keep);
@@ -1568,12 +1704,15 @@ where
             }
             if self.snapshot_selectable[index] {
                 self.resident_snapshots = self.resident_snapshots.saturating_add(1);
-                self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_add(
-                    entry
-                        .snapshot
-                        .as_deref()
-                        .map_or(0, |snapshot| self.snapshot_charge(snapshot)),
-                );
+                self.resident_snapshot_bytes = self
+                    .resident_snapshot_bytes
+                    .checked_add(
+                        entry
+                            .snapshot
+                            .as_deref()
+                            .map_or(0, |snapshot| self.snapshot_charge(snapshot)),
+                    )
+                    .expect("resident snapshot charge overflow");
                 if !self.keyframe[index] {
                     self.resident_snapshot_order.push_back(index);
                 }
@@ -1645,7 +1784,7 @@ where
         if !preserve {
             for id in 0..self.entries.len() {
                 if !self.snapshot_selectable[id] {
-                    self.entries[id].snapshot.take();
+                    self.reclaim_inactive_snapshot(id);
                 }
             }
             self.enforce_snapshot_memory_budget()?;
@@ -1751,7 +1890,10 @@ where
             self.inflight_snapshot_pins.remove(&id);
             self.release_keep(1);
             if let Some(charge) = self.inflight_snapshot_charges.remove(&id) {
-                self.inflight_snapshot_bytes = self.inflight_snapshot_bytes.saturating_sub(charge);
+                self.inflight_snapshot_bytes = self
+                    .inflight_snapshot_bytes
+                    .checked_sub(charge)
+                    .expect("snapshot charge imbalance");
             }
             if let Some(index) = self.index_of_id(id) {
                 self.reclaim_inactive_snapshot(index);
@@ -2176,13 +2318,39 @@ where
         } else {
             None
         };
+        self.validate_owned_prefixes()?;
+        for (id, _) in &snapshots {
+            self.index_of_id(*id)
+                .ok_or("a checkpoint snapshot names a missing archive entry")?;
+        }
         for (id, snapshot) in snapshots {
             let index = self
                 .index_of_id(id)
                 .ok_or("a checkpoint snapshot names a missing archive entry")?;
             self.entries[index].snapshot = Some(Arc::new(snapshot));
         }
-        self.validate_owned_prefixes()
+        self.rebuild_shared_snapshot_memory();
+        self.resident_snapshot_bytes = 0;
+        self.inflight_snapshot_bytes = 0;
+        self.inflight_snapshot_charges.clear();
+        for (index, entry) in self.entries.iter().enumerate() {
+            if let Some(snapshot) = entry.snapshot.as_deref() {
+                let charge = self.snapshot_charge(snapshot);
+                if self.snapshot_selectable[index] {
+                    self.resident_snapshot_bytes = self
+                        .resident_snapshot_bytes
+                        .checked_add(charge)
+                        .ok_or("restored resident snapshot charge overflow")?;
+                } else if self.inflight_snapshot_pins.contains_key(&entry.id) {
+                    self.inflight_snapshot_charges.insert(entry.id, charge);
+                    self.inflight_snapshot_bytes = self
+                        .inflight_snapshot_bytes
+                        .checked_add(charge)
+                        .ok_or("restored in-flight snapshot charge overflow")?;
+                }
+            }
+        }
+        Ok(())
     }
 
     fn validate_owned_prefixes(&self) -> Result<(), &'static str> {
@@ -2522,6 +2690,11 @@ where
                 .bind_certificates(ancestor, suffix.as_ref(), certificates)?;
         }
         let suffix_len = suffix.as_ref().len();
+        if let Some(visit) = self.snapshot_shared_allocations {
+            visit(&snapshot, &mut |identity, bytes| {
+                self.shared_snapshot_memory.retain(identity, bytes)
+            });
+        }
         self.entries.push(ArchiveEntry {
             id: stable_id,
             parent_id: parent_id.map(|parent| self.entries[parent].id),
@@ -2536,7 +2709,10 @@ where
         self.id_to_index.insert(stable_id, id);
         self.snapshot_selectable.push(true);
         self.resident_snapshots = self.resident_snapshots.saturating_add(1);
-        self.resident_snapshot_bytes = self.resident_snapshot_bytes.saturating_add(snapshot_charge);
+        self.resident_snapshot_bytes = self
+            .resident_snapshot_bytes
+            .checked_add(snapshot_charge)
+            .expect("resident snapshot charge overflow");
         let inherited_keyframe = parent_id
             .filter(|parent| {
                 Self::replay_bucket(self.entries[*parent].input_len)
@@ -3025,7 +3201,10 @@ where
     #[must_use]
     pub fn resident_snapshot_bytes(&self) -> usize {
         self.resident_snapshot_bytes
-            .saturating_add(self.inflight_snapshot_bytes)
+            .checked_add(self.inflight_snapshot_bytes)
+            .expect("resident snapshot charge overflow")
+            .checked_add(self.shared_snapshot_memory.bytes)
+            .expect("resident shared snapshot charge overflow")
     }
 
     #[must_use]
@@ -3448,12 +3627,19 @@ where
             };
             reports.push(report);
             if let Some(snapshot) = entry.snapshot {
+                if let Some(visit) = self.snapshot_shared_allocations {
+                    visit(&snapshot, &mut |identity, bytes| {
+                        self.shared_snapshot_memory.release(identity, bytes)
+                    });
+                }
                 snapshots.push((
                     snapshot_id,
                     Arc::try_unwrap(snapshot).unwrap_or_else(|snapshot| (*snapshot).clone()),
                 ));
             }
         }
+        assert!(self.shared_snapshot_memory.allocations.is_empty());
+        assert_eq!(self.shared_snapshot_memory.bytes, 0);
         (reports, snapshots)
     }
 }
@@ -3669,7 +3855,8 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, MAX_TIER_RANK_SHIFT, SelectorAccounting,
-        SelectorDraw, SelectorPath, TierCells, WeightedSet, checked_tier_rank_shift, tier_weight,
+        SelectorDraw, SelectorPath, SharedSnapshotMemory, TierCells, WeightedSet,
+        checked_tier_rank_shift, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -4327,6 +4514,369 @@ mod tests {
         assert_eq!(index.remove_owner_and_prune(leaf, 42), 3);
         assert_eq!(index.live_nodes, 1);
         assert_eq!(index.walk(0, &[1, 2, 3]), None);
+    }
+
+    struct MemoryNode {
+        parent: Option<Arc<MemoryNode>>,
+        bytes: usize,
+    }
+
+    #[derive(Clone)]
+    struct SharedMemorySnapshot {
+        node: Arc<MemoryNode>,
+        visits: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl SharedMemorySnapshot {
+        fn root(bytes: usize) -> Self {
+            Self {
+                node: Arc::new(MemoryNode {
+                    parent: None,
+                    bytes,
+                }),
+                visits: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            }
+        }
+
+        fn child(&self, bytes: usize) -> Self {
+            Self {
+                node: Arc::new(MemoryNode {
+                    parent: Some(Arc::clone(&self.node)),
+                    bytes,
+                }),
+                visits: Arc::clone(&self.visits),
+            }
+        }
+
+        fn visit(snapshot: &Self, visitor: &mut dyn FnMut(usize, usize) -> bool) {
+            let mut node = Some(&snapshot.node);
+            while let Some(current) = node {
+                snapshot
+                    .visits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if !visitor(Arc::as_ptr(current) as usize, current.bytes) {
+                    break;
+                }
+                node = current.parent.as_ref();
+            }
+        }
+
+        fn visits(&self) -> usize {
+            self.visits.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    fn shared_memory_archive() -> Archive<u8, FlatKey, (), SharedMemorySnapshot> {
+        let mut archive = Archive::new(|_| 1);
+        archive.set_memory_budget(usize::MAX, |_| 7);
+        archive.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
+        archive
+    }
+
+    fn insert_shared_snapshot(
+        archive: &mut Archive<u8, FlatKey, (), SharedMemorySnapshot>,
+        index: u8,
+        snapshot: SharedMemorySnapshot,
+    ) {
+        archive
+            .insert(
+                None,
+                u64::from(index),
+                ArchiveCandidate {
+                    suffix: vec![index],
+                    key: FlatKey([u16::from(index), u16::from(index), 0, 0]),
+                    milestones: (),
+                },
+                snapshot,
+            )
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn shared_snapshot_nodes_charge_once_until_the_final_retained_root_releases() {
+        let mut archive = shared_memory_archive();
+        let root = SharedMemorySnapshot::root(17);
+        let child = root.child(19);
+        insert_shared_snapshot(&mut archive, 0, root.clone());
+        insert_shared_snapshot(&mut archive, 1, child.clone());
+        let visits = child.visits();
+        insert_shared_snapshot(&mut archive, 2, child.clone());
+        assert_eq!(child.visits() - visits, 1);
+        let shared =
+            SharedSnapshotMemory::entry_charge(17) + SharedSnapshotMemory::entry_charge(19);
+        assert_eq!(archive.shared_snapshot_memory.bytes, shared);
+        assert_eq!(archive.resident_snapshot_bytes(), 21 + shared);
+        assert!(archive.release_snapshot(0));
+        assert_eq!(archive.shared_snapshot_memory.bytes, shared);
+        assert!(archive.release_snapshot(1));
+        assert_eq!(archive.shared_snapshot_memory.bytes, shared);
+        assert!(archive.release_snapshot(2));
+        assert_eq!(archive.shared_snapshot_memory.bytes, 0);
+        assert_eq!(archive.resident_snapshot_bytes(), 0);
+        assert!(archive.shared_snapshot_memory.allocations.is_empty());
+    }
+
+    #[test]
+    fn shared_snapshot_accounting_walks_only_new_nodes_and_queries_do_not_walk() {
+        let mut archive = shared_memory_archive();
+        let root = SharedMemorySnapshot::root(17);
+        let mut tail = root.clone();
+        for _ in 0..128 {
+            tail = tail.child(19);
+        }
+        insert_shared_snapshot(&mut archive, 0, tail.clone());
+        assert_eq!(tail.visits(), 129);
+        archive.establish_liveness_anchor();
+        let visits = tail.visits();
+        for _ in 0..32 {
+            let _ = archive.resident_memory_bytes();
+            archive.liveness_anchor_memory_bytes();
+            archive.enforce_snapshot_memory_budget().unwrap();
+        }
+        assert_eq!(tail.visits(), visits);
+        let child = tail.child(23);
+        insert_shared_snapshot(&mut archive, 1, child.clone());
+        assert_eq!(tail.visits() - visits, 2);
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 130);
+        archive.memory_limit = Some(archive.liveness_anchor_memory_bytes() - 1);
+        assert_eq!(
+            archive.enforce_snapshot_memory_budget(),
+            Err("memory budget cannot retain the executable liveness anchor")
+        );
+    }
+
+    #[test]
+    fn in_flight_and_preserved_inactive_snapshots_keep_shared_allocations_charged() {
+        let mut archive = shared_memory_archive();
+        let root = SharedMemorySnapshot::root(17);
+        insert_shared_snapshot(&mut archive, 0, root.clone());
+        insert_shared_snapshot(&mut archive, 1, root.child(19));
+        let (first, _, _, stable_id) = archive.pin_job_origin(1).unwrap();
+        let (second, _, _, _) = archive.pin_job_origin(1).unwrap();
+        let shared = archive.shared_snapshot_memory.bytes;
+        archive.deactivate(1);
+        archive.compact_history(true).unwrap();
+        assert_eq!(archive.shared_snapshot_memory.bytes, shared);
+        drop(first);
+        drop(second);
+        archive.unpin_job_origin(stable_id);
+        assert_eq!(archive.shared_snapshot_memory.bytes, shared);
+        archive.unpin_job_origin(stable_id);
+        assert_eq!(
+            archive.shared_snapshot_memory.bytes,
+            SharedSnapshotMemory::entry_charge(17)
+        );
+        archive.preserve_inactive_snapshots(true).unwrap();
+        insert_shared_snapshot(&mut archive, 2, root.child(29));
+        let index = archive.index_of_id(2).unwrap();
+        archive.deactivate(index);
+        let shared = archive.shared_snapshot_memory.bytes;
+        archive.compact_history(true).unwrap();
+        assert_eq!(archive.shared_snapshot_memory.bytes, shared);
+        archive.preserve_inactive_snapshots(false).unwrap();
+        assert_eq!(
+            archive.shared_snapshot_memory.bytes,
+            SharedSnapshotMemory::entry_charge(17)
+        );
+    }
+
+    #[test]
+    fn shared_snapshot_resume_recounts_actual_allocations_instead_of_serialized_bytes() {
+        let mut archive = shared_memory_archive();
+        let root = SharedMemorySnapshot::root(17);
+        insert_shared_snapshot(&mut archive, 0, root.child(19));
+        insert_shared_snapshot(&mut archive, 1, root.child(19));
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 3);
+        archive.resident_snapshot_bytes = usize::MAX;
+        let serialized = postcard::to_allocvec(&archive).unwrap();
+        let mut restored: Archive<u8, FlatKey, (), SharedMemorySnapshot> =
+            postcard::from_bytes(&serialized).unwrap();
+        assert!(restored.shared_snapshot_memory.allocations.is_empty());
+        assert!(restored.snapshot_shared_allocations.is_none());
+        restored.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
+        restored
+            .restore_runtime(
+                |_| 1,
+                Some(|_| 7),
+                vec![
+                    (0, SharedMemorySnapshot::root(17).child(19)),
+                    (1, SharedMemorySnapshot::root(17).child(19)),
+                ],
+            )
+            .unwrap();
+        assert_eq!(restored.shared_snapshot_memory.allocations.len(), 4);
+        assert_eq!(
+            restored.resident_snapshot_bytes(),
+            14 + 2
+                * (SharedSnapshotMemory::entry_charge(17) + SharedSnapshotMemory::entry_charge(19))
+        );
+        let (_, snapshots) = restored.take_entry_reports_and_snapshots();
+        assert_eq!(snapshots.len(), 2);
+        assert_eq!(restored.shared_snapshot_memory.bytes, 0);
+    }
+
+    #[test]
+    fn shared_snapshot_checkpoint_canonicalization_preserves_budget_eviction() {
+        let mut archive = shared_memory_archive();
+        let root = SharedMemorySnapshot::root(17);
+        insert_shared_snapshot(&mut archive, 0, root.clone());
+        insert_shared_snapshot(&mut archive, 1, root.child(19));
+        insert_shared_snapshot(&mut archive, 2, root.child(23));
+        archive.establish_liveness_anchor();
+        let metadata = postcard::to_allocvec(&archive).unwrap();
+        let paths = vec![
+            (0_u64, vec![17_usize]),
+            (1, vec![17, 19]),
+            (2, vec![17, 23]),
+        ];
+        let snapshot_bytes = postcard::to_allocvec(&paths).unwrap();
+        let decoded: Vec<(u64, Vec<usize>)> = postcard::from_bytes(&snapshot_bytes).unwrap();
+        let mut canonical = BTreeMap::<Vec<usize>, SharedMemorySnapshot>::new();
+        let snapshots = decoded
+            .into_iter()
+            .map(|(id, path)| {
+                let mut snapshot = SharedMemorySnapshot::root(path[0]);
+                for depth in 1..=path.len() {
+                    let prefix = path[..depth].to_vec();
+                    snapshot = canonical
+                        .entry(prefix)
+                        .or_insert_with(|| {
+                            if depth == 1 {
+                                snapshot.clone()
+                            } else {
+                                snapshot.child(path[depth - 1])
+                            }
+                        })
+                        .clone();
+                }
+                (id, snapshot)
+            })
+            .collect();
+        let mut resumed: Archive<u8, FlatKey, (), SharedMemorySnapshot> =
+            postcard::from_bytes(&metadata).unwrap();
+        resumed.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
+        resumed
+            .restore_runtime(|_| 1, Some(|_| 7), snapshots)
+            .unwrap();
+        assert_eq!(
+            archive.resident_memory_bytes(),
+            resumed.resident_memory_bytes()
+        );
+        assert_eq!(
+            archive.shared_snapshot_memory.bytes,
+            resumed.shared_snapshot_memory.bytes
+        );
+        let limit = archive.resident_memory_bytes() - SharedSnapshotMemory::entry_charge(19) - 7;
+        for current in [&mut archive, &mut resumed] {
+            current.memory_limit = Some(limit);
+            current.enforce_snapshot_memory_budget().unwrap();
+        }
+        assert!(archive.snapshot_evictions > 0 || archive.active_count < 3);
+        assert_eq!(archive.snapshot_evictions, resumed.snapshot_evictions);
+        assert_eq!(archive.snapshot_selectable, resumed.snapshot_selectable);
+        assert_eq!(archive.active, resumed.active);
+        assert_eq!(
+            archive.resident_memory_bytes(),
+            resumed.resident_memory_bytes()
+        );
+        assert_eq!(
+            archive.shared_snapshot_memory.bytes,
+            resumed.shared_snapshot_memory.bytes
+        );
+    }
+
+    #[test]
+    fn earlier_and_later_worker_drops_before_ordered_unpin_have_identical_charges() {
+        let run = |early_drop: bool| {
+            let mut archive = shared_memory_archive();
+            let root = SharedMemorySnapshot::root(17);
+            insert_shared_snapshot(&mut archive, 0, root.clone());
+            insert_shared_snapshot(&mut archive, 1, root.child(19));
+            let (worker, _, _, id) = archive.pin_job_origin(1).unwrap();
+            let mut worker = Some(worker);
+            if early_drop {
+                drop(worker.take());
+            }
+            let mut observations = Vec::new();
+            archive.deactivate(1);
+            observations.push((
+                archive.resident_memory_bytes(),
+                archive.shared_snapshot_memory.bytes,
+            ));
+            archive.compact_history(true).unwrap();
+            observations.push((
+                archive.resident_memory_bytes(),
+                archive.shared_snapshot_memory.bytes,
+            ));
+            drop(worker.take());
+            archive.unpin_job_origin(id);
+            archive.maintain_memory_budget().unwrap();
+            observations.push((
+                archive.resident_memory_bytes(),
+                archive.shared_snapshot_memory.bytes,
+            ));
+            observations
+        };
+        assert_eq!(run(true), run(false));
+    }
+
+    #[test]
+    fn replacing_a_retained_snapshot_releases_its_unique_shared_tail() {
+        let mut archive = shared_memory_archive();
+        let root = SharedMemorySnapshot::root(17);
+        insert_shared_snapshot(&mut archive, 9, root.clone());
+        archive.establish_liveness_anchor();
+        let first = root.child(19);
+        let second = root.child(23);
+        let first_identity = Arc::as_ptr(&first.node) as usize;
+        for (suffix, snapshot) in [
+            (vec![0, 0, 0], first),
+            (vec![2, 2], root.clone()),
+            (vec![1], second),
+        ] {
+            archive
+                .insert(
+                    None,
+                    0,
+                    ArchiveCandidate {
+                        suffix,
+                        key: FlatKey([0, 0, 0, 0]),
+                        milestones: (),
+                    },
+                    snapshot,
+                )
+                .unwrap()
+                .unwrap();
+        }
+        assert!(
+            !archive
+                .shared_snapshot_memory
+                .allocations
+                .contains_key(&first_identity)
+        );
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 2);
+        assert_eq!(
+            archive.shared_snapshot_memory.bytes,
+            SharedSnapshotMemory::entry_charge(17) + SharedSnapshotMemory::entry_charge(23)
+        );
+    }
+
+    #[test]
+    fn shared_snapshot_ledger_rejects_unbalanced_release_and_allows_reused_identity_after_release()
+    {
+        let mut memory = SharedSnapshotMemory::default();
+        assert!(memory.retain(1, 17));
+        assert!(!memory.retain(1, 17));
+        assert!(!memory.release(1, 17));
+        assert!(memory.release(1, 17));
+        assert_eq!(memory.bytes, 0);
+        assert!(memory.retain(1, 23));
+        assert!(memory.release(1, 23));
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| memory.release(1, 23)))
+                .is_err()
+        );
     }
 
     #[test]
