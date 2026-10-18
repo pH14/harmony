@@ -237,6 +237,12 @@ struct Node {
     receipt: HistoryReceipt,
 }
 
+impl Node {
+    fn allocation_bytes() -> usize {
+        size_of::<Self>() + 2 * size_of::<usize>()
+    }
+}
+
 impl Drop for Node {
     fn drop(&mut self) {
         let mut parent = self.parent.take();
@@ -301,21 +307,35 @@ impl FaultHistory {
         }
         Some(Self(node))
     }
-    pub fn receipts(&self) -> Vec<HistoryReceipt> {
-        let mut out = Vec::with_capacity(self.len() + 1);
-        let mut node = Some(&self.0);
-        while let Some(current) = node {
-            out.push(current.receipt.clone());
-            node = current.parent.as_ref();
+    fn nodes(&self) -> impl Iterator<Item = &Node> {
+        std::iter::successors(Some(self.0.as_ref()), |node| node.parent.as_deref())
+    }
+    pub fn receipts(&self) -> Vec<&HistoryReceipt> {
+        let mut receipts: Vec<_> = self.nodes().map(|node| &node.receipt).collect();
+        receipts.reverse();
+        receipts
+    }
+    pub fn receipts_after(
+        &self,
+        depth: usize,
+    ) -> Option<impl DoubleEndedIterator<Item = &HistoryReceipt> + ExactSizeIterator> {
+        if depth > self.len() {
+            return None;
         }
-        out.reverse();
-        out
+        let receipts: Vec<_> = self
+            .nodes()
+            .take_while(|node| node.receipt.depth() > depth)
+            .map(|node| &node.receipt)
+            .collect();
+        Some(receipts.into_iter().rev())
     }
     pub fn actions(&self) -> Vec<FaultAction> {
-        self.receipts()
-            .into_iter()
-            .filter_map(|r| r.action)
-            .collect()
+        let mut actions: Vec<_> = self
+            .nodes()
+            .filter_map(|node| node.receipt.action())
+            .collect();
+        actions.reverse();
+        actions
     }
     pub fn matches_actions(&self, actions: &[FaultAction]) -> bool {
         if actions.len() != self.len() {
@@ -334,36 +354,21 @@ impl FaultHistory {
         true
     }
 
+    #[cfg(test)]
     pub fn certificates(&self) -> Vec<Option<[u8; 32]>> {
-        self.receipts()
-            .into_iter()
-            .skip(1)
-            .map(|r| r.certificate)
+        let mut certificates: Vec<_> = self
+            .nodes()
+            .take(self.len())
+            .map(|node| node.receipt.certificate())
+            .collect();
+        certificates.reverse();
+        certificates
+    }
+    #[cfg(test)]
+    fn allocations(&self) -> Vec<(usize, usize)> {
+        self.nodes()
+            .map(|node| (std::ptr::from_ref(node) as usize, Node::allocation_bytes()))
             .collect()
-    }
-    pub fn visit_allocations(&self, mut visit: impl FnMut(usize, usize) -> bool) {
-        let mut node = Some(&self.0);
-        while let Some(current) = node {
-            if !visit(
-                Arc::as_ptr(current) as usize,
-                size_of::<Node>() + 2 * size_of::<usize>(),
-            ) {
-                break;
-            }
-            node = current.parent.as_ref();
-        }
-    }
-    pub fn allocations(&self) -> Vec<(usize, usize)> {
-        let mut out = Vec::new();
-        let mut node = Some(&self.0);
-        while let Some(current) = node {
-            out.push((
-                Arc::as_ptr(current) as usize,
-                size_of::<Node>() + 2 * size_of::<usize>(),
-            ));
-            node = current.parent.as_ref();
-        }
-        out
     }
 }
 
@@ -398,10 +403,6 @@ pub struct FaultHistoryRetention {
 impl FaultHistoryRetention {
     fn index_charge() -> usize {
         size_of::<([u8; 32], FaultHistory)>() + 64
-    }
-
-    fn node_charge() -> usize {
-        size_of::<Node>() + 2 * size_of::<usize>()
     }
 
     fn normalize(&self, history: &mut FaultHistory) -> Result<usize, &'static str> {
@@ -468,7 +469,7 @@ impl searcher::search::archive::SnapshotRetention<crate::target::FaultSnapshot>
     ) {
         let mut current = Some(&snapshot.history.0);
         while let Some(node) = current {
-            if !memory.retain(Arc::as_ptr(node) as usize, Self::node_charge()) {
+            if !memory.retain(Arc::as_ptr(node) as usize, Node::allocation_bytes()) {
                 break;
             }
             let previous = self
@@ -486,7 +487,7 @@ impl searcher::search::archive::SnapshotRetention<crate::target::FaultSnapshot>
     ) {
         let mut current = Some(&snapshot.history.0);
         while let Some(node) = current {
-            if !memory.release(Arc::as_ptr(node) as usize, Self::node_charge()) {
+            if !memory.release(Arc::as_ptr(node) as usize, Node::allocation_bytes()) {
                 break;
             }
             let registered = self
@@ -507,7 +508,7 @@ impl searcher::search::archive::SnapshotRetention<crate::target::FaultSnapshot>
 
     fn standalone_bytes(&self, snapshot: &crate::target::FaultSnapshot) -> usize {
         let per_node =
-            searcher::search::archive::SharedSnapshotMemory::entry_charge(Self::node_charge())
+            searcher::search::archive::SharedSnapshotMemory::entry_charge(Node::allocation_bytes())
                 .checked_add(Self::index_charge())
                 .expect("fault history charge overflow");
         snapshot
@@ -599,6 +600,63 @@ impl FaultHistory {
 mod tests {
     use super::*;
     use crate::target::FaultOperation;
+    #[test]
+    fn borrowed_suffix_traversal_preserves_actions_receipts_and_wire_encoding() {
+        let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);
+        let mut observation = FaultObservations::default();
+        let mut history = FaultHistory::genesis(
+            HistoryReceipt::genesis(
+                [3; 32],
+                endpoint,
+                fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut actions = Vec::new();
+        for depth in 0..=1024 {
+            if [0, 1, 8, 128, 1024].contains(&depth) {
+                assert_eq!(history.actions(), actions);
+                assert!(history.matches_actions(&actions));
+                let receipts = history.receipts();
+                assert_eq!(receipts.len(), depth + 1);
+                for start in [0, depth / 2, depth] {
+                    let suffix = history.receipts_after(start).unwrap();
+                    assert_eq!(suffix.len(), depth - start);
+                    for (actual, expected) in suffix.zip(&receipts[start + 1..]) {
+                        assert!(std::ptr::eq(actual, *expected));
+                    }
+                }
+                assert!(history.receipts_after(depth + 1).is_none());
+                let owned: Vec<HistoryReceipt> = receipts.into_iter().cloned().collect();
+                assert_eq!(
+                    postcard::to_allocvec(&history).unwrap(),
+                    postcard::to_allocvec(&("fault-history-v1", owned)).unwrap()
+                );
+            }
+            if depth == 1024 {
+                break;
+            }
+            let action = FaultOperation::Wait(
+                std::num::NonZeroU16::new(u16::try_from(depth + 1).unwrap()).unwrap(),
+            )
+            .into();
+            observation.moment += 1;
+            let receipt = history
+                .receipt()
+                .extend(
+                    action,
+                    endpoint,
+                    fixture_event_history(endpoint),
+                    &observation,
+                )
+                .unwrap();
+            history = history.push(receipt).unwrap();
+            actions.push(action);
+        }
+    }
+
     #[test]
     fn retained_history_normalization_matches_checkpoint_physical_charges() {
         use searcher::search::archive::{SharedSnapshotMemory, SnapshotRetention};
