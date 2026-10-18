@@ -49,11 +49,19 @@ const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
 pub fn replay_endpoint_certificate(
     hash: [u8; 32],
+    history: (u64, [u8; 32]),
     observation: &FaultObservations,
     failed: bool,
 ) -> Result<[u8; 32], String> {
-    let encoded = postcard::to_allocvec(&("fault-replay-endpoint-v1", hash, observation, failed))
-        .map_err(|error| format!("encode fault replay endpoint: {error}"))?;
+    let encoded = postcard::to_allocvec(&(
+        "fault-replay-endpoint-v2",
+        control_proto::EventHistory::VERSION,
+        hash,
+        history,
+        observation,
+        failed,
+    ))
+    .map_err(|error| format!("encode fault replay endpoint: {error}"))?;
     Ok(Sha256::digest(encoded).into())
 }
 
@@ -65,6 +73,9 @@ pub(crate) fn validate_snapshot_prefix_certificates(
         return Err("fault snapshot prefix certificate count does not match its actions".into());
     }
     if uml {
+        if snapshot.event_history.is_some() {
+            return Err("UML snapshot unexpectedly carries a normalized event history".into());
+        }
         if snapshot.endpoint != Some(FaultEndpointCertificate::UmlWholeStateUnavailable) {
             return Err("UML snapshot lacks its backend endpoint certificate".into());
         }
@@ -76,11 +87,15 @@ pub(crate) fn validate_snapshot_prefix_certificates(
     let Some(FaultEndpointCertificate::KvmWholeState(hash)) = snapshot.endpoint else {
         return Err("KVM snapshot lacks its whole-state endpoint certificate".into());
     };
+    let history = snapshot
+        .event_history
+        .ok_or("KVM snapshot lacks ordered event history")?;
     if snapshot.prefix_certificates.iter().any(Option::is_none) {
         return Err("KVM snapshot prefix lacks an endpoint certificate".into());
     }
     if let Some(&Some(actual)) = snapshot.prefix_certificates.last() {
-        let expected = replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?;
+        let expected =
+            replay_endpoint_certificate(hash, history, &snapshot.observation, snapshot.failed)?;
         if actual != expected {
             return Err("KVM snapshot final prefix differs from its endpoint certificate".into());
         }
@@ -698,6 +713,21 @@ impl FaultTarget {
         })
     }
 
+    pub fn event_history_current(&self) -> Result<(u64, [u8; 32]), String> {
+        LIVE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let live = slot.as_mut().ok_or("the current job has no live session")?;
+            if live.key != self.config.key || live.abandoned || live.session.abandoned() {
+                return Err("the current job has no usable matching live session".into());
+            }
+            let result = live.ordered_history();
+            if live.abandoned || live.session.abandoned() {
+                *slot = None;
+            }
+            result
+        })
+    }
+
     pub fn verify_replayed_endpoint(&self, certificate: Option<[u8; 32]>) -> Result<(), String> {
         if self.failed || !self.observation.stop.is_continuable() {
             return Err("replayed fault prefix stopped before its archived endpoint".to_owned());
@@ -711,6 +741,7 @@ impl FaultTarget {
         let expected = certificate.ok_or("KVM replay prefix lacks an endpoint certificate")?;
         let actual = replay_endpoint_certificate(
             self.state_hash_current()?,
+            self.event_history_current()?,
             &self.observation,
             self.failed,
         )?;
@@ -907,7 +938,12 @@ impl FaultTarget {
                     observation
                         .park_reads
                         .retain(|read| read.moment > previous_moment);
-                    let actual = replay_endpoint_certificate(hash, &observation, false)?;
+                    let actual = replay_endpoint_certificate(
+                        hash,
+                        live.ordered_history()?,
+                        &observation,
+                        false,
+                    )?;
                     if Some(actual) != snapshot.prefix_certificates[index] {
                         return Err(
                             "restored fault prefix differs from its snapshot certificate".into(),
@@ -938,7 +974,12 @@ impl FaultTarget {
                         let actual = live.session.state_hash().map_err(|error| {
                             format!("restored fault endpoint state hash: {error}")
                         })?;
-                        if actual != expected {
+                        if actual != expected
+                            || live.ordered_history()?
+                                != snapshot
+                                    .event_history
+                                    .ok_or("KVM snapshot lacks ordered event history")?
+                        {
                             return Err(
                                 "restored fault endpoint differs from its snapshot certificate"
                                     .into(),
@@ -1016,6 +1057,11 @@ impl FaultTarget {
             observation: self.observation.clone(),
             failed: false,
             endpoint: Some(endpoint),
+            event_history: if self.config.uml.is_some() {
+                None
+            } else {
+                Some(self.event_history_current()?)
+            },
         };
         validate_snapshot_prefix_certificates(&snapshot, self.config.uml.is_some())?;
         Ok(Some(snapshot))
@@ -1050,7 +1096,12 @@ impl FaultTarget {
                     .session
                     .state_hash()
                     .map_err(|error| format!("fault action state hash: {error}"))?;
-                Some(replay_endpoint_certificate(hash, &observation, false)?)
+                Some(replay_endpoint_certificate(
+                    hash,
+                    live.ordered_history()?,
+                    &observation,
+                    false,
+                )?)
             } else {
                 None
             };
@@ -1323,6 +1374,13 @@ impl Live {
                 .map(|(name, value)| (format!("vmm.{name}"), value)),
         );
         out
+    }
+
+    fn ordered_history(&mut self) -> Result<(u64, [u8; 32]), String> {
+        self.session
+            .event_history()
+            .map(|history| (history.count, history.digest))
+            .map_err(|error| self.abandon("ordered event history", error.as_ref()))
     }
 
     fn abandon(&mut self, what: &str, error: &(dyn Error + 'static)) -> String {
@@ -1867,6 +1925,7 @@ mod tests {
     #[derive(Debug)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
+        history: control_proto::EventHistory,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
         run_hashes: Option<Vec<[u8; 32]>>,
@@ -1883,6 +1942,10 @@ mod tests {
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
             self.hash.ok_or_else(|| "state hash unavailable".into())
+        }
+
+        fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+            Ok(self.history)
         }
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -2006,6 +2069,7 @@ mod tests {
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
+                history: control_proto::EventHistory::default(),
                 hash: None,
                 events: BTreeMap::new(),
                 current: 1,
@@ -2040,6 +2104,7 @@ mod tests {
     ) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some(commitment),
             events: BTreeMap::new(),
             current: target.0,
@@ -2179,6 +2244,7 @@ mod tests {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
@@ -2228,6 +2294,10 @@ mod tests {
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
             Ok([0; 32])
+        }
+
+        fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+            Ok(control_proto::EventHistory::default())
         }
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -2379,6 +2449,7 @@ mod tests {
     fn hashed_live(hash: [u8; 32]) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some(hash),
             events: BTreeMap::new(),
             current: 1,
@@ -2424,6 +2495,7 @@ mod tests {
         );
         let missing = FaultSnapshot {
             endpoint: None,
+            event_history: None,
             ..snapshot
         };
         let error = target.restore(&missing).unwrap_err().to_string();
@@ -2480,11 +2552,12 @@ mod tests {
         let snapshot = FaultSnapshot {
             actions: vec![action],
             prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &expected, false).unwrap(),
+                replay_endpoint_certificate([17; 32], (0, [0; 32]), &expected, false).unwrap(),
             )],
             observation: expected,
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
@@ -2497,6 +2570,7 @@ mod tests {
             None,
         );
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
             current: 1,
@@ -2523,6 +2597,7 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 events: BTreeMap::new(),
                 current: 1,
@@ -2556,7 +2631,8 @@ mod tests {
             Ok((replayed_parent, replayed_observation, final_snapshot))
         };
         let baseline = run([17; 32], false, None).unwrap();
-        let certificate = replay_endpoint_certificate(baseline.0, &baseline.1, false).unwrap();
+        let certificate =
+            replay_endpoint_certificate(baseline.0, (0, [0; 32]), &baseline.1, false).unwrap();
         let verified_baseline = run([17; 32], false, Some(certificate)).unwrap();
         let divergent = run([23; 32], false, None).unwrap();
         let forged = run([17; 32], true, None).unwrap();
@@ -2597,6 +2673,7 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2612,6 +2689,7 @@ mod tests {
         baseline.apply_replayed(first_action);
         let expected = replay_endpoint_certificate(
             baseline.state_hash_current().unwrap(),
+            baseline.event_history_current().unwrap(),
             baseline.observation(),
             baseline.failed(),
         )
@@ -2621,6 +2699,7 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2659,6 +2738,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
@@ -2694,9 +2774,11 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2737,9 +2819,11 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2772,6 +2856,7 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2809,6 +2894,7 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2841,6 +2927,7 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
             current: 1,
@@ -2862,6 +2949,7 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 events: BTreeMap::new(),
                 current: 1,
@@ -2901,10 +2989,16 @@ mod tests {
         let snapshot = FaultSnapshot {
             actions: vec![FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
             prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
-                    .unwrap(),
+                replay_endpoint_certificate(
+                    [17; 32],
+                    (0, [0; 32]),
+                    &FaultObservations::default(),
+                    false,
+                )
+                .unwrap(),
             )],
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
@@ -2978,6 +3072,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         target.finish_restore(&snapshot, Err(error)).unwrap();
         assert_eq!(target.watchdog_cutoffs(), 1);
@@ -3018,6 +3113,7 @@ mod tests {
             },
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
@@ -3051,6 +3147,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         for phase in ["run", "snapshot"] {
             for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
@@ -3084,6 +3181,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         let error = target
             .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))
@@ -3240,6 +3338,69 @@ mod tests {
             })
             .is_err()
         );
+    }
+    #[test]
+    fn replay_and_resident_keyframes_reject_equal_endpoints_with_different_event_history() {
+        let target = unbooted_target();
+        let endpoint = [17; 32];
+        let install = |digest| {
+            let mut live = hashed_live(endpoint);
+            live.session = Box::new(TimedOutRestore {
+                hash: Some(endpoint),
+                history: control_proto::EventHistory { count: 2, digest },
+                events: BTreeMap::new(),
+                current: 1,
+                run_hashes: None,
+                run_hung: false,
+                snapshots: BTreeMap::from([(1, endpoint)]),
+                moment: 0,
+                next_snap: 1,
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        };
+        install([11; 32]);
+        let snapshot = target.snapshot().unwrap().unwrap();
+        let mut missing = snapshot.clone();
+        missing.event_history = None;
+        assert!(
+            validate_snapshot_prefix_certificates(&missing, false)
+                .unwrap_err()
+                .contains("lacks ordered event history")
+        );
+        let certificate = replay_endpoint_certificate(
+            target.state_hash_current().unwrap(),
+            target.event_history_current().unwrap(),
+            target.observation(),
+            false,
+        )
+        .unwrap();
+        target.verify_replayed_endpoint(Some(certificate)).unwrap();
+        let observation = target.observation().clone();
+        install([12; 32]);
+        assert_eq!(target.state_hash_current().unwrap(), endpoint);
+        assert_eq!(target.observation(), &observation);
+        assert_eq!(
+            target.event_history_current().unwrap().0,
+            snapshot.event_history.unwrap().0
+        );
+        assert!(
+            target
+                .verify_replayed_endpoint(Some(certificate))
+                .unwrap_err()
+                .contains("differs from its archived endpoint certificate")
+        );
+        let mut restored = unbooted_target();
+        let error = restored.restore(&snapshot).unwrap_err().to_string();
+        assert!(
+            error.contains("differs from its snapshot certificate"),
+            "{error}"
+        );
+        install([11; 32]);
+        restored.restore(&snapshot).unwrap();
+        restored
+            .verify_replayed_endpoint(Some(certificate))
+            .unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
     }
 }
 
