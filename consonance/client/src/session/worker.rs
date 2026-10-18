@@ -41,12 +41,12 @@ use crate::copy_work::{CopySite, CopyWork};
 
 pub const WORKER_FD_ENV: &str = "HARMONY_SESSION_WORKER_FD";
 const HEADER: usize = 16;
-const MAX_FDS: usize = crate::import_reuse::REFERENCE_LIMIT;
+const MAX_FDS: usize = crate::import_layout::PROTOCOL_REFERENCE_LIMIT;
 #[cfg(target_os = "macos")]
 const DARWIN_CONTROL_CAPACITY: usize = 2048;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
-const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v2";
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v3";
 const IMAGE_HELLO_LIMIT: usize = 512;
 const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -398,6 +398,21 @@ fn transport_error(error: io::Error) -> SessionError {
     } else {
         SessionError::Control(format!("session worker: {error}"))
     }
+}
+
+fn check_worker_image_hello(body: &[u8], expected_image: &str) -> io::Result<()> {
+    let mut input = In(body);
+    if input.bytes()? != IMAGE_HELLO {
+        return Err(malformed("worker image hello has an unknown version"));
+    }
+    let actual = input.string()?;
+    input.finish()?;
+    if actual != expected_image {
+        return Err(io::Error::other(
+            "session worker loaded image differs from launcher",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -1009,18 +1024,7 @@ impl WorkerLauncher {
             if !fds.is_empty() {
                 return Err(malformed("worker image hello carries descriptors"));
             }
-            let mut input = In(&body);
-            if input.bytes()? != IMAGE_HELLO {
-                return Err(malformed("worker image hello has an unknown version"));
-            }
-            let actual = input.string()?;
-            input.finish()?;
-            if actual != self.expected_image {
-                return Err(io::Error::other(
-                    "session worker loaded image differs from launcher",
-                ));
-            }
-            Ok(())
+            check_worker_image_hello(&body, &self.expected_image)
         });
         let check = check.and_then(|()| {
             loaded_image_guard.check_at(crate::image_identity::GuardSite::LauncherAfter)
@@ -5852,7 +5856,26 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn descriptor_table_import_requires_the_new_host_hello_version() {
-        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v2");
+        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v3");
+        for version in [
+            b"harmony-session-worker-image-v1".as_slice(),
+            b"harmony-session-worker-image-v2".as_slice(),
+        ] {
+            let mut hello = Out::default();
+            hello.bytes(version).bytes(b"fixture");
+            assert!(
+                check_worker_image_hello(&hello.0, "fixture")
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unknown version")
+            );
+        }
+        let mut hello = Out::default();
+        hello.bytes(IMAGE_HELLO).bytes(b"fixture");
+        check_worker_image_hello(&hello.0, "fixture").unwrap();
+        assert!(check_worker_image_hello(&hello.0, "different").is_err());
+        hello.0.push(0);
+        assert!(check_worker_image_hello(&hello.0, "fixture").is_err());
     }
 
     #[test]

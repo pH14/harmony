@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use crate::cache::{CommittedExtent, segments::BackingWitness};
-use crate::import_reuse::REFERENCE_LIMIT;
 use std::io;
+
+pub(crate) const PROTOCOL_REFERENCE_LIMIT: usize = 64;
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ImportRange {
@@ -23,7 +24,7 @@ fn malformed() -> io::Error {
 
 impl ImportLayout {
     pub(crate) fn from_extents(extents: &[CommittedExtent]) -> io::Result<Self> {
-        if extents.is_empty() || extents.len() > REFERENCE_LIMIT {
+        if extents.is_empty() || extents.len() > PROTOCOL_REFERENCE_LIMIT {
             return Err(malformed());
         }
         let mut owners: Vec<BackingWitness> = Vec::new();
@@ -79,7 +80,7 @@ impl ImportLayout {
         let unique = count(&mut bytes)?;
         let rows = count(&mut bytes)?;
         if rows == 0
-            || rows > REFERENCE_LIMIT
+            || rows > PROTOCOL_REFERENCE_LIMIT
             || unique == 0
             || unique > rows
             || unique != descriptors
@@ -176,7 +177,7 @@ mod tests {
     fn layout_rejects_bad_counts_slots_ranges_and_noncanonical_tables() {
         let valid = encoded(2, &[[0, 0, 4096], [1, 4096, 4096], [0, 8192, 4096]]);
         assert!(ImportLayout::decode(&valid, 2).is_ok());
-        for descriptors in [0, 1, 3, REFERENCE_LIMIT + 1] {
+        for descriptors in [0, 1, 3, PROTOCOL_REFERENCE_LIMIT + 1] {
             assert!(ImportLayout::decode(&valid, descriptors).is_err());
         }
         for (unique, rows) in [
@@ -188,7 +189,7 @@ mod tests {
             (2, vec![[0, 0, 1], [0, 1, 1]]),
             (1, vec![[0, 0, 0]]),
             (1, vec![[0, u64::MAX, 1]]),
-            (1, vec![[0, 0, 1]; REFERENCE_LIMIT + 1]),
+            (1, vec![[0, 0, 1]; PROTOCOL_REFERENCE_LIMIT + 1]),
             (0, vec![]),
         ] {
             assert!(ImportLayout::decode(&encoded(unique, &rows), unique as usize).is_err());
@@ -206,9 +207,13 @@ mod tests {
         let mut segments = PageSegments::new(4096, usize::MAX);
         let a = segments.allocate(4096).unwrap().commit();
         assert!(ImportLayout::from_extents(&[]).is_err());
-        assert!(ImportLayout::from_extents(&vec![a.clone(); REFERENCE_LIMIT + 1]).is_err());
-        let layout = ImportLayout::from_extents(&vec![a; REFERENCE_LIMIT]).unwrap();
+        assert!(ImportLayout::from_extents(&vec![a.clone(); 65]).is_err());
+        let layout = ImportLayout::from_extents(&vec![a; 64]).unwrap();
         assert_eq!(layout.backing_rows.len(), 1);
-        assert_eq!(layout.ranges.len(), REFERENCE_LIMIT);
+        assert_eq!(layout.ranges.len(), 64);
+        let mut wire = Vec::new();
+        layout.encode_into(0, &mut wire);
+        assert!(ImportLayout::decode(&wire, 1).is_ok());
+        assert!(ImportLayout::decode(&encoded(1, &vec![[0, 0, 1]; 65]), 1).is_err());
     }
 }
