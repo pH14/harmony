@@ -6090,10 +6090,10 @@ mod tests {
                     live.session = Box::new(session);
                     LIVE.with(|slot| *slot.borrow_mut() = Some(live));
                     validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
-                    let before = thread_telemetry();
+                    let before = thread_work_telemetry();
                     let mut target = unbooted_target();
                     let result = target.restore(&snapshot);
-                    let after = thread_telemetry();
+                    let after = thread_work_telemetry();
                     assert_eq!(
                         after["run.rebuild.count"] - before["run.rebuild.count"],
                         u64::from(!rooted)
@@ -6253,7 +6253,7 @@ mod tests {
                     live.observe(FaultStop::Deadline).map(|_| ())
                 };
                 assert_eq!(
-                    live.counters(true).into_iter().collect::<BTreeMap<_, _>>()["vmm.test.sdk_calls"],
+                    live.work_counters().into_iter().collect::<BTreeMap<_, _>>()["vmm.test.sdk_calls"],
                     1
                 );
                 let Some(failure) = failure else {
