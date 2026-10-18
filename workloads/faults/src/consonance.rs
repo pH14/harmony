@@ -1104,6 +1104,38 @@ impl FaultTarget {
         self.apply_as(action, RunKind::Replay);
     }
 
+    pub fn apply_replayed_certified(
+        &mut self,
+        action: FaultAction,
+        expected: Option<[u8; 32]>,
+    ) -> Result<(), String> {
+        let endpoint = self
+            .apply_as(action, RunKind::Replay)
+            .ok_or("replayed fault prefix stopped before its archived endpoint")?;
+        match (self.config.uml.is_some(), endpoint) {
+            (true, FaultEndpointCertificate::UmlWholeStateUnavailable) => {
+                if expected.is_some() {
+                    return Err("UML replay unexpectedly carries a KVM endpoint certificate".into());
+                }
+            }
+            (false, FaultEndpointCertificate::KvmWholeState(_)) => {
+                let expected = expected.ok_or("KVM replay prefix lacks an endpoint certificate")?;
+                let actual = self
+                    .history
+                    .receipt()
+                    .certificate()
+                    .ok_or("captured KVM replay prefix lacks an endpoint certificate")?;
+                if actual != expected {
+                    return Err(
+                        "replayed KVM prefix differs from its archived endpoint certificate".into(),
+                    );
+                }
+            }
+            _ => return Err("captured replay endpoint differs from its backend".into()),
+        }
+        Ok(())
+    }
+
     fn apply_as(&mut self, action: FaultAction, kind: RunKind) -> Option<FaultEndpointCertificate> {
         if self.failed || !self.observation.stop.is_continuable() {
             return None;
@@ -3587,6 +3619,200 @@ mod tests {
             snapshot.endpoint,
             Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
         );
+    }
+
+    #[test]
+    fn campaign_parent_replay_verifies_each_capture_without_rehashing_it() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for hashes in [vec![[17; 32]], vec![[17; 32], [23; 32]]] {
+            let mut target = unbooted_target();
+            LIVE.with(|slot| {
+                *slot.borrow_mut() = Some(scripted_capture_live(hashes.clone(), false))
+            });
+            let origin = target.snapshot().unwrap().unwrap();
+            let certificates = hashes
+                .iter()
+                .map(|hash| {
+                    Some(
+                        replay_endpoint_certificate(
+                            *hash,
+                            (0, [0; 32]),
+                            &FaultObservations::default(),
+                            false,
+                        )
+                        .unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let before = capture_hash_calls();
+            let result = crate::campaign::execute_job(
+                &mut target,
+                &origin,
+                &vec![action; hashes.len()],
+                &certificates,
+                crate::archive::FaultMilestones::default(),
+                &[],
+                false,
+            )
+            .unwrap();
+            assert_eq!(capture_hash_calls() - before, hashes.len() as u64 + 1);
+            assert_eq!(target.guest_horizons_run(), hashes.len() as u64);
+            assert_eq!(target.actions().len(), hashes.len());
+            assert!(result.actions.is_empty());
+            assert!(!target.failed());
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
+    fn campaign_parent_replay_rejects_intermediate_divergence_before_convergence() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let final_certificate = replay_endpoint_certificate(
+            [23; 32],
+            (0, [0; 32]),
+            &FaultObservations::default(),
+            false,
+        )
+        .unwrap();
+        for wrong in [
+            Some(final_certificate),
+            Some(
+                replay_endpoint_certificate(
+                    [17; 32],
+                    (0, [11; 32]),
+                    &FaultObservations::default(),
+                    false,
+                )
+                .unwrap(),
+            ),
+            None,
+        ] {
+            let mut target = unbooted_target();
+            LIVE.with(|slot| {
+                *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32], [23; 32]], false))
+            });
+            let origin = target.snapshot().unwrap().unwrap();
+            let before = capture_hash_calls();
+            let error = crate::campaign::execute_job(
+                &mut target,
+                &origin,
+                &[action, action],
+                &[wrong, Some(final_certificate)],
+                crate::archive::FaultMilestones::default(),
+                &[],
+                false,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("certificate"), "{error}");
+            assert_eq!(target.guest_horizons_run(), 1);
+            assert_eq!(capture_hash_calls() - before, 2);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
+    fn campaign_parent_replay_watchdog_after_success_cannot_reuse_prior_capture() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut target = unbooted_target();
+        let mut live = scripted_capture_live(Vec::new(), false);
+        live.session = Box::new(TimedOutRestore {
+            run_hashes: Some(vec![[17; 32]]),
+            run_hung: true,
+            ..fixture_session()
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let origin = target.snapshot().unwrap().unwrap();
+        let certificate = Some(
+            replay_endpoint_certificate(
+                [17; 32],
+                (0, [0; 32]),
+                &FaultObservations::default(),
+                false,
+            )
+            .unwrap(),
+        );
+        let error = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[action, action],
+            &[certificate, certificate],
+            crate::archive::FaultMilestones::default(),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("campaign incomplete"), "{error}");
+        assert!(error.to_string().contains("parent replay"), "{error}");
+        assert_eq!(target.history.len(), 1);
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(target.failed());
+        assert!(target.snapshot().unwrap().is_none());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+    }
+
+    #[test]
+    fn campaign_parent_replay_terminal_endpoint_cannot_reuse_the_origin_certificate() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut target = unbooted_target();
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(fixture_session());
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let origin = target.snapshot().unwrap().unwrap();
+        let error = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[action],
+            &[origin.history.receipt().certificate()],
+            crate::archive::FaultMilestones::default(),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("replayed fault prefix stopped"),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("campaign incomplete"));
+        assert!(!target.failed());
+        assert!(!target.observation().stop.is_continuable());
+        assert!(target.history.is_empty());
+        assert!(target.snapshot().unwrap().is_none());
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn certified_uml_parent_replay_never_requests_a_kvm_hash() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for expected in [None, Some([17; 32])] {
+            let mut target = unbooted_uml_target();
+            let mut live = scripted_capture_live(vec![[17; 32]], false);
+            live.chain = Chain::new(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                None,
+            );
+            live.chain
+                .certify(0, target.history.receipt().clone())
+                .unwrap();
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let origin = target.snapshot().unwrap().unwrap();
+            let before = capture_hash_calls();
+            let result = crate::campaign::execute_job(
+                &mut target,
+                &origin,
+                &[action],
+                &[expected],
+                crate::archive::FaultMilestones::default(),
+                &[],
+                false,
+            );
+            assert_eq!(result.is_ok(), expected.is_none());
+            assert_eq!(capture_hash_calls(), before);
+            assert_eq!(target.history.receipt().certificate(), None);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
     }
 
     #[test]
