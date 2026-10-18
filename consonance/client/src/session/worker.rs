@@ -2891,7 +2891,9 @@ mod tests {
         let server = std::thread::spawn(move || {
             let mut served = Served::default();
             let (body, fds) = recv(&child).unwrap();
-            let reply = status(served.handle(&body, &fds, &mut Fake::open));
+            let reply = status(served.handle(&body, &fds, &mut Fake::open, &mut |_| {
+                panic!("unexpected setup allocation")
+            }));
             send(&child, &reply, &[]).unwrap();
             let (body, _) = recv(&child).unwrap();
             assert_eq!(body[0], STATE_HASH);
