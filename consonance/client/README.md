@@ -506,3 +506,15 @@ partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
 this API does not authenticate a previously consumed prefix or detect rollback.
 `EventHistory.count` counts normalized execution events and is not an SDK offset.
 Workload adapters own decoder checkpoints and lineage validation.
+
+Worker publication relies on the RPC entry check before EXPORT rather than
+checking again in its publication wrappers. EXPORT and WRITE_EXTENT each retain
+checks before sending and after receiving. Publication retains its check after
+commitment calculation before the index callback, and its revoking check after
+that callback. Child serving checks once before its first receive, after each
+handler/status result before sending, and after every successful send. The
+post-send check also admits the next receive, including the receive of EOF.
+These boundaries still invoke the executable guard; they do not cache live-code
+identity. Test counters distinguish guard entries from actual strict dispatches;
+fixture counts establish placement, while admitted-host tests establish strict
+mutation refusal.
