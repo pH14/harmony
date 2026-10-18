@@ -66,11 +66,11 @@ separate 15-minute pull-request jobs. Both package jobs prove that a
 disk-backed host is refused, the paired frontend enters the sealed host, and
 native QuickNES remains on the frontend. The package fixture uses the Faults
 runner on both Linux architectures. A separate x86-64 musl job runs the public
-Session, worker reexec and failure recovery, UML shutdown, timeout, branch and
-handler tests, executable-map rejection and cache revocation, Recording, and
-terminal console limits through
+Session, worker reexec and failure recovery, UML shutdown, timeout, branch,
+handler, and root-import commitment tests, executable-map rejection and cache
+revocation, Recording, and terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
-fully sealed executable memfd before execution. All 15 exact tests require
+fully sealed executable memfd before execution. All 16 exact tests require
 one test to start and pass. The musl positive tests fail if strict host
 admission is unavailable, so a missing runner cannot produce a green skip.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
