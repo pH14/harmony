@@ -4323,8 +4323,9 @@ writer.close()
             std::thread::spawn(move || {
                 EXIT_PAUSE_HOOK.with(|hook| {
                     *hook.borrow_mut() = Some(Box::new(move |id| {
-                        if pauses.fetch_add(1, Ordering::SeqCst) == 0 {
-                            let _ = notice_tx.send(id.clone());
+                        let pause = pauses.fetch_add(1, Ordering::SeqCst) + 1;
+                        if pause == 1 || pause == EXIT_POLLS as usize {
+                            let _ = notice_tx.send((pause, id.clone()));
                             let _ = release_rx.recv_timeout(Duration::from_secs(10));
                         }
                     }))
@@ -4333,41 +4334,52 @@ writer.close()
                 EXIT_PAUSE_HOOK.with(|hook| hook.borrow_mut().take());
             })
         };
-        let notice = notice_rx.recv_timeout(Duration::from_secs(10));
-        let mut before = None;
-        let mut background_polled = false;
-        if let Ok(id) = &notice {
+        let mut before = Vec::new();
+        let mut retained_id = None;
+        for _ in 0..2 {
+            let Ok((pause, id)) = notice_rx.recv_timeout(Duration::from_secs(10)) else {
+                break;
+            };
+            let prior_polls = polls.load(Ordering::SeqCst);
             for _ in 0..4096 {
                 crate::writer_lifetime::reap_worker_quarantine(64);
-                if polls.load(Ordering::SeqCst) > 1 {
+                if polls.load(Ordering::SeqCst) > prior_polls {
                     break;
                 }
             }
-            background_polled = polls.load(Ordering::SeqCst) > 1;
-            before = Some((
+            before.push((
+                pause,
+                polls.load(Ordering::SeqCst) > prior_polls,
                 signals.load(Ordering::SeqCst),
-                crate::writer_lifetime::retained_worker(id),
+                crate::writer_lifetime::retained_worker(&id),
                 index.stats().charged,
             ));
+            retained_id = Some(id);
+            let _ = release_tx.send(());
         }
         let _ = release_tx.send(());
         let joined = dropper.join();
-        let after = notice
+        let after = retained_id
             .as_ref()
-            .ok()
             .map(crate::writer_lifetime::retained_worker);
         let final_pauses = pauses.load(Ordering::SeqCst);
         let final_signals = signals.load(Ordering::SeqCst);
         let at_signal = signal_pause.load(Ordering::SeqCst);
-        if let Ok(id) = &notice {
+        if let Some(id) = &retained_id {
             crate::writer_lifetime::allow_worker_signal(id);
             let _ = crate::writer_lifetime::poll_worker(id, true);
             let _ = crate::writer_lifetime::poll_worker(id, false);
         }
         assert!(joined.is_ok());
-        assert!(notice.is_ok());
-        assert!(background_polled);
-        assert_eq!(before, Some((0, Some((1, 4096, false)), 4096)));
+        assert_eq!(EXIT_POLLS, 400);
+        assert_eq!(EXIT_POLL, Duration::from_millis(5));
+        assert_eq!(
+            before,
+            vec![
+                (1, true, 0, Some((1, 4096, false)), 4096),
+                (400, true, 0, Some((1, 4096, false)), 4096),
+            ]
+        );
         assert_eq!(final_pauses, EXIT_POLLS as usize);
         assert_eq!(final_signals, 1);
         assert_eq!(at_signal, EXIT_POLLS as usize);
