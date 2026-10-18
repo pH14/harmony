@@ -154,6 +154,15 @@ pub trait SearchSession: std::fmt::Debug {
     }
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>>;
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>>;
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        let offset = usize::try_from(offset)?;
+        let mut events = self.sdk_events()?;
+        u32::try_from(events.len()).map_err(|_| "SDK event offset overflow")?;
+        if offset >= events.len() {
+            return Ok(Vec::new());
+        }
+        Ok(events.split_off(offset))
+    }
     fn abandoned(&self) -> bool;
 }
 
@@ -307,6 +316,10 @@ impl SearchSession for Session {
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
         Session::sdk_events(self)
+    }
+
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        Session::sdk_events_since(self, offset)
     }
 
     fn abandoned(&self) -> bool {
@@ -1244,9 +1257,17 @@ impl SearchSession for WorkerSession {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-        let reply = self.call(&Out::op(SDK_EVENTS), &[])?;
+        self.sdk_events_since(0)
+    }
+
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        let reply = self.call(Out::op(SDK_EVENTS).u64(u64::from(offset)), &[])?;
         let mut input = In(&reply);
-        let events = (0..input.len()?)
+        let count = input.len()?;
+        offset
+            .checked_add(u32::try_from(count).map_err(|_| malformed("SDK event count overflows"))?)
+            .ok_or_else(|| malformed("SDK event offset overflows"))?;
+        let events = (0..count)
             .map(|_| {
                 let moment = input.u64()?;
                 let id = u32::try_from(input.u64()?).map_err(|_| malformed("event id"))?;
@@ -1451,8 +1472,13 @@ impl Served {
                     .map_err(|error| format!("encode stop reason: {error}"))?;
             }
             SDK_EVENTS => {
+                let offset = u32::try_from(input.u64()?)
+                    .map_err(|_| malformed("SDK event offset overflows"))?;
                 input.finish()?;
-                let events = session.sdk_events()?;
+                if !fds.is_empty() {
+                    return Err(malformed("SDK events carries no descriptors").into());
+                }
+                let events = session.sdk_events_since(offset)?;
                 out.len(events.len());
                 for (moment, id, bytes) in &events {
                     out.u64(*moment).u64(u64::from(*id)).bytes(bytes);
@@ -1569,6 +1595,7 @@ mod tests {
         current: u8,
         runs: u64,
         quarantine_on_import: Option<Arc<LocalIndex>>,
+        sdk_history: Option<Vec<SdkEvent>>,
     }
 
     impl Fake {
@@ -1713,7 +1740,10 @@ mod tests {
         }
 
         fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-            Ok(vec![(5, 7, vec![self.current])])
+            Ok(self
+                .sdk_history
+                .clone()
+                .unwrap_or_else(|| vec![(5, 7, vec![self.current])]))
         }
 
         fn abandoned(&self) -> bool {
@@ -2012,6 +2042,113 @@ mod tests {
             recv(&right).unwrap_err().kind(),
             io::ErrorKind::UnexpectedEof
         );
+    }
+
+    #[test]
+    fn sdk_suffix_transport_preserves_offsets_and_the_full_history_fallback() {
+        let (mut session, server) = threaded(3);
+        assert_eq!(session.sdk_events_since(0).unwrap(), vec![(5, 7, vec![3])]);
+        assert!(session.sdk_events_since(1).unwrap().is_empty());
+        assert!(session.sdk_events_since(u32::MAX).unwrap().is_empty());
+        assert_eq!(session.sdk_events().unwrap(), vec![(5, 7, vec![3])]);
+        drop(session);
+        server.join().unwrap();
+        let mut fake = Fake::default();
+        assert_eq!(
+            fake.sdk_events_since(0).unwrap(),
+            fake.sdk_events().unwrap()
+        );
+        assert!(fake.sdk_events_since(1).unwrap().is_empty());
+        assert!(fake.sdk_events_since(u32::MAX).unwrap().is_empty());
+        let history = vec![(5, 7, vec![3]), (5, 8, vec![4]), (9, 9, vec![5])];
+        fake.sdk_history = Some(history.clone());
+        assert_eq!(fake.sdk_events_since(1).unwrap(), history[1..]);
+        assert_eq!(fake.sdk_events_since(2).unwrap(), history[2..]);
+        let mut served = Served {
+            session: Some(Box::new(fake)),
+            ..Served::default()
+        };
+        let mut request = Out::op(SDK_EVENTS);
+        request.u64(2);
+        let reply = served.handle(&request.0, &[], &mut Fake::open).unwrap();
+        let mut input = In(&reply.0);
+        assert_eq!(input.len().unwrap(), 1);
+        assert_eq!(input.u64().unwrap(), 9);
+        assert_eq!(input.u64().unwrap(), 9);
+        assert_eq!(input.bytes().unwrap(), &[5]);
+        input.finish().unwrap();
+    }
+
+    #[test]
+    fn sdk_suffix_requests_reject_truncation_overflow_trailing_bytes_and_descriptors() {
+        let mut served = Served {
+            session: Some(Box::<Fake>::default()),
+            ..Served::default()
+        };
+        let mut too_large = Out::op(SDK_EVENTS);
+        too_large.u64(u64::from(u32::MAX) + 1);
+        let mut trailing = Out::op(SDK_EVENTS);
+        trailing.u64(0).u8(1);
+        for body in [vec![SDK_EVENTS], too_large.0, trailing.0] {
+            assert!(served.handle(&body, &[], &mut Fake::open).is_err());
+        }
+        let (left, _right) = UnixStream::pair().unwrap();
+        let fd: OwnedFd = left.into();
+        let mut request = Out::op(SDK_EVENTS);
+        request.u64(0);
+        assert!(served.handle(&request.0, &[fd], &mut Fake::open).is_err());
+        assert!(served.handle(&request.0, &[], &mut Fake::open).is_ok());
+    }
+
+    #[test]
+    fn sdk_suffix_replies_reject_malformed_rows_and_cursor_overflow() {
+        let mut trailing = Out::op(OK);
+        trailing.len(0).u8(1);
+        let mut bad_id = Out::op(OK);
+        bad_id.len(1).u64(5).u64(u64::from(u32::MAX) + 1).bytes(&[]);
+        let mut overflow = Out::op(OK);
+        overflow.len(1).u64(5).u64(7).bytes(&[]);
+        for (offset, reply) in [
+            (0, vec![OK]),
+            (0, trailing.0),
+            (0, bad_id.0),
+            (u32::MAX, overflow.0),
+        ] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut served = Served::default();
+                let (body, fds) = recv(&child).unwrap();
+                send(
+                    &child,
+                    &status(served.handle(&body, &fds, &mut Fake::open)),
+                    &[],
+                )
+                .unwrap();
+                let (body, fds) = recv(&child).unwrap();
+                assert!(fds.is_empty());
+                let mut input = In(&body);
+                assert_eq!(input.u8().unwrap(), SDK_EVENTS);
+                assert_eq!(input.u64().unwrap(), u64::from(offset));
+                input.finish().unwrap();
+                send(&child, &reply, &[]).unwrap();
+            });
+            let mut session = WorkerSession::connect(
+                WorkerConnection {
+                    stream: parent,
+                    process: None,
+                    loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                },
+                &[3],
+                b"i",
+                &config(),
+                &[],
+                "fake",
+            )
+            .unwrap();
+            assert!(session.sdk_events_since(offset).is_err());
+            drop(session);
+            server.join().unwrap();
+        }
     }
 
     #[test]
