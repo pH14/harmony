@@ -156,7 +156,7 @@ build_guest() {
         -I"$n6_root" -DN6_ARCH='"'"$arch"'"' -DN6_AUDIT_REJECTED=1 \
         "${extra[@]}" -o "$binary" \
         "$LINUX_DIR/n6-instruction-guest.c" "$n6_root/n6-generated.S"
-    python3 "$entropy_scan" "$binary"
+    python3 "$entropy_scan" "$binary" | tee "$binary.entropy-audit.txt"
 }
 
 echo "== N6: compile table-generated JIT guests"

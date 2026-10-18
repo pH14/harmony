@@ -30,6 +30,12 @@ The recipes write these layouts below the standard build artifact directory:
 | `k3s-image` | `build/oci-images/k3s.oci` |
 | `arm64-postgres-image` | `build/aarch64/oci-images/postgres.oci` |
 
+When the locked Nix guest-image builder runs with `--n6`, a failed build
+preserves the N6 guest binaries, generated assembly/header, and entropy-audit
+logs under `OUTPUT/diagnostics/n6` before deleting its temporary workspace.
+The failed build retains its nonzero status; these files are diagnostic
+witnesses and do not constitute a completed or qualified guest bundle.
+
 Each layout contains a single deterministic layer and an OCI config whose
 entrypoint is the application workload. The outer platform runtime supplies
 `/proc`, `/dev`, `/sys`, `/run`, and `/tmp`, runs the entrypoint as the OCI
