@@ -6093,6 +6093,7 @@ mod tests {
     std::thread_local! {
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
@@ -6322,7 +6323,9 @@ mod tests {
             milestones: &mut Self::Milestones,
         ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
             self.apply_action(target, action, milestones)?;
-            if FUSED_IMPORT.with(|enabled| enabled.get()) {
+            if FUSED_IMPORT.with(|enabled| enabled.get())
+                && !OMIT_IMPORT_CAPTURE.with(|omitted| omitted.get() == Some(target.value))
+            {
                 IMPORT_CALLS.with(|calls| {
                     let (captured, current, snapshots) = calls.get();
                     calls.set((captured + 1, current, snapshots));
@@ -8094,7 +8097,12 @@ mod tests {
 
     #[test]
     fn whole_tree_import_reuses_bounded_captures_and_keeps_every_prefix_certificate() {
-        for fused in [false, true] {
+        for (fused, omitted) in [
+            (false, None),
+            (true, None),
+            (true, Some(3)),
+            (true, Some(6)),
+        ] {
             let workload = TestWorkload {
                 bootstrap_objective: false,
                 targets: None,
@@ -8135,17 +8143,25 @@ mod tests {
             };
             CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
             FUSED_IMPORT.with(|enabled| enabled.set(fused));
+            OMIT_IMPORT_CAPTURE.with(|capture| capture.set(omitted));
             IMPORT_CALLS.with(|calls| calls.set((0, 0, 0)));
             let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
             core.archive.set_memory_budget(usize::MAX, |_| 1);
             let result =
                 core.import_tree(&workload, &(), &mut TestTarget::default(), &source, None);
             FUSED_IMPORT.with(|enabled| enabled.set(false));
+            OMIT_IMPORT_CAPTURE.with(|capture| capture.set(None));
             CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
             assert_eq!(result.unwrap().imported, 1);
             assert_eq!(
                 IMPORT_CALLS.with(|calls| calls.get()),
-                if fused { (3, 0, 1) } else { (0, 3, 2) }
+                match (fused, omitted) {
+                    (false, _) => (0, 3, 2),
+                    (true, None) => (3, 0, 1),
+                    (true, Some(3)) => (2, 1, 1),
+                    (true, Some(6)) => (2, 1, 2),
+                    _ => unreachable!(),
+                }
             );
             let child = core.archive.index_of_id(1).unwrap();
             core.archive
