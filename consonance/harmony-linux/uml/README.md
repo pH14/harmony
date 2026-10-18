@@ -328,7 +328,15 @@ the host's bridge state. The first two diamonds compare every physical page
 with the stored checkpoint after each capture and restore, and fail on a
 page that changed without being reported. The report gives capture and
 restore times from the other diamonds, image sizes and the bytes each
-checkpoint owns in the store.
+checkpoint owns in the store. An inherited seccomp negative control denies
+one-page RWX host `mprotect` calls. It must first reach a normal fixture event,
+then fail during checkpoint dirty-page unprotection with its specific host
+memory diagnostic. Capture must refuse without returning a checkpoint or
+adding guest events; the final status must be infrastructure failure, with no
+guest panic and no remaining process group or work directory. The ordinary
+diamonds and launch-suite guest panic remain successful controls. Compiled
+patch probes independently inject allocation, whole-map unprotection,
+protection-reset, and destructive-restore failures for both architectures.
 
 The event hash is SHA-256 over each event's virtual time, ID, length and
 data.

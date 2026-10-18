@@ -8,8 +8,8 @@ use environment::input_spec::{ServiceConfig, nominal_factory};
 use serde_json::{Value, json};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use uml::{
-    Capture, Checkpoint, Checkpoints, Event, Exit, Guest, Launch, MemoryError, Profile, Session,
-    SessionError, Stop, VerifiedProfile, event_hash,
+    Capture, Checkpoint, Checkpoints, Event, Exit, ExitReason, Guest, Launch, MemoryError, Profile,
+    Session, SessionError, Stop, VerifiedProfile, event_hash,
 };
 
 use crate::filter;
@@ -93,9 +93,72 @@ pub fn checks(options: &Options, profile: &VerifiedProfile) -> io::Result<Vec<Va
             json!({"reference": summary(&reference)}),
         ));
     }
+    checks.push(host_dirty_page_failure(options, profile));
     checks.push(console_branch_restore(options, profile));
     checks.push(console_terminal(options, profile));
     Ok(checks)
+}
+
+fn host_dirty_page_failure(options: &Options, profile: &VerifiedProfile) -> Value {
+    let result = (|| -> Result<Value, SessionError> {
+        let base = seeded(options, "schedule", SEED);
+        let work = base.work_directory()?;
+        let mut command = base.command(profile, work.path())?;
+        filter::deny_checkpoint_unprotect(&mut command);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start(
+            command,
+            work,
+            &base,
+            &checkpoints,
+            None,
+            Some(base.wall_limit),
+        )?;
+        if session.run_to(1)? != Stop::Event {
+            return Err(SessionError::Protocol(
+                "the injected guest did not reach its first event".into(),
+            ));
+        }
+        let before = session.events().to_vec();
+        let capture_error = match session.capture(Capture::default()) {
+            Ok(_) => {
+                return Err(SessionError::Protocol(
+                    "the injected dirty-page failure published a checkpoint".into(),
+                ));
+            }
+            Err(error) => error,
+        };
+        let terminal = session.settle_terminal_console(base.wall_limit);
+        let stopped = matches!(
+            terminal,
+            Err(SessionError::Stopped(ExitReason::HostFailure))
+        );
+        let exit = session.kill()?;
+        let passed = stopped
+            && exit.reason == ExitReason::HostFailure
+            && exit.events == before
+            && crate::linux::contains(
+                &exit,
+                "Harmony checkpoint host memory failed: unprotect dirty page",
+            )
+            && !crate::linux::contains(&exit, "Kernel panic")
+            && crate::linux::clean(&exit);
+        Ok(
+            json!({"passed": passed, "capture_error": capture_error.to_string(), "events_before": before.len(), "exit": summary(&exit)}),
+        )
+    })();
+    match result {
+        Ok(detail) => check(
+            "checkpoint_host_dirty_page_failure",
+            detail["passed"] == json!(true),
+            detail,
+        ),
+        Err(error) => check(
+            "checkpoint_host_dirty_page_failure",
+            false,
+            json!({"error": error.to_string()}),
+        ),
+    }
 }
 
 fn console_terminal(options: &Options, profile: &VerifiedProfile) -> Value {

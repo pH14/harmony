@@ -128,7 +128,11 @@
   The primitive exits directly without invoking guest panic notifiers or guest
   cleanup; the launcher then reaps the process group. Host mmap, socketpair,
   clone, futex, ptrace and register-transport failures in that substrate abandon
-  execution. Guest-generated invalid traps retain their guest signal path.
+  execution. Checkpoint dirty-bitmap allocation, direct-map protection and
+  unprotection, address-space reconstruction, and destructive host-memory
+  restore failures use that same infrastructure status. Dirty-page fault
+  diagnostics use only signal-safe writes before the direct exit.
+  Guest-generated invalid traps retain their guest signal path.
   The client abandons host failures without publishing a guest shutdown or crash. A
   guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The

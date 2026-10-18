@@ -305,6 +305,88 @@ int main(void) {
 }'''
         self.compile_run(source.replace("BODY", block))
 
+    def test_uml_checkpoint_host_memory_failures_never_become_guest_panics(self):
+        for series, provenance in [("um", "0016-um-harmony-host-failure-provenance.patch"),
+                                   ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
+            with self.subTest(series=series):
+                checkpoint = postimage(PATCHES / series / "0008-um-harmony-checkpoint.patch",
+                                       "arch/um/os-Linux/skas/checkpoint.c")
+                primitive = postimage(PATCHES / series / provenance, "arch/um/os-Linux/util.c")
+                signatures = {
+                    "os_host_failure": "static void os_host_failure(void) __attribute__((noreturn));\nstatic void os_host_failure(void)",
+                    "page_size": "static unsigned long page_size(void)",
+                    "round_up": "static unsigned long round_up(unsigned long value, unsigned long page)",
+                    "memory_failure": "static void memory_failure(const char *operation)",
+                    "os_track_init": "void os_track_init(unsigned long base, unsigned long start, unsigned long end)",
+                    "set_page": "static void set_page(unsigned long pfn)",
+                    "os_track_mark": "void os_track_mark(unsigned long long phys, unsigned long length)",
+                    "open_all": "static void open_all(void)",
+                    "open_range": "static void open_range(unsigned long start, unsigned long end)",
+                    "os_track_fault": "int os_track_fault(unsigned long address)",
+                    "protect_all": "static void protect_all(void)",
+                    "fatal": "static void fatal(const char *what, int error)",
+                }
+                source = r'''#define _GNU_SOURCE
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <errno.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#define UM_KERN_PAGE_SHIFT 12
+#define UM_KERN_PAGE_SIZE (1UL << UM_KERN_PAGE_SHIFT)
+#define UM_KERN_PAGE_MASK (~(UM_KERN_PAGE_SIZE - 1))
+#define LONG_BITS (8 * sizeof(unsigned long))
+#define UNPROTECT_LIMIT 16384
+#define HARMONY_UML_HOST_FAILURE_STATUS 87
+struct track { unsigned long base,start,end,pages,words,*bits,unprotects; int tracking,all; };
+static struct track track;
+static int failure, calls;
+static unsigned long bits[1];
+static void *injected_mmap(void *address, size_t length, int prot, int flags, int fd, off_t offset) {
+ errno=ENOMEM; return failure==1 ? MAP_FAILED : bits;
+}
+static int injected_mprotect(void *address, size_t length, int prot) {
+ assert(length>0); calls++; errno=ENOMEM; return failure ? -1 : 0;
+}
+#define mmap injected_mmap
+#define mprotect injected_mprotect
+FUNCTIONS
+int main(int argc, char **argv) {
+ assert(argc==2); failure=atoi(argv[1]);
+ os_track_init(0x1000,0x2000,0x4000);
+ assert(track.pages==3 && track.words==1 && track.bits==bits);
+ track.tracking=1;
+ if(failure==4 || !failure) protect_all();
+ if(failure==2 || !failure) {
+  assert(os_track_fault(0x1000)==0); assert(os_track_fault(0x4000)==0);
+  assert(os_track_fault(0x2001)==1); assert(bits[0]==2);
+ }
+ if(failure==3 || !failure) {
+  track.unprotects=UNPROTECT_LIMIT; assert(os_track_fault(0x3001)==1); assert(track.all);
+ }
+ if(failure==5) fatal("injected restore operation",ENOMEM);
+ assert(!failure && calls==3); return 0;
+}
+'''
+                functions = "\n".join(signature + "\n" + function(primitive if name == "os_host_failure" else checkpoint, name)
+                                      for name, signature in signatures.items())
+                source = source.replace("FUNCTIONS", functions)
+                self.compile_run(source, ("0",))
+                for failure in range(1, 6):
+                    self.compile_run(source, (str(failure),), expected=87)
+                # A planted panic classification must fail the same exit oracle.
+                old = source.replace("os_host_failure();", "_exit(86);", 1)
+                with self.assertRaises(AssertionError):
+                    self.compile_run(old, ("2",), expected=87)
+                self.assertNotIn("RESTORE_FAILED", checkpoint)
+                mmu = postimage(PATCHES / series / "0008-um-harmony-checkpoint.patch",
+                                "arch/um/kernel/skas/mmu.c")
+                rebuild = function(mmu, "um_checkpoint_rebuild_stubs")
+                self.assertNotIn("panic(", rebuild)
+                self.assertIn("os_host_failure();", rebuild)
+
     def test_uml_substrate_failures_have_reserved_host_status_on_both_architectures(self):
         for series, filename in [("um", "0016-um-harmony-host-failure-provenance.patch"),
                                  ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
