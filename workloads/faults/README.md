@@ -431,6 +431,10 @@ expected certificates. Missing suffixes execute and check each actual prefix
 before the next action or publication, so an intermediate divergence cannot be
 hidden by a converged final endpoint. Snapshot standalone capture still reads
 fresh live evidence; no whole-state digest is cached across operations.
+Cached-child hits do not materialize the action prefix. New execution still
+materializes the actions required by branch configuration and window scheduling;
+that work scales with prefix length. Missing-prefix checks traverse the expected
+suffix once and compare borrowed receipts rather than repeatedly walking ancestors.
 
 Fault caches use exact fixed-width action-path roots. The cache object commitment
 binds both the admitted machine target and opaque captured-history attachment;
@@ -438,6 +442,9 @@ different histories for one action path quarantine the namespace even if final
 machine states agree. Page, inherited-page, omitted-page, host-image and lease
 checks remain enabled. This removes repeated historical VM work, not the data
 integrity scans required by those checks.
+Child publication selects the lease of the actual restored parent point, including
+when another sibling remains resident. Runnable, terminal and interrupted-rebuild
+observations all exclude park and read evidence at or before the previous endpoint.
 
 Checkpoint histories use a validated flat encoding with explicit versions and
 iterative destruction. Restore canonicalizes validated expected histories into

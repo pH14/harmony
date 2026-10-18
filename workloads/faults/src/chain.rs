@@ -196,11 +196,9 @@ impl Chain {
     }
 
     #[must_use]
-    pub fn parent_for(&self, len: usize) -> Option<(SnapId, &Lease)> {
-        let link = self.links.last()?;
-        (link.len.saturating_add(1) == len)
-            .then_some(link)
-            .and_then(|link| link.lease.as_ref().map(|lease| (link.point.snap, lease)))
+    pub fn parent_for(&self, parent: Point) -> Option<(SnapId, &Lease)> {
+        let link = self.links.iter().find(|link| link.point == parent)?;
+        link.lease.as_ref().map(|lease| (link.point.snap, lease))
     }
 }
 
@@ -314,6 +312,51 @@ mod tests {
     }
 
     #[test]
+    fn parent_lease_uses_the_selected_point_instead_of_a_later_sibling() {
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::exact(&[b"sibling-parent"]);
+        let mut chain = chain(Some(Shared {
+            index: index.clone(),
+            namespace,
+        }));
+        let mut leases = Vec::new();
+        for (snap, ticks) in [(1, 1), (2, 2)] {
+            let receipt = child(&root(), ticks);
+            let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+            write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+            let lease = index
+                .publish(
+                    namespace,
+                    &receipt.path(),
+                    None,
+                    extent,
+                    [ticks as u8; 32],
+                    1,
+                )
+                .unwrap();
+            leases.push(index.lookup(namespace, &receipt.path()).unwrap());
+            chain
+                .push_history(point(snap), Some(lease), receipt)
+                .unwrap();
+        }
+        let (snapshot, parent) = chain.parent_for(point(1)).unwrap();
+        assert_eq!(snapshot, SnapId(1));
+        assert_eq!(parent, &leases[0]);
+        assert_ne!(parent, &leases[1]);
+        for lease in leases {
+            index.release(lease);
+        }
+        assert!(
+            chain
+                .parent_for(Point {
+                    snap: SnapId(1),
+                    moment: 999
+                })
+                .is_none()
+        );
+    }
+
+    #[test]
     fn exact_cache_leases_follow_certified_depth_and_release_on_drop() {
         let index = Arc::new(LocalIndex::new(1 << 20));
         let namespace = Namespace::exact(&[b"certified-chain"]);
@@ -331,7 +374,9 @@ mod tests {
                 .publish(
                     namespace,
                     &receipt.path(),
-                    chain.parent_for(depth).map(|(_, lease)| lease),
+                    chain
+                        .parent_for(point(depth as u64 - 1))
+                        .map(|(_, lease)| lease),
                     extent,
                     [17; 32],
                     1,
@@ -342,8 +387,8 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(index.stats().leased, CHAIN_LIMIT);
-        assert!(chain.parent_for(41).is_some());
-        assert!(chain.parent_for(40).is_none());
+        assert!(chain.parent_for(point(40)).is_some());
+        assert!(chain.parent_for(point(41)).is_none());
         drop(chain);
         assert_eq!(index.stats().leased, 0);
         let lease = index.lookup(namespace, &receipt.path()).unwrap();
