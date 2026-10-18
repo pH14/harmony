@@ -335,10 +335,12 @@ impl Store {
             dirty_set.insert(gfn);
         }
 
+        let timing = self.verification_batch();
         let mut verified_pages = BTreeSet::new();
         for (&gfn, &pref) in &inherited {
             self.page_entry(pref, gfn, &mut verified_pages)?;
         }
+        drop(timing);
         for &pref in inherited.values() {
             if let PageRef::Data(id) = pref {
                 let entry = self.pages[id.get() - 1].as_mut().expect("inherited page");
@@ -1196,6 +1198,7 @@ impl<'store> ReadTransaction<'store> {
         }
 
         let Some(from) = from else {
+            let _timing = store.verification_batch();
             return (0..store.cfg.mem_pages)
                 .map(|gfn| {
                     let (_, page) = store.page_entry(
@@ -1404,6 +1407,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)]
     fn verification_batch_errors_restore_standalone_timing_and_exact_counts() {
         let mut store = Store::new(cfg(2));
         let mut builder = store.begin_base();
@@ -1411,19 +1415,32 @@ mod tests {
         let snap = builder.seal(Vec::new());
         let slot = store.pages.iter().position(Option::is_some).unwrap();
         store.pages[slot].as_mut().unwrap().data[0] ^= 1;
-        assert!(store.verify_snapshot_pages(snap).is_err());
+        let failed: Result<(), StoreError> = (|| {
+            let mut timing = store.verification_batch();
+            timing.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+            store.verify_snapshot_pages(snap)?;
+            Ok(())
+        })();
+        assert!(failed.is_err());
         assert_eq!(store.verification_batch_depth.get(), 0);
         let after_batch = store.verification_telemetry();
         assert_eq!(after_batch.resident_hashes, 1);
         assert_eq!(after_batch.resident_bytes, PAGE_SIZE as u64);
         assert_eq!(after_batch.errors, 1);
-        assert!(store.materialize(snap).is_err());
+        assert!(after_batch.nanos >= 1_000_000_000);
+        let failed: Result<(), StoreError> = (|| {
+            let mut timing = store.verification_batch();
+            timing.started = Some(std::time::Instant::now() - std::time::Duration::from_secs(1));
+            store.materialize(snap)?;
+            Ok(())
+        })();
+        assert!(failed.is_err());
         assert_eq!(store.verification_batch_depth.get(), 0);
         let after_materialize = store.verification_telemetry();
         assert_eq!(after_materialize.resident_hashes, 2);
         assert_eq!(after_materialize.resident_bytes, 2 * PAGE_SIZE as u64);
         assert_eq!(after_materialize.errors, 2);
-        assert!(after_materialize.nanos >= after_batch.nanos);
+        assert!(after_materialize.nanos - after_batch.nanos >= 1_000_000_000);
         let outer = store.verification_batch();
         let inner = store.verification_batch();
         assert!(outer.started.is_some());

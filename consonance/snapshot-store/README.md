@@ -170,9 +170,12 @@ counts resolved page-record checks, including zero and alias requests;
 `memo_hits` counts resident slots already verified in the current read
 transaction. `zero_requests` counts implicit zero checks, which hash no resident
 bytes. `resident_hashes` and `resident_bytes` count actual BLAKE3 feeds. `ns` measures
-resident verification envelopes: full verification and materialization use one
-timer per batch, including traversal and memo checks, while standalone checks
-time the individual digest. It is not pure BLAKE3 CPU time. Batches avoid clock
+resident verification envelopes. Full verification includes layer traversal and
+memo checks in one batch. Full-image restore includes frame resolution and memo
+checks. Flattening times verification of the already resolved inherited records;
+materialization times verification of the already resolved frames. Those batches
+exclude initial record-map construction and subsequent image allocation/copying.
+Standalone checks time the individual digest. It is not pure BLAKE3 CPU time. Batches avoid clock
 reads per resident page and retain elapsed time on errors. This includes
 unchanged-page checks outside read transactions. Materialization keeps its
 existing per-frame checks; it does not acquire a new memoization policy.
