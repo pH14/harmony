@@ -122,6 +122,7 @@ class StructureTests(unittest.TestCase):
             "grep -Eq 'test result: ok\\. 1 passed;'",
             "client_test session::tests::sealed_host_admits_public_session_identity",
             "client_test session::worker::tests::sealed_host_reexecs_a_public_worker",
+            "client_test session::worker::tests::shared_launcher_forks_session_telemetry_owners",
             "client_test session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown",
             "client_test session::uml::tests::host_signal_abandons_instead_of_reporting_guest_shutdown",
             "client_test session::uml::tests::host_clone_status_abandons_instead_of_reporting_guest_shutdown",
@@ -134,6 +135,7 @@ class StructureTests(unittest.TestCase):
             "client_test session::worker::tests::killed_worker_processes_release_their_leases_and_keep_the_cache_consistent",
             "client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease",
             "sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact",
+            "sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact",
             "recording::tests::sealed_host_admits_public_recording_round_trip -- --exact",
             "-p uml --test terminal_console_limit console_limit_is_settled_after_a_provisional_terminal_stop -- --exact",
         ):
