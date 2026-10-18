@@ -325,10 +325,51 @@ fn smccc_workaround_two_is_unavailable_to_the_frozen_guest() {
 fn restore_drops_guest_translations_cached_before_it() {
     let mut guest = Guest::new(&read_page(false));
 
+    let physical_start = guest.backend.physical_telemetry();
     warm_translation_to_page_a(&mut guest);
+    let physical_warm = guest.backend.physical_telemetry();
+    assert!(
+        physical_warm
+            .cost(
+                vmm_backend::RunPlatform::HvfArm64,
+                vmm_backend::RunPurpose::Guest
+            )
+            .entries
+            > physical_start
+                .cost(
+                    vmm_backend::RunPlatform::HvfArm64,
+                    vmm_backend::RunPurpose::Guest
+                )
+                .entries
+    );
     guest.map_probe_page(OFF_PAGE_B);
     guest.load(&read_page(true));
     guest.restart();
+    let physical_restored = guest.backend.physical_telemetry();
+    assert!(
+        physical_restored
+            .cost(
+                vmm_backend::RunPlatform::HvfArm64,
+                vmm_backend::RunPurpose::Maintenance
+            )
+            .entries
+            > physical_warm
+                .cost(
+                    vmm_backend::RunPlatform::HvfArm64,
+                    vmm_backend::RunPurpose::Maintenance
+                )
+                .entries
+    );
+    assert_eq!(
+        physical_restored.cost(
+            vmm_backend::RunPlatform::HvfArm64,
+            vmm_backend::RunPurpose::Guest
+        ),
+        physical_warm.cost(
+            vmm_backend::RunPlatform::HvfArm64,
+            vmm_backend::RunPurpose::Guest
+        )
+    );
     assert_eq!(
         guest.next_store(),
         VALUE_B,
