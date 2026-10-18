@@ -26,7 +26,8 @@
   descriptors remain open through child spawn, so later path changes cannot
   substitute different bytes for the verified profile. The child receives the
   executable at descriptor 240 and rootfs at 241; an initramfs override uses
-  242. These stable numbers let a checkpoint captured by one worker restore in
+  242. The launcher also reserves 243 for each child's owned work directory.
+  These stable numbers let a checkpoint captured by one worker restore in
   another even when their parent descriptor layouts differ. The launcher
   reserves those numbers for its lifetime and refuses profiles if another host
   resource already occupies one.
@@ -64,8 +65,14 @@
 - `Launch` builds the UML command line: memory size, initramfs,
   `seccomp=on`, `time-travel=inf-cpu` starting at zero, console 0 on the
   output pipe, every other console and serial line on `null`, and a
-  per-launch work directory for
-  `TMPDIR` and `uml_dir`. The environment is cleared except for `TMPDIR`,
+  per-launch work directory. On Linux, `TMPDIR` and `uml_dir` both name the
+  stable `/proc/self/fd/243` role, with that descriptor pointing to the child's
+  actual directory. The random host pathname never enters the kernel's
+  arguments or environment. `Guest::start` opens the owned directory without
+  following a symlink and installs it after caller callbacks, so an earlier
+  callback cannot replace the final descriptor. A fresh restore keeps the new
+  process's directory handle; copied kernel strings continue to address that
+  process's own files. The environment is cleared except for `TMPDIR`,
   `GLIBC_TUNABLES`, and the pinned boot CPU-info and auxiliary-vector values
   passed at `Guest::start`.
   With a `Bridge`, it adds `harmony_fd=3` and the boot seed.
@@ -190,9 +197,15 @@
   `Checkpoints::import` reproduces the published checkpoint only onto a base
   with the publisher's digest, because a base also holds per-process host
   values: the C library's stack canary and pointer guard, host process IDs
-  and the work directory name. `Session::state_hash` refuses a full-state
-  digest because a stable cross-process identity for guest memory is not yet
-  available. `bridge_state_digest` covers only services and the pending request;
+  and native runtime bookkeeping. The stable directory role removes pathname
+  entropy but does not canonicalize these remaining fields. The raw image also
+  includes signal stacks and suspended guest kernel call frames: those cannot
+  be omitted as host scratch space. A canonical identity needs typed ownership
+  and liveness for these bytes and for aliases of host resource values. Guarded
+  runtime pointers must preserve their decoded targets when their per-process
+  keys differ. No such canonical checkpoint ABI is currently defined.
+  `Session::state_hash` refuses a full-state digest because a stable
+  cross-process identity for guest memory is not yet available. `bridge_state_digest` covers only services and the pending request;
   the client combines it with the full setup checkpoint digest for its
   setup-scoped cache identity. It must not be compared as a whole-state replay
   proof. Sessions are Linux only.
@@ -241,11 +254,30 @@
 The parent-death signal follows the thread that spawned the guest, so a guest
 must be started from a thread that outlives it.
 
+For canonical-state investigation, set `UML_STATE_DIAGNOSTICS_DIR` to an existing
+empty directory when running the checkpoint qualification suite. Its import
+checks retain full raw page journals, sidecars and capture/export costs at the
+source setup and target cuts, repeated captures of each paused setup,
+in-place/fresh target restores, and an independent setup. Each fixture and cut
+owns a new directory; existing witnesses are never replaced. A page journal
+record is the little-endian GFN, 32-byte page-store hash and 4096 page bytes;
+the metadata declares its format and reserved image region. This opt-in path
+checks that diagnostic captures preserve bridge events and virtual time. These
+are raw investigation bytes and a raw checkpoint digest, with no canonical
+whole-state claim. `Session::state_hash` remains explicitly unavailable.
+
 `harmony-uml-qualify` is the qualification binary described in
 `consonance/harmony-linux/uml/README.md`. Qualification CI builds it as a
 static-musl executable. Its suites reexec from a fully sealed memfd before
 using public Recording and Session admission, both natively and inside the
 Docker qualification container.
+
+The checkpoint suite restores into a separate directory with spaces and a
+different pathname length, then exercises capture/restore detours and complete
+continuations. The source remains paused while the restored process exits;
+its kernel-owned `harmony/pid` must remain unchanged. Both actual directories
+must be cleaned after their owners exit. This catches restoration of a source
+pathname that would make destination cleanup delete the source's files.
 
 The crate's `unsafe` blocks are host system calls: sequenced-packet sockets,
 descriptor passing, `memfd_create`, fixed mappings and process-group signals.

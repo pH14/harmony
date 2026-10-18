@@ -31,6 +31,8 @@ const KERNEL_FD: i32 = 240;
 const ROOTFS_FD: i32 = 241;
 #[cfg(target_os = "linux")]
 const INITRAMFS_FD: i32 = 242;
+#[cfg(target_os = "linux")]
+pub(crate) const WORK_DIRECTORY_FD: i32 = 243;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -364,13 +366,13 @@ fn child_path(fd: i32) -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn reserved_child_fds() -> io::Result<&'static [OwnedFd; 3]> {
-    static RESERVED: OnceLock<Result<[OwnedFd; 3], String>> = OnceLock::new();
+pub(crate) fn reserved_child_fds() -> io::Result<&'static [OwnedFd; 4]> {
+    static RESERVED: OnceLock<Result<[OwnedFd; 4], String>> = OnceLock::new();
     RESERVED
         .get_or_init(|| {
             let source = File::open("/dev/null").map_err(|error| error.to_string())?;
             let mut reserved = Vec::new();
-            for target in [KERNEL_FD, ROOTFS_FD, INITRAMFS_FD] {
+            for target in [KERNEL_FD, ROOTFS_FD, INITRAMFS_FD, WORK_DIRECTORY_FD] {
                 // SAFETY: fcntl(2) duplicates a live source descriptor, and
                 // from_raw_fd takes ownership only after a successful call.
                 let duplicate =
@@ -808,7 +810,64 @@ mod tests {
         assert_eq!(child_path(KERNEL_FD), PathBuf::from("/proc/self/fd/240"));
         assert_eq!(child_path(ROOTFS_FD), PathBuf::from("/proc/self/fd/241"));
         assert_eq!(child_path(INITRAMFS_FD), PathBuf::from("/proc/self/fd/242"));
-        const { assert!(KERNEL_FD > 4 && KERNEL_FD < ROOTFS_FD && ROOTFS_FD < INITRAMFS_FD) };
+        assert_eq!(
+            child_path(WORK_DIRECTORY_FD),
+            PathBuf::from("/proc/self/fd/243")
+        );
+        const {
+            assert!(
+                KERNEL_FD > 4
+                    && KERNEL_FD < ROOTFS_FD
+                    && ROOTFS_FD < INITRAMFS_FD
+                    && INITRAMFS_FD < WORK_DIRECTORY_FD
+            )
+        };
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn occupied_work_directory_slot_is_refused_without_overwriting_its_owner() {
+        use std::os::unix::process::CommandExt;
+
+        const CHILD: &str = "HARMONY_WORK_DIRECTORY_SLOT_TEST_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let error = reserved_child_fds().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("launcher descriptor 243 is already in use")
+            );
+            assert_eq!(std::fs::read("/proc/self/fd/243").unwrap(), b"owned");
+            return;
+        }
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("owner");
+        std::fs::write(&path, b"owned").unwrap();
+        let owner = File::open(path).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args([
+            "--exact",
+            "profile::tests::occupied_work_directory_slot_is_refused_without_overwriting_its_owner",
+        ]);
+        command.env(CHILD, "1");
+        // SAFETY: the callback owns its source file and duplicates it only
+        // into the child descriptor table before exec, retaining its owner.
+        unsafe {
+            command.pre_exec(move || {
+                if libc::dup2(owner.as_raw_fd(), WORK_DIRECTORY_FD) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
     }
 
     fn write_profile(directory: &Path, edit: impl FnOnce(&mut Profile)) -> Profile {
