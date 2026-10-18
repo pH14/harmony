@@ -776,6 +776,7 @@ CONSONANCE_UML = Workflow(
                 "uml::guest_exitcode guest_cannot_choose_host_reserved_exit_statuses",
                 "uml::host_clone_exhaustion host_clone_quota_exhaustion_is_not_a_guest_fork_result",
                 "uml::host_failure_provenance *",
+                "uml::checkpoint_host_failure dirty_page_failure_after_a_published_checkpoint_is_infrastructure",
                 "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
             ),
             select="rust_checks"),

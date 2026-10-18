@@ -17,6 +17,7 @@ const OFFSET_NR: u32 = 0;
 const OFFSET_ARCH: u32 = 4;
 const OFFSET_ARG0: u32 = 16;
 const OFFSET_ARG1: u32 = 24;
+const OFFSET_ARG2: u32 = 32;
 const KVM_IOCTL_TYPE: u32 = 0xae00;
 const INVALID_PTRACE_REQUEST: libc::c_long = 0x7fff_ffff;
 const PERSONALITY_QUERY: u32 = 0xffff_ffff;
@@ -61,6 +62,28 @@ fn host_program() -> Vec<libc::sock_filter> {
         statement(BPF_ALU_AND_K, 0xff00),
         jump(KVM_IOCTL_TYPE, 0, 1),
         statement(BPF_RET_K, RET_ERRNO | libc::EPERM as u32),
+        statement(BPF_RET_K, RET_ALLOW),
+    ]
+}
+
+fn checkpoint_unprotect_program() -> Vec<libc::sock_filter> {
+    vec![
+        statement(BPF_LD_W_ABS, OFFSET_ARCH),
+        jump(AUDIT_ARCH, 1, 0),
+        statement(BPF_RET_K, RET_KILL_PROCESS),
+        statement(BPF_LD_W_ABS, OFFSET_NR),
+        jump(number(libc::SYS_mprotect), 0, 7),
+        statement(BPF_LD_W_ABS, OFFSET_ARG1),
+        jump(4096, 0, 5),
+        statement(BPF_LD_W_ABS, OFFSET_ARG1 + 4),
+        jump(0, 0, 3),
+        statement(BPF_LD_W_ABS, OFFSET_ARG2),
+        jump(
+            (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u32,
+            0,
+            1,
+        ),
+        statement(BPF_RET_K, RET_ERRNO | libc::ENOMEM as u32),
         statement(BPF_RET_K, RET_ALLOW),
     ]
 }
@@ -148,8 +171,15 @@ pub fn deny_host_virtualization() -> Result<Value, String> {
     Ok(json!({"ptrace": "EPERM", "kvm_ioctl": "EPERM"}))
 }
 
+pub fn deny_checkpoint_unprotect(command: &mut Command) {
+    install_in_child(command, checkpoint_unprotect_program());
+}
+
 pub fn deny_seccomp_install(command: &mut Command) {
-    let mut program = seccomp_install_program();
+    install_in_child(command, seccomp_install_program());
+}
+
+fn install_in_child(command: &mut Command, mut program: Vec<libc::sock_filter>) {
     // SAFETY: the closure runs in the forked child before exec. It installs a
     // program allocated before the fork and calls only prctl(2), which is
     // async-signal-safe; it performs no allocation or locking.
@@ -194,6 +224,68 @@ fn personality_change_filter(command: &mut Command, preserve_layout: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn evaluate(program: &[libc::sock_filter], syscall: u32, length: u64, protection: u32) -> u32 {
+        let mut data = [0_u32; 16];
+        data[OFFSET_ARCH as usize / 4] = AUDIT_ARCH;
+        data[OFFSET_NR as usize / 4] = syscall;
+        data[OFFSET_ARG1 as usize / 4] = length as u32;
+        data[(OFFSET_ARG1 + 4) as usize / 4] = (length >> 32) as u32;
+        data[OFFSET_ARG2 as usize / 4] = protection;
+        let mut accumulator = 0;
+        let mut pc = 0;
+        loop {
+            let instruction = &program[pc];
+            pc += 1;
+            match instruction.code {
+                BPF_LD_W_ABS => accumulator = data[instruction.k as usize / 4],
+                BPF_JMP_JEQ_K => {
+                    pc += usize::from(if accumulator == instruction.k {
+                        instruction.jt
+                    } else {
+                        instruction.jf
+                    })
+                }
+                BPF_RET_K => return instruction.k,
+                _ => panic!("unsupported filter opcode"),
+            }
+        }
+    }
+
+    #[test]
+    fn checkpoint_injection_denies_only_one_page_rwx_mprotect() {
+        let program = checkpoint_unprotect_program();
+        let rwx = (libc::PROT_READ | libc::PROT_WRITE | libc::PROT_EXEC) as u32;
+        assert_eq!(
+            evaluate(&program, number(libc::SYS_mprotect), 4096, rwx),
+            RET_ERRNO | libc::ENOMEM as u32
+        );
+        for length in [0, 8192, (1_u64 << 32) + 4096] {
+            assert_eq!(
+                evaluate(&program, number(libc::SYS_mprotect), length, rwx),
+                RET_ALLOW
+            );
+        }
+        for protection in [
+            libc::PROT_NONE,
+            libc::PROT_READ,
+            libc::PROT_READ | libc::PROT_EXEC,
+        ] {
+            assert_eq!(
+                evaluate(
+                    &program,
+                    number(libc::SYS_mprotect),
+                    4096,
+                    protection as u32
+                ),
+                RET_ALLOW
+            );
+        }
+        assert_eq!(
+            evaluate(&program, number(libc::SYS_mmap), 4096, rwx),
+            RET_ALLOW
+        );
+    }
 
     #[test]
     #[cfg(not(miri))]
