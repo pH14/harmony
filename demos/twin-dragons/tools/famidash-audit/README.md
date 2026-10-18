@@ -9,6 +9,19 @@ It does not change the arcade's game rules, hide escaped states, or infer a
 bug from a map pixel. Geometry comes from the actual level source and its
 metatile collision definitions.
 
+The original `audit.mjs scan` uses custom input mutations, **not Dissonance**.
+For actual arcade-engine searches, use `dissonance.mjs` and the
+[Dissonance investigation package](findings/dissonance/README.md). It includes
+independently reproduced openings in Stereo Madness and Base After Base,
+tested release repairs, and a Dissonance reproduction of the known Fofii bug.
+
+A completing route can itself exploit a bug: the existing Base After Base
+route enters a hollow block through a missing wall. It is not a trustworthy
+definition of the intended corridor. The Dissonance runner now reports
+reference-route interior signals and disables their reference bounds;
+geometry signals remain independent of those bounds. A new clearing route
+found on the repaired ROM is retained with the Base After Base witnesses.
+
 ## What is generic
 
 1. **Export the release geometry.** `source.py` reads all 109 levels in ROM
@@ -16,10 +29,11 @@ metatile collision definitions.
    reordered Tiled tilesets and bottom-aligned world coordinates. It requires
    a clean checkout at the release revision. It never runs upstream Python
    modules or their automatic package installation.
-2. **Establish a normal-play control.** Play the checked-in clearing route
+2. **Establish a control and review its legality.** Play the checked-in clearing route
    without debug/invincibility assistance or map-builder palette writes. It
    must reach the actual level-complete state. Missing, assisted, dying and
-   incomplete routes are reported as unassessed.
+   incomplete routes are reported as unassessed. Completion alone does not
+   establish that the route stays inside the intended course.
 3. **Search deviations.** Seeded input variations branch from control-route
    checkpoints. The first detector looks for a player more than 32 pixels
    below the nearby control route, inside source tiles `X_NO_OUTLINE` or

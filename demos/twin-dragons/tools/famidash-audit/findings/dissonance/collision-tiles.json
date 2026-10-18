@@ -1,0 +1,83 @@
+[
+  {
+    "file": "stereo-escape.json.gz",
+    "frame": 4619,
+    "observation": {
+      "level": 0,
+      "state": 2,
+      "x": 12721,
+      "y": 750,
+      "camera": 718,
+      "vy": 0,
+      "mode": 1,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": false,
+      "debug": 0,
+      "invincible": 0,
+      "paused": 0
+    },
+    "source_tile": {
+      "column": 795,
+      "row": 17,
+      "id": 47
+    },
+    "collision_map_tile": 47,
+    "collision_map_address": 25387
+  },
+  {
+    "file": "base-floor.json.gz",
+    "frame": 1111,
+    "observation": {
+      "level": 4,
+      "state": 2,
+      "x": 3020,
+      "y": 865,
+      "camera": 705,
+      "vy": 0,
+      "mode": 0,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": false,
+      "debug": 0,
+      "invincible": 0,
+      "paused": 0
+    },
+    "source_tile": {
+      "column": 189,
+      "row": 24,
+      "id": 47
+    },
+    "collision_map_tile": 47,
+    "collision_map_address": 25501
+  },
+  {
+    "file": "base-ceiling.json.gz",
+    "frame": 3280,
+    "observation": {
+      "level": 4,
+      "state": 2,
+      "x": 9018,
+      "y": 766,
+      "camera": 710,
+      "vy": 0,
+      "mode": 1,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": false,
+      "debug": 0,
+      "invincible": 0,
+      "paused": 0
+    },
+    "source_tile": {
+      "column": 564,
+      "row": 18,
+      "id": 47
+    },
+    "collision_map_tile": 47,
+    "collision_map_address": 25396
+  }
+]

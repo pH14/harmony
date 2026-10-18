@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/stereomadness.tmx",
+      "before_sha256": "694664028d0be6a8c10935b420622d69ac5a46db9170839b2a3460d3520e41b8",
+      "after_sha256": "86977a64d3b22c025f625f43aec4b7a2e6d854a01dc54f836e1b2127dea751c2",
+      "edits": [
+        {
+          "column": 795,
+          "row": 16,
+          "from_gid": 40,
+          "to_gid": 35
+        },
+        {
+          "column": 795,
+          "row": 17,
+          "from_gid": 48,
+          "to_gid": 35
+        },
+        {
+          "column": 795,
+          "row": 18,
+          "from_gid": 0,
+          "to_gid": 40
+        }
+      ]
+    },
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/baseafterbase.tmx",
+      "before_sha256": "21d62113fb6dd1c94bce0b51872da985b085c1510e234b3dd67193c4b3d525d6",
+      "after_sha256": "166e26bdcedf542080c8913d29f7c9614852afabc62bb1461392265f673d94dd",
+      "edits": [
+        {
+          "column": 188,
+          "row": 24,
+          "from_gid": 48,
+          "to_gid": 35
+        },
+        {
+          "column": 564,
+          "row": 17,
+          "from_gid": 48,
+          "to_gid": 35
+        },
+        {
+          "column": 564,
+          "row": 18,
+          "from_gid": 48,
+          "to_gid": 35
+        }
+      ]
+    }
+  ],
+  "status": "source-proposal-needs-export-build-and-replay",
+  "evidence": [
+    "Dissonance seed 6 unmodified 1.2.8 main ROM; independently replayed Stereo Madness ceiling escape. Current-upstream ROM still requires build and replay."
+  ]
+}

@@ -1,0 +1,133 @@
+{
+  "schema": 1,
+  "runs": [
+    {
+      "run": "main-6",
+      "engine": "dissonance-campaign",
+      "options": {
+        "side": "main",
+        "level": 0,
+        "seed": 6,
+        "executions": 80000,
+        "tail": 32
+      },
+      "executions": 80000,
+      "observations_by_level": {
+        "0": 14145,
+        "1": 11307,
+        "2": 15975,
+        "3": 12515,
+        "4": 15169,
+        "5": 14699
+      },
+      "candidate_count": 93,
+      "replay_mismatches": 0,
+      "inspected_snapshots": 31370,
+      "unavailable_snapshots": 781,
+      "search_wasm_sha256": "25d8e3053fd568d617b128dcb4b8f25e195852e315a64b09238197175e597f1c",
+      "bindings_sha256": "253c6e8b114eebaf22d9c125cd9653a1ac89277415685fac372d9436ac293b4d",
+      "source_index_sha256": "096699d0ce9b452ee343dadc1356774d165b2ca5ce88d5ede35fcd7762694e27",
+      "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+      "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+      "report_sha256": "ac03f09bdd8e18de2aad543523430c2c7026ccbf211b6d458ea9c128992376ee",
+      "clearing": null
+    },
+    {
+      "run": "main-7",
+      "engine": "dissonance-campaign",
+      "options": {
+        "side": "main",
+        "level": 6,
+        "seed": 7,
+        "executions": 50000,
+        "tail": 32,
+        "checkpoint": 0
+      },
+      "executions": 50000,
+      "observations_by_level": {
+        "6": 17748,
+        "7": 21151,
+        "8": 14190
+      },
+      "candidate_count": 31,
+      "replay_mismatches": 0,
+      "inspected_snapshots": 14990,
+      "unavailable_snapshots": 406,
+      "search_wasm_sha256": "25d8e3053fd568d617b128dcb4b8f25e195852e315a64b09238197175e597f1c",
+      "bindings_sha256": "253c6e8b114eebaf22d9c125cd9653a1ac89277415685fac372d9436ac293b4d",
+      "source_index_sha256": "096699d0ce9b452ee343dadc1356774d165b2ca5ce88d5ede35fcd7762694e27",
+      "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+      "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+      "report_sha256": "153cd873d1f99644969f527fca3e69db44ff05ce7682b56ee57caad2dcef69b2",
+      "clearing": null
+    },
+    {
+      "run": "base-fixed-search",
+      "engine": "dissonance-campaign",
+      "options": {
+        "side": "main",
+        "level": 4,
+        "seed": 1,
+        "executions": 100000,
+        "tail": 32,
+        "checkpoint": 0,
+        "clear": 1
+      },
+      "executions": 17504,
+      "observations_by_level": {
+        "4": 18446,
+        "5": 2
+      },
+      "candidate_count": 0,
+      "replay_mismatches": 0,
+      "inspected_snapshots": 6115,
+      "unavailable_snapshots": 145,
+      "search_wasm_sha256": "25d8e3053fd568d617b128dcb4b8f25e195852e315a64b09238197175e597f1c",
+      "bindings_sha256": "253c6e8b114eebaf22d9c125cd9653a1ac89277415685fac372d9436ac293b4d",
+      "source_index_sha256": "096699d0ce9b452ee343dadc1356774d165b2ca5ce88d5ede35fcd7762694e27",
+      "rom_sha256": "c835ef71af6b5e282a0c2c2304636510f78712569973f0a201d7bfcea0396fe6",
+      "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+      "report_sha256": "e242441c4d85b6731dc1f761abbc4f9682968bbde74c2284b0e20d677e57c19f",
+      "clearing": {
+        "file": "clearing-route.json.gz",
+        "sha256": "18eb0debca5379fac875435ab7604c97649c0943e00fad0754c552cac77274cb",
+        "frames": 4973
+      }
+    },
+    {
+      "run": "final-control",
+      "engine": "dissonance-campaign",
+      "options": {
+        "side": "b",
+        "level": 6,
+        "seed": 1,
+        "executions": 4096,
+        "tail": 150,
+        "checkpoint": 1200,
+        "clear": 0
+      },
+      "executions": 4096,
+      "observations_by_level": {
+        "6": 4292
+      },
+      "candidate_count": 11,
+      "replay_mismatches": 0,
+      "inspected_snapshots": 881,
+      "unavailable_snapshots": 15,
+      "search_wasm_sha256": "25d8e3053fd568d617b128dcb4b8f25e195852e315a64b09238197175e597f1c",
+      "bindings_sha256": "253c6e8b114eebaf22d9c125cd9653a1ac89277415685fac372d9436ac293b4d",
+      "source_index_sha256": "096699d0ce9b452ee343dadc1356774d165b2ca5ce88d5ede35fcd7762694e27",
+      "rom_sha256": "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
+      "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+      "report_sha256": "3f68007efc6659c07e7b77530f1c10f42fdba997325abd560b5af72df45fc0d4",
+      "clearing": null
+    }
+  ],
+  "scope": "Two actual Dissonance campaigns cover the first eight built-in levels, plus a Fofii positive control and a patched Base After Base clearing search. Candidate counts are detector signals, not bug counts. Unreviewed candidates are not exhaustively retained in this package.",
+  "reviewed_findings": [
+    "stereo-escape.json.gz",
+    "base-floor.json.gz",
+    "base-ceiling.json.gz"
+  ],
+  "pending": "Other candidates, including a decorative-fill candidate in Cycles, still require source review."
+}

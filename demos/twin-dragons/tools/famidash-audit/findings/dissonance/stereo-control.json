@@ -1,0 +1,7 @@
+{
+  "status": "clearing-control-identical",
+  "frames": 5124,
+  "sha256": "6573fd9bc940ea62862000c4182693d7e833a594d14b32617ee11fbc5e224544",
+  "fixed_rom_sha256": "f691baa9f492e1353ab552b4bb2d2d8ea51dcdd88ff91cebb50655bb0472a7ea",
+  "escape_dies_frame": 4614
+}

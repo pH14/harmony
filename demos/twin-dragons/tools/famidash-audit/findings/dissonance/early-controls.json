@@ -1,0 +1,45 @@
+{
+  "fixed_rom_sha256": "c835ef71af6b5e282a0c2c2304636510f78712569973f0a201d7bfcea0396fe6",
+  "controls": [
+    {
+      "level": 0,
+      "frames": 5124,
+      "sha256": "6573fd9bc940ea62862000c4182693d7e833a594d14b32617ee11fbc5e224544"
+    },
+    {
+      "level": 1,
+      "frames": 4846,
+      "sha256": "ca0364282894727dba5d249766bde022d182e851c1a219703d51e4299c53fa70"
+    },
+    {
+      "level": 2,
+      "frames": 5355,
+      "sha256": "515b5209a7fc760e4b88b8022646077545aba78ad9759792e31b2ee158f7e0ab"
+    },
+    {
+      "level": 3,
+      "frames": 4823,
+      "sha256": "fbd4b8d4e2b39611f096939727d57670d8dbe034a84c6011e0b62813d4208ba1"
+    },
+    {
+      "level": 4,
+      "frames": 4973,
+      "sha256": "429c7a280f81223a2bc0eda984af18f806f1b357b8e3e945d2d03db7e6651eea"
+    },
+    {
+      "level": 5,
+      "frames": 4788,
+      "sha256": "1258a2fd4f87e0c0cae99712a03876d6b40afa6d1e4015204bd525062ef130f6"
+    },
+    {
+      "level": 6,
+      "frames": 5135,
+      "sha256": "fa24fdb394db887a0eb54c970a0327316ecf57caa8c69ccb16e3bcc2d5220973"
+    },
+    {
+      "level": 7,
+      "frames": 5714,
+      "sha256": "2a5686386b4ff7ff05b6370992c5f8943ff52cc2c6113e40655c974d276b5fe4"
+    }
+  ]
+}

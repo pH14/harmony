@@ -109,6 +109,8 @@ class Fceumm:
 
 
 def verify(core, witness, fixed, intro_frames=0):
+    if witness.get("engine") == "dissonance-campaign":
+        return verify_campaign(core, witness, fixed, intro_frames)
     layout = witness["layout"]
     trace = core.replay(layout["side"], layout["level"], witness["actions"])
     if fixed:
@@ -133,6 +135,47 @@ def verify(core, witness, fixed, intro_frames=0):
             "comparison_start_frame": intro_frames + 1,
             "intro_difference_frames": [i + 1 for i in range(min(intro_frames, len(trace)))
                                         if trace[i] != witness["trace"][i]],
+            "rom_sha256": hashlib.sha256(core.rom).hexdigest()}
+
+
+def verify_campaign(core, witness, fixed, intro_frames):
+    if not fixed:
+        assert hashlib.sha256(core.rom).hexdigest() == witness["rom_sha256"]
+    core.boot(witness["options"]["side"], witness["boot_level"])
+    trace = []
+    for action in witness["actions"]:
+        assert action["buttons"] in (0, 1, 128) and 0 < action["frames"] <= 200000
+        for _ in range(action["frames"]):
+            core.step(action["buttons"])
+            state = core.observe()
+            trace.append(state)
+            if fixed and state["dead"]:
+                break
+        if fixed and trace[-1]["dead"]:
+            break
+    differences = []
+    for frame, (actual, expected) in enumerate(zip(trace, witness["trace"]), 1):
+        if fixed and frame == len(trace):
+            break
+        if actual != expected:
+            differences.append(frame)
+            assert frame <= intro_frames, f"independent campaign replay differs at frame {frame}"
+    if fixed:
+        assert trace[-1]["dead"], "patched input must die"
+        assert len(trace) > witness["first_suspect_frame"] - 64, "patched input died before the reported region"
+    else:
+        assert len(trace) == len(witness["trace"])
+    control_status = "not-included-in-campaign-witness"
+    if "control_actions" in witness:
+        control = core.replay(witness["options"]["side"], witness["target_level"], witness["control_actions"])
+        assert control[-1]["state"] == 3
+        assert len(control) == witness["control_frames"]
+        expected_hash = witness["control_after_intro_sha256"] if intro_frames else witness["control_sha256"]
+        assert trace_hash(control[intro_frames:]) == expected_hash, "clearing control changed"
+        control_status = "verified"
+    return {"schema": 1, "status": "patched-campaign-replay-verified" if fixed else "independent-campaign-replay-verified",
+            "frames": len(trace), "endpoint": trace[-1], "comparison_start_frame": intro_frames + 1,
+            "intro_difference_frames": differences, "clearing_control": control_status,
             "rom_sha256": hashlib.sha256(core.rom).hexdigest()}
 
 

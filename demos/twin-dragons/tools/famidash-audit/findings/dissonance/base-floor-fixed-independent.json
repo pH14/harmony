@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "status": "patched-campaign-replay-verified",
+  "frames": 1103,
+  "endpoint": {
+    "level": 4,
+    "state": 2,
+    "x": 2997,
+    "y": 849,
+    "camera": 698,
+    "vy": 0,
+    "mode": 0,
+    "gravity": 0,
+    "mini": 0,
+    "dual": 0,
+    "dead": true,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "comparison_start_frame": 41,
+  "intro_difference_frames": [
+    1,
+    8
+  ],
+  "clearing_control": "verified",
+  "rom_sha256": "c835ef71af6b5e282a0c2c2304636510f78712569973f0a201d7bfcea0396fe6",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478",
+  "case_sha256": "de0994068468d7c06a67ec739f9461cc6ad6080c2ed14ec86113b183994c07e3"
+}
