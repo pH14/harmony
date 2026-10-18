@@ -392,7 +392,13 @@ reason; they cannot form a runnable session. A host progress timeout remains `Se
 errors. Classification uses owned child status rather than diagnostic text.
 Abandonment reaps the guest and settles its console before returning diagnostics.
 `WorkerSession` preserves typed infrastructure errors through its v2 image hello
-and distinct error tag; they abandon the worker just as progress timeouts do.
+and distinct error tag; they abandon the worker just as progress timeouts do. A
+worker transport disconnect is also infrastructure failure: legitimate guest exits
+arrive in framed stop replies. Complete malformed frames retain control/protocol
+error semantics. Native controls check an owned worker killed by SIGKILL and a
+malformed frame from a peer held alive; the Faults admission guard separately
+checks the resulting typed infrastructure error without requiring a test-only
+public worker factory.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic

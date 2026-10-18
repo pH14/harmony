@@ -391,7 +391,11 @@ completion record. A later search can resume an earlier complete checkpoint.
 The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
 streams and checkpoints with an absent or different policy are refused, including
 the earlier watchdog-only policy. The execution and endpoint-certificate identities
-also advance because observations now encode the distinct infrastructure flag. Ordinary
+also advance because observations now encode the distinct infrastructure flag. The
+combined replay endpoint uses certificate domain v3, binding ordered event history
+and infrastructure-marked observations under one schema. Reading ordered history
+preserves typed host failures and rejects a known abandoned matching session as
+incomplete; missing or mismatched session identities remain ordinary errors. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
 also an infrastructure failure. Completed reports still expose
 `execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to

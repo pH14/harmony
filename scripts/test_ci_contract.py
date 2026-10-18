@@ -49,7 +49,7 @@ class StructureTests(unittest.TestCase):
         jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
         artifacts = jobs["artifacts"]
         steps = {step.get("name"): step for step in artifacts["steps"]}
-        panic = steps["Report a reviewed kernel panic through the public UML client"]
+        panic = steps["Report guest panics and distinguish setup host failures"]
         for architecture in ("X86_64", "AARCH64"):
             self.assertEqual(
                 panic["env"][f"CARGO_TARGET_{architecture}_UNKNOWN_LINUX_MUSL_RUNNER"],
@@ -57,6 +57,10 @@ class StructureTests(unittest.TestCase):
             )
         self.assertIn("--target ${{ matrix.architecture }}-unknown-linux-musl", panic["run"])
         self.assertIn("reviewed_kernel_panic_is_a_public_client_crash", panic["run"])
+        self.assertIn("setup_terminal_status_preserves_host_provenance_and_guest_controls", panic["run"])
+        self.assertIn("setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty", panic["run"])
+        self.assertIn("sealed_worker_sigkill_is_infrastructure_and_guest_stops_are_framed", panic["run"])
+        self.assertIn("worker transport provenance: SIGKILL infrastructure; framed guest panic/shutdown preserved", panic["run"])
         fsgsbase = steps["Check native FS and GS bases across reused and fresh restores"]
         self.assertEqual(fsgsbase["if"], "matrix.architecture == 'x86_64'")
         self.assertEqual(
