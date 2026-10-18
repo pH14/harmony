@@ -9,6 +9,14 @@ pub(crate) enum GuardSite {
     SessionBoundary,
     ParentRpcBefore,
     ParentRpcAfter,
+    ParentExportBefore,
+    ParentExtentRequested,
+    ParentExtentAllocated,
+    ParentExportCompleted,
+    ChildExtentBefore,
+    ChildExtentSent,
+    ChildExtentReceived,
+
     LauncherBefore,
     LauncherAfter,
     ChildReceive,
@@ -23,11 +31,18 @@ pub(crate) enum GuardSite {
 }
 
 impl GuardSite {
-    const ALL: [Self; 15] = [
+    const ALL: [Self; 22] = [
         Self::Admission,
         Self::SessionBoundary,
         Self::ParentRpcBefore,
         Self::ParentRpcAfter,
+        Self::ParentExportBefore,
+        Self::ParentExtentRequested,
+        Self::ParentExtentAllocated,
+        Self::ParentExportCompleted,
+        Self::ChildExtentBefore,
+        Self::ChildExtentSent,
+        Self::ChildExtentReceived,
         Self::LauncherBefore,
         Self::LauncherAfter,
         Self::ChildReceive,
@@ -46,6 +61,14 @@ impl GuardSite {
             Self::SessionBoundary => "session_boundary",
             Self::ParentRpcBefore => "rpc_before",
             Self::ParentRpcAfter => "rpc_after",
+            Self::ParentExportBefore => "export_before",
+            Self::ParentExtentRequested => "extent_requested",
+            Self::ParentExtentAllocated => "extent_allocated",
+            Self::ParentExportCompleted => "export_completed",
+            Self::ChildExtentBefore => "extent_before",
+            Self::ChildExtentSent => "extent_sent",
+            Self::ChildExtentReceived => "extent_received",
+
             Self::LauncherBefore => "launcher_before",
             Self::LauncherAfter => "launcher_after",
             Self::ChildReceive => "receive",
@@ -96,7 +119,7 @@ struct SiteWork {
 }
 
 #[derive(Debug)]
-pub(crate) struct GuardTelemetry(Mutex<[SiteWork; 15]>);
+pub(crate) struct GuardTelemetry(Mutex<[SiteWork; 22]>);
 
 impl Default for GuardTelemetry {
     fn default() -> Self {
