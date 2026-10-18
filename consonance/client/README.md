@@ -316,7 +316,7 @@ the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
 An import sends one descriptor per extent in the chain, and the child maps each
 range read-only for that call. Dropping a `WorkerSession` closes the socket and
-reaps the child.
+transfers the child to the teardown owner described below.
 
 Worker ancillary parsing bounds every header and complete descriptor integer by
 both the supplied control-buffer extent and recvmsg's actual `msg_controllen`.
@@ -400,19 +400,47 @@ unbounded reply. Typed child Hung/Abandoned errors retain their types while
 abandoning the exchange after a destination has been allocated. Any child failure
 after destination allocation abandons the session, including FAILED/OTHER; the
 same ordinary failure before allocation leaves the session usable.
-The parent never accesses or commits a destination while a successful
-child exchange still owns its writer mapping. A lost acknowledgement does not
-prove that the writer has exited: the current cache allocator uses append-only
-ranges and retires empty backing segments, so abandoned storage cannot alias a
-later allocation. Future range reuse would require a stronger writer-lifetime
-protocol. A child mapping can keep a retired segment alive after its charge is
-removed on either platform. On Linux, hole punching an abandoned range can also
-be followed by late writer refills outside cache accounting. The allocator's
-charge is not an inventory of those residual physical pages. The child checks
-offset arithmetic, slice length, exact required length, and current descriptor
-backing size before mapping. The size check
-cannot prevent later truncation; the coordinator must keep its backing allocation
-alive and untruncated throughout the active exchange.
+
+Before attempting an FD handoff, the parent marks the destination as exposed.
+Failure or unwinding then keeps the unique uncommitted extent in the failed
+session, with its existing cache charge, until writer exit is proved. A partially
+failed send can still have delivered the descriptor. Neither EOF, a closed socket,
+nor successful signalling proves that the writer mapping is gone. The retained
+extent is never read, committed, hole-punched or reused while ownership is
+uncertain. `WorkerSession::retained_export_bytes` reports this session-held storage.
+
+Dropping the session transfers its child and retained extents to a process-lifetime
+quarantine before polling exit. A successful `Child::try_wait` exit status is the
+release proof. Teardown polls for up to two seconds before signalling a child
+whose ownership remains unambiguous, then polls for up to fifty more milliseconds.
+Each polling step uses the nonblocking child wait API. Any wait or signal error
+permanently forbids further signalling for that owner, preventing a kill through
+an ambiguous or potentially reused PID. A later confirmed exit can still release
+its storage. Unconfirmed owners remain in quarantine; no bare leak or unobserved
+resource drop is used. Private threaded fixtures use completed joins as their
+corresponding proof.
+
+`worker_quarantine_stats` reports retained worker/extent counts, retained extent
+bytes, ambiguous owners, successful signals, wait/signal errors and confirmed exits.
+The retained fields are gauges; error, signal and exit fields are cumulative totals.
+`reap_worker_quarantine(limit)` retries at most 64 owners per call in round-robin
+order. Connecting a new worker also retries one old owner. Reaping never releases
+on a signal result and never signals an ambiguous owner. A permanently ambiguous
+owner can retain capacity indefinitely; this conservative refusal is preferable
+to reclaiming storage while a writer may still use it. These are runtime physical
+resource observations and do not enter snapshots, logical EventHistory or cache
+commitments. Retained bytes describe extent ranges, not process RSS or total
+virtual backing size. The cache remains append-only and retires empty backing
+segments after their ownership has ended.
+
+The parent never accesses a destination while a successful child exchange owns
+its writer mapping. The child checks offset arithmetic, slice length, exact
+required length, and current descriptor backing size before mapping. That size
+check cannot prevent later truncation; the coordinator keeps backing storage
+alive and untruncated for the complete writer lifetime, including uncertain
+completion. macOS can conservatively retain a released range's charge until its
+remaining segment extents are dropped; Linux may reclaim a proved-retired range
+with hole punching.
 
 Guard work is observational, per owner, and exported by bounded site. Direct
 Session and UML totals use `guard.session.<site>`. A WorkerSession reports its own
