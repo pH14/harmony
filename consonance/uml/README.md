@@ -306,3 +306,20 @@ sends SIGTERM/SIGINT to the ready kernel and SIGKILL to a live `uml-userspace`
 stub. Compiled boundary probes separately plant mmap/socketpair/clone failures;
 they exercise the production patch statements but do not substitute for a live
 post-boot resource-injection qualification.
+
+Session::shutdown invokes the existing owned Guest teardown and returns an
+idempotent shutdown receipt. It confirms the Child wait and existing process-group
+sweep before reporting success. Failed or incomplete teardown remains an error;
+repeated shutdown does not retry waits or send another signal to the old group.
+This does not strengthen the launcher's existing group-identity or descendant
+cleanup guarantees.
+
+Closed or ambiguously terminated Guest instances reject later polling entrypoints.
+A real child-poll error latches the same unconfirmed state, preventing subsequent
+PID waits and signals. Native failure tests inject before the OS wait, so their
+private fixture cleanup still owns the unreaped Child; that cleanup does not
+license retry after a real ambiguous wait in production.
+
+Numeric process-group identity after leader reaping remains a separate limitation,
+tracked in [issue766](https://github.com/pH14/harmony/issues/766). A successful
+owned-child receipt does not resolve that group-identity problem.

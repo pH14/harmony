@@ -775,3 +775,13 @@ counts accepted layouts of at most 64 references. Larger accepted layouts advanc
 saturate at u64 maximum. Refused and interrupted imports contribute nothing.
 These counters add no ownership RPCs, mapping deduplication, registration cache,
 or admission authority. Descriptor and mapping counters still report actual work.
+
+Explicit session shutdown reports whether the currently owned process completed
+teardown. WorkerSession closes its transport and uses the same bounded grace,
+signal eligibility and sole-owner exit checks as Drop. An ambiguous or still
+running owner returns an error and remains quarantined with its exposed writable
+extents charged. The result is latched; repeated shutdown and Drop do not poll or
+signal that owner again. Background quarantine reaping retains its existing rules.
+Direct in-process sessions have no external child. UML delegates to its owned
+Guest teardown and records an idempotent receipt; successful group cleanup uses
+the existing launcher checks, not a new guarantee about arbitrary descendants.

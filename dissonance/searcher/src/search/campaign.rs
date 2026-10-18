@@ -415,6 +415,12 @@ pub trait TargetExecution: CampaignTypes {
     }
 
     fn new_target(&self) -> Result<Self::Target, String>;
+    fn begin_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
+    fn finish_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn reset(&self, target: &mut Self::Target);
     fn restore(
         &self,
@@ -3462,30 +3468,32 @@ where
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
             let bootstrap_started = now();
-            let resume = match search_checkpoint.take() {
-                Some(reader) => Some(restore_search_checkpoint(
-                    workload,
-                    config,
-                    &executable_identity,
-                    reader,
-                    &mut core,
-                    &mut draw_state,
-                    &mut duration_policies,
-                    &mut counters,
-                )?),
-                None => {
-                    bootstrap_campaign(
+            let resume = with_bootstrap_session(workload, || {
+                Ok(match search_checkpoint.take() {
+                    Some(reader) => Some(restore_search_checkpoint(
                         workload,
                         config,
-                        origin,
+                        &executable_identity,
+                        reader,
                         &mut core,
-                        &draw_state,
-                        &duration_policies,
+                        &mut draw_state,
+                        &mut duration_policies,
                         &mut counters,
-                    )?;
-                    None
-                }
-            };
+                    )?),
+                    None => {
+                        bootstrap_campaign(
+                            workload,
+                            config,
+                            origin,
+                            &mut core,
+                            &draw_state,
+                            &duration_policies,
+                            &mut counters,
+                        )?;
+                        None
+                    }
+                })
+            })?;
             telemetry.bootstrap_ns = nanos_since(bootstrap_started);
             if let (Some(path), Some(input)) =
                 (&config.objective_witness_path, &core.objective_witness)
@@ -4397,6 +4405,50 @@ where
     telemetry.persistence_ns = nanos_since(persistence_started);
     report.telemetry = telemetry;
     Ok((report, checkpoint))
+}
+
+struct BootstrapSession<'a, G: TargetExecution> {
+    workload: &'a G,
+    finished: bool,
+    begun: bool,
+}
+impl<G: TargetExecution> BootstrapSession<'_, G> {
+    fn finish(&mut self) -> Result<(), Box<dyn Error>> {
+        self.finished = true;
+        self.workload.finish_bootstrap_session()
+    }
+}
+impl<G: TargetExecution> Drop for BootstrapSession<'_, G> {
+    fn drop(&mut self) {
+        if self.begun && !self.finished {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = self.finish();
+            }));
+        }
+    }
+}
+fn with_bootstrap_session<G: TargetExecution, T>(
+    workload: &G,
+    operation: impl FnOnce() -> Result<T, Box<dyn Error>>,
+) -> Result<T, Box<dyn Error>> {
+    let mut scope = BootstrapSession {
+        workload,
+        finished: false,
+        begun: false,
+    };
+    workload.begin_bootstrap_session()?;
+    scope.begun = true;
+    let result = operation();
+    let cleanup = scope.finish();
+    match (result, cleanup) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Ok(_), Err(error)) => Err(error),
+        (Err(error), Ok(())) => Err(error),
+        (Err(error), Err(cleanup)) => {
+            eprintln!("bootstrap session finalization also failed: {cleanup}");
+            Err(error)
+        }
+    }
 }
 
 fn bootstrap_campaign<G: Workload>(
@@ -6052,6 +6104,7 @@ mod tests {
         retained_archive_indexes, run_campaign_checkpointed,
         run_campaign_checkpointed_with_options, schedule_policy_identifier,
         schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
+        with_bootstrap_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -6118,8 +6171,14 @@ mod tests {
 
     type TestActionHook = dyn Fn(TestAction) -> Result<(), String> + Send + Sync;
 
+    struct BootstrapGate {
+        coordinator: std::thread::ThreadId,
+        finalized: std::sync::atomic::AtomicBool,
+        worker_starts: std::sync::atomic::AtomicUsize,
+    }
     #[derive(Default)]
     struct LiveTargets {
+        bootstrap_gate: Option<BootstrapGate>,
         refuse: bool,
         integrity_invalidated: std::sync::atomic::AtomicBool,
         fail_next_target: std::sync::atomic::AtomicBool,
@@ -6175,6 +6234,7 @@ mod tests {
         targets: Option<Arc<LiveTargets>>,
     }
     std::thread_local! {
+        static FINALIZATION: std::cell::Cell<(usize, bool)> = const { std::cell::Cell::new((0, false)) };
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
@@ -6324,6 +6384,25 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn finish_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
+            FINALIZATION.with(|state| {
+                let (calls, fail) = state.get();
+                state.set((calls + 1, fail));
+                if fail {
+                    Err("test shutdown unconfirmed".into())
+                } else {
+                    if let Some(gate) = self
+                        .targets
+                        .as_ref()
+                        .and_then(|targets| targets.bootstrap_gate.as_ref())
+                    {
+                        gate.finalized
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                    Ok(())
+                }
+            })
+        }
         fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
             if self.targets.as_ref().is_some_and(|targets| {
                 targets
@@ -6339,6 +6418,17 @@ mod tests {
             let Some(targets) = &self.targets else {
                 return Ok(TestTarget::default());
             };
+            if let Some(gate) = &targets.bootstrap_gate
+                && std::thread::current().id() != gate.coordinator
+            {
+                assert!(
+                    gate.finalized.load(std::sync::atomic::Ordering::SeqCst),
+                    "worker started before bootstrap session finalized"
+                );
+                gate.worker_starts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+
             if targets.refuse {
                 return Err("the test target refused to start".to_owned());
             }
@@ -6635,6 +6725,88 @@ mod tests {
             self.target.value = *snapshot;
             Ok(true)
         }
+    }
+
+    #[test]
+    fn bootstrap_session_scope_finalizes_success_error_and_unwind_once() {
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        for fail in [false, true] {
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = with_bootstrap_session(&workload, || Ok(7));
+            assert_eq!(result.is_err(), fail);
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result: Result<(), Box<dyn Error>> =
+                with_bootstrap_session(&workload, || Err(Box::new(TestIntegrityViolation)));
+            assert!(
+                result
+                    .unwrap_err()
+                    .downcast_ref::<TestIntegrityViolation>()
+                    .is_some()
+            );
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _: Result<(), Box<dyn Error>> =
+                    with_bootstrap_session(&workload, || panic!("bootstrap unwind"));
+            }));
+            assert!(result.is_err());
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
+    }
+
+    #[test]
+    fn campaign_finalizes_bootstrap_before_worker_readiness_and_refuses_unconfirmed_exit() {
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 0;
+        for fail in [false, true] {
+            let targets = Arc::new(LiveTargets {
+                bootstrap_gate: Some(BootstrapGate {
+                    coordinator: std::thread::current().id(),
+                    finalized: std::sync::atomic::AtomicBool::new(false),
+                    worker_starts: std::sync::atomic::AtomicUsize::new(0),
+                }),
+                ..LiveTargets::default()
+            });
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(targets.clone()),
+            };
+            FINALIZATION.with(|state| state.set((0, fail)));
+            let result = run_campaign_checkpointed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut Vec::new(),
+                None,
+            );
+            assert_eq!(result.is_err(), fail);
+            if fail {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("shutdown unconfirmed")
+                );
+            }
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            let gate = targets.bootstrap_gate.as_ref().unwrap();
+            assert_eq!(
+                gate.worker_starts.load(std::sync::atomic::Ordering::SeqCst),
+                usize::from(!fail)
+            );
+            assert_eq!(
+                gate.finalized.load(std::sync::atomic::Ordering::SeqCst),
+                !fail
+            );
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
     }
 
     fn test_core() -> (TestWorkload, (), CoordinatorCore<TestWorkload>, TestTarget) {
@@ -9405,6 +9577,24 @@ mod tests {
             stable_checkpoint(&second_directory)
         );
         let resume = |directory: &std::path::Path| {
+            FINALIZATION.with(|state| state.set((0, true)));
+            let error = run_campaign_checkpointed(
+                &TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                },
+                &config,
+                &CampaignOrigin::SearchCheckpoint {
+                    path: checkpoint_path(directory),
+                    expected_sha256: None,
+                },
+                &mut Vec::new(),
+                None,
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("shutdown unconfirmed"));
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, false)));
             let mut stream = Vec::new();
             let outcome = run_campaign_checkpointed(
                 &TestWorkload {
@@ -9420,6 +9610,7 @@ mod tests {
                 None,
             )
             .expect("checkpoint resumes without the injected failure");
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
             (outcome, stream)
         };
         let (first_resume, first_resume_stream) = resume(&first_directory);
@@ -10116,6 +10307,7 @@ mod tests {
 
     #[test]
     fn a_failed_bootstrap_returns_its_error_with_workers_waiting() {
+        FINALIZATION.with(|state| state.set((0, false)));
         let error = run_campaign_checkpointed(
             &TestWorkload {
                 bootstrap_objective: false,
@@ -10136,6 +10328,7 @@ mod tests {
                 .contains("failed to build the bootstrap target"),
             "{error}"
         );
+        assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
     }
 
     #[test]

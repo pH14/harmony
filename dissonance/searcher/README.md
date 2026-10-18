@@ -871,3 +871,11 @@ The checkpoint journal records both completed (`executions`) and reserved
 (`reserved`) work. A consumer granting an additional execution budget starts
 from `reserved`, because restoring the checkpoint also restores already queued
 work. At a completed checkpoint those counts are equal.
+
+TargetExecution::finish_bootstrap_session ends coordinator-owned bootstrap or
+checkpoint-resume resources before worker readiness is released. The default is
+empty for workloads without such resources. The scope is installed before target
+construction; normal success and errors invoke it once, while unwinding invokes
+best-effort cleanup. A cleanup error fails successful bootstrap. If execution
+already failed, its original typed error is retained and cleanup failure is
+reported separately. Worker targets and their in-campaign reuse are unaffected.
