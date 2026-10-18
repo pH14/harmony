@@ -408,21 +408,45 @@ job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
 Each campaign job's recorded result digest binds its logical result to a tagged
-final endpoint certificate. Every runnable KVM snapshot carries an action-aligned
-certificate for each prefix in its portable history. Each runnable KVM action
-captures its whole-state hash and action-local observation before the next
-action. Campaign suffix execution captures its candidate from that same bounded
-operation, using one whole-state hash for both the prefix certificate and the
-candidate endpoint. No digest is cached across operations; standalone snapshot
-capture hashes the current live endpoint again and refuses missing, foreign, or
-abandoned sessions. Restoring a KVM snapshot visits each prefix, including cached prefixes,
-and checks its certificate before continuing. This also covers a resident
-keyframe whose first action diverges and later reconverges at its final
-endpoint. When a candidate is retained, the archive binds the certificates for
-its action suffix, including actions whose own candidates were rejected or
-deduplicated. Jobs restored from an older keyframe compare each replayed KVM
-endpoint and observation with that archive certificate before the next action.
-Missing, malformed, or conflicting KVM certificates stop the campaign.
+final endpoint certificate. Every runnable snapshot carries a persistent, shared action history. Each node
+binds its parent history, action, actual endpoint evidence, action-local
+observation commitment, and observation boundary moments. KVM endpoint evidence
+includes the whole-state certificate; UML explicitly records that whole-state
+evidence is unavailable while still committing observations. Nodes are captured
+from stopped execution before their snapshots are published. Candidate clones
+share nodes, and snapshot/result identities hash their history roots rather than
+serializing every ancestor.
+
+A retained endpoint restores directly after comparing its independently captured
+history receipt with the requested history. This requires one endpoint replay and
+whole-state hash on KVM, regardless of action depth. An imported endpoint receives
+its receipt from the integrity-checked cache object, never from the caller's
+expected certificates. Missing suffixes execute and check each actual prefix
+before the next action or publication, so an intermediate divergence cannot be
+hidden by a converged final endpoint. Snapshot standalone capture still reads
+fresh live evidence; no whole-state digest is cached across operations.
+
+Fault caches use exact fixed-width action-path roots. The cache object commitment
+binds both the admitted machine target and opaque captured-history attachment;
+different histories for one action path quarantine the namespace even if final
+machine states agree. Page, inherited-page, omitted-page, host-image and lease
+checks remain enabled. This removes repeated historical VM work, not the data
+integrity scans required by those checks.
+
+Checkpoint histories use a validated flat encoding with explicit versions and
+iterative destruction. Restore canonicalizes validated expected histories into
+actual shared node allocations before rebuilding the memory ledger. Bootstrap
+imports seed this with the live genesis allocation. Before archive installation, a typed retention index normalizes a candidate's
+new tail against currently budget-owned nodes. Independent workers therefore
+share actual prefix allocations in both live execution and checkpoint resume.
+Index registration and pruning follow the ledger's first retain and final
+release, and index metadata is charged. Runtime accounting acquires only newly
+unique history nodes and releases them at physical snapshot removal,
+including inactive snapshots still needed by work in flight. Expected-history
+canonicalization does not grant captured execution authority. Branch roots use
+`HMROOT03` to preserve their independently pinned semantic object commitments.
+Old history, snapshot, stream, cache and root formats are refused. Missing,
+malformed, or conflicting certificates stop the campaign.
 Restoring a KVM source snapshot checks its recorded prefix certificates before
 using its logical observation. Importing a KVM tree rebuilds each imported
 action, including paths with source snapshots, and compares each checkpointed

@@ -19,8 +19,7 @@ use searcher::{
             CampaignExecutionOptions, CampaignJobResult, CampaignModeReport, CampaignOrigin,
             CampaignProgressRecord, CampaignStreamHeader, CampaignTypes, Evaluation, InputPolicy,
             Reporting, SnapshotCheckpoint, TargetExecution, ThreadPlacement, WorkloadPolicies,
-            default_window, postcard_result_sha256, postcard_value_sha256,
-            run_campaign_checkpointed_with_options,
+            default_window, postcard_value_sha256, run_campaign_checkpointed_with_options,
         },
         draw::{DrawMixture, MixtureDraw, draw_suffix},
         draw_tables::{DrawTableHeader, DrawTables, biased_step},
@@ -54,10 +53,10 @@ use crate::{
     },
 };
 
-pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v9";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v7";
-pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v6";
-pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v3";
+pub const CAMPAIGN_STREAM_FORMAT: &str = "faultlab-consonance-campaign-stream-v10";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-consonance-snapshot-root-v8";
+pub const UML_CAMPAIGN_STREAM_FORMAT: &str = "faultlab-uml-campaign-stream-v7";
+pub const UML_SNAPSHOT_CHECKPOINT_FORMAT: &str = "faultlab-uml-snapshot-root-v4";
 pub const TERMINAL_POLICY_IDENTIFIER: &str = "assertion_or_crash";
 const ADAPTIVE_DURATION_MAX_TICKS: u64 = 1_024;
 
@@ -150,13 +149,55 @@ pub type FaultCampaignProgressRecord = CampaignProgressRecord<FaultArchiveKey>;
 type FaultCampaignActionResult = CampaignActionResult<FaultWorkload>;
 type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 
+fn snapshot_digest(snapshot: &FaultSnapshot) -> Result<String, Box<dyn Error>> {
+    postcard_value_sha256(&(
+        "fault-snapshot-identity-v2",
+        snapshot.history.receipt().root(),
+        &snapshot.observation,
+        snapshot.failed,
+        snapshot.endpoint,
+    ))
+}
+
+fn fault_result_sha256(result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
+    let actions = result
+        .actions
+        .iter()
+        .map(|result| {
+            let candidate = result
+                .candidate
+                .as_ref()
+                .map(|candidate| {
+                    Ok::<_, Box<dyn Error>>((
+                        &candidate.key,
+                        candidate.viable,
+                        snapshot_digest(&candidate.snapshot)?,
+                    ))
+                })
+                .transpose()?;
+            Ok::<_, Box<dyn Error>>((
+                &result.action,
+                &result.observations,
+                &result.milestones,
+                &result.outcome,
+                candidate,
+            ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    postcard_value_sha256(&(
+        "fault-result-history-v1",
+        &result.preparation_failure,
+        actions,
+    ))
+}
+
 fn endpoint_result_sha256(
     result: &FaultCampaignJobResult,
     endpoint: FaultEndpointCertificate,
 ) -> Result<String, Box<dyn Error>> {
     postcard_value_sha256(&(
         "fault-campaign-result-endpoint-v1",
-        postcard_result_sha256(result)?,
+        fault_result_sha256(result)?,
         endpoint,
     ))
 }
@@ -177,7 +218,7 @@ fn kvm_result_endpoint(
         validate_snapshot_prefix_certificates(&candidate.snapshot, false)?;
         if !candidate.viable
             || candidate.snapshot.failed
-            || candidate.snapshot.actions != actions
+            || !candidate.snapshot.history.matches_actions(actions)
             || &candidate.snapshot.observation != observation
             || candidate.key != archive_key(observation)
         {
@@ -439,7 +480,7 @@ impl Reporting for FaultWorkload {
     }
 
     fn result_sha256(&self, result: &FaultCampaignJobResult) -> Result<String, Box<dyn Error>> {
-        postcard_result_sha256(result)
+        fault_result_sha256(result)
     }
 
     fn certified_result_sha256(
@@ -465,7 +506,7 @@ impl Reporting for FaultWorkload {
         snapshot: &Self::Snapshot,
     ) -> Result<String, Box<dyn Error>> {
         validate_snapshot_prefix_certificates(snapshot, self.config.uml().is_some())?;
-        postcard_value_sha256(snapshot)
+        snapshot_digest(snapshot)
     }
 
     fn archive_report(
@@ -751,6 +792,11 @@ impl TargetExecution for FaultWorkload {
 
     fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {
         action_cost
+    }
+
+    fn snapshot_retention()
+    -> Option<Box<dyn searcher::search::archive::SnapshotRetention<FaultSnapshot>>> {
+        Some(Box::new(crate::history::FaultHistoryRetention::default()))
     }
 
     fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
@@ -1130,7 +1176,10 @@ mod tests {
         assert_ne!(first, failed);
         assert_ne!(first, uml);
         assert_ne!(failed, uml);
-        assert_ne!(first, postcard_result_sha256(&result).unwrap());
+        assert_ne!(
+            first,
+            searcher::search::campaign::postcard_result_sha256(&result).unwrap()
+        );
     }
 
     #[test]
@@ -1140,11 +1189,15 @@ mod tests {
             std::num::NonZeroU16::new(1).unwrap(),
         );
         let snapshot = FaultSnapshot {
-            actions: vec![action],
-            prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
-                    .unwrap(),
-            )],
+            history: crate::history::FaultHistory::fixture(
+                &[action],
+                &[Some(
+                    replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
+                        .unwrap(),
+                )],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &(FaultObservations::default()),
+            ),
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             ..FaultSnapshot::default()
         };
@@ -1221,8 +1274,12 @@ mod tests {
         let final_certificate =
             replay_endpoint_certificate(endpoint_hash, &observation, false).unwrap();
         let snapshot = FaultSnapshot {
-            actions: vec![action, action],
-            prefix_certificates: vec![Some([11; 32]), Some(final_certificate)],
+            history: crate::history::FaultHistory::fixture(
+                &[action, action],
+                &[Some([11; 32]), Some(final_certificate)],
+                Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
+                &(observation.clone()),
+            ),
             observation,
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(endpoint_hash)),
@@ -1230,19 +1287,26 @@ mod tests {
         let game = game();
         let identity = game.snapshot_identity_sha256(&snapshot).unwrap();
 
+        let actions = snapshot.history.actions();
         let mut changed = snapshot.clone();
-        changed.prefix_certificates[0] = Some([23; 32]);
+        changed.history = crate::history::FaultHistory::fixture(
+            &actions,
+            &[Some([23; 32]), Some(final_certificate)],
+            snapshot.endpoint,
+            &snapshot.observation,
+        );
         assert_ne!(game.snapshot_identity_sha256(&changed).unwrap(), identity);
-
-        let mut missing = snapshot.clone();
-        missing.prefix_certificates.pop();
-        assert!(game.snapshot_identity_sha256(&missing).is_err());
-        missing.prefix_certificates.push(None);
-        assert!(game.snapshot_identity_sha256(&missing).is_err());
-
-        let mut wrong_final = snapshot;
-        wrong_final.prefix_certificates[1] = Some([23; 32]);
+        let mut wrong_final = snapshot.clone();
+        wrong_final.history = crate::history::FaultHistory::fixture(
+            &actions,
+            &[Some([11; 32]), Some([23; 32])],
+            snapshot.endpoint,
+            &snapshot.observation,
+        );
         assert!(game.snapshot_identity_sha256(&wrong_final).is_err());
+        let mut malformed = serde_json::to_value(&snapshot.history).unwrap();
+        malformed[1][1]["certificate"] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<crate::history::FaultHistory>(malformed).is_err());
     }
 
     #[test]

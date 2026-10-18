@@ -33,9 +33,10 @@ use searcher::target::ExitKind;
 use sha2::{Digest, Sha256};
 
 use crate::chain::{Chain, Hit, Point, Shared};
+use crate::history::{FaultHistory, HistoryReceipt};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
-    FaultStop, actions_key, decode_sdk_events, standing_windows,
+    FaultStop, decode_sdk_events, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -52,38 +53,26 @@ pub fn replay_endpoint_certificate(
     observation: &FaultObservations,
     failed: bool,
 ) -> Result<[u8; 32], String> {
-    let encoded = postcard::to_allocvec(&("fault-replay-endpoint-v1", hash, observation, failed))
-        .map_err(|error| format!("encode fault replay endpoint: {error}"))?;
-    Ok(Sha256::digest(encoded).into())
+    crate::history::replay_certificate(hash, observation, failed)
 }
 
 pub(crate) fn validate_snapshot_prefix_certificates(
     snapshot: &FaultSnapshot,
     uml: bool,
 ) -> Result<(), String> {
-    if snapshot.prefix_certificates.len() != snapshot.actions.len() {
-        return Err("fault snapshot prefix certificate count does not match its actions".into());
-    }
-    if uml {
-        if snapshot.endpoint != Some(FaultEndpointCertificate::UmlWholeStateUnavailable) {
-            return Err("UML snapshot lacks its backend endpoint certificate".into());
-        }
-        if snapshot.prefix_certificates.iter().any(Option::is_some) {
-            return Err("UML snapshot unexpectedly carries KVM prefix certificates".into());
-        }
-        return Ok(());
-    }
-    let Some(FaultEndpointCertificate::KvmWholeState(hash)) = snapshot.endpoint else {
-        return Err("KVM snapshot lacks its whole-state endpoint certificate".into());
-    };
-    if snapshot.prefix_certificates.iter().any(Option::is_none) {
-        return Err("KVM snapshot prefix lacks an endpoint certificate".into());
-    }
-    if let Some(&Some(actual)) = snapshot.prefix_certificates.last() {
-        let expected = replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?;
-        if actual != expected {
-            return Err("KVM snapshot final prefix differs from its endpoint certificate".into());
-        }
+    let receipt = snapshot.history.receipt();
+    receipt.validate()?;
+    let endpoint = snapshot
+        .endpoint
+        .ok_or("fault snapshot lacks an endpoint")?;
+    if receipt.endpoint() != endpoint
+        || receipt.certificate()
+            != crate::history::endpoint_certificate(endpoint, &snapshot.observation)?
+        || !receipt.matches_observation(&snapshot.observation)?
+        || receipt.moment() != snapshot.observation.moment
+        || matches!(endpoint, FaultEndpointCertificate::UmlWholeStateUnavailable) != uml
+    {
+        return Err("fault snapshot final prefix differs from its endpoint certificate".to_owned());
     }
     Ok(())
 }
@@ -212,7 +201,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v8";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v9";
 
 type CoverageWindow = (u64, u64, std::num::NonZeroU16);
 const COVERAGE_WINDOW_BYTES: usize = 18;
@@ -564,8 +553,8 @@ pub fn thread_telemetry() -> BTreeMap<String, u64> {
 #[derive(Debug)]
 pub struct FaultTarget {
     config: Arc<Config>,
-    actions: Vec<FaultAction>,
-    prefix_certificates: Vec<Option<[u8; 32]>>,
+    actions: std::sync::OnceLock<Vec<FaultAction>>,
+    history: FaultHistory,
     observation: FaultObservations,
     action_observations: Vec<FaultObservations>,
     failed: bool,
@@ -603,14 +592,15 @@ impl FaultTarget {
                 .map(|guest| uml_launch(guest, initramfs, config))
                 .transpose()?,
         });
-        let (observation, root_seal) = with_live(&config, |live| {
+        let (observation, root_seal, history) = with_live(&config, |live| {
             let observation = live.observe(FaultStop::Deadline)?;
-            Ok((observation, live.windows.root_seal))
+            let history = FaultHistory::genesis(live.chain.provenance(0)?.clone())?;
+            Ok((observation, live.windows.root_seal, history))
         })?;
         Ok(Self {
             config,
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            actions: std::sync::OnceLock::new(),
+            history,
             action_observations: vec![observation.clone()],
             observation,
             failed: false,
@@ -737,7 +727,7 @@ impl FaultTarget {
 
     #[must_use]
     pub fn actions(&self) -> &[FaultAction] {
-        &self.actions
+        self.actions.get_or_init(|| self.history.actions())
     }
 
     pub fn debug_position(&self) -> Result<(usize, u64), String> {
@@ -762,7 +752,7 @@ impl FaultTarget {
         }
         let (progress, observation) = with_live(&self.config, |live| {
             let (snapshot, at) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let standing = branch_config(live.windows, &live.inherited, &self.actions)
+            let standing = branch_config(live.windows, &live.inherited, self.actions())
                 .map_err(|e| e.to_string())?;
             let service =
                 debug_configuration(&standing.configuration, message).map_err(|e| e.to_string())?;
@@ -774,7 +764,7 @@ impl FaultTarget {
                     service,
                     Vec::new(),
                     Vec::new(),
-                    Some(branch_coverage_schedule(live.windows, &self.actions)?),
+                    Some(branch_coverage_schedule(live.windows, self.actions())?),
                 )
                 .map_err(|e| e.to_string())?;
             live.session
@@ -811,7 +801,7 @@ impl FaultTarget {
     pub fn export_root(&self) -> Result<Vec<u8>, String> {
         with_live(&self.config, |live| {
             let (snapshot, moment) = live.session.snapshot().map_err(|e| e.to_string())?;
-            let result = active_root_windows(&live.inherited, live.windows, &self.actions, moment)
+            let result = active_root_windows(&live.inherited, live.windows, self.actions(), moment)
                 .and_then(|standing| {
                     export_root(
                         live.session.as_mut(),
@@ -837,8 +827,11 @@ impl FaultTarget {
         });
         match result {
             Ok(observation) => {
-                self.actions.clear();
-                self.prefix_certificates.clear();
+                self.actions.take();
+                self.history = with_live(&self.config, |live| {
+                    FaultHistory::genesis(live.chain.provenance(0)?.clone())
+                })
+                .unwrap_or_default();
                 self.guest_horizons_run = 0;
                 self.observation = observation.clone();
                 self.action_observations = vec![observation];
@@ -847,7 +840,7 @@ impl FaultTarget {
             }
             Err(error) => {
                 eprintln!("fault target reset failed: {error}");
-                self.prefix_certificates.clear();
+                self.history = FaultHistory::default();
                 self.failed = true;
                 self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
             }
@@ -874,86 +867,45 @@ impl FaultTarget {
         validate_snapshot_prefix_certificates(snapshot, self.config.uml.is_some())?;
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
-            let mut previous_moment = None;
-            if expected.is_some() && snapshot.actions.len() > 1 {
-                let root = live.chain.point(live.chain.local(&[]));
-                live.replay(root.snap)?;
-                let mut prefix_moment = live.observe(FaultStop::Deadline)?.moment;
-                for index in 0..snapshot.actions.len() - 1 {
-                    let prefix = &snapshot.actions[..=index];
-                    let at = live.chain.local(prefix);
-                    let point = if live.chain.depth(at) == prefix.len() {
-                        live.chain.point(at)
-                    } else {
-                        live.ensure_prefix(prefix)?.map_err(
-                            |_| "restored fault prefix stopped before its snapshot certificate",
-                        )?
-                    };
-                    live.replay(point.snap)?;
-                    let hash = live
-                        .session
-                        .state_hash()
-                        .map_err(|error| format!("restored fault prefix state hash: {error}"))?;
-                    let mut observation = live.observe(FaultStop::Deadline)?;
-                    observation.parks.retain(|park| park.moment > prefix_moment);
-                    observation
-                        .park_reads
-                        .retain(|read| read.moment > prefix_moment);
-                    let actual = replay_endpoint_certificate(hash, &observation, false)?;
-                    if Some(actual) != snapshot.prefix_certificates[index] {
-                        return Err(
-                            "restored fault prefix differs from its snapshot certificate".into(),
-                        );
-                    }
-                    prefix_moment = observation.moment;
-                }
-                previous_moment = Some(prefix_moment);
+            if snapshot.history.receipt().domain() != live.key {
+                return Err("fault history execution domain differs".to_owned());
             }
-            if previous_moment.is_none() && !snapshot.actions.is_empty() {
-                let prefix = &snapshot.actions[..snapshot.actions.len() - 1];
-                let at = live.chain.local(prefix);
-                let previous = if live.chain.depth(at) == prefix.len() {
-                    live.chain.point(at)
-                } else {
-                    live.ensure_prefix(prefix)?.map_err(
-                        |_| "restored fault prefix stopped before its snapshot certificate",
-                    )?
-                };
-                live.replay(previous.snap)?;
-                previous_moment = Some(live.observe(FaultStop::Deadline)?.moment);
+            let cached = live
+                .ensure_certified_prefix(&snapshot.history)?
+                .map_err(|_| "restored fault endpoint stopped before its snapshot certificate")?;
+            let at = live
+                .chain
+                .at_snapshot(cached.snap)
+                .ok_or("restored endpoint link missing")?;
+            let receipt = live.chain.provenance(at)?.clone();
+            if &receipt != snapshot.history.receipt() {
+                return Err(
+                    "restored fault history differs from its snapshot certificate".to_owned(),
+                );
             }
-            match live.ensure_prefix(&snapshot.actions)? {
-                Ok(cached) => {
-                    live.replay(cached.snap)?;
-                    if let Some(expected) = expected {
-                        let actual = live.session.state_hash().map_err(|error| {
-                            format!("restored fault endpoint state hash: {error}")
-                        })?;
-                        if actual != expected {
-                            return Err(
-                                "restored fault endpoint differs from its snapshot certificate"
-                                    .into(),
-                            );
-                        }
-                    }
-                    let mut actual = live.observe(FaultStop::Deadline)?;
-                    if let Some(previous_moment) = previous_moment {
-                        actual.parks.retain(|park| park.moment > previous_moment);
-                        actual
-                            .park_reads
-                            .retain(|read| read.moment > previous_moment);
-                    }
-                    if actual != snapshot.observation {
-                        return Err(
-                            "restored fault endpoint observation differs from its snapshot".into(),
-                        );
-                    }
-                    Ok(())
-                }
-                Err(_) => {
-                    Err("restored fault endpoint stopped before its snapshot certificate".into())
-                }
+            live.replay(cached.snap)?;
+            if let Some(expected) = expected
+                && live.state_hash_current()? != expected
+            {
+                return Err(
+                    "restored fault endpoint differs from its snapshot certificate".to_owned(),
+                );
             }
+            let mut actual = live.observe(FaultStop::Deadline)?;
+            if !snapshot.history.is_empty() {
+                actual
+                    .parks
+                    .retain(|park| park.moment > receipt.previous_moment());
+                actual
+                    .park_reads
+                    .retain(|read| read.moment > receipt.previous_moment());
+            }
+            if actual != snapshot.observation {
+                return Err(
+                    "restored fault endpoint observation differs from its snapshot".to_owned(),
+                );
+            }
+            Ok(())
         });
         self.finish_restore(snapshot, rebuilt)
     }
@@ -968,8 +920,8 @@ impl FaultTarget {
         match rebuilt {
             Ok(()) => {}
             Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
-                self.actions.clear();
-                self.prefix_certificates.clear();
+                self.actions.take();
+                self.history = FaultHistory::default();
                 self.observation = FaultObservations::default();
                 self.failed = true;
                 self.watchdog_cutoffs = 1;
@@ -981,9 +933,8 @@ impl FaultTarget {
             }
             Err(error) => return Err(error.into()),
         }
-        self.actions.clone_from(&snapshot.actions);
-        self.prefix_certificates
-            .clone_from(&snapshot.prefix_certificates);
+        self.actions.take();
+        self.history = snapshot.history.clone();
         self.observation = snapshot.observation.clone();
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
@@ -1009,8 +960,7 @@ impl FaultTarget {
         endpoint: FaultEndpointCertificate,
     ) -> Result<Option<FaultSnapshot>, String> {
         let snapshot = FaultSnapshot {
-            actions: self.actions.clone(),
-            prefix_certificates: self.prefix_certificates.clone(),
+            history: self.history.clone(),
             observation: self.observation.clone(),
             failed: false,
             endpoint: Some(endpoint),
@@ -1044,42 +994,35 @@ impl FaultTarget {
             return None;
         }
         self.action_observations.clear();
-        let previous_moment = self.observation.moment;
-        let kvm = self.config.uml.is_none();
         let result = with_live(&self.config, |live| {
             let before = live.horizons_run;
-            let mut observation = live.advance(&self.actions, action, kind)?;
-            observation
-                .parks
-                .retain(|park| park.moment > previous_moment);
-            observation
-                .park_reads
-                .retain(|read| read.moment > previous_moment);
-            let (endpoint, certificate) = if !observation.stop.is_continuable() {
-                (None, None)
-            } else if kvm {
-                let hash = live.state_hash_current()?;
-                (
-                    Some(FaultEndpointCertificate::KvmWholeState(hash)),
-                    Some(replay_endpoint_certificate(hash, &observation, false)?),
-                )
-            } else {
-                (
-                    Some(FaultEndpointCertificate::UmlWholeStateUnavailable),
-                    None,
-                )
-            };
+            let (observation, receipt) = live.advance(&self.history, action, kind)?;
             Ok((
                 observation,
                 live.horizons_run.saturating_sub(before),
-                certificate,
-                endpoint,
+                receipt,
             ))
         });
         match result {
-            Ok((observation, ran, certificate, endpoint)) => {
-                self.actions.push(action);
-                self.prefix_certificates.push(certificate);
+            Ok((observation, ran, receipt)) => {
+                let endpoint = receipt.as_ref().map(HistoryReceipt::endpoint);
+                if let Some(receipt) = receipt {
+                    match self.history.push(receipt) {
+                        Ok(history) => self.history = history,
+                        Err(error) => {
+                            eprintln!("fault history extension failed: {error}");
+                            self.failed = true;
+                            return None;
+                        }
+                    }
+                }
+                if endpoint.is_none() {
+                    let mut actions = self.actions().to_vec();
+                    actions.push(action);
+                    self.actions = std::sync::OnceLock::from(actions);
+                } else {
+                    self.actions.take();
+                }
                 self.execution_ticks = self
                     .execution_ticks
                     .saturating_add(crate::target::action_ticks(&action));
@@ -1278,14 +1221,14 @@ impl Live {
                     .map_err(|error| format!("setup cache identity: {error}"))?;
                 Some(Shared {
                     index: Arc::clone(index),
-                    namespace: Namespace::new(&[&config.key, SERVICE_IDENTITY, &setup_hash]),
+                    namespace: Namespace::exact(&[&config.key, SERVICE_IDENTITY, &setup_hash]),
                 })
             }
             None => None,
         };
         let mut telemetry = LiveTelemetry::default();
         telemetry.boot.since(boot_started);
-        Ok(Self {
+        let mut live = Self {
             key: config.key,
             holder: HOLDERS.fetch_add(1, Ordering::Relaxed),
             base_identity,
@@ -1303,7 +1246,18 @@ impl Live {
             horizons_run: 0,
             abandoned: false,
             telemetry,
-        })
+        };
+        let observation = live.observe(FaultStop::Deadline)?;
+        let endpoint = if config.uml.is_some() {
+            FaultEndpointCertificate::UmlWholeStateUnavailable
+        } else {
+            FaultEndpointCertificate::KvmWholeState(live.state_hash_current()?)
+        };
+        live.chain.certify(
+            0,
+            HistoryReceipt::genesis(config.key, endpoint, &observation)?,
+        )?;
+        Ok(live)
     }
 
     fn counters(&self, resident: bool) -> Vec<(String, u64)> {
@@ -1406,33 +1360,28 @@ impl Live {
         }
     }
 
-    fn push_link(
-        &mut self,
-        actions: &[FaultAction],
-        point: Point,
-        lease: Option<Lease>,
-    ) -> Result<Point, String> {
-        let evicted = self.chain.push(actions, point, lease);
-        self.drop_snapshots(evicted.into_iter().collect())?;
-        Ok(point)
-    }
-
     fn publish(
         &mut self,
-        actions: &[FaultAction],
+        _actions: &[FaultAction],
         snap: SnapId,
         cost: u64,
+        receipt: &HistoryReceipt,
     ) -> Result<Option<Lease>, String> {
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
         };
         let publish_started = started();
-        let published = self.session.publish_snapshot(
+        let attachment = consonance_client::session::SnapshotAttachment {
+            domain: b"fault-history-v1".to_vec(),
+            bytes: postcard::to_allocvec(receipt).map_err(|error| error.to_string())?,
+        };
+        let published = self.session.publish_snapshot_attached(
             shared.index.as_ref(),
             shared.namespace,
-            &actions_key(actions),
-            self.chain.parent_for(actions.len()),
+            &receipt.path(),
+            self.chain.parent_for(receipt.depth()),
             snap,
+            &attachment,
             cost,
         );
         self.telemetry.publishes.since(publish_started);
@@ -1451,63 +1400,159 @@ impl Live {
         }
     }
 
-    fn seal_link(
+    fn seal_captured_link(
         &mut self,
         actions: &[FaultAction],
         snap: SnapId,
         moment: u64,
         from: u64,
+        receipt: HistoryReceipt,
     ) -> Result<Point, String> {
-        let lease = self.publish(actions, snap, moment.saturating_sub(from))?;
-        let point = self.push_link(actions, Point { snap, moment }, lease)?;
+        let lease = match self.publish(actions, snap, moment.saturating_sub(from), &receipt) {
+            Ok(lease) => lease,
+            Err(error) => {
+                let _ = self.session.drop_snapshot(snap);
+                return Err(error);
+            }
+        };
+        let point = Point { snap, moment };
+        let dropped = self.chain.push_history(point, lease, receipt)?;
+        self.drop_snapshots(dropped)?;
         self.fit_store(2)?;
         Ok(point)
     }
 
-    fn find(&mut self, actions: &[FaultAction]) -> Result<usize, String> {
+    fn find_path(&mut self, path: [u8; 32], depth: usize) -> Result<Option<usize>, String> {
         if let Some(shared) = self.chain.shared() {
             shared
                 .index
                 .verify_namespace(shared.namespace)
                 .map_err(|error| error.to_string())?;
         }
-        let at = self.chain.local(actions);
-        let local = self.chain.depth(at);
-        if local == actions.len() {
-            return Ok(at);
+        if let Some(at) = self.chain.by_path(path) {
+            return Ok(Some(at));
         }
-        let Some(lease) = self.chain.deeper_shared(actions, local) else {
-            return Ok(at);
+        let Some(shared) = self.chain.shared() else {
+            return Ok(None);
         };
-        let index = self
-            .chain
-            .shared()
-            .map(|shared| Arc::clone(&shared.index))
-            .ok_or("a shared lease without a shared cache")?;
+        let Some(lease) = shared.index.lookup(shared.namespace, &path) else {
+            return Ok(None);
+        };
+        let index = Arc::clone(&shared.index);
+        let near = self.chain.point(self.chain.links() - 1).snap;
         let import_started = started();
-        let near = self.chain.point(at).snap;
-        let imported = self.session.import_cached(index.as_ref(), &lease, near);
+        let imported = self
+            .session
+            .import_cached_receipt(index.as_ref(), &lease, near);
         self.telemetry.imports.since(import_started);
-        let (snap, moment) = match imported {
+        let imported = match imported {
             Ok(imported) => imported,
             Err(error) => {
                 self.chain.release(lease);
                 return Err(self.abandon("import snapshot", error.as_ref()));
             }
         };
-        let dropped = self.chain.truncate(at.saturating_add(1));
+        let validated = (|| {
+            if imported.attachment.domain != b"fault-history-v1" {
+                return Err("imported snapshot lacks captured fault history".to_owned());
+            }
+            let receipt: HistoryReceipt = postcard::from_bytes(&imported.attachment.bytes)
+                .map_err(|error| format!("imported fault history: {error}"))?;
+            receipt.validate()?;
+            if receipt.domain() != self.key || receipt.depth() != depth || receipt.path() != path {
+                return Err("imported fault history domain, path or depth differs".to_owned());
+            }
+            Ok(receipt)
+        })();
+        let receipt = match validated {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                self.chain.release(lease);
+                let _ = self.session.drop_snapshot(imported.snapshot);
+                return Err(error);
+            }
+        };
+        let point = Point {
+            snap: imported.snapshot,
+            moment: imported.moment,
+        };
+        let dropped = self.chain.push_history(point, Some(lease), receipt)?;
         self.drop_snapshots(dropped)?;
-        let len = Chain::actions_in(&lease);
-        self.push_link(&actions[..len], Point { snap, moment }, Some(lease))?;
-        Ok(self.chain.links() - 1)
+        Ok(Some(self.chain.links() - 1))
     }
 
-    fn ensure_prefix(
+    fn find_history(&mut self, history: &FaultHistory) -> Result<usize, String> {
+        if let Some(at) = self.find_path(history.receipt().path(), history.len())? {
+            return Ok(at);
+        }
+        for receipt in history.receipts().into_iter().rev().skip(1) {
+            if let Some(at) = self.find_path(receipt.path(), receipt.depth())? {
+                return Ok(at);
+            }
+        }
+        Err("captured fault setup history is unavailable".to_owned())
+    }
+
+    fn capture_receipt(
         &mut self,
-        actions: &[FaultAction],
+        parent: &HistoryReceipt,
+        action: FaultAction,
+        observation: &mut FaultObservations,
+    ) -> Result<HistoryReceipt, String> {
+        observation
+            .parks
+            .retain(|park| park.moment > parent.moment());
+        observation
+            .park_reads
+            .retain(|read| read.moment > parent.moment());
+        let endpoint = match parent.endpoint() {
+            FaultEndpointCertificate::KvmWholeState(_) => {
+                FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?)
+            }
+            FaultEndpointCertificate::UmlWholeStateUnavailable => {
+                FaultEndpointCertificate::UmlWholeStateUnavailable
+            }
+            FaultEndpointCertificate::KvmUnavailableAfterFailure => {
+                return Err("uncertified parent endpoint".to_owned());
+            }
+        };
+        parent.extend(action, endpoint, observation)
+    }
+
+    fn capture_sealed_receipt(
+        &mut self,
+        snap: SnapId,
+        parent: &HistoryReceipt,
+        action: FaultAction,
+        observation: &mut FaultObservations,
+    ) -> Result<HistoryReceipt, String> {
+        match self.capture_receipt(parent, action, observation) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                let _ = self.session.drop_snapshot(snap);
+                Err(error)
+            }
+        }
+    }
+
+    fn ensure_certified_prefix(
+        &mut self,
+        history: &FaultHistory,
     ) -> Result<Result<Point, FaultObservations>, String> {
-        let at = self.find(actions)?;
+        if let Some(at) = self.chain.certified(history.receipt()) {
+            self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
+            return Ok(Ok(self.chain.point(at)));
+        }
+        let actions = history.actions();
+        let at = self.find_history(history)?;
         let start = self.chain.depth(at);
+        let expected_parent = history
+            .ancestor(start)
+            .ok_or("fault history ancestor missing")?;
+        let mut receipt = self.chain.provenance(at)?.clone();
+        if &receipt != expected_parent.receipt() {
+            return Err("restored fault prefix differs from its snapshot certificate".to_owned());
+        }
         let counter = match Hit::of(start, actions.len()) {
             Hit::Exact => &mut self.telemetry.exact_hits,
             Hit::Ancestor => &mut self.telemetry.ancestor_hits,
@@ -1520,50 +1565,71 @@ impl Live {
         for index in start..actions.len() {
             let prefix = &actions[..=index];
             self.branch(last, prefix)?;
-            let (observation, sealed) =
+            let (mut observation, sealed) =
                 self.run_action(prefix, index, last.moment, RunKind::Rebuild)?;
             let Some((snap, moment)) = sealed else {
                 return Ok(Err(observation));
             };
-            last = self.seal_link(prefix, snap, moment, last.moment)?;
+            let actual =
+                self.capture_sealed_receipt(snap, &receipt, actions[index], &mut observation)?;
+            if &actual
+                != history
+                    .ancestor(index + 1)
+                    .ok_or("fault history node missing")?
+                    .receipt()
+            {
+                let _ = self.session.drop_snapshot(snap);
+                return Err(
+                    "restored fault prefix differs from its snapshot certificate".to_owned(),
+                );
+            }
+            last = self.seal_captured_link(prefix, snap, moment, last.moment, actual.clone())?;
+            receipt = actual;
         }
         Ok(Ok(last))
     }
 
     fn advance(
         &mut self,
-        prefix: &[FaultAction],
+        history: &FaultHistory,
         action: FaultAction,
         kind: RunKind,
-    ) -> Result<FaultObservations, String> {
-        let mut next = prefix.to_vec();
+    ) -> Result<(FaultObservations, Option<HistoryReceipt>), String> {
+        let prefix = history.actions();
+        let mut next = prefix.clone();
         next.push(action);
-        let at = self.find(&next)?;
-        if self.chain.depth(at) == next.len() {
+        if let Some(at) = self.find_path(history.receipt().next_path(action)?, history.len() + 1)? {
+            let receipt = self.chain.provenance(at)?.clone();
+            if !receipt.follows(history.receipt()) || receipt.action() != Some(action) {
+                return Err("cached fault prefix history differs from its parent".to_owned());
+            }
             self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
-            let snap = self.chain.point(at).snap;
-            self.replay(snap)?;
-            return self.observe(FaultStop::Deadline);
+            self.replay(self.chain.point(at).snap)?;
+            let mut observation = self.observe(FaultStop::Deadline)?;
+            if self.capture_receipt(history.receipt(), action, &mut observation)? != receipt {
+                return Err("cached fault endpoint differs from captured history".to_owned());
+            }
+            return Ok((observation, Some(receipt)));
         }
-        let parent = match self.ensure_prefix(prefix)? {
+        let parent = match self.ensure_certified_prefix(history)? {
             Ok(parent) => parent,
-            Err(observation) => {
-                eprintln!(
-                    "fault prefix {prefix:?} stopped at {:?} when rebuilt",
-                    observation.stop
-                );
-                return Ok(FaultObservations {
-                    stop: FaultStop::Unexpected,
-                    ..observation
-                });
+            Err(mut observation) => {
+                observation.stop = FaultStop::Unexpected;
+                return Ok((observation, None));
             }
         };
         self.branch(parent, &next)?;
-        let (observation, sealed) = self.run_action(&next, prefix.len(), parent.moment, kind)?;
-        if let Some((snap, moment)) = sealed {
-            self.seal_link(&next, snap, moment, parent.moment)?;
-        }
-        Ok(observation)
+        let (mut observation, sealed) =
+            self.run_action(&next, prefix.len(), parent.moment, kind)?;
+        let receipt = if let Some((snap, moment)) = sealed {
+            let receipt =
+                self.capture_sealed_receipt(snap, history.receipt(), action, &mut observation)?;
+            self.seal_captured_link(&next, snap, moment, parent.moment, receipt.clone())?;
+            Some(receipt)
+        } else {
+            None
+        };
+        Ok((observation, receipt))
     }
 
     fn branch(&mut self, parent: Point, actions: &[FaultAction]) -> Result<(), String> {
@@ -1660,33 +1726,6 @@ impl Live {
 #[must_use]
 pub fn snapshot_memory_charge(snapshot: &FaultSnapshot) -> usize {
     size_of::<FaultSnapshot>()
-        .saturating_add(
-            snapshot
-                .actions
-                .len()
-                .saturating_mul(size_of::<FaultAction>()),
-        )
-        .saturating_add(
-            snapshot
-                .prefix_certificates
-                .capacity()
-                .saturating_mul(size_of::<Option<[u8; 32]>>()),
-        )
-        .saturating_add(
-            snapshot
-                .observation
-                .assertions
-                .0
-                .iter()
-                .map(|(id, outcome)| {
-                    size_of::<String>()
-                        + id.len()
-                        + outcome.message.len()
-                        + outcome.location.len()
-                        + size_of::<crate::assertion::AssertionOutcome>()
-                })
-                .sum::<usize>(),
-        )
         .saturating_add(snapshot.observation.check.as_ref().map_or(0, |check| {
             check
                 .points
@@ -1884,8 +1923,13 @@ mod tests {
                 worker: None,
                 uml: None,
             }),
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            actions: std::sync::OnceLock::new(),
+            history: FaultHistory::fixture(
+                &[],
+                &[],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &FaultObservations::default(),
+            ),
             observation: FaultObservations::default(),
             action_observations: Vec::new(),
             failed: false,
@@ -1896,11 +1940,63 @@ mod tests {
         }
     }
 
+    fn fixture_genesis() -> HistoryReceipt {
+        HistoryReceipt::genesis(
+            [0; 32],
+            FaultEndpointCertificate::KvmWholeState([17; 32]),
+            &FaultObservations::default(),
+        )
+        .unwrap()
+    }
+
+    impl Live {
+        fn seal_link(
+            &mut self,
+            actions: &[FaultAction],
+            snap: SnapId,
+            moment: u64,
+            from: u64,
+        ) -> Result<Point, String> {
+            let parent = self.chain.provenance(0)?.clone();
+            let action = *actions.last().ok_or("fixture action missing")?;
+            let mut observation = self.observe(FaultStop::Deadline)?;
+            let receipt = self.capture_receipt(&parent, action, &mut observation)?;
+            self.seal_captured_link(actions, snap, moment, from, receipt)
+        }
+        fn find(&mut self, actions: &[FaultAction]) -> Result<usize, String> {
+            let mut path = self.chain.provenance(0)?.clone();
+            for action in actions {
+                path = path.extend(*action, path.endpoint(), &FaultObservations::default())?;
+            }
+            self.find_path(path.path(), actions.len())?
+                .ok_or_else(|| "fixture path missing".to_owned())
+        }
+        fn ensure_prefix(
+            &mut self,
+            actions: &[FaultAction],
+        ) -> Result<Result<Point, FaultObservations>, String> {
+            let mut history = FaultHistory::genesis(self.chain.provenance(0)?.clone())?;
+            for action in actions {
+                let (observation, receipt) = self.advance(&history, *action, RunKind::Rebuild)?;
+                let Some(receipt) = receipt else {
+                    return Ok(Err(observation));
+                };
+                history = history.push(receipt)?;
+            }
+            let at = self
+                .chain
+                .certified(history.receipt())
+                .ok_or("fixture endpoint missing")?;
+            Ok(Ok(self.chain.point(at)))
+        }
+    }
+
     #[derive(Debug)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
         hash_calls: u64,
         abandon_on_hash: bool,
+        hash_failure: bool,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
         run_hashes: Option<Vec<[u8; 32]>>,
@@ -1917,6 +2013,9 @@ mod tests {
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
             self.hash_calls += 1;
+            if self.hash_failure {
+                return Err("ordinary hash failure".into());
+            }
             self.hash.ok_or_else(|| "state hash unavailable".into())
         }
 
@@ -1925,7 +2024,10 @@ mod tests {
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
-            vec![("test.hash_calls".to_owned(), self.hash_calls)]
+            vec![
+                ("test.hash_calls".to_owned(), self.hash_calls),
+                ("test.snapshots".to_owned(), self.snapshots.len() as u64),
+            ]
         }
 
         fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
@@ -1966,6 +2068,104 @@ mod tests {
             _: SnapId,
         ) -> Result<(SnapId, u64), Box<dyn Error>> {
             Err(SessionError::Hung(WALL_LIMIT).into())
+        }
+
+        fn publish_root(
+            &self,
+            index: &dyn CacheIndex,
+            namespace: Namespace,
+            target: SnapId,
+        ) -> Result<Lease, Box<dyn Error>> {
+            self.publish_snapshot_attached(
+                index,
+                namespace,
+                b"root",
+                None,
+                target,
+                &consonance_client::session::SnapshotAttachment::default(),
+                1,
+            )
+        }
+        fn import_root(
+            &mut self,
+            index: &dyn CacheIndex,
+            lease: &Lease,
+        ) -> Result<(SnapId, u64), Box<dyn Error>> {
+            let receipt = self.import_cached_receipt(index, lease, SnapId(1))?;
+            Ok((receipt.snapshot, receipt.moment))
+        }
+
+        fn publish_snapshot_attached(
+            &self,
+            index: &dyn CacheIndex,
+            namespace: Namespace,
+            key: &[u8],
+            parent: Option<(SnapId, &Lease)>,
+            target: SnapId,
+            attachment: &consonance_client::session::SnapshotAttachment,
+            cost: u64,
+        ) -> Result<Lease, Box<dyn Error>> {
+            let hash = *self.snapshots.get(&target.0).ok_or("unknown snapshot")?;
+            let sidecar = postcard::to_allocvec(&(
+                target.0,
+                hash,
+                self.moment,
+                &attachment.domain,
+                &attachment.bytes,
+                self.events.get(&target.0).cloned().unwrap_or_default(),
+            ))?;
+            let commitment = Sha256::digest(postcard::to_allocvec(&(
+                hash,
+                &attachment.domain,
+                &attachment.bytes,
+            ))?)
+            .into();
+            let mut extent = index.extent(extent_len(0, 0, sidecar.len()).unwrap())?;
+            write_extent(extent.bytes_mut(), &[], &[], &sidecar)?;
+            Ok(index.publish(
+                namespace,
+                key,
+                parent.map(|(_, lease)| lease),
+                extent,
+                commitment,
+                cost,
+            )?)
+        }
+        fn import_cached_receipt(
+            &mut self,
+            index: &dyn CacheIndex,
+            lease: &Lease,
+            _: SnapId,
+        ) -> Result<consonance_client::session::CachedSnapshotReceipt, Box<dyn Error>> {
+            if self.hash.is_none() {
+                return Err(SessionError::Hung(WALL_LIMIT).into());
+            }
+            let extents = index.chain(lease)?;
+            let delta = read_extent(extents.last().ok_or("missing extent")?.bytes())?;
+            let (_, hash, moment, domain, bytes, events): (
+                u64,
+                [u8; 32],
+                u64,
+                Vec<u8>,
+                Vec<u8>,
+                Vec<consonance_client::session::SdkEvent>,
+            ) = postcard::from_bytes(delta.sidecar)?;
+            let object_commitment =
+                Sha256::digest(postcard::to_allocvec(&(hash, &domain, &bytes))?).into();
+            if index.target_commitment(lease)? != object_commitment {
+                return Err("fixture cache commitment differs".into());
+            }
+            self.next_snap += 1;
+            let snapshot = SnapId(self.next_snap);
+            self.snapshots.insert(snapshot.0, hash);
+            self.events.insert(snapshot.0, events);
+            Ok(consonance_client::session::CachedSnapshotReceipt {
+                snapshot,
+                moment,
+                machine_commitment: hash,
+                attachment: consonance_client::session::SnapshotAttachment { domain, bytes },
+                object_commitment,
+            })
         }
 
         fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
@@ -2037,13 +2237,14 @@ mod tests {
     }
 
     fn timed_out_live() -> Live {
-        Live {
+        let mut live = Live {
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
                 hash: None,
                 hash_calls: 0,
                 abandon_on_hash: false,
+                hash_failure: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: None,
@@ -2066,7 +2267,9 @@ mod tests {
             horizons_run: 0,
             abandoned: false,
             telemetry: LiveTelemetry::default(),
-        }
+        };
+        live.chain.certify(0, fixture_genesis()).unwrap();
+        live
     }
 
     fn publishing_live(
@@ -2080,6 +2283,7 @@ mod tests {
             hash: Some(commitment),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: target.0,
             run_hashes: None,
@@ -2098,6 +2302,7 @@ mod tests {
                 namespace,
             }),
         );
+        live.chain.certify(0, fixture_genesis()).unwrap();
         live
     }
 
@@ -2106,7 +2311,7 @@ mod tests {
         use std::num::NonZeroU16;
 
         let index = Arc::new(LocalIndex::new(1 << 20));
-        let namespace = Namespace::new(&[b"fault-campaign"]);
+        let namespace = Namespace::exact(&[b"fault-campaign"]);
         let actions = [FaultOperation::Wait(NonZeroU16::MIN).into()];
         let mut first = publishing_live(&index, namespace, SnapId(2), [0x11; 32]);
         let mut second = publishing_live(&index, namespace, SnapId(3), [0x22; 32]);
@@ -2117,32 +2322,34 @@ mod tests {
         let error = second.seal_link(&actions, SnapId(3), 10, 0).unwrap_err();
         assert!(error.contains("publish snapshot: snapshot cache key"));
         assert!(error.contains(&format!("{namespace:?}")));
-        assert!(error.contains(&format!("{:?}", actions_key(&actions))));
+        assert!(error.contains("snapshot cache key"));
         assert_eq!(second.chain.links(), 1);
         assert_eq!(index.stats().entries, 1);
         assert_eq!(index.stats().duplicates, 0);
         assert_eq!(second.session.state_hash().unwrap(), [0x22; 32]);
         assert!(first.find(&actions).unwrap_err().contains("quarantined"));
-        assert!(index.lookup(namespace, &actions_key(&actions)).is_none());
+        assert!(
+            index
+                .lookup(namespace, &fixture_genesis().next_path(actions[0]).unwrap())
+                .is_none()
+        );
         assert!(matches!(
             index.verify_integrity(),
             Err(CacheError::Quarantined { .. })
         ));
         let evidence = index.divergences();
         assert_eq!(evidence.len(), 1);
-        assert_eq!(evidence[0].existing.target_commitment, [0x11; 32]);
-        assert_eq!(evidence[0].published.target_commitment, [0x22; 32]);
-        assert_eq!(
+        assert_ne!(
+            evidence[0].existing.target_commitment,
+            evidence[0].published.target_commitment
+        );
+        assert_ne!(
             read_extent(evidence[0].existing.chain[0].bytes())
                 .unwrap()
                 .sidecar,
-            &2u64.to_le_bytes()
-        );
-        assert_eq!(
             read_extent(evidence[0].published.chain[0].bytes())
                 .unwrap()
-                .sidecar,
-            &3u64.to_le_bytes()
+                .sidecar
         );
     }
 
@@ -2151,7 +2358,7 @@ mod tests {
         use std::num::NonZeroU16;
 
         let index = Arc::new(LocalIndex::new(1 << 20));
-        let namespace = Namespace::new(&[b"fault-campaign"]);
+        let namespace = Namespace::exact(&[b"fault-campaign"]);
         let actions = [FaultOperation::Wait(NonZeroU16::MIN).into()];
         let mut first = publishing_live(&index, namespace, SnapId(2), [0x11; 32]);
         let mut second = publishing_live(&index, namespace, SnapId(3), [0x11; 32]);
@@ -2163,19 +2370,18 @@ mod tests {
         assert_eq!(second.chain.links(), 2);
         assert_eq!(index.stats().entries, 1);
         assert_eq!(index.stats().duplicates, 1);
-        let held = index.lookup(namespace, &actions_key(&actions)).unwrap();
+        let held = index
+            .lookup(namespace, &fixture_genesis().next_path(actions[0]).unwrap())
+            .unwrap();
         let extents = index.chain(&held).unwrap();
-        assert_eq!(
-            read_extent(extents[0].bytes()).unwrap().sidecar,
-            &2u64.to_le_bytes()
-        );
+        assert!(!read_extent(extents[0].bytes()).unwrap().sidecar.is_empty());
         index.release(held);
     }
 
     #[test]
     fn shared_cache_import_preserves_typed_watchdog_failure() {
         let index = Arc::new(LocalIndex::new(1 << 20));
-        let namespace = Namespace::new(&[b"fault-import-timeout"]);
+        let namespace = Namespace::exact(&[b"fault-import-timeout"]);
         let actions = [FaultOperation::Wait(std::num::NonZeroU16::MIN).into()];
         let mut publisher = publishing_live(&index, namespace, SnapId(2), [17; 32]);
         publisher.seal_link(&actions, SnapId(2), 10, 0).unwrap();
@@ -2190,6 +2396,7 @@ mod tests {
                 namespace,
             }),
         );
+        importer.chain.certify(0, fixture_genesis()).unwrap();
         let error = importer.find(&actions).unwrap_err();
         assert!(error.starts_with(WATCHDOG_CUTOFF), "{error}");
         assert!(error.contains("import snapshot"), "{error}");
@@ -2217,6 +2424,7 @@ mod tests {
         };
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
+            history: FaultHistory::genesis(fixture_genesis()).unwrap(),
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             ..FaultSnapshot::default()
         };
@@ -2421,6 +2629,7 @@ mod tests {
             hash: Some(hash),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -2438,6 +2647,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(hashes),
@@ -2468,7 +2678,7 @@ mod tests {
             Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
         );
         assert_eq!(
-            snapshot.prefix_certificates,
+            snapshot.history.certificates(),
             vec![Some(
                 replay_endpoint_certificate([17; 32], &snapshot.observation, false).unwrap()
             )]
@@ -2523,7 +2733,7 @@ mod tests {
         assert_eq!(result.actions.len(), 2);
         for (index, hash) in [[17; 32], [23; 32]].into_iter().enumerate() {
             let snapshot = &result.actions[index].candidate.as_ref().unwrap().snapshot;
-            assert_eq!(snapshot.actions.len(), index + 1);
+            assert_eq!(snapshot.history.actions().len(), index + 1);
             assert_eq!(
                 snapshot.endpoint,
                 Some(FaultEndpointCertificate::KvmWholeState(hash))
@@ -2544,14 +2754,13 @@ mod tests {
         );
         assert!(target.failed());
         assert!(target.actions().is_empty());
-        assert!(target.prefix_certificates.is_empty());
+        assert!(target.history.is_empty());
         LIVE.with(|slot| assert!(slot.borrow().is_none()));
         assert!(target.snapshot().unwrap().is_none());
         LIVE.with(|slot| assert!(slot.borrow().is_none()));
     }
 
-    #[test]
-    fn uml_action_capture_keeps_the_unavailable_certificate_without_hashing() {
+    fn unbooted_uml_target() -> FaultTarget {
         let mut target = unbooted_target();
         Arc::get_mut(&mut target.config).unwrap().uml = Some(UmlLaunch {
             profile: PathBuf::new(),
@@ -2573,7 +2782,38 @@ mod tests {
             setup_budget: SETUP_BUDGET,
             progress_limit: WALL_LIMIT,
         });
-        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
+        target.history = FaultHistory::genesis(
+            HistoryReceipt::genesis(
+                [0; 32],
+                FaultEndpointCertificate::UmlWholeStateUnavailable,
+                &FaultObservations::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        target
+    }
+
+    #[test]
+    fn uml_action_capture_keeps_the_unavailable_certificate_without_hashing() {
+        let mut target = unbooted_uml_target();
+        let mut live = scripted_capture_live(vec![[17; 32]], false);
+        let receipt = HistoryReceipt::genesis(
+            [0; 32],
+            FaultEndpointCertificate::UmlWholeStateUnavailable,
+            &FaultObservations::default(),
+        )
+        .unwrap();
+        target.history = FaultHistory::genesis(receipt.clone()).unwrap();
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            None,
+        );
+        live.chain.certify(0, receipt).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         let before = capture_hash_calls();
         let snapshot = target
             .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
@@ -2584,7 +2824,7 @@ mod tests {
             snapshot.endpoint,
             Some(FaultEndpointCertificate::UmlWholeStateUnavailable)
         );
-        assert_eq!(snapshot.prefix_certificates, vec![None]);
+        assert_eq!(snapshot.history.certificates(), vec![None]);
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
@@ -2594,12 +2834,9 @@ mod tests {
         LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
         let first = postcard::to_allocvec(&target.snapshot().unwrap().unwrap()).unwrap();
         LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([23; 32])));
-        let second = postcard::to_allocvec(&target.snapshot().unwrap().unwrap()).unwrap();
+        assert!(target.snapshot().unwrap_err().contains("final prefix"));
         LIVE.with(|slot| slot.borrow_mut().take());
-        assert_ne!(
-            first, second,
-            "a runnable snapshot omitted its live endpoint"
-        );
+        assert!(!first.is_empty());
         assert!(target.snapshot().unwrap_err().contains("unavailable"));
     }
 
@@ -2674,29 +2911,58 @@ mod tests {
         );
         expected.parks.retain(|park| park.moment > 10);
         expected.park_reads.retain(|read| read.moment > 10);
+        let setup_observation = FaultObservations::new(
+            10,
+            &decode_sdk_events(std::slice::from_ref(&first)).unwrap(),
+            FaultStop::Deadline,
+        );
+        let setup_receipt = HistoryReceipt::genesis(
+            [0; 32],
+            FaultEndpointCertificate::KvmWholeState([17; 32]),
+            &setup_observation,
+        )
+        .unwrap();
+        let actual_receipt = setup_receipt
+            .extend(
+                action,
+                FaultEndpointCertificate::KvmWholeState([17; 32]),
+                &expected,
+            )
+            .unwrap();
         let snapshot = FaultSnapshot {
-            actions: vec![action],
-            prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &expected, false).unwrap(),
-            )],
+            history: FaultHistory::genesis(setup_receipt.clone())
+                .unwrap()
+                .push(actual_receipt.clone())
+                .unwrap(),
             observation: expected,
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
         };
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
-        live.chain.push(
-            &[action],
+        live.chain = Chain::new(
             Point {
-                snap: SnapId(2),
-                moment: 1_000_000,
+                snap: SnapId(1),
+                moment: 0,
             },
             None,
         );
+        live.chain.certify(0, setup_receipt).unwrap();
+        live.chain
+            .push_history(
+                Point {
+                    snap: SnapId(2),
+                    moment: 1_000_000,
+                },
+                None,
+                actual_receipt,
+            )
+            .unwrap();
         live.session = Box::new(TimedOutRestore {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
             current: 1,
             run_hashes: None,
@@ -2725,6 +2991,7 @@ mod tests {
                 hash: Some([17; 32]),
                 hash_calls: 0,
                 abandon_on_hash: false,
+                hash_failure: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![first_hash, [17; 32]]),
@@ -2769,12 +3036,12 @@ mod tests {
             archived_parent,
             FaultEndpointCertificate::KvmWholeState(baseline.0)
         );
-        assert_eq!(baseline.2.actions, divergent.2.actions);
+        assert_eq!(baseline.2.history.actions(), divergent.2.history.actions());
         assert_eq!(baseline.2.observation, divergent.2.observation);
         assert_eq!(baseline.2.endpoint, divergent.2.endpoint);
         assert_ne!(
-            baseline.2.prefix_certificates,
-            divergent.2.prefix_certificates
+            baseline.2.history.certificates(),
+            divergent.2.history.certificates()
         );
         assert_eq!(baseline.2, forged.2);
         assert_eq!(forged.0, baseline.0);
@@ -2801,6 +3068,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -2827,6 +3095,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -2859,8 +3128,12 @@ mod tests {
     fn campaign_job_reconstruction_cutoff_is_incomplete() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[],
+                &[],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &(FaultObservations::default()),
+            ),
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
@@ -2894,8 +3167,12 @@ mod tests {
     fn campaign_job_replayed_action_cutoff_is_incomplete() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[],
+                &[],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &(FaultObservations::default()),
+            ),
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
@@ -2905,6 +3182,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -2939,8 +3217,12 @@ mod tests {
     fn campaign_job_replay_non_watchdog_failure_remains_fatal() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[],
+                &[],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &(FaultObservations::default()),
+            ),
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
@@ -2950,6 +3232,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(Vec::new()),
@@ -2984,6 +3267,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
@@ -3014,57 +3298,381 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_cached_certified_path_observes_each_required_prefix_once() {
-        let actions = [
-            FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into(),
-            FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into(),
-        ];
-        for depth in 0..=actions.len() {
-            let mut target = unbooted_target();
-            let mut live = hashed_live([17; 32]);
-            live.session = Box::new(TimedOutRestore {
-                hash: Some([17; 32]),
-                hash_calls: 0,
-                abandon_on_hash: false,
-                events: BTreeMap::new(),
-                current: 1,
-                run_hashes: Some(vec![[17; 32]; depth]),
-                run_hung: false,
-                snapshots: BTreeMap::from([(1, [17; 32])]),
+    fn imported_unavailable_machine_history_rejects_observation_divergence() {
+        let target = unbooted_uml_target();
+        let root = target.history.clone();
+        let endpoint = FaultEndpointCertificate::UmlWholeStateUnavailable;
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let observation = FaultObservations::default();
+        let first = root
+            .receipt()
+            .extend(action, endpoint, &observation)
+            .unwrap();
+        let expected = root.push(first).unwrap();
+        let expected = expected
+            .push(
+                expected
+                    .receipt()
+                    .extend(action, endpoint, &observation)
+                    .unwrap(),
+            )
+            .unwrap();
+        let mut divergent_observation = observation.clone();
+        divergent_observation.alive = 7;
+        let actual_first = root
+            .receipt()
+            .extend(action, endpoint, &divergent_observation)
+            .unwrap();
+        let actual_final = actual_first.extend(action, endpoint, &observation).unwrap();
+        assert_ne!(expected.receipt().root(), actual_final.root());
+        assert_eq!(expected.receipt().moment(), actual_final.moment());
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::exact(&[b"uml-observation-history"]);
+        let mut publisher = publishing_live(&index, namespace, SnapId(3), [17; 32]);
+        publisher.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
                 moment: 0,
-                next_snap: 1,
-            });
-            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
-            for action in &actions[..depth] {
-                target.apply(*action);
-            }
-            let snapshot = target.snapshot().unwrap().unwrap();
-            assert_eq!(snapshot.actions, actions[..depth]);
-            let before = LIVE.with(|slot| {
-                let slot = slot.borrow();
-                let live = slot.as_ref().unwrap();
-                (
-                    live.chain.links(),
-                    live.telemetry.restores.count,
-                    live.telemetry.observations.count,
-                    live.horizons_run,
-                )
-            });
-            assert_eq!(before.0, depth + 1);
-            target.restore(&snapshot).unwrap();
-            assert_eq!(target.observation(), &snapshot.observation);
-            LIVE.with(|slot| {
-                let slot = slot.borrow();
-                let live = slot.as_ref().unwrap();
-                assert_eq!(live.chain.links(), before.0);
-                assert_eq!(live.horizons_run, before.3);
-                assert_eq!(live.telemetry.restores.count - before.1, depth as u64 + 1);
-                assert_eq!(
-                    live.telemetry.observations.count - before.2,
-                    depth as u64 + 1
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace,
+            }),
+        );
+        publisher.chain.certify(0, root.receipt().clone()).unwrap();
+        publisher
+            .seal_captured_link(&[action, action], SnapId(3), 0, 0, actual_final)
+            .unwrap();
+        let snapshot = FaultSnapshot {
+            history: expected,
+            observation,
+            failed: false,
+            endpoint: Some(endpoint),
+        };
+        let mut importer = scripted_capture_live(Vec::new(), false);
+        importer.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace,
+            }),
+        );
+        importer.chain.certify(0, root.receipt().clone()).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
+        let mut target = target;
+        assert!(
+            target
+                .restore(&snapshot)
+                .unwrap_err()
+                .to_string()
+                .contains("prefix")
+        );
+        assert_eq!(capture_hash_calls(), 0);
+        assert!(index.verify_integrity().is_ok());
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn valid_terminal_endpoint_does_not_publish_a_runnable_history_link() {
+        let mut target = unbooted_target();
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let mut live = hashed_live([17; 32]);
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace: Namespace::exact(&[b"terminal-endpoint"]),
+            }),
+        );
+        live.chain.certify(0, fixture_genesis()).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        assert!(
+            target
+                .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+                .unwrap()
+                .is_none()
+        );
+        assert!(!target.failed());
+        assert_eq!(target.watchdog_cutoffs(), 0);
+        assert_eq!(target.actions().len(), 1);
+        assert!(!target.observation().stop.is_continuable());
+        assert_eq!(index.stats().entries, 0);
+        LIVE.with(|slot| {
+            assert_eq!(slot.borrow().as_ref().unwrap().chain.links(), 1);
+            slot.borrow_mut().take();
+        });
+    }
+
+    #[test]
+    fn ordinary_hash_failure_drops_the_unpublished_snapshot() {
+        let mut target = unbooted_target();
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let mut live = scripted_capture_live(vec![[17; 32]], false);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
+            hash_failure: true,
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(vec![[17; 32]]),
+            run_hung: false,
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace: Namespace::exact(&[b"ordinary-hash-failure"]),
+            }),
+        );
+        live.chain.certify(0, fixture_genesis()).unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        assert!(
+            target
+                .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+                .unwrap()
+                .is_none()
+        );
+        assert!(target.failed());
+        LIVE.with(|slot| {
+            let slot = slot.borrow();
+            let live = slot.as_ref().unwrap();
+            assert_eq!(live.chain.links(), 1);
+            assert!(!live.session.abandoned());
+            assert_eq!(
+                live.session
+                    .telemetry_counters()
+                    .into_iter()
+                    .collect::<BTreeMap<_, _>>()["test.snapshots"],
+                1
+            );
+        });
+        assert_eq!(index.stats().entries, 0);
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn roots_preserve_the_pinned_object_commitment_and_reject_tampering() {
+        let mut source = scripted_capture_live(vec![[17; 32]], false);
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let history = FaultHistory::genesis(fixture_genesis()).unwrap();
+        source.advance(&history, action, RunKind::New).unwrap();
+        let snap = source.chain.point(source.chain.links() - 1).snap;
+        let bytes = export_root(source.session.as_mut(), snap, [17; 32], &[]).unwrap();
+        assert_eq!(&bytes[..8], b"HMROOT03");
+        let mut destination = scripted_capture_live(Vec::new(), false);
+        let (imported, _, _) = import_root(destination.session.as_mut(), &bytes).unwrap();
+        destination.replay(imported).unwrap();
+        assert_eq!(destination.state_hash_current().unwrap(), [17; 32]);
+        let mut changed = bytes.clone();
+        changed[40] ^= 1;
+        assert!(
+            import_root(destination.session.as_mut(), &changed)
+                .unwrap_err()
+                .to_string()
+                .contains("commitment")
+        );
+        let mut old = bytes;
+        old[..8].copy_from_slice(b"HMROOT02");
+        assert!(import_root(destination.session.as_mut(), &old).is_err());
+    }
+
+    #[test]
+    fn forged_expected_history_cannot_replace_captured_history() {
+        for imported in [false, true] {
+            let mut target = unbooted_target();
+            let index = Arc::new(LocalIndex::new(1 << 20));
+            let namespace = Namespace::exact(&[b"forged-expected-history"]);
+            let mut live = scripted_capture_live(vec![[17; 32], [17; 32]], false);
+            if imported {
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
                 );
-            });
+                live.chain.certify(0, fixture_genesis()).unwrap();
+            }
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+            target.apply(action);
+            target.apply(action);
+            let snapshot = target.snapshot().unwrap().unwrap();
+            let mut forged = snapshot.clone();
+            let mut certificates = snapshot.history.certificates();
+            certificates[0] = Some([23; 32]);
+            forged.history = FaultHistory::fixture(
+                &snapshot.history.actions(),
+                &certificates,
+                snapshot.endpoint,
+                &snapshot.observation,
+            );
+            if imported {
+                let mut live = scripted_capture_live(Vec::new(), false);
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            }
+            let before = thread_telemetry();
+            assert!(
+                target
+                    .restore(&forged)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("prefix")
+            );
+            let after = thread_telemetry();
+            assert_eq!(
+                after["session.restore.count"],
+                before["session.restore.count"]
+            );
+            assert_eq!(after["run.rebuild.count"], before["run.rebuild.count"]);
+            assert_eq!(after["vmm.test.hash_calls"], before["vmm.test.hash_calls"]);
+            assert!(index.verify_integrity().is_ok());
+            assert!(target.restore(&snapshot).is_ok());
             LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
+    fn converged_machine_endpoints_with_different_captured_history_quarantine() {
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::exact(&[b"converged-history"]);
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for (first_hash, expected_error) in [([17; 32], false), ([23; 32], true)] {
+            let mut live = scripted_capture_live(vec![first_hash, [17; 32]], false);
+            let history = FaultHistory::genesis(fixture_genesis()).unwrap();
+            let (_, first) = live.advance(&history, action, RunKind::New).unwrap();
+            let history = history.push(first.unwrap()).unwrap();
+            let (_, second) = live.advance(&history, action, RunKind::New).unwrap();
+            let receipt = second.unwrap();
+            let point = live.chain.point(live.chain.links() - 1);
+            live.chain = Chain::new(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                Some(Shared {
+                    index: index.clone(),
+                    namespace,
+                }),
+            );
+            live.chain.certify(0, fixture_genesis()).unwrap();
+            let result =
+                live.seal_captured_link(&[action, action], point.snap, point.moment, 0, receipt);
+            assert_eq!(result.is_err(), expected_error);
+        }
+        assert!(matches!(
+            index.verify_integrity(),
+            Err(CacheError::Quarantined { .. })
+        ));
+        let evidence = index.divergences();
+        assert_eq!(evidence.len(), 1);
+        assert_ne!(
+            evidence[0].existing.target_commitment,
+            evidence[0].published.target_commitment
+        );
+    }
+
+    #[test]
+    fn certified_local_and_imported_restores_do_constant_endpoint_work() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for depth in [1, 8, 32, 128, 1024] {
+            for imported in [false, true] {
+                let mut target = unbooted_target();
+                let index = Arc::new(LocalIndex::new(64 << 20));
+                let namespace = Namespace::exact(&[b"certified-restore-fixture"]);
+                let mut live = scripted_capture_live(vec![[17; 32]; depth], false);
+                if imported {
+                    live.chain = Chain::new(
+                        Point {
+                            snap: SnapId(1),
+                            moment: 0,
+                        },
+                        Some(Shared {
+                            index: index.clone(),
+                            namespace,
+                        }),
+                    );
+                    live.chain.certify(0, fixture_genesis()).unwrap();
+                }
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+                for _ in 0..depth {
+                    target.apply(action);
+                }
+                let snapshot = target.snapshot().unwrap().unwrap();
+                assert_eq!(snapshot.history.len(), depth);
+                if imported {
+                    let mut importer = scripted_capture_live(Vec::new(), false);
+                    importer.chain = Chain::new(
+                        Point {
+                            snap: SnapId(1),
+                            moment: 0,
+                        },
+                        Some(Shared {
+                            index: index.clone(),
+                            namespace,
+                        }),
+                    );
+                    importer.chain.certify(0, fixture_genesis()).unwrap();
+                    LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
+                }
+                let before = thread_telemetry();
+                target.restore(&snapshot).unwrap();
+                assert!(target.actions.get().is_none());
+                assert_eq!(target.observation(), &snapshot.observation);
+                let after = thread_telemetry();
+                for key in [
+                    "session.restore.count",
+                    "session.observe.count",
+                    "vmm.test.hash_calls",
+                ] {
+                    assert_eq!(
+                        after[key] - before[key],
+                        1,
+                        "{key}, depth={depth}, imported={imported}"
+                    );
+                }
+                for key in ["run.new.count", "run.rebuild.count", "run.replay.count"] {
+                    assert_eq!(
+                        after[key] - before[key],
+                        0,
+                        "{key}, depth={depth}, imported={imported}"
+                    );
+                }
+                if imported {
+                    assert_eq!(
+                        after["shared.import.count"] - before["shared.import.count"],
+                        1
+                    );
+                }
+                LIVE.with(|slot| slot.borrow_mut().take());
+            }
         }
     }
 
@@ -3078,6 +3686,7 @@ mod tests {
             hash: Some([17; 32]),
             hash_calls: 0,
             abandon_on_hash: false,
+            hash_failure: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -3091,7 +3700,10 @@ mod tests {
         baseline.apply(second_action);
         assert!(!baseline.failed());
         let keyframe = baseline.snapshot().unwrap().unwrap();
-        assert_eq!(keyframe.actions, vec![first_action, second_action]);
+        assert_eq!(
+            keyframe.history.actions(),
+            vec![first_action, second_action]
+        );
         LIVE.with(|slot| slot.borrow_mut().take());
 
         for cached in [false, true] {
@@ -3101,6 +3713,7 @@ mod tests {
                 hash: Some([17; 32]),
                 hash_calls: 0,
                 abandon_on_hash: false,
+                hash_failure: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -3137,11 +3750,15 @@ mod tests {
     fn restore_rejects_a_prefix_that_stops_before_its_certified_endpoint() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: vec![FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
-            prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
-                    .unwrap(),
-            )],
+            history: crate::history::FaultHistory::fixture(
+                &[FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
+                &[Some(
+                    replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
+                        .unwrap(),
+                )],
+                Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                &(FaultObservations::default()),
+            ),
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             ..FaultSnapshot::default()
         };
@@ -3211,8 +3828,12 @@ mod tests {
 
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[],
+                &[],
+                None,
+                &(FaultObservations::default()),
+            ),
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
@@ -3248,8 +3869,15 @@ mod tests {
     fn reconstruction_cutoff_discards_stale_evidence_and_allows_a_later_restore() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: vec![FaultOperation::Wait(std::num::NonZeroU16::new(32768).unwrap()).into()],
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[FaultOperation::Wait(std::num::NonZeroU16::new(32768).unwrap()).into()],
+                &[],
+                None,
+                &(FaultObservations {
+                    ticks: 123,
+                    ..FaultObservations::default()
+                }),
+            ),
             observation: FaultObservations {
                 ticks: 123,
                 ..FaultObservations::default()
@@ -3265,7 +3893,7 @@ mod tests {
         assert!(target.failed());
         assert!(!target.found_bug());
         assert!(target.snapshot().unwrap().is_none());
-        assert!(target.actions.is_empty());
+        assert!(target.actions().is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
         target.apply(FaultOperation::Kill(0, std::num::NonZeroU16::new(50).unwrap()).into());
         assert_eq!(target.execution_ticks(), 17);
@@ -3277,15 +3905,19 @@ mod tests {
         assert!(!target.failed());
         assert_eq!(target.watchdog_cutoffs(), 0);
         assert_eq!(target.observation(), &snapshot.observation);
-        assert_eq!(target.actions(), snapshot.actions);
+        assert_eq!(target.actions(), snapshot.history.actions());
         assert!(!target.last_action_observations()[0].watchdog_cutoff);
     }
 
     #[test]
     fn run_and_snapshot_watchdogs_share_the_recoverable_classification() {
         let snapshot = FaultSnapshot {
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[],
+                &[],
+                None,
+                &(FaultObservations::default()),
+            ),
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
@@ -3317,8 +3949,12 @@ mod tests {
     fn other_reconstruction_errors_remain_fatal() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
-            actions: Vec::new(),
-            prefix_certificates: Vec::new(),
+            history: crate::history::FaultHistory::fixture(
+                &[],
+                &[],
+                None,
+                &(FaultObservations::default()),
+            ),
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
@@ -3415,7 +4051,7 @@ mod tests {
         let moment = root.window(&prefix, 0).unwrap().1;
         let original = branch_config(root, &[], &prefix).unwrap();
         let active = active_root_windows(&[], root, &prefix, moment).unwrap();
-        let payload = encode_root_payload([7; 32], &active, b"snapshot").unwrap();
+        let payload = encode_root_payload([7; 32], &active, b"snapshot", [9; 32]).unwrap();
         let decoded = decode_root_payload(&payload, [7; 32]).unwrap();
         assert_eq!(decoded.snapshot, b"snapshot");
         assert_eq!(root_standing(&payload).unwrap(), active);
@@ -3436,7 +4072,8 @@ mod tests {
         let nested_moment = rooted.window(&suffix, 0).unwrap().1;
         let nested_active =
             active_root_windows(&decoded.standing, rooted, &suffix, nested_moment).unwrap();
-        let nested_payload = encode_root_payload([7; 32], &nested_active, b"nested").unwrap();
+        let nested_payload =
+            encode_root_payload([7; 32], &nested_active, b"nested", [9; 32]).unwrap();
         let nested = decode_root_payload(&nested_payload, [7; 32]).unwrap();
         let nested_config = branch_config(
             ActionWindows {
@@ -3494,7 +4131,12 @@ fn export_root(
     if chain.len() != 1 {
         return Err("branch root must be a complete snapshot extent".into());
     }
-    encode_root_payload(identity, standing, chain[0].bytes())
+    encode_root_payload(
+        identity,
+        standing,
+        chain[0].bytes(),
+        index.target_commitment(&lease)?,
+    )
 }
 
 fn active_root_windows(
@@ -3515,11 +4157,14 @@ fn import_root(
 ) -> Result<(SnapId, u64, Vec<StandingWindow>), Box<dyn Error>> {
     use consonance_client::cache::LocalIndex;
     let identity = session.root_identity()?;
-    let RootPayload { standing, snapshot } = decode_root_payload(bytes, identity)?;
+    let RootPayload {
+        standing,
+        snapshot,
+        target_commitment,
+    } = decode_root_payload(bytes, identity)?;
     let index = LocalIndex::new(usize::MAX);
     let mut extent = index.extent(snapshot.len())?;
     extent.bytes_mut().copy_from_slice(snapshot);
-    let target_commitment = Sha256::digest(extent.bytes_mut()).into();
     let lease = index.publish(
         Namespace::new(&[&identity]),
         b"root",
@@ -3539,12 +4184,14 @@ fn encode_root_payload(
     identity: [u8; 32],
     standing: &[StandingWindow],
     snapshot: &[u8],
+    target_commitment: [u8; 32],
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     let encoded = encode_windows(standing)?;
     let length =
         u32::try_from(encoded.len()).map_err(|_| "branch root standing list is too large")?;
-    let mut bytes = b"HMROOT02".to_vec();
+    let mut bytes = b"HMROOT03".to_vec();
     bytes.extend_from_slice(&identity);
+    bytes.extend_from_slice(&target_commitment);
     bytes.extend_from_slice(&length.to_le_bytes());
     bytes.extend_from_slice(&encoded);
     bytes.extend_from_slice(snapshot);
@@ -3562,32 +4209,37 @@ pub(crate) fn root_standing(root: &[u8]) -> Result<Vec<StandingWindow>, Box<dyn 
 struct RootPayload<'a> {
     standing: Vec<StandingWindow>,
     snapshot: &'a [u8],
+    target_commitment: [u8; 32],
 }
 
 fn decode_root_payload(
     bytes: &[u8],
     identity: [u8; 32],
 ) -> Result<RootPayload<'_>, Box<dyn Error>> {
-    if bytes.len() < 44 || &bytes[..8] != b"HMROOT02" {
+    if bytes.len() < 76 || &bytes[..8] != b"HMROOT03" {
         return Err("invalid branch snapshot header".into());
     }
     if bytes[8..40] != identity {
         return Err("branch snapshot setup identity differs".into());
     }
-    let length = usize::try_from(u32::from_le_bytes(bytes[40..44].try_into()?))?;
-    let end = 44_usize
+    let length = usize::try_from(u32::from_le_bytes(bytes[72..76].try_into()?))?;
+    let end = 76_usize
         .checked_add(length)
         .ok_or("branch root standing length overflows")?;
     let standing = fault_policy::decode_windows(
         bytes
-            .get(44..end)
+            .get(76..end)
             .ok_or("truncated branch root standing list")?,
     )?;
     let snapshot = bytes.get(end..).ok_or("missing branch root snapshot")?;
     if snapshot.is_empty() {
         return Err("missing branch root snapshot".into());
     }
-    Ok(RootPayload { standing, snapshot })
+    Ok(RootPayload {
+        standing,
+        snapshot,
+        target_commitment: bytes[40..72].try_into()?,
+    })
 }
 
 #[derive(Debug)]
