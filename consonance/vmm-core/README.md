@@ -30,7 +30,12 @@ inheriting the host's KVM reset descriptor.
 `tests/linux_snapshot_continuation.rs` exercises the production Linux boot,
 completed-boundary capture and full RAM/VM-state restore APIs with the owned
 continuation initramfs. The guest's memory, SIMD, x87, clock and entropy
-readbacks supply the oracle independently of the snapshot encoder. The
+readbacks supply an oracle independently of the snapshot encoder. Bounded O1
+also compares the production whole-state hash at READY, DONE and termination;
+O2 fixes RAM/SIMD/x87 goldens; O3 repeats two distinct seeds and requires changed
+entropy with equal nonentropy outputs and positive continuation work. A separate
+`ControlServer` portable snapshot path preserves the cumulative event history;
+raw `VmState` restore does not carry that history. The
 [qualification adapter](../../scripts/qualification/README.md#composed-linux-continuation)
 retains exact artifacts and cross-host admission outcomes. This bounded x86
 fixture does not establish a complete backend register inventory or qualify
