@@ -446,11 +446,14 @@ Branch and replay install a checkpoint from the selected actual captured Link;
 rollback, new sessions and failures cannot reuse another lineage's cursor.
 
 Captured observation attachments use `fault-observations-v1`, included in the exact
-cache namespace. Imported attachments remain untrusted until the normal required
-machine replay or branch reconstructs the full actual SDK history and compares
-all decoder state, including hidden maps and offset. This adds full-history fetch
-and decode work on first import, but no additional machine restore. Evicted or
-missing checkpoints reconstruct actual history and validate its captured receipt.
+cache namespace. Imported decoder checkpoints remain untrusted. When a pending
+checkpoint is retained, the normal required machine replay or branch reconstructs
+the full actual SDK history and compares all decoder state, including hidden maps
+and offset. If pressure has discarded the pending checkpoint, restoration instead
+reconstructs actual decoder state and validates the captured receipt without using
+the imported decoder. Missing local checkpoints use that same reconstruction path.
+First import and eviction fallback add full-history fetch and decode work, but no
+additional machine restore.
 Expected campaign snapshots and root payloads provide no decoder authority; fresh
 root imports start from offset zero. Whole-state and ordered-event certificates
 retain their existing formats and fresh integrity checks.
@@ -460,8 +463,10 @@ sessions without a shared index. This is a performance policy, not a logical
 retention setting. Under shared-cache pressure they are discarded before certified
 VM links. Restoring an evicted checkpoint enforces the cap and reports its charge
 without moving the selected VM Link. `report_store` includes session storage plus
-unique retained decoder allocations and checkpoint metadata. Shared Arc state is
-charged once by physical identity; map storage uses a conservative per-entry bound,
+unique retained decoder allocations and checkpoint metadata. If a session does not
+expose storage bytes, the report still includes the optional checkpoint charge.
+Shared Arc state is charged once by physical identity; map storage uses a
+conservative per-entry bound,
 with owned string/vector capacities and Arc headers counted. Cached charges are
 computed at installation, not by rescanning maps on budget queries. Current working
 decoder and temporary decoding/accounting scratch remain target-private, as the
@@ -477,8 +482,10 @@ capture projection. Full actual reconstruction at restore is reported separately
 as `session.observe_checkpoint_rebuild` and `observe.checkpoint_rebuild_*`, for both
 imports and local eviction fallback. Fetch counts can include batches subsequently
 rejected; failed decode/infrastructure attempts do not contribute completed timing
-samples. `observe.checkpoint_hits`, `observe.checkpoint_evictions` and
-`observe.full_rebuilds` distinguish reuse and fallback. `cache.resident_bytes`
+samples. Checkpoint rebuild timing counts completed fetch/decode/infrastructure
+checks even when a subsequent decoder comparison or receipt-binding check rejects
+the reconstructed checkpoint. `observe.checkpoint_hits`,
+`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and fallback. `cache.resident_bytes`
 retains its VM-page meaning; `cache.observation_checkpoint_bytes` is the optional
 pool charge and `cache.charged_bytes` combines both reported gauges.
 
