@@ -69,6 +69,11 @@ PR_ARTIFACT_BUILD_BUDGETS = {
 }
 PR_EXTENDED_CHECK_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
+    (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"): 30,
+}
+PR_TIMEOUT_EXPRESSIONS = {
+    (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"):
+        "${{ matrix.name == 'vmm-backend' && 30 || 15 }}",
 }
 
 
@@ -401,7 +406,9 @@ CONSONANCE_ANALYSIS = Workflow(
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("miri_matrix", "kani")),
-        Job("Miri — <Crate>", "pr", 15, select="miri_matrix"),
+        Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
+            exception="The backend's interpreted snapshot and register inventory "
+                      "checks exceed 15 minutes; other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
             exception="Interpreting a whole unsafe crate under Miri takes hours, "
                       "so pull requests get the tests the change reaches."),

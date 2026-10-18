@@ -262,8 +262,8 @@ class StructureTests(unittest.TestCase):
         self.assertEqual((registered.trigger, registered.timeout_minutes,
                           registered.select), ("pr", 35, "harmony_languages"))
         self.assertTrue(registered.exception)
-        self.assertEqual(ci_contract.PR_EXTENDED_CHECK_BUDGETS,
-                         {(workflow.path, "C Investigation"): 35})
+        self.assertEqual(ci_contract.PR_EXTENDED_CHECK_BUDGETS[
+            (workflow.path, "C Investigation")], 35)
         self.assertEqual(investigation["timeout-minutes"], registered.timeout_minutes)
         self.assertEqual(jobs["check"]["timeout-minutes"], 15)
         self.assertNotIn("cli/tests/investigation.sh", str(jobs["check"]["steps"]))
@@ -276,6 +276,20 @@ class StructureTests(unittest.TestCase):
         self.assertIn("docker load --input language-image/c.tar", commands)
         self.assertIn("timeout -k 10 1800 bash cli/tests/investigation.sh", commands)
         self.assertNotIn("scripts/historical-search.sh", commands)
+
+    def test_only_the_backend_miri_variant_has_the_extended_budget(self):
+        import yaml
+
+        workflow = ci_contract.CONSONANCE_ANALYSIS
+        job = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]["miri"]
+        registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
+        self.assertEqual(registered.timeout_minutes, 30)
+        self.assertTrue(registered.exception)
+        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
+        expression = "${{ matrix.name == 'vmm-backend' && 30 || 15 }}"
+        self.assertEqual(job["timeout-minutes"], expression)
+        self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
+                         {(workflow.path, registered.name): expression})
 
     def test_release_guest_archive_carries_verified_runtime_pair(self):
         import yaml

@@ -507,6 +507,25 @@ class JobContractTests(unittest.TestCase):
         self.assertFalse(self.check("    timeout-minutes: 15\n    steps: []"))
         self.assertEqual(self.check("    steps: []"), ["ci-pr-job-timeout"])
 
+    def test_backend_miri_requires_its_exact_scoped_timeout_expression(self):
+        workflow = ci_contract.CONSONANCE_ANALYSIS
+        registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
+        expression = ci_contract.PR_TIMEOUT_EXPRESSIONS[(workflow.path, registered.name)]
+        for timeout in (expression, 30, 15, True,
+                        expression.replace("|| 15", "|| 30"),
+                        expression.replace("vmm-backend", "vmm-core")):
+            with self.subTest(timeout=timeout):
+                job = {"timeout-minutes": timeout, "steps": []}
+                violations = LINTS.check_job_contract(
+                    workflow.path, "miri", job, registered._replace(select=""), True)
+                errors = [v for v in violations if v.rule == "ci-pr-job-timeout"]
+                self.assertEqual(bool(errors), timeout != expression)
+        job = {"timeout-minutes": expression, "steps": []}
+        violations = LINTS.check_job_contract(
+            ".github/workflows/example.yml", "miri", job,
+            registered._replace(select=""), True)
+        self.assertIn("ci-pr-job-timeout", [v.rule for v in violations])
+
     def test_a_pull_request_job_cannot_exceed_the_bound(self):
         rules = self.check("    timeout-minutes: 16\n    steps: []",
                            job=ci_contract.Job("Guest Memory", "pr", 16))
