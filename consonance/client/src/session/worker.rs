@@ -1159,8 +1159,6 @@ impl WorkerSession {
             loaded_image_guard,
             transport,
         } = connection;
-        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
-        crate::writer_lifetime::reap_worker_quarantine(1);
         let mut session = Self {
             stream,
             process,
@@ -1180,6 +1178,10 @@ impl WorkerSession {
             telemetry_query_failures: Cell::new(0),
             retained_export: RefCell::new(Vec::new()),
         };
+        session
+            .loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::Admission)?;
+        crate::writer_lifetime::reap_worker_quarantine(1);
         let mut request = Out::measured(INIT, &session.copies);
         put_config(&mut request, config);
         request
@@ -5373,6 +5375,108 @@ while s.recv(4096): pass
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn constructor_admission_refusal_shuts_down_owned_child_without_sending_init() {
+        use std::os::unix::process::CommandExt;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        #[derive(Debug)]
+        struct ObservedChild {
+            child: std::process::Child,
+            confirmed: Arc<AtomicBool>,
+            fallback: Arc<AtomicBool>,
+            polls: Arc<AtomicUsize>,
+        }
+        impl crate::writer_lifetime::ExitOwner for ObservedChild {
+            fn try_exited(&mut self) -> io::Result<bool> {
+                self.polls.fetch_add(1, Ordering::SeqCst);
+                let exited = self.child.try_wait()?.is_some();
+                self.confirmed.store(exited, Ordering::SeqCst);
+                Ok(exited)
+            }
+            fn terminate(&mut self) -> io::Result<()> {
+                self.child.kill()
+            }
+        }
+        impl Drop for ObservedChild {
+            fn drop(&mut self) {
+                if self.polls.load(Ordering::SeqCst) == 0 {
+                    self.fallback.store(true, Ordering::SeqCst);
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                }
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let ready = directory.path().join("ready");
+        let received = directory.path().join("received");
+        let (parent, child) = UnixStream::pair().unwrap();
+        let raw = child.as_raw_fd();
+        let mut command = std::process::Command::new("python3");
+        command
+            .arg("-c")
+            .arg(
+                r#"
+import pathlib,socket,sys
+s=socket.socket(fileno=int(sys.argv[1]))
+pathlib.Path(sys.argv[2]).write_text('ready')
+pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
+"#,
+            )
+            .arg(raw.to_string())
+            .arg(&ready)
+            .arg(&received);
+        // SAFETY: the endpoint remains owned through spawn; the post-fork closure only changes CLOEXEC on its inherited descriptor with fcntl.
+        unsafe {
+            command.pre_exec(move || set_cloexec(raw, false));
+        }
+        let confirmed = Arc::new(AtomicBool::new(false));
+        let fallback = Arc::new(AtomicBool::new(false));
+        let polls = Arc::new(AtomicUsize::new(0));
+        let owner = ObservedChild {
+            child: command.spawn().unwrap(),
+            confirmed: confirmed.clone(),
+            fallback: fallback.clone(),
+            polls: polls.clone(),
+        };
+        drop(child);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !ready.exists() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !ready.exists() {
+            drop(owner);
+            panic!("protocol child did not reach its receive barrier");
+        }
+        let (result, checks, strict) = crate::image_identity::trace_checks(Some(1), || {
+            WorkerSession::connect(
+                WorkerConnection {
+                    stream: parent,
+                    process: None,
+                    owner: Some(Box::new(owner)),
+                    loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                    transport: Arc::default(),
+                },
+                &[3],
+                b"i",
+                &config(),
+                &[],
+                "fake",
+            )
+        });
+        let error = result.unwrap_err();
+        assert!(error.to_string().contains("injected loaded-image refusal"));
+        assert_eq!((checks, strict), (1, 0));
+        assert!(
+            confirmed.load(Ordering::SeqCst),
+            "shutdown did not confirm its owned child exit"
+        );
+        assert!(!fallback.load(Ordering::SeqCst));
+        assert!(polls.load(Ordering::SeqCst) > 0);
+        assert_eq!(std::fs::read(received).unwrap(), b"");
+    }
+
+    #[test]
     fn explicit_shutdown_retains_ambiguous_owner_and_never_repolls_on_retry() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         #[derive(Debug)]
@@ -5724,6 +5828,28 @@ while s.recv(4096): pass
         drop((first, second));
         first_server.join().unwrap();
         second_server.join().unwrap();
+    }
+
+    #[test]
+    fn cache_import_survives_confirmed_publisher_session_shutdown() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut publisher, publisher_server) = threaded(3);
+        let (mut importer, importer_server) = threaded(50);
+        publisher.run_until(40).unwrap();
+        let expected = publisher.state_hash().unwrap();
+        let (snapshot, _) = publisher.snapshot().unwrap();
+        let lease = publisher
+            .publish_snapshot(&index, namespace(), b"closed-publisher", None, snapshot, 1)
+            .unwrap();
+        publisher.shutdown().unwrap();
+        publisher_server.join().unwrap();
+        drop(publisher);
+        importer.import_cached(&index, &lease, SnapId(1)).unwrap();
+        assert_eq!(importer.state_hash().unwrap(), expected);
+        index.release(lease);
+        importer.shutdown().unwrap();
+        drop(importer);
+        importer_server.join().unwrap();
     }
 
     #[test]

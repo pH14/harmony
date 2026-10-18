@@ -711,3 +711,7 @@ Final cumulative telemetry is captured once before explicit session shutdown and
 merged into retired counters without a post-close RPC. It excludes teardown work;
 telemetry failure does not prevent the owned shutdown attempt. Bootstrap scope
 acquisition refuses nesting atomically, preserving the outer scope's ownership.
+
+Standalone full and prefix replay own the coordinator thread's session for the
+whole operation, then explicitly finalize it on every result. macOS target Drop
+also defers to this active scope; session reuse inside a replay remains intact.
