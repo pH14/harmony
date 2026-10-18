@@ -101,6 +101,17 @@ before trusting a cached base-RAM digest; implicit zero pages need no read.
 `verify_snapshots` checks multiple resolved snapshots with one set of verified
 resident pages, so content shared by the base and target is hashed once.
 
+`read_transaction` shares the resident-slot verification set across delta
+planning, page differences, checked page reads, and complete-image verification.
+A transaction holds an immutable store borrow; page storage cannot be rewritten,
+released, collected, or reused while that transaction or its returned page
+references remain live. Verified slot identities stay private to that store and
+transaction. A new transaction verifies the resident bytes again, including
+unchanged, inherited, and omitted pages reached by complete-image verification.
+Standalone read, delta, difference, and verification operations begin fresh
+transactions. This boundary removes duplicate integrity hashing within one
+operation without carrying trust across operations or changing commitment bytes.
+
 An inherited lookup caches its answer only on the requested layer, without
 populating every traversed ancestor. Cached answers remain available until their
 layer is collected; there is no capacity limit or eviction policy. This favors
