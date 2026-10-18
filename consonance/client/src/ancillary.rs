@@ -64,7 +64,7 @@ pub(crate) fn parse_control_rights(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     fn native_space_bytes(bytes: usize) -> usize {
         // SAFETY: CMSG_SPACE only computes native layout for this bounded test payload.
@@ -114,6 +114,48 @@ mod tests {
             &payload,
             capacity,
         )
+    }
+
+    #[cfg(any(target_os = "macos", miri))]
+    pub(crate) fn two_rights_control(descriptor: RawFd) -> Vec<u64> {
+        let space = native_space_bytes(size_of::<RawFd>());
+        let mut control = vec![0_u64; (space * 2).div_ceil(size_of::<u64>())];
+        for offset in [0, space] {
+            // SAFETY: each u64-aligned header and one integer payload fit its separately CMSG_SPACE-sized initialized region; all pointers remain live through sendmsg.
+            unsafe {
+                let header = control
+                    .as_mut_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<libc::cmsghdr>();
+                (*header).cmsg_level = libc::SOL_SOCKET;
+                (*header).cmsg_type = libc::SCM_RIGHTS;
+                (*header).cmsg_len = libc::CMSG_LEN(size_of::<RawFd>() as _) as _;
+                libc::CMSG_DATA(header)
+                    .cast::<RawFd>()
+                    .write_unaligned(descriptor);
+            }
+        }
+        control
+    }
+
+    #[test]
+    #[cfg(any(target_os = "macos", miri))]
+    fn multiple_rights_headers_have_bounded_native_layout() {
+        let control = two_rights_control(7);
+        // SAFETY: the initialized allocation is viewed only within its actual byte length.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                control.as_ptr().cast::<u8>(),
+                size_of_val(control.as_slice()),
+            )
+        };
+        let mut found = Vec::new();
+        parse_control_rights(bytes, native_space_bytes(size_of::<RawFd>()) * 2, |fd| {
+            found.push(fd)
+        })
+        .unwrap();
+        assert_eq!(found, [7, 7]);
     }
 
     #[test]
