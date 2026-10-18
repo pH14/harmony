@@ -110,6 +110,7 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
     assert!(target.snapshot()?.is_none());
     assert_eq!(target.execution_ticks(), before_ticks);
     assert_eq!(target.guest_horizons_run(), before_horizons);
+    assert_eq!(target.last_action_observations().len(), 1);
     assert!(target.last_action_observations().iter().all(|observation| {
         observation.infrastructure_failure && !observation.watchdog_cutoff && !observation.is_bug()
     }));

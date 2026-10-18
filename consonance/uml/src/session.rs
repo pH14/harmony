@@ -482,7 +482,8 @@ impl Session {
             .prepare_resolution(request, moment, service, id, answer);
         check_host_guard(self.host_guard)?;
         let (services, response) = prepared.map_err(SessionError::BadResolution)?;
-        bridge::send(&self.socket, &response)?;
+        let sent = bridge::send(&self.socket, &response);
+        self.transport_result(sent)?;
         self.services = services;
         self.pending = None;
         self.serve(Until::Moment(deadline))
@@ -1672,7 +1673,7 @@ mod tests {
         command
             .args([
                 "-c",
-                "while [ ! -e \"$1\" ]; do sleep 0.001; done; sleep 0.02; exit \"$2\"",
+                "while [ ! -e \"$1\" ]; do sleep 0.001; done; sleep 0.02; case \"$2\" in -*) kill -\"${2#-}\" $$;; *) exit \"$2\";; esac",
                 "checkpoint-peer",
             ])
             .arg(&release)
@@ -1750,6 +1751,61 @@ mod tests {
                     assert!(exit.work_removed);
                 }
             }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_decision_reply_preserves_status_and_does_not_publish_the_answer() {
+        use hypercall_proto::{ServiceId, encode_request};
+
+        for (status, expected) in [
+            (0, ExitReason::Exited(0)),
+            (86, ExitReason::GuestPanic),
+            (87, ExitReason::HostFailure),
+            (-9, ExitReason::Signaled(9)),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, release) =
+                controlled_peer(directory.path(), status, Duration::from_secs(2));
+            session
+                .services
+                .branch(7, Box::new(WaitingHandler), Vec::new(), None)
+                .unwrap();
+            let mut payload = 19_u16.to_le_bytes().to_vec();
+            payload.extend(7_u64.to_le_bytes());
+            payload.extend(b"choose");
+            let mut request = vec![0; STAMP_LEN + MAX_FRAME];
+            request[..STAMP_LEN].copy_from_slice(&120_u64.to_le_bytes());
+            let length =
+                encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+            request.truncate(STAMP_LEN + length);
+            let mut response = [0; MAX_FRAME];
+            assert!(matches!(
+                session
+                    .services
+                    .exchange(&request, &mut response)
+                    .unwrap()
+                    .signal,
+                Some(Signal::Decision(_))
+            ));
+            session.pending = Some(request);
+            let before = session.bridge_state_digest().unwrap();
+            drop(peer);
+            std::fs::write(release, []).unwrap();
+            let answer = environment::channel::Answer::Data(vec![42]).encode();
+            let error = session
+                .resolve_and_run(200, 120, 19, 7, &answer)
+                .unwrap_err();
+            assert!(
+                matches!(error, SessionError::Stopped(reason) if reason == expected),
+                "status={status}: {error}"
+            );
+            assert!(session.paused());
+            assert_eq!(session.bridge_state_digest().unwrap(), before);
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
         }
     }
 

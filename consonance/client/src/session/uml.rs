@@ -192,6 +192,41 @@ fn session_error(error: &uml::SessionError, detail: String) -> SessionError {
     }
 }
 
+fn setup_point(
+    session: &mut uml::Session,
+    budget: u64,
+    progress_limit: Duration,
+) -> Result<u64, Box<dyn Error>> {
+    match session.run_to_snapshot_point(budget) {
+        Ok(Stop::SnapshotPoint(moment)) => Ok(moment),
+        Ok(Stop::Closed) => {
+            let reason = session
+                .settle_terminal_console(progress_limit)
+                .map_err(|error| {
+                    session_error(
+                        &error,
+                        format!("setup: {error}\n{}", session.console_tail()),
+                    )
+                })?;
+            Err(SessionError::Control(format!(
+                "the guest stopped at {reason:?} before the setup snapshot point\n{}",
+                session.console_tail()
+            ))
+            .into())
+        }
+        Ok(stop) => Err(SessionError::Control(format!(
+            "the guest stopped at {stop:?} before the setup snapshot point\n{}",
+            session.console_tail()
+        ))
+        .into()),
+        Err(error) => Err(session_error(
+            &error,
+            format!("setup: {error}\n{}", session.console_tail()),
+        )
+        .into()),
+    }
+}
+
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
         let (loaded_executable, loaded_image_guard) =
@@ -236,23 +271,7 @@ impl UmlSession {
                 None,
             )
             .map_err(|error| session_error(&error, error.to_string()))?;
-        let moment = match session.run_to_snapshot_point(config.setup_budget) {
-            Ok(Stop::SnapshotPoint(moment)) => moment,
-            Ok(stop) => {
-                return Err(SessionError::Control(format!(
-                    "the guest stopped at {stop:?} before the setup snapshot point\n{}",
-                    session.console_tail()
-                ))
-                .into());
-            }
-            Err(error) => {
-                return Err(session_error(
-                    &error,
-                    format!("setup: {error}\n{}", session.console_tail()),
-                )
-                .into());
-            }
-        };
+        let moment = setup_point(&mut session, config.setup_budget, config.progress_limit)?;
         let mut this = Self {
             session: Some(session),
             loaded_image_guard,
@@ -984,6 +1003,46 @@ mod tests {
         session.checkpoints = checkpoints;
         session.progress_limit = Duration::from_secs(5);
         session
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn setup_terminal_status_preserves_host_provenance_and_guest_controls() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        for (script, expected, infrastructure) in [
+            ("kill -KILL $$", "Signaled(9)", true),
+            ("exit 87", "HostFailure", true),
+            ("exit 86", "GuestPanic", false),
+            (
+                "printf 'HostFailure Signaled(9)\\n'; exit 0",
+                "Exited(0)",
+                false,
+            ),
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let mut session = terminal_session(script, &parent);
+            let error = setup_point(
+                session.session.as_mut().unwrap(),
+                100,
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+            let detail = match error.downcast_ref::<SessionError>() {
+                Some(SessionError::Infrastructure(detail)) if infrastructure => detail,
+                Some(SessionError::Control(detail)) if !infrastructure => detail,
+                _ => panic!("script={script}: {error}"),
+            };
+            assert!(detail.contains(expected), "{detail}");
+            assert!(session.snapshots.is_empty());
+            drop(session);
+            assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
+        }
+        eprintln!(
+            "setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty"
+        );
     }
 
     #[test]

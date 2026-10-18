@@ -371,8 +371,9 @@ settled ordinary exit status whether the bridge closure or process exit was
 seen first. A signaled host exit abandons the session instead of producing a
 guest crash or shutdown. Host exit87, host signals and launch resource limits
 return typed `SessionError::Infrastructure` errors, including wrapped restore
-boot failures. Guest panic86 retains its guest crash classification. A host
-progress timeout remains `SessionError::Hung`; malformed replies remain control
+boot failures. After setup, guest panic86 retains its guest crash classification.
+Before setup, guest exit and panic remain control errors with the actual terminal
+reason; they cannot form a runnable session. A host progress timeout remains `SessionError::Hung`; malformed replies remain control
 errors. Classification uses owned child status rather than diagnostic text.
 Abandonment reaps the guest and settles its console before returning diagnostics.
 `WorkerSession` preserves typed infrastructure errors through its v2 image hello

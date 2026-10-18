@@ -138,7 +138,7 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: cargo test --locked -p harmony-cli --bin harmony loaded_reviewed_uml_profile_binds_the_recorded_kernel -- --ignored --nocapture
-      - name: Report a reviewed kernel panic through the public UML client
+      - name: Report guest panics and distinguish setup host failures
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
@@ -150,6 +150,11 @@ jobs:
           printf '%s\n' "$output"
           grep -Fxq 'running 1 test' <<<"$output"
           grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
+          output=$(cargo test --locked --target ${{ matrix.architecture }}-unknown-linux-musl -p consonance-client --features uml --lib session::uml::tests::setup_terminal_status_preserves_host_provenance_and_guest_controls -- --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Fxq 'running 1 test' <<<"$output"
+          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
+          grep -Fq 'setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty' <<<"$output"
       - name: Reject guest writes to host-reserved UML exit statuses
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
