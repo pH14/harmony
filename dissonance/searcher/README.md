@@ -734,7 +734,7 @@ a caller that wants it writes it separately.
 
 Optional job observations use `run_campaign_checkpointed_observed`. Each workload
 owns its `CampaignTypes::JobObservation` schema; uninterested workloads use `()`.
-The payload is `Copy + Send + 'static` and compile-time limited to256 bytes. It
+The payload is `Copy + Send + 'static` and compile-time limited to 256 bytes. It
 must contain self-contained values: `Copy` excludes owning containers, but cannot
 prove that a static reference or integer handle does not refer to external data.
 Searcher never decodes the workload payload and does not serialize it into the
@@ -751,8 +751,10 @@ campaign result and records the coverage loss in caller-owned
 owns a small delivery envelope; dropping an unsent, invalid, queued or undelivered
 payload counts one discard without allocating or locking during Drop. After the
 campaign and worker scope fully terminate, collected equals delivered plus
-discarded, unless the explicit overflow flag is set. A snapshot while producers
-are active is observational and is not a final coverage receipt. Consumers must
+discarded, unless the explicit overflow flag is set. Hook panic counters count
+events: one job can increment both begin and drain panic counts, so those counts
+are not a disjoint partition of eligible jobs. A snapshot while producers are
+active is observational and is not a final coverage receipt. Consumers must
 bound their own output rows; no internal per-job log is retained.
 
 `telemetry.completed_buffer` reports live and peak `results`, `actions` and
