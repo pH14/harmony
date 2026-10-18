@@ -369,7 +369,14 @@ collector to finish before reporting the diagnostic tail. The kernel-owned exit
 status decides a panic; console text does not. Crash diagnostics report the
 settled ordinary exit status whether the bridge closure or process exit was
 seen first. A signaled host exit abandons the session instead of producing a
-guest crash or shutdown.
+guest crash or shutdown. Host exit87, host signals and launch resource limits
+return typed `SessionError::Infrastructure` errors, including wrapped restore
+boot failures. Guest panic86 retains its guest crash classification. A host
+progress timeout remains `SessionError::Hung`; malformed replies remain control
+errors. Classification uses owned child status rather than diagnostic text.
+Abandonment reaps the guest and settles its console before returning diagnostics.
+`WorkerSession` preserves typed infrastructure errors through its v2 image hello
+and distinct error tag; they abandon the worker just as progress timeouts do.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic

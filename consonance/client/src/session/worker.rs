@@ -36,7 +36,7 @@ const HEADER: usize = 16;
 const MAX_FDS: usize = 2 * ANCHOR_DEPTH as usize;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
-const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v1";
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v2";
 const IMAGE_HELLO_LIMIT: usize = 512;
 const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -63,6 +63,7 @@ const FAILED: u8 = 1;
 const OTHER: u8 = 0;
 const HUNG: u8 = 1;
 const ABANDONED: u8 = 2;
+const INFRASTRUCTURE: u8 = 3;
 
 pub trait SearchSession: std::fmt::Debug {
     fn setup_handle(&self) -> (SnapId, u64);
@@ -978,6 +979,7 @@ impl WorkerSession {
                 let error = match kind {
                     HUNG => SessionError::Hung(Duration::from_nanos(input.u64()?)),
                     ABANDONED => SessionError::Abandoned,
+                    INFRASTRUCTURE => SessionError::Infrastructure(input.string()?),
                     _ => SessionError::Control(input.string()?),
                 };
                 if kind != OTHER {
@@ -1508,6 +1510,9 @@ fn status(result: Result<Out, Box<dyn Error>>) -> Vec<u8> {
                 Some(SessionError::Abandoned) => {
                     out.u8(ABANDONED);
                 }
+                Some(SessionError::Infrastructure(detail)) => {
+                    out.u8(INFRASTRUCTURE).bytes(detail.as_bytes());
+                }
                 _ => {
                     out.u8(OTHER).bytes(error.to_string().as_bytes());
                 }
@@ -1587,6 +1592,7 @@ mod tests {
     };
 
     const HANG: u64 = u64::MAX;
+    const HOST_FAILURE: u64 = u64::MAX - 1;
 
     #[derive(Debug, Default)]
     struct Fake {
@@ -1704,6 +1710,9 @@ mod tests {
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
             if deadline == HANG {
                 return Err(SessionError::Hung(Duration::from_secs(3)).into());
+            }
+            if deadline == HOST_FAILURE {
+                return Err(SessionError::Infrastructure("owned host exited87".into()).into());
             }
             self.current = self.current.wrapping_add(1);
             self.runs += 1;
@@ -2149,6 +2158,24 @@ mod tests {
             drop(session);
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn a_worker_session_preserves_typed_infrastructure_failure_and_abandons() {
+        let (mut session, server) = threaded(3);
+        let error = session.run_until(HOST_FAILURE).unwrap_err();
+        assert!(matches!(error.downcast_ref::<SessionError>(),
+            Some(SessionError::Infrastructure(detail)) if detail == "owned host exited87"));
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        drop(session);
+        server.join().unwrap();
     }
 
     #[test]
