@@ -1286,6 +1286,7 @@ impl Drop for WorkerSession {
                 ExitPoll::Running => std::thread::sleep(EXIT_POLL),
             }
         }
+        crate::writer_lifetime::allow_worker_signal(&id);
         if poll_worker(&id, true) != ExitPoll::Running {
             return;
         }
@@ -4104,35 +4105,10 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
-    struct AmbiguousChild {
-        child: Child,
-        first: bool,
-        signals: Arc<std::sync::atomic::AtomicUsize>,
-        exited: Arc<std::sync::atomic::AtomicBool>,
-    }
-    impl crate::writer_lifetime::ExitOwner for AmbiguousChild {
-        fn try_exited(&mut self) -> io::Result<bool> {
-            if std::mem::replace(&mut self.first, false) {
-                return Err(io::Error::other("injected ambiguous wait"));
-            }
-            let exited = self.child.try_wait()?.is_some();
-            self.exited
-                .store(exited, std::sync::atomic::Ordering::SeqCst);
-            Ok(exited)
-        }
-        fn terminate(&mut self) -> io::Result<()> {
-            self.signals
-                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            self.child.kill()
-        }
-    }
-
     #[test]
     #[cfg_attr(miri, ignore)]
     #[allow(clippy::disallowed_methods)]
     fn actual_process_writer_stays_charged_and_unpunched_until_confirmed_exit() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let directory = tempfile::tempdir().unwrap();
         let (parent, child) = UnixStream::pair().unwrap();
         parent
@@ -4192,18 +4168,11 @@ writer.close()
         }
         let process = command.spawn().unwrap();
         drop(child);
-        let signals = Arc::new(AtomicUsize::new(0));
-        let exited = Arc::new(AtomicBool::new(false));
-        let session = WorkerSession::connect(
+        let mut session = WorkerSession::connect(
             WorkerConnection {
                 stream: parent,
-                process: None,
-                owner: Some(Box::new(AmbiguousChild {
-                    child: process,
-                    first: true,
-                    signals: signals.clone(),
-                    exited: exited.clone(),
-                })),
+                process: Some(process),
+                owner: None,
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             },
             &[3],
@@ -4225,14 +4194,26 @@ writer.close()
         assert_eq!(session.retained_export_bytes(), 8192);
         assert_eq!(index.stats().charged, 3 * 4096);
         assert!(index.extent(1).is_err());
+        let id = crate::writer_lifetime::retain_worker(
+            session
+                .process
+                .take()
+                .map(|child| Box::new(child) as Box<dyn crate::writer_lifetime::ExitOwner>),
+            std::mem::take(session.retained_export.get_mut()),
+        );
         drop(session);
-        assert!(!exited.load(Ordering::SeqCst));
-        assert_eq!(signals.load(Ordering::SeqCst), 0);
-        let retained = crate::writer_lifetime::worker_quarantine_stats();
-        assert!(
-            retained.retained_extents >= 1
-                && retained.retained_bytes >= 8192
-                && retained.ambiguous_workers >= 1
+        assert_eq!(
+            crate::writer_lifetime::poll_worker(&id, false),
+            crate::writer_lifetime::ExitPoll::Running
+        );
+        assert_eq!(
+            crate::writer_lifetime::retained_worker(&id),
+            Some((1, 8192, false))
+        );
+        crate::writer_lifetime::reap_worker_quarantine(64);
+        assert_eq!(
+            crate::writer_lifetime::retained_worker(&id),
+            Some((1, 8192, false))
         );
         assert_eq!(index.stats().charged, 3 * 4096);
         std::fs::write(directory.path().join("write"), b"go").unwrap();
@@ -4244,14 +4225,16 @@ writer.close()
         assert!(!directory.path().join("punched").exists());
         assert!(keeper.bytes_mut().iter().all(|byte| *byte == 0xcd));
         assert_eq!(index.stats().charged, 3 * 4096);
-        assert_eq!(signals.load(Ordering::SeqCst), 0);
         std::fs::write(directory.path().join("exit"), b"go").unwrap();
-        while !exited.load(Ordering::SeqCst) {
+        while crate::writer_lifetime::retained_worker(&id).is_some() {
             assert!(Instant::now() < deadline, "worker exit was not confirmed");
             crate::writer_lifetime::reap_worker_quarantine(64);
             std::thread::sleep(Duration::from_millis(5));
         }
-        assert_eq!(signals.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            crate::writer_lifetime::poll_worker(&id, false),
+            crate::writer_lifetime::ExitPoll::Exited
+        );
         if crate::cache::segments::RELEASES_EXTENTS {
             assert_eq!(index.stats().charged, 4096);
         }

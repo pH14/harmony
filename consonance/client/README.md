@@ -413,11 +413,14 @@ Dropping the session transfers its child and retained extents to a process-lifet
 quarantine before polling exit. A successful `Child::try_wait` exit status is the
 release proof. Teardown polls for up to two seconds before signalling a child
 whose ownership remains unambiguous, then polls for up to fifty more milliseconds.
-Each polling step uses the nonblocking child wait API. Any wait or signal error
-permanently forbids further signalling for that owner, preventing a kill through
-an ambiguous or potentially reused PID. A later confirmed exit can still release
-its storage. Unconfirmed owners remain in quarantine; no bare leak or unobserved
-resource drop is used. Private threaded fixtures use completed joins as their
+Background reaping cannot signal an owner until the dropping session finishes
+that grace period and explicitly permits signalling. Each polling step uses the
+nonblocking child wait API. Any wait or signal error, or panic during an owner
+operation, permanently stops both further waits and signals for that owner.
+A PID may already have been reused, so another `Child::try_wait` cannot establish
+safe recovery after ambiguity. Its storage and charge remain retained for the
+process lifetime. Owners with no ambiguous operation can still be released by a
+later confirmed exit. Private threaded fixtures use completed joins as their
 corresponding proof.
 
 `worker_quarantine_stats` reports retained worker/extent counts, retained extent
@@ -425,8 +428,9 @@ bytes, ambiguous owners, successful signals, wait/signal errors and confirmed ex
 The retained fields are gauges; error, signal and exit fields are cumulative totals.
 `reap_worker_quarantine(limit)` retries at most 64 owners per call in round-robin
 order. Connecting a new worker also retries one old owner. Reaping never releases
-on a signal result and never signals an ambiguous owner. A permanently ambiguous
-owner can retain capacity indefinitely; this conservative refusal is preferable
+on a signal result, never signals during grace, and never waits or signals an
+ambiguous owner again. A permanently ambiguous owner retains capacity indefinitely;
+this conservative refusal is preferable
 to reclaiming storage while a writer may still use it. These are runtime physical
 resource observations and do not enter snapshots, logical EventHistory or cache
 commitments. Retained bytes describe extent ranges, not process RSS or total
