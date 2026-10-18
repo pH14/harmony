@@ -113,6 +113,15 @@ those of VMs the server has already replaced. These are host wall-clock
 measurements for performance accounting; they never enter virtual time, state
 hashes, or snapshots.
 
+Sparse delta export holds one snapshot-store read transaction across full
+setup/parent/target integrity verification, delta planning, target comparison,
+and the first base-RAM commitment calculation. Each distinct resident page is
+integrity-hashed once within that export; subsequent exports start fresh
+verification even when the base-RAM digest is cached. BLAKE3 resident integrity
+checks and the flat SHA-256 base/target commitments retain their separate
+purposes and existing encodings. Import keeps its existing operation boundaries;
+no verified-slot state crosses a mutable derive or import.
+
 Guest RAM is owned by `Vmm` for the lifetime of the backend. The canonical state
 fingerprint and snapshot machinery cover guest memory, vCPU state, device state,
 timer state, virtual time, entropy, control state, and protocol state. Vendor
