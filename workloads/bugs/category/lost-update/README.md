@@ -22,7 +22,7 @@ parks reach syscall-free user code.
 
 ## Variants and difficulty
 
-Kernel command-line knobs, passed with `--knobs`:
+Kernel command-line knobs, set as `knobs = [...]` under `workload.options` in the recipe:
 
 | knob | effect |
 |---|---|

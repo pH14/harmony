@@ -201,7 +201,7 @@ and 3. Easy and Fair run exact 2,000-execution soaks. Hard searches up to
 20,000 executions and stops after finding a victory (then drains outstanding
 worker reservations). Every cell uses two workers, ordinary admission, the
 existing fixed input/key policy, and a 30-minute
-job timeout. The correctness probe checks controls, autonomous opposition,
+search wall limit. The correctness probe checks controls, autonomous opposition,
 and restored continuations before search. The campaign compares live/replayed
 reports and checkpoint bytes and verifies the headless/rendered endpoint.
 
