@@ -1005,3 +1005,21 @@ allows a fresh reproducer to use its recorded override without skipping a
 handler state transition. External handlers retain their existing stateful
 contract. Supporting stateful computed local answers would require separate
 computed-answer provenance and replay semantics and is outside this format.
+
+Branch preflight rejects an answer binding that conflicts with the selected
+snapshot's actual pending Decision or CoverageDecision payload, before calling
+the service factory or changing the live VM/tape. It does not inspect a different
+current live question in place of the selected snapshot. This applies to local
+and external policies alike. Ordinary nonpending request binding mismatches
+still produce the guarded guest BadRequest response. A local deadline-pending
+request with an initially supplied or replayed conflicting binding also produces
+BadRequest after independently checking its actual tuple and payload. The common
+guarded writer uses the captured sequence and opcode; only successful publication
+clears the pending stop. This rejection changes neither environment nor tape. A
+handler error cannot substitute for proof of a recorded binding mismatch.
+
+Local and explicit resolution share the control answer-frame bound before
+recording or publishing anything. Canonical Data encoding is one tag byte plus
+the data, so at most MAX_PAYLOAD - 1 data bytes fit. Oversized local responses
+return MalformedEnvironment with the question still pending, matching explicit
+resolution, rather than reaching a writer failure that retires the VM.

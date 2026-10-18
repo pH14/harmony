@@ -2212,6 +2212,52 @@ where
             .unwrap_or_default()
     }
 
+    fn write_service_response(
+        &mut self,
+        opcode: u16,
+        seq: u32,
+        status: Status,
+        payload: &[u8],
+    ) -> Result<(), VmmError> {
+        let mut response = [0; HC_PAGE];
+        let len = encode_response(ServiceId::Sdk, opcode, seq, status, payload, &mut response)
+            .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
+        self.write_doorbell_response(&response[..len])
+    }
+
+    pub(crate) fn resolve_service_binding_mismatch(&mut self) -> Result<(), VmmError> {
+        let sdk = self
+            .sdk
+            .as_ref()
+            .ok_or(channel::ChannelError::RequestIdentityMismatch)?;
+        let Some(SdkStop::Decision {
+            moment,
+            seq,
+            question,
+        }) = &sdk.pending_stop
+        else {
+            return Err(channel::ChannelError::RequestIdentityMismatch.into());
+        };
+        let before = sdk.env.handler_fingerprint()?;
+        let mut probe = sdk.env.checked_clone()?;
+        probe.set_moment(*moment);
+        let decision = probe.decide_recorded(question);
+        sdk.env.verify_handler_fingerprint_unchanged(&before)?;
+        if !matches!(
+            decision,
+            Err(channel::ChannelError::RequestIdentityMismatch)
+        ) {
+            return Err(channel::ChannelError::RequestIdentityMismatch.into());
+        }
+        let seq = *seq;
+        self.write_service_response(3, seq, Status::BadRequest, &[])?;
+        self.sdk
+            .as_mut()
+            .expect("validated pending SDK request")
+            .pending_stop = None;
+        Ok(())
+    }
+
     pub(crate) fn resolve_service_answer(
         &mut self,
         answer: channel::Answer,
@@ -2292,17 +2338,7 @@ where
                 "prepared service question differs".into(),
             ));
         }
-        let mut response = [0; HC_PAGE];
-        let len = encode_response(
-            ServiceId::Sdk,
-            opcode,
-            seq,
-            Status::Ok,
-            &payload,
-            &mut response,
-        )
-        .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
-        self.write_doorbell_response(&response[..len])?;
+        self.write_service_response(opcode, seq, Status::Ok, &payload)?;
         let sdk = self
             .sdk
             .as_mut()
