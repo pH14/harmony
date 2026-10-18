@@ -51,6 +51,7 @@ struct TinyTarget {
 struct TinyExecution;
 
 impl CampaignTypes for TinyExecution {
+    type JobObservation = ();
     type Target = TinyTarget;
     type Action = TinyAction;
     type Key = TinyKey;

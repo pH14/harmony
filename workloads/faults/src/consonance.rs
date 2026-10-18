@@ -667,6 +667,16 @@ pub struct ThreadResidencyDiagnostics {
     pub charged_bytes: Option<u64>,
 }
 
+pub(crate) fn take_job_observation() -> Option<crate::job_observation::FaultJobObservation> {
+    let generation = LIVE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|_| crate::job_observation::generation())
+    });
+    crate::job_observation::update(|value| value.end_generation = generation);
+    crate::job_observation::take()
+}
+
 #[must_use]
 pub fn thread_residency_diagnostics() -> Option<ThreadResidencyDiagnostics> {
     LIVE.with(|slot| slot.borrow().as_ref().map(Live::residency_diagnostics))
@@ -981,6 +991,7 @@ impl FaultTarget {
     }
 
     pub fn restore(&mut self, snapshot: &FaultSnapshot) -> Result<(), Box<dyn Error>> {
+        crate::job_observation::origin_start(snapshot.history.len());
         self.verify_integrity()?;
         if snapshot.failed || !snapshot.observation.stop.is_continuable() {
             return Err("the fault snapshot is not a runnable endpoint".into());
@@ -991,13 +1002,15 @@ impl FaultTarget {
             _ => return Err("the fault snapshot lacks a certificate for its backend".into()),
         };
         validate_snapshot_prefix_certificates(snapshot, self.config.uml.is_some())?;
+        crate::job_observation::stage(crate::job_observation::RestoreStage::Session);
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
             if snapshot.history.receipt().domain() != live.key {
                 return Err("fault history execution domain differs".to_owned());
             }
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Lookup);
             let cached = live
-                .ensure_certified_prefix(&snapshot.history)?
+                .ensure_certified_prefix(&snapshot.history, true)?
                 .map_err(|_| "restored fault endpoint stopped before its snapshot certificate")?;
             let at = live
                 .chain
@@ -1009,7 +1022,9 @@ impl FaultTarget {
                     "restored fault history differs from its snapshot certificate".to_owned(),
                 );
             }
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Replay);
             live.replay(cached.snap)?;
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Certificate);
             if let Some(expected) = expected
                 && (live.state_hash_current()? != expected
                     || Some(live.ordered_history()?) != snapshot.event_history)
@@ -1018,6 +1033,7 @@ impl FaultTarget {
                     "restored fault endpoint differs from its snapshot certificate".to_owned(),
                 );
             }
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Observation);
             let mut actual = live.observe(FaultStop::Deadline)?;
             if !snapshot.history.is_empty() {
                 actual
@@ -1042,6 +1058,13 @@ impl FaultTarget {
         snapshot: &FaultSnapshot,
         rebuilt: Result<(), String>,
     ) -> Result<(), Box<dyn Error>> {
+        crate::job_observation::origin_finish(match &rebuilt {
+            Ok(()) => crate::job_observation::RestoreOutcome::Succeeded,
+            Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
+                crate::job_observation::RestoreOutcome::Cutoff
+            }
+            Err(_) => crate::job_observation::RestoreOutcome::Failed,
+        });
         self.action_observations.clear();
         self.watchdog_cutoffs = 0;
         self.infrastructure_failure = false;
@@ -1270,6 +1293,7 @@ fn with_live<T>(
         let mut slot = slot.borrow_mut();
         if slot.as_ref().is_none_or(|live| live.key != config.key) {
             *slot = Some(Live::boot(config)?);
+            crate::job_observation::new_generation();
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
         let result = operation(live);
@@ -1814,7 +1838,20 @@ impl Live {
         Ok(point)
     }
 
+    #[cfg(test)]
     fn find_path(&mut self, path: [u8; 32], depth: usize) -> Result<Option<usize>, String> {
+        Ok(self
+            .find_path_selected(path, depth, crate::job_observation::LookupStage::Child)?
+            .map(|(at, _)| at))
+    }
+
+    fn find_path_selected(
+        &mut self,
+        path: [u8; 32],
+        depth: usize,
+        stage: crate::job_observation::LookupStage,
+    ) -> Result<Option<(usize, bool)>, String> {
+        crate::job_observation::lookup(stage, crate::job_observation::LookupEvent::Attempt);
         if let Some(shared) = self.chain.shared() {
             shared
                 .index
@@ -1822,7 +1859,7 @@ impl Live {
                 .map_err(|error| error.to_string())?;
         }
         if let Some(at) = self.chain.by_path(path) {
-            return Ok(Some(at));
+            return Ok(Some((at, false)));
         }
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
@@ -1833,6 +1870,7 @@ impl Live {
         let index = Arc::clone(&shared.index);
         let near = self.chain.point(self.chain.links() - 1).snap;
         let import_started = started();
+        crate::job_observation::lookup(stage, crate::job_observation::LookupEvent::ImportAttempt);
         let imported = self
             .session
             .import_cached_receipt(index.as_ref(), &lease, near);
@@ -1882,15 +1920,20 @@ impl Live {
             .set_pending_observation_checkpoint(at, checkpoint)?;
         self.drop_snapshots(dropped)?;
         self.fit_store(2)?;
-        Ok(self.chain.at_snapshot(point.snap))
+        crate::job_observation::lookup(stage, crate::job_observation::LookupEvent::ImportCompleted);
+        Ok(self.chain.at_snapshot(point.snap).map(|at| (at, true)))
     }
 
-    fn find_history(&mut self, history: &FaultHistory) -> Result<usize, String> {
-        if let Some(at) = self.find_path(history.receipt().path(), history.len())? {
+    fn find_history(
+        &mut self,
+        history: &FaultHistory,
+        stage: crate::job_observation::LookupStage,
+    ) -> Result<(usize, bool), String> {
+        if let Some(at) = self.find_path_selected(history.receipt().path(), history.len(), stage)? {
             return Ok(at);
         }
         for receipt in history.receipts().into_iter().rev().skip(1) {
-            if let Some(at) = self.find_path(receipt.path(), receipt.depth())? {
+            if let Some(at) = self.find_path_selected(receipt.path(), receipt.depth(), stage)? {
                 return Ok(at);
             }
         }
@@ -1949,13 +1992,31 @@ impl Live {
     fn ensure_certified_prefix(
         &mut self,
         history: &FaultHistory,
+        origin: bool,
     ) -> Result<Result<Point, FaultObservations>, String> {
         if let Some(at) = self.chain.certified(history.receipt()) {
+            if origin {
+                crate::job_observation::selected(false, self.chain.depth(at));
+            } else {
+                crate::job_observation::source(
+                    crate::job_observation::LookupStage::Parent,
+                    false,
+                    self.chain.depth(at),
+                    history.len(),
+                );
+            }
             self.telemetry.exact_hits = self.telemetry.exact_hits.saturating_add(1);
             return Ok(Ok(self.chain.point(at)));
         }
         let actions = history.actions();
-        let at = self.find_history(history)?;
+        let (at, imported) = self.find_history(
+            history,
+            if origin {
+                crate::job_observation::LookupStage::Origin
+            } else {
+                crate::job_observation::LookupStage::Parent
+            },
+        )?;
         let start = self.chain.depth(at);
         let expected_parent = history
             .ancestor(start)
@@ -1963,6 +2024,9 @@ impl Live {
         let mut receipt = self.chain.provenance(at)?.clone();
         if &receipt != expected_parent.receipt() {
             return Err("restored fault prefix differs from its snapshot certificate".to_owned());
+        }
+        if origin {
+            crate::job_observation::selected(imported, start);
         }
         let counter = match Hit::of(start, actions.len()) {
             Hit::Exact => &mut self.telemetry.exact_hits,
@@ -1973,6 +2037,9 @@ impl Live {
         let dropped = self.chain.truncate(at.saturating_add(1));
         self.drop_snapshots(dropped)?;
         let mut last = self.chain.point(at);
+        if origin && start < history.len() {
+            crate::job_observation::stage(crate::job_observation::RestoreStage::Rebuild);
+        }
         for (offset, expected) in history
             .receipts_after(start)
             .ok_or("fault history suffix missing")?
@@ -1980,6 +2047,14 @@ impl Live {
         {
             let index = start + offset;
             let prefix = &actions[..=index];
+            if origin {
+                crate::job_observation::update(|v| {
+                    crate::job_observation::increment(
+                        &mut v.origin.rebuild_attempted,
+                        &mut v.overflow,
+                    )
+                });
+            }
             self.branch(last, prefix)?;
             let (mut observation, sealed) =
                 self.run_action(prefix, index, last.moment, RunKind::Rebuild)?;
@@ -1996,6 +2071,22 @@ impl Live {
             }
             last = self.seal_captured_link(last, snap, moment, actual.clone())?;
             receipt = actual;
+            if origin {
+                crate::job_observation::update(|v| {
+                    crate::job_observation::increment(
+                        &mut v.origin.rebuild_completed,
+                        &mut v.overflow,
+                    )
+                });
+            }
+        }
+        if !origin {
+            crate::job_observation::source(
+                crate::job_observation::LookupStage::Parent,
+                imported,
+                start,
+                history.len(),
+            );
         }
         Ok(Ok(last))
     }
@@ -2006,7 +2097,11 @@ impl Live {
         action: FaultAction,
         kind: RunKind,
     ) -> Result<(FaultObservations, Option<HistoryReceipt>), String> {
-        if let Some(at) = self.find_path(history.receipt().next_path(action)?, history.len() + 1)? {
+        if let Some((at, imported)) = self.find_path_selected(
+            history.receipt().next_path(action)?,
+            history.len() + 1,
+            crate::job_observation::LookupStage::Child,
+        )? {
             let receipt = self.chain.provenance(at)?.clone();
             if !receipt.follows(history.receipt()) || receipt.action() != Some(action) {
                 return Err("cached fault prefix history differs from its parent".to_owned());
@@ -2017,9 +2112,15 @@ impl Live {
             if self.capture_receipt(history.receipt(), action, &mut observation)? != receipt {
                 return Err("cached fault endpoint differs from captured history".to_owned());
             }
+            crate::job_observation::source(
+                crate::job_observation::LookupStage::Child,
+                imported,
+                self.chain.depth(at),
+                history.len() + 1,
+            );
             return Ok((observation, Some(receipt)));
         }
-        let parent = match self.ensure_certified_prefix(history)? {
+        let parent = match self.ensure_certified_prefix(history, false)? {
             Ok(parent) => parent,
             Err(mut observation) => {
                 observation.stop = FaultStop::Unexpected;
@@ -5680,6 +5781,193 @@ mod tests {
     }
 
     #[test]
+    fn locality_drain_observes_session_retirement_outside_with_live_without_rpc() {
+        for history in [false, true] {
+            let target = unbooted_target();
+            let mut live = hashed_live([17; 32]);
+            let mut session = fixture_session();
+            session.abandon_on_hash = !history;
+            session.history_hung = history;
+            live.session = Box::new(session);
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            crate::job_observation::new_generation();
+            crate::job_observation::begin();
+            crate::job_observation::origin_start(0);
+            crate::job_observation::selected(false, 0);
+            let generation = crate::job_observation::generation().unwrap();
+            if history {
+                let _ = target.event_history_current();
+            } else {
+                let _ = target.state_hash_current();
+            }
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            let row = take_job_observation().unwrap();
+            assert_eq!(row.origin.generation, Some(generation));
+            assert_eq!(row.end_generation, None);
+            assert!(take_job_observation().is_none());
+        }
+    }
+
+    #[test]
+    fn locality_parent_and_cached_child_sources_are_separate_from_origin() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for imported in [false, true] {
+            let mut target = unbooted_target();
+            let index = Arc::new(LocalIndex::new(64 << 20));
+            let namespace = Namespace::exact(&[b"locality-child"]);
+            let mut live = scripted_capture_live(vec![[17; 32]; 3], false);
+            if imported {
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+            }
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            target.apply(action);
+            let parent = target.snapshot().unwrap().unwrap();
+            target.apply(action);
+            if imported {
+                let mut live = scripted_capture_live(vec![[17; 32]], false);
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            }
+            target.restore(&parent).unwrap();
+            crate::job_observation::begin();
+            target.apply(action);
+            assert!(!target.failed());
+            let child = take_job_observation().unwrap();
+            assert_eq!(
+                child.origin.outcome,
+                crate::job_observation::RestoreOutcome::NotAttempted
+            );
+            assert_eq!(child.child_sources.shared_exact, u64::from(imported));
+            assert_eq!(child.child_sources.local_exact, u64::from(!imported));
+            assert_eq!(child.parent_sources.local_exact, 0);
+            crate::job_observation::begin();
+            target.apply(action);
+            assert!(!target.failed());
+            let parent = take_job_observation().unwrap();
+            assert_eq!(parent.parent_sources.local_exact, 1);
+            assert_eq!(parent.child_sources.local_exact, 0);
+            assert_eq!(parent.child_sources.shared_exact, 0);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
+    fn locality_observation_distinguishes_ancestors_reconstruction_and_final_failure() {
+        use crate::job_observation::{RestoreOutcome, RestoreSource};
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut target = unbooted_target();
+        LIVE.with(|slot| {
+            *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; 2], false))
+        });
+        target.apply(action);
+        target.apply(action);
+        let snapshot = target.snapshot().unwrap().unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+        for (shared, selected_depth) in [(false, 0), (false, 1), (true, 1)] {
+            let index = Arc::new(LocalIndex::new(64 << 20));
+            let namespace = Namespace::exact(&[b"locality-ancestor"]);
+            let mut live = scripted_capture_live(vec![[17; 32]; 2], false);
+            if shared {
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                live.chain.certify(0, fixture_genesis()).unwrap();
+            }
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let mut seed = unbooted_target();
+            if selected_depth > 0 {
+                seed.apply(action);
+            }
+            if shared {
+                let mut importer = scripted_capture_live(vec![[17; 32]], false);
+                importer.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    Some(Shared {
+                        index: index.clone(),
+                        namespace,
+                    }),
+                );
+                importer.chain.certify(0, fixture_genesis()).unwrap();
+                LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
+            }
+            crate::job_observation::begin();
+            target.restore(&snapshot).unwrap();
+            let row = take_job_observation().unwrap();
+            assert_eq!(
+                row.origin.source,
+                if shared {
+                    RestoreSource::SharedImportAncestor
+                } else {
+                    RestoreSource::LocalAncestor
+                }
+            );
+            assert_eq!(row.origin.outcome, RestoreOutcome::Succeeded);
+            assert_eq!(row.origin.selected_depth, selected_depth);
+            assert_eq!(row.origin.rebuild_attempted, 2 - selected_depth);
+            assert_eq!(row.origin.rebuild_completed, 2 - selected_depth);
+            assert_eq!(row.origin_lookups.import_completed, u64::from(shared));
+            let mut wrong = snapshot.clone();
+            wrong.endpoint = Some(FaultEndpointCertificate::KvmWholeState([23; 32]));
+            crate::job_observation::begin();
+            assert!(target.restore(&wrong).is_err());
+            let refused = take_job_observation().unwrap();
+            assert_ne!(refused.origin.outcome, RestoreOutcome::Succeeded);
+            LIVE.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let live = slot.as_mut().unwrap();
+                let mut corrupt = fixture_session();
+                corrupt.hash = Some([23; 32]);
+                for at in 0..live.chain.links() {
+                    corrupt
+                        .snapshots
+                        .insert(live.chain.point(at).snap.0, [23; 32]);
+                }
+                live.session = Box::new(corrupt);
+            });
+            crate::job_observation::begin();
+            assert!(target.restore(&snapshot).is_err());
+            let failed = take_job_observation().unwrap();
+            assert_eq!(failed.origin.source, RestoreSource::LocalExact);
+            assert_eq!(
+                failed.origin.stage,
+                crate::job_observation::RestoreStage::Certificate
+            );
+            assert_eq!(failed.origin.outcome, RestoreOutcome::Failed);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
     fn certified_local_and_imported_restores_do_constant_endpoint_work() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         for depth in [1, 8, 32, 128, 1024] {
@@ -5730,7 +6018,45 @@ mod tests {
                     LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
                 }
                 let before = thread_work_telemetry();
+                crate::job_observation::new_generation();
+                SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(0));
+                TRACK_SHUTDOWN_TELEMETRY.with(|flag| flag.set(true));
+                SHUTDOWN_CLOSED.with(|flag| flag.set(false));
+                crate::job_observation::begin();
                 target.restore(&snapshot).unwrap();
+                assert_eq!(SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.get()), 0);
+                TRACK_SHUTDOWN_TELEMETRY.with(|flag| flag.set(false));
+                let captured = take_job_observation().unwrap();
+                assert_eq!(
+                    captured.origin.outcome,
+                    crate::job_observation::RestoreOutcome::Succeeded
+                );
+                assert_eq!(
+                    captured.origin.source,
+                    if imported {
+                        crate::job_observation::RestoreSource::SharedImportExact
+                    } else {
+                        crate::job_observation::RestoreSource::LocalExact
+                    }
+                );
+                assert_eq!(captured.origin.requested_depth, depth as u64);
+                assert_eq!(captured.origin.selected_depth, depth as u64);
+                assert!(captured.origin.generation.is_some());
+                assert_eq!(captured.origin_lookups.import_attempts, u64::from(imported));
+                assert_eq!(
+                    captured.origin_lookups.import_completed,
+                    u64::from(imported)
+                );
+                assert_eq!(captured.origin.rebuild_attempted, 0);
+                assert!(take_job_observation().is_none());
+                crate::job_observation::begin();
+                target.restore(&snapshot).unwrap();
+                let again = take_job_observation().unwrap();
+                assert_eq!(
+                    again.origin.source,
+                    crate::job_observation::RestoreSource::LocalExact
+                );
+                assert_eq!(again.origin_lookups.import_attempts, 0);
                 assert!(target.actions.get().is_none());
                 assert_eq!(target.observation(), &snapshot.observation);
                 let after = thread_work_telemetry();
@@ -5742,7 +6068,7 @@ mod tests {
                 ] {
                     assert_eq!(
                         after[key] - before[key],
-                        1,
+                        2,
                         "{key}, depth={depth}, imported={imported}"
                     );
                 }
@@ -5883,7 +6209,13 @@ mod tests {
             ..FaultSnapshot::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        crate::job_observation::begin();
         let error = target.restore(&snapshot).unwrap_err().to_string();
+        let captured = take_job_observation().unwrap();
+        assert_eq!(
+            captured.origin.outcome,
+            crate::job_observation::RestoreOutcome::Failed
+        );
         assert!(
             error.contains("stopped before its snapshot certificate"),
             "{error}"
@@ -6009,6 +6341,8 @@ mod tests {
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
+        crate::job_observation::begin();
+        crate::job_observation::origin_start(1);
         target
             .finish_restore(&snapshot, Err(format!("{WATCHDOG_CUTOFF}run: expired")))
             .unwrap();
@@ -6017,6 +6351,10 @@ mod tests {
         assert!(target.snapshot().unwrap().is_none());
         assert!(target.actions().is_empty());
         assert_eq!(target.watchdog_cutoffs(), 1);
+        assert_eq!(
+            take_job_observation().unwrap().origin.outcome,
+            crate::job_observation::RestoreOutcome::Cutoff
+        );
         target.apply(FaultOperation::Kill(0, std::num::NonZeroU16::new(50).unwrap()).into());
         assert_eq!(target.execution_ticks(), 17);
         assert_eq!(target.last_action_observations().len(), 1);

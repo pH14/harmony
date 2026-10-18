@@ -485,6 +485,7 @@ where
     M: SmbMachineKind<P>,
     P: SnapshotState,
 {
+    type JobObservation = ();
     type Target = SmbTarget<M, P>;
     type Action = ButtonChord;
     type Key = SmbArchiveKey;

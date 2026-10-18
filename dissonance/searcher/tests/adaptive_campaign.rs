@@ -82,6 +82,7 @@ struct TimingWorkload {
 }
 
 impl CampaignTypes for TimingWorkload {
+    type JobObservation = ();
     type Target = TimingTarget;
     type Action = TimedAction;
     type Key = TimingKey;
