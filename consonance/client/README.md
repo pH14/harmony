@@ -334,7 +334,8 @@ The per-mbuf 512-FD constant or socket high-water options alone do not prove it.
 Public XNU tags are not the shipped kernel binaries. Local native evidence is
 macOS 26.6.2, build 25G83, Darwin 25.6.0/XNU 12377.161.14~5, newer than every
 audited tag; no matching public source was inspected. macOS 14 runtime evidence
-is pending its CI run, and no macOS 15 native run was performed. The ordinary
+comes from the qualification tests’ PASS records in that CI job; no macOS 15
+native run was performed. The ordinary
 `Checks / Harmony Host Compatibility / macOS Arm64` job on `macos-14` checks
 exact PASS records in its existing workspace test log for both native Darwin
 qualification tests. Missing feature selection or a skipped test fails that

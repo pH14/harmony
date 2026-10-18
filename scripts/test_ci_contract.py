@@ -667,8 +667,12 @@ class HostCompatibilityTests(unittest.TestCase):
                           for name in names], True),
                 ("progress", [f"PASS [0.01s] ( 1/2) consonance-client session::worker::tests::{name}"
                               for name in names], True),
-                ("colored", [f"\033[32mPASS\033[0m [0.01s] consonance-client session::worker::tests::{name}"
-                             for name in names], True),
+                ("colored", [
+                    "\033[32;1m        PASS\033[0m [   0.021s] (   1/1998) "
+                    "\033[35;1mconsonance-client\033[0m "
+                    "\033[36msession::worker::tests\033[0m\033[36m::\033[0m"
+                    f"\033[34;1m{name}\033[0m" for name in names
+                ], True),
                 ("missing", [], False),
                 ("failed", [f"FAIL [0.01s] consonance-client session::worker::tests::{name}"
                             for name in names], False),
