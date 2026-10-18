@@ -1109,7 +1109,7 @@ impl WorkerSession {
                         failure.u64()?;
                     }
                     ABANDONED => {}
-                    OTHER => {
+                    OTHER | INFRASTRUCTURE => {
                         failure.string()?;
                     }
                     _ => return Err(malformed("reply error kind").into()),
@@ -1178,7 +1178,13 @@ impl WorkerSession {
                 if error.is::<SessionError>() {
                     Err(error)
                 } else {
-                    Err(SessionError::Control(format!("session worker export: {error}")).into())
+                    match error.downcast::<io::Error>() {
+                        Ok(error) => Err(transport_error(*error).into()),
+                        Err(error) => Err(SessionError::Control(format!(
+                            "session worker export: {error}"
+                        ))
+                        .into()),
+                    }
                 }
             }
         }
@@ -3932,6 +3938,72 @@ mod tests {
         drop((first, second));
         first_server.join().unwrap();
         second_server.join().unwrap();
+    }
+
+    #[test]
+    fn early_export_infrastructure_failure_is_typed_and_retires_session() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut served = Served::default();
+            loop {
+                let (body, fds) = recv(&child).unwrap();
+                if body[0] == EXPORT {
+                    send(
+                        &child,
+                        &status(Err(SessionError::Infrastructure(
+                            "export host failure".into(),
+                        )
+                        .into())),
+                        &[],
+                    )
+                    .unwrap();
+                    return;
+                }
+                let reply = status(served.handle(&body, &fds, &mut Fake::open, &mut |_| {
+                    panic!("unexpected allocation")
+                }));
+                send(&child, &reply, &[]).unwrap();
+            }
+        });
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let (snapshot, _) = session.snapshot().unwrap();
+        let error = session
+            .publish_snapshot(&index, namespace(), b"early-failure", None, snapshot, 1)
+            .unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<SessionError>(), Some(SessionError::Infrastructure(detail)) if detail == "export host failure")
+        );
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        assert_eq!(
+            (
+                index.stats().entries,
+                index.stats().leased,
+                index.stats().publishes
+            ),
+            (0, 0, 0)
+        );
+        drop(session);
+        server.join().unwrap();
     }
 
     #[test]
