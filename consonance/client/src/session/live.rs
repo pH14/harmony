@@ -44,7 +44,7 @@ pub(super) fn vmm_target_commitment(
     }
     let raw_commitment = sparse_delta_target_commitment(&sidecar[prefix_len..])?;
     let mut digest = Sha256::new();
-    digest.update(b"consonance-cache-vmm-target-v1\0");
+    digest.update(b"consonance-cache-vmm-target-v2\0");
     digest.update(&sidecar[..prefix_len]);
     digest.update(raw_commitment);
     Ok(digest.finalize().into())
@@ -700,6 +700,21 @@ impl Session {
             Reply::Hash(hash) => Ok(hash),
             reply => Err(SessionError::Reply {
                 operation: "whole-state hash",
+                reply,
+            }
+            .into()),
+        }
+    }
+
+    pub fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+        match self
+            .client
+            .request(&Request::EventHistory)
+            .map_err(|error| SessionError::Control(error.to_string()))?
+        {
+            Reply::EventHistory(history) => Ok(history),
+            reply => Err(SessionError::Reply {
+                operation: "ordered event history",
                 reply,
             }
             .into()),
@@ -1394,5 +1409,78 @@ mod tests {
         });
 
         assert_eq!(result.unwrap_err().to_string(), "cleanup failed");
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn cached_import_retains_history_and_equal_endpoint_different_history_quarantines() {
+        use crate::cache::{CacheError, LocalIndex};
+        use vmm_core::vendor::arm64::image_loader;
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut source = mock_arm_session(config.clone(), &image);
+        let original = source.setup_sparse_snapshot().unwrap();
+        let endpoint = source.state_hash().unwrap();
+        let original_history = source.event_history().unwrap();
+        let changed = |byte| {
+            let mut sidecar = original.sidecar.materialize();
+            let start = sidecar.len() - 41;
+            assert_eq!(sidecar[start], 1);
+            sidecar[start + 1..start + 9].copy_from_slice(&2u64.to_le_bytes());
+            sidecar[start + 9..].fill(byte);
+            SparseSnapshot::from_parts(
+                original.base,
+                original.image_identity,
+                original.pages.clone(),
+                &sidecar,
+                None,
+            )
+            .unwrap()
+        };
+        let first = source.import_sparse_snapshot(&changed(11)).unwrap();
+        source.replay_snapshot(first).unwrap();
+        assert_eq!(source.state_hash().unwrap(), endpoint);
+        let expected = source.event_history().unwrap();
+        assert_eq!(
+            expected,
+            control_proto::EventHistory {
+                count: 2,
+                digest: [11; 32]
+            }
+        );
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"event-history"]);
+        let lease = source
+            .publish_snapshot(&index, namespace, b"same-actions", None, first, 1)
+            .unwrap();
+        let mut destination = mock_arm_session(config.clone(), &image);
+        let (imported, _) = destination
+            .import_cached(&index, &lease, destination.setup)
+            .unwrap();
+        destination.replay_snapshot(imported).unwrap();
+        assert_eq!(destination.state_hash().unwrap(), endpoint);
+        assert_eq!(destination.event_history().unwrap(), expected);
+        destination.replay_snapshot(destination.setup).unwrap();
+        assert_eq!(destination.event_history().unwrap(), original_history);
+        let second = source.import_sparse_snapshot(&changed(12)).unwrap();
+        source.replay_snapshot(second).unwrap();
+        assert_eq!(source.state_hash().unwrap(), endpoint);
+        assert_eq!(source.event_history().unwrap().count, expected.count);
+        let error = source
+            .publish_snapshot(&index, namespace, b"same-actions", None, second, 1)
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<CacheError>(),
+                Some(CacheError::DivergentDuplicate { .. })
+            ),
+            "{error}"
+        );
+        assert!(index.verify_lease(&lease).is_err());
+        assert!(
+            destination
+                .import_cached(&index, &lease, destination.setup)
+                .is_err()
+        );
     }
 }

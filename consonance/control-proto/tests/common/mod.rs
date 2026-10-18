@@ -95,6 +95,7 @@ pub fn arb_request() -> impl Strategy<Value = Request> {
             deadline: Moment(deadline),
         }),
         Just(Request::RecordedEnv),
+        Just(Request::EventHistory),
     ]
 }
 
@@ -210,6 +211,9 @@ fn arb_reply() -> impl Strategy<Value = Reply> {
             }
         ),
         arb_environment().prop_map(Reply::Recorded),
+        (any::<u64>(), proptest::array::uniform32(any::<u8>())).prop_map(|(count, digest)| {
+            Reply::EventHistory(control_proto::EventHistory { count, digest })
+        }),
     ]
 }
 

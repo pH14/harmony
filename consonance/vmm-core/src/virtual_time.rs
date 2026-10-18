@@ -228,6 +228,7 @@ struct PendingLiveEvent {
 
 #[derive(Clone, Debug, Default)]
 pub struct LiveVirtualTimeTrace {
+    history: control_proto::EventHistory,
     raw: Vec<RawEvent>,
     normalized: NormalizedLog,
     schedule: Vec<ScheduledInterrupt>,
@@ -238,6 +239,21 @@ pub struct LiveVirtualTimeTrace {
 }
 
 impl LiveVirtualTimeTrace {
+    pub fn event_history(&self) -> control_proto::EventHistory {
+        self.history
+    }
+
+    pub(crate) fn restore_event_history(&mut self, history: control_proto::EventHistory) {
+        self.history = history;
+    }
+
+    pub(crate) fn retire(&mut self) -> Self {
+        let history = self.history;
+        let retired = std::mem::take(self);
+        self.history = history;
+        retired
+    }
+
     pub fn raw_log(&self) -> &[RawEvent] {
         &self.raw
     }
@@ -512,14 +528,36 @@ impl LiveVirtualTimeTrace {
             .take()
             .ok_or("virtual_time trace finished with no active event")?;
         self.raw.push(pending.raw);
-        self.normalized.events.push(NormalizedEvent {
+        let event = NormalizedEvent {
             event_index: u64::try_from(self.normalized.events.len()).unwrap_or(u64::MAX),
             class: pending.class,
             payload_digest: digest_payload(pending.class, &pending.payload),
             vns_after,
             interrupts: std::mem::take(&mut self.current_interrupts),
             state_hash,
-        });
+        };
+        let count = self
+            .history
+            .count
+            .checked_add(1)
+            .ok_or("event history count overflow")?;
+        let mut digest = Sha256::new();
+        digest.update(b"consonance.ordered-event-history.v1\0");
+        digest.update(self.history.digest);
+        digest.update(count.to_le_bytes());
+        digest.update([event.class.tag()]);
+        digest.update(event.payload_digest);
+        digest.update(event.vns_after.to_le_bytes());
+        digest.update((event.interrupts.len() as u64).to_le_bytes());
+        for delivery in &event.interrupts {
+            digest.update(delivery.deadline_vns.to_le_bytes());
+            digest.update(delivery.interrupt_id.to_le_bytes());
+        }
+        self.history = control_proto::EventHistory {
+            count,
+            digest: digest.finalize().into(),
+        };
+        self.normalized.events.push(event);
         Ok(())
     }
 
@@ -1230,5 +1268,131 @@ mod live_trace_tests {
             ..schedule[0]
         }];
         assert_eq!(check_delivery_placement(&future_epoch, &prefix), Ok(()));
+    }
+
+    #[test]
+    fn ordered_history_is_capture_and_retirement_neutral() {
+        let event = |trace: &mut LiveVirtualTimeTrace, payload, at| {
+            trace
+                .begin(
+                    ExitReason::Mmio,
+                    "diagnostic".into(),
+                    NormalizedEventClass::DeviceMmio(DeviceClass::Serial),
+                    vec![payload],
+                )
+                .unwrap();
+            trace.finish(at, None).unwrap();
+        };
+        let mut uninterrupted = LiveVirtualTimeTrace::default();
+        event(&mut uninterrupted, 1, 10);
+        event(&mut uninterrupted, 2, 20);
+        let mut segmented = LiveVirtualTimeTrace::default();
+        event(&mut segmented, 1, 10);
+        let before = segmented.event_history();
+        segmented.checkpoint_last([7; 32]).unwrap();
+        assert_eq!(segmented.event_history(), before);
+        let retired = segmented.retire();
+        assert_eq!(retired.event_history(), before);
+        assert_eq!(segmented.event_history(), before);
+        event(&mut segmented, 2, 20);
+        assert_eq!(segmented.event_history(), uninterrupted.event_history());
+        let mut changed = LiveVirtualTimeTrace::default();
+        event(&mut changed, 9, 10);
+        event(&mut changed, 2, 20);
+        assert_eq!(
+            changed.event_history().count,
+            uninterrupted.event_history().count
+        );
+        assert_eq!(
+            changed.normalized_log().events.last().unwrap().vns_after,
+            20
+        );
+        assert_ne!(changed.event_history(), uninterrupted.event_history());
+        let mut reordered = LiveVirtualTimeTrace::default();
+        event(&mut reordered, 2, 10);
+        event(&mut reordered, 1, 20);
+        assert_ne!(reordered.event_history(), uninterrupted.event_history());
+        let mut restored = LiveVirtualTimeTrace::default();
+        restored.restore_event_history(before);
+        event(&mut restored, 2, 20);
+        assert_eq!(restored.event_history(), uninterrupted.event_history());
+    }
+
+    #[test]
+    fn ordered_history_binds_interrupt_association_and_order_without_local_schedule_ids() {
+        let run = |deliveries: Vec<InterruptDelivery>, later: bool| {
+            let mut trace = LiveVirtualTimeTrace::default();
+            for ordinal in 0..2 {
+                trace
+                    .begin(
+                        ExitReason::Idle,
+                        "idle".into(),
+                        NormalizedEventClass::Idle,
+                        vec![],
+                    )
+                    .unwrap();
+                if (ordinal == 1) == later {
+                    trace.current_interrupts = deliveries.clone();
+                }
+                trace.finish(ordinal + 10, None).unwrap();
+            }
+            trace.event_history()
+        };
+        let a = InterruptDelivery {
+            deadline_vns: 5,
+            schedule_index: 0,
+            interrupt_id: 32,
+        };
+        let b = InterruptDelivery {
+            deadline_vns: 5,
+            schedule_index: 1,
+            interrupt_id: 33,
+        };
+        let baseline = run(vec![a, b], false);
+        assert_eq!(
+            baseline,
+            run(
+                vec![
+                    InterruptDelivery {
+                        schedule_index: 91,
+                        ..a
+                    },
+                    InterruptDelivery {
+                        schedule_index: 92,
+                        ..b
+                    }
+                ],
+                false
+            )
+        );
+        assert_ne!(baseline, run(vec![b, a], false));
+        assert_ne!(baseline, run(vec![a, b], true));
+        assert_ne!(
+            baseline,
+            run(
+                vec![
+                    InterruptDelivery {
+                        deadline_vns: 6,
+                        ..a
+                    },
+                    b
+                ],
+                false
+            )
+        );
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_event_history(control_proto::EventHistory {
+            count: u64::MAX,
+            digest: [4; 32],
+        });
+        trace
+            .begin(
+                ExitReason::Idle,
+                "idle".into(),
+                NormalizedEventClass::Idle,
+                vec![],
+            )
+            .unwrap();
+        assert_eq!(trace.finish(1, None), Err("event history count overflow"));
     }
 }

@@ -460,9 +460,30 @@ where
         self.virtual_time_trace.as_ref()
     }
 
+    pub fn event_history(&self) -> Option<control_proto::EventHistory> {
+        self.virtual_time_trace
+            .as_ref()
+            .map(LiveVirtualTimeTrace::event_history)
+    }
+
+    pub(crate) fn restore_event_history(
+        &mut self,
+        history: control_proto::EventHistory,
+    ) -> Result<(), VmmError> {
+        self.virtual_time_trace
+            .as_mut()
+            .ok_or_else(|| {
+                VmmError::ContractViolation("event history requires V-time wiring".into())
+            })?
+            .restore_event_history(history);
+        Ok(())
+    }
+
     pub(crate) fn take_virtual_time_trace(&mut self) -> Option<LiveVirtualTimeTrace> {
         self.virtual_time_checkpoint_events.clear();
-        self.virtual_time_trace.as_mut().map(std::mem::take)
+        self.virtual_time_trace
+            .as_mut()
+            .map(LiveVirtualTimeTrace::retire)
     }
 
     pub fn defer_virtual_time_checkpoint_hashes(&mut self) -> Result<(), VmmError> {
