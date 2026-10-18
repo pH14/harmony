@@ -161,7 +161,9 @@ Whole-request and checkpoint time also includes vCPU state capture, readiness
 checks and suffix encoding; it is not pure digest CPU time.
 
 The leaves attribute each feed once; wrapper requests do not add another
-charge. Retiring or replaying a VMM never rewinds these host totals. Snapshot
+charge. Retiring or replaying a VMM never rewinds these host totals. Backend physical
+entry telemetry is merged on the same retirement and failed-restore boundaries,
+independently of normalized exit service counts. Snapshot
 store verification appears under `snapshot.verify.*`, with distinct BLAKE3
 resident-page and VM-state work. Timings are nested diagnostic envelopes across
 hashing and storage, not additive elapsed time. Standalone codec/comparison

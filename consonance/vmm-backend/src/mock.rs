@@ -69,6 +69,7 @@ pub struct MockBackend {
     pending: Pending,
     completion_staged: bool,
     counts: ExitCounts,
+    physical_telemetry: crate::PhysicalTelemetry,
     state: VcpuState,
     host_core_class: Option<HostCoreClass>,
     regions: Vec<(Gpa, usize)>,
@@ -89,6 +90,10 @@ impl Default for MockBackend {
 }
 
 impl MockBackend {
+    pub fn set_physical_telemetry_for_test(&mut self, telemetry: crate::PhysicalTelemetry) {
+        self.physical_telemetry = telemetry;
+    }
+
     pub fn new() -> Self {
         Self {
             caps: MOCK_CAPS,
@@ -97,6 +102,7 @@ impl MockBackend {
             pending: Pending::None,
             completion_staged: false,
             counts: ExitCounts::default(),
+            physical_telemetry: crate::PhysicalTelemetry::default(),
             state: VcpuState::default(),
             host_core_class: None,
             regions: Vec::new(),
@@ -406,6 +412,10 @@ impl Backend for MockBackend {
         self.pending_irq = None;
         self.accepted_irq.clear();
         Ok(())
+    }
+
+    fn physical_telemetry(&self) -> crate::PhysicalTelemetry {
+        self.physical_telemetry
     }
 
     fn exit_counts(&self) -> ExitCounts {

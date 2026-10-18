@@ -519,6 +519,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(vmm) = &self.vmm {
             telemetry.exits.merge(&vmm.exit_telemetry());
             telemetry.hashes.merge(&vmm.hash_telemetry());
+            telemetry.physical.merge(&vmm.physical_telemetry());
         }
         (telemetry.exports, telemetry.export_pages) = self.export_telemetry.get();
         telemetry.hashes.merge(&self.hash_telemetry.get());
@@ -533,6 +534,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(vmm) = self.vmm.take() {
             self.telemetry.exits.merge(&vmm.exit_telemetry());
             self.telemetry.hashes.merge(&vmm.hash_telemetry());
+            self.telemetry.physical.merge(&vmm.physical_telemetry());
         }
     }
 
@@ -2037,6 +2039,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 if use_remap {
                     self.telemetry.exits.merge(&fresh.exit_telemetry());
                     self.telemetry.hashes.merge(&fresh.hash_telemetry());
+                    self.telemetry.physical.merge(&fresh.physical_telemetry());
                     drop(fresh);
                     fresh = (self.factory)()?;
                     self.attach_host_operation_guard(&mut fresh);
@@ -2047,6 +2050,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Err(error) => {
                 self.telemetry.exits.merge(&fresh.exit_telemetry());
                 self.telemetry.hashes.merge(&fresh.hash_telemetry());
+                self.telemetry.physical.merge(&fresh.physical_telemetry());
                 return Err(error.into());
             }
         }
@@ -2075,6 +2079,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Err(error) = prepared {
             self.telemetry.exits.merge(&fresh.exit_telemetry());
             self.telemetry.hashes.merge(&fresh.hash_telemetry());
+            self.telemetry.physical.merge(&fresh.physical_telemetry());
             return Err(error.into());
         }
         self.vmm = Some(fresh);
@@ -5279,6 +5284,35 @@ mod tests {
     }
 
     #[test]
+    fn physical_work_survives_replay_retirement_exactly_once() {
+        use vmm_backend::{PhysicalTelemetry, RunPlatform, RunPurpose, RunReturn};
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let state = hash(&mut server);
+        let history = server.vmm().unwrap().event_history();
+        let mut physical = PhysicalTelemetry::default();
+        physical.measure(RunPlatform::KvmX86, RunPurpose::Guest, || {
+            ((), RunReturn::Returned(6))
+        });
+        server
+            .vmm_mut()
+            .unwrap()
+            .backend_mut()
+            .set_physical_telemetry_for_test(physical);
+        for _ in 0..2 {
+            assert_eq!(server.host_telemetry().physical, physical);
+            assert_eq!(
+                server.handle(&Request::Replay(origin)).unwrap(),
+                Ok(Reply::Unit)
+            );
+            assert_eq!(hash(&mut server), state);
+            assert_eq!(server.vmm().unwrap().event_history(), history);
+            assert_eq!(server.host_telemetry().physical, physical);
+        }
+    }
+
+    #[test]
     fn hash_costs_survive_replay_retirement_without_entering_logical_state() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
@@ -5312,6 +5346,17 @@ mod tests {
         server.set_restore_mode(super::RestoreMode::InPlace);
         server.vmm_mut().unwrap().run().unwrap();
         server.vmm_mut().unwrap().state_hash().unwrap();
+        let mut physical = vmm_backend::PhysicalTelemetry::default();
+        physical.measure(
+            vmm_backend::RunPlatform::KvmX86,
+            vmm_backend::RunPurpose::Completion,
+            || ((), vmm_backend::RunReturn::Interrupted),
+        );
+        server
+            .vmm_mut()
+            .unwrap()
+            .backend_mut()
+            .set_physical_telemetry_for_test(physical);
         let before = server.host_telemetry();
         assert!(before.exits.guest_runs.count > 0);
         server
@@ -5324,6 +5369,7 @@ mod tests {
         let after = server.host_telemetry();
         assert_eq!(after.hashes, before.hashes);
         assert_eq!(after.exits, before.exits);
+        assert_eq!(after.physical, before.physical);
         assert_eq!(server.in_place_fallbacks(), 0);
         server.retire_vmm();
         assert_eq!(server.host_telemetry().hashes, before.hashes);
