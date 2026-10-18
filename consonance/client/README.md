@@ -186,7 +186,24 @@ the same local number. `CacheIndex` is the interface workers use:
 | `forget_store(holder)` | removes a finished worker's store from the budget |
 
 `LocalIndex` is a mutex over the table, held by the process that runs the
-search. Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
+search. Its diagnostic-only `lock_counters()` shares one fixed atomic owner across
+clones; other `CacheIndex` implementations default to no counters. Active sites
+report acquisition `attempts`, `acquired`, release `completed`, `wait_ns` and
+`hold_ns`. Sites cover every index operation, including `stats` and abandoned
+writable extents. Counter export takes no table lock and inactive sites are omitted.
+Acquisition attempts are counted before the wait timestamp; wait ends just after
+mutex acquisition. Hold starts at that acquisition timestamp and ends immediately
+before unlocking, including bookkeeping at acquisition, allocation, eviction and
+reclamation performed under the existing mutex. Completion counters update after
+unlocking, including early return and unwind. Unlock and final atomic updates are
+excluded. These sampled envelopes have timer/atomic overhead and overlap nested
+allocation/I/O work; they must not be added to those durations. Concurrent reads
+are approximate field snapshots, not a synchronized event record. Abandon callbacks
+hold only weak table ownership plus the instrumentation owner. Host time never
+enters `CacheStats` equality, budgeting, leases, quarantine or search policy.
+The campaign reports the shared owner once, rather than once per worker/session.
+
+Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
 `shm_open` on macOS. Committed extents are never written again. An extent holds
 the pages a snapshot changed over its parent with their BLAKE3 hashes, the pages
 that returned to the setup content, and the sparse sidecar, with a SHA-256

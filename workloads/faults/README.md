@@ -215,7 +215,11 @@ budget. When eviction cannot, the worker with the largest store drops its
 oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
-and `shrinks`, under `snapshot_cache`.
+and `shrinks`, under `snapshot_cache`. It samples the shared index once under
+`snapshot_cache_locks` for bounded-site acquisition attempts, acquired/completed
+counts and wait/hold nanoseconds; worker/session totals never sum this shared
+owner. `stats` reads have their own site. These host-time diagnostics do not affect
+budget policy or certificates.
 A fault search keeps sixteen reservations per worker in its admission window.
 Each action draws its own
 duration, so one execution can run a hundred times longer than the median, and
