@@ -719,6 +719,9 @@ fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     recv_with_limit(stream, usize::MAX, None)
 }
 
+#[cfg(test)]
+thread_local! { static MAPPING_ATTEMPTS: Cell<usize> = const { Cell::new(0) }; }
+
 struct Mapping {
     base: NonNull<u8>,
     skip: usize,
@@ -727,14 +730,15 @@ struct Mapping {
 
 impl Mapping {
     fn new(fd: BorrowedFd<'_>, offset: usize, len: usize, writable: bool) -> io::Result<Self> {
-        let file = std::fs::File::from(fd.try_clone_to_owned()?);
+        #[cfg(test)]
+        MAPPING_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
         // SAFETY: sysconf reads a constant system parameter.
         let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| io::Error::last_os_error())?;
         let (start, skip, mapped_len) = crate::cache::segments::checked_mapping_range(
             offset,
             len,
-            file.metadata()?.len(),
+            crate::cache::segments::backing_len(fd)?,
             page,
         )?;
         let start = libc::off_t::try_from(start).map_err(|_| malformed("offset"))?;
@@ -1171,7 +1175,11 @@ impl WorkerSession {
             Err(error) => {
                 self.failed.set(true);
                 let _ = self.stream.shutdown(Shutdown::Both);
-                Err(SessionError::Control(format!("session worker export: {error}")).into())
+                if error.is::<SessionError>() {
+                    Err(error)
+                } else {
+                    Err(SessionError::Control(format!("session worker export: {error}")).into())
+                }
             }
         }
     }
@@ -1689,7 +1697,7 @@ fn serve(
             Err(error) => return Err(error.into()),
         };
         let mut requested = false;
-        let mut allocation_broken = false;
+        let mut allocation_broken = None;
         let mut allocate = |len| {
             let result: Result<Option<Mapping>, Box<dyn Error>> = (|| {
                 if std::mem::replace(&mut requested, true) {
@@ -1727,14 +1735,14 @@ fn serve(
                 Ok(Some(mapping)) => Ok(mapping),
                 Ok(None) => Err("destination allocation denied".into()),
                 Err(error) => {
-                    allocation_broken = true;
+                    allocation_broken = Some(error.to_string());
                     Err(error)
                 }
             }
         };
         let reply = status(served.handle(&body, &fds, open, &mut allocate));
-        if allocation_broken {
-            return Err(malformed("allocation exchange failed").into());
+        if let Some(cause) = allocation_broken {
+            return Err(malformed(&format!("allocation exchange failed: {cause}")).into());
         }
         loaded_image_guard.check()?;
         drop(fds);
@@ -3278,6 +3286,12 @@ mod tests {
                 })
             });
             if case < 2 {
+                if case == 1 {
+                    assert!(matches!(
+                        result.as_ref().unwrap_err().downcast_ref::<SessionError>(),
+                        Some(SessionError::Abandoned)
+                    ));
+                }
                 assert!(result.is_err());
                 assert_eq!(
                     (
@@ -3293,6 +3307,136 @@ mod tests {
             SESSION.with(|slot| slot.borrow_mut().take());
             assert_eq!(server.join().unwrap(), usize::from(case == 2));
         }
+    }
+
+    #[test]
+    fn child_reverse_guards_refuse_before_the_next_send_receive_or_mapping() {
+        for refusal in 4..=6 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            parent
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let server = std::thread::spawn(move || {
+                let ((result, writes), _, _) =
+                    crate::image_identity::trace_checks(Some(refusal), || {
+                        crate::cache::extent::trace_writes(|| {
+                            serve(
+                                &child,
+                                &mut Fake::open,
+                                crate::image_identity::LoadedImageGuard::fixture(),
+                            )
+                        })
+                    });
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("injected loaded-image refusal"), "{error}");
+                assert_eq!(MAPPING_ATTEMPTS.with(Cell::get), 0);
+                assert!(writes.is_empty());
+            });
+            send(&parent, &init_frame().0, &[]).unwrap();
+            assert_eq!(recv(&parent).unwrap().0[0], OK);
+            send(
+                &parent,
+                &Out::op(EXPORT).option(None).u64(1).bytes(b"").bytes(b"").0,
+                &[],
+            )
+            .unwrap();
+            if refusal != 4 {
+                let (body, fds) = recv(&parent).unwrap();
+                assert!(fds.is_empty());
+                let mut input = In(&body);
+                assert_eq!(input.u8().unwrap(), NEED_EXTENT);
+                let len = input.len().unwrap();
+                input.finish().unwrap();
+                if refusal == 6 {
+                    let destination = tempfile::tempfile().unwrap();
+                    destination.set_len(len as u64).unwrap();
+                    send(
+                        &parent,
+                        &Out::op(EXTENT_READY).len(0).len(len).0,
+                        &[destination.as_fd()],
+                    )
+                    .unwrap();
+                }
+            }
+            assert_eq!(
+                recv(&parent).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn export_postallocation_errors_keep_their_type_and_diagnostic_while_abandoning() {
+        for kind in [HUNG, ABANDONED, OTHER] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                recv(&child).unwrap();
+                send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+                assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+                send(&child, &Out::op(NEED_EXTENT).len(8192).0, &[]).unwrap();
+                let (_, fds) = recv(&child).unwrap();
+                assert_eq!(fds.len(), 1);
+                let mut reply = Out::op(FAILED);
+                reply.u8(kind);
+                if kind == HUNG {
+                    reply.u64(123);
+                }
+                if kind == OTHER {
+                    reply.bytes(b"child export diagnostic");
+                }
+                send(&child, &reply.0, &[]).unwrap();
+            });
+            let session = connected_to_script(parent);
+            let index = LocalIndex::new(1 << 20);
+            let error = session
+                .publish_snapshot(&index, namespace(), b"typed", None, SnapId(1), 1)
+                .unwrap_err();
+            match (kind, error.downcast_ref::<SessionError>()) {
+                (HUNG, Some(SessionError::Hung(limit))) => {
+                    assert_eq!(*limit, Duration::from_nanos(123))
+                }
+                (ABANDONED, Some(SessionError::Abandoned)) => {}
+                (OTHER, Some(SessionError::Control(message))) => {
+                    assert_eq!(message, "child export diagnostic")
+                }
+                _ => panic!("wrong error type: {error}"),
+            }
+            assert!(session.abandoned());
+            assert_eq!(index.stats().publishes, 0);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn oversized_export_failure_is_bounded_and_abandons_without_publication() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            recv(&child).unwrap();
+            send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+            assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+            let _ = send(
+                &child,
+                &Out::op(FAILED)
+                    .u8(OTHER)
+                    .bytes(&vec![b'x'; EXPORT_FRAME_LIMIT + 1])
+                    .0,
+                &[],
+            );
+            assert!(recv(&child).is_err());
+        });
+        let session = connected_to_script(parent);
+        let index = LocalIndex::new(1 << 20);
+        let error = session
+            .publish_snapshot(&index, namespace(), b"oversized", None, SnapId(1), 1)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("frame length exceeds limit"),
+            "{error}"
+        );
+        assert!(session.abandoned());
+        assert_eq!((index.stats().entries, index.stats().publishes), (0, 0));
+        server.join().unwrap();
     }
 
     #[test]

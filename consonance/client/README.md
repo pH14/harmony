@@ -295,9 +295,8 @@ into that mapping, drops its writer and borrowed slices, and then acknowledges
 completion. The parent reads the extent and computes its commitment only after
 that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
-the destination, and metadata and sidecar allocations remain. The former
-WRITE_EXTENT request and pending payload state have been removed, with no old
-worker-protocol fallback. The loaded-image handshake requires matching workers.
+the destination, and metadata and sidecar allocations remain. The loaded-image
+handshake requires matching workers.
 An import sends one descriptor per extent in the chain, and the child maps each
 range read-only for that call. Dropping a `WorkerSession` closes the socket and
 reaps the child.
@@ -369,22 +368,26 @@ callback it also checks before NEED_EXTENT, after sending that request, and
 after receiving the allocation response. Each retained boundary performs fresh
 live-code validation. Test counters distinguish guard entries from actual strict
 dispatches; fixture counts establish placement, while admitted-host tests
-establish strict mutation refusal. A publication retains six parent checks. The
-reverse allocation conversation adds one child check after the allocation reply;
-INIT plus one successful EXPORT uses eight child checks in the transport fixture,
-compared with seven for INIT plus the former EXPORT/WRITE_EXTENT pair. The four
-control frames remain; copy elimination alone is not an end-to-end speedup claim.
+establish strict mutation refusal. A publication retains six parent checks;
+INIT plus one successful EXPORT uses eight child checks in the transport fixture.
+An export uses four control frames. Copy elimination alone is not an end-to-end
+speedup claim.
 
 Allocation refusal sends EXTENT_DENIED without a descriptor and drains the
 child's failure acknowledgement before returning the original typed cache error.
 The source session remains usable after this synchronized refusal. Malformed
 frames, guard refusal, or uncertain completion abandon the exchange and publish
-nothing. The parent never accesses or commits a destination while a successful
+nothing. The 4096-byte bound includes failure diagnostics: an oversized diagnostic
+abandons the session rather than preserving recoverability or allocating an
+unbounded reply. Typed child Hung/Abandoned errors retain their types while
+abandoning the exchange after a destination has been allocated. The parent never accesses or commits a destination while a successful
 child exchange still owns its writer mapping. A lost acknowledgement does not
 prove that the writer has exited: the current cache allocator uses append-only
 ranges and retires empty backing segments, so abandoned storage cannot alias a
 later allocation. Future range reuse would require a stronger writer-lifetime
-protocol. The child checks offset arithmetic, slice length, exact required
+protocol. On Linux, hole punching an abandoned range can be followed by late
+writer refills that are outside cache accounting; the allocator's charge is not
+an inventory of those residual physical pages. The child checks offset arithmetic, slice length, exact required
 length, and current descriptor backing size before mapping. The size check
 cannot prevent later truncation; the coordinator must keep its backing allocation
 alive and untruncated throughout the active exchange.

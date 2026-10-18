@@ -37,6 +37,23 @@ pub(crate) fn checked_mapping_range(
     Ok((offset - skip, skip, mapped))
 }
 
+#[cfg(all(
+    any(test, feature = "in-process"),
+    any(target_os = "linux", target_os = "macos")
+))]
+pub(crate) fn backing_len(fd: std::os::fd::BorrowedFd<'_>) -> io::Result<u64> {
+    use std::os::fd::AsRawFd;
+    let mut metadata = std::mem::MaybeUninit::<libc::stat>::zeroed();
+    // SAFETY: fd remains borrowed and open; fstat only writes the local full-sized stat storage.
+    if unsafe { libc::fstat(fd.as_raw_fd(), metadata.as_mut_ptr()) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: successful fstat initialized the fields of the zero-initialized stat storage.
+    let metadata = unsafe { metadata.assume_init() };
+    u64::try_from(metadata.st_size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "negative backing length"))
+}
+
 struct Mapped(Arc<AtomicUsize>);
 
 impl Mapped {
@@ -124,8 +141,9 @@ impl Segment {
             return false;
         };
         // SAFETY: fallocate only changes the file behind a descriptor this segment owns, and
-        // only for a range whose WritableExtent is gone and whose last CommittedExtent copy
-        // is being freed, so no reference or child mapping reads it.
+        // only within a retired extent range with no parent Rust references. KEEP_SIZE preserves
+        // mapped addresses and length. An uncertain child writer can still access this range;
+        // the allocator never reuses it, although late writes can refill these uncharged pages.
         unsafe {
             libc::fallocate(
                 self.backing.as_raw_fd(),
@@ -543,6 +561,17 @@ impl PageSegments {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn backing_length_borrows_the_descriptor_without_closing_it() {
+        use std::os::fd::AsFd;
+        let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(4096).unwrap();
+        assert_eq!(backing_len(file.as_file().as_fd()).unwrap(), 4096);
+        file.as_file().set_len(17).unwrap();
+        assert_eq!(backing_len(file.as_file().as_fd()).unwrap(), 17);
+    }
 
     #[test]
     fn mapping_range_validation_checks_backing_bounds_and_slice_lengths() {
