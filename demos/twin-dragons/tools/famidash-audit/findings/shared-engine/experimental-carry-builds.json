@@ -1,0 +1,31 @@
+{
+  "source_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "compiler_revision": "2f25b1807450db2d386f027b6d81dc906ab03396",
+  "status": "experimental; searches and playability review incomplete",
+  "targets": {
+    "main": {
+      "rom_sha256": "d947a5e8ecfd71fbb3aa7722c54c67f4d5787ada033227c3bab70ada1e53f2fe",
+      "bytes": 786448,
+      "collision_bank_used": 8192,
+      "collision_bank_capacity": 8192
+    },
+    "b-sides": {
+      "rom_sha256": "de869646b1b001299f583403743b82f3a9d5dbc294cf958428330cc02b9157bb",
+      "bytes": 786448,
+      "collision_bank_used": 8192,
+      "collision_bank_capacity": 8192
+    },
+    "c-sides": {
+      "rom_sha256": "caf368fcabb0aa9e7583c9600ec03e60e2b65c50de9f00d329e1c3d72ffcbd20",
+      "bytes": 786448,
+      "collision_bank_used": 8192,
+      "collision_bank_capacity": 8192
+    },
+    "d-sides": {
+      "rom_sha256": "e7d8bbbf989fa91d0849afd1b2544e653db0c63471bcd18ce8933e6efb1e0a9a",
+      "bytes": 786448,
+      "collision_bank_used": 8192,
+      "collision_bank_capacity": 8192
+    }
+  }
+}

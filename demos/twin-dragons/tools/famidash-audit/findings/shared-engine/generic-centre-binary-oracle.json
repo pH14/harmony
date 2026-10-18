@@ -1,0 +1,12 @@
+{
+  "status": "assembled-centre-conversion-matches-linear-oracle",
+  "cases": 1474560,
+  "heights": [
+    7,
+    8,
+    15
+  ],
+  "rom_sha256": "caf368fcabb0aa9e7583c9600ec03e60e2b65c50de9f00d329e1c3d72ffcbd20",
+  "debug_sha256": "e3dc050cd6b451d81695c4c54a7d76ca18dcbe11524b7598ce5b2431a0c5923f",
+  "entry_rom_offset": 495685
+}

@@ -105,14 +105,46 @@ check that a previous replay cannot change the result. Only entry frame 1
 differs. `luckydraw-cold-setup-proof.json.gz` is a Dissonance setup regression,
 not a failing bug witness; its independent replay matches after entry.
 
-One apparent Bloodbath solid-overlap signal was a detector error. In the
-release, the centre calculation truncates relative Y to eight bits before
-adding the camera. At frame 3,369, relative Y 253 plus centre offset 7 wraps
-to 4; camera 614 therefore gives sample Y 618, not 874. Original-ROM CPU
-reads confirm noncolliding tile 111 at Y 618. The new detector revision 4
-and regression case use that observed calculation. The current upstream
-linear-coordinate calculation is a separate explicitly selected model.
-Older detector inventories remain exploratory and are not clean rounds.
+The Bloodbath investigation exposed a release-engine coordinate bug. At frame
+3,369, relative Y 253 plus centre offset 7 wraps to 4 before the camera is
+added. The original ROM samples noncolliding tile 111 at Y 618; the player's
+physical centre at Y 874 lies inside a solid block. The earlier classification
+as only a detector error was incomplete: predicting the observed probe
+correctly must not hide the physical collision miss. Detector revision 7
+records these blind spots separately from false lines across coordinate jumps.
+
+`release-centre.patch` preserves the carry and normalizes both 240-pixel room
+boundaries. The first repair attempt still returned noncanonical packed
+`01F0` for camera 225, relative Y 247, offset 8, instead of `0200`. That
+attempt was rejected by executing its assembled instructions against a
+linear-coordinate oracle. The final combined build passes 1,474,560 cases
+covering every camera and relative Y, actual hitbox heights 7, 8 and 15,
+and both mini flags. `check-centre-carry.py` runs that check directly on a
+built ROM and its matching DBG file.
+
+The isolated repair's C-side ROM is
+`b15566ab63402b82495afb794bf82c3186ad6428372ee21de5bcefec81f2d553`.
+It kills the original Dissonance witness at frame 3,368 with an unchanged
+approach in QuickNES and FCEUmm (FCEUmm entry frame 4 differs). A fresh
+ordinary Dissonance control clears it in 6,861 frames, with matching FCEUmm
+gameplay. Its input and replay reports are retained here. Current upstream
+already uses linear coordinates for these probes; this is a release repair,
+not an outstanding current-upstream arithmetic defect. Other release body
+probe calculations still need assessment.
+
+The latest combined prototype is retained separately as
+`experimental-release-collision-carry.patch`. It also skips empty spike
+shapes and absent second primitives, and uses unsigned slab intersections.
+The original experimental patch remains available for its earlier evidence.
+The combined patch excludes the separately reviewed Fofii level edits and
+corrected D-side continuation assets. All four combined ROMs build, and
+every decoded tile and all 256 compiled collision classes match the combined
+source index. `experimental-carry-builds.json` records all ROM hashes. The
+collision bank uses all 8,192 bytes, so this build requires the pinned compiler;
+there is no spare space in that bank. Full searches and
+playability review remain outstanding; neither prototype is approved for
+production. Older detector inventories and superseded build searches are
+exploratory and do not count as clean rounds.
 
 ## Stale split-level compression cache
 

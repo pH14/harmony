@@ -79,10 +79,19 @@ unsigned char original(unsigned char kind, unsigned char x, unsigned char y) {
     return !!bg_coll_spikes();
 }
 unsigned char swept(unsigned char kind, unsigned char x, unsigned char y, signed char dx, signed char dy) {
+    FAST_REJECT
     ss_player=0; cube_data[0]=0; ss_type=kind; ss_origin_x=-x; ss_origin_y=-y; ss_dx=dx; ss_dy=dy;
     ss_test_tile(); return !!(cube_data[0]&1);
 }
 '''
+    fast_reject = ""
+    if "ss_same_tile_clear" in header.read_text():
+        fast_reject = """
+    currplayer=0; temp_x=x+dx; temp_y=y+dy; temp_room=0; collision=kind;
+    pit_previous_x[0]=x; pit_previous_y[0]=y; pit_previous_room[0]=0; pit_previous_collision[0]=kind;
+    if (ss_shapes[kind] && !(((temp_x ^ x) | (temp_y ^ y)) & 240) && ss_same_tile_clear()) return 0;
+"""
+    program = program.replace("FAST_REJECT", fast_reject)
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         (root / "oracle.c").write_text(program)

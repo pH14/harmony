@@ -2,6 +2,7 @@
 """Group replayed entry signals by source geometry without declaring them bugs."""
 
 import argparse
+import hashlib
 import json
 from collections import Counter, deque
 from pathlib import Path
@@ -30,7 +31,7 @@ def components(layout, metatiles):
                     boundary["source-edge"] += 1
                     continue
                 neighbor = ny * width + nx
-                if tiles[neighbor] == tile:
+                if tiles[neighbor] in interiors:
                     if labels[neighbor] < 0:
                         labels[neighbor] = number
                         queue.append(neighbor)
@@ -42,7 +43,8 @@ def components(layout, metatiles):
         xs, ys = zip(*members)
         faces = sum(value for kind, value in boundary.items() if kind != "source-edge")
         blocking = faces - boundary["COL_NONE"]
-        result.append({"number": number, "tile": tile, "name": metatiles[tile]["name"], "area": len(members),
+        names = Counter(metatiles[tiles[y * width + x]]["name"] for x, y in members)
+        result.append({"number": number, "tile": tile, "names": dict(names), "area": len(members),
                        "bbox": [min(xs), min(ys), max(xs), max(ys)], "boundary": dict(boundary),
                        "non_none_boundary_fraction": blocking / max(1, faces), "open_faces": opens, "entries": []})
     return labels, result
@@ -56,7 +58,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
     index = json.loads(args.index.read_text())
     review = json.loads(args.review.read_text())
-    output = {"schema": 1, "components": {}, "other_entries": {}}
+    output = {"schema": 2, "index_sha256": hashlib.sha256(args.index.read_bytes()).hexdigest(),
+              "review_sha256": hashlib.sha256(args.review.read_bytes()).hexdigest(),
+              "components": {}, "other_entries": {}}
     by_level = {}
     for layout in index["levels"]:
         key = f"{layout['side']}:{layout['level']}"

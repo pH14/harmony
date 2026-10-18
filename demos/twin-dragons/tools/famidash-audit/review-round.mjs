@@ -12,9 +12,10 @@ await mkdir(output, { recursive: true });
 let ledger;
 try { ledger = JSON.parse(await readFile(join(output, "review.json"))); }
 catch { ledger = { schema: 1, cases: {}, entries: {}, mismatches: [], reviewed_candidates: 0, status: "review-in-progress" }; }
-if (ledger.detector_revision !== 6) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 6; }
+if (ledger.detector_revision !== 7) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 7; }
 ledger.status = "replay-in-progress";
 ledger.source_review_complete = false;
+let entryCount = Object.keys(ledger.entries).length, lastSavedAt = performance.now();
 const machines = new Map();
 const coveredLevels = new Map();
 function fill(o, layout) {
@@ -68,8 +69,12 @@ function crossedHazardRow(trace, frame, player, layout) {
   return tile;
 }
 function addEntry(key, evidence, duration, aliveAfter) {
-  const entry = ledger.entries[key] ??= { key, disposition: "pending-source-review", evidence_count: 0,
-    max_duration: 0, max_alive_after: 0, representative: evidence };
+  let entry = ledger.entries[key];
+  if (!entry) {
+    entry = ledger.entries[key] = { key, disposition: "pending-source-review", evidence_count: 0,
+      max_duration: 0, max_alive_after: 0, representative: evidence };
+    entryCount++;
+  }
   entry.evidence_count++;
   if (aliveAfter > entry.max_alive_after || duration > entry.max_duration) entry.representative = evidence;
   entry.max_duration = Math.max(entry.max_duration, duration);
@@ -119,13 +124,14 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
     }
     let tail = 0;
     for (; tail < 16; tail++) { m.core.step(0, 1); const states = players(m); trace.push(states); if (states[0].dead || states[0].state !== 2) break; }
-    const before = new Set(Object.keys(ledger.entries));
+    const before = entryCount;
     for (const player of [0, 1]) {
-      let start = null, centre = null;
+      let start = null, centre = null, linearCentre = null;
       for (let frame = 0; frame < trace.length; frame++) {
         const o = trace[frame][player], previous = trace[frame - 1]?.[player];
         const previousCentre = centre;
-        centre = advanceCollisionPoint(previous, o, centre);
+        centre = advanceCollisionPoint(previous, o, centre, index.centre_coordinates === "linear");
+        linearCentre = advanceCollisionPoint(previous, o, linearCentre, true);
         const tile = fill(o, layout), previousTile = fill(previous, layout);
         if (tile && previousTile && tile.id !== previousTile.id) {
           const key = `${layout.side}:${layout.level}:fill:${tile.column}:${tile.row}:style:${player}`;
@@ -148,6 +154,19 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
         if (!o || o.dead || o.state !== 2 || o.debug || o.invincible || o.paused) continue;
         const survives = frame + 8 < trace.length && !trace.slice(frame, frame + 9).some(states => !states[player] || states[player].dead || states[player].state !== 2);
         const solid = centre && tileAt(layout, centre.x, centre.y);
+        const physicalTile = linearCentre && tileAt(layout, linearCentre.x, linearCentre.y);
+        if (survives && centre && physicalTile && Math.abs(linearCentre.y - centre.y) === 256) {
+          const type = index.metatiles[physicalTile.id].collision, x = linearCentre.x & 15, y = linearCentre.y & 15;
+          const hit = type === "COL_ALL" ? x >= 3 && x <= 12 && y >= 3 && y <= 12
+            : type === "COL_DEATH" ? x >= 4 && x <= 8 && y >= 4 && y <= 11
+            : ["COL_DEATH_BOTTOM", "COL_PIT"].includes(type) ? x >= 5 && x <= 7 && y >= 11
+            : type === "COL_DEATH_TOP" ? x >= 5 && x <= 7 && y <= 5 : false;
+          if (hit) {
+            const key = `${layout.side}:${layout.level}:centre-wrap:${physicalTile.column}:${physicalTile.row}:${player}`;
+            addEntry(key, { path, sha, frame: frame + 1, player, tile: physicalTile, observation: o, previous,
+              actual_probe: centre, physical_centre: linearCentre, requires_wave_dblock_review: o.mode === 6 }, 1, Math.min(trace.length - frame, 512));
+          }
+        }
         if (survives && solid && index.metatiles[solid.id].collision === "COL_ALL" &&
             (centre.x & 15) >= 3 && (centre.x & 15) <= 12 && (centre.y & 15) >= 3 && (centre.y & 15) <= 12) {
           const key = `${layout.side}:${layout.level}:solid:${solid.column}:${solid.row}:${player}`;
@@ -176,9 +195,12 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
     }
     for (const cached of created) cached.covered = true;
     ledger.cases[sha] = { path, disposition: "replayed", validated_prefix_frames: validatedPrefixFrames,
-      entries_added: Object.keys(ledger.entries).length - before.size };
+      entries_added: entryCount - before };
     ledger.reviewed_candidates++;
-    if (ledger.reviewed_candidates % 25 === 0) { await save(); console.log("replayed", ledger.reviewed_candidates, "entry candidates", Object.keys(ledger.entries).length); }
+    if (ledger.reviewed_candidates % 25 === 0) {
+      if (performance.now() - lastSavedAt >= 10000) { await save(); lastSavedAt = performance.now(); }
+      console.log("replayed", ledger.reviewed_candidates, "entry candidates", entryCount);
+    }
   }
   await save();
 }

@@ -38,5 +38,19 @@
   "current-fofii-fixed-control-fceumm.json": "e52a5572472acaf9b00d4dba956b9ba8ba1b3098852e09640446e4f1f4c423f2",
   "current-fofii-witness.json.gz": "86abe8113ceb175eec9fcfd05ea2454f8bb59633422d6d46a0c7e3c2402ba787",
   "current-fofii-fceumm.json": "5793d5f7cd34994684bf5de347ab72afb9d7a6941bc87398c83f7d34e30aedf6",
-  "current-fofii-builds.json": "a5036dc612ff1928f238b2823de597a491eaa03430facb7d464b742fcbd67011"
+  "current-fofii-builds.json": "a5036dc612ff1928f238b2823de597a491eaa03430facb7d464b742fcbd67011",
+  "release-centre.patch": "c3ec30a5a97bba6f6296d17edf7d44e42ac6b40aba484dd8cbb9fe099c9f0b53",
+  "experimental-release-collision-carry.patch": "8cf2a0ff23b23fd86b7079a5872aaa487e472d8661f6985baaed8d49fd0d83be",
+  "c20-centre-only-fixed-replay.json": "4c0959c188cb7f2cde6613ff2364fab5ed54e66fb7fe21c5f6bc707a466c2a3c",
+  "c20-centre-only-fixed-fceumm.json": "1984725ea5bbe7075c2d623dddf589940f3f7e170dccfb9685f787e66c879261",
+  "c20-centre-fixed-control.json.gz": "14ef77d3093f98a96237dc093940847016bbdd344fa0e65b6644a0dbb7232dca",
+  "c20-centre-fixed-control-fceumm.json": "0f6ffe5072cdbd5507dd4a4045feec690fad2538a71a16141f2fd3be846250d9",
+  "generic-centre-binary-oracle.json": "15eca9384a63840982640f756987fc3ba45c186b17d1c7dfa3f3b81960b046b2",
+  "theory-spike-carry-combined-fixed-fceumm.json": "39105b0cc1c1ca8dca83bcc733be0e4cfe9d61812c853205e97d308c34dc364a",
+  "c6-spike-carry-combined-fixed-fceumm.json": "0af63e479c5d80efab943918a0a1de3621d50bab6db77ebfd9a58293707a697d",
+  "c8-top-spike-carry-combined-fixed-fceumm.json": "66dfed3311f616d2944674f647e004cf9e358373a4b550092188c0d8b2384a3e",
+  "timemachine-wrap-carry-combined-fixed-fceumm.json": "68664c68264cfd419897451d945a97bbc70464664a4c7a810acd4057a3c08ab1",
+  "b-10-wrap-carry-combined-fixed-fceumm.json": "3b7f4e5a9312757827c387b020657edb41f4f1dbfced53f4bc3c31e88807dde6",
+  "experimental-carry-builds.json": "7dc79aece55358baaf6fe061c173b9049385e776457858226decdb4ae8d75290",
+  "generic-carry-rom-geometry.json": "2a3967ad78f8e5353b54f1ef1c005a10b21be7efd14c67c4b808cc9f72ea99d1"
 }

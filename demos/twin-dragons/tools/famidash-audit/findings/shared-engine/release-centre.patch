@@ -1,0 +1,24 @@
+diff --git a/SAUCE/functions/collision.h b/SAUCE/functions/collision.h
+index e076b2c..75ccb5c 100644
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -1023,11 +1023,14 @@ void bg_coll_death() {
+ 
+ 	temp_x = Generic.x + low_word(scroll_x) + (Generic.width >> 1)-1; // automatically only the low byte
+ 
+-	storeWordSeparately(
+-		add_scroll_y(
+-			Generic.y + (Generic.height >> 1) + (currplayer_mini ? byte(0x10 - Generic.height) >> 1 : 0),
+-			scroll_y
+-		), temp_y, temp_room);
++    __A__ = (Generic.height >> 1) + (currplayer_mini ? byte(0x10 - Generic.height) >> 1 : 0);
++    __asm__("ldx %v+1\n clc\n adc %v+1\n bcc %g\n adc #15\n inx", scroll_y, Generic, centre_add_camera);
++centre_add_camera:
++    __asm__("clc\n adc %v\n bcs %g\n cmp #$f0\n bcc %g", scroll_y, centre_adjust, centre_store);
++centre_adjust:
++    __asm__("adc #15\n inx\n cmp #$f0\n bcc %g\n adc #15\n inx", centre_store);
++centre_store:
++    __asm__("sta %v\n stx %v", temp_y, temp_room);
+ 
+ 	bg_collision_sub();
+ 	

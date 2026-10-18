@@ -63,10 +63,12 @@ The ledger records executions, frontiers, clears and candidates separately.
 A searched level is not a reviewed level. `review-round.mjs` verifies saved
 endpoints and inventories entry signals, including both players in dual
 mode, partial hazards, persistent solid overlap and horizontal escapes.
-`components.py` groups decorative-fill components for source review. Detector
+`components.py` groups connected decorative fill across visual styles for
+source review; its schema 2 records the index and review hashes. Detector
 signals never automatically become bug reports or tile edits. Repeated mechanical
 states retain the last collision sample: a lag frame must not invent a new
-horizontal sample. Detector revision 6 corrects lag, eight-bit centre discontinuities, and the
+horizontal sample. Detector revision 7 records physical collisions hidden by eight-bit centre
+wrapping, and corrects lag, discontinuities, and the
 second player's distinct collision phase and wave height.
 The standard Famidash target bounds rollouts after the level-length table;
 the missed-finish signal therefore begins 64 pixels past the source edge,
@@ -108,7 +110,8 @@ ROM's collision samples without modifying the game.
 ROM's actual level-pointer tables, LZ streams, RLE runs and continuation IDs
 using matching DBG file offsets. It compares every decoded tile with the
 source index instead of assuming that a source checkout describes a ROM.
-It checks named level pointers when present. `level_header_bytes: 14` selects
+It also compares all 256 compiled collision classes against the index, and
+checks named level pointers when present. `level_header_bytes: 14` selects
 the current upstream header; the release default is 18.
 The official release's 3,726,087 tiles across all 109 levels match the index.
 The D-Sides source/ROM byte discrepancy is stale continuation metadata, not
@@ -120,6 +123,9 @@ explain its reproduction and cache-key repair.
 its geometry against an independent exact rational oracle, including upward
 and downward crossings, diagonal tile edges and 240-pixel room boundaries.
 This does not replace NES replay, bank-size or frame-budget validation.
+`check-centre-carry.py ROM DBG OUTPUT` executes the assembled centre-coordinate
+calculation against a linear oracle, including both carry and 240-pixel room
+boundaries and the actual mini/normal hitbox heights.
 
 ## What is generic
 

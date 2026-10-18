@@ -52,6 +52,18 @@ class RomGeometryTests(unittest.TestCase):
             path.write_bytes(rom)
             layout["rom_sha256"] = hashlib.sha256(rom).hexdigest()
             self.assertEqual(geometry.compare({"levels": [layout], "level_header_bytes": 14}, root, root)["status"], "verified")
+            debug += 'sym\tname="metatiles_coll",seg=0,val=0xA300\n'
+            debug += 'sym\tname="COL_NONE",val=0x0,type=equ\n'
+            (root / "main" / "famidash.dbg").write_text(debug)
+            collision_index = {"levels": [layout], "level_header_bytes": 14,
+                               "metatiles": [{"collision": "COL_NONE"}] * 256}
+            checked = geometry.compare(collision_index, root, root)
+            self.assertEqual(checked["collision_tables"]["main"]["entries"], 256)
+            rom[784 + 42] = 7
+            path.write_bytes(rom)
+            layout["rom_sha256"] = hashlib.sha256(rom).hexdigest()
+            with self.assertRaisesRegex(AssertionError, "collision classes"):
+                geometry.compare(collision_index, root, root)
             debug += 'sym\tname="level_data_test",seg=0,val=0xA200\n'
             (root / "main" / "famidash.dbg").write_text(debug)
             with self.assertRaisesRegex(AssertionError, "different named level"):

@@ -10,11 +10,11 @@ export function collisionPoint(previous, current, linearCoordinates = false) {
     y: linearCoordinates ? current.y + offset : current.camera + ((current.y - current.camera + offset) & 255) };
 }
 
-export function advanceCollisionPoint(previous, current, previousPoint) {
+export function advanceCollisionPoint(previous, current, previousPoint, linearCoordinates = false) {
   if (!previous || !current) return null;
   if (["x", "y", "camera", "vy", "mode", "gravity", "mini", "dual", "state", "dead", "paused"]
     .every(key => previous[key] === current[key])) return previousPoint;
-  return collisionPoint(previous, current);
+  return collisionPoint(previous, current, linearCoordinates);
 }
 
 export function players(m) {

@@ -46,7 +46,7 @@ def decompress(rom, offset):
 
 
 def compare(index, roms, builds):
-    result = {"schema": 1, "status": "verified", "levels": []}
+    result = {"schema": 1, "status": "verified", "levels": [], "collision_tables": {}}
     header_bytes = index.get("level_header_bytes", 18)
     assert header_bytes in (14, 18), "unsupported level header layout"
     machines = {}
@@ -57,6 +57,20 @@ def compare(index, roms, builds):
             assert hashlib.sha256(rom).hexdigest() == layout["rom_sha256"], "ROM identity mismatch"
             debug = builds / ("main" if side == "main" else f"{side}-sides") / "famidash.dbg"
             machines[side] = rom, debug_symbols(debug)
+            if "metatiles" in index:
+                definitions = {}
+                for line in debug.read_text().splitlines():
+                    if not line.startswith("sym\t"):
+                        continue
+                    name = re.search(r'name="(COL_[^"]+)"', line)
+                    value = re.search(r"(?:^|,)val=0x([\da-f]+)", line, re.I)
+                    if name and value:
+                        definitions[name[1]] = int(value[1], 16)
+                expected = bytes(definitions[tile["collision"]] for tile in index["metatiles"])
+                table = machines[side][1]["metatiles_coll"]
+                actual = rom[table:table + len(expected)]
+                assert len(expected) == 256 and actual == expected, "ROM collision classes differ from source index"
+                result["collision_tables"][side] = {"entries": len(expected), "sha256": hashlib.sha256(actual).hexdigest()}
         rom, symbols = machines[side]
 
         def pointer(prefix, number):
