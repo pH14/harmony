@@ -444,7 +444,7 @@ exception.
  #include <os.h>
  #include <skas.h>
  #include <stub-data.h>
-@@ -125,3 +126,75 @@ static int __init init_child_tracking(void)
+@@ -125,3 +126,77 @@ static int __init init_child_tracking(void)
  	return 0;
  }
  early_initcall(init_child_tracking)
@@ -513,8 +513,10 @@ exception.
 +		id->syscall_data_len = 0;
 +		id->syscall_fd_num = 0;
 +		ret = start_userspace(id);
-+		if (ret < 0)
-+			panic("Restoring an address space failed: %d\n", ret);
++		if (ret < 0) {
++			printk(UM_KERN_ERR "Restoring an address space failed: %d\n", ret);
++			os_host_failure();
++		}
 +		unmap(id, 0, STUB_START);
 +		for_each_vma(vmi, vma)
 +			um_checkpoint_mark_present(mm, vma->vm_start, vma->vm_end);
@@ -847,7 +849,7 @@ exception.
  include $(srctree)/arch/um/scripts/Makefile.rules
 --- /dev/null
 +++ b/arch/um/os-Linux/skas/checkpoint.c
-@@ -0,0 +1,988 @@
+@@ -0,0 +1,997 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Host side of User-mode Linux checkpoints.
@@ -889,7 +891,6 @@ exception.
 +#define MAX_REGIONS 512
 +#define MAX_FDS 128
 +#define MAPS_BYTES (256 * 1024)
-+#define RESTORE_FAILED 86
 +#define UNPROTECT_LIMIT 16384
 +#define LONG_BITS (8 * sizeof(unsigned long))
 +
@@ -983,6 +984,17 @@ exception.
 +	return (value + page - 1) & ~(page - 1);
 +}
 +
++/* This can run from the SIGSEGV dirty-page handler: use only signal-safe I/O. */
++static void memory_failure(const char *operation)
++{
++	static const char prefix[] = "Harmony checkpoint host memory failed: ";
++
++	write(2, prefix, sizeof(prefix) - 1);
++	write(2, operation, strlen(operation));
++	write(2, "\n", 1);
++	os_host_failure();
++}
++
 +void os_track_init(unsigned long base, unsigned long start, unsigned long end)
 +{
 +	unsigned long pages = (end - base) >> UM_KERN_PAGE_SHIFT;
@@ -992,8 +1004,7 @@ exception.
 +			  -1, 0);
 +
 +	if (bits == MAP_FAILED)
-+		panic("Harmony write tracking needs %lu bytes: %d\n",
-+		      words * sizeof(long), errno);
++		memory_failure("allocate dirty bitmap");
 +	track.base = base;
 +	track.start = start;
 +	track.end = end;
@@ -1037,7 +1048,7 @@ exception.
 +	track.all = 1;
 +	if (mprotect((void *)track.start, track.end - track.start,
 +		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
-+		panic("Opening the direct map failed: %d\n", errno);
++		memory_failure("unprotect direct map");
 +}
 +
 +static void open_range(unsigned long start, unsigned long end)
@@ -1050,7 +1061,7 @@ exception.
 +	os_track_mark(start - track.base, end - start);
 +	if (mprotect((void *)start, end - start,
 +		     PROT_READ | PROT_WRITE | PROT_EXEC) < 0)
-+		panic("Opening a direct map page failed: %d\n", errno);
++		memory_failure("unprotect dirty page");
 +}
 +
 +void os_track_unprotect(unsigned long start, unsigned long end)
@@ -1082,7 +1093,7 @@ exception.
 +		return;
 +	if (mprotect((void *)track.start, track.end - track.start,
 +		     PROT_READ | PROT_EXEC) < 0)
-+		panic("Protecting the direct map failed: %d\n", errno);
++		memory_failure("protect direct map");
 +}
 +
 +static void track_reset(void)
@@ -1141,7 +1152,7 @@ exception.
 +
 +	if (n > 0)
 +		write(2, line, n);
-+	_exit(RESTORE_FAILED);
++	os_host_failure();
 +}
 +
 +static int read_file(const char *path, char *buffer, size_t capacity)
