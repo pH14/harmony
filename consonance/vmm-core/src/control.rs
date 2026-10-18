@@ -35,7 +35,10 @@ use crate::portable_snapshot::{
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
 use crate::snapshot::{SnapshotEngine, SnapshotError, SnapshotReadTransaction};
-use crate::vmm::{HostOperationGuard, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
+use crate::vmm::{
+    HostOperationGuard, HostOperationSite, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm,
+    VmmError,
+};
 
 #[cfg(all(target_os = "linux", any(test, not(miri))))]
 fn host_minor_faults_with(getrusage: impl FnOnce(*mut libc::rusage) -> i32) -> Option<u64> {
@@ -434,9 +437,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.host_operation_guard = Some(guard);
     }
 
-    fn check_host_operation_guard(&self) -> Result<(), ServeError> {
+    fn check_host_operation_guard(&self, site: HostOperationSite) -> Result<(), ServeError> {
         if let Some(guard) = &self.host_operation_guard {
-            guard().map_err(VmmError::ContractViolation)?;
+            guard(site).map_err(VmmError::ContractViolation)?;
         }
         Ok(())
     }
@@ -1213,9 +1216,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
 
     #[allow(clippy::result_large_err)]
     pub fn handle(&mut self, req: &Request) -> Result<Result<Reply, ControlError>, ServeError> {
-        self.check_host_operation_guard()?;
+        self.check_host_operation_guard(HostOperationSite::ControlBefore)?;
         let result = self.handle_inner(req);
-        self.check_host_operation_guard()?;
+        self.check_host_operation_guard(HostOperationSite::ControlAfter)?;
         result
     }
 
@@ -2809,8 +2812,11 @@ mod tests {
     fn host_operation_guard_follows_fresh_restore_vmm() {
         let changed = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let signal = Arc::clone(&changed);
+        let sites = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_sites = Arc::clone(&sites);
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
-        server.set_host_operation_guard(Arc::new(move || {
+        server.set_host_operation_guard(Arc::new(move |site| {
+            captured_sites.lock().unwrap().push(site);
             if signal.load(std::sync::atomic::Ordering::SeqCst) {
                 Err("host loader changed".into())
             } else {
@@ -2824,11 +2830,25 @@ mod tests {
             server.handle(&Request::Replay(origin)).unwrap(),
             Ok(Reply::Unit)
         );
+        {
+            let sites = sites.lock().unwrap();
+            assert_eq!(
+                &sites[sites.len() - 2..],
+                &[
+                    crate::vmm::HostOperationSite::ControlBefore,
+                    crate::vmm::HostOperationSite::ControlAfter
+                ]
+            );
+        }
         changed.store(true, std::sync::atomic::Ordering::SeqCst);
         assert!(matches!(
             server.vmm_mut().unwrap().service_doorbell(0),
             Err(VmmError::ContractViolation(reason)) if reason == "host loader changed"
         ));
+        assert_eq!(
+            sites.lock().unwrap().last(),
+            Some(&crate::vmm::HostOperationSite::SdkRequest)
+        );
         assert!(matches!(
             server.handle(&Request::RecordedEnv),
             Err(ServeError::Vmm(VmmError::ContractViolation(reason))) if reason == "host loader changed"

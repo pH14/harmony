@@ -73,7 +73,10 @@ the request's reply is encoded, and attaches it to every fresh or recovery VM.
 The VMM checks the same guard before servicing a doorbell and immediately
 before writing any service answer to guest memory. Consonance uses this hook
 to reject host loader changes without making the execution core depend on a
-particular process-loader implementation.
+particular process-loader implementation. The callback receives a bounded
+`HostOperationSite` tag for control-before, control-after, SDK request or SDK
+response. Tags describe existing call boundaries and add no guard calls or
+executable policy; runtime measurement ownership belongs to the composition.
 
 When a `Run` deadline is the earlier idle wake and resumes the guest, control
 refuses `RecordedEnv`: the operator's deadline is absent from the input tape,

@@ -301,7 +301,8 @@ impl UmlSession {
             .ok_or_else(|| SessionError::Control("the setup snapshot is gone".into()))?;
         cache_domain.update(setup_checkpoint.digest()?);
         this.cache_domain = cache_domain.finalize().into();
-        this.loaded_image_guard.check()?;
+        this.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(this)
     }
 
@@ -555,7 +556,8 @@ impl SearchSession for UmlSession {
         namespace: Namespace,
         target: SnapId,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.loaded_image_guard.check()?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let target = self
             .snapshots
             .get(&target)
@@ -643,6 +645,7 @@ impl SearchSession for UmlSession {
             out.push((format!("{name}.count"), spent.count));
             out.push((format!("{name}.ns"), spent.nanos));
         }
+        out.extend(self.loaded_image_guard.counters("guard.session"));
         out
     }
 
@@ -684,7 +687,8 @@ impl SearchSession for UmlSession {
         attachment: &SnapshotAttachment,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.loaded_image_guard.check()?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let checkpoint = |id: SnapId| -> Result<&Checkpoint, Box<dyn Error>> {
             self.snapshots

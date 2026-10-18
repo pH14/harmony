@@ -15,6 +15,8 @@ pub mod cache;
 pub mod catalog;
 #[cfg(any(target_os = "linux", test))]
 mod cgroup;
+#[cfg(feature = "in-process")]
+mod guard_telemetry;
 pub mod image_identity;
 pub mod placement;
 
