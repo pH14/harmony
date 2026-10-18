@@ -287,13 +287,20 @@ recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
-publish asks the child for the delta size, allocates the extent, and sends the
-segment's descriptor so the child writes the delta into the shared mapping; the
-parent publishes only after the child answers. An import sends one descriptor per
-extent in the chain, and the child maps each range read-only for that call.
-A child that dies mid-call therefore leaves no entry half-written and no lease
-held; its unpublished extent is freed like any abandoned extent. Dropping a
-`WorkerSession` closes the socket and reaps the child.
+publish starts one EXPORT conversation. The child computes the sparse delta once
+and sends NEED_EXTENT from its destination-allocation callback. The parent
+allocates a unique writable extent and returns EXTENT_READY with exactly one
+descriptor and the exact checked range. The child writes changed pages directly
+into that mapping, drops its writer and borrowed slices, and then acknowledges
+completion. The parent reads the extent and computes its commitment only after
+that acknowledgement. No complete serialized payload buffer or subsequent
+full-extent copy is retained in the child; page payloads still copy once into
+the destination, and metadata and sidecar allocations remain. The former
+WRITE_EXTENT request and pending payload state have been removed, with no old
+worker-protocol fallback. The loaded-image handshake requires matching workers.
+An import sends one descriptor per extent in the chain, and the child maps each
+range read-only for that call. Dropping a `WorkerSession` closes the socket and
+reaps the child.
 
 Worker ancillary parsing bounds every header and complete descriptor integer by
 both the supplied control-buffer extent and recvmsg's actual `msg_controllen`.
@@ -349,17 +356,38 @@ omitted from truncated output, which this process cannot recover safely. Such
 behavior falls outside the qualified bound and is not repaired by closing
 guessed FD numbers. New macOS/XNU behavior requires requalification.
 
-Worker publication relies on the RPC entry check before EXPORT rather than
-checking again in its publication wrappers. EXPORT and WRITE_EXTENT each retain
-checks before sending and after receiving. Publication retains its check after
-commitment calculation before the index callback, and its revoking check after
-that callback. Child serving checks once before its first receive, after each
-handler/status result before sending, and after every successful send. The
-post-send check also admits the next receive, including the receive of EOF.
-Each retained boundary performs fresh live-code validation. Test counters
-distinguish guard entries from actual strict dispatches;
-fixture counts establish placement, while admitted-host tests establish strict
-mutation refusal.
+The parent retains checks before EXPORT, after NEED_EXTENT, after the extent
+allocator callback before sending its descriptor, and after receiving completion.
+Publication retains its check after commitment calculation before the index
+callback, and its revoking check after that callback. Each allocation exchange
+permits only one destination request. Its frames are bounded to 4096 bytes and
+reject trailing bytes, unexpected descriptors, repeated requests, and ordinary
+commands. A same-session nested call is rejected before any socket operation.
+Child serving checks once before its first receive, after each handler/status
+result before sending, and after every successful send. Within the allocator
+callback it also checks before NEED_EXTENT, after sending that request, and
+after receiving the allocation response. Each retained boundary performs fresh
+live-code validation. Test counters distinguish guard entries from actual strict
+dispatches; fixture counts establish placement, while admitted-host tests
+establish strict mutation refusal. A publication retains six parent checks. The
+reverse allocation conversation adds one child check after the allocation reply;
+INIT plus one successful EXPORT uses eight child checks in the transport fixture,
+compared with seven for INIT plus the former EXPORT/WRITE_EXTENT pair. The four
+control frames remain; copy elimination alone is not an end-to-end speedup claim.
+
+Allocation refusal sends EXTENT_DENIED without a descriptor and drains the
+child's failure acknowledgement before returning the original typed cache error.
+The source session remains usable after this synchronized refusal. Malformed
+frames, guard refusal, or uncertain completion abandon the exchange and publish
+nothing. The parent never accesses or commits a destination while a successful
+child exchange still owns its writer mapping. A lost acknowledgement does not
+prove that the writer has exited: the current cache allocator uses append-only
+ranges and retires empty backing segments, so abandoned storage cannot alias a
+later allocation. Future range reuse would require a stronger writer-lifetime
+protocol. The child checks offset arithmetic, slice length, exact required
+length, and current descriptor backing size before mapping. The size check
+cannot prevent later truncation; the coordinator must keep its backing allocation
+alive and untruncated throughout the active exchange.
 
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot

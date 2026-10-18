@@ -407,22 +407,6 @@ impl Session {
         Ok(lease)
     }
 
-    pub(super) fn write_delta<T>(
-        &self,
-        parent: Option<SnapId>,
-        target: SnapId,
-        allocate: impl FnOnce(usize) -> Result<T, Box<dyn Error>>,
-        bytes: impl FnOnce(&mut T) -> &mut [u8],
-    ) -> Result<T, Box<dyn Error>> {
-        self.write_delta_attached(
-            parent,
-            target,
-            &SnapshotAttachment::default(),
-            allocate,
-            bytes,
-        )
-    }
-
     pub(super) fn write_delta_attached<T>(
         &self,
         parent: Option<SnapId>,
@@ -1203,6 +1187,97 @@ mod tests {
         })
         .unwrap();
         assert_eq!(events, vec![event]);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn served_export_writes_once_into_the_allocated_destination() {
+        use crate::cache::{
+            LocalIndex,
+            extent::{read_extent, trace_writes},
+        };
+        use vmm_core::vendor::arm64::image_loader;
+        let image = image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let config = SessionConfig::new(16 * 1024 * 1024, 7, 19, "console=ttyAMA0");
+        let mut source = mock_arm_session(config.clone(), &image);
+        let index = LocalIndex::new(16 << 20);
+        let attachment = SnapshotAttachment {
+            domain: b"copy-proof".to_vec(),
+            bytes: vec![9; 40],
+        };
+        let mut destination = mock_arm_session(config.clone(), &image);
+        let mut chain = Vec::new();
+        let mut parent = None;
+        for (fill, count) in [(0, 8), (7, 8), (9, 1), (0, 8), (11, 8)] {
+            let rows = (100..100 + count)
+                .map(|gfn| (gfn, [fill; 4096]))
+                .collect::<Vec<_>>();
+            source
+                .client
+                .transport_mut()
+                .vmm_mut()
+                .unwrap()
+                .write_guest_pages(&rows)
+                .unwrap();
+            let (target, _) = source.snapshot().unwrap();
+            let before = source.client.transport().host_telemetry().exports.count;
+            let ((mut extent, allocations), writes) = trace_writes(|| {
+                super::super::worker::export_destination_for_test(
+                    &source,
+                    &index,
+                    parent,
+                    target,
+                    &attachment,
+                )
+            });
+            assert_eq!(
+                source.client.transport().host_telemetry().exports.count,
+                before + 1
+            );
+            assert_eq!(allocations.len(), 1);
+            let actual = read_extent(extent.bytes_mut()).unwrap();
+            assert_eq!(
+                writes,
+                vec![(
+                    allocations[0].0,
+                    allocations[0].1,
+                    actual.pages.len() * 4096
+                )]
+            );
+            let direct = source
+                .write_delta_attached(
+                    parent,
+                    target,
+                    &attachment,
+                    |len| Ok(vec![0; len]),
+                    Vec::as_mut_slice,
+                )
+                .unwrap();
+            let expected = read_extent(&direct).unwrap();
+            assert_eq!(actual.pages, expected.pages);
+            assert_eq!(actual.reverted, expected.reverted);
+            assert_eq!(actual.sidecar, expected.sidecar);
+            assert_eq!(vmm_target_commitment(&mut extent).unwrap(), {
+                let mut direct_extent = index.extent(direct.len()).unwrap();
+                direct_extent.bytes_mut().copy_from_slice(&direct);
+                vmm_target_commitment(&mut direct_extent).unwrap()
+            });
+            chain.push(extent.bytes_mut().to_vec());
+            let refs = chain.iter().map(Vec::as_slice).collect::<Vec<_>>();
+            let (restored, _) = destination
+                .import_extents(&refs, destination.setup)
+                .unwrap();
+            destination.replay_snapshot(restored).unwrap();
+            assert_eq!(
+                destination.state_hash().unwrap(),
+                source.state_hash().unwrap()
+            );
+            assert_eq!(
+                destination.event_history().unwrap(),
+                source.event_history().unwrap()
+            );
+            parent = Some(target);
+        }
     }
 
     #[cfg(target_arch = "aarch64")]
