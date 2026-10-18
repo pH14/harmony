@@ -872,10 +872,17 @@ The checkpoint journal records both completed (`executions`) and reserved
 from `reserved`, because restoring the checkpoint also restores already queued
 work. At a completed checkpoint those counts are equal.
 
-TargetExecution::finish_bootstrap_session ends coordinator-owned bootstrap or
+TargetExecution::finish_coordinator_session ends coordinator-owned bootstrap or
 checkpoint-resume resources before worker readiness is released. The default is
 empty for workloads without such resources. The scope is installed before target
 construction; normal success and errors invoke it once, while unwinding invokes
 best-effort cleanup. A cleanup error fails successful bootstrap. If execution
 already failed, its original typed error is retained and cleanup failure is
 reported separately. Worker targets and their in-campaign reuse are unaffected.
+
+The same coordinator-session scope surrounds the entire standalone full or prefix
+campaign replay, including validation, target construction, replay errors and
+unwinding. A replay reuses its session within that operation and finalizes it
+before returning. During a live campaign the coordinator releases its bootstrap
+gate only after finalization; other execution workers may initialize concurrently,
+and accepting whole-pool readiness still waits for the gated worker.

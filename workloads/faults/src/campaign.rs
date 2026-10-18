@@ -793,11 +793,11 @@ fn held_suffix(
 }
 
 impl TargetExecution for FaultWorkload {
-    fn begin_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
-        crate::consonance::begin_bootstrap_session()
+    fn begin_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        crate::consonance::begin_coordinator_session()
     }
-    fn finish_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
-        crate::consonance::finish_bootstrap_session()
+    fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
+        crate::consonance::finish_coordinator_session()
     }
     fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
         if let Some(cache) = &self.snapshot_cache {

@@ -415,10 +415,10 @@ pub trait TargetExecution: CampaignTypes {
     }
 
     fn new_target(&self) -> Result<Self::Target, String>;
-    fn begin_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
+    fn begin_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
-    fn finish_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
+    fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
     fn reset(&self, target: &mut Self::Target);
@@ -3468,7 +3468,7 @@ where
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
             let bootstrap_started = now();
-            let resume = with_bootstrap_session(workload, || {
+            let resume = with_coordinator_session(workload, || {
                 Ok(match search_checkpoint.take() {
                     Some(reader) => Some(restore_search_checkpoint(
                         workload,
@@ -4407,18 +4407,18 @@ where
     Ok((report, checkpoint))
 }
 
-struct BootstrapSession<'a, G: TargetExecution> {
+struct CoordinatorSession<'a, G: TargetExecution> {
     workload: &'a G,
     finished: bool,
     begun: bool,
 }
-impl<G: TargetExecution> BootstrapSession<'_, G> {
+impl<G: TargetExecution> CoordinatorSession<'_, G> {
     fn finish(&mut self) -> Result<(), Box<dyn Error>> {
         self.finished = true;
-        self.workload.finish_bootstrap_session()
+        self.workload.finish_coordinator_session()
     }
 }
-impl<G: TargetExecution> Drop for BootstrapSession<'_, G> {
+impl<G: TargetExecution> Drop for CoordinatorSession<'_, G> {
     fn drop(&mut self) {
         if self.begun && !self.finished {
             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -4427,25 +4427,36 @@ impl<G: TargetExecution> Drop for BootstrapSession<'_, G> {
         }
     }
 }
-fn with_bootstrap_session<G: TargetExecution, T>(
+fn with_coordinator_session<G: TargetExecution, T>(
     workload: &G,
     operation: impl FnOnce() -> Result<T, Box<dyn Error>>,
 ) -> Result<T, Box<dyn Error>> {
-    let mut scope = BootstrapSession {
+    let mut scope = CoordinatorSession {
         workload,
         finished: false,
         begun: false,
     };
-    workload.begin_bootstrap_session()?;
+    workload.begin_coordinator_session()?;
     scope.begun = true;
     let result = operation();
     let cleanup = scope.finish();
+    coordinator_session_result(result, cleanup, &mut std::io::stderr())
+}
+
+fn coordinator_session_result<T>(
+    result: Result<T, Box<dyn Error>>,
+    cleanup: Result<(), Box<dyn Error>>,
+    diagnostics: &mut dyn Write,
+) -> Result<T, Box<dyn Error>> {
     match (result, cleanup) {
         (Ok(value), Ok(())) => Ok(value),
         (Ok(_), Err(error)) => Err(error),
         (Err(error), Ok(())) => Err(error),
         (Err(error), Err(cleanup)) => {
-            eprintln!("bootstrap session finalization also failed: {cleanup}");
+            let _ = writeln!(
+                diagnostics,
+                "coordinator session finalization also failed: {cleanup}"
+            );
             Err(error)
         }
     }
@@ -4953,8 +4964,29 @@ where
     )
 }
 
-#[allow(clippy::too_many_lines)]
 fn replay_campaign_checkpointed_inner<G: Workload>(
+    workload: &G,
+    stream_bytes: &[u8],
+    origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
+    origin_checkpoint: Option<&CampaignCheckpoint<G::Snapshot>>,
+    require_terminal: bool,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    with_coordinator_session(workload, || {
+        replay_campaign_checkpointed_in_session(
+            workload,
+            stream_bytes,
+            origin_source,
+            origin_checkpoint,
+            require_terminal,
+        )
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+fn replay_campaign_checkpointed_in_session<G: Workload>(
     workload: &G,
     stream_bytes: &[u8],
     origin_source: Option<&ArchiveSource<G::ArchiveReport>>,
@@ -6095,16 +6127,16 @@ mod tests {
         LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, MAX_PROGRESS_CURVE_POINTS,
         PROGRESS_CHECKPOINT_INTERVAL, PlacedThread, Reporting, RomuDuoJrRand, SnapshotCheckpoint,
         SnapshotCheckpointEntry, TargetExecution, ThreadPlacement, WorkloadPolicies,
-        archive_entry_limit_is_valid, compact_progress_curve, default_window, draws_continuation,
-        draws_highest_preference, execution_work_delta, finish_record, full_selector_report_due,
-        is_zero_usize, memory_is_within_reserve, postcard_value_sha256, profile_elapsed,
-        progress_checkpoint_due, progress_line_interval, progress_policy_is_supported,
-        record_compaction_elapsed, record_mixture_outcome, replay_campaign_checkpointed,
-        replay_campaign_prefix_checkpointed, replay_splice, resident_memory_is_within_budget,
-        retained_archive_indexes, run_campaign_checkpointed,
+        archive_entry_limit_is_valid, compact_progress_curve, coordinator_session_result,
+        default_window, draws_continuation, draws_highest_preference, execution_work_delta,
+        finish_record, full_selector_report_due, is_zero_usize, memory_is_within_reserve,
+        postcard_value_sha256, profile_elapsed, progress_checkpoint_due, progress_line_interval,
+        progress_policy_is_supported, record_compaction_elapsed, record_mixture_outcome,
+        replay_campaign_checkpointed, replay_campaign_prefix_checkpointed, replay_splice,
+        resident_memory_is_within_budget, retained_archive_indexes, run_campaign_checkpointed,
         run_campaign_checkpointed_with_options, schedule_policy_identifier,
         schedule_policy_is_supported, schedule_policy_window, stop_reservations_after_objective,
-        with_bootstrap_session,
+        with_coordinator_session,
     };
     use crate::search::archive::{
         ArchiveEntryReport, ArchiveKey, Input, ProgressPoint, RetentionPolicy, SelectorDraw,
@@ -6384,7 +6416,7 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
-        fn finish_bootstrap_session(&self) -> Result<(), Box<dyn Error>> {
+        fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
             FINALIZATION.with(|state| {
                 let (calls, fail) = state.get();
                 state.set((calls + 1, fail));
@@ -6735,12 +6767,12 @@ mod tests {
         };
         for fail in [false, true] {
             FINALIZATION.with(|state| state.set((0, fail)));
-            let result = with_bootstrap_session(&workload, || Ok(7));
+            let result = with_coordinator_session(&workload, || Ok(7));
             assert_eq!(result.is_err(), fail);
             assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
             FINALIZATION.with(|state| state.set((0, fail)));
             let result: Result<(), Box<dyn Error>> =
-                with_bootstrap_session(&workload, || Err(Box::new(TestIntegrityViolation)));
+                with_coordinator_session(&workload, || Err(Box::new(TestIntegrityViolation)));
             assert!(
                 result
                     .unwrap_err()
@@ -6751,12 +6783,41 @@ mod tests {
             FINALIZATION.with(|state| state.set((0, fail)));
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let _: Result<(), Box<dyn Error>> =
-                    with_bootstrap_session(&workload, || panic!("bootstrap unwind"));
+                    with_coordinator_session(&workload, || panic!("bootstrap unwind"));
             }));
             assert!(result.is_err());
             assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
         }
         FINALIZATION.with(|state| state.set((0, false)));
+    }
+
+    #[test]
+    fn bootstrap_primary_error_survives_failed_secondary_diagnostic_write() {
+        struct Broken {
+            attempts: usize,
+        }
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                self.attempts += 1;
+                Err(std::io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut diagnostics = Broken { attempts: 0 };
+        let result: Result<(), Box<dyn Error>> = coordinator_session_result(
+            Err(Box::new(TestIntegrityViolation)),
+            Err("shutdown unconfirmed".into()),
+            &mut diagnostics,
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .downcast_ref::<TestIntegrityViolation>()
+                .is_some()
+        );
+        assert_eq!(diagnostics.attempts, 1);
     }
 
     #[test]
@@ -7352,6 +7413,73 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         (workload, lines)
+    }
+
+    #[test]
+    fn standalone_full_and_prefix_replay_finalize_coordinator_sessions_on_all_results() {
+        let (workload, lines) = five_job_campaign_stream();
+        for prefix in [false, true] {
+            let stream = if prefix {
+                lines[..lines.len() - 1].join("\n")
+            } else {
+                lines.join("\n")
+            };
+            for fail in [false, true] {
+                FINALIZATION.with(|state| state.set((0, fail)));
+                let result = if prefix {
+                    replay_campaign_prefix_checkpointed(&workload, stream.as_bytes(), None, None)
+                } else {
+                    replay_campaign_checkpointed(&workload, stream.as_bytes(), None, None)
+                };
+                assert_eq!(
+                    result.is_err(),
+                    fail,
+                    "prefix={prefix} fail={fail}: {:?}",
+                    result.as_ref().err().map(ToString::to_string)
+                );
+                if fail {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("shutdown unconfirmed")
+                    );
+                }
+                assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            }
+            FINALIZATION.with(|state| state.set((0, false)));
+            let refusing = TestWorkload {
+                bootstrap_objective: false,
+                targets: Some(Arc::new(LiveTargets {
+                    refuse: true,
+                    ..LiveTargets::default()
+                })),
+            };
+            let error = if prefix {
+                replay_campaign_prefix_checkpointed(&refusing, stream.as_bytes(), None, None)
+            } else {
+                replay_campaign_checkpointed(&refusing, stream.as_bytes(), None, None)
+            }
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("failed to build the replay target")
+            );
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+            FINALIZATION.with(|state| state.set((0, false)));
+            let mut incomplete = lines.clone();
+            incomplete.pop();
+            let result = replay_campaign_checkpointed(
+                &workload,
+                incomplete.join("\n").as_bytes(),
+                None,
+                None,
+            );
+            assert!(result.is_err());
+            assert_eq!(FINALIZATION.with(|state| state.get().0), 1);
+        }
+        FINALIZATION.with(|state| state.set((0, false)));
     }
 
     #[test]

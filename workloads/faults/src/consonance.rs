@@ -568,7 +568,7 @@ struct Live {
 static HOLDERS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
-    static BOOTSTRAP_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static COORDINATOR_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
     static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -609,10 +609,10 @@ pub fn thread_work_telemetry() -> BTreeMap<String, u64> {
     counters
 }
 
-pub fn begin_bootstrap_session() -> Result<(), Box<dyn Error>> {
-    BOOTSTRAP_SESSION.with(|active| {
+pub fn begin_coordinator_session() -> Result<(), Box<dyn Error>> {
+    COORDINATOR_SESSION.with(|active| {
         if active.replace(true) {
-            Err("a bootstrap session scope is already active".into())
+            Err("a coordinator session scope is already active".into())
         } else {
             Ok(())
         }
@@ -620,12 +620,12 @@ pub fn begin_bootstrap_session() -> Result<(), Box<dyn Error>> {
 }
 #[cfg(any(target_os = "macos", test))]
 fn drop_target_session() {
-    if !BOOTSTRAP_SESSION.with(|active| active.get()) {
+    if !COORDINATOR_SESSION.with(|active| active.get()) {
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 }
-pub fn finish_bootstrap_session() -> Result<(), Box<dyn Error>> {
-    BOOTSTRAP_SESSION.with(|active| active.set(false));
+pub fn finish_coordinator_session() -> Result<(), Box<dyn Error>> {
+    COORDINATOR_SESSION.with(|active| active.set(false));
     let live = LIVE.with(|slot| slot.borrow_mut().take());
     if let Some(mut live) = live {
         live.final_counters = Some(Vec::new());
@@ -641,7 +641,7 @@ pub fn finish_bootstrap_session() -> Result<(), Box<dyn Error>> {
         live.session.shutdown()?;
         if telemetry_failed {
             return Err(
-                "bootstrap retirement telemetry panicked after cleanup was attempted".into(),
+                "coordinator retirement telemetry panicked after cleanup was attempted".into(),
             );
         }
     }
@@ -2921,10 +2921,10 @@ mod tests {
             BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(fail));
             let live = timed_out_live();
             LIVE.with(|slot| *slot.borrow_mut() = Some(live));
-            let result = finish_bootstrap_session();
+            let result = finish_coordinator_session();
             assert_eq!(result.is_err(), fail);
             LIVE.with(|slot| assert!(slot.borrow().is_none()));
-            finish_bootstrap_session().unwrap();
+            finish_coordinator_session().unwrap();
             assert_eq!(BOOTSTRAP_SHUTDOWNS.with(|calls| calls.get()), 1);
         }
         BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(false));
@@ -2937,15 +2937,15 @@ mod tests {
         SHUTDOWN_CLOSED.with(|closed| closed.set(false));
         SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(0));
         BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.set(true));
-        begin_bootstrap_session().unwrap();
-        assert!(begin_bootstrap_session().is_err());
+        begin_coordinator_session().unwrap();
+        assert!(begin_coordinator_session().is_err());
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         drop_target_session();
         LIVE.with(|slot| assert!(slot.borrow().is_some()));
-        assert!(finish_bootstrap_session().is_err());
-        assert!(!BOOTSTRAP_SESSION.with(|active| active.get()));
+        assert!(finish_coordinator_session().is_err());
+        assert!(!COORDINATOR_SESSION.with(|active| active.get()));
         LIVE.with(|slot| assert!(slot.borrow().is_none()));
-        finish_bootstrap_session().unwrap();
+        finish_coordinator_session().unwrap();
         assert_eq!(SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.get()), 1);
         assert_eq!(
             RETIRED.with(|retired| retired.borrow()["vmm.test.retirement_units"]),
@@ -2962,9 +2962,9 @@ mod tests {
         SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(true));
         BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(0));
         BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(false));
-        begin_bootstrap_session().unwrap();
+        begin_coordinator_session().unwrap();
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
-        let result = finish_bootstrap_session();
+        let result = finish_coordinator_session();
         SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(false));
         TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
         assert!(
@@ -2975,7 +2975,7 @@ mod tests {
         );
         assert_eq!(BOOTSTRAP_SHUTDOWNS.with(|calls| calls.get()), 1);
         LIVE.with(|slot| assert!(slot.borrow().is_none()));
-        assert!(!BOOTSTRAP_SESSION.with(|active| active.get()));
+        assert!(!COORDINATOR_SESSION.with(|active| active.get()));
     }
 
     fn timed_out_live() -> Live {

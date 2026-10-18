@@ -316,7 +316,9 @@ cleanup guarantees.
 
 Closed or ambiguously terminated Guest instances reject later polling entrypoints.
 A real child-poll error latches the same unconfirmed state, preventing subsequent
-PID waits and signals. Native failure tests inject before the OS wait, so their
+PID waits and signals. The related numeric process-group identity limitation is
+tracked in [#766](https://github.com/pH14/harmony/issues/766); ambiguity remains
+an error rather than permission to signal a possibly reused number. Native failure tests inject before the OS wait, so their
 private fixture cleanup still owns the unreaped Child; that cleanup does not
 license retry after a real ambiguous wait in production.
 
