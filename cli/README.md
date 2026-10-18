@@ -270,6 +270,77 @@ Console evidence retains a bounded 64 KiB tail; adjacent observations can overla
 Terminal output is saved separately and included by `show --logs` without a point
 selector. Point-filtered logs show the console captured at that boundary.
 
+## Independent campaigns on two hosts
+
+Run a complete local search on each host with a different seed to explore more
+histories concurrently. Each search owns its coordinator, workers and cache;
+this does not preserve one globally ordered campaign or exchange search archives.
+This recipe is checked against the CLI source, not an executed two-host
+qualification or a measured speedup.
+
+Use the same installed release pair (`harmony` and `harmony-consonance-host`),
+architecture and explicit backend on both hosts. Start with already admitted,
+identical workload and runtime artifact bytes, setup and configuration; use a
+saved OCI file and omit build directives to avoid rebuilding independently.
+`--offline` prevents Harmony release downloads, not configured builds or their
+container-builder network access.
+The normal strict-host and runtime admission checks still apply. Replay requires
+the exact recorded host executable and runner identity. CPU provenance warnings
+are advisory: matching metadata does not prove numerical or whole-state
+portability, and different metadata can explain replay divergence.
+
+On each host, choose a distinct `SEED`, an execution ceiling `EXECUTIONS`, a
+wall budget `WALL` (such as a duration ending in `s` or `m`), and a fresh `RUN`
+directory. Set `CONFIG` to the prepared configuration file. Choose budgets and
+available cores and memory before starting; the CLI derives workers and cache
+capacity from local resources, so different hosts can explore different work.
+Run these existing commands separately on each host:
+
+```sh
+harmony check --config "${CONFIG:?}" --offline --json
+harmony search --config "${CONFIG:?}" --offline --seed "${SEED:?}" \
+  --executions "${EXECUTIONS:?}" --for "${WALL:?}" --out "${RUN:?}"
+harmony show "${RUN:?}" --json
+```
+
+Retain stdout, stderr and each command's exit status. A faults search exits `0`
+without reported bugs, unmet reachability assertions or execution failures; `1`
+means a bug or unmet reachability assertion; `2` means an execution failure or
+watchdog cutoff. Inspect the report as well as the exit status: a completed
+manifest can accompany any of these codes. `show` displays saved evidence; it
+does not verify artifacts or perform a fresh replay. A search wall budget is
+not a hard process-cleanup deadline. After completion or interruption, check
+owned child processes before reusing resources; an uncertain shutdown must not
+be treated as confirmed cleanup.
+
+After the run has stopped and its files are stable, copy the **whole run
+directory** to a compatible replay host, retaining the manifest, report,
+artifacts, streams and checkpoints. Verify the transfer against producer file
+hashes; do not rewrite manifests or copy only `first-bug-input.json`. Keep each
+host's directory distinct. For a producer-confirmed finding, set `COPIED_RUN`,
+its one-based `FINDING`, a positive repeat count `REPEATS` and a fresh
+`REPLAY_OUT`, then use:
+
+```sh
+harmony debug replay "${COPIED_RUN:?}" --finding "${FINDING:?}" \
+  --repeat "${REPEATS:?}" --out "${REPLAY_OUT:?}"
+```
+
+Replay verifies the saved recording and runs fresh executions. Keep refusals,
+divergence and CPU warnings with the result; do not weaken identity checks to
+make another host accept it. Search confirmation reproduces bug evidence;
+exact replay is a separate status. UML's unavailable full-state identity cannot
+certify exact reproduction. Replay has no wall-budget flag, so plan its resource
+and cleanup limits separately.
+
+Report per-host seeds, artifacts, CPU/backend identity, actual worker and cache
+sizes, completed executions, errors, watchdogs and confirmed finding records.
+Keep exact replay outcomes separate. Summing finding records does not count
+unique bugs: independent runs can rediscover the same input or cause. Compare
+useful confirmed outcomes and observed elapsed time across a seed panel before
+claiming a scaling benefit. Cooperating campaigns and globally ordered remote
+shards require additional protocols; these commands implement neither.
+
 The `nested` package preserves the nested VM search supported by the runtime.
 Select it explicitly with an OCI driver input, `runner.kind = "consonance"` and
 both `runner.options.kernel` pointing to a kernel built with nested KVM support

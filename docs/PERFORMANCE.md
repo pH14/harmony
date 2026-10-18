@@ -298,6 +298,11 @@ Weak scaling increases the campaign size along with the worker count. This
 still runs into coordinator capacity as jobs per second increase, and memory
 capacity as more guests need to fit on the host.
 
+For independent trials across hosts, use the CLI's
+[independent-campaign recipe](../cli/README.md#independent-campaigns-on-two-hosts).
+It keeps search state local and uses existing saved-run replay; it is not a
+qualification of multi-host speedup or one globally ordered campaign.
+
 ## Checks
 
 The estimates above depend on the chip, backend, and workload. Use these
