@@ -302,12 +302,26 @@ Worker target-private state, including independently retained inner history
 handles after a reply, remains outside this archive budget. Job-origin outer
 snapshot handles are dropped before the reply releases their ordered pins.
 Thus legal worker drop timing before unpin cannot change budget decisions.
-Checkpoint restoration and imported snapshot batches call the workload's
-canonicalization hook before rebuilding the ledger. This must restore actual
-sharing of validated expected histories, rather than merely treating equal
-content digests as shared storage. An import seeds canonicalization with the
-existing bootstrap root. Temporary canonicalization indexes are discarded before
-accounting; independent execution receipts retain their own validation authority.
+The archive owns a typed workload retention adapter alongside the checked
+allocation ledger. After a candidate wins retention, the adapter normalizes its
+validated expected history against currently retained nodes, walking only the
+new tail to an indexed ancestor. The adapter registers nodes when the ledger
+first acquires them and removes registrations when the final root or parent
+edge releases them; its index storage is charged as well. The incoming root is
+acquired before population retirement or replacement releases old roots, so
+replacing the sole owner of a deep prefix still walks only the new tail. Candidates
+rejected or failing before installation cannot leave registrations. Input-prefix
+ownership and
+certificate bindings are committed only after normalization and population
+admission succeed. Retirement clears owners without pruning prefix nodes, so
+the validated prefix start remains available for that commit. Independently allocated worker
+histories therefore enter the archive with the same physical sharing as restored
+histories.
+Checkpoint restoration feeds roots through the same normalization and acquisition
+path in stable entry order. Imported snapshots use the already admitted bootstrap
+root in that index. Sharing changes actual allocations rather than treating equal
+content digests as shared storage. The index has no global lifetime and independent
+execution receipts retain their own validation authority.
 
 The shared `search::rollout` loop owns action evidence capture, candidate
 creation, retention probe placement, and stopping; a workload provides action execution and state evaluation.
