@@ -35,6 +35,7 @@ what owns it, and the linter rejects them.
 | `Checks / Consonance` | `consonance-checks.yml` | pull_request, push |
 | `Checks / Consonance / Analysis` | `consonance-analysis.yml` | pull_request, push, schedule, workflow_dispatch |
 | `Checks / Consonance / Hardware Qualification` | `consonance-hardware-qualification.yml` | schedule, workflow_dispatch |
+| `Checks / Consonance / Native Math Qualification` | `consonance-native-math-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Guest Runtime Qualification` | `consonance-runtime-qualification.yml` | schedule, workflow_dispatch |
 | `Checks / Consonance / Nested Host Qualification` | `consonance-nested-host-qualification.yml` | push, schedule, workflow_dispatch |
 | `Checks / Consonance / Kernel XSAVE Qualification` | `consonance-kernel-xsave-qualification.yml` | workflow_dispatch |
@@ -410,6 +411,16 @@ builds on that host and fails on one with no runner. A test that no job or
 machine runs is deleted.
 
 ## Cross-host execution qualification
+
+The separate `Native Math Qualification` workflow builds one static baseline
+x86-64 executable and runs three pinned repetitions on each of six hosts. Its
+comparator requires AMD/Intel diversity and retains exact input/result/status
+bits for every differing pair, plus matching subsets by operation and floating
+point mode. Successful evidence collection may include numerical differences;
+missing diversity, instability, or artifact mismatch fails. The bounded scope,
+compiler/library provenance, and exclusions are documented beside the
+[corpus](../scripts/qualification/native-math/README.md). This does not alter
+standard-library admission or advisory CPU replay warnings.
 
 The hardware workflow builds `x86_kvm_virtual_time` once as a static musl test
 executable and distributes the exact retained bytes to both X1 replicas. Each

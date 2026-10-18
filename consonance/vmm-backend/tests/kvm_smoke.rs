@@ -1013,6 +1013,7 @@ fn sysenter_restore_rejects_values_kvm_cannot_preserve() {
                     ecx: u32::from_le_bytes(*b"ntel"),
                     ..Default::default()
                 }],
+                ..Default::default()
             },
             msr_filter: MsrFilter {
                 allow_inkernel: vec![MsrRange {

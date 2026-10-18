@@ -46,6 +46,9 @@ impl StubServer {
 
     fn handle(&mut self, req: &Request) -> Result<Reply, ControlError> {
         match req {
+            Request::EventHistory => {
+                Ok(Reply::EventHistory(control_proto::EventHistory::default()))
+            }
             Request::Hello(_) => Ok(Reply::Hello(caps())),
             Request::Snapshot => {
                 let id = self.next_snap;

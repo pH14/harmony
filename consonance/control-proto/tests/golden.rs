@@ -719,6 +719,7 @@ fn every_request_variant_has_a_pinned_tag() {
         },
         Request::RecordedEnv,
         Request::Console { offset: 0 },
+        Request::EventHistory,
     ];
 
     let mut tags = Vec::new();
@@ -738,6 +739,7 @@ fn every_request_variant_has_a_pinned_tag() {
             Request::Exec { .. } => 0x0C,
             Request::RecordedEnv => 0x0D,
             Request::Console { .. } => 0x0E,
+            Request::EventHistory => 0x0F,
         };
         let mut buf = Vec::new();
         encode_request(1, req, &mut buf).expect("encode");
@@ -749,8 +751,8 @@ fn every_request_variant_has_a_pinned_tag() {
     tags.dedup();
     assert_eq!(
         tags,
-        (0x01u8..=0x0E).collect::<Vec<u8>>(),
-        "the 14 peer verbs must occupy tags 1..=14, each exactly once"
+        (0x01u8..=0x0F).collect::<Vec<u8>>(),
+        "the 15 peer verbs must occupy tags 1..=15, each exactly once"
     );
 }
 
@@ -791,6 +793,7 @@ fn every_reply_variant_has_a_pinned_tag() {
             sdk_events: 0,
             tainted: false,
         },
+        Reply::EventHistory(control_proto::EventHistory::default()),
         Reply::Recorded(Reproducer {
             blob_version: 1,
             bytes: vec![],
@@ -811,6 +814,7 @@ fn every_reply_variant_has_a_pinned_tag() {
             Reply::Snapshot { .. } => 0x0A,
             Reply::Recorded(_) => 0x0B,
             Reply::Console { .. } => 0x0C,
+            Reply::EventHistory(_) => 0x0D,
         };
         let mut buf = Vec::new();
         encode_reply(1, &Ok(reply.clone()), &mut buf).expect("encode");
@@ -821,7 +825,7 @@ fn every_reply_variant_has_a_pinned_tag() {
 
     tags.sort_unstable();
     tags.dedup();
-    let mut expected_tags: Vec<u8> = (0x01u8..=0x0C).collect();
+    let mut expected_tags: Vec<u8> = (0x01u8..=0x0D).collect();
     expected_tags.retain(|t| *t != 0x02);
     assert_eq!(
         tags, expected_tags,
@@ -838,4 +842,16 @@ fn err_snapshot_refused_preserves_diagnostic() {
         }),
         &[0x01, 0x14, 0x03, 0x00, 0x00, 0x00, b'S', b'D', b'K'],
     );
+}
+
+#[test]
+fn ordered_history_bytes_are_pinned() {
+    check_req(7, Request::EventHistory, &[15]);
+    let history = control_proto::EventHistory {
+        count: 0x0102030405060708,
+        digest: [0x5a; 32],
+    };
+    let mut body = vec![0, 13, 8, 7, 6, 5, 4, 3, 2, 1];
+    body.extend_from_slice(&[0x5a; 32]);
+    check_reply(7, Ok(Reply::EventHistory(history)), &body);
 }

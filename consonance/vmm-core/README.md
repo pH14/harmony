@@ -321,6 +321,37 @@ advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
 The modeled 8259 master and slave command and interrupt-mask ports accept only
 byte reads and writes; other widths fail before changing masks or virtual time.
+Every V-time-wired VMM maintains a v1 ordered normalized-event commitment:
+`count` starts at zero with a zero digest; each completed normalized event
+advances a SHA-256 chain under `consonance.ordered-event-history.v1`, committing
+the preceding digest, checked cumulative count, event class, payload digest,
+virtual time after completion, and ordered interrupt deadline/vector pairs.
+Delivery outside an active guest-exit context is rejected before consuming the
+clockevent schedule. ARM GIC and trapped-system-register exits normally remain
+raw-only. If such an exit actually delivers a clockevent, it becomes an
+`irq_delivery` normalized event at that exact boundary, with no V-time charge
+and no backend-specific raw payload. The interrupt is neither deferred to the
+next normalized exit nor left uncommitted across capture. The association of
+an interrupt with its completing event is semantic; local trace event indexes,
+schedule indexes, backend debug strings, diagnostic
+checkpoint hashes, and session segment labels are excluded. Raw-only backend
+exits without semantic delivery do not consume a normalized ordinal. Count
+overflow fails the event.
+This is a constant-size history commitment, separate from logical VM state;
+the existing diagnostic log remains available independently.
+
+Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
+its diagnostic trace do not advance or reset it. Replay and branch restore the
+captured commitment before continuation, regardless of local snapshot IDs or
+restore mode. Full portable snapshots (v8) and sparse sidecars (v10) retain its
+presence, count and digest independently of the logical state hash. Imports
+require a live validator and check availability against its V-time model before
+creating a handle. Restore also rejects a mismatch on the actual target.
+Unwired VMMs explicitly carry no history. These formats reject older versions.
+The control `EventHistory` request reports history only for a wired VMM.
+Checksum validation authenticates artifact bytes against corruption; comparing
+a replay requires the archived source certificate, not a newly invented history.
+
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
@@ -832,3 +863,53 @@ cache coherence on other hosts or kernels. ARM KVM still inherits the default
 instruction-cache hook, and #633 remains an investigation without a confirmed
 stale-instruction witness. This fixture does not qualify cross-host restore,
 arbitrary code mutation, or continuously enforced executable admission.
+
+### x86 capability admission
+
+The contract adapter declares the following CPUID bits as supplied by the VMM
+when constructing `CpuidModel.emulated_features`. They remain in the frozen
+guest model; this metadata tells the KVM substrate which host bits are not
+required. Every other advertised capability word is checked against KVM's
+supported or emulated inventory, including all scalar/SIMD instruction flags.
+
+| Contract fields | Provider and implementation |
+| --- | --- |
+| `6:EAX[2]` ARAT | Userspace LAPIC timer scheduling uses virtual time, independent of host power states (`lapic`, x86 dispatch) |
+| `7:EBX[1]` TSC_ADJUST | `IA32_TSC_ADJUST` reads/writes use the virtual-clock state (`vendor/x86/dispatch.rs`) |
+| `7:EDX[29]` ARCH_CAPABILITIES | Contract MSR `0x10a` has an explicit fixed userspace read disposition, handled by MSR dispatch |
+| `80000007:EDX[8]` invariant TSC | Virtual TSC rate comes from the contract clock, independent of host frequency (`vtime`, x86 dispatch) |
+
+The current contract requires these remaining capabilities from KVM's
+supported inventory, or its explicit instruction-emulation inventory:
+
+| Contract feature word | Required capabilities |
+| --- | --- |
+| `1:ECX` | SSE3, PCLMULQDQ, SSSE3, FMA, CMPXCHG16B, PCID, SSE4.1, SSE4.2, MOVBE, POPCNT, AES, XSAVE, AVX, F16C |
+| `1:EDX` | FPU, VME, DE, PSE, TSC, MSR, PAE, CMPXCHG8B, APIC, SEP, MTRR, PGE, CMOV, PAT, PSE36, CLFLUSH, MMX, FXSR, SSE, SSE2 |
+| `7:EBX` | FSGSBASE, BMI1, AVX2, SMEP, BMI2, ERMS, INVPCID, ADX, SMAP, CLFLUSHOPT |
+| `80000001:ECX` | LAHF/SAHF in long mode, ABM/LZCNT, PREFETCHW |
+| `80000001:EDX` | SYSCALL/SYSRET, NX, 1-GiB pages, RDTSCP, long mode |
+| `D.0`, `D.2` | x87/SSE/YMM state; YMM component size 256 and standard offset 576 |
+
+Policy version 7 explicitly clears self-snoop (`1:EDX[27]`) on every host and
+changes the ordinary and nested contract fingerprints. The bit describes
+conflicting-memory-type cache behavior, not an instruction enable. AMD does
+not enumerate the Intel bit, and the stateful guest MTRR/PAT surface does not
+establish equivalent alias semantics. It is neither a host intersection nor a
+userspace-emulation exemption. Older snapshots are rejected by contract
+identity before restore. Standard instruction features are unchanged.
+KVM recommends always setting the inverse x87 absence flags `7:EBX[6,13]`;
+these describe unavailable legacy x87 fields rather than native capabilities.
+
+This checks the complete requested capability words, so newly requested bits
+in these words automatically require admission too. KVM may provide a feature
+through virtualization rather than native execution: 1-GiB pages can be
+provided through shadow paging, and MOVBE has explicit software emulation.
+The supported/emulated API results, not a raw hardware-only mask, decide.
+
+The generic backend contains no frozen-profile feature exemption mask. It
+validates the caller's declarations against the advertised model and never
+allows them to exempt XSAVE state or component layouts. CPUID identity, caches,
+topology, and frequency descriptions remain fixed guest values. Standard math
+libraries remain supported; admission is about execution capability, not a
+claim of identical arithmetic results across all admitted CPUs.

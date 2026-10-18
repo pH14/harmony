@@ -49,11 +49,19 @@ const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
 
 pub fn replay_endpoint_certificate(
     hash: [u8; 32],
+    history: (u64, [u8; 32]),
     observation: &FaultObservations,
     failed: bool,
 ) -> Result<[u8; 32], String> {
-    let encoded = postcard::to_allocvec(&("fault-replay-endpoint-v1", hash, observation, failed))
-        .map_err(|error| format!("encode fault replay endpoint: {error}"))?;
+    let encoded = postcard::to_allocvec(&(
+        "fault-replay-endpoint-v2",
+        control_proto::EventHistory::VERSION,
+        hash,
+        history,
+        observation,
+        failed,
+    ))
+    .map_err(|error| format!("encode fault replay endpoint: {error}"))?;
     Ok(Sha256::digest(encoded).into())
 }
 
@@ -65,6 +73,9 @@ pub(crate) fn validate_snapshot_prefix_certificates(
         return Err("fault snapshot prefix certificate count does not match its actions".into());
     }
     if uml {
+        if snapshot.event_history.is_some() {
+            return Err("UML snapshot unexpectedly carries a normalized event history".into());
+        }
         if snapshot.endpoint != Some(FaultEndpointCertificate::UmlWholeStateUnavailable) {
             return Err("UML snapshot lacks its backend endpoint certificate".into());
         }
@@ -76,11 +87,15 @@ pub(crate) fn validate_snapshot_prefix_certificates(
     let Some(FaultEndpointCertificate::KvmWholeState(hash)) = snapshot.endpoint else {
         return Err("KVM snapshot lacks its whole-state endpoint certificate".into());
     };
+    let history = snapshot
+        .event_history
+        .ok_or("KVM snapshot lacks ordered event history")?;
     if snapshot.prefix_certificates.iter().any(Option::is_none) {
         return Err("KVM snapshot prefix lacks an endpoint certificate".into());
     }
     if let Some(&Some(actual)) = snapshot.prefix_certificates.last() {
-        let expected = replay_endpoint_certificate(hash, &snapshot.observation, snapshot.failed)?;
+        let expected =
+            replay_endpoint_certificate(hash, history, &snapshot.observation, snapshot.failed)?;
         if actual != expected {
             return Err("KVM snapshot final prefix differs from its endpoint certificate".into());
         }
@@ -683,16 +698,24 @@ impl FaultTarget {
             if live.key != self.config.key {
                 return Err("the current job session has a different identity".to_owned());
             }
-            if live.abandoned || live.session.abandoned() {
-                return Err("the current job session was abandoned".to_owned());
-            }
-            let result = live
-                .session
-                .state_hash()
-                .map_err(|error| format!("current job state hash: {error}"));
+            let result = live.state_hash_current();
             if live.abandoned || live.session.abandoned() {
                 *slot = None;
-                return Err("the current job session was abandoned while hashing".to_owned());
+            }
+            result
+        })
+    }
+
+    pub fn event_history_current(&self) -> Result<(u64, [u8; 32]), String> {
+        LIVE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let live = slot.as_mut().ok_or("the current job has no live session")?;
+            if live.key != self.config.key || live.abandoned || live.session.abandoned() {
+                return Err("the current job has no usable matching live session".into());
+            }
+            let result = live.ordered_history();
+            if live.abandoned || live.session.abandoned() {
+                *slot = None;
             }
             result
         })
@@ -711,6 +734,7 @@ impl FaultTarget {
         let expected = certificate.ok_or("KVM replay prefix lacks an endpoint certificate")?;
         let actual = replay_endpoint_certificate(
             self.state_hash_current()?,
+            self.event_history_current()?,
             &self.observation,
             self.failed,
         )?;
@@ -881,10 +905,11 @@ impl FaultTarget {
         validate_snapshot_prefix_certificates(snapshot, self.config.uml.is_some())?;
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
+            let mut previous_moment = None;
             if expected.is_some() && snapshot.actions.len() > 1 {
                 let root = live.chain.point(live.chain.local(&[]));
                 live.replay(root.snap)?;
-                let mut previous_moment = live.observe(FaultStop::Deadline)?.moment;
+                let mut prefix_moment = live.observe(FaultStop::Deadline)?.moment;
                 for index in 0..snapshot.actions.len() - 1 {
                     let prefix = &snapshot.actions[..=index];
                     let at = live.chain.local(prefix);
@@ -901,24 +926,26 @@ impl FaultTarget {
                         .state_hash()
                         .map_err(|error| format!("restored fault prefix state hash: {error}"))?;
                     let mut observation = live.observe(FaultStop::Deadline)?;
-                    observation
-                        .parks
-                        .retain(|park| park.moment > previous_moment);
+                    observation.parks.retain(|park| park.moment > prefix_moment);
                     observation
                         .park_reads
-                        .retain(|read| read.moment > previous_moment);
-                    let actual = replay_endpoint_certificate(hash, &observation, false)?;
+                        .retain(|read| read.moment > prefix_moment);
+                    let actual = replay_endpoint_certificate(
+                        hash,
+                        live.ordered_history()?,
+                        &observation,
+                        false,
+                    )?;
                     if Some(actual) != snapshot.prefix_certificates[index] {
                         return Err(
                             "restored fault prefix differs from its snapshot certificate".into(),
                         );
                     }
-                    previous_moment = observation.moment;
+                    prefix_moment = observation.moment;
                 }
+                previous_moment = Some(prefix_moment);
             }
-            let previous_moment = if snapshot.actions.is_empty() {
-                None
-            } else {
+            if previous_moment.is_none() && !snapshot.actions.is_empty() {
                 let prefix = &snapshot.actions[..snapshot.actions.len() - 1];
                 let at = live.chain.local(prefix);
                 let previous = if live.chain.depth(at) == prefix.len() {
@@ -929,8 +956,8 @@ impl FaultTarget {
                     )?
                 };
                 live.replay(previous.snap)?;
-                Some(live.observe(FaultStop::Deadline)?.moment)
-            };
+                previous_moment = Some(live.observe(FaultStop::Deadline)?.moment);
+            }
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
@@ -938,7 +965,12 @@ impl FaultTarget {
                         let actual = live.session.state_hash().map_err(|error| {
                             format!("restored fault endpoint state hash: {error}")
                         })?;
-                        if actual != expected {
+                        if actual != expected
+                            || live.ordered_history()?
+                                != snapshot
+                                    .event_history
+                                    .ok_or("KVM snapshot lacks ordered event history")?
+                        {
                             return Err(
                                 "restored fault endpoint differs from its snapshot certificate"
                                     .into(),
@@ -1010,12 +1042,24 @@ impl FaultTarget {
         } else {
             FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?)
         };
+        self.snapshot_with_endpoint(endpoint)
+    }
+
+    fn snapshot_with_endpoint(
+        &self,
+        endpoint: FaultEndpointCertificate,
+    ) -> Result<Option<FaultSnapshot>, String> {
         let snapshot = FaultSnapshot {
             actions: self.actions.clone(),
             prefix_certificates: self.prefix_certificates.clone(),
             observation: self.observation.clone(),
             failed: false,
             endpoint: Some(endpoint),
+            event_history: if self.config.uml.is_some() {
+                None
+            } else {
+                Some(self.event_history_current()?)
+            },
         };
         validate_snapshot_prefix_certificates(&snapshot, self.config.uml.is_some())?;
         Ok(Some(snapshot))
@@ -1025,13 +1069,25 @@ impl FaultTarget {
         self.apply_as(action, RunKind::New);
     }
 
+    pub fn apply_and_snapshot(
+        &mut self,
+        action: FaultAction,
+    ) -> Result<Option<FaultSnapshot>, String> {
+        let endpoint = self.apply_as(action, RunKind::New);
+        self.verify_integrity().map_err(|error| error.to_string())?;
+        match endpoint {
+            Some(endpoint) => self.snapshot_with_endpoint(endpoint),
+            None => Ok(None),
+        }
+    }
+
     pub fn apply_replayed(&mut self, action: FaultAction) {
         self.apply_as(action, RunKind::Replay);
     }
 
-    fn apply_as(&mut self, action: FaultAction, kind: RunKind) {
+    fn apply_as(&mut self, action: FaultAction, kind: RunKind) -> Option<FaultEndpointCertificate> {
         if self.failed || !self.observation.stop.is_continuable() {
-            return;
+            return None;
         }
         self.action_observations.clear();
         let previous_moment = self.observation.moment;
@@ -1045,23 +1101,34 @@ impl FaultTarget {
             observation
                 .park_reads
                 .retain(|read| read.moment > previous_moment);
-            let certificate = if kvm && observation.stop.is_continuable() {
-                let hash = live
-                    .session
-                    .state_hash()
-                    .map_err(|error| format!("fault action state hash: {error}"))?;
-                Some(replay_endpoint_certificate(hash, &observation, false)?)
+            let (endpoint, certificate) = if !observation.stop.is_continuable() {
+                (None, None)
+            } else if kvm {
+                let hash = live.state_hash_current()?;
+                (
+                    Some(FaultEndpointCertificate::KvmWholeState(hash)),
+                    Some(replay_endpoint_certificate(
+                        hash,
+                        live.ordered_history()?,
+                        &observation,
+                        false,
+                    )?),
+                )
             } else {
-                None
+                (
+                    Some(FaultEndpointCertificate::UmlWholeStateUnavailable),
+                    None,
+                )
             };
             Ok((
                 observation,
                 live.horizons_run.saturating_sub(before),
                 certificate,
+                endpoint,
             ))
         });
         match result {
-            Ok((observation, ran, certificate)) => {
+            Ok((observation, ran, certificate, endpoint)) => {
                 self.actions.push(action);
                 self.prefix_certificates.push(certificate);
                 self.execution_ticks = self
@@ -1070,6 +1137,7 @@ impl FaultTarget {
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
                 self.action_observations.push(observation);
+                endpoint
             }
             Err(error) => {
                 eprintln!("fault action {action:?} failed: {error}");
@@ -1082,6 +1150,7 @@ impl FaultTarget {
                     self.action_observations.push(observation);
                 }
                 self.failed = true;
+                None
             }
         }
     }
@@ -1193,6 +1262,20 @@ fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
 }
 
 impl Live {
+    fn state_hash_current(&mut self) -> Result<[u8; 32], String> {
+        if self.abandoned || self.session.abandoned() {
+            return Err("the current job session was abandoned".to_owned());
+        }
+        let result = self
+            .session
+            .state_hash()
+            .map_err(|error| format!("current job state hash: {error}"));
+        if self.abandoned || self.session.abandoned() {
+            return Err("the current job session was abandoned while hashing".to_owned());
+        }
+        result
+    }
+
     fn open(config: &Config) -> Result<Box<dyn SearchSession>, Box<dyn Error>> {
         if let Some(launch) = &config.uml {
             #[cfg(target_os = "linux")]
@@ -1323,6 +1406,13 @@ impl Live {
                 .map(|(name, value)| (format!("vmm.{name}"), value)),
         );
         out
+    }
+
+    fn ordered_history(&mut self) -> Result<(u64, [u8; 32]), String> {
+        self.session
+            .event_history()
+            .map(|history| (history.count, history.digest))
+            .map_err(|error| self.abandon("ordered event history", error.as_ref()))
     }
 
     fn abandon(&mut self, what: &str, error: &(dyn Error + 'static)) -> String {
@@ -1867,6 +1957,10 @@ mod tests {
     #[derive(Debug)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
+        hash_calls: u64,
+        abandon_on_hash: bool,
+        history: control_proto::EventHistory,
+        history_hung: bool,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
         run_hashes: Option<Vec<[u8; 32]>>,
@@ -1882,7 +1976,15 @@ mod tests {
         }
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+            self.hash_calls += 1;
             self.hash.ok_or_else(|| "state hash unavailable".into())
+        }
+
+        fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+            if self.history_hung {
+                return Err(SessionError::Hung(WALL_LIMIT).into());
+            }
+            Ok(self.history)
         }
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1890,7 +1992,7 @@ mod tests {
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
-            Vec::new()
+            vec![("test.hash_calls".to_owned(), self.hash_calls)]
         }
 
         fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
@@ -1997,7 +2099,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            false
+            self.abandon_on_hash && self.hash_calls != 0
         }
     }
 
@@ -2006,7 +2108,11 @@ mod tests {
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
+                history_hung: false,
+                history: control_proto::EventHistory::default(),
                 hash: None,
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: None,
@@ -2040,7 +2146,11 @@ mod tests {
     ) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some(commitment),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: target.0,
             run_hashes: None,
@@ -2179,6 +2289,7 @@ mod tests {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
@@ -2228,6 +2339,10 @@ mod tests {
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
             Ok([0; 32])
+        }
+
+        fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+            Ok(control_proto::EventHistory::default())
         }
 
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -2379,7 +2494,11 @@ mod tests {
     fn hashed_live(hash: [u8; 32]) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some(hash),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -2389,6 +2508,170 @@ mod tests {
             next_snap: 1,
         });
         live
+    }
+
+    fn scripted_capture_live(hashes: Vec<[u8; 32]>, abandon_on_hash: bool) -> Live {
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
+            history_hung: false,
+            hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash,
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(hashes),
+            run_hung: false,
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        live
+    }
+
+    fn capture_hash_calls() -> u64 {
+        thread_telemetry()["vmm.test.hash_calls"]
+    }
+
+    #[test]
+    fn action_capture_hashes_once_and_standalone_snapshot_reads_the_live_endpoint() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
+        let before = capture_hash_calls();
+        let snapshot = target
+            .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture_hash_calls() - before, 1);
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
+        );
+        assert_eq!(
+            snapshot.prefix_certificates,
+            vec![Some(
+                replay_endpoint_certificate(
+                    [17; 32],
+                    snapshot.event_history.unwrap(),
+                    &snapshot.observation,
+                    false
+                )
+                .unwrap()
+            )]
+        );
+        let before = capture_hash_calls();
+        assert_eq!(target.snapshot().unwrap(), Some(snapshot.clone()));
+        assert_eq!(capture_hash_calls() - before, 1);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([23; 32])));
+        assert!(target.snapshot().unwrap_err().contains("final prefix"));
+        LIVE.with(|slot| slot.borrow_mut().as_mut().unwrap().key = [1; 32]);
+        assert!(
+            target
+                .snapshot()
+                .unwrap_err()
+                .contains("different identity")
+        );
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            live.key = [0; 32];
+            live.abandoned = true;
+        });
+        assert!(target.snapshot().unwrap_err().contains("abandoned"));
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        assert!(target.snapshot().unwrap_err().contains("unavailable"));
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
+        );
+    }
+
+    #[test]
+    fn campaign_suffix_captures_each_action_with_one_hash() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| {
+            *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32], [23; 32]], false))
+        });
+        let origin = target.snapshot().unwrap().unwrap();
+        let before = capture_hash_calls();
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let result = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[action, action],
+            false,
+        )
+        .unwrap();
+        assert_eq!(capture_hash_calls() - before, 3);
+        assert_eq!(result.actions.len(), 2);
+        for (index, hash) in [[17; 32], [23; 32]].into_iter().enumerate() {
+            let snapshot = &result.actions[index].candidate.as_ref().unwrap().snapshot;
+            assert_eq!(snapshot.actions.len(), index + 1);
+            assert_eq!(
+                snapshot.endpoint,
+                Some(FaultEndpointCertificate::KvmWholeState(hash))
+            );
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn action_capture_discards_evidence_if_hashing_abandons_the_session() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], true)));
+        assert!(
+            target
+                .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+                .unwrap()
+                .is_none()
+        );
+        assert!(target.failed());
+        assert!(target.actions().is_empty());
+        assert!(target.prefix_certificates.is_empty());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        assert!(target.snapshot().unwrap().is_none());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+    }
+
+    #[test]
+    fn uml_action_capture_keeps_the_unavailable_certificate_without_hashing() {
+        let mut target = unbooted_target();
+        Arc::get_mut(&mut target.config).unwrap().uml = Some(UmlLaunch {
+            profile: PathBuf::new(),
+            expected_profile_identity_sha256: "fixture".into(),
+            expected_host: uml::HostIdentity {
+                architecture: "x86_64".into(),
+                processor: 0,
+                cpu_model: "fixture".into(),
+                cpu_features: String::new(),
+                boot_cpuinfo: String::new(),
+                auxv: uml::HostAuxv::default(),
+            },
+            initramfs: PathBuf::new(),
+            expected_initramfs_sha256: [0; 32],
+            memory_mib: DEFAULT_RAM_MIB,
+            kernel_arguments: Vec::new(),
+            work_parent: PathBuf::new(),
+            seed: SEED,
+            setup_budget: SETUP_BUDGET,
+            progress_limit: WALL_LIMIT,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
+        let before = capture_hash_calls();
+        let snapshot = target
+            .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture_hash_calls(), before);
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::UmlWholeStateUnavailable)
+        );
+        assert_eq!(snapshot.prefix_certificates, vec![None]);
+        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]
@@ -2424,6 +2707,7 @@ mod tests {
         );
         let missing = FaultSnapshot {
             endpoint: None,
+            event_history: None,
             ..snapshot
         };
         let error = target.restore(&missing).unwrap_err().to_string();
@@ -2480,11 +2764,12 @@ mod tests {
         let snapshot = FaultSnapshot {
             actions: vec![action],
             prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &expected, false).unwrap(),
+                replay_endpoint_certificate([17; 32], (0, [0; 32]), &expected, false).unwrap(),
             )],
             observation: expected,
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
@@ -2497,7 +2782,11 @@ mod tests {
             None,
         );
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
             current: 1,
             run_hashes: None,
@@ -2523,7 +2812,11 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                history_hung: false,
+                history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![first_hash, [17; 32]]),
@@ -2556,7 +2849,8 @@ mod tests {
             Ok((replayed_parent, replayed_observation, final_snapshot))
         };
         let baseline = run([17; 32], false, None).unwrap();
-        let certificate = replay_endpoint_certificate(baseline.0, &baseline.1, false).unwrap();
+        let certificate =
+            replay_endpoint_certificate(baseline.0, (0, [0; 32]), &baseline.1, false).unwrap();
         let verified_baseline = run([17; 32], false, Some(certificate)).unwrap();
         let divergent = run([23; 32], false, None).unwrap();
         let forged = run([17; 32], true, None).unwrap();
@@ -2597,7 +2891,11 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -2612,6 +2910,7 @@ mod tests {
         baseline.apply_replayed(first_action);
         let expected = replay_endpoint_certificate(
             baseline.state_hash_current().unwrap(),
+            baseline.event_history_current().unwrap(),
             baseline.observation(),
             baseline.failed(),
         )
@@ -2621,7 +2920,11 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -2659,6 +2962,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
         let result = crate::campaign::execute_job(
@@ -2694,10 +2998,15 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -2737,10 +3046,15 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(Vec::new()),
@@ -2772,7 +3086,11 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
@@ -2803,35 +3121,60 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_cached_certified_path_does_not_rebuild_it() {
-        let first = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
-        let second = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
-        let mut target = unbooted_target();
-        let mut live = hashed_live([17; 32]);
-        live.session = Box::new(TimedOutRestore {
-            hash: Some([17; 32]),
-            events: BTreeMap::new(),
-            current: 1,
-            run_hashes: Some(vec![[17; 32], [17; 32]]),
-            run_hung: false,
-            snapshots: BTreeMap::from([(1, [17; 32])]),
-            moment: 0,
-            next_snap: 1,
-        });
-        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
-        target.apply(first);
-        target.apply(second);
-        let snapshot = target.snapshot().unwrap().unwrap();
-        assert_eq!(snapshot.actions, vec![first, second]);
-        let links = LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links());
-        assert_eq!(links, 3);
-        target.restore(&snapshot).unwrap();
-        assert_eq!(target.observation(), &snapshot.observation);
-        assert_eq!(
-            LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links()),
-            links
-        );
-        LIVE.with(|slot| slot.borrow_mut().take());
+    fn restoring_a_cached_certified_path_observes_each_required_prefix_once() {
+        let actions = [
+            FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into(),
+            FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into(),
+        ];
+        for depth in 0..=actions.len() {
+            let mut target = unbooted_target();
+            let mut live = hashed_live([17; 32]);
+            live.session = Box::new(TimedOutRestore {
+                history_hung: false,
+                history: control_proto::EventHistory::default(),
+                hash: Some([17; 32]),
+                hash_calls: 0,
+                abandon_on_hash: false,
+                events: BTreeMap::new(),
+                current: 1,
+                run_hashes: Some(vec![[17; 32]; depth]),
+                run_hung: false,
+                snapshots: BTreeMap::from([(1, [17; 32])]),
+                moment: 0,
+                next_snap: 1,
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            for action in &actions[..depth] {
+                target.apply(*action);
+            }
+            let snapshot = target.snapshot().unwrap().unwrap();
+            assert_eq!(snapshot.actions, actions[..depth]);
+            let before = LIVE.with(|slot| {
+                let slot = slot.borrow();
+                let live = slot.as_ref().unwrap();
+                (
+                    live.chain.links(),
+                    live.telemetry.restores.count,
+                    live.telemetry.observations.count,
+                    live.horizons_run,
+                )
+            });
+            assert_eq!(before.0, depth + 1);
+            target.restore(&snapshot).unwrap();
+            assert_eq!(target.observation(), &snapshot.observation);
+            LIVE.with(|slot| {
+                let slot = slot.borrow();
+                let live = slot.as_ref().unwrap();
+                assert_eq!(live.chain.links(), before.0);
+                assert_eq!(live.horizons_run, before.3);
+                assert_eq!(live.telemetry.restores.count - before.1, depth as u64 + 1);
+                assert_eq!(
+                    live.telemetry.observations.count - before.2,
+                    depth as u64 + 1
+                );
+            });
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
     }
 
     #[test]
@@ -2841,7 +3184,11 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            history_hung: false,
+            history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -2862,7 +3209,11 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                history_hung: false,
+                history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -2901,10 +3252,16 @@ mod tests {
         let snapshot = FaultSnapshot {
             actions: vec![FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into()],
             prefix_certificates: vec![Some(
-                replay_endpoint_certificate([17; 32], &FaultObservations::default(), false)
-                    .unwrap(),
+                replay_endpoint_certificate(
+                    [17; 32],
+                    (0, [0; 32]),
+                    &FaultObservations::default(),
+                    false,
+                )
+                .unwrap(),
             )],
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
         };
         LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
@@ -2978,6 +3335,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         target.finish_restore(&snapshot, Err(error)).unwrap();
         assert_eq!(target.watchdog_cutoffs(), 1);
@@ -3018,6 +3376,7 @@ mod tests {
             },
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         target.observation.stop = FaultStop::Crash;
         target.action_observations.push(target.observation.clone());
@@ -3051,6 +3410,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         for phase in ["run", "snapshot"] {
             for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
@@ -3084,6 +3444,7 @@ mod tests {
             observation: FaultObservations::default(),
             failed: false,
             endpoint: None,
+            event_history: None,
         };
         let error = target
             .finish_restore(&snapshot, Err("replay: invalid snapshot".into()))
@@ -3240,6 +3601,142 @@ mod tests {
             })
             .is_err()
         );
+    }
+    #[test]
+    fn replay_and_resident_keyframes_reject_equal_endpoints_with_different_event_history() {
+        let mut target = unbooted_target();
+        let endpoint = [17; 32];
+        let install = |digest| {
+            let mut live = hashed_live(endpoint);
+            live.session = Box::new(TimedOutRestore {
+                hash_calls: 0,
+                abandon_on_hash: false,
+                history_hung: false,
+                hash: Some(endpoint),
+                history: control_proto::EventHistory { count: 2, digest },
+                events: BTreeMap::new(),
+                current: 1,
+                run_hashes: Some(vec![endpoint]),
+                run_hung: false,
+                snapshots: BTreeMap::from([(1, endpoint)]),
+                moment: 0,
+                next_snap: 1,
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        };
+        install([11; 32]);
+        target.apply_replayed(FaultAction::new(
+            crate::target::FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+            std::num::NonZeroU16::new(1).unwrap(),
+        ));
+        assert!(!target.failed());
+        let snapshot = target.snapshot().unwrap().unwrap();
+        let mut missing = snapshot.clone();
+        missing.event_history = None;
+        assert!(
+            validate_snapshot_prefix_certificates(&missing, false)
+                .unwrap_err()
+                .contains("lacks ordered event history")
+        );
+        assert_eq!(snapshot.actions.len(), 1);
+        let certificate = snapshot.prefix_certificates[0].unwrap();
+        target.verify_replayed_endpoint(Some(certificate)).unwrap();
+        let observation = target.observation().clone();
+        install([12; 32]);
+        assert_eq!(target.state_hash_current().unwrap(), endpoint);
+        assert_eq!(target.observation(), &observation);
+        assert_eq!(
+            target.event_history_current().unwrap().0,
+            snapshot.event_history.unwrap().0
+        );
+        assert!(
+            target
+                .verify_replayed_endpoint(Some(certificate))
+                .unwrap_err()
+                .contains("differs from its archived endpoint certificate")
+        );
+        let mut restored = unbooted_target();
+        let error = restored.restore(&snapshot).unwrap_err().to_string();
+        assert!(
+            error.contains("differs from its snapshot certificate"),
+            "{error}"
+        );
+        install([11; 32]);
+        restored.restore(&snapshot).unwrap();
+        restored
+            .verify_replayed_endpoint(Some(certificate))
+            .unwrap();
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn terminal_and_zero_action_job_certification_binds_history() {
+        use searcher::search::{
+            campaign::{CampaignActionResult, CampaignJobResult, Reporting},
+            rollout::{ExecutionDisposition, Outcome},
+        };
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
+            root: None,
+        };
+        let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
+        for terminal in [false, true] {
+            let mut target = unbooted_target();
+            let mut result = CampaignJobResult::<crate::campaign::FaultWorkload> {
+                preparation_failure: None,
+                actions: Vec::new(),
+            };
+            if terminal {
+                let action = FaultAction::new(
+                    crate::target::FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+                    std::num::NonZeroU16::new(1).unwrap(),
+                );
+                target.actions.push(action);
+                target.observation.stop = FaultStop::Crash;
+                result.actions.push(CampaignActionResult {
+                    action,
+                    observations: vec![target.observation.clone()],
+                    milestones: Default::default(),
+                    outcome: Outcome {
+                        objective_reached: true,
+                        disposition: ExecutionDisposition::Terminal,
+                    },
+                    candidate: None,
+                });
+            }
+            let certify = |digest, history_hung| {
+                let mut live = hashed_live([17; 32]);
+                live.session = Box::new(TimedOutRestore {
+                    hash_calls: 0,
+                    abandon_on_hash: false,
+                    history_hung,
+                    history: control_proto::EventHistory { count: 2, digest },
+                    hash: Some([17; 32]),
+                    events: BTreeMap::new(),
+                    current: 1,
+                    run_hashes: None,
+                    run_hung: false,
+                    snapshots: BTreeMap::new(),
+                    moment: 0,
+                    next_snap: 1,
+                });
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+                assert_eq!(target.state_hash_current().unwrap(), [17; 32]);
+                if !history_hung {
+                    assert_eq!(target.event_history_current().unwrap().0, 2);
+                }
+                game.certified_result_sha256(&result, &target)
+            };
+            let first = certify([11; 32], false).unwrap();
+            assert_ne!(first, certify([12; 32], false).unwrap());
+            assert_eq!(first, certify([11; 32], false).unwrap());
+            let error = certify([11; 32], true).unwrap_err().to_string();
+            assert!(error.starts_with(WATCHDOG_CUTOFF), "{error}");
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
     }
 }
 
