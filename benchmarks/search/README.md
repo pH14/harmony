@@ -155,7 +155,7 @@ because their stream starts at the checkpoint.
 | `smb-reference.json` | Practical fresh whole-game SMB recipe: 24 workers, 2,048 MiB, count weighting, two-reservation window, 600,000 executions and 120 million frames. Five fresh validation seeds; every cell must solve. |
 | `smb-regression.json` | Fresh whole-game SMB at 24 workers and both 256/2048 MiB, five seeds. Every cell must solve within its declared budget. |
 | `smb-regression-three.json` | The same case at 256 MiB on the first three seeds, the check run on every build that changes only the Metroid side. Every cell must solve. |
-| `throughput.json` | Short isolated 24-worker runs across all five games, three seeds, a two-reservation window and 512 MiB. Whole-game completion is not required in this work-limited panel. |
+| `throughput.json` | Short isolated 24-worker runs across all four games, three seeds, a two-reservation window and 512 MiB. Whole-game completion is not required in this work-limited panel. |
 
 Seeds 20260905–20260907 form the development pilot. The dedicated SMB check adds
 20260908–20260909; those seeds have now been observed in count-policy validation.
