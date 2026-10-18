@@ -3291,6 +3291,39 @@ mod tests {
     }
 
     #[test]
+    fn store_copy_work_reaches_host_telemetry_counter_export() {
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        snap(&mut source);
+        let before = source.engine.store().copy_telemetry();
+        source
+            .vmm
+            .as_mut()
+            .unwrap()
+            .write_guest_pages(&[(1, [7; 4096])])
+            .unwrap();
+        snap(&mut source);
+        let actual = source.engine.store().copy_telemetry();
+        assert_eq!(actual.intern_copy_bytes - before.intern_copy_bytes, 4096);
+        let telemetry = source.host_telemetry();
+        assert_eq!(telemetry.copies, actual);
+        let counters = telemetry
+            .counters()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            counters["snapshot.copy.intern_copy_bytes"],
+            actual.intern_copy_bytes
+        );
+        assert_eq!(counters["snapshot.copy.intern_hits"], actual.intern_hits);
+        assert_eq!(counters["snapshot.copy.intern_calls"], actual.intern_calls);
+        assert_eq!(
+            counters["snapshot.copy.read_copy_bytes"],
+            actual.read_copy_bytes
+        );
+    }
+
+    #[test]
     #[cfg_attr(
         miri,
         ignore = "mock VMM setup uses guest memory mappings unavailable under Miri"

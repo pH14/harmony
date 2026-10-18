@@ -1264,6 +1264,22 @@ mod tests {
             assert_eq!(allocations.len(), 1);
             let actual = read_extent(extent.bytes_mut()).unwrap();
             let after_writes = source.extent_writes.get();
+            let reported = source
+                .telemetry_counters()
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            assert_eq!(
+                reported["copy.session.extent.encoded_bytes"],
+                after_writes.encoded_bytes
+            );
+            assert_eq!(
+                reported["copy.session.extent.metadata_copy_bytes"],
+                after_writes.metadata_copy_bytes
+            );
+            assert_eq!(
+                reported["copy.session.extent.page_copy_bytes"],
+                after_writes.page_copy_bytes
+            );
             assert_eq!(
                 after_writes.page_copy_bytes - before_writes.page_copy_bytes,
                 (actual.pages.len() * 4096) as u64

@@ -742,6 +742,19 @@ class HostCompatibilityTests(unittest.TestCase):
                     self.assertEqual(actual["if"], "needs.scope.outputs.rust_checks == 'true'")
                     self.assertEqual(actual["timeout-minutes"], job.timeout_minutes)
 
+    def test_arm64_host_runs_the_real_direct_export_copy_accounting_case(self):
+        host = self.hosts["macos-arm64"]
+        self.assertEqual(host["runs-on"], "macos-14")
+        step = next(step for step in host["steps"]
+                    if step.get("name") == "Verify direct extent export copy accounting on Arm64")
+        command = step["run"]
+        self.assertIn('test "$(uname -m)" = arm64', command)
+        self.assertIn("cargo test --locked -p consonance-client --all-features --lib "
+                      "session::live::tests::served_export_writes_once_into_the_allocated_destination "
+                      "-- --exact", command)
+        self.assertIn("grep -Fxq 'running 1 test'", command)
+        self.assertIn("grep -Eq 'test result: ok\\. 1 passed;'", command)
+
     def test_each_job_names_an_explicit_runner(self):
         runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}
         self.assertEqual(
