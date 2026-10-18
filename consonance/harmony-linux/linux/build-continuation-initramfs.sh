@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 set -euo pipefail
 cd "$(dirname "$0")"
-# shellcheck source=lib-build.sh
+# shellcheck source=lib-build.sh disable=SC1091
 . ./lib-build.sh
 require_linux_amd64
 require_tools cc gzip
