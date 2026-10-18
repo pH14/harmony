@@ -11,60 +11,8 @@ env:
   CARGO_TERM_COLOR: always
   HARMONY_RUST_TOOLCHAIN: 1.97.0
 jobs:
-  x3-artifact:
-    name: Retained Linux Continuation Executable
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: e82aa7e03bb04fa0dbad1c84ce5c219e4ed8fd5e
-      - uses: actions/download-artifact@v4
-        with:
-          name: x86-guest-image
-          path: nix-guest-output
-          run-id: 39109973065
-          github-token: ${{ github.token }}
-      - name: Verify locked Linux image
-        run: |
-          set -euo pipefail
-          (cd nix-guest-output && sha256sum -c guest-image-report.txt)
-          echo 'b13eb72fd5c0d438fe5e454da93f64e6171a7754b544e201ee6a6cc63c94d91e  nix-guest-output/x86_64/bzImage' | sha256sum -c
-          mkdir provenance
-          cp nix-guest-output/guest-image-report.txt provenance/
-          printf '%s\n' 'retained image run: 39109973065' 'image source: 953fa4bf49f2e997e90886367f674f2bc313dec6' 'qualification source: e82aa7e03bb04fa0dbad1c84ce5c219e4ed8fd5e' > provenance/source.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: x3-kernel-provenance
-          path: provenance
-      - name: Install retained executable toolchain
-        run: |
-          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --target x86_64-unknown-linux-musl
-          rustup default "${HARMONY_RUST_TOOLCHAIN}"
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build owned PID 1 and retain one execution artifact
-        run: |
-          source consonance/harmony-linux/linux/versions.lock
-          mkdir -p consonance/harmony-linux/dl
-          curl --fail --location --retry 3 "$KERNEL_URL" -o "consonance/harmony-linux/dl/$(basename "$KERNEL_URL")"
-          bash consonance/harmony-linux/linux/build-continuation-initramfs.sh
-          python3 scripts/qualify-linux-continuation.py bundle x3-bundle \
-            --kernel nix-guest-output/x86_64/bzImage \
-            --initramfs consonance/harmony-linux/build/initramfs-continuation.cpio.gz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: x3-executable
-          path: x3-bundle
-          if-no-files-found: error
-
   diagnostics:
     name: Retained Cut State Diagnostics — Replica ${{ matrix.replica }}
-    needs: x3-artifact
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -76,6 +24,8 @@ jobs:
         with:
           name: x3-executable
           path: bundle
+          run-id: 39160052957
+          github-token: ${{ github.token }}
       - uses: actions/download-artifact@v4
         with:
           name: x3-export
@@ -92,7 +42,7 @@ jobs:
           uname -a > evidence/kernel
           cp bundle/identity.json evidence/
           set +e
-          X3_ARTIFACTS="$PWD/bundle" X3_IMPORT="$PWD/exported" X3_DIAGNOSTICS_DIR="$PWD/evidence/state" bundle/linux_snapshot_continuation composed_linux_snapshot_continuation --ignored --exact --nocapture --test-threads=1 > evidence/execution.log 2>&1
+          X3_ARTIFACTS="$PWD/bundle" X3_IMPORT="$PWD/exported/cut" X3_DIAGNOSTICS_DIR="$PWD/evidence/state" bundle/linux_snapshot_continuation composed_linux_snapshot_continuation --ignored --exact --nocapture --test-threads=1 > evidence/execution.log 2>&1
           result=$?
           echo "$result" > evidence/exit-code
           tar -czf state-diagnostics.tar.gz evidence
