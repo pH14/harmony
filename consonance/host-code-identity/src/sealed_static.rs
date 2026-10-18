@@ -680,6 +680,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "uses temporary files and positioned OS reads unavailable under Miri isolation"
+    )]
     fn measured_read_hash_and_comparison_bytes_survive_refusal() {
         let mut file = tempfile::tempfile().unwrap();
         let mut memory = tempfile::tempfile().unwrap();

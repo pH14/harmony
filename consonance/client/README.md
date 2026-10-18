@@ -397,6 +397,49 @@ backing size before mapping. The size check
 cannot prevent later truncation; the coordinator must keep its backing allocation
 alive and untruncated throughout the active exchange.
 
+Guard work is observational, per owner, and exported by bounded site. Direct
+Session and UML totals use `guard.session.<site>`. A WorkerSession reports its own
+checks as `guard.parent.<site>`, the child's session/core checks as
+`guard.child.session.<site>`, and the serving loop as `guard.child.loop.<site>`.
+Clones within one session share an owner; each worker spawned by a reused launcher
+forks an empty owner, so another session's cumulative work is never copied into it.
+`WorkerLauncher::telemetry_counters` separately exposes launcher construction work
+under `guard.launcher`; session parent totals start with that session's actual
+spawn checks. Session startup includes its fresh admission/identity measurements.
+Standalone identity preflight calls outside a session and cross-process child-file
+identity checks are not session guard totals. Failed construction has no returned
+session from which to query counters; the low-level caller-owned measured API
+retains refused admission work when that boundary needs observation.
+
+Sites are `admission`, `session_boundary`, `launcher_before/after`,
+`rpc_before/after`, `receive`, `handled`, `sent`, `publication_before/after`,
+`control_before/after`, and `sdk_request/response`. The serving loop's `receive`
+check is its one initial check; each `sent` check also covers the next receive.
+Unclassified public session boundaries remain explicit `session_boundary` entries.
+Core hook tags describe generic control/SDK boundaries; executable policy remains
+in the client. Each site exports dispatch attempts, errors and host `ns`, fixture
+dispatches, actual `strict_attempts`, `strict_errors`, and `strict_ns`. These strict
+totals include fresh capture and recheck work. `strict_check_attempts/errors/ns`
+and `strict_capture_attempts/errors/ns` expose those disjoint stages, including
+checks during admission. Fixture placement counts are not real executable measurements. Timing envelopes overlap:
+strict time is inside dispatch time, so the two must not be added. Dispatch timing
+stops before counter accumulation/export. A local delta
+is merged after each check, never while holding an accounting lock across policy
+checks or callbacks. Snapshot/replay does not rewind these host-work totals.
+
+Linux byte fields report actual live-code/vDSO reads, sealed executable code reads,
+SHA-256 input and comparison input, with admission-only full-file reads/hashes
+separate. Successful partial reads remain counted on refusal. ELF/proc metadata,
+digest framing and cross-process child identity work are excluded. macOS exports
+`bytes_available=0` and omits Linux byte leaves, while reporting its kernel signing
+state, static-signing and image-census stage attempts. A telemetry query replaces
+cached child totals rather than adding them. `guard.child.telemetry_query_ok=0`
+means child values are the last successfully queried totals, not a final account
+of work in a dead or refusing child. Parent checks for the query are immediately
+visible; child checks after its telemetry snapshot appear only on a later query.
+These counters do not enter identities, snapshots, EventHistory, certificates,
+retention budgets or search decisions.
+
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot
 arguments, seed, setup budget and the progress limit after which a guest that

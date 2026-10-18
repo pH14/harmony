@@ -161,13 +161,14 @@ impl Session {
     ) -> Result<Self, Box<dyn Error>> {
         config.validate()?;
         let loaded_image_guard = crate::image_identity::LoadedImageGuard::capture()?;
-        let image_identity = super::image_identity_with_config_and_payloads(
+        let image_identity = super::image_identity_with_guard(
             kernel,
             initramfs,
             &config,
             &setup_payloads,
+            Some(&loaded_image_guard),
         )?;
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Self::new_with_config_and_payloads_inner(
             kernel,
             initramfs,
@@ -186,7 +187,7 @@ impl Session {
         image_identity: [u8; 32],
         loaded_image_guard: crate::image_identity::LoadedImageGuard,
     ) -> Result<Self, Box<dyn Error>> {
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let ram = config.ram_bytes;
         let seed = config.seed;
         let cmdline = config.cmdline.clone();
@@ -226,7 +227,7 @@ impl Session {
         };
 
         let live = boot(kernel, initramfs).map_err(SessionError::Control)?;
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let factory_kernel = kernel.to_vec();
         let factory_initramfs = initramfs.to_vec();
         let factory: VmmFactory<Box<dyn Backend<A = HostArch>>> = Box::new(move || {
@@ -234,10 +235,17 @@ impl Session {
                 .map_err(vmm_core::vmm::VmmError::ContractViolation)
         });
         let mut server = ControlServer::new(live, factory);
-        server.set_host_operation_guard(Arc::new(move || {
-            loaded_image_guard
-                .check()
-                .map_err(|error| error.to_string())
+        let core_guard = loaded_image_guard.clone();
+        server.set_host_operation_guard(Arc::new(move |site| {
+            use crate::image_identity::GuardSite;
+            use vmm_core::vmm::HostOperationSite;
+            let site = match site {
+                HostOperationSite::ControlBefore => GuardSite::ControlBefore,
+                HostOperationSite::ControlAfter => GuardSite::ControlAfter,
+                HostOperationSite::SdkRequest => GuardSite::SdkRequest,
+                HostOperationSite::SdkResponse => GuardSite::SdkResponse,
+            };
+            core_guard.check_at(site).map_err(|error| error.to_string())
         }));
         server.set_restore_mode(RestoreMode::InPlace);
         let mut client = Client::connect(server, server_caps())
@@ -260,7 +268,7 @@ impl Session {
             )
             .into());
         }
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(Self {
             client,
             loaded_image_guard,
@@ -390,7 +398,8 @@ impl Session {
             WritableExtent::bytes_mut,
         )?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
-        self.loaded_image_guard.check()?;
+        self.loaded_image_guard
+            .check_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let lease = index.publish(
             namespace,
             key,
@@ -693,7 +702,9 @@ impl Session {
 
     #[must_use]
     pub fn telemetry_counters(&self) -> Vec<(String, u64)> {
-        self.client.transport().host_telemetry().counters()
+        let mut counters = self.client.transport().host_telemetry().counters();
+        counters.extend(self.loaded_image_guard.counters("guard.session"));
+        counters
     }
 
     pub fn doorbell_exits(&self) -> u64 {

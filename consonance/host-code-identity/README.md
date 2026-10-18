@@ -137,8 +137,8 @@ prevent such code from entering this process.
 refusals; partial work remains available after an error. Linux byte fields count
 successful bytes returned by the actual code/vDSO and sealed-file reads, including
 partial reads before EOF or another error. Hash bytes count only buffers actually
-fed to SHA-256. Comparison input bytes count the equal-length buffers passed to
-code equality checks, including a mismatching buffer; they do not estimate CPU
+fed to SHA-256. Comparison input bytes count each compared pair's length once
+(N for two N-byte buffers), including a mismatching pair; they do not estimate CPU
 comparison instructions. Admission-only whole-file reads/hashes are separate from
 recheck code reads. ELF headers, proc-map text, metadata and digest framing are
 excluded from executable-byte fields. The live vDSO is included. macOS byte fields

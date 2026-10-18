@@ -530,8 +530,34 @@ mod tests {
             if let Some(runtime_guard) = runtime_guard {
                 println!("loaded_guard={}", runtime_guard.check().is_ok());
             }
-            match strict_macos_executable_identity() {
-                Ok(identity) => {
+            let mut measured = GuardMeasurement::default();
+            let admitted = StrictMacosExecutableGuard::capture_measured(&mut measured);
+            assert_eq!(measured.attempts, 1);
+            assert_eq!(measured.bytes, None);
+            assert_eq!(measured.errors, u64::from(admitted.is_err()));
+            match admitted {
+                Ok((identity, guard)) => {
+                    assert_eq!(
+                        (
+                            measured.kernel_state_checks,
+                            measured.static_signing_checks,
+                            measured.image_censuses
+                        ),
+                        (2, 1, 1)
+                    );
+                    let mut checked = GuardMeasurement::default();
+                    guard.check_measured(&mut checked).unwrap();
+                    assert_eq!(
+                        (
+                            checked.attempts,
+                            checked.errors,
+                            checked.kernel_state_checks,
+                            checked.static_signing_checks,
+                            checked.image_censuses
+                        ),
+                        (1, 0, 2, 0, 1)
+                    );
+                    assert_eq!(checked.bytes, None);
                     // SAFETY: null selects default VM options; a successful create owns one
                     // process-local VM that this test destroys before returning.
                     let vm_status = unsafe { hv_vm_create(ptr::null()) };

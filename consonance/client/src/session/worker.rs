@@ -807,21 +807,34 @@ impl WorkerLauncher {
         let launcher = Self {
             program,
             args,
-            expected_image: crate::image_identity::loaded_executable_identity_self()?,
+            expected_image: loaded_image_guard.current_identity()?,
             expected_main: crate::image_identity::loaded_executable_identity_for_child(
                 std::process::id(),
             )?,
-            loaded_image_guard,
+            loaded_image_guard: loaded_image_guard.clone(),
         };
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         Ok(launcher)
     }
 
+    pub fn telemetry_counters(&self) -> Vec<(String, u64)> {
+        self.loaded_image_guard.counters("guard.launcher")
+    }
+
     #[allow(clippy::disallowed_methods)]
+    #[cfg(test)]
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
-        self.loaded_image_guard.check()?;
+        self.spawn_guarded(&self.loaded_image_guard)
+    }
+
+    #[allow(clippy::disallowed_methods)]
+    fn spawn_guarded(
+        &self,
+        loaded_image_guard: &crate::image_identity::LoadedImageGuard,
+    ) -> io::Result<(Child, UnixStream)> {
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::LauncherBefore)?;
         crate::image_identity::reject_loader_overrides()?;
-        if crate::image_identity::loaded_executable_identity_self()? != self.expected_image {
+        if loaded_image_guard.current_identity()? != self.expected_image {
             return Err(io::Error::other(
                 "launcher loaded image changed before worker spawn",
             ));
@@ -871,7 +884,9 @@ impl WorkerLauncher {
             }
             Ok(())
         });
-        let check = check.and_then(|()| self.loaded_image_guard.check());
+        let check = check.and_then(|()| {
+            loaded_image_guard.check_at(crate::image_identity::GuardSite::LauncherAfter)
+        });
         let check = check.and(parent.set_read_timeout(None));
         if let Err(error) = check {
             let _ = process.kill();
@@ -951,17 +966,20 @@ impl WorkerSession {
         setup_payloads: &[Vec<u8>],
         service: &str,
     ) -> Result<Self, Box<dyn Error>> {
-        let (process, stream) = launcher.spawn().map_err(|error| {
-            SessionError::Control(format!(
-                "start session worker {}: {error}",
-                launcher.program.display()
-            ))
-        })?;
+        let loaded_image_guard = launcher.loaded_image_guard.fork();
+        let (process, stream) = launcher
+            .spawn_guarded(&loaded_image_guard)
+            .map_err(|error| {
+                SessionError::Control(format!(
+                    "start session worker {}: {error}",
+                    launcher.program.display()
+                ))
+            })?;
         Self::connect(
             WorkerConnection {
                 stream,
                 process: Some(process),
-                loaded_image_guard: launcher.loaded_image_guard,
+                loaded_image_guard,
             },
             kernel,
             initramfs,
@@ -984,7 +1002,7 @@ impl WorkerSession {
             process,
             loaded_image_guard,
         } = connection;
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         let mut session = Self {
             stream,
             process,
@@ -1009,7 +1027,7 @@ impl WorkerSession {
         let mut input = In(&reply);
         session.setup = input.snap()?;
         input.finish()?;
-        session.check_loaded_image()?;
+        session.check_loaded_image_at(crate::image_identity::GuardSite::Admission)?;
         Ok(session)
     }
 
@@ -1018,11 +1036,14 @@ impl WorkerSession {
         self.process.as_ref().map(Child::id)
     }
 
-    fn check_loaded_image(&self) -> Result<(), Box<dyn Error>> {
+    fn check_loaded_image_at(
+        &self,
+        site: crate::image_identity::GuardSite,
+    ) -> Result<(), Box<dyn Error>> {
         if self.failed.get() {
             return Err(SessionError::Abandoned.into());
         }
-        if let Err(error) = self.loaded_image_guard.check() {
+        if let Err(error) = self.loaded_image_guard.check_at(site) {
             self.failed.set(true);
             return Err(error.into());
         }
@@ -1038,7 +1059,7 @@ impl WorkerSession {
 
     fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
         let _exchange = self.begin_exchange()?;
-        self.check_loaded_image()?;
+        self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
         let reply = send(&self.stream, &request.0, fds).and_then(|()| recv(&self.stream));
         let body = match reply {
             Ok((body, _)) => body,
@@ -1047,7 +1068,7 @@ impl WorkerSession {
                 return Err(transport_error(error).into());
             }
         };
-        self.check_loaded_image()?;
+        self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcAfter)?;
         self.reply_status(&body)
     }
 
@@ -1082,7 +1103,7 @@ impl WorkerSession {
         attachment: &SnapshotAttachment,
     ) -> Result<crate::cache::WritableExtent, Box<dyn Error>> {
         let _exchange = self.begin_exchange()?;
-        self.check_loaded_image()?;
+        self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
         let mut denied = None;
         let mut rejected = None;
         let result: Result<Option<crate::cache::WritableExtent>, Box<dyn Error>> = (|| {
@@ -1094,7 +1115,7 @@ impl WorkerSession {
                 .bytes(&attachment.bytes);
             send(&self.stream, &request.0, &[])?;
             let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
-            self.check_loaded_image()?;
+            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
             if !fds.is_empty() {
                 return Err(malformed("allocation request descriptors").into());
             }
@@ -1130,7 +1151,7 @@ impl WorkerSession {
                     None
                 }
             };
-            self.check_loaded_image()?;
+            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
             if let Some(extent) = extent.as_ref() {
                 let SharedRange {
                     fd,
@@ -1149,7 +1170,7 @@ impl WorkerSession {
                 send(&self.stream, &Out::op(EXTENT_DENIED).0, &[])?;
             }
             let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
-            self.check_loaded_image()?;
+            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
             if !fds.is_empty() {
                 return Err(malformed("completion descriptors").into());
             }
@@ -1265,10 +1286,26 @@ impl SearchSession for WorkerSession {
             input.finish()?;
             Ok(counters)
         };
+        let mut fresh = false;
         if let Ok(Ok(counters)) = self.call(&Out::op(TELEMETRY), &[]).map(decode) {
-            self.counters.replace(counters);
+            fresh = true;
+            self.counters.replace(
+                counters
+                    .into_iter()
+                    .map(|(name, value)| {
+                        let name = name.strip_prefix("guard.session.").map_or_else(
+                            || name.clone(),
+                            |suffix| format!("guard.child.session.{suffix}"),
+                        );
+                        (name, value)
+                    })
+                    .collect(),
+            );
         }
-        self.counters.borrow().clone()
+        let mut counters = self.counters.borrow().clone();
+        counters.extend(self.loaded_image_guard.counters("guard.parent"));
+        counters.push(("guard.child.telemetry_query_ok".into(), u64::from(fresh)));
+        counters
     }
 
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
@@ -1321,7 +1358,7 @@ impl SearchSession for WorkerSession {
         let mut extent =
             self.export_extent(index, parent.map(|(snap, _)| snap), target, attachment)?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
-        self.check_loaded_image()?;
+        self.check_loaded_image_at(crate::image_identity::GuardSite::PublicationBefore)?;
         let lease = index.publish(
             namespace,
             key,
@@ -1497,6 +1534,7 @@ type Open<'a> = dyn FnMut(Init) -> Result<Box<dyn ServedSession>, Box<dyn Error>
 
 #[derive(Default)]
 struct Served {
+    loaded_image_guard: Option<crate::image_identity::LoadedImageGuard>,
     session: Option<Box<dyn ServedSession>>,
 }
 
@@ -1548,7 +1586,10 @@ impl Served {
             }
             TELEMETRY => {
                 input.finish()?;
-                let counters = session.telemetry_counters();
+                let mut counters = session.telemetry_counters();
+                if let Some(guard) = &self.loaded_image_guard {
+                    counters.extend(guard.counters("guard.child.loop"));
+                }
                 out.len(counters.len());
                 for (name, value) in &counters {
                     out.bytes(name.as_bytes()).u64(*value);
@@ -1694,8 +1735,11 @@ fn serve(
     open: &mut Open<'_>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
 ) -> Result<(), Box<dyn Error>> {
-    let mut served = Served::default();
-    loaded_image_guard.check()?;
+    let mut served = Served {
+        loaded_image_guard: Some(loaded_image_guard.clone()),
+        ..Served::default()
+    };
+    loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildReceive)?;
     loop {
         let (body, fds) = match recv(stream) {
             Ok(frame) => frame,
@@ -1709,11 +1753,11 @@ fn serve(
                 if std::mem::replace(&mut requested, true) {
                     return Err(malformed("repeated allocation").into());
                 }
-                loaded_image_guard.check()?;
+                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
                 send(stream, &Out::op(NEED_EXTENT).len(len).0, &[])?;
-                loaded_image_guard.check()?;
+                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
                 let (body, fds) = recv_with_limit(stream, EXPORT_FRAME_LIMIT, None)?;
-                loaded_image_guard.check()?;
+                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
                 let mut input = In(&body);
                 match input.u8()? {
                     EXTENT_READY => {
@@ -1750,10 +1794,10 @@ fn serve(
         if let Some(cause) = allocation_broken {
             return Err(malformed(&format!("allocation exchange failed: {cause}")).into());
         }
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
         drop(fds);
         send(stream, &reply, &[])?;
-        loaded_image_guard.check()?;
+        loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildSent)?;
     }
 }
 
@@ -1788,7 +1832,7 @@ fn serve_inherited_with_open(open: &mut Open<'_>) -> Result<(), Box<dyn Error>> 
     let (identity, loaded_image_guard) = crate::image_identity::LoadedImageGuard::identity()?;
     let mut hello = Out::default();
     hello.bytes(IMAGE_HELLO).bytes(identity.as_bytes());
-    loaded_image_guard.check()?;
+    loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
     send(&stream, &hello.0, &[])?;
     serve(&stream, open, loaded_image_guard)
 }
@@ -2967,7 +3011,14 @@ mod tests {
         assert_eq!((snap, at), (SnapId(2), 20));
         assert_eq!(session.state_hash().unwrap(), [4; 32]);
         assert_eq!(session.sdk_events().unwrap(), vec![(5, 7, vec![4])]);
-        assert_eq!(session.telemetry_counters(), vec![("runs".to_owned(), 1)]);
+        assert_eq!(
+            session
+                .telemetry_counters()
+                .into_iter()
+                .filter(|(name, _)| !name.starts_with("guard."))
+                .collect::<Vec<_>>(),
+            vec![("runs".to_owned(), 1)]
+        );
         assert_eq!(session.snapshot_owned_pages(snap), Some(1));
         assert_eq!(session.snapshot_owned_pages(SnapId(9)), None);
         let held = session.store_bytes().expect("store bytes");
@@ -3003,13 +3054,81 @@ mod tests {
             Some(SessionError::Abandoned)
         ));
         assert_eq!(
-            session.telemetry_counters(),
+            session
+                .telemetry_counters()
+                .into_iter()
+                .filter(|(name, _)| !name.starts_with("guard."))
+                .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)],
             "the last counters outlive the worker"
         );
         assert_eq!(session.store_bytes(), None);
         drop(session);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn guard_telemetry_separates_parent_child_queries_and_cached_totals() {
+        let (mut first, first_server) = threaded(3);
+        let (second, second_server) = threaded(3);
+        let a_values = first.telemetry_counters();
+        let a_count = a_values.len();
+        let a = a_values
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let b_values = first.telemetry_counters();
+        let b_count = b_values.len();
+        let b = b_values
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(a.len(), a_count);
+        assert_eq!(b.len(), b_count);
+        assert_eq!(b["runs"], a["runs"]);
+        assert_eq!(
+            b["guard.parent.rpc_before.dispatches"] - a["guard.parent.rpc_before.dispatches"],
+            1
+        );
+        assert_eq!(
+            b["guard.parent.rpc_after.dispatches"] - a["guard.parent.rpc_after.dispatches"],
+            1
+        );
+        assert_eq!(
+            b["guard.child.loop.handled.dispatches"] - a["guard.child.loop.handled.dispatches"],
+            1
+        );
+        assert_eq!(
+            b["guard.child.loop.sent.dispatches"] - a["guard.child.loop.sent.dispatches"],
+            1
+        );
+        assert_eq!(b["guard.child.loop.receive.dispatches"], 1);
+        assert_eq!(b["guard.child.telemetry_query_ok"], 1);
+        assert_eq!(b["guard.parent.rpc_before.strict_attempts"], 0);
+        assert_eq!(
+            b["guard.parent.rpc_before.fixture_dispatches"],
+            b["guard.parent.rpc_before.dispatches"]
+        );
+        let separate = second
+            .telemetry_counters()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            separate["guard.parent.rpc_before.dispatches"],
+            a["guard.parent.rpc_before.dispatches"]
+        );
+        assert!(first.run_until(u64::MAX).is_err());
+        let failed = first
+            .telemetry_counters()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(failed["guard.child.telemetry_query_ok"], 0);
+        assert_eq!(
+            failed["guard.child.loop.handled.dispatches"],
+            b["guard.child.loop.handled.dispatches"]
+        );
+        drop(first);
+        drop(second);
+        first_server.join().unwrap();
+        second_server.join().unwrap();
     }
 
     #[test]
@@ -3065,6 +3184,26 @@ mod tests {
             assert!(result.is_err());
             assert_eq!((entries, strict), (refusal, 0));
             assert!(session.failed.get());
+            let counters = session
+                .loaded_image_guard
+                .counters("guard.parent")
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let refused_site = if refusal == 1 {
+                "guard.parent.rpc_before.errors"
+            } else {
+                "guard.parent.rpc_after.errors"
+            };
+            assert_eq!(counters[refused_site], 1);
+            assert!(session.call(&Out::op(STORE_BYTES), &[]).is_err());
+            assert_eq!(
+                session
+                    .loaded_image_guard
+                    .counters("guard.parent")
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>(),
+                counters
+            );
             server.join().unwrap();
         }
     }
