@@ -5257,6 +5257,51 @@ mod tests {
         ));
     }
 
+    #[test]
+    #[cfg_attr(miri, ignore = "requires snapshot mmap")]
+    fn failed_remap_restore_preserves_physical_work_before_and_after_commit() {
+        for precommit in [true, false] {
+            let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+            hello(&mut server);
+            let origin = snap(&mut server);
+            let mut physical = vmm_backend::PhysicalTelemetry::default();
+            physical.measure(
+                vmm_backend::RunPlatform::KvmX86,
+                vmm_backend::RunPurpose::Maintenance,
+                || ((), vmm_backend::RunReturn::Interrupted),
+            );
+            server.set_remap_factory(Box::new(move |mapping| {
+                let mut backend = MockBackend::with_exits(vec![Exit::Common(CommonExit::Mmio {
+                    gpa: vmm_backend::Gpa(0),
+                    size: 1,
+                    write: None,
+                })]);
+                if !precommit {
+                    backend.set_policy(&X86Policy::default()).unwrap();
+                    backend.run().unwrap();
+                }
+                backend.set_physical_telemetry_for_test(physical);
+                let mut fresh = crate::vendor::x86::bringup::compose_restore_target(
+                    backend, mapping, !precommit,
+                )?;
+                fresh.wire_vtime(
+                    VtimeWiring::new_virtual_time(contract_vclock_config(), 0).unwrap(),
+                );
+                fresh.wire_snapshot_hashing();
+                Ok(fresh)
+            }));
+            let result = server.handle(&Request::Replay(origin));
+            if precommit {
+                assert_eq!(result.unwrap(), Err(ControlError::RestoreFailed));
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(server.host_telemetry().physical, physical);
+            server.retire_vmm();
+            assert_eq!(server.host_telemetry().physical, physical);
+        }
+    }
+
     fn run_seeking_snapshot(server: &mut ControlServer<MockBackend>) -> StopReason {
         let req = Request::Run {
             until: StopConditions {

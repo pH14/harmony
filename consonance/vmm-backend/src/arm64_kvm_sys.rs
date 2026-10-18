@@ -311,7 +311,7 @@ impl LiveKvm {
             purpose,
             || {
                 // SAFETY: this backend exclusively owns the stopped vCPU fd and its live kvm_run mapping; KVM_RUN takes no argument and completes before either mapping is read or another entry begins.
-                let code = unsafe { libc::ioctl(fd, KVM_RUN_IOCTL, 0) };
+                let code = unsafe { libc::ioctl(fd, KVM_RUN_IOCTL as _, 0) };
                 let errno = if code == 0 {
                     0
                 } else {

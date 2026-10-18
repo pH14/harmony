@@ -348,8 +348,6 @@ impl KvmBackend {
             &mut self.completion,
             &self.state_mutation_guard,
             || {
-                // SAFETY: the owned vCPU fd references the mapped run page and
-                // this entry is restricted to consuming its staged completion.
                 physical.measure(
                     crate::RunPlatform::KvmX86,
                     crate::RunPurpose::Completion,
@@ -876,8 +874,6 @@ impl KvmBackend {
             &mut self.completion,
             &self.state_mutation_guard,
             || {
-                // SAFETY: the owned vCPU has a run page requesting immediate exit and,
-                // when a completion was staged, no pending value left to supply.
                 physical.measure(crate::RunPlatform::KvmX86, purpose, || {
                     // SAFETY: the owned vCPU and its mapped run page are live; the guard has staged immediate exit before calling this closure.
                     let rc = unsafe { raw_kvm_run(fd) };
@@ -1754,7 +1750,22 @@ mod xsave_diagnostic {
             let readiness = backend.readiness_current;
             let mut after = before.clone();
             for preparation in 1..=2 {
+                let physical_before = backend.physical_telemetry();
                 backend.prepare_snapshot().unwrap();
+                let physical_after = backend.physical_telemetry();
+                assert_eq!(
+                    physical_after
+                        .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance)
+                        .entries,
+                    physical_before
+                        .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance)
+                        .entries
+                        + 1
+                );
+                assert_eq!(
+                    physical_after.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Guest),
+                    physical_before.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Guest)
+                );
                 let observed = backend.save().unwrap();
                 println!(
                     "SNAPSHOT_PREPARATION seed_bv={restore_bv} preparation={preparation} raw_before={:?} raw_after={:?}",
@@ -1798,7 +1809,22 @@ mod xsave_diagnostic {
             assert_eq!(backend.save().unwrap(), after);
             assert_eq!(backend.completion, Stage::AWAITING_FINISH);
             backend.completion = ACKNOWLEDGED_WRITE;
+            let physical_before = backend.physical_telemetry();
             backend.prepare_snapshot().unwrap();
+            let physical_after = backend.physical_telemetry();
+            assert_eq!(
+                physical_after
+                    .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Completion)
+                    .entries,
+                physical_before
+                    .cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Completion)
+                    .entries
+                    + 1
+            );
+            assert_eq!(
+                physical_after.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance),
+                physical_before.cost(crate::RunPlatform::KvmX86, crate::RunPurpose::Maintenance)
+            );
             assert_eq!(backend.completion, Stage::CLEAR);
             after = backend.save().unwrap();
             backend.pending_irq = None;

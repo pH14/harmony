@@ -2335,7 +2335,7 @@ mod tests {
     use crate::arch::arm64::{Arm64CoreRegs, Arm64Policy, Arm64SimdFpState, IdRegModel};
 
     #[test]
-    fn raw_kvm_syscall_seam_preserves_memory_fault_interpretation_without_inventing_returns() {
+    fn raw_kvm_syscall_boundary_preserves_memory_fault_interpretation_without_inventing_returns() {
         use crate::{RunPlatform, RunPurpose};
         for errno in KVM_MEMORY_FAULT_ERRNOS {
             let mut telemetry = crate::PhysicalTelemetry::default();

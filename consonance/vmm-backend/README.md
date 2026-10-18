@@ -24,10 +24,10 @@ and leaves are `entries`, `returns`, `interruptions`, `errors` and `run_ns`.
 internal handling, including consumed interrupts, PSCI calls and tracked writes.
 Reason numbers retain their platform ABI meanings. These are OS entry API
 attempts and returns, not proof of hardware guest entry or guest instruction
-counts. Neither normalized exit totals nor EventHistory counts must equal them.
+counts. Normalized exit totals and EventHistory counts need not equal them.
 
 KVM `EINTR` attempts have interruption counts and no successful-return/reason
-charge. Other failed syscalls have error counts. The arm64 raw syscall seam
+charge. Other failed syscalls have error counts. The arm64 raw syscall boundary
 preserves the locked kvm-ioctls 0.25.0 interpretation of `-1` with `EFAULT` or
 `EHWPOISON` and `KVM_EXIT_MEMORY_FAULT`: normal backend handling still receives
 that condition, while telemetry counts an OS error, never a successful return.
@@ -37,7 +37,8 @@ ordinary errors never read stale exit data. The memory-fault errno pair is the
 explicit exception permitted by the KVM ABI and pinned against Linux constants.
 
 Staged KVM completion calls are distinct from guest calls. Snapshot preparation
-with immediate exit and HVF translation-flush guest stubs are maintenance.
+with immediate exit is maintenance unless it consumes a staged completion, in
+which case it is completion. HVF translation-flush guest stubs are maintenance.
 HVF canceled exits are successful raw returns with reason zero, even when the
 backend rejects them; nonzero HVF API status is an OS error. HVF does not invent
 an errno-style interruption count. Checks that reject before an OS call do not
