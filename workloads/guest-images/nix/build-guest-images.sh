@@ -116,9 +116,9 @@ install -m 0644 "$HARMONY_NIX_LINUX_SOURCE" \
     "$downloads/linux-6.18.35.tar.xz"
 install -m 0644 "$HARMONY_NIX_BUSYBOX_SOURCE" \
     "$downloads/busybox-1.38.0.tar.bz2"
+install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" \
+    "$downloads/musl-1.2.6.tar.gz"
 if [ "$host_arch" = aarch64 ]; then
-    install -m 0644 "$HARMONY_NIX_MUSL_SOURCE" \
-        "$downloads/musl-1.2.6.tar.gz"
     install -m 0644 "$HARMONY_NIX_POSTGRES_SOURCE" \
         "$downloads/postgresql-17.10.tar.bz2"
 fi
@@ -224,9 +224,17 @@ else
     echo "== N5: build minimal x86 kernel and initramfs"
     (cd "$linux_dir" && ./build-kernel.sh && ./build-initramfs.sh && ./build-go-runtime-image.sh)
     if [ "$n6" -eq 1 ]; then
+        echo "== N6: build owned musl for the generated sweep"
+        (
+            cd "$linux_dir"
+            # shellcheck source=../linux/lib-build.sh disable=SC1091
+            . ./lib-build.sh
+            build_x86_musl
+        )
         echo "== N6: build generated sweep and traps-off x86 kernel"
         (cd "$linux_dir" && \
-            ./build-n6-instruction-images.sh && \
+            HARMONY_N6_CC="$build_root/musl-x86-prefix/bin/musl-gcc" \
+                ./build-n6-instruction-images.sh && \
             N6_TRAPS_OFF=1 ./build-kernel.sh)
     fi
     if [ "$serialization_check" -eq 1 ]; then
