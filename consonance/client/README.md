@@ -324,8 +324,27 @@ that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
 the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
-An import sends one descriptor per extent in the chain, and the child maps each
-range read-only for that call. Dropping a `WorkerSession` closes the socket and
+The host image hello is version2 because IMPORT now carries a message-local
+backing table: U descriptors followed by N ordered (slot, offset, length) rows.
+The parent groups only exact live Segment Arc owners while holding the original
+committed chain clones. File descriptor numbers, allocator-local segment IDs,
+identical bytes and inode metadata do not establish owner identity. Both the
+original N<=64 reference limit and U<=N descriptor limit remain enforced. Slots
+appear in first-use order and every supplied slot must be referenced; malformed
+counts, slots, overflow, zero lengths and trailing bytes are rejected before
+mapping, while each mapping still validates its exact backing range.
+
+The child still makes N read-only mappings and drops them before replying. No
+registration, mapping or additional pin survives the import. Namespace, pinned
+object commitment, actual pages/sidecar/state and post-reply lease checks remain
+mandatory on every call. Grouping uses bounded O(N*U) comparisons. Numeric wire
+metadata grows by8+8*N bytes per import versus the former envelope, even if U=N;
+U=N saves no descriptors. Store intern copies, per-use integrity verification,
+guest materialization and SDK guard work are unchanged. Existing physical I/O
+counters report actual U handles and copy counters retain actual N mappings;
+backing-reuse counters retain their original N/U per accepted operation meaning.
+Repeated-owner transport fixtures show fewer handles, not campaign speedup or
+once-per-worker registration/shared Store pages. Dropping a `WorkerSession` closes the socket and
 transfers the child to the teardown owner described below.
 
 Worker ancillary parsing bounds every header and complete descriptor integer by
@@ -341,7 +360,8 @@ length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
 parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
-The accepted worker descriptor cap and protocol remain unchanged.
+The accepted worker descriptor cap remains unchanged; the version2 host hello
+identifies the revised import descriptor-table schema.
 
 On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
 control buffer, including header remainders and body bytes. All complete

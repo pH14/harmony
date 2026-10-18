@@ -1735,12 +1735,14 @@ impl SearchSession for WorkerSession {
             checked_cached_attachment(&extents, index.target_commitment(lease)?)?;
         let ranges: Vec<SharedRange<'_>> =
             chain.iter().map(CommittedExtent::shared_range).collect();
+        let layout = crate::import_layout::ImportLayout::from_extents(&chain)?;
         let mut request = Out::measured(IMPORT, &self.copies);
-        request.u64(near.0).len(ranges.len());
-        for range in &ranges {
-            request.len(range.offset).len(range.len);
-        }
-        let fds: Vec<BorrowedFd<'_>> = ranges.iter().map(|range| range.fd).collect();
+        layout.encode_into(near.0, &mut request.0);
+        let fds: Vec<BorrowedFd<'_>> = layout
+            .backing_rows
+            .iter()
+            .map(|row| ranges[*row].fd)
+            .collect();
         let reply = self.call(&request, &fds)?;
         let mut input = In(&reply);
         let snap = input.snap()?;
@@ -1962,18 +1964,22 @@ impl Served {
                 session.export_delta_into(parent, target, &attachment, allocate)?;
             }
             IMPORT => {
-                let near = SnapId(input.u64()?);
-                let count = input.len()?;
-                if count != fds.len() {
-                    return Err(malformed("an import carries one descriptor per extent").into());
-                }
-                let mappings = fds
+                let (near, layout) =
+                    crate::import_layout::ImportLayout::decode(input.0, fds.len())?;
+                let near = SnapId(near);
+                let mappings = layout
+                    .ranges
                     .iter()
-                    .map(|fd| {
-                        Mapping::measured(fd.as_fd(), input.len()?, input.len()?, false, &copies)
+                    .map(|row| {
+                        Mapping::measured(
+                            fds[row.slot].as_fd(),
+                            row.offset,
+                            row.len,
+                            false,
+                            &copies,
+                        )
                     })
                     .collect::<io::Result<Vec<_>>>()?;
-                input.finish()?;
                 let extents: Vec<&[u8]> = mappings.iter().map(Mapping::bytes).collect();
                 let (snap, at) = session.import_extents(&extents, near)?;
                 out.u64(snap.0).u64(at);
@@ -5715,66 +5721,138 @@ pathlib.Path(sys.argv[3]).write_bytes(s.recv(1))
 
     #[test]
     fn accepted_worker_imports_report_references_backings_and_session_recurrence() {
-        let index = LocalIndex::new(1 << 20);
-        let (mut source, source_server) = threaded(3);
-        let (mut destination, destination_server) = threaded(50);
-        let (mut other, other_server) = threaded(70);
-        let space = Namespace::exact(&[b"import-layout"]);
-        let mut snapshots = Vec::new();
-        let mut leases = Vec::new();
-        for step in 0..4u8 {
-            source.run_until(40 + u64::from(step)).unwrap();
-            let (snapshot, _) = source.snapshot().unwrap();
-            let parent = snapshots
-                .last()
-                .zip(leases.last())
-                .map(|(snap, lease)| (*snap, lease));
-            let lease = source
-                .publish_snapshot(&index, space, &[step], parent, snapshot, 1)
-                .unwrap();
-            snapshots.push(snapshot);
-            leases.push(lease);
+        for (segment_pages, unique) in [(8, 1), (4, 2), (2, 4)] {
+            let index = LocalIndex::with_segment_bytes(1 << 20, segment_pages * 4096);
+            let (mut source, source_server) = threaded(3);
+            let (mut destination, destination_server) = threaded(50);
+            let (mut other, other_server) = threaded(70);
+            let space = Namespace::exact(&[b"import-layout"]);
+            let mut snapshots = Vec::new();
+            let mut leases = Vec::new();
+            for step in 0..4u8 {
+                source.run_until(40 + u64::from(step)).unwrap();
+                let (snapshot, _) = source.snapshot().unwrap();
+                let parent = snapshots
+                    .last()
+                    .zip(leases.last())
+                    .map(|(snap, lease)| (*snap, lease));
+                let lease = source
+                    .publish_snapshot(&index, space, &[step], parent, snapshot, 1)
+                    .unwrap();
+                snapshots.push(snapshot);
+                leases.push(lease);
+            }
+            let lease = leases.last().unwrap();
+            let chain = index.chain(lease).unwrap();
+            assert_eq!(chain.len(), 4);
+            assert_eq!(
+                crate::import_layout::ImportLayout::from_extents(&chain)
+                    .unwrap()
+                    .backing_rows
+                    .len(),
+                unique
+            );
+            destination.import_cached(&index, lease, SnapId(1)).unwrap();
+            destination.import_cached(&index, lease, SnapId(1)).unwrap();
+            let telemetry: BTreeMap<_, _> = destination.telemetry_counters().into_iter().collect();
+            for (name, value) in [
+                ("accepted_imports", 2),
+                ("measured_imports", 2),
+                ("extent_references", 8),
+                ("backing_occurrences", 2 * unique as u64),
+                ("duplicate_references", 8 - 2 * unique as u64),
+                ("recent_backing_hits", unique as u64),
+                ("recent_backing_misses", unique as u64),
+                ("unmeasured_overlimit", 0),
+            ] {
+                assert_eq!(telemetry[&format!("cache_import.parent.{name}")], value);
+            }
+            assert_eq!(
+                telemetry["transport.parent.import.send.fd_handles"],
+                2 * unique as u64
+            );
+            assert_eq!(
+                telemetry["transport.child.loop.import.receive.fd_handles"],
+                2 * unique as u64
+            );
+            assert_eq!(telemetry["copy.child.loop.import_mapping.attempts"], 8);
+            assert_eq!(
+                telemetry["transport.parent.import.send.body_bytes"],
+                2 * (1 + 24 + 24 * 4)
+            );
+            assert_eq!(
+                telemetry["transport.child.loop.import.receive.body_bytes"],
+                2 * (1 + 24 + 24 * 4)
+            );
+            assert_eq!(
+                destination.state_hash().unwrap(),
+                source.state_hash().unwrap()
+            );
+            other.import_cached(&index, lease, SnapId(1)).unwrap();
+            let fresh: BTreeMap<_, _> = other.telemetry_counters().into_iter().collect();
+            assert_eq!(fresh["cache_import.parent.recent_backing_hits"], 0);
+            assert_eq!(
+                fresh["cache_import.parent.recent_backing_misses"],
+                unique as u64
+            );
+            for lease in leases {
+                index.release(lease);
+            }
+            drop((source, destination, other));
+            source_server.join().unwrap();
+            destination_server.join().unwrap();
+            other_server.join().unwrap();
         }
-        let lease = leases.last().unwrap();
-        let chain = index.chain(lease).unwrap();
-        assert_eq!(chain.len(), 4);
-        assert!(
-            chain
-                .iter()
-                .all(|extent| extent.span().0 == chain[0].span().0)
-        );
-        destination.import_cached(&index, lease, SnapId(1)).unwrap();
-        destination.import_cached(&index, lease, SnapId(1)).unwrap();
-        let telemetry: BTreeMap<_, _> = destination.telemetry_counters().into_iter().collect();
-        for (name, value) in [
-            ("accepted_imports", 2),
-            ("measured_imports", 2),
-            ("extent_references", 8),
-            ("backing_occurrences", 2),
-            ("duplicate_references", 6),
-            ("recent_backing_hits", 1),
-            ("recent_backing_misses", 1),
-            ("unmeasured_overlimit", 0),
-        ] {
-            assert_eq!(telemetry[&format!("cache_import.parent.{name}")], value);
+    }
+
+    #[test]
+    fn import_descriptor_table_refuses_malformed_rows_before_mapping_or_mutation() {
+        let (mut session, server) = threaded(50);
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(4096).unwrap();
+        let before = session.state_hash().unwrap();
+        let cases = [
+            (1, vec![[0, 0, 1]], 0, 0),
+            (1, vec![[0, 0, 1]], 2, 0),
+            (1, vec![[1, 0, 1]], 1, 0),
+            (2, vec![[1, 0, 1], [0, 0, 1]], 2, 0),
+            (2, vec![[1, 0, 1], [0, 0, 1], [1, 1, 1]], 2, 0),
+            (2, vec![[0, 0, 1], [0, 1, 1]], 2, 0),
+            (1, vec![[0, u64::MAX, 1]], 1, 0),
+            (1, vec![[0, 0, 0]], 1, 0),
+            (1, vec![[0, 4096, 4096]], 1, 1),
+        ];
+        for (unique, rows, descriptors, attempts) in cases {
+            let prior: BTreeMap<_, _> = session.telemetry_counters().into_iter().collect();
+            let mut request = Out::op(IMPORT);
+            request.u64(1).u64(unique).len(rows.len());
+            for row in rows {
+                for value in row {
+                    request.u64(value);
+                }
+            }
+            let fds = vec![file.as_fd(); descriptors];
+            let error = session.call(&request, &fds).unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Control(_))
+            ));
+            assert_eq!(session.state_hash().unwrap(), before);
+            assert_eq!(file.metadata().unwrap().len(), 4096);
+            let after: BTreeMap<_, _> = session.telemetry_counters().into_iter().collect();
+            assert_eq!(
+                after["copy.child.loop.import_mapping.attempts"]
+                    - prior["copy.child.loop.import_mapping.attempts"],
+                attempts
+            );
         }
-        assert_eq!(telemetry["transport.parent.import.send.fd_handles"], 8);
-        assert_eq!(telemetry["copy.child.loop.import_mapping.attempts"], 8);
-        assert_eq!(
-            destination.state_hash().unwrap(),
-            source.state_hash().unwrap()
-        );
-        other.import_cached(&index, lease, SnapId(1)).unwrap();
-        let fresh: BTreeMap<_, _> = other.telemetry_counters().into_iter().collect();
-        assert_eq!(fresh["cache_import.parent.recent_backing_hits"], 0);
-        assert_eq!(fresh["cache_import.parent.recent_backing_misses"], 1);
-        for lease in leases {
-            index.release(lease);
-        }
-        drop((source, destination, other));
-        source_server.join().unwrap();
-        destination_server.join().unwrap();
-        other_server.join().unwrap();
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn descriptor_table_import_requires_the_new_host_hello_version() {
+        assert_eq!(IMAGE_HELLO, b"harmony-session-worker-image-v2");
     }
 
     #[test]
