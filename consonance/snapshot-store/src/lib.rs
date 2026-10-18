@@ -127,9 +127,28 @@ pub struct Store {
     pages: Vec<Option<PageEntry>>,
     free_pages: Vec<NonZeroUsize>,
     zero_hash: PageHash,
+    #[cfg(any(test, feature = "test-utils"))]
+    page_verifications: std::cell::Cell<usize>,
+}
+
+pub struct ReadTransaction<'store> {
+    store: &'store Store,
+    verified_pages: BTreeSet<NonZeroUsize>,
 }
 
 impl Store {
+    #[cfg(feature = "test-utils")]
+    pub fn page_verifications_for_test(&self) -> usize {
+        self.page_verifications.get()
+    }
+
+    pub fn read_transaction(&self) -> ReadTransaction<'_> {
+        ReadTransaction {
+            store: self,
+            verified_pages: BTreeSet::new(),
+        }
+    }
+
     pub fn new(cfg: StoreConfig) -> Store {
         Store {
             cfg,
@@ -146,6 +165,8 @@ impl Store {
             pages: Vec::new(),
             free_pages: Vec::new(),
             zero_hash: *blake3::hash(&[0u8; PAGE_SIZE]).as_bytes(),
+            #[cfg(any(test, feature = "test-utils"))]
+            page_verifications: std::cell::Cell::new(0),
         }
     }
 
@@ -261,16 +282,7 @@ impl Store {
         if out.len() != PAGE_SIZE {
             return Err(StoreError::BadPageLength { len: out.len() });
         }
-        if gfn >= self.cfg.mem_pages {
-            return Err(StoreError::GfnOutOfRange {
-                gfn,
-                mem_pages: self.cfg.mem_pages,
-            });
-        }
-        match self.resolve(snap.0, gfn) {
-            PageRef::Zero => out.fill(0),
-            pref => out.copy_from_slice(self.checked_page_ref(pref, gfn)?),
-        }
+        out.copy_from_slice(self.read_transaction().read_page(snap, gfn)?);
         Ok(())
     }
 
@@ -344,37 +356,7 @@ impl Store {
         to: SnapshotId,
         dirty: &[u64],
     ) -> Result<Vec<(u64, &[u8; PAGE_SIZE])>, StoreError> {
-        self.live_layer(to)?;
-        if from == Some(to) && dirty.is_empty() {
-            return Ok(Vec::new());
-        }
-        for &gfn in dirty {
-            if gfn >= self.cfg.mem_pages {
-                return Err(StoreError::GfnOutOfRange {
-                    gfn,
-                    mem_pages: self.cfg.mem_pages,
-                });
-            }
-        }
-
-        let mut verified_pages = BTreeSet::new();
-        let Some(from) = from else {
-            return (0..self.cfg.mem_pages)
-                .map(|gfn| {
-                    let (_, page) =
-                        self.page_entry(self.resolve(to.0, gfn), gfn, &mut verified_pages)?;
-                    Ok((gfn, page))
-                })
-                .collect();
-        };
-
-        self.live_layer(from)?;
-        let mut pages = Vec::new();
-        for gfn in self.changed_gfns(from, to, dirty)? {
-            let (_, page) = self.page_entry(self.resolve(to.0, gfn), gfn, &mut verified_pages)?;
-            pages.push((gfn, page));
-        }
-        Ok(pages)
+        self.read_transaction().restore_pages(from, to, dirty)
     }
 
     pub fn page_delta(
@@ -383,31 +365,7 @@ impl Store {
         parent: Option<SnapshotId>,
         target: SnapshotId,
     ) -> Result<PageDelta<'_>, StoreError> {
-        self.live_layer(base)?;
-        self.live_layer(target)?;
-        let from = parent.unwrap_or(base);
-        self.live_layer(from)?;
-        let mut delta = PageDelta::default();
-        let mut verified_pages = self.verified_snapshot_pages(target)?;
-        if from != target {
-            self.verify_snapshot_pages_into(from, &mut verified_pages)?;
-        }
-        if base != from && base != target {
-            self.verify_snapshot_pages_into(base, &mut verified_pages)?;
-        }
-        for gfn in self.changed_gfns(from, target, &[])? {
-            let page = self.resolve(target.0, gfn);
-            if page == self.resolve(from.0, gfn) {
-                continue;
-            }
-            if parent.is_some() && page == self.resolve(base.0, gfn) {
-                delta.reverted.push(gfn);
-                continue;
-            }
-            let (hash, data) = self.page_entry(page, gfn, &mut verified_pages)?;
-            delta.changed.push((gfn, hash, data));
-        }
-        Ok(delta)
+        self.read_transaction().page_delta(base, parent, target)
     }
 
     pub fn rebase(
@@ -478,8 +436,13 @@ impl Store {
                     .as_ref()
                     .try_into()
                     .map_err(|_| StoreError::PageIntegrity { gfn })?;
-                if !verified_pages.contains(&id) && blake3::hash(data).as_bytes() != &entry.hash {
-                    return Err(StoreError::PageIntegrity { gfn });
+                if !verified_pages.contains(&id) {
+                    #[cfg(any(test, feature = "test-utils"))]
+                    self.page_verifications
+                        .set(self.page_verifications.get() + 1);
+                    if blake3::hash(data).as_bytes() != &entry.hash {
+                        return Err(StoreError::PageIntegrity { gfn });
+                    }
                 }
                 verified_pages.insert(id);
                 Ok((&entry.hash, data))
@@ -492,12 +455,7 @@ impl Store {
     }
 
     pub fn verify_snapshots(&self, snaps: &[SnapshotId]) -> Result<(), StoreError> {
-        let mut verified_pages = BTreeSet::new();
-        for &snap in snaps {
-            self.live_layer(snap)?;
-            self.verify_snapshot_pages_into(snap, &mut verified_pages)?;
-        }
-        Ok(())
+        self.read_transaction().verify_snapshots(snaps)
     }
 
     fn verified_snapshot_pages(
@@ -1056,6 +1014,122 @@ pub struct PageDelta<'a> {
     pub reverted: Vec<u64>,
 }
 
+impl<'store> ReadTransaction<'store> {
+    pub fn read_page(
+        &mut self,
+        snap: SnapshotId,
+        gfn: u64,
+    ) -> Result<&'store [u8; PAGE_SIZE], StoreError> {
+        self.store.live_layer(snap)?;
+        if gfn >= self.store.cfg.mem_pages {
+            return Err(StoreError::GfnOutOfRange {
+                gfn,
+                mem_pages: self.store.cfg.mem_pages,
+            });
+        }
+        let (_, data) = self.store.page_entry(
+            self.store.resolve(snap.0, gfn),
+            gfn,
+            &mut self.verified_pages,
+        )?;
+        Ok(data)
+    }
+
+    pub fn verify_snapshots(&mut self, snaps: &[SnapshotId]) -> Result<(), StoreError> {
+        for &snap in snaps {
+            self.store.live_layer(snap)?;
+            self.store
+                .verify_snapshot_pages_into(snap, &mut self.verified_pages)?;
+        }
+        Ok(())
+    }
+
+    pub fn diff_pages(
+        &mut self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+    ) -> Result<Vec<(u64, &'store [u8; PAGE_SIZE])>, StoreError> {
+        self.restore_pages(from, to, &[])
+    }
+
+    fn restore_pages(
+        &mut self,
+        from: Option<SnapshotId>,
+        to: SnapshotId,
+        dirty: &[u64],
+    ) -> Result<Vec<(u64, &'store [u8; PAGE_SIZE])>, StoreError> {
+        let store = self.store;
+        store.live_layer(to)?;
+        if from == Some(to) && dirty.is_empty() {
+            return Ok(Vec::new());
+        }
+        for &gfn in dirty {
+            if gfn >= store.cfg.mem_pages {
+                return Err(StoreError::GfnOutOfRange {
+                    gfn,
+                    mem_pages: store.cfg.mem_pages,
+                });
+            }
+        }
+
+        let Some(from) = from else {
+            return (0..store.cfg.mem_pages)
+                .map(|gfn| {
+                    let (_, page) = store.page_entry(
+                        store.resolve(to.0, gfn),
+                        gfn,
+                        &mut self.verified_pages,
+                    )?;
+                    Ok((gfn, page))
+                })
+                .collect();
+        };
+
+        store.live_layer(from)?;
+        let mut pages = Vec::new();
+        for gfn in store.changed_gfns(from, to, dirty)? {
+            let (_, page) =
+                store.page_entry(store.resolve(to.0, gfn), gfn, &mut self.verified_pages)?;
+            pages.push((gfn, page));
+        }
+        Ok(pages)
+    }
+
+    pub fn page_delta(
+        &mut self,
+        base: SnapshotId,
+        parent: Option<SnapshotId>,
+        target: SnapshotId,
+    ) -> Result<PageDelta<'store>, StoreError> {
+        let store = self.store;
+        store.live_layer(base)?;
+        store.live_layer(target)?;
+        let from = parent.unwrap_or(base);
+        store.live_layer(from)?;
+        let mut delta = PageDelta::default();
+        store.verify_snapshot_pages_into(target, &mut self.verified_pages)?;
+        if from != target {
+            store.verify_snapshot_pages_into(from, &mut self.verified_pages)?;
+        }
+        if base != from && base != target {
+            store.verify_snapshot_pages_into(base, &mut self.verified_pages)?;
+        }
+        for gfn in store.changed_gfns(from, target, &[])? {
+            let page = store.resolve(target.0, gfn);
+            if page == store.resolve(from.0, gfn) {
+                continue;
+            }
+            if parent.is_some() && page == store.resolve(base.0, gfn) {
+                delta.reverted.push(gfn);
+                continue;
+            }
+            let (hash, data) = store.page_entry(page, gfn, &mut self.verified_pages)?;
+            delta.changed.push((gfn, hash, data));
+        }
+        Ok(delta)
+    }
+}
+
 pub struct BaseBuilder<'a> {
     core: BuilderCore<'a>,
 }
@@ -1192,6 +1266,72 @@ mod tests {
             })
             .collect();
         (changed, delta.reverted.clone())
+    }
+
+    fn transaction_snapshots() -> (Store, SnapshotId, SnapshotId, SnapshotId) {
+        let mut store = Store::new(cfg(6));
+        let mut builder = store.begin_base();
+        for (gfn, fill) in [(0, 1), (1, 1), (2, 2), (4, 4)] {
+            builder.write_page(gfn, &[fill; PAGE_SIZE]).unwrap();
+        }
+        let setup = builder.seal(Vec::new());
+        let parent = snap_with(&mut store, setup, &[(0, 3), (2, 0), (3, 5)]);
+        let target = snap_with(&mut store, parent, &[(0, 1), (1, 6)]);
+        (store, setup, parent, target)
+    }
+
+    #[test]
+    fn read_transaction_verifies_each_resident_slot_once_and_renews_trust() {
+        let (store, setup, parent, target) = transaction_snapshots();
+        store.page_verifications.set(0);
+        for operation in 1..=2 {
+            let (delta, pages, inherited) = {
+                let mut transaction = store.read_transaction();
+                let delta = transaction.page_delta(setup, Some(parent), target).unwrap();
+                let pages = transaction.diff_pages(Some(setup), target).unwrap();
+                for &(gfn, _) in &pages {
+                    transaction.read_page(setup, gfn).unwrap();
+                }
+                for gfn in 0..6 {
+                    transaction.read_page(setup, gfn).unwrap();
+                }
+                transaction
+                    .verify_snapshots(&[setup, parent, target])
+                    .unwrap();
+                let inherited = transaction.read_page(target, 4).unwrap();
+                (delta, pages, inherited)
+            };
+            assert_eq!(delta_summary(&delta), (vec![(1, 6)], vec![0]));
+            assert_eq!(
+                pages.iter().map(|row| row.0).collect::<Vec<_>>(),
+                vec![0, 1, 2, 3]
+            );
+            assert_eq!(inherited, &[4; PAGE_SIZE]);
+            assert_eq!(store.page_verifications.get(), operation * 6);
+        }
+    }
+
+    #[test]
+    fn a_new_read_transaction_rejects_corruption_omitted_from_a_previous_delta() {
+        for (snapshot, gfn) in [(0, 2), (1, 0), (2, 3), (2, 4)] {
+            let (mut store, setup, parent, target) = transaction_snapshots();
+            let snapshots = [setup, parent, target];
+            {
+                let mut transaction = store.read_transaction();
+                transaction.page_delta(setup, Some(target), target).unwrap();
+                transaction.read_page(snapshots[snapshot], gfn).unwrap();
+            }
+            let PageRef::Data(id) = store.resolve(snapshots[snapshot].0, gfn) else {
+                panic!("the planted corruption needs a resident page");
+            };
+            store.pages[id.get() - 1].as_mut().unwrap().data[0] ^= 1;
+            assert!(matches!(
+                store
+                    .read_transaction()
+                    .page_delta(setup, Some(parent), target),
+                Err(StoreError::PageIntegrity { .. })
+            ));
+        }
     }
 
     #[test]

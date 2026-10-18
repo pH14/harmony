@@ -34,7 +34,7 @@ use crate::portable_snapshot::{
     decode_sparse_sidecar, encode_sparse_sidecar_with_target_pages,
 };
 use crate::session_trace::{SessionTraceSegment, SessionTraceStart, SessionVirtualTimeTrace};
-use crate::snapshot::{SnapshotEngine, SnapshotError};
+use crate::snapshot::{SnapshotEngine, SnapshotError, SnapshotReadTransaction};
 use crate::vmm::{HostOperationGuard, SdkSnapshot, SdkStop, Step, TerminalReason, Vmm, VmmError};
 
 #[cfg(all(target_os = "linux", any(test, not(miri))))]
@@ -82,7 +82,6 @@ fn restore_defers_materialization(mode: RestoreMode) -> bool {
 enum SparsePageVerification {
     Base,
     BaseAndTarget(SnapshotId),
-    AlreadyVerified,
 }
 
 fn restore_error_is_precommit(error: &VmmError) -> bool {
@@ -122,13 +121,13 @@ fn sparse_target_pages_digest(pages: &[(u64, Arc<[u8; 4096]>)]) -> [u8; 32] {
 }
 
 fn sparse_delta_target_pages_digest<'a>(
-    engine: &SnapshotEngine,
+    transaction: &mut SnapshotReadTransaction<'_>,
     setup: snapshot_store::SnapshotId,
     pages: impl IntoIterator<Item = (u64, &'a [u8; 4096])>,
 ) -> Result<[u8; 32], PortableSnapshotError> {
     let mut changed = Vec::new();
     for (gfn, page) in pages {
-        if engine.read_page(setup, gfn)? != *page {
+        if transaction.read_page(setup, gfn)? != page {
             changed.push((gfn, page));
         }
     }
@@ -598,15 +597,16 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let setup_id = self.store_id(setup)?;
         let parent_id = parent.map(|parent| self.store_id(parent)).transpose()?;
         let target_id = self.store_id(target)?;
-        let delta = self.engine.page_delta(setup_id, parent_id, target_id)?;
-        let target_pages = self.engine.diff_pages(Some(setup_id), target_id)?;
+        let mut transaction = self.engine.read_transaction();
+        let delta = transaction.page_delta(setup_id, parent_id, target_id)?;
+        let target_pages = transaction.diff_pages(Some(setup_id), target_id)?;
         let target_pages_digest =
-            sparse_delta_target_pages_digest(&self.engine, setup_id, target_pages)?;
-        let sidecar = self.sparse_sidecar(
-            setup,
+            sparse_delta_target_pages_digest(&mut transaction, setup_id, target_pages)?;
+        let base_ram_digest = self.sparse_base_ram_digest_in(setup, &mut transaction)?;
+        let sidecar = self.sparse_sidecar_with_base_digest(
             target,
             target_id,
-            SparsePageVerification::AlreadyVerified,
+            base_ram_digest,
             Some(target_pages_digest),
         )?;
         let (mut cost, pages) = self.export_telemetry.get();
@@ -633,18 +633,28 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         verification: SparsePageVerification,
     ) -> Result<[u8; 32], PortableSnapshotError> {
         let base_id = self.store_id(base)?;
+        let mut transaction = self.engine.read_transaction();
+        match verification {
+            SparsePageVerification::Base => {}
+            SparsePageVerification::BaseAndTarget(target_id) => {
+                transaction.verify_snapshots(&[base_id, target_id])?;
+            }
+        }
+        self.sparse_base_ram_digest_in(base, &mut transaction)
+    }
+
+    fn sparse_base_ram_digest_in(
+        &self,
+        base: SnapId,
+        transaction: &mut SnapshotReadTransaction<'_>,
+    ) -> Result<[u8; 32], PortableSnapshotError> {
+        let base_id = self.store_id(base)?;
+        transaction.verify_snapshots(&[base_id])?;
         let meta = self
             .snapshot_meta
             .get(&base.0)
             .ok_or(PortableSnapshotError::UnknownSnapshot(base.0))?;
         if let Some(digest) = meta.base_ram_digest.get() {
-            match verification {
-                SparsePageVerification::Base => self.engine.verify_snapshot_pages(base_id)?,
-                SparsePageVerification::BaseAndTarget(target_id) => {
-                    self.engine.verify_snapshots(&[base_id, target_id])?;
-                }
-                SparsePageVerification::AlreadyVerified => {}
-            }
             return Ok(digest);
         }
         let memory_len = self
@@ -658,14 +668,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         hasher.update(b"consonance-sparse-base-ram-v1\0");
         hasher.update(memory_len.to_le_bytes());
         for gfn in 0..self.engine.mem_pages() {
-            hasher.update(self.engine.read_page(base_id, gfn)?);
+            hasher.update(transaction.read_page(base_id, gfn)?);
         }
         let digest = hasher.finalize().into();
-        if let SparsePageVerification::BaseAndTarget(target_id) = verification
-            && target_id != base_id
-        {
-            self.engine.verify_snapshot_pages(target_id)?;
-        }
         meta.base_ram_digest.set(Some(digest));
         Ok(digest)
     }
@@ -679,6 +684,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         target_pages_digest: Option<[u8; 32]>,
     ) -> Result<Vec<u8>, PortableSnapshotError> {
         let base_ram_digest = self.sparse_base_ram_digest(base, verification)?;
+        self.sparse_sidecar_with_base_digest(
+            target,
+            target_id,
+            base_ram_digest,
+            target_pages_digest,
+        )
+    }
+
+    fn sparse_sidecar_with_base_digest(
+        &self,
+        target: SnapId,
+        target_id: snapshot_store::SnapshotId,
+        base_ram_digest: [u8; 32],
+        target_pages_digest: Option<[u8; 32]>,
+    ) -> Result<Vec<u8>, PortableSnapshotError> {
         let meta = self
             .snapshot_meta
             .get(&target.0)
@@ -760,7 +780,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let started = std::time::Instant::now();
         let setup_id = self.store_id(setup)?;
         let target_pages_digest = sparse_delta_target_pages_digest(
-            &self.engine,
+            &mut self.engine.read_transaction(),
             setup_id,
             pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
         )?;
@@ -7558,6 +7578,90 @@ mod tests {
             Ok(Reply::Unit)
         );
         assert_eq!(hash(&mut matched), source_hash);
+    }
+
+    #[test]
+    fn sparse_delta_export_verifies_each_slot_once_with_cold_and_cached_base_digest() {
+        use super::decode_sparse_sidecar;
+        use sha2::{Digest, Sha256};
+        let mut source = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut source);
+        let setup = snap(&mut source);
+        let mut image = source.vmm().unwrap().guest_memory().to_vec();
+        image[4096..8192].fill(0xa5);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let parent = snap(&mut source);
+        image[4096..8192].fill(0);
+        image[8192..12288].fill(0xb6);
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_guest_memory(&image)
+            .unwrap();
+        let target = snap(&mut source);
+        let setup_id = source.store_id(setup).unwrap();
+        let parent_id = source.store_id(parent).unwrap();
+        let target_id = source.store_id(target).unwrap();
+        let store = source.engine.store();
+        let before = store.page_verifications_for_test();
+        store
+            .verify_snapshots(&[setup_id, parent_id, target_id])
+            .unwrap();
+        let distinct = store.page_verifications_for_test() - before;
+        assert!(distinct > 0);
+        assert!(
+            source.snapshot_meta[&setup.0]
+                .base_ram_digest
+                .get()
+                .is_none()
+        );
+        let mut exported = Vec::new();
+        for _ in 0..2 {
+            let before = store.page_verifications_for_test();
+            let delta = source
+                .export_sparse_delta(setup, Some(parent), target)
+                .unwrap();
+            assert_eq!(store.page_verifications_for_test() - before, distinct);
+            exported.push((
+                delta
+                    .pages
+                    .iter()
+                    .map(|(gfn, hash, page)| (*gfn, **hash, **page))
+                    .collect::<Vec<_>>(),
+                delta.reverted,
+                delta.sidecar,
+            ));
+        }
+        assert_eq!(exported[0], exported[1]);
+        let target_pages = source.engine.diff_pages(Some(setup_id), target_id).unwrap();
+        let mut changed = Vec::new();
+        for (gfn, page) in target_pages {
+            if source.engine.read_page(setup_id, gfn).unwrap() != *page {
+                changed.push((gfn, page));
+            }
+        }
+        let mut digest = Sha256::new();
+        digest.update(b"consonance-sparse-delta-target-pages-v1\0");
+        digest.update((changed.len() as u64).to_le_bytes());
+        for (gfn, page) in changed {
+            digest.update(gfn.to_le_bytes());
+            digest.update(page);
+        }
+        let reference_target_digest: [u8; 32] = digest.finalize().into();
+        let mut digest = Sha256::new();
+        digest.update(b"consonance-sparse-base-ram-v1\0");
+        digest.update((source.engine.mem_pages() * snapshot_store::PAGE_SIZE as u64).to_le_bytes());
+        for gfn in 0..source.engine.mem_pages() {
+            digest.update(source.engine.read_page(setup_id, gfn).unwrap());
+        }
+        let reference_base_digest: [u8; 32] = digest.finalize().into();
+        let portable = decode_sparse_sidecar(&exported[0].2).unwrap();
+        assert_eq!(portable.target_pages_digest, Some(reference_target_digest));
+        assert_eq!(portable.base_ram_digest, reference_base_digest);
     }
 
     #[test]
