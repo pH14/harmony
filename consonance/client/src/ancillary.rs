@@ -121,7 +121,7 @@ pub(crate) mod tests {
         let space = native_space_bytes(size_of::<RawFd>());
         let mut control = vec![0_u64; (space * 2).div_ceil(size_of::<u64>())];
         for offset in [0, space] {
-            // SAFETY: each u64-aligned header and one integer payload fit its separately CMSG_SPACE-sized initialized region; all pointers remain live through sendmsg.
+            // SAFETY: each aligned header and one integer payload fit its separately CMSG_SPACE-sized initialized region; all writes stay within the live control allocation.
             unsafe {
                 let header = control
                     .as_mut_ptr()

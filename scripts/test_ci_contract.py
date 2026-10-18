@@ -646,6 +646,47 @@ class HostCompatibilityTests(unittest.TestCase):
         self.data = yaml.safe_load((ROOT / self.workflow.path).read_text())
         self.hosts = {key: job for key, job in self.data["jobs"].items() if key != "scope"}
 
+    def test_darwin_rights_qualification_requires_actual_pass_records(self):
+        job = self.hosts["macos-arm64"]
+        step = next(step for step in job["steps"]
+                    if step.get("name") == "Verify Darwin descriptor receive qualification")
+        script = step["run"]
+        self.assertIn('test "$(uname -m)" = arm64', script)
+        self.assertNotIn("cargo ", script)
+        for name in ci_contract.DARWIN_RIGHTS_QUALIFICATION_TESTS:
+            self.assertIn(name, script)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uname = root / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
+            names = ci_contract.DARWIN_RIGHTS_QUALIFICATION_TESTS
+            cases = [
+                ("pass", [f"PASS [0.01s] consonance-client session::worker::tests::{name}"
+                          for name in names], True),
+                ("progress", [f"PASS [0.01s] ( 1/2) consonance-client session::worker::tests::{name}"
+                              for name in names], True),
+                ("colored", [f"\033[32mPASS\033[0m [0.01s] consonance-client session::worker::tests::{name}"
+                             for name in names], True),
+                ("missing", [], False),
+                ("failed", [f"FAIL [0.01s] consonance-client session::worker::tests::{name}"
+                            for name in names], False),
+                ("skipped", [f"SKIP [0.01s] consonance-client session::worker::tests::{name}"
+                             for name in names], False),
+            ]
+            for missing in names:
+                cases.append((missing, [
+                    f"PASS [0.01s] consonance-client session::worker::tests::{name}"
+                    for name in names if name != missing
+                ], False))
+            for label, lines, expected in cases:
+                with self.subTest(case=label):
+                    (root / "host-tests.log").write_text("\n".join(lines) + "\n")
+                    result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, expected, result.stderr)
+
     def test_host_jobs_are_selected_and_bounded_on_every_pull_request(self):
         self.assertEqual(
             [job.name for job in self.workflow.jobs if not job.selects],

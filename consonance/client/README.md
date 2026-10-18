@@ -310,28 +310,44 @@ recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
 The accepted worker descriptor cap and protocol remain unchanged.
 
-On Darwin, worker receives allocate a separate 2048-byte control buffer before
-enforcing the protocol's 64-descriptor limit. All complete returned rights become
-owned before oversized messages are refused. Linux keeps its protocol-sized
-control buffer. This Darwin bound is a qualified XNU implementation assumption,
-not a universal ancillary-data API guarantee: audited XNU releases
-10002.1.13, 11417.140.69 and 12377.121.6 limit the complete send control buffer
-to one 2048-byte cluster (with a tighter LP64 expansion limit), accept one
-SCM_RIGHTS header covering that buffer, and preserve control record boundaries
-through receive. The per-mbuf 512-FD constant alone does not prove this bound.
-Socket send/receive high-water options are flow control and do not replace it.
-The bound follows XNU's [whole-control allocation limit](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_syscalls.c#L3274),
-[one-header AF_UNIX admission](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_usrreq.c#L2491)
-and [control record receive boundary](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_socket.c#L2958).
+On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
+control buffer, including header remainders and body bytes. All complete
+returned rights become owned before oversized messages are refused; rights
+after the initial header receive are malformed and close on refusal. A plain
+Darwin read can install rights without reporting them, so it cannot consume
+frame remainders safely. Linux retains its protocol-sized initial control
+buffer and plain remainder reads.
 
-Native Darwin subprocess tests cover protocol limits, maximum accepted and
-oversized kernel sends, multiple headers, queued sends and zero-data controls,
-and compare live task-FD sets after closing only known owned handles. These run
-in the normal macOS in-process client test lane. Unexpected MSG_CTRUNC still
-refuses the message; XNU can install descriptors omitted from truncated output,
-so this process cannot recover those handles safely. Such behavior falls outside
-the qualified receive bound and is not repaired by scanning and closing guessed
-FD numbers. New macOS/XNU behavior requires requalification of this assumption.
+The Darwin bound is a qualified XNU implementation assumption, not a universal
+ancillary-data API guarantee. Audited public releases
+[`xnu-10002.1.13`](https://github.com/apple-oss-distributions/xnu/tree/xnu-10002.1.13),
+[`xnu-11417.140.69`](https://github.com/apple-oss-distributions/xnu/tree/xnu-11417.140.69)
+and [`xnu-12377.121.6`](https://github.com/apple-oss-distributions/xnu/tree/xnu-12377.121.6)
+limit the complete send control allocation to one 2048-byte cluster, with a
+tighter LP64 expansion limit, accept one SCM_RIGHTS header covering that
+buffer, and preserve control record boundaries through receive. The bound
+combines [whole-control allocation](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_syscalls.c),
+[AF_UNIX header admission](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_usrreq.c)
+and [control receive boundaries](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_socket.c).
+The per-mbuf 512-FD constant or socket high-water options alone do not prove it.
+
+Public XNU tags are not the shipped kernel binaries. Local native evidence is
+macOS 26.6.2, build 25G83, Darwin 25.6.0/XNU 12377.161.14~5, newer than every
+audited tag; no matching public source was inspected. macOS 14 runtime evidence
+is pending its CI run, and no macOS 15 native run was performed. The ordinary
+`Checks / Harmony Host Compatibility / macOS Arm64` job on `macos-14` checks
+exact PASS records in its existing workspace test log for both native Darwin
+qualification tests. Missing feature selection or a skipped test fails that
+check without another Cargo build.
+
+Sacrificial subprocess tests cover protocol limits, maximum accepted and
+oversized kernel sends, multiple headers, queued sends, zero-data controls,
+and unexpected rights in header remainders/body bytes with and without a
+deadline. They compare live task-FD sets after closing only known owned handles.
+Unexpected MSG_CTRUNC still refuses the message; XNU can install descriptors
+omitted from truncated output, which this process cannot recover safely. Such
+behavior falls outside the qualified bound and is not repaired by closing
+guessed FD numbers. New macOS/XNU behavior requires requalification.
 
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot

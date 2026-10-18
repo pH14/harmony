@@ -621,6 +621,11 @@ REPOSITORY_CHECKS = Workflow(
     ),
 )
 
+DARWIN_RIGHTS_QUALIFICATION_TESTS = (
+    "darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal",
+    "darwin_frame_remainders_own_and_refuse_unexpected_rights",
+)
+
 HARMONY_HOST_COMPATIBILITY = Workflow(
     path=f"{WORKFLOW_DIR}/harmony-host-compatibility.yml",
     name="Checks / Harmony Host Compatibility",

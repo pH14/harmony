@@ -81,6 +81,12 @@ readiness. It runs on pull requests so a broken macOS package is caught before
 release. The Arm64 Linux package job likewise checks readiness with the musl
 host beside its frontend.
 
+`Checks / Harmony Host Compatibility / macOS Arm64` runs the portable workspace
+suites on `macos-14`. Its existing `host-tests.log` must contain exact nextest
+PASS records for the Darwin descriptor receive-bound and frame-remainder
+qualification tests. Missing in-process feature selection, a skipped test or a
+failed test cannot satisfy this check. It does not add another Cargo build.
+
 `Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
 `rust_checks`. `Linux Arm64` compiles the backend and runs the portable
 Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
