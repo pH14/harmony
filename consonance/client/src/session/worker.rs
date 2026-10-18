@@ -947,6 +947,8 @@ pub struct WorkerSession {
     seed: u64,
     failed: Cell<bool>,
     counters: RefCell<Vec<(String, u64)>>,
+    telemetry_queries: Cell<u64>,
+    telemetry_query_failures: Cell<u64>,
     exchanging: Cell<bool>,
 }
 
@@ -1012,6 +1014,8 @@ impl WorkerSession {
             failed: Cell::new(false),
             counters: RefCell::default(),
             exchanging: Cell::new(false),
+            telemetry_queries: Cell::new(0),
+            telemetry_query_failures: Cell::new(0),
         };
         let mut request = Out::op(INIT);
         put_config(&mut request, config);
@@ -1286,6 +1290,8 @@ impl SearchSession for WorkerSession {
             input.finish()?;
             Ok(counters)
         };
+        self.telemetry_queries
+            .set(self.telemetry_queries.get().saturating_add(1));
         let mut fresh = false;
         if let Ok(Ok(counters)) = self.call(&Out::op(TELEMETRY), &[]).map(decode) {
             fresh = true;
@@ -1302,9 +1308,20 @@ impl SearchSession for WorkerSession {
                     .collect(),
             );
         }
+        if !fresh {
+            self.telemetry_query_failures
+                .set(self.telemetry_query_failures.get().saturating_add(1));
+        }
         let mut counters = self.counters.borrow().clone();
         counters.extend(self.loaded_image_guard.counters("guard.parent"));
-        counters.push(("guard.child.telemetry_query_ok".into(), u64::from(fresh)));
+        counters.push((
+            "guard.child.telemetry_queries".into(),
+            self.telemetry_queries.get(),
+        ));
+        counters.push((
+            "guard.child.telemetry_query_failures".into(),
+            self.telemetry_query_failures.get(),
+        ));
         counters
     }
 
@@ -1912,7 +1929,10 @@ mod tests {
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
-            vec![("runs".to_owned(), self.runs)]
+            vec![
+                ("runs".to_owned(), self.runs),
+                ("guard.session.fixture.dispatches".to_owned(), self.runs),
+            ]
         }
 
         fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
@@ -2718,6 +2738,31 @@ mod tests {
         );
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn shared_launcher_forks_session_telemetry_owners() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let launcher = WorkerLauncher::current_exe(vec![
+            "--exact".into(),
+            "session::worker::tests::serve_fake_worker".into(),
+        ])
+        .unwrap();
+        let before = launcher.telemetry_counters();
+        let mut first =
+            WorkerSession::spawn(&launcher, &[3], b"i", &config(), &[], "fake").unwrap();
+        first.state_hash().unwrap();
+        let first_before = first.loaded_image_guard.counters("test");
+        let second = WorkerSession::spawn(&launcher, &[3], b"i", &config(), &[], "fake").unwrap();
+        assert_eq!(first.loaded_image_guard.counters("test"), first_before);
+        assert_eq!(launcher.telemetry_counters(), before);
+        let second_before = second.loaded_image_guard.counters("test");
+        first.state_hash().unwrap();
+        assert_eq!(second.loaded_image_guard.counters("test"), second_before);
+    }
+
     fn kill(session: &WorkerSession) {
         let pid = libc::pid_t::try_from(session.process_id().unwrap()).unwrap();
         // SAFETY: kill only signals the child process this test spawned.
@@ -3101,7 +3146,10 @@ mod tests {
             1
         );
         assert_eq!(b["guard.child.loop.receive.dispatches"], 1);
-        assert_eq!(b["guard.child.telemetry_query_ok"], 1);
+        assert_eq!(b["guard.child.telemetry_queries"], 2);
+        assert_eq!(b["guard.child.telemetry_query_failures"], 0);
+        assert_eq!(b["guard.child.session.fixture.dispatches"], b["runs"]);
+        assert!(!b.contains_key("guard.session.fixture.dispatches"));
         assert_eq!(b["guard.parent.rpc_before.strict_attempts"], 0);
         assert_eq!(
             b["guard.parent.rpc_before.fixture_dispatches"],
@@ -3120,7 +3168,20 @@ mod tests {
             .telemetry_counters()
             .into_iter()
             .collect::<std::collections::BTreeMap<_, _>>();
-        assert_eq!(failed["guard.child.telemetry_query_ok"], 0);
+        assert_eq!(failed["guard.child.telemetry_query_failures"], 1);
+        let again = first
+            .telemetry_counters()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let successful = second
+            .telemetry_counters()
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(
+            again["guard.child.telemetry_query_failures"]
+                + successful["guard.child.telemetry_query_failures"],
+            2
+        );
         assert_eq!(
             failed["guard.child.loop.handled.dispatches"],
             b["guard.child.loop.handled.dispatches"]
@@ -3176,6 +3237,8 @@ mod tests {
                 seed: 0,
                 counters: RefCell::new(Vec::new()),
                 exchanging: Cell::new(false),
+                telemetry_queries: Cell::new(0),
+                telemetry_query_failures: Cell::new(0),
                 failed: std::cell::Cell::new(false),
                 loaded_image_guard: LoadedImageGuard::fixture(),
             };
