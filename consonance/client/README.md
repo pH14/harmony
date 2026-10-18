@@ -201,7 +201,7 @@ allocation/I/O work; they must not be added to those durations. Concurrent reads
 are approximate field snapshots, not a synchronized event record. Abandon callbacks
 hold only weak table ownership plus the shared counters. Host time never
 enters `CacheStats` equality, budgeting, leases, quarantine or search policy.
-The campaign reports the shared owner once, rather than once per worker/session.
+The campaign reports each shared index once.
 
 Extents live in 64 MiB `PageSegments` backed by memfd on Linux and
 `shm_open` on macOS. Committed extents are never written again. An extent holds
