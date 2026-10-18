@@ -371,6 +371,21 @@ fn malformed(what: &str) -> io::Error {
     )
 }
 
+fn transport_error(error: io::Error) -> SessionError {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+    ) {
+        SessionError::Infrastructure(format!("session worker disconnected: {error}"))
+    } else {
+        SessionError::Control(format!("session worker: {error}"))
+    }
+}
+
 #[derive(Debug, Default)]
 struct Out(Vec<u8>);
 
@@ -967,7 +982,7 @@ impl WorkerSession {
             Ok((body, _)) => body,
             Err(error) => {
                 self.failed.set(true);
-                return Err(SessionError::Control(format!("session worker: {error}")).into());
+                return Err(transport_error(error).into());
             }
         };
         self.check_loaded_image()?;
@@ -1593,6 +1608,8 @@ mod tests {
 
     const HANG: u64 = u64::MAX;
     const HOST_FAILURE: u64 = u64::MAX - 1;
+    const GUEST_PANIC: u64 = u64::MAX - 2;
+    const GUEST_SHUTDOWN: u64 = u64::MAX - 3;
 
     #[derive(Debug, Default)]
     struct Fake {
@@ -1713,6 +1730,19 @@ mod tests {
             }
             if deadline == HOST_FAILURE {
                 return Err(SessionError::Infrastructure("owned host exited87".into()).into());
+            }
+            if let Some(kind) = match deadline {
+                GUEST_PANIC => Some(control_proto::CrashKind::Panic),
+                GUEST_SHUTDOWN => Some(control_proto::CrashKind::Shutdown),
+                _ => None,
+            } {
+                return Ok(StopReason::Crash {
+                    vtime: Moment(40),
+                    info: control_proto::CrashInfo {
+                        kind,
+                        detail: b"framed guest stop".to_vec(),
+                    },
+                });
             }
             self.current = self.current.wrapping_add(1);
             self.runs += 1;
@@ -1967,6 +1997,56 @@ mod tests {
         assert_eq!(session.state_hash().unwrap(), [3; 32]);
     }
 
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn sealed_worker_sigkill_is_infrastructure_and_guest_stops_are_framed() {
+        use std::os::unix::process::ExitStatusExt;
+
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let mut session = spawned(3);
+        for (deadline, expected) in [
+            (GUEST_PANIC, control_proto::CrashKind::Panic),
+            (GUEST_SHUTDOWN, control_proto::CrashKind::Shutdown),
+        ] {
+            let stop = session.run_until(deadline).unwrap();
+            assert!(matches!(stop, StopReason::Crash { info, .. } if info.kind == expected));
+            assert!(!session.abandoned());
+        }
+        let pid = session.process_id().unwrap();
+        assert!(
+            Command::new("/bin/kill")
+                .args(["-KILL", &pid.to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let error = session.run_until(80).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<SessionError>(),
+            Some(SessionError::Infrastructure(detail)) if detail.contains("session worker disconnected")),
+            "{error}"
+        );
+        assert!(session.abandoned());
+        assert_eq!(
+            session.process.as_mut().unwrap().wait().unwrap().signal(),
+            Some(9)
+        );
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        drop(session);
+        eprintln!(
+            "worker transport provenance: SIGKILL infrastructure; framed guest panic/shutdown preserved"
+        );
+    }
+
     fn kill(session: &WorkerSession) {
         let pid = libc::pid_t::try_from(session.process_id().unwrap()).unwrap();
         // SAFETY: kill only signals the child process this test spawned.
@@ -2158,6 +2238,52 @@ mod tests {
             drop(session);
             server.join().unwrap();
         }
+    }
+
+    #[test]
+    fn a_complete_malformed_frame_from_a_live_worker_remains_control() {
+        let (parent, mut child) = UnixStream::pair().unwrap();
+        let (release, hold) = std::sync::mpsc::channel();
+        let (ready, complete) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut served = Served::default();
+            let (body, fds) = recv(&child).unwrap();
+            let reply = status(served.handle(&body, &fds, &mut Fake::open));
+            send(&child, &reply, &[]).unwrap();
+            let (body, _) = recv(&child).unwrap();
+            assert_eq!(body[0], STATE_HASH);
+            let mut header = [0; HEADER];
+            header[..8].copy_from_slice(&1_u64.to_le_bytes());
+            header[8..].copy_from_slice(&1_u64.to_le_bytes());
+            child.write_all(&header).unwrap();
+            child.write_all(&[OK]).unwrap();
+            ready.send(()).unwrap();
+            hold.recv().unwrap();
+        });
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let error = session.state_hash().unwrap_err();
+        complete.recv().unwrap();
+        assert!(
+            matches!(error.downcast_ref::<SessionError>(),
+            Some(SessionError::Control(detail)) if detail.contains("descriptor count")),
+            "{error}"
+        );
+        assert!(session.abandoned());
+        release.send(()).unwrap();
+        drop(session);
+        server.join().unwrap();
     }
 
     #[test]
@@ -2494,7 +2620,13 @@ mod tests {
         let error = session
             .publish_snapshot(&index, namespace(), b"key", None, snap, 1)
             .unwrap_err();
-        assert!(error.to_string().contains("session worker"), "{error}");
+        assert!(
+            matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Infrastructure(_))
+            ),
+            "{error}"
+        );
         server.join().unwrap();
         let stats = index.stats();
         assert_eq!((stats.entries, stats.leased, stats.publishes), (0, 0, 0));

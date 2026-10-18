@@ -215,7 +215,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v9";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v10";
 
 type CoverageWindow = (u64, u64, std::num::NonZeroU16);
 const COVERAGE_WINDOW_BYTES: usize = 18;
@@ -746,8 +746,12 @@ impl FaultTarget {
         LIVE.with(|cell| {
             let mut slot = cell.borrow_mut();
             let live = slot.as_mut().ok_or("the current job has no live session")?;
-            if live.key != self.config.key || live.abandoned || live.session.abandoned() {
-                return Err("the current job has no usable matching live session".into());
+            if live.key != self.config.key {
+                return Err("the current job session has a different identity".into());
+            }
+            if live.abandoned || live.session.abandoned() {
+                *slot = None;
+                return Err(format!("{INFRASTRUCTURE_FAILURE}the current job session was abandoned while reading ordered event history"));
             }
             let result = live.ordered_history();
             if live.abandoned || live.session.abandoned() {
@@ -2416,7 +2420,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug)]
+    #[derive(Debug, Default)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
         hash_calls: u64,
@@ -2428,7 +2432,7 @@ mod tests {
         abandon_on_hash: bool,
         hash_failure: bool,
         history: control_proto::EventHistory,
-        history_hung: bool,
+        history_failure: Option<fn() -> SessionError>,
         histories: BTreeMap<u64, control_proto::EventHistory>,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
@@ -2453,8 +2457,8 @@ mod tests {
         }
 
         fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
-            if self.history_hung {
-                return Err(SessionError::Hung(WALL_LIMIT).into());
+            if let Some(failure) = self.history_failure {
+                return Err(failure().into());
             }
             Ok(self.history)
         }
@@ -2740,7 +2744,7 @@ mod tests {
             session: Box::new(TimedOutRestore {
                 histories: BTreeMap::new(),
 
-                history_hung: false,
+                history_failure: None,
                 history: control_proto::EventHistory::default(),
                 hash: None,
                 hash_calls: 0,
@@ -2789,7 +2793,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some(commitment),
             hash_calls: 0,
@@ -3149,7 +3153,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some(hash),
             hash_calls: 0,
@@ -3183,7 +3187,7 @@ mod tests {
         TimedOutRestore {
             histories: BTreeMap::new(),
             history: control_proto::EventHistory::default(),
-            history_hung: false,
+            history_failure: None,
             hash: Some([17; 32]),
             hash_calls: 0,
             replay_calls: 0,
@@ -3213,7 +3217,7 @@ mod tests {
             histories: BTreeMap::new(),
 
             history,
-            history_hung: false,
+            history_failure: None,
             hash: Some([17; 32]),
             hash_calls: 0,
             replay_calls: 0,
@@ -3556,7 +3560,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3594,7 +3598,7 @@ mod tests {
             live.session = Box::new(TimedOutRestore {
                 histories: BTreeMap::new(),
 
-                history_hung: false,
+                history_failure: None,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 hash_calls: 0,
@@ -3681,7 +3685,7 @@ mod tests {
         baseline_live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3718,7 +3722,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3816,7 +3820,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3876,7 +3880,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3920,7 +3924,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -4262,7 +4266,7 @@ mod tests {
         let mut live = scripted_capture_live(vec![[17; 32]], false);
         live.session = Box::new(TimedOutRestore {
             history: control_proto::EventHistory::default(),
-            history_hung: false,
+            history_failure: None,
             histories: BTreeMap::new(),
 
             hash: Some([17; 32]),
@@ -4826,7 +4830,7 @@ mod tests {
         baseline_live.session = Box::new(TimedOutRestore {
             histories: BTreeMap::new(),
 
-            history_hung: false,
+            history_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -4862,7 +4866,7 @@ mod tests {
             live.session = Box::new(TimedOutRestore {
                 histories: BTreeMap::new(),
 
-                history_hung: false,
+                history_failure: None,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 hash_calls: 0,
@@ -5143,6 +5147,197 @@ mod tests {
     }
 
     #[test]
+    fn replay_certificate_v3_refuses_reused_v2_domains() {
+        let hash = [17; 32];
+        let history = (2, [23; 32]);
+        let observation = FaultObservations::default();
+        let certificate = replay_endpoint_certificate(hash, history, &observation, false).unwrap();
+        let mut snapshot = FaultSnapshot {
+            actions: vec![FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
+            prefix_certificates: vec![Some(certificate)],
+            observation: observation.clone(),
+            failed: false,
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState(hash)),
+            event_history: Some(history),
+        };
+        validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
+        for previous in [
+            postcard::to_allocvec(&("fault-replay-endpoint-v2", hash, &observation, false))
+                .unwrap(),
+            postcard::to_allocvec(&(
+                "fault-replay-endpoint-v2",
+                control_proto::EventHistory::VERSION,
+                hash,
+                history,
+                &observation,
+                false,
+            ))
+            .unwrap(),
+        ] {
+            snapshot.prefix_certificates[0] = Some(Sha256::digest(previous).into());
+            assert!(
+                validate_snapshot_prefix_certificates(&snapshot, false)
+                    .unwrap_err()
+                    .contains("final prefix differs")
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_history_preserves_typed_host_failure_before_admission() {
+        let snapshot = FaultSnapshot {
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
+            ..FaultSnapshot::default()
+        };
+        validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
+        for (failure, watchdog) in [
+            (
+                (|| SessionError::Hung(WALL_LIMIT)) as fn() -> SessionError,
+                true,
+            ),
+            (
+                (|| SessionError::Infrastructure("owned worker disconnected".into()))
+                    as fn() -> SessionError,
+                false,
+            ),
+            ((|| SessionError::Abandoned) as fn() -> SessionError, false),
+        ] {
+            let mut target = unbooted_target();
+            let mut live = hashed_live([17; 32]);
+            live.session = Box::new(TimedOutRestore {
+                hash: Some([17; 32]),
+                history_failure: Some(failure),
+                ..TimedOutRestore::default()
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let error = target.event_history_current().unwrap_err();
+            assert!(
+                error.starts_with(if watchdog {
+                    WATCHDOG_CUTOFF
+                } else {
+                    INFRASTRUCTURE_FAILURE
+                }),
+                "{error}"
+            );
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            target.finish_restore(&snapshot, Err(error)).unwrap();
+            assert_eq!(target.infrastructure_failure(), !watchdog);
+            assert_eq!(target.watchdog_cutoffs(), u64::from(watchdog));
+            assert_eq!(target.execution_ticks(), 17);
+            assert!(target.actions().is_empty());
+            assert!(!target.found_bug());
+            assert!(target.snapshot().unwrap().is_none());
+            let error =
+                crate::campaign::require_completed_attempt(&target, "ordered history").unwrap_err();
+            assert!(
+                error.to_string().contains("reservation not admitted"),
+                "{error}"
+            );
+        }
+        let mut target = unbooted_target();
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            history_failure: Some(|| {
+                SessionError::Control(format!("{INFRASTRUCTURE_FAILURE}forged transport cause"))
+            }),
+            ..TimedOutRestore::default()
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let error = target.event_history_current().unwrap_err();
+        assert!(!error.starts_with(INFRASTRUCTURE_FAILURE));
+        assert!(!error.starts_with(WATCHDOG_CUTOFF));
+        assert_eq!(
+            target
+                .finish_restore(&snapshot, Err(error.clone()))
+                .unwrap_err()
+                .to_string(),
+            error
+        );
+        assert!(!target.infrastructure_failure());
+        assert_eq!(target.watchdog_cutoffs(), 0);
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+    }
+
+    #[test]
+    fn ordered_history_distinguishes_abandoned_matching_sessions_from_identity_errors() {
+        let target = unbooted_target();
+        for matching in [false, true] {
+            let mut live = hashed_live([17; 32]);
+            if !matching {
+                live.key = [1; 32];
+            }
+            live.abandoned = true;
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let error = target.event_history_current().unwrap_err();
+            assert_eq!(
+                error.starts_with(INFRASTRUCTURE_FAILURE),
+                matching,
+                "{error}"
+            );
+            LIVE.with(|slot| assert_eq!(slot.borrow().is_none(), matching));
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+        let missing = target.event_history_current().unwrap_err();
+        assert!(!missing.starts_with(INFRASTRUCTURE_FAILURE));
+    }
+
+    #[test]
+    fn typed_worker_disconnect_refuses_campaign_evaluation_and_certification() {
+        use searcher::search::campaign::{CampaignJobResult, Evaluation, Reporting};
+
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
+            root: None,
+        };
+        let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
+        let run = crate::campaign::FaultCampaignRun {
+            vocabulary: crate::bundle::FaultVocabulary::new(1, vec![1]).unwrap(),
+        };
+        let mut target = unbooted_target();
+        let snapshot = FaultSnapshot {
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
+            ..FaultSnapshot::default()
+        };
+        validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
+        let before_ticks = target.execution_ticks();
+        let error = SessionError::Infrastructure(
+            "session worker disconnected: unexpected end of file".into(),
+        );
+        target
+            .finish_restore(&snapshot, Err(session_failure("worker replay", &error)))
+            .unwrap();
+        assert!(target.infrastructure_failure());
+        assert_eq!(target.watchdog_cutoffs(), 0);
+        assert_eq!(target.execution_ticks(), before_ticks);
+        assert!(target.actions().is_empty());
+        assert!(!target.found_bug());
+        assert!(target.snapshot().unwrap().is_none());
+        let result = CampaignJobResult {
+            preparation_failure: None,
+            actions: Vec::new(),
+        };
+        for error in [
+            crate::campaign::require_completed_attempt(&target, "worker replay").unwrap_err(),
+            game.certified_result_sha256(&result, &target).unwrap_err(),
+            game.rollout_outcome(&run, &target).unwrap_err(),
+        ] {
+            assert!(
+                error.to_string().contains("host infrastructure failure"),
+                "{error}"
+            );
+            assert!(
+                error.to_string().contains("reservation not admitted"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
     fn other_reconstruction_errors_remain_fatal() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
@@ -5331,7 +5526,7 @@ mod tests {
                 sdk_event_count: 0,
                 run_events: None,
                 abandon_on_hash: false,
-                history_hung: false,
+                history_failure: None,
                 hash: Some(endpoint),
                 history: control_proto::EventHistory { count: 2, digest },
                 events: BTreeMap::new(),
@@ -5426,7 +5621,7 @@ mod tests {
                     candidate: None,
                 });
             }
-            let certify = |digest, history_hung| {
+            let certify = |digest, history_hung: bool| {
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
                     histories: BTreeMap::new(),
@@ -5439,7 +5634,7 @@ mod tests {
                     sdk_event_count: 0,
                     run_events: None,
                     abandon_on_hash: false,
-                    history_hung,
+                    history_failure: history_hung.then_some(|| SessionError::Hung(WALL_LIMIT)),
                     history: control_proto::EventHistory { count: 2, digest },
                     hash: Some([17; 32]),
                     events: BTreeMap::new(),
