@@ -636,7 +636,7 @@ function showPathLevel(level) {
 }
 function followStalledPath(now) {
   if (!ready || path.level == null) return;
-  if (path.show && camera.follow) {
+  if (path.show && $("inspector").hidden) {
     const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
     if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
     else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.length || 0), 0) >= 3) {

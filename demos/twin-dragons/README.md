@@ -356,8 +356,8 @@ pipe is the warp's destination. The view follows one path through the game: it
 moves to a level only when a clearing rollout that starts in the level the path
 is on arrives, and it moves to that rollout's exit once the exit has at least
 three live sprites, so the view never shows a level the search has not started
-exploring. While a selected history has stopped the camera, that move waits
-until the camera follows the search again, so the selection keeps its room.
+exploring. While the History panel is open, that move waits until the panel
+closes, so the selected history keeps its room.
 Levels that other
 lineages reach, such as the worlds past a warp zone the path did not take, do
 not move the view. When a deeper level has had more live rollouts than the
