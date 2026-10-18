@@ -437,8 +437,10 @@ standard-library admission or advisory CPU replay warnings.
 The hardware workflow's Linux composed continuation jobs retain one static
 executable and its exact kernel/initramfs, export a completed Linux cut, and
 run fresh imports on six distinct runner instances. The required aggregate
-checks local uninterrupted/capture/fresh/reused controls and guest-originated
-RAM/SIMD/x87/timer/entropy observations, then requires a successful Intel/AMD
+checks local uninterrupted/capture/fresh/reused controls, READY/DONE/terminal whole-VMM
+hashes, composed portable-snapshot histories, bounded RAM/SIMD/x87 goldens and
+two-seed sensitivity with equal positive work and exact guest termination. It
+retains independent timer/entropy observations and requires a successful Intel/AMD
 host-pair import. Documented admission refusals remain explicit evidence and
 cannot satisfy that supported migration requirement. The bounded registry,
 commands and exclusions are in

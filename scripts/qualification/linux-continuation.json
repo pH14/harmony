@@ -1,13 +1,35 @@
 {
-  "version": 1,
+  "version": 2,
   "cell": {
     "id": "linux-x86-kvm-composed-continuation",
     "host_class": "linux-x86_64-kvm",
     "backend": "KvmBackend",
     "test": "composed_linux_snapshot_continuation",
-    "scope": "owned PID 1 on the pinned 64-bit Linux kernel; memory, XMM15, x87, virtual timer, entropy and serial readbacks",
-    "oracles": ["uninterrupted", "capture-neutral", "fresh-restore", "cache-pressure", "reused-after-detour-or-explicit-amd-refusal", "corrupt-ram-negative", "omitted-simd-negative", "cross-host-fresh-restore", "cross-vendor-fresh-restore"],
-    "unsupported": ["host-core-class-mismatch", "amd-reused-vcpu"],
-    "minimum_import_hosts": 2
+    "scope": "owned PID 1 on the pinned 64-bit Linux kernel; READY/DONE/terminal whole-VMM hashes, separate composed portable-snapshot event history, bounded RAM/SIMD/x87 goldens and seed-sensitive entropy with equal continuation work",
+    "oracles": [
+      "uninterrupted",
+      "capture-neutral",
+      "fresh-restore",
+      "cache-pressure",
+      "reused-after-detour-or-explicit-amd-refusal",
+      "corrupt-ram-negative",
+      "omitted-simd-negative",
+      "cross-host-fresh-restore",
+      "cross-vendor-fresh-restore",
+      "whole-vmm-checkpoints",
+      "ordered-control-history",
+      "bounded-conformance",
+      "seed-sensitivity",
+      "latent-memory-negative"
+    ],
+    "unsupported": [
+      "host-core-class-mismatch",
+      "amd-reused-vcpu"
+    ],
+    "minimum_import_hosts": 2,
+    "seeds": [
+      "0028c0ffee5eedc0",
+      "0028c0ffee5fedc0"
+    ]
   }
 }

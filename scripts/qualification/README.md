@@ -106,14 +106,39 @@ guest record. These controls execute in the same retained executable as the
 positive arms; snapshots and their shared state-hash inventory are not the
 observation oracle.
 
-The exporter retains RAM, encoded VM state, the expected guest record and
-the source backend's host core class. Importers validate those bytes before
-restoring into a fresh composed VMM. A core-class mismatch must produce the
-public `ContractMismatch` admission error, leave CPU, RAM, virtual time and
-serial state unchanged, then successfully restore and continue an admitted
-local snapshot in that same target. An arbitrary restore error never counts
-as an unsupported combination. Accepted imports must reproduce the exact
-exported guest record.
+The cell separates three acceptance obligations. O1 enables production VM-state
+hashing and compares the complete modeled VMM hash at READY and DONE boundaries and at termination
+across same-seed boots, capture, fresh/reused restore and pressure variation.
+A planted byte outside the emitted memory buffer must change the hash while
+preserving guest observations and continuation work. O2 checks the reviewed
+4096-byte memory checksum and SIMD/x87 constants; it does not call the time or
+entropy outputs specification goldens. O3 repeats seeds `0028c0ffee5eedc0` and
+`0028c0ffee5fedc0`, compares each seed's complete state and output, requires
+entropy to differ and every nonentropy readback to agree, and requires equal
+positive continuation event counts and virtual nanoseconds. Both runs continue
+past DONE to the exact `Terminal(Idle)` outcome after the owned guest requests
+Linux `POWER_OFF`; arbitrary errors and time limits cannot count as completion.
+
+Raw `VmState` capture restores logical machine state, not cumulative event
+history. The additional production `ControlServer` path captures and exports
+its full portable snapshot, imports and replays it in a fresh server, then
+compares both complete VMM hashes and the separately preserved history count
+and digest. Capture itself must preserve both. These paths retain distinct
+oracles rather than copying an expected history into the raw VMM fixture.
+
+The exporter retains RAM, encoded raw VM state, raw checkpoint oracles, the
+composed portable snapshot and its oracles, the expected guest record and
+source backend core class. Importers validate every file hash before running
+both raw and composed portable restoration. A raw core-class mismatch must
+produce the public `ContractMismatch` admission error, leave CPU, RAM, virtual
+time and serial state unchanged, then successfully restore and continue an
+admitted local snapshot in that same target. Arbitrary errors never count as
+unsupported combinations. Accepted imports reproduce READY/DONE/terminal whole
+state hashes, exact guest observations and continuation work, and the composed
+portable path's cumulative event history. The aggregate rejects a changed hash
+or history even if every guest-emitted field agrees. Missing oracles, a repeated
+seed, stable entropy under changed seeds, zero/unequal work, or an unexpected
+terminal outcome refuse qualification.
 
 Build and run on Linux x86-64 with Rust's musl target and `musl-gcc`:
 
