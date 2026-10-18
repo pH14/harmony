@@ -30,5 +30,13 @@
   "current-ejection-controls.json": "d3df77f0ceb5334a406b4a46e87782b891718d45f670f619104f4dbf777a9cee",
   "c7-pit-collision.json": "e81da12dc688a70097c1b7c4497272807abc3d2c52af22998ea646d0cf3677cd",
   "current-timemachine-wrap-fceumm.json": "ac8023712c1cd98aa4f34c03e1afa2662b41135594792193a72b50c07281e880",
-  "c6-spike-generic-fixed-fceumm.json": "e3d2642b8f0c820593d61eeae6f1a57abce9b75755b01f13c90551aa478d8a58"
+  "c6-spike-generic-fixed-fceumm.json": "e3d2642b8f0c820593d61eeae6f1a57abce9b75755b01f13c90551aa478d8a58",
+  "current-fofii-fixed-fceumm.json": "4ace01a6c84805c877cfc12ca88e6061cc1858e9dca4fb9218f57435745e8eaf",
+  "current-fofii-fixed-replay.json": "f5ce1f70be0aad0c95787ddf679b1a3f4d52d099d6534e683b02d85cfedd0d20",
+  "current-fofii-fixed-control.json.gz": "f567526d46502187941d8280ccd8a6ca1c47ac68deac3489de5e00489f06d403",
+  "current-fofii-rom-geometry.json": "7869ff279ed26deacc5ae024eba5eb28adbb64115cd6e15d21e6e681a0ff70ad",
+  "current-fofii-fixed-control-fceumm.json": "e52a5572472acaf9b00d4dba956b9ba8ba1b3098852e09640446e4f1f4c423f2",
+  "current-fofii-witness.json.gz": "86abe8113ceb175eec9fcfd05ea2454f8bb59633422d6d46a0c7e3c2402ba787",
+  "current-fofii-fceumm.json": "5793d5f7cd34994684bf5de347ab72afb9d7a6941bc87398c83f7d34e30aedf6",
+  "current-fofii-builds.json": "a5036dc612ff1928f238b2823de597a491eaa03430facb7d464b742fcbd67011"
 }

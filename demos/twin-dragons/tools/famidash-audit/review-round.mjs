@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { machine, hash, tileAt } from "./runtime.mjs";
-import { players, collisionPoint } from "./signals.mjs";
+import { players, advanceCollisionPoint } from "./signals.mjs";
 
 const [indexPath, roms, runtime, roundDirectory, output] = process.argv.slice(2);
 if (!output) throw new Error("review-round.mjs INDEX ROMS RUNTIME ROUND_DIRECTORY OUTPUT");
@@ -12,10 +12,11 @@ await mkdir(output, { recursive: true });
 let ledger;
 try { ledger = JSON.parse(await readFile(join(output, "review.json"))); }
 catch { ledger = { schema: 1, cases: {}, entries: {}, mismatches: [], reviewed_candidates: 0, status: "review-in-progress" }; }
-if (ledger.detector_revision !== 4) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 4; }
+if (ledger.detector_revision !== 6) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 6; }
 ledger.status = "replay-in-progress";
 ledger.source_review_complete = false;
 const machines = new Map();
+const coveredLevels = new Map();
 function fill(o, layout) {
   if (!o || o.dead || o.state !== 2 || o.debug || o.invincible || o.paused || o.x < 128) return null;
   const tile = tileAt(layout, o.x + 8, o.y + 8);
@@ -31,12 +32,12 @@ function intersection(a, b, left, top, right, bottom) {
   }
   return true;
 }
-function hazards(older, previous, current, layout) {
+function hazards(a, b, previous, current, layout) {
   if (!previous || current.x < 128 || previous.mode !== current.mode) return [];
   if (Math.abs(current.x - previous.x) > 32 || Math.abs(current.y - previous.y) > 32) return [];
   if (current.mode === 5 && current.gravity !== previous.gravity) return [];
-  const a = collisionPoint(older, previous), b = collisionPoint(previous, current);
   if (!a || !b) return [];
+  if (Math.abs(b.x - a.x) > 32 || Math.abs(b.y - a.y) > 32) return [];
   const result = [];
   for (let y = Math.floor(Math.min(a.y, b.y) / 16) * 16; y <= Math.max(a.y, b.y); y += 16)
     for (let x = Math.floor(Math.min(a.x, b.x) / 16) * 16; x <= Math.max(a.x, b.x); x += 16) {
@@ -80,6 +81,7 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
   const root = join(roundDirectory, directory.name);
   let report; try { report = JSON.parse(await readFile(join(root, "report.json"))); } catch { continue; }
   const layout = index.levels.find(l => l.side === report.side && l.level === report.level); if (!layout) continue;
+  coveredLevels.set(`${layout.side}:${layout.level}`, { status: report.status, candidates: report.candidates.length });
   if (!machines.has(layout.rom)) machines.set(layout.rom, await machine(join(roms, layout.rom), runtime));
   const m = machines.get(layout.rom);
   m.boot(layout.side, layout.level, report.setup?.menu_delay ?? 0, report.setup?.startup_released_frames);
@@ -119,9 +121,11 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
     for (; tail < 16; tail++) { m.core.step(0, 1); const states = players(m); trace.push(states); if (states[0].dead || states[0].state !== 2) break; }
     const before = new Set(Object.keys(ledger.entries));
     for (const player of [0, 1]) {
-      let start = null;
+      let start = null, centre = null;
       for (let frame = 0; frame < trace.length; frame++) {
         const o = trace[frame][player], previous = trace[frame - 1]?.[player];
+        const previousCentre = centre;
+        centre = advanceCollisionPoint(previous, o, centre);
         const tile = fill(o, layout), previousTile = fill(previous, layout);
         if (tile && previousTile && tile.id !== previousTile.id) {
           const key = `${layout.side}:${layout.level}:fill:${tile.column}:${tile.row}:style:${player}`;
@@ -143,7 +147,7 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
         }
         if (!o || o.dead || o.state !== 2 || o.debug || o.invincible || o.paused) continue;
         const survives = frame + 8 < trace.length && !trace.slice(frame, frame + 9).some(states => !states[player] || states[player].dead || states[player].state !== 2);
-        const centre = collisionPoint(previous, o), solid = centre && tileAt(layout, centre.x, centre.y);
+        const solid = centre && tileAt(layout, centre.x, centre.y);
         if (survives && solid && index.metatiles[solid.id].collision === "COL_ALL" &&
             (centre.x & 15) >= 3 && (centre.x & 15) <= 12 && (centre.y & 15) >= 3 && (centre.y & 15) <= 12) {
           const key = `${layout.side}:${layout.level}:solid:${solid.column}:${solid.row}:${player}`;
@@ -163,7 +167,7 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
           const key = `${layout.side}:${layout.level}:outside:${o.y < layout.top ? "top" : "bottom"}:${player}`;
           addEntry(key, { path, sha, frame: frame + 1, player, observation: o, previous }, 1, Math.min(trace.length - frame, 512));
         }
-        for (const tile of hazards(trace[frame - 2]?.[player], previous, o, layout)) {
+        for (const tile of hazards(previousCentre, centre, previous, o, layout)) {
           if (frame + 8 >= trace.length || trace.slice(frame, frame + 9).some(states => !states[player] || states[player].dead || states[player].state !== 2)) continue;
           const key = `${layout.side}:${layout.level}:hazard:${tile.column}:${tile.row}:${tile.collision}:${player}`;
           addEntry(key, { path, sha, frame: frame + 1, player, tile, observation: o, previous }, 1, Math.min(trace.length - frame, 512));
@@ -179,7 +183,10 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
   await save();
 }
 await save();
-ledger.status = "replay-inventory-complete";
+ledger.level_coverage = Object.fromEntries(coveredLevels);
+ledger.expected_levels = index.levels.length;
+ledger.status = coveredLevels.size === index.levels.length && [...coveredLevels.values()].every(level => level.status === "searched")
+  ? "replay-inventory-complete" : "partial-replay-inventory";
 ledger.source_review_complete = false;
 await save();
 console.log("replay inventory", ledger.reviewed_candidates, Object.keys(ledger.entries).length, "mismatches", ledger.mismatches.length);

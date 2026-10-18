@@ -4,10 +4,17 @@ import { tileAt } from "./runtime.mjs";
 export function collisionPoint(previous, current, linearCoordinates = false) {
   if (!previous || !current || previous.mode !== current.mode || previous.mini !== current.mini) return null;
   const width = current.mode === 6 || current.mini ? 8 : 15;
-  const height = current.mode === 6 ? 8 : current.mini ? 7 : 15;
+  const height = current.mode === 6 && current.player !== 1 ? 8 : current.mini ? 7 : 15;
   const offset = (height >> 1) + (current.mini ? (16 - height) >> 1 : 0);
-  return { x: previous.x + (width >> 1) - 1,
+  return { x: (current.player === 1 ? current.x : previous.x) + (width >> 1) - 1,
     y: linearCoordinates ? current.y + offset : current.camera + ((current.y - current.camera + offset) & 255) };
+}
+
+export function advanceCollisionPoint(previous, current, previousPoint) {
+  if (!previous || !current) return null;
+  if (["x", "y", "camera", "vy", "mode", "gravity", "mini", "dual", "state", "dead", "paused"]
+    .every(key => previous[key] === current[key])) return previousPoint;
+  return collisionPoint(previous, current);
 }
 
 export function players(m) {

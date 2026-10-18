@@ -3,12 +3,32 @@ import { readFile } from "node:fs/promises";
 import { machine, hash } from "./runtime.mjs";
 
 export async function symbolMachine(rom, runtime, debugFile) {
-  const bytes = await readFile(debugFile), symbols = new Map();
+  const bytes = await readFile(debugFile), symbols = new Map(), segments = new Map(), fileSymbols = new Map();
   for (const line of bytes.toString().split("\n")) {
+    const fields = Object.fromEntries([...line.matchAll(/(\w+)=("[^"]*"|[^,\t]+)/g)].map(m => [m[1], m[2]]));
+    if (line.startsWith("seg\t") && fields.ooffs)
+      segments.set(Number(fields.id), { start: Number(fields.start), offset: Number(fields.ooffs) });
     if (!line.startsWith("sym\t")) continue;
     const name = line.match(/name="([^"]+)"/), value = line.match(/(?:^|,)val=0x([\da-f]+)/i);
-    if (name && value) symbols.set(name[1], Number.parseInt(value[1], 16));
+    if (name && value) {
+      symbols.set(name[1], Number.parseInt(value[1], 16));
+      if (fields.seg !== undefined) fileSymbols.set(name[1], { segment: Number(fields.seg), address: Number.parseInt(value[1], 16) });
+    }
   }
+  const romBytes = await readFile(rom);
+  const fileOffset = name => {
+    const symbol = fileSymbols.get(name), segment = symbol && segments.get(symbol.segment);
+    if (!segment) throw new Error(`missing ROM symbol: ${name}`);
+    return segment.offset + symbol.address - segment.start;
+  };
+  const namedLevels = new Map([...fileSymbols.keys()].filter(name => name.startsWith("level_data_"))
+    .map(name => [fileOffset(name), name.slice("level_data_".length)]));
+  const levelName = level => {
+    const low = romBytes[fileOffset("_level_list_lo") + level];
+    const high = romBytes[fileOffset("_level_list_hi") + level];
+    const bank = romBytes[fileOffset("_level_list_bank") + level];
+    return namedLevels.get(16 + bank * 8192 + low + (high - 0xa0) * 256);
+  };
   const address = name => {
     const value = symbols.get(`_${name}`);
     if (!Number.isInteger(value) || value < 0 || value >= 2048) throw new Error(`missing RAM symbol: ${name}`);
@@ -19,6 +39,7 @@ export async function symbolMachine(rom, runtime, debugFile) {
     "invincible_counter", "pauseStatus", "wrap_mode", "coins", "speed", "scroll_y_subpx"];
   const locations = Object.fromEntries(names.map(name => [name, address(name)]));
   const m = await machine(rom, runtime), powerOn = m.core.capture();
+  const targetLevels = new Map();
   const observe = () => {
     const r = m.ram(), v = new DataView(r.buffer, r.byteOffset), a = locations;
     return { level: r[a.level], state: r[a.gameState],
@@ -38,6 +59,7 @@ export async function symbolMachine(rom, runtime, debugFile) {
       ["gamemode", 0x7a, 1], ["dual", 0x96, 1], ["cube_data", 0x7b, 2], ["speed", 0x45e, 1],
       ["scroll_y_subpx", 0x4a8, 1], ["DEBUG_MODE", 0x595, 1], ["invincible_counter", 0x4a1, 1],
       ["pauseStatus", 0x5b5, 1]]) result.set(r.slice(a[name], a[name] + count), target);
+    result[0x47b] = targetLevels.get(r[a.level]) ?? r[a.level];
     const camera = v.getUint16(a.scroll_y, true);
     result[0x4a6] = camera % 240; result[0x4a7] = Math.floor(camera / 240);
     return result;
@@ -46,14 +68,19 @@ export async function symbolMachine(rom, runtime, debugFile) {
     reset() { m.core.restore(powerOn); m.core.step(0, 158); },
     ramView: () => new Proxy({}, { set(_target, property, value) {
       if (Number(property) !== 0x47b) throw new Error("symbol adapter permits only level-select setup writes");
-      m.ram()[locations.level] = value; return true;
+      m.ram()[locations.level] = [...targetLevels].find(([, target]) => target === value)?.[0] ?? value; return true;
     } }),
     frames(buttons, frames) {
       const result = new Uint8Array(frames * 2048);
       for (let i = 0; i < frames; i++) { m.core.step(buttons, 1); result.set(memory(), i * 2048); }
       return result;
     } };
-  return { ...m, symbols: locations, debug_sha256: hash(bytes), observe, adapter,
+  return { ...m, symbols: locations, debug_sha256: hash(bytes), observe, adapter, levelName,
+    mapTargetLevel(actual, target) {
+      if (![actual, target].every(value => Number.isInteger(value) && value >= 0 && value < 256))
+        throw new Error("level aliases must be byte indices");
+      targetLevels.set(actual, target);
+    },
     players() {
       const primary = { ...observe(), player: 0 }, r = m.ram(), a = locations;
       if (!primary.dual) return [primary];

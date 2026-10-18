@@ -47,6 +47,8 @@ def decompress(rom, offset):
 
 def compare(index, roms, builds):
     result = {"schema": 1, "status": "verified", "levels": []}
+    header_bytes = index.get("level_header_bytes", 18)
+    assert header_bytes in (14, 18), "unsupported level header layout"
     machines = {}
     for layout in index["levels"]:
         side = layout["side"]
@@ -66,8 +68,10 @@ def compare(index, roms, builds):
             return 16 + bank * 8192 + address - 0xa000
 
         header = pointer("_level_list", layout["level"])
-        assert rom[header + 17] == layout["height"], "release level height differs"
-        stream = decompress(rom, header + 18)
+        named_header = symbols.get("level_data_" + layout["name"])
+        assert named_header is None or header == named_header, "level index selects a different named level"
+        assert rom[header + header_bytes - 1] == layout["height"], "ROM level height differs"
+        stream = decompress(rom, header + header_bytes)
         tiles, continuations = [], []
         wanted = layout["width"] * layout["height"]
         while len(tiles) < wanted:

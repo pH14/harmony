@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "status": "verified",
+  "levels": [
+    {
+      "side": "b",
+      "level": 10,
+      "name": "fofii_fofii_fofii",
+      "tile_count": 32430,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    }
+  ]
+}

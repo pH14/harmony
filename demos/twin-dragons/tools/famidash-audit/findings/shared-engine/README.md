@@ -149,3 +149,26 @@ reported escape, before any later original death, with unchanged approach.
 Patch application, builds, independent replays, coin objectives and NES
 frame-budget checks remain separate requirements. No upstream submission
 has been made. `sha256.json` records retained artifact identities.
+
+## Current-upstream Fofii data repair
+
+At `541d68ffcae2096f116146ef21cbc4d62886eb6b`, the original B-side ROM
+`982e220d348379a24ae387a94dbc1aed51d5359f34f24993b2f240dc370a47b6`
+still permits the three-cell floor escape. All 32,430 decoded Fofii background
+tiles match the shared HUGE source. Fofii moved from release index 6 to
+current index 10; the symbol adapter verifies the named ROM pointer and uses
+release target 6 for Dissonance's length/progress model. An initial run with
+index 6 selected A Jolly Retro Christmas and is invalid as Fofii evidence.
+
+`current-fofii-witness.json.gz` is fresh ordinary input found by Dissonance.
+Original replay survives below the level through frame 1,536, x 4,519, y 897;
+FCEUmm matches the complete trace, including the entry animation. Applying
+`../../examples/fofii-current.patch`, exporting B, and building with cc65
+`6bd01e8` gives ROM
+`23a9b4ea178f66db4c15f58c9df1f7376921ce9522b588e5e45e988a969fb3a4`.
+Both cores match the original approach and kill that input at frame 1,317.
+A fresh Dissonance control clears the repaired ROM in 3,764 frames with coins
+1 and 3; FCEUmm matches every frame. The corresponding input, geometry and
+replay reports are retained here. Both B and HUGE export and build successfully; `current-fofii-builds.json`
+records their ROM identities and sizes. These are B-side replay proofs; HUGE
+replay and broader objective coverage remain separate checks.

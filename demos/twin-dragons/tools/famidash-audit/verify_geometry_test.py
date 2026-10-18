@@ -46,6 +46,16 @@ class RomGeometryTests(unittest.TestCase):
             self.assertEqual(result["status"], "geometry-mismatch")
             self.assertEqual(result["levels"][0]["examples"],
                              [{"column": 5, "row": 0, "source": 4, "rom": 3}])
+            layout["tiles"][-1] = 3
+            rom[272 + 13] = 1
+            rom[286:286 + len(first) * 2 + 1] = bytes(value for byte in first for value in (128, byte)) + bytes([255])
+            path.write_bytes(rom)
+            layout["rom_sha256"] = hashlib.sha256(rom).hexdigest()
+            self.assertEqual(geometry.compare({"levels": [layout], "level_header_bytes": 14}, root, root)["status"], "verified")
+            debug += 'sym\tname="level_data_test",seg=0,val=0xA200\n'
+            (root / "main" / "famidash.dbg").write_text(debug)
+            with self.assertRaisesRegex(AssertionError, "different named level"):
+                geometry.compare({"levels": [layout], "level_header_bytes": 14}, root, root)
 
 
 if __name__ == "__main__":

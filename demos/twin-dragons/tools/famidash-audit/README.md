@@ -64,7 +64,10 @@ A searched level is not a reviewed level. `review-round.mjs` verifies saved
 endpoints and inventories entry signals, including both players in dual
 mode, partial hazards, persistent solid overlap and horizontal escapes.
 `components.py` groups decorative-fill components for source review. Detector
-signals never automatically become bug reports or tile edits.
+signals never automatically become bug reports or tile edits. Repeated mechanical
+states retain the last collision sample: a lag frame must not invent a new
+horizontal sample. Detector revision 6 corrects lag, eight-bit centre discontinuities, and the
+second player's distinct collision phase and wave height.
 The standard Famidash target bounds rollouts after the level-length table;
 the missed-finish signal therefore begins 64 pixels past the source edge,
 before that search cutoff. Review extends ordinary input in the real core to
@@ -92,7 +95,12 @@ observations; gameplay snapshots and controller execution remain native to
 the ROM. The only RAM write is the normal level-select setup. Witnesses
 record their symbol layout and are independently replayed with FCEUmm's
 symbol-based decoder. This adapter has been exercised on the shared Time
-Machine and Theory of Everything levels, not every current-upstream mode.
+Machine, Theory of Everything and B-side Fofii levels, not every current-upstream mode.
+The adapter checks the selected level name against the ROM pointer table.
+Current upstream reordered B-side levels: Fofii is index 10, release index 6.
+An index entry may specify `release_target_level` to use the corresponding
+release target length/progress model; only adapter observations and the normal
+level-select setup translate that alias. Recorded gameplay uses the actual level.
 `trace-collision.py` uses export-only FCEUmm CPU hooks to observe the original
 ROM's collision samples without modifying the game.
 
@@ -100,6 +108,8 @@ ROM's collision samples without modifying the game.
 ROM's actual level-pointer tables, LZ streams, RLE runs and continuation IDs
 using matching DBG file offsets. It compares every decoded tile with the
 source index instead of assuming that a source checkout describes a ROM.
+It checks named level pointers when present. `level_header_bytes: 14` selects
+the current upstream header; the release default is 18.
 The official release's 3,726,087 tiles across all 109 levels match the index.
 The D-Sides source/ROM byte discrepancy is stale continuation metadata, not
 a geometry difference; the retained [shared findings](findings/shared-engine/README.md)
@@ -220,9 +230,12 @@ python3 demos/twin-dragons/tools/famidash-audit/patch.py \
 the tested Fofii repair to upstream commit
 `541d68ffcae2096f116146ef21cbc4d62886eb6b`. Upstream now shares its level
 sources under `lvlset_HUGE`; the three defective cells are still unchanged.
-The generated manifest deliberately says **source proposal: export, build
-and replay required**. The release ROM patch is tested; the current-upstream
-ROM is not. This proposal has not been submitted.
+The generated manifest describes the source edits. Current B-side export,
+build, original/fixed independent replays and a fresh repaired clearing control
+are now retained in the [shared findings](findings/shared-engine/README.md).
+B and HUGE both export and build successfully. HUGE replay and broader
+playability review remain separate. This proposal
+has not been submitted.
 
 After applying a current-upstream source proposal, regenerate each metadata
 set that references the edited level. For Fofii that is B and HUGE:

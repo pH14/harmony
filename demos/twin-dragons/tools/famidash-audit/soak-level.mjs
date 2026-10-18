@@ -17,6 +17,13 @@ const rom = await readFile(join(romDirectory, layout.rom));
 const m = process.env.FAMIDASH_SYMBOLS
   ? await symbolMachine(join(romDirectory, layout.rom), runtime, process.env.FAMIDASH_SYMBOLS)
   : await machine(join(romDirectory, layout.rom), runtime);
+if (m.levelName && m.levelName(level) !== layout.name)
+  throw new Error(`level index ${level} selects ${m.levelName(level)}, expected ${layout.name}`);
+const targetLevel = layout.release_target_level ?? level;
+if (targetLevel !== level) {
+  if (!m.mapTargetLevel) throw new Error("level aliases require a symbol-based memory adapter");
+  m.mapTargetLevel(level, targetLevel);
+}
 const menuDelay = Number(process.env.FAMIDASH_MENU_DELAY || 0);
 if (!Number.isSafeInteger(menuDelay) || menuDelay < 0 || menuDelay > 3600)
   throw new Error("invalid menu delay");
@@ -49,7 +56,7 @@ const report = { schema: 1, engine: "dissonance-wasm-single-level", side, level,
   mixture, setup: { menu_delay: menuDelay, startup_released_frames: startupFrames }, roots: [], candidates: [], inspected: 0, unavailable: 0,
   max_x: 0, dual_inspected: 0, cleared: false, coverage_cells: 0, modes: [], status: "running" };
 if (m.adapter) report.target_layout = { kind: "symbol-based linear coordinates normalized for the release target",
-  debug_sha256: m.debug_sha256, symbols: m.symbols, startup_released_frames: 180 };
+  debug_sha256: m.debug_sha256, symbols: m.symbols, startup_released_frames: 180, actual_level: level, release_target_level: targetLevel };
 const seed = (round * 1000003 + ["main", "b", "c", "d"].indexOf(side) * 1009 + level * 101) >>> 0;
 const routes = JSON.parse(await readFile(new URL(`../famidash-routes/${side}.json`, import.meta.url)));
 function positive(value, name) {
@@ -139,9 +146,9 @@ for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
   let valid = true;
   for (const buttons of root.prefix) { m.core.step(buttons, 1); const o = m.observe(); if (o.dead || o.state !== 2) { valid = false; break; } }
   if (!valid) { report.roots.push({ frame: root.frame, status: "prefix-dies-or-completes" }); continue; }
-  const search = bindings.famidash_level_search(game, 0, rom, identity, m.core_sha256, level,
+  const search = bindings.famidash_level_search(game, 0, rom, identity, m.core_sha256, targetLevel,
     (seed + rootIndex * 7919) >>> 0, m.core.capture(), JSON.stringify(compress(root.prefix)), 256, root.budget, mixture);
-  const worker = bindings.famidash_level_worker(game, 0, rom, identity, m.core_sha256, level);
+  const worker = bindings.famidash_level_worker(game, 0, rom, identity, m.core_sha256, targetLevel);
   const record = { frame: root.frame, origin: root.origin, prefix_sha256: root.key, seed: (seed + rootIndex * 7919) >>> 0, budget: root.budget, executions: 0, max_x: 0, cleared: false };
   report.roots.push(record);
   for (let execution = 1; execution <= root.budget; execution++) {
@@ -195,6 +202,6 @@ for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
   console.log(side, level, round, "root", root.frame, "executions", record.executions, "max_x", record.max_x, "candidates", report.candidates.length);
 }
 if (frontier) await writeFile(join(out, "frontier.json"), JSON.stringify(frontier));
-report.status = "searched";
+report.status = report.roots.some(root => root.executions > 0) ? "searched" : "unassessed-no-valid-root";
 await progress();
 console.log("finished", side, level, round, report.cleared, report.max_x, report.candidates.length);

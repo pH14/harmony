@@ -2,7 +2,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compress, expand, routeTape, suspect, tileAt } from "./runtime.mjs";
-import { collisionPoint } from "./signals.mjs";
+import { collisionPoint, advanceCollisionPoint } from "./signals.mjs";
+
+test("lag repeats the last collision sample rather than inventing horizontal motion", () => {
+  const before = { x: 5211, y: 771, camera: 601, mode: 0, mini: 1 };
+  const moving = { ...before, x: 5215, y: 773 };
+  const sample = advanceCollisionPoint(before, moving, null);
+  assert.deepEqual(sample, { x: 5214, y: 780 });
+  assert.deepEqual(advanceCollisionPoint(moving, { ...moving }, sample), sample);
+  assert.deepEqual(advanceCollisionPoint(moving, { ...moving, x: 5218, y: 768 }, sample), { x: 5218, y: 775 });
+});
 
 test("centre estimates match independently traced Theory of Everything collision reads", () => {
   const previous = { x: 3891, y: 883, camera: 662, mode: 3, mini: 0 };
@@ -17,6 +26,13 @@ test("release centre uses the traced eight-bit relative-Y addition before camera
   const current = { ...previous, x: 9251, y: 867 };
   assert.deepEqual(collisionPoint(previous, current), { x: 9252, y: 618 });
   assert.deepEqual(collisionPoint(previous, current, true), { x: 9252, y: 874 });
+});
+
+test("dual wave estimates match the second player's independently traced collision phase", () => {
+  const previous = { x: 9397, y: 811, camera: 710, mode: 6, mini: 0, player: 1 };
+  const current = { ...previous, x: 9401, y: 807 };
+  assert.deepEqual(collisionPoint(previous, current), { x: 9404, y: 814 });
+  assert.deepEqual(collisionPoint(previous, { ...current, player: 0 }), { x: 9400, y: 811 });
 });
 
 test("map-builder assistance cannot become an upstream gameplay witness", () => {

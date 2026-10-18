@@ -1,0 +1,24 @@
+{
+  "source_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "compiler_revision": "6bd01e8",
+  "targets": {
+    "b-sides": {
+      "status": "built",
+      "rom_sha256": "23a9b4ea178f66db4c15f58c9df1f7376921ce9522b588e5e45e988a969fb3a4",
+      "bytes": 786448,
+      "linker_warnings": [
+        "SAUCE/functions/collision.h:544: Warning: Unreachable code",
+        "SAUCE/functions/collision.h:545: Warning: Unreachable code"
+      ]
+    },
+    "huge": {
+      "status": "built",
+      "rom_sha256": "0e6d38c76e059377be724952287b607b5c4be4ab19da5d580a02b95f125b6021",
+      "bytes": 2359312,
+      "linker_warnings": [
+        "SAUCE/functions/collision.h:544: Warning: Unreachable code",
+        "SAUCE/functions/collision.h:545: Warning: Unreachable code"
+      ]
+    }
+  }
+}
