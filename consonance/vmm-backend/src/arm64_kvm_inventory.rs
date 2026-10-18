@@ -39,48 +39,80 @@ fn identity_register(id: u64) -> bool {
 }
 
 pub(super) fn disposition(id: u64) -> Option<Disposition> {
-    if (0..=72).step_by(2).any(|index| id == core_reg(index))
-        || (0..32).any(|index| id == core_reg_sized(KVM_REG_SIZE_U128, CORE_FP_BASE + index * 4))
-        || [CORE_FPCR, CORE_FPSR]
-            .into_iter()
-            .any(|index| id == core_reg_sized(KVM_REG_SIZE_U32, index))
-        || SYSREGS.iter().any(|&(register, _)| id == register)
-        || (0..16)
-            .any(|index| [dbgbvr(index), dbgbcr(index), dbgwvr(index), dbgwcr(index)].contains(&id))
-        || [
-            MDCCINT_EL1,
-            MDSCR_EL1,
-            CNTV_CTL_EL0,
-            CNTV_CVAL_EL0,
-            CNTVCT_EL0,
-        ]
-        .contains(&id)
-    {
-        return Some(Disposition::Captured);
+    let class = id & !0xffff;
+    let offset = id & 0xffff;
+    if class == core_reg(0) {
+        return if offset <= 72 && offset.is_multiple_of(2) {
+            Some(Disposition::Captured)
+        } else if (74..=80).contains(&offset) && offset.is_multiple_of(2) {
+            Some(Disposition::ExcludedAarch32)
+        } else {
+            None
+        };
     }
-    if [ACTLR_EL1, CNTP_CTL_EL0, CNTP_CVAL_EL0, DISR_EL1].contains(&id)
-        || RESERVED_IDS
-            .into_iter()
-            .any(|encoding| id == sysreg(encoding))
-        || OPTIONAL_FIRMWARE_BITMAPS.contains(&id)
-    {
-        return Some(Disposition::FixedZero);
+    if class == core_reg_sized(KVM_REG_SIZE_U128, 0) {
+        return ((CORE_FP_BASE..=CORE_FP_BASE + 31 * 4).contains(&offset)
+            && (offset - CORE_FP_BASE).is_multiple_of(4))
+        .then_some(Disposition::Captured);
     }
-    if id == OSLSR_EL1 {
-        return Some(Disposition::OsLock);
+    if class == core_reg_sized(KVM_REG_SIZE_U32, 0) {
+        return [CORE_FPCR, CORE_FPSR]
+            .contains(&offset)
+            .then_some(Disposition::Captured);
     }
-    if identity_register(id) || (0..14).any(|selector| id == DEMUX | selector) {
+    if class == KVM_REG_ARM64 | KVM_REG_SIZE_U64 | KVM_REG_ARM64_SYSREG {
+        let encoding = id as u16;
+        if (0x8004..=0x807f).contains(&encoding) && matches!(encoding & 7, 4..=7)
+            || matches!(
+                encoding,
+                0xc080
+                    | 0xc100
+                    | 0xc101
+                    | 0xc102
+                    | 0xc510
+                    | 0xc600
+                    | 0xc082
+                    | 0xc290
+                    | 0xc300
+                    | 0xde82
+                    | 0xde83
+                    | 0xc684
+                    | 0xc708
+                    | 0xc681
+                    | 0xc518
+                    | 0xc3a0
+                    | 0xd000
+                    | 0xc288
+                    | 0xc289
+                    | 0x8010
+                    | 0x8012
+                    | 0xdf19
+                    | 0xdf02
+                    | 0xdf1a
+            )
+        {
+            return Some(Disposition::Captured);
+        }
+        if matches!(encoding, 0xc081 | 0xc609 | 0xdf11 | 0xdf12) || RESERVED_IDS.contains(&encoding)
+        {
+            return Some(Disposition::FixedZero);
+        }
+        if id == OSLSR_EL1 {
+            return Some(Disposition::OsLock);
+        }
+        if identity_register(id) {
+            return Some(Disposition::Immutable);
+        }
+        if matches!(encoding, 0xa038 | 0xe180 | 0xe281 | 0xe298) {
+            return Some(Disposition::ExcludedAarch32);
+        }
+        return (id == PHYSICAL_COUNTER).then_some(Disposition::ExcludedPhysicalCounter);
+    }
+    if class == DEMUX && offset < 14 {
         return Some(Disposition::Immutable);
     }
-    if (74..=80).step_by(2).any(|index| id == core_reg(index))
-        || [0xa038, 0xe180, 0xe281, 0xe298]
-            .into_iter()
-            .any(|encoding| id == sysreg(encoding))
-    {
-        return Some(Disposition::ExcludedAarch32);
-    }
-    if id == PHYSICAL_COUNTER {
-        return Some(Disposition::ExcludedPhysicalCounter);
+    if OPTIONAL_FIRMWARE_BITMAPS.contains(&id) {
+        return Some(Disposition::FixedZero);
     }
     if id == KVM_REG_ARM_PSCI_VERSION || SMCCC_WORKAROUND_REGISTERS.contains(&id) {
         return Some(Disposition::Firmware);
@@ -88,45 +120,52 @@ pub(super) fn disposition(id: u64) -> Option<Disposition> {
     None
 }
 
-fn baseline_registers() -> Vec<u64> {
-    let mut ids = (0..=80).step_by(2).map(core_reg).collect::<Vec<_>>();
-    ids.extend((0..32).map(|index| core_reg_sized(KVM_REG_SIZE_U128, CORE_FP_BASE + index * 4)));
-    ids.extend([CORE_FPCR, CORE_FPSR].map(|index| core_reg_sized(KVM_REG_SIZE_U32, index)));
-    ids.extend(SYSREGS.iter().map(|&(id, _)| id));
-    for index in 0..16 {
-        ids.extend([dbgbvr(index), dbgbcr(index), dbgwvr(index), dbgwcr(index)]);
-    }
-    ids.extend([
-        MDCCINT_EL1,
-        MDSCR_EL1,
-        OSLSR_EL1,
-        ACTLR_EL1,
-        DISR_EL1,
-        CNTV_CTL_EL0,
-        CNTV_CVAL_EL0,
-        CNTVCT_EL0,
-        CNTP_CTL_EL0,
-        CNTP_CVAL_EL0,
-        PHYSICAL_COUNTER,
-    ]);
-    ids.extend(
-        [
-            0xa038, 0xe180, 0xe281, 0xe298, 0xc000, 0xc005, 0xc006, 0xc801, 0xc807, 0xd801,
-        ]
-        .map(sysreg),
-    );
-    ids.extend((0xc008..=0xc03f).map(sysreg));
-    ids.extend((0..14).map(|selector| DEMUX | selector));
-    ids.extend(OPTIONAL_FIRMWARE_BITMAPS);
-    ids.push(KVM_REG_ARM_PSCI_VERSION);
-    ids.extend(SMCCC_WORKAROUND_REGISTERS);
-    ids.sort_unstable();
-    ids
+fn baseline_registers() -> &'static [u64] {
+    static REGISTER_IDS: std::sync::OnceLock<Vec<u64>> = std::sync::OnceLock::new();
+    REGISTER_IDS
+        .get_or_init(|| {
+            let mut ids = (0..=80).step_by(2).map(core_reg).collect::<Vec<_>>();
+            ids.extend(
+                (0..32).map(|index| core_reg_sized(KVM_REG_SIZE_U128, CORE_FP_BASE + index * 4)),
+            );
+            ids.extend([CORE_FPCR, CORE_FPSR].map(|index| core_reg_sized(KVM_REG_SIZE_U32, index)));
+            ids.extend(SYSREGS.iter().map(|&(id, _)| id));
+            for index in 0..16 {
+                ids.extend([dbgbvr(index), dbgbcr(index), dbgwvr(index), dbgwcr(index)]);
+            }
+            ids.extend([
+                MDCCINT_EL1,
+                MDSCR_EL1,
+                OSLSR_EL1,
+                ACTLR_EL1,
+                DISR_EL1,
+                CNTV_CTL_EL0,
+                CNTV_CVAL_EL0,
+                CNTVCT_EL0,
+                CNTP_CTL_EL0,
+                CNTP_CVAL_EL0,
+                PHYSICAL_COUNTER,
+            ]);
+            ids.extend(
+                [
+                    0xa038, 0xe180, 0xe281, 0xe298, 0xc000, 0xc005, 0xc006, 0xc801, 0xc807, 0xd801,
+                ]
+                .map(sysreg),
+            );
+            ids.extend((0xc008..=0xc03f).map(sysreg));
+            ids.extend((0..14).map(|selector| DEMUX | selector));
+            ids.extend(OPTIONAL_FIRMWARE_BITMAPS);
+            ids.push(KVM_REG_ARM_PSCI_VERSION);
+            ids.extend(SMCCC_WORKAROUND_REGISTERS);
+            ids.sort_unstable();
+            ids
+        })
+        .as_slice()
 }
 
 #[cfg(any(test, feature = "mock"))]
 pub(super) fn fake_registers() -> Vec<u64> {
-    baseline_registers()
+    baseline_registers().to_vec()
 }
 
 pub(super) fn validate(mut ids: Vec<u64>) -> Result<Vec<(u64, Disposition)>> {
@@ -142,7 +181,7 @@ pub(super) fn validate(mut ids: Vec<u64>) -> Result<Vec<(u64, Disposition)>> {
                 .ok_or_else(|| error(id, "no modeled disposition"))
         })
         .collect::<Result<Vec<_>>>()?;
-    for id in baseline_registers() {
+    for &id in baseline_registers() {
         if disposition(id) == Some(Disposition::Captured) && ids.binary_search(&id).is_err() {
             return Err(error(id, "inventory omits captured state"));
         }
