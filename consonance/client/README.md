@@ -326,7 +326,7 @@ the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
 The host image hello is version 3 because IMPORT now carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
-Versions 1 and 2 are refused; version 2 is reserved for the shipping typed-error schema.
+Versions 1 and 2 are refused because they predate the descriptor-table IMPORT.
 The protocol reference cap is independent of diagnostic sampling limits.
 The parent groups only exact live Segment Arc owners while holding the original
 committed chain clones. File descriptor numbers, allocator-local segment IDs,
@@ -647,7 +647,7 @@ Before setup, guest exit and panic remain control errors with the actual termina
 reason; they cannot form a runnable session. A host progress timeout remains `SessionError::Hung`; malformed replies remain control
 errors. Classification uses owned child status rather than diagnostic text.
 Abandonment reaps the guest and settles its console before returning diagnostics.
-`WorkerSession` preserves typed infrastructure errors through its v2 image hello
+`WorkerSession` preserves typed infrastructure errors through the current image hello
 and distinct error tag; they abandon the worker just as progress timeouts do. A
 worker transport disconnect is also infrastructure failure: legitimate guest exits
 arrive in framed stop replies. Complete malformed frames retain control/protocol
