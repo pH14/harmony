@@ -557,6 +557,7 @@ fn action_champion_key(observations: &[MetroidObservations]) -> Option<MetroidCh
 }
 
 impl CampaignTypes for MetroidGame {
+    type JobObservation = ();
     type Target = MetroidTarget;
     type Action = ButtonChord;
     type Key = MetroidArchiveKey;

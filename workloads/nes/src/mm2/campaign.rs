@@ -545,6 +545,7 @@ fn action_champion_key(observations: &[Mm2Observations]) -> Option<Mm2ChampionKe
 }
 
 impl CampaignTypes for Mm2Game {
+    type JobObservation = ();
     type Target = Mm2Target;
     type Action = ButtonChord;
     type Key = Mm2ArchiveKey;

@@ -732,6 +732,29 @@ which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
 
+Optional job observations use `run_campaign_checkpointed_observed`. Each workload
+owns its `CampaignTypes::JobObservation` schema; uninterested workloads use `()`.
+The payload is `Copy + Send + 'static` and compile-time limited to256 bytes. It
+must contain self-contained values: `Copy` excludes owning containers, but cannot
+prove that a static reference or integer handle does not refer to external data.
+Searcher never decodes the workload payload and does not serialize it into the
+logical stream, report or checkpoint. Collection does not call cumulative target
+telemetry; final worker telemetry still runs once per worker.
+
+The optional sink receives validated completion receipts with the actual physical
+worker, reservation, planned finish and reserved parent identifiers. Completion
+order is physical; consumers join by reservation rather than assigning logical
+meaning to delivery order. The sink runs synchronously and can affect host timing.
+A sink error or panic disables subsequent sink calls, preserves the primary
+campaign result and records the coverage loss in caller-owned
+`ObservationDiagnostics`. Counters survive campaign errors and unwind. A reply
+owns a small delivery envelope; dropping an unsent, invalid, queued or undelivered
+payload counts one discard without allocating or locking during Drop. After the
+campaign and worker scope fully terminate, collected equals delivered plus
+discarded, unless the explicit overflow flag is set. A snapshot while producers
+are active is observational and is not a final coverage receipt. Consumers must
+bound their own output rows; no internal per-job log is retained.
+
 `telemetry.completed_buffer` reports live and peak `results`, `actions` and
 `candidates` counts for the current coordinator invocation; checkpoint resume
 starts fresh gauges and peaks. A result enters when the coordinator receives it

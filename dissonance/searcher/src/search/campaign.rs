@@ -39,7 +39,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::{WorkerPoolError, with_worker_pool};
+use crate::search::parallel::{WorkerPoolError, with_worker_pool_observed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, CompletedBufferTelemetry, HostTimes, IdleClock, IdleReason, TargetCounters,
@@ -178,6 +178,7 @@ pub const SNAPSHOT_ROOT_RESUME_IDENTIFIER: &str = "snapshot_root";
 pub type WorkloadPolicies = BTreeMap<String, String>;
 
 pub trait CampaignTypes: Sync {
+    type JobObservation: Copy + Send + 'static;
     type Target;
     type Action: Copy + Ord + Debug + Eq + Send + Sync + Serialize + DeserializeOwned;
     type Key: ArchiveKey + Debug + Eq + Send + Sync;
@@ -410,6 +411,10 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn begin_job_observation(&self) {}
+    fn take_job_observation(&self) -> Option<Self::JobObservation> {
+        None
+    }
     fn verify_integrity(&self) -> Result<(), Box<dyn Error>> {
         Ok(())
     }
@@ -3311,12 +3316,30 @@ pub fn run_campaign_checkpointed_with_options<G: Workload>(
     config: &CampaignConfig<G>,
     origin: &CampaignOrigin<G>,
     stream: &mut dyn Write,
-    mut progress: Option<&mut dyn Write>,
+    progress: Option<&mut dyn Write>,
     options: CampaignExecutionOptions,
 ) -> Result<CampaignOutcome<G>, Box<dyn Error>>
 where
     G::ArchiveReport: Serialize,
 {
+    run_campaign_checkpointed_observed(workload, config, origin, stream, progress, options, None)
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn run_campaign_checkpointed_observed<G: Workload>(
+    workload: &G,
+    config: &CampaignConfig<G>,
+    origin: &CampaignOrigin<G>,
+    stream: &mut dyn Write,
+    mut progress: Option<&mut dyn Write>,
+    options: CampaignExecutionOptions,
+    mut observer: Option<crate::search::job_observation::JobObserver<'_, G::JobObservation>>,
+) -> Result<CampaignOutcome<G>, Box<dyn Error>>
+where
+    G::ArchiveReport: Serialize,
+{
+    crate::search::job_observation::bounded::<G::JobObservation>();
+    let mut sink_disabled = false;
     workload.verify_integrity()?;
     let executable_identity = workload.executable_identity()?;
     let work_budget = options.work_budget;
@@ -3420,7 +3443,7 @@ where
     let mut admission = telemetry.admission.clone();
     let mut idle_clock = IdleClock::new(workers);
     let mut coordinator_schedstat = None;
-    let ((), worker_telemetry) = with_worker_pool(
+    let ((), worker_telemetry) = with_worker_pool_observed(
         config.workers,
         |worker| {
             if worker == 0 {
@@ -3465,6 +3488,11 @@ where
             Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
+        || workload.begin_job_observation(),
+        || workload.take_job_observation(),
+        observer
+            .as_ref()
+            .map(|observer| observer.diagnostics.clone()),
         |pool| -> Result<(), Box<dyn Error>> {
             ThreadPlacement::place(placement, PlacedThread::Coordinator)?;
             let bootstrap_started = now();
@@ -3931,7 +3959,7 @@ where
                     }
                     Some(reply)
                 };
-                while let Some(reply) = ready_reply {
+                while let Some(mut reply) = ready_reply {
                     coordinator_profile.receives = coordinator_profile.receives.saturating_add(1);
                     let physical_worker = reply.worker;
                     if physical_worker >= config.workers {
@@ -3966,6 +3994,7 @@ where
                     let pending_job = pending
                         .remove(&reservation)
                         .ok_or("campaign worker replied for an unknown reservation")?;
+                    let observed_parent = (pending_job.parent_id, pending_job.snapshot_id);
                     if completed
                         .insert(
                             reservation,
@@ -3978,6 +4007,51 @@ where
                         .is_some()
                     {
                         return Err("campaign worker completed one reservation twice".into());
+                    }
+                    if let Some(observer) = observer.as_mut()
+                        && !sink_disabled
+                    {
+                        let receipt = reply.observation.take();
+                        let has_payload = receipt.payload.is_some();
+                        let completion = crate::search::job_observation::CompletionObservation {
+                            worker: physical_worker,
+                            reservation,
+                            planned_finish: key.0,
+                            parent_id: observed_parent.0,
+                            snapshot_id: observed_parent.1,
+                            job_failed: completed
+                                .entries
+                                .get(&reservation)
+                                .is_some_and(|job| job.outcome.is_err()),
+                            receipt,
+                        };
+                        observer
+                            .diagnostics
+                            .add(crate::search::job_observation::Counter::SinkAttempts);
+                        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            (observer.sink)(completion)
+                        })) {
+                            Ok(Ok(())) => {
+                                if has_payload {
+                                    observer
+                                        .diagnostics
+                                        .add(crate::search::job_observation::Counter::Delivered);
+                                }
+                            }
+                            failure => {
+                                observer.diagnostics.add(if failure.is_err() {
+                                    crate::search::job_observation::Counter::SinkPanics
+                                } else {
+                                    crate::search::job_observation::Counter::SinkErrors
+                                });
+                                if has_payload {
+                                    observer
+                                        .diagnostics
+                                        .add(crate::search::job_observation::Counter::Discarded);
+                                }
+                                sink_disabled = true;
+                            }
+                        }
                     }
                     ready_reply = match pool.try_receive() {
                         Ok(reply) => reply,
@@ -6274,6 +6348,7 @@ mod tests {
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     impl CampaignTypes for TestWorkload {
+        type JobObservation = ();
         type Target = TestTarget;
         type Action = TestAction;
         type Key = TestKey;
@@ -6416,6 +6491,9 @@ mod tests {
     impl Error for TestIntegrityViolation {}
 
     impl TargetExecution for TestWorkload {
+        fn take_job_observation(&self) -> Option<Self::JobObservation> {
+            Some(())
+        }
         fn finish_coordinator_session(&self) -> Result<(), Box<dyn Error>> {
             FINALIZATION.with(|state| {
                 let (calls, fail) = state.get();
@@ -10835,5 +10913,114 @@ mod tests {
                 .expect_err("replay accepted semantically equal but byte-distinct source archive")
                 .to_string();
         assert!(error.contains("source archive bytes"), "{error}");
+    }
+    #[test]
+    fn job_observer_delivery_failures_preserve_logical_bytes_and_complete_counts() {
+        use crate::search::job_observation::{
+            JobObserver, ObservationDiagnostics, ObservationSinkError,
+        };
+        let mut config = three_worker_config();
+        config.execution_budget = 8;
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: None,
+        };
+        let mut baseline = Vec::new();
+        let expected = run_campaign_checkpointed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut baseline,
+            None,
+        )
+        .unwrap();
+        for fail in [0, 1, 2] {
+            let diagnostics = ObservationDiagnostics::default();
+            let mut seen = Vec::new();
+            let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
+                seen.push((row.reservation, row.worker, row.receipt.payload));
+                if fail == 1 {
+                    return Err(ObservationSinkError);
+                }
+                if fail == 2 {
+                    panic!("sink panic");
+                }
+                Ok(())
+            };
+            let mut stream = Vec::new();
+            let actual = super::run_campaign_checkpointed_observed(
+                &workload,
+                &config,
+                &CampaignOrigin::Genesis,
+                &mut stream,
+                None,
+                CampaignExecutionOptions::default(),
+                Some(JobObserver {
+                    diagnostics: diagnostics.clone(),
+                    sink: &mut sink,
+                }),
+            )
+            .unwrap();
+            assert_eq!(stream, baseline);
+            assert_eq!(actual, expected);
+            let counts = diagnostics.snapshot();
+            assert_eq!(counts.eligible, 8);
+            assert_eq!(counts.collected, 8);
+            assert_eq!(counts.collected, counts.delivered + counts.discarded);
+            if fail == 0 {
+                assert_eq!(seen.len(), 8);
+                assert_eq!(counts.delivered, 8);
+                assert_eq!(counts.discarded, 0);
+            } else {
+                assert_eq!(seen.len(), 1);
+                assert_eq!(counts.discarded, 8);
+                assert_eq!(counts.sink_errors, u64::from(fail == 1));
+                assert_eq!(counts.sink_panics, u64::from(fail == 2));
+            }
+            assert!(
+                seen.iter()
+                    .all(|(_, worker, payload)| *worker < 3 && payload.is_some())
+            );
+        }
+    }
+    #[test]
+    fn job_observer_panic_does_not_mask_the_primary_execution_error() {
+        use crate::search::job_observation::{JobObserver, ObservationDiagnostics};
+        let mut config = three_worker_config();
+        config.workers = 1;
+        config.window = 1;
+        config.execution_budget = 1;
+        let targets = Arc::new(LiveTargets::default());
+        *targets.action_hook.lock().unwrap() =
+            Some(Arc::new(|_| Err("primary execution refused".to_owned())));
+        let workload = TestWorkload {
+            bootstrap_objective: false,
+            targets: Some(targets),
+        };
+        let diagnostics = ObservationDiagnostics::default();
+        let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
+            assert!(row.job_failed);
+            panic!("observer failure")
+        };
+        let error = super::run_campaign_checkpointed_observed(
+            &workload,
+            &config,
+            &CampaignOrigin::Genesis,
+            &mut Vec::new(),
+            None,
+            CampaignExecutionOptions::default(),
+            Some(JobObserver {
+                diagnostics: diagnostics.clone(),
+                sink: &mut sink,
+            }),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("primary execution refused"));
+        let counts = diagnostics.snapshot();
+        assert_eq!(counts.eligible, 1);
+        assert_eq!(counts.collected, 1);
+        assert_eq!(counts.sink_panics, 1);
+        assert_eq!(counts.discarded, 1);
+        assert_eq!(counts.delivered, 0);
     }
 }
