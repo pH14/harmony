@@ -80,7 +80,7 @@ const HARMONY_TIMER_HZ: u64 = 62_500_000;
 const HARMONY_TIMER_INTID: u32 = 27;
 pub(crate) const KVM_VTIMER_PPI: u32 = 20;
 const KVM_PTIMER_PPI: u32 = 30;
-const GIC_STATE_VERSION: u32 = 8;
+const GIC_STATE_VERSION: u32 = 9;
 
 pub(crate) const KVM_MEM_LOG_DIRTY_PAGES: u32 = 1;
 const KVM_PAGE_SIZE: u64 = 4096;
@@ -498,6 +498,8 @@ const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
 const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
 const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
+const OSLSR_EL1: u64 = sysreg_id(2, 0, 1, 1, 4);
+const OSLSR_OSLK: u64 = 1 << 1;
 const MDCCINT_EL1: u64 = sysreg_id(2, 0, 0, 2, 0);
 const MDSCR_EL1: u64 = sysreg_id(2, 0, 0, 2, 2);
 const MDCCINT_WRITABLE_BITS: u64 = (1 << 29) | (1 << 30);
@@ -1072,6 +1074,11 @@ fn restore_vgic<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64GicState) -> Result<()
     Ok(())
 }
 
+fn unlock_os_lock<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
+    let oslsr = k.get_one_reg(OSLSR_EL1)?;
+    k.set_one_reg(OSLSR_EL1, oslsr & !OSLSR_OSLK)
+}
+
 pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     let mut s = Arm64VcpuState::default();
     for i in 0..31u64 {
@@ -1100,6 +1107,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
         s.debug.breakpoint_control[index as usize] = k.get_one_reg(dbgbcr(index))?;
         s.debug.watchpoint_value[index as usize] = k.get_one_reg(dbgwvr(index))?;
         s.debug.watchpoint_control[index as usize] = k.get_one_reg(dbgwcr(index))?;
+    }
+    if k.get_one_reg(OSLSR_EL1)? & OSLSR_OSLK != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with debug OS lock set",
+        });
     }
     s.debug.mdccint_el1 = k.get_one_reg(MDCCINT_EL1)?;
     s.debug.mdscr_el1 = k.get_one_reg(MDSCR_EL1)?;
@@ -1160,6 +1172,7 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwvr(index), s.debug.watchpoint_value[index as usize])?;
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
+    unlock_os_lock(k)?;
     k.set_one_reg(MDCCINT_EL1, s.debug.mdccint_el1)?;
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
     k.set_one_reg(DISR_EL1, 0)?;
@@ -1502,6 +1515,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         .map_err(|_| BackendError::InvalidState)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
         self.kvm.set_one_reg(DISR_EL1, 0)?;
+        unlock_os_lock(&mut self.kvm)?;
         self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
         self.kvm.set_one_reg(CNTP_CVAL_EL0, 0)?;
         if !self.configured {
@@ -1794,6 +1808,10 @@ pub struct FakeKvm {
     #[cfg(test)]
     fail_reg_write_on: Option<usize>,
     #[cfg(test)]
+    fail_reg_read: Option<u64>,
+    #[cfg(test)]
+    fail_reg_write: Option<u64>,
+    #[cfg(test)]
     fail_mmio_completion: bool,
     #[cfg(test)]
     fail_run_after_entry: bool,
@@ -1828,6 +1846,7 @@ pub struct FakeKvm {
 impl FakeKvm {
     pub fn new() -> Self {
         let mut fake = Self::default();
+        fake.regs.insert(OSLSR_EL1, 8);
         for (id, level) in SMCCC_WORKAROUND_REGISTERS
             .into_iter()
             .zip(crate::arch::arm64::Arm64Caps::FIXED_SMCCC_WORKAROUND_LEVELS)
@@ -1992,6 +2011,10 @@ impl Arm64Kvm for FakeKvm {
         #[cfg(test)]
         self.state_reads
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        #[cfg(test)]
+        if self.fail_reg_read == Some(id) {
+            return Err(BackendError::Internal("fake KVM register read failed"));
+        }
         Ok(self.regs.get(&id).copied().unwrap_or(0))
     }
 
@@ -2005,7 +2028,7 @@ impl Arm64Kvm for FakeKvm {
         #[cfg(test)]
         {
             self.reg_writes += 1;
-            if self.fail_reg_write_on == Some(self.reg_writes) {
+            if self.fail_reg_write_on == Some(self.reg_writes) || self.fail_reg_write == Some(id) {
                 return Err(BackendError::Internal("fake KVM register write failed"));
             }
         }
@@ -4455,6 +4478,73 @@ mod tests {
         let mut backend = Arm64KvmBackend::new(policy_fake);
         backend.set_policy(&Arm64Policy::default()).unwrap();
         assert_eq!(backend.kvm.get_one_reg(DISR_EL1).unwrap(), 0);
+    }
+
+    #[test]
+    fn os_lock_refuses_capture_and_clean_restore_unlocks_fresh_and_reused_targets() {
+        let mut source = FakeKvm::new();
+        source.vcpu_init().unwrap();
+        source.set_one_reg(OSLSR_EL1, 8).unwrap();
+        let clean = save_vcpu(&source).unwrap();
+        source.set_one_reg(OSLSR_EL1, 8 | OSLSR_OSLK).unwrap();
+        assert!(matches!(
+            save_vcpu(&source),
+            Err(BackendError::Unsupported {
+                what: "save ARM KVM with debug OS lock set"
+            })
+        ));
+        restore_vcpu(&mut source, &clean).unwrap();
+        assert_eq!(source.get_one_reg(OSLSR_EL1).unwrap() & OSLSR_OSLK, 0);
+        let mut fresh = FakeKvm::new();
+        fresh.vcpu_init().unwrap();
+        restore_vcpu(&mut fresh, &clean).unwrap();
+        assert_eq!(fresh.reg(OSLSR_EL1), Some(8));
+        let mut legacy = clean;
+        legacy.gic.as_mut().unwrap().version = 8;
+        fresh.calls.clear();
+        assert!(matches!(
+            restore_vcpu(&mut fresh, &legacy),
+            Err(BackendError::InvalidState)
+        ));
+        assert!(fresh.calls.is_empty());
+
+        source.set_one_reg(OSLSR_EL1, 8 | OSLSR_OSLK).unwrap();
+        let mut backend = Arm64KvmBackend::new(source);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        assert_eq!(backend.kvm.reg(OSLSR_EL1), Some(8));
+    }
+
+    #[test]
+    fn os_lock_register_access_failures_refuse_capture_policy_and_restore() {
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        let clean = save_vcpu(&fake).unwrap();
+        fake.fail_reg_read = Some(OSLSR_EL1);
+        assert!(matches!(
+            save_vcpu(&fake),
+            Err(BackendError::Internal("fake KVM register read failed"))
+        ));
+        fake.fail_reg_read = None;
+        let mut backend = Arm64KvmBackend::new(fake);
+        backend.set_policy(&Arm64Policy::default()).unwrap();
+        backend.kvm.fail_reg_write = Some(OSLSR_EL1);
+        assert!(matches!(
+            backend.restore(&clean),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
+        assert!(matches!(
+            backend.save(),
+            Err(BackendError::Internal("backend state mutation failed"))
+        ));
+
+        let mut fake = FakeKvm::new();
+        fake.vcpu_init().unwrap();
+        fake.fail_reg_write = Some(OSLSR_EL1);
+        let mut backend = Arm64KvmBackend::new(fake);
+        assert!(matches!(
+            backend.set_policy(&Arm64Policy::default()),
+            Err(BackendError::Internal("fake KVM register write failed"))
+        ));
     }
 
     #[test]

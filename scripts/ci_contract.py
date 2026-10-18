@@ -275,6 +275,7 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot guest_physical_timer_state_refuses_capture_and_legacy_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_timer_owned_ppi_line_refuses_terminal_cut_capture_and_restore",
         "vmm-backend::arm64_sysreg_snapshot guest_disr_state_refuses_capture_and_legacy_restore",
+        "vmm-backend::arm64_sysreg_snapshot guest_os_lock_refuses_capture_and_clean_restore_unlocks",
         "vmm-backend arm64_kvm::tests::routed_away_pending_spi_refuses_capture_and_restore",
         "vmm-backend::arm64_sysreg_snapshot kvm_irq_mask_read_matches_full_capture",
         "vmm-backend::arm64_sysreg_snapshot smccc_workaround_features_match_backend_levels",
