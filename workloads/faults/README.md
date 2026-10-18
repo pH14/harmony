@@ -785,3 +785,12 @@ attribution after explicit coordinator finalization without creating a session,
 querying a closed child, or measuring shared cache counters twice. It does not
 finalize a session or imply teardown success; the lifecycle receipt remains
 independent. Ordinary thread work and residency diagnostics are unchanged.
+
+Thread work reports add final controller counters across retired LIVE sessions.
+For SDK attribution, `vmm.sdk_dispatch.event_shape_slots` therefore sums
+per-session filled-slot memberships and can exceed 32. Equal shape keys from
+different sessions have their values added, so this number need not equal the
+number of distinct named rows in the thread report. The 32-row witness cap
+applies per producer table; the accumulated thread report can retain keys from
+multiple sessions and has no global 32-row bound. Neither this field nor the
+shape rows report current residency or enter archive memory policy.

@@ -1030,9 +1030,11 @@ resolution, rather than reaching a writer failure that retires the VM.
 SDK dispatch attribution partitions existing request and response guard callback
 calls, errors, and outer callback nanoseconds by bounded generic wire-operation
 bins. It does not add checks, RPCs, copied-byte estimates, or canonical state.
-The outer duration includes callback bookkeeping and overlaps session guard
-metrics; inner strict-check time and executable-read bytes are unavailable by
-operation. Request counts include unreadable and predecode-refused attempts;
+The outer duration wraps `check_host_operation_guard`, including its optional
+callback invocation and error mapping, and overlaps session guard metrics.
+Constructing the callback record, classifying the request, and updating witness
+rows occur outside this timer. Inner strict-check time and executable-read bytes
+are unavailable by operation. Request counts include unreadable and predecode-refused attempts;
 callback counts/time do not count successful response writes or semantic
 outcomes. The first scope has no separate semantic-status/write-success or
 copy-byte counters. An absent guard contributes zero callback calls, not a measured
@@ -1047,6 +1049,10 @@ Known shapes keep their slots; unseen shapes after capacity go to an explicit
 aggregate overflow. Shape rows plus overflow cover eligible Event.emit requests
 and response callbacks, and are subsets of operation totals, not additional work.
 No inference of zero is valid for missing shapes when overflow is nonzero.
+The cap applies to each VMM or merged controller table. `event_shape_slots`
+reports that table's filled slots and is monotone within its lifetime. Summing
+independent controller reports counts per-controller slot memberships; that sum
+is not a global unique-shape count, current table fill, or memory charge.
 
 Deferred doorbells charge the original request once; later completion derives
 response attribution from the retained request without another request check.
