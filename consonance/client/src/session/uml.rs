@@ -827,17 +827,25 @@ impl SearchSession for UmlSession {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        self.sdk_events_since(0)
+    }
+
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
         self.loaded_image_guard.check()?;
+        let offset = usize::try_from(offset)?;
         Ok(self
             .session
             .as_ref()
-            .map(|session| {
-                session
+            .map(|session| -> Result<_, Box<dyn Error>> {
+                u32::try_from(session.events().len()).map_err(|_| "SDK event offset overflow")?;
+                Ok(session
                     .events()
                     .iter()
+                    .skip(offset)
                     .map(|event| (event.moment, event.id, event.data.to_vec()))
-                    .collect()
+                    .collect())
             })
+            .transpose()?
             .unwrap_or_default())
     }
 

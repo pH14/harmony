@@ -77,6 +77,23 @@ pub(super) fn checked_cached_attachment(
     Ok((machine, envelope.attachment, actual))
 }
 
+fn collect_sdk_events(
+    mut offset: u32,
+    mut fetch: impl FnMut(u32) -> Result<Vec<SdkEvent>, Box<dyn Error>>,
+) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+    let mut events = Vec::new();
+    loop {
+        let page = fetch(offset)?;
+        if page.is_empty() {
+            return Ok(events);
+        }
+        offset = offset
+            .checked_add(u32::try_from(page.len()).map_err(|_| "SDK event page overflow")?)
+            .ok_or("SDK event offset overflow")?;
+        events.extend(page);
+    }
+}
+
 pub struct Session {
     client: Server,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
@@ -739,29 +756,24 @@ impl Session {
     }
 
     pub fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-        let mut offset = 0_u32;
-        let mut events = Vec::new();
-        loop {
+        self.sdk_events_since(0)
+    }
+
+    pub fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        collect_sdk_events(offset, |offset| {
             let reply = self
                 .client
                 .request(&Request::SdkEvents { offset })
                 .map_err(|error| SessionError::Control(error.to_string()))?;
-            let Reply::SdkEvents(page) = reply else {
-                return Err(SessionError::Reply {
+            match reply {
+                Reply::SdkEvents(page) => Ok(page),
+                reply => Err(SessionError::Reply {
                     operation: "SDK events",
                     reply,
                 }
-                .into());
-            };
-            if page.is_empty() {
-                break;
+                .into()),
             }
-            offset = offset
-                .checked_add(u32::try_from(page.len()).map_err(|_| "SDK event page overflow")?)
-                .ok_or("SDK event offset overflow")?;
-            events.extend(page);
-        }
-        Ok(events)
+        })
     }
 
     pub fn read_observation(
@@ -1128,6 +1140,69 @@ mod tests {
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
         }
+    }
+
+    #[test]
+    fn sdk_suffix_pagination_advances_from_the_requested_event_offset() {
+        let mut offsets = Vec::new();
+        let first = (10, 1, vec![1]);
+        let second = (10, 2, vec![2]);
+        let third = (20, 3, vec![3]);
+        let expected = vec![first.clone(), second.clone(), third.clone()];
+        let mut pages = vec![vec![first, second], vec![third], Vec::new()].into_iter();
+        let events = collect_sdk_events(7, |offset| {
+            offsets.push(offset);
+            Ok(pages.next().unwrap())
+        })
+        .unwrap();
+        assert_eq!(events, expected);
+        assert_eq!(offsets, vec![7, 9, 10]);
+        let mut calls = 0;
+        assert!(
+            collect_sdk_events(u32::MAX, |offset| {
+                assert_eq!(offset, u32::MAX);
+                calls += 1;
+                Ok(Vec::new())
+            })
+            .unwrap()
+            .is_empty()
+        );
+        assert_eq!(calls, 1);
+    }
+
+    #[test]
+    fn sdk_suffix_pagination_refuses_overflow_and_discards_partial_fetches() {
+        let event = (10, 1, vec![1]);
+        let mut offsets = Vec::new();
+        let error = collect_sdk_events(u32::MAX, |offset| {
+            offsets.push(offset);
+            Ok(vec![event.clone()])
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("SDK event offset overflow"));
+        assert_eq!(offsets, vec![u32::MAX]);
+        let mut offsets = Vec::new();
+        let error = collect_sdk_events(8, |offset| {
+            offsets.push(offset);
+            if offset == 8 {
+                Ok(vec![event.clone()])
+            } else {
+                Err(std::io::Error::other("suffix fetch failed").into())
+            }
+        })
+        .unwrap_err();
+        assert_eq!(error.to_string(), "suffix fetch failed");
+        assert_eq!(offsets, vec![8, 9]);
+        let events = collect_sdk_events(u32::MAX - 1, |offset| {
+            if offset == u32::MAX - 1 {
+                Ok(vec![event.clone()])
+            } else {
+                assert_eq!(offset, u32::MAX);
+                Ok(Vec::new())
+            }
+        })
+        .unwrap();
+        assert_eq!(events, vec![event]);
     }
 
     #[cfg(target_arch = "aarch64")]

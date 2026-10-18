@@ -422,3 +422,19 @@ UML imported roots also retain their source index commitment. After validating
 and importing the checkpoint, the session recomputes the root-domain machine
 commitment and compares it with the pinned index record before installing a
 handle. Final host-image and lease checks remove a temporary handle on failure.
+
+`Session::sdk_events_since(offset)` and `SearchSession::sdk_events_since(offset)`
+return the SDK event suffix starting at the zero-based event index. Direct
+sessions retain the control protocol's checked pagination; process workers carry
+the offset in their SDK-events request and return only that suffix. UML skips
+prior events before copying payloads. `sdk_events()` explicitly requests offset
+zero. Backends using the trait's fallback fetch their complete SDK history and
+slice it; callers must distinguish that correctness fallback from native suffix
+transport when measuring cost.
+
+An offset at or beyond the available event count returns an empty suffix.
+Advancing a cursor beyond `u32::MAX` fails; a failed multi-page read returns no
+partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
+this API does not authenticate a previously consumed prefix or detect rollback.
+`EventHistory.count` counts normalized execution events and is not an SDK offset.
+Workload adapters own decoder checkpoints and lineage validation.
