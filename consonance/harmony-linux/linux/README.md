@@ -38,6 +38,17 @@ rwsems use Linux's existing blocking and wakeup path.
 
 ## Canonical artifacts
 
+`build-continuation-initramfs.sh` builds a separate x86 Linux qualification
+fixture, `build/initramfs-continuation.cpio.gz`. Its static, libc-free PID 1
+initializes a 4 KiB memory pattern, XMM15 and an x87 stack value, then announces
+`X3_READY` and waits for a console line. `A` reads those guest values back,
+waits for a virtual timer, reads monotonic time and kernel entropy, and emits
+one `X3_RESULT` record. `B` changes the memory and floating-point values and
+waits again after `X3_DETOUR`. Compiler-generated vector code is disabled so
+the named SIMD register stays live across the console syscalls. This fixture
+does not replace the standard initramfs or OCI runtime and adds no execution
+policy to the VMM. See the [continuation cells](../../../scripts/qualification/README.md#composed-linux-continuation).
+
 The x86 build publishes `build/x86_64/bzImage` and
 `build/x86_64/initramfs-oci.cpio.gz`. The native arm64 build publishes
 `build/aarch64/Image` and `build/aarch64/initramfs-oci.cpio.gz`. Each runtime

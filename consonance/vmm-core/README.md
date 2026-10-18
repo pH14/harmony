@@ -27,6 +27,15 @@ Production Linux composition also copies the entry state's complete task
 register descriptor, including its defined busy 32-bit TSS type, instead of
 inheriting the host's KVM reset descriptor.
 
+`tests/linux_snapshot_continuation.rs` exercises the production Linux boot,
+completed-boundary capture and full RAM/VM-state restore APIs with the owned
+continuation initramfs. The guest's memory, SIMD, x87, clock and entropy
+readbacks supply the oracle independently of the snapshot encoder. The
+[qualification adapter](../../scripts/qualification/README.md#composed-linux-continuation)
+retains exact artifacts and cross-host admission outcomes. This bounded x86
+fixture does not establish a complete backend register inventory or qualify
+Arm Linux continuation.
+
 `Vmm::run` repeatedly obtains one backend exit, classifies it through the
 architecture vendor, advances virtual time by the assigned integer duration,
 dispatches devices and protocol services, and completes any pending backend
