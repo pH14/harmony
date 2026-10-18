@@ -753,9 +753,28 @@ class HostCompatibilityTests(unittest.TestCase):
                       "\n".join(step.get("run", "") for step in host["steps"]))
         self.assertIn("grep -Eq '^[[:space:]]*PASS[[:space:]]+\\[[^]]+\\][[:space:]]+"
                       "(\\([[:space:]]*[0-9]+/[0-9]+\\)[[:space:]]+)?consonance-client[[:space:]]+session::live::tests::"
-                      "served_export_writes_once_into_the_allocated_destination$' host-tests.log",
+                      "served_export_writes_once_into_the_allocated_destination$' copy-work-tests.log",
                       command)
         self.assertNotIn("cargo test", command)
+
+    def test_direct_export_pass_gate_accepts_colored_nextest_and_rejects_missing_or_skipped(self):
+        step = next(step for step in self.hosts["macos-arm64"]["steps"]
+                    if step.get("name") == "Verify direct extent export copy accounting on Arm64")
+        name = "session::live::tests::served_export_writes_once_into_the_allocated_destination"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uname = root / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
+            for prefix, suffix, expected in [("PASS", "", True), ("SKIP", "", False),
+                                              ("FAIL", "", False), ("PASS", "_other", False)]:
+                line = (f"\033[32;1m        {prefix}\033[0m [ 0.021s] ( 1/1998) "
+                        f"\033[35;1mconsonance-client\033[0m \033[36m{name}{suffix}\033[0m\n")
+                (root / "host-tests.log").write_text(line)
+                result = subprocess.run(["bash", "-c", step["run"]], cwd=root, env=env,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode == 0, expected, result.stderr)
 
     def test_each_job_names_an_explicit_runner(self):
         runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}
