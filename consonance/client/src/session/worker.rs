@@ -2064,6 +2064,7 @@ mod tests {
     fn worker_import_selects_target_attachment_and_rejects_independent_digest_mismatch() {
         use crate::cache::extent::{extent_len, read_extent, write_extent};
         let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"worker-exact"]);
         let (mut source, server) = threaded(3);
         let (mut destination, other_server) = threaded(50);
         let first = SnapshotAttachment {
@@ -2076,15 +2077,15 @@ mod tests {
         };
         let (parent, _) = source.snapshot().unwrap();
         let parent_lease = source
-            .publish_snapshot_attached(&index, namespace(), b"a", None, parent, &first, 1)
+            .publish_snapshot_attached(&index, space, &[9; 32], None, parent, &first, 1)
             .unwrap();
         source.run_until(40).unwrap();
         let (child, _) = source.snapshot().unwrap();
         let lease = source
             .publish_snapshot_attached(
                 &index,
-                namespace(),
-                b"ab",
+                space,
+                &[3; 32],
                 Some((parent, &parent_lease)),
                 child,
                 &second,
@@ -2114,8 +2115,8 @@ mod tests {
         write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
         let bad = index
             .publish(
-                namespace(),
-                b"ac",
+                space,
+                &[4; 32],
                 Some(&parent_lease),
                 extent,
                 receipt.object_commitment,
@@ -2138,7 +2139,7 @@ mod tests {
         write_extent(extent.bytes_mut(), &target.pages, &target.reverted, &forged).unwrap();
         let digest = super::super::attachment::commitment([0xee; 32], &second);
         let wrong_machine = index
-            .publish(namespace(), b"ad", Some(&parent_lease), extent, digest, 1)
+            .publish(space, &[5; 32], Some(&parent_lease), extent, digest, 1)
             .unwrap();
         let error = destination
             .import_cached_receipt(&index, &wrong_machine, SnapId(1))

@@ -396,3 +396,15 @@ namespace. Attachments preserve existing page validation, leases, revocation,
 and host-image guards. They are composition-produced provenance protected by
 immutable cache ownership, not signatures against a malicious producer or a
 replacement for checking the actual imported machine state.
+
+Cache namespaces select their key semantics at construction. `Namespace::new`
+uses action-prefix keys: lookup returns the longest retained prefix and a delta
+parent must have a strictly shorter prefix key. `Namespace::exact` uses opaque
+keys: lookup requires complete equality and a delta parent may have unrelated
+key bytes. The constructors use separate digest domains, so the same namespace
+parts cannot mix key modes. Exact mode retains parent ownership, namespace,
+existence, and commitment checks. Entries always link to already retained parent
+entries; equal duplicate publication returns the existing entry without changing
+its ancestry. A conflicting duplicate retains both witness chains and
+quarantines its namespace in either mode. Composition adapters using opaque path
+roots must search their own certified ancestor roots when an exact key is absent.
