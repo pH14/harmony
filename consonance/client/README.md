@@ -324,8 +324,10 @@ that acknowledgement. No complete serialized payload buffer or subsequent
 full-extent copy is retained in the child; page payloads still copy once into
 the destination, and metadata and sidecar allocations remain. The loaded-image
 handshake requires matching workers.
-The host image hello is version 2 because IMPORT now carries a message-local
+The host image hello is version 3 because IMPORT now carries a message-local
 backing table: U descriptors followed by N ordered (slot, offset, length) rows.
+Versions 1 and 2 are refused; version 2 is reserved for the shipping typed-error schema.
+The protocol reference cap is independent of diagnostic sampling limits.
 The parent groups only exact live Segment Arc owners while holding the original
 committed chain clones. File descriptor numbers, allocator-local segment IDs,
 identical bytes and inode metadata do not establish owner identity. Both the
@@ -360,7 +362,7 @@ length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
 parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
 recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
-The accepted worker descriptor cap remains unchanged; the version 2 host hello
+The accepted worker descriptor cap remains unchanged; the version 3 host hello
 identifies the revised import descriptor-table schema.
 
 On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
