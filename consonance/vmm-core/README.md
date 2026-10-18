@@ -409,7 +409,7 @@ the existing diagnostic log remains available independently.
 Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
 its diagnostic trace do not advance or reset it. Replay and branch restore the
 captured commitment before continuation, regardless of local snapshot IDs or
-restore mode. Full portable snapshots (v8) and sparse sidecars (v10) retain its
+restore mode. Full portable snapshots (v9) and sparse sidecars (v11) retain its
 presence, count and digest independently of the logical state hash. Imports
 require a live validator and check availability against its V-time model before
 creating a handle. Restore also rejects a mismatch on the actual target.
@@ -989,7 +989,8 @@ response guard, then install the candidate SDK handler/answer and controller
 tape. Local handler errors retire the failed VM; a capacity refusal leaves the
 pending question uncommitted. A response-guard failure in either a local answer
 or an explicit Run resolution retires the failed VM while retaining its console
-and SDK events for diagnostics, without committing the candidate answer or tape. A handler returning External preserves that stop.
+and SDK events for diagnostics, without committing the candidate answer or tape.
+A handler returning External preserves that stop.
 The request, including the response guard on its initial pending boundary,
 remains present. No guest request suppression or unchecked reply path exists.
 
