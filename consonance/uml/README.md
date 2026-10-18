@@ -69,8 +69,9 @@
   stable `/proc/self/fd/243` role, with that descriptor pointing to the child's
   actual directory. The random host pathname never enters the kernel's
   arguments or environment. `Guest::start` opens the owned directory without
-  following a symlink and installs it after caller callbacks, so an earlier
-  callback cannot replace the final descriptor. A fresh restore keeps the new
+  following a symlink, copies its source above the standard I/O and bridge
+  descriptor slots, and installs it after caller callbacks. Earlier bridge
+  remapping cannot replace that source or the final directory descriptor. A fresh restore keeps the new
   process's directory handle; copied kernel strings continue to address that
   process's own files. The environment is cleared except for `TMPDIR`,
   `GLIBC_TUNABLES`, and the pinned boot CPU-info and auxiliary-vector values
