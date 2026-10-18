@@ -1529,7 +1529,7 @@ impl Live {
             let events = self
                 .session
                 .sdk_events_since(0)
-                .map_err(|error| format!("restored SDK events: {error}"))?;
+                .map_err(|error| session_failure("restored SDK events", error.as_ref()))?;
             self.telemetry.observation_checkpoint_rebuild_events += events.len() as u64;
             self.telemetry.observation_checkpoint_rebuild_payload_bytes +=
                 events.iter().map(|event| event.2.len() as u64).sum::<u64>();
@@ -2438,6 +2438,7 @@ mod tests {
         hash_error: Option<fn() -> SessionError>,
         history: control_proto::EventHistory,
         history_failure: Option<fn() -> SessionError>,
+        sdk_failure: Option<fn() -> SessionError>,
         histories: BTreeMap<u64, control_proto::EventHistory>,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
@@ -2728,6 +2729,9 @@ mod tests {
             offset: u32,
         ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
             self.sdk_offsets.push(offset);
+            if let Some(failure) = self.sdk_failure {
+                return Err(failure().into());
+            }
             let events: Vec<_> = self
                 .events
                 .get(&self.current)
@@ -2753,6 +2757,8 @@ mod tests {
                 histories: BTreeMap::new(),
 
                 history_failure: None,
+
+                sdk_failure: None,
                 history: control_proto::EventHistory::default(),
                 hash: None,
                 hash_calls: 0,
@@ -2803,6 +2809,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some(commitment),
             hash_calls: 0,
@@ -3164,6 +3172,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some(hash),
             hash_calls: 0,
@@ -3199,6 +3209,7 @@ mod tests {
             histories: BTreeMap::new(),
             history: control_proto::EventHistory::default(),
             history_failure: None,
+            sdk_failure: None,
             hash: Some([17; 32]),
             hash_calls: 0,
             replay_calls: 0,
@@ -3230,6 +3241,7 @@ mod tests {
 
             history,
             history_failure: None,
+            sdk_failure: None,
             hash: Some([17; 32]),
             hash_calls: 0,
             replay_calls: 0,
@@ -3574,6 +3586,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3613,6 +3627,8 @@ mod tests {
                 histories: BTreeMap::new(),
 
                 history_failure: None,
+
+                sdk_failure: None,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 hash_calls: 0,
@@ -3701,6 +3717,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3739,6 +3757,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3838,6 +3858,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3899,6 +3921,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -3944,6 +3968,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -4287,6 +4313,7 @@ mod tests {
         live.session = Box::new(TimedOutRestore {
             history: control_proto::EventHistory::default(),
             history_failure: None,
+            sdk_failure: None,
             histories: BTreeMap::new(),
 
             hash: Some([17; 32]),
@@ -4852,6 +4879,8 @@ mod tests {
             histories: BTreeMap::new(),
 
             history_failure: None,
+
+            sdk_failure: None,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
@@ -4889,6 +4918,8 @@ mod tests {
                 histories: BTreeMap::new(),
 
                 history_failure: None,
+
+                sdk_failure: None,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 hash_calls: 0,
@@ -5446,6 +5477,88 @@ mod tests {
     }
 
     #[test]
+    fn sdk_suffix_failures_preserve_provenance_in_observation_and_cursor_rebuilds() {
+        let snapshot = FaultSnapshot {
+            history: FaultHistory::genesis(fixture_genesis()).unwrap(),
+            endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+            event_history: Some((0, [0; 32])),
+            ..FaultSnapshot::default()
+        };
+        validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
+        for rebuild in [false, true] {
+            for failure in [
+                None,
+                Some((|| SessionError::Hung(WALL_LIMIT)) as fn() -> SessionError),
+                Some(
+                    (|| SessionError::Infrastructure("worker disconnected".into()))
+                        as fn() -> SessionError,
+                ),
+                Some((|| SessionError::Abandoned) as fn() -> SessionError),
+                Some(
+                    (|| SessionError::Control("malformed complete reply".into()))
+                        as fn() -> SessionError,
+                ),
+            ] {
+                let mut live = hashed_live([17; 32]);
+                live.session = Box::new(TimedOutRestore {
+                    sdk_failure: failure,
+                    ..fixture_session()
+                });
+                let result = if rebuild {
+                    live.replay(SnapId(1))
+                } else {
+                    live.observe(FaultStop::Deadline).map(|_| ())
+                };
+                assert_eq!(
+                    live.counters(true).into_iter().collect::<BTreeMap<_, _>>()["vmm.test.sdk_calls"],
+                    1
+                );
+                let Some(failure) = failure else {
+                    result.unwrap();
+                    assert!(live.cursor.decoder.is_some());
+                    continue;
+                };
+                assert!(live.cursor.decoder.is_none());
+                let error = result.unwrap_err();
+                let failure = failure();
+                let watchdog = matches!(failure, SessionError::Hung(_));
+                let ordinary = matches!(failure, SessionError::Control(_));
+                assert_eq!(error.starts_with(WATCHDOG_CUTOFF), watchdog, "{error}");
+                assert_eq!(
+                    error.starts_with(INFRASTRUCTURE_FAILURE),
+                    !watchdog && !ordinary,
+                    "{error}"
+                );
+                let mut target = unbooted_target();
+                let result = target.finish_restore(&snapshot, Err(error));
+                if ordinary {
+                    assert!(
+                        result
+                            .unwrap_err()
+                            .to_string()
+                            .contains("malformed complete reply")
+                    );
+                    assert!(!target.infrastructure_failure());
+                    assert_eq!(target.watchdog_cutoffs(), 0);
+                } else {
+                    result.unwrap();
+                    assert_eq!(target.infrastructure_failure(), !watchdog);
+                    assert_eq!(target.watchdog_cutoffs(), u64::from(watchdog));
+                    assert!(!target.found_bug());
+                    assert!(target.actions().is_empty());
+                    assert!(target.snapshot().unwrap().is_none());
+                    assert!(
+                        crate::campaign::require_completed_attempt(&target, "SDK suffix")
+                            .unwrap_err()
+                            .to_string()
+                            .contains("reservation not admitted")
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ordered_history_distinguishes_abandoned_matching_sessions_from_identity_errors() {
         let target = unbooted_target();
         for matching in [false, true] {
@@ -5714,6 +5827,7 @@ mod tests {
                 run_events: None,
                 abandon_on_hash: false,
                 history_failure: None,
+                sdk_failure: None,
                 hash: Some(endpoint),
                 history: control_proto::EventHistory { count: 2, digest },
                 events: BTreeMap::new(),
@@ -5823,6 +5937,7 @@ mod tests {
                     run_events: None,
                     abandon_on_hash: false,
                     history_failure: history_hung.then_some(|| SessionError::Hung(WALL_LIMIT)),
+                    sdk_failure: None,
                     history: control_proto::EventHistory { count: 2, digest },
                     hash: Some([17; 32]),
                     events: BTreeMap::new(),
