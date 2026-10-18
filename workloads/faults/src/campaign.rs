@@ -414,10 +414,10 @@ pub(crate) fn execute_job(
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
-        target.apply_replayed(*action);
+        let checked = target.apply_replayed_certified(*action, *certificate);
         target.verify_integrity()?;
         require_completed_attempt(target, "parent replay")?;
-        target.verify_replayed_endpoint(*certificate)?;
+        checked?;
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
