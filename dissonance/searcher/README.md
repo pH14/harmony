@@ -114,8 +114,9 @@ and the current bounded progress policy; recordings from superseded policy
 namespaces are rejected before replay because their memory accounting differs.
 
 Empirical step tables fold retained suffixes into an incremental hash and a
-deterministic frequency map capped at 4,096 distinct steps. The compact table
-is the only supported representation. Every campaign keeps one, in
+deterministic frequency map capped at 4,096 distinct steps. A draw picks a step
+with probability proportional to its count over all retained suffixes, with no
+recency weighting. The compact table is the only supported representation. Every campaign keeps one, in
 `search::draw_tables`, so a workload gets the biased draw without owning any of
 the bookkeeping. `DrawTables` folds each retained suffix as its record closes,
 publishes an `EmpiricalStepCheckpoint` the stream records beside every draw,
