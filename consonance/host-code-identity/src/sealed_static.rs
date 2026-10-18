@@ -566,6 +566,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "creates a temporary file, which Miri isolation refuses"
+    )]
     fn accepts_one_static_file_backed_code_segment() {
         let segment = parsed(&elf(false, false)).unwrap();
         assert_eq!(segment.offset, 0x1000);
@@ -573,6 +577,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "creates a temporary file, which Miri isolation refuses"
+    )]
     fn rejects_interpreter_needed_library_and_writable_code() {
         assert!(parsed(&elf(true, false)).is_err());
         assert!(parsed(&elf(false, true)).is_err());
@@ -582,6 +590,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "creates a temporary file, which Miri isolation refuses"
+    )]
     fn full_file_digest_changes_with_writable_initializer() {
         let mut first = elf(false, false);
         let mut second = first.clone();
@@ -648,6 +660,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "reads /proc/self/exe, which Miri isolation refuses")]
     fn ordinary_test_process_cannot_claim_sealed_static_identity() {
         assert_eq!(
             sealed_static_executable_identity().unwrap_err().kind(),
