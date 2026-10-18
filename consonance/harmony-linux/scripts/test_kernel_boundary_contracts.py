@@ -10,7 +10,6 @@ import platform
 from pathlib import Path
 import re
 import shutil
-import shlex
 import struct
 import subprocess
 import sys
@@ -109,51 +108,112 @@ int main(void) {
             result = subprocess.run([str(base / "probe"), *args], capture_output=True, text=True)
             self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
-    def test_failed_n6_audit_retains_the_rejected_binary_without_accepting_the_build(self):
+    def test_flake_builders_retain_a_rejected_n6_guest_through_their_real_entrypoints(self):
+        version = subprocess.run(["bash", "-c", 'echo "${BASH_VERSINFO[0]}.${BASH_VERSINFO[1]}"'],
+                                 check=True, capture_output=True, text=True)
+        if tuple(map(int, version.stdout.strip().split("."))) < (4, 4):
+            self.skipTest("the locked Linux builders require Bash 4.4 or newer")
         spec = importlib.util.spec_from_file_location("n6_entropy_fixture", Path(__file__).with_name("test_n6_entropy_scan.py"))
         fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fixture)
         guest = PATCHES.parents[1]
         repository = guest.parents[1]
-        builder = (guest / "linux/build-n6-instruction-images.sh").read_text()
-        wrapper = (repository / "workloads/guest-images/nix/build-guest-images.sh").read_text()
-        for text, expected in [(bytes.fromhex("0fc7f8c3"), 1), (b"\xc3", 0)]:
-            with self.subTest(rejected=bool(expected)), tempfile.TemporaryDirectory() as temporary:
+        flake = (repository / "flake.nix").read_text()
+        self.assertRegex(flake, r"guest-images\s*=\s*platformBuilder;")
+        for binding in ("platformBuilder", "workloadBuilder"):
+            entry = re.search(re.escape(binding) + r" = pkgs\.writeShellApplication \{.*?exec \$\{\./([^}]+)\}", flake, re.S)
+            self.assertIsNotNone(entry)
+            wrapper = repository / entry[1]
+            with self.subTest(builder=binding), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
-                work = root / "work"
+                source = root / "source"
+                linux = source / "consonance/harmony-linux/linux"
+                scripts = source / "consonance/harmony-linux/scripts"
+                linux.mkdir(parents=True)
+                scripts.mkdir()
+                for name in ("build-n6-instruction-images.sh",):
+                    shutil.copyfile(guest / "linux" / name, linux / name)
+                    (linux / name).chmod(0o755)
+                for name in ("n6-instruction-sweep.py", "n6-entropy-scan.py", "instruction-contract.toml"):
+                    shutil.copyfile(guest / "scripts" / name, scripts / name)
+                (scripts / "runtime-artifacts.py").write_text('print("fixture-source-key")\n')
+                (linux / "lib-build.sh").write_text('''BUILD_ROOT=$GUEST_BUILD_ROOT
+ART_DIR=$HARMONY_ARTIFACT_DIR
+ARM64_ART_DIR=$ART_DIR/aarch64
+LINUX_DIR=$PWD
+KSRC=$BUILD_ROOT/kernel-source
+require_tools() { for tool in "$@"; do command -v "$tool" >/dev/null; done; }
+extract_kernel() { mkdir -p "$KSRC/usr"; }
+''')
+                for name in ("build-kernel.sh", "build-go-runtime-image.sh", "build-initramfs.sh"):
+                    path = linux / name
+                    path.write_text('''#!/usr/bin/env bash
+if [ "${TASK_PARK_PROFILE:-0}" = 1 ]; then
+    echo UNEXPECTED_POST_N6_BUILD
+fi
+exit 0
+''')
+                    path.chmod(0o755)
+                tools = root / "tools"
+                tools.mkdir()
+                (tools / "uname").write_text('''#!/bin/sh
+case "$1" in
+    -s) echo Linux ;;
+    -m) echo x86_64 ;;
+    *) exec /usr/bin/uname "$@" ;;
+esac
+''')
+                (tools / "uname").chmod(0o755)
+                (tools / "cc").write_text("#!" + sys.executable + "\n" + '''import os
+from pathlib import Path
+import shutil
+import sys
+arguments = sys.argv[1:]
+output = Path(arguments[arguments.index("-o") + 1])
+name = {"n6-entropy-negative": "negative", "n6-entropy-displacement": "displacement", "n6-instruction-guest": "rejected"}[output.name]
+shutil.copyfile(Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / name, output)
+''')
+                (tools / "cc").chmod(0o755)
+                fixtures = root / "compiler-fixtures"
+                fixtures.mkdir()
+                images = {
+                    "negative": fixture.elf(62, bytes.fromhex("0fc7f0 0fc7f8 c3"), b"\xc3", 6),
+                    "displacement": fixture.elf(62, bytes.fromhex("488d3d 0fc7f8 00 c3"), b"\xc3", 6),
+                    "rejected": fixture.elf(62, bytes.fromhex("0fc7f8 c3"), b"\xc3", 6),
+                }
+                for name, image in images.items():
+                    (fixtures / name).write_bytes(image)
+                tarball = root / "source.tar"
+                tarball.write_bytes(b"build-input-placeholder")
+                temporary_work = root / "temporary-work"
+                temporary_work.mkdir()
                 output = root / "output"
-                n6 = work / "build/n6-instruction-sweep"
-                n6.mkdir(parents=True)
-                binary = n6 / "n6-instruction-guest"
-                image = fixture.elf(62, text, b"\xc3", 6)
-                binary.write_bytes(image)
-                (n6 / "n6-generated.S").write_text("generated probe assembly")
-                script = "set -euo pipefail\n" + "\n".join([
-                    "work=" + shlex.quote(str(work)),
-                    "output=" + shlex.quote(str(output)),
-                    "n6=1",
-                    "HARMONY_NIX_KEEP_WORK=0",
-                    "n6_root=" + shlex.quote(str(n6)),
-                    "n6_cc=" + shlex.quote(shutil.which("true")),
-                    "entropy_scan=" + shlex.quote(str(guest / "scripts/n6-entropy-scan.py")),
-                    "LINUX_DIR=" + shlex.quote(str(guest / "linux")),
-                    "arch=x86_64",
-                    "march=(-m64)",
-                    "cleanup() " + function(wrapper, "cleanup"),
-                    "build_guest() " + function(builder, "build_guest"),
-                    "trap cleanup EXIT",
-                    "build_guest traps-off " + shlex.quote(str(binary)),
-                ])
-                result = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                environment = os.environ.copy()
+                environment.update({
+                    "PATH": str(tools) + os.pathsep + environment.get("PATH", ""),
+                    "TMPDIR": str(temporary_work),
+                    "HARMONY_NIX_SOURCE": str(source),
+                    "HARMONY_NIX_LINUX_SOURCE": str(tarball),
+                    "HARMONY_NIX_BUSYBOX_SOURCE": str(tarball),
+                    "HARMONY_NIX_MUSL_SOURCE": str(tarball),
+                    "HARMONY_NIX_KEEP_WORK": "0",
+                    "HARMONY_N6_CC": str(tools / "cc"),
+                    "HARMONY_TEST_CC_FIXTURES": str(fixtures),
+                })
+                result = subprocess.run(["bash", str(wrapper), "--output", str(output), "--n6"],
+                                        cwd=root, env=environment, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("ok: opcode-shaped LEA displacement rejected", result.stdout)
+                self.assertIn("N6_ENTROPY_REJECT", result.stdout)
+                self.assertIn("N6 failed-build diagnostics preserved:", result.stderr)
+                self.assertNotIn("UNEXPECTED_POST_N6_BUILD", result.stdout)
+                self.assertNotIn("PASS: Nix-locked", result.stdout)
+                self.assertEqual(list(temporary_work.glob("harmony-nix-guest.*")), [])
                 diagnostics = output / "diagnostics/n6"
-                self.assertFalse(work.exists())
-                if expected:
-                    self.assertEqual((diagnostics / binary.name).read_bytes(), image)
-                    self.assertEqual((diagnostics / "n6-generated.S").read_text(), "generated probe assembly")
-                    self.assertIn("N6_ENTROPY_REJECT", (diagnostics / (binary.name + ".entropy-audit.txt")).read_text())
-                else:
-                    self.assertFalse(diagnostics.exists())
+                self.assertEqual((diagnostics / "n6-instruction-guest").read_bytes(), images["rejected"])
+                self.assertIn("decl %eax", (diagnostics / "n6-generated.S").read_text())
+                self.assertIn("N6_TABLE_ROW_COUNT", (diagnostics / "n6-generated.h").read_text())
+                self.assertIn("N6_ENTROPY_REJECT", (diagnostics / "n6-instruction-guest.entropy-audit.txt").read_text())
 
     def test_both_syscall_flag_copies_are_pinned_before_the_first_tick(self):
         patch = PATCHES / "x86/0001-x86-harmony-pvclock-exit-count-clocksource.patch"
