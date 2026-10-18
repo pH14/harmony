@@ -564,11 +564,21 @@ impl SearchSession for UmlSession {
             .import_full(near, &resolved.pages, sidecar, &self.factory);
         self.verify_live_service_fingerprint(before.as_ref())?;
         let checkpoint = imported?;
+        if target_commitment(self.root_identity, &checkpoint)? != index.target_commitment(lease)? {
+            return Err("root snapshot commitment differs".into());
+        }
         let id = SnapId(self.next);
         self.next += 1;
         let at = checkpoint.moment();
         self.snapshots.insert(id, checkpoint);
-        self.loaded_image_guard.check()?;
+        if let Err(error) = self.loaded_image_guard.check() {
+            self.snapshots.remove(&id);
+            return Err(error.into());
+        }
+        if let Err(error) = index.verify_lease(lease) {
+            self.snapshots.remove(&id);
+            return Err(error.into());
+        }
         Ok((id, at))
     }
 
@@ -1462,6 +1472,97 @@ mod tests {
         index
             .publish(Namespace::new(&[b"test"]), key, None, extent, commitment, 1)
             .unwrap()
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn root_import_checks_the_independently_pinned_machine_commitment() {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        let directory = tempfile::tempdir().unwrap();
+        let mut launch = Launch::new(directory.path().to_path_buf());
+        launch.bridge = Some(Bridge::new(7));
+        launch.wall_limit = Duration::from_secs(5);
+        let work = launch.work_directory().unwrap();
+        let mut command = Command::new("python3");
+        command
+            .args([
+                "-c",
+                r#"import os,struct
+os.ftruncate(4,4*4096)
+os.write(3,struct.pack('<Q',100))
+def read_frame():
+    frame=b''
+    while len(frame)<16:
+        chunk=os.read(3,16-len(frame))
+        if not chunk: return None
+        frame+=chunk
+    return frame
+while True:
+    frame=read_frame()
+    if frame is None: break
+    command=struct.unpack('<I',frame[4:8])[0]
+    if command==1: os.write(3,struct.pack('<IIq',0x31435548,4,1))
+    elif command==5: os.write(3,struct.pack('<IIq',0x31435548,1,0))
+    else: raise RuntimeError(command)
+"#,
+            ])
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut guest = uml::Session::start(
+            command,
+            work,
+            &launch,
+            &checkpoints,
+            None,
+            Some(Duration::from_secs(5)),
+        )
+        .unwrap();
+        assert!(matches!(guest.run_until(100), Ok(Stop::Deadline(100))));
+        let checkpoint = guest.capture(Capture::default()).unwrap();
+        let mut session = unbooted_session();
+        session.launch = launch;
+        session.checkpoints = checkpoints;
+        session.session = Some(guest);
+        session.snapshots.insert(SnapId(1), checkpoint);
+        let index = LocalIndex::new(1 << 20);
+        let namespace = Namespace::new(&[b"root-test"]);
+        let lease = session.publish_root(&index, namespace, SnapId(1)).unwrap();
+        let expected =
+            target_commitment(session.root_identity, &session.snapshots[&SnapId(1)]).unwrap();
+        assert_eq!(index.target_commitment(&lease).unwrap(), expected);
+        let (imported, moment) = session.import_root(&index, &lease).unwrap();
+        assert_eq!(moment, 100);
+        assert_eq!(
+            target_commitment(session.root_identity, &session.snapshots[&imported]).unwrap(),
+            expected
+        );
+        let extents = index.chain(&lease).unwrap();
+        let mut altered = index.extent(extents[0].bytes().len()).unwrap();
+        altered.bytes_mut().copy_from_slice(extents[0].bytes());
+        let bad = index
+            .publish(
+                Namespace::new(&[b"bad-root-test"]),
+                b"root",
+                None,
+                altered,
+                [0; 32],
+                1,
+            )
+            .unwrap();
+        let handles = session.snapshots.len();
+        let next = session.next;
+        assert!(
+            session
+                .import_root(&index, &bad)
+                .unwrap_err()
+                .to_string()
+                .contains("root snapshot commitment differs")
+        );
+        assert_eq!(session.snapshots.len(), handles);
+        assert_eq!(session.next, next);
+        index.release(bad);
+        index.release(lease);
     }
 
     #[test]
