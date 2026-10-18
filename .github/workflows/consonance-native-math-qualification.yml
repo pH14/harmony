@@ -1,0 +1,94 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+name: Checks / Consonance / Native Math Qualification
+
+on:
+  schedule:
+    - cron: "33 4 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-math-qualification-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  artifact:
+    name: Retained Native Math Executable
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check native corpus and negative controls
+        run: python3 -m unittest discover -s scripts -p test_ci_native_math.py
+      - name: Build one retained static executable
+        run: python3 scripts/qualify-native-math.py bundle native-math-bundle --source-revision "$(git rev-parse HEAD)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-math-executable
+          path: native-math-bundle
+          if-no-files-found: error
+          retention-days: 30
+
+  observe:
+    name: Pinned Native Math — Replica ${{ matrix.replica }}
+    needs: artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-math-executable
+          path: native-math-bundle
+      - name: Run three pinned repetitions of the retained executable
+        run: |
+          sudo cat /sys/class/dmi/id/product_uuid > "$RUNNER_TEMP/native-math-host-id"
+          python3 scripts/qualify-native-math.py run native-math-bundle native-math-report --host-id-file "$RUNNER_TEMP/native-math-host-id"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-math-replica-${{ matrix.replica }}
+          path: native-math-report
+          if-no-files-found: error
+          retention-days: 30
+
+  results:
+    name: Bounded Native Math Results
+    needs: [artifact, observe]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require every observation job
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 -c 'import json, os; jobs=json.loads(os.environ["JOB_RESULTS"]); assert jobs and all(job["result"] == "success" for job in jobs.values()), jobs'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-math-executable
+          path: native-math-bundle
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: native-math-replica-*
+          path: native-math-replicas
+      - name: Compare exact cases and preserve numerical differences
+        run: python3 scripts/qualify-native-math.py compare native-math-bundle native-math-qualification.json native-math-replicas/*/receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-math-qualification
+          path: native-math-qualification.json
+          if-no-files-found: error
+          retention-days: 30
