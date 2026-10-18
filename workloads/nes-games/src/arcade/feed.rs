@@ -329,6 +329,10 @@ impl<V: Copy> Feed<V> {
         }
     }
 
+    pub fn forget_pending(&mut self) {
+        self.pending.clear();
+    }
+
     pub fn take_batch(&mut self, stats: Stats) -> Batch<V> {
         Batch {
             stats,

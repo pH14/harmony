@@ -255,6 +255,8 @@ const swarm = new Swarm(
   FINISH_HOLD,
 );
 let visualization = "movement", liveVisualization = null, swarmRooms = new Map();
+const pointLevels = new Map();
+let trailsSeen = false, traillessBatches = 0;
 const sprites = new Image();
 if (!game.buildSprites) sprites.src = new URL("sprites.png", assets).href;
 function setVisualization(mode, draw = true) {
@@ -648,7 +650,7 @@ function followStalledPath(now) {
     const level = roomLevel(room);
     if (points.length && level != null) counts.set(level, (counts.get(level) || 0) + points.length);
   }
-  const deepest = busierDeeperLevel(counts, path.level);
+  const deepest = busierDeeperLevel(trailsSeen ? counts : pointLevels, path.level);
   if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
     path.idle = 0;
     return;
@@ -1626,6 +1628,15 @@ function startSearch(level = bootLevel) {
         if (data.active !== activeSearch) return;
         const { motion, finishes, exits, ...batchStats } = data;
         swarm.add(activeSearch, motion || [], heat.clock(performance.now()), finishes);
+        if (motion?.length) trailsSeen = true;
+        else if (liveView && !trailsSeen) {
+          for (const [level, count] of pointLevels) pointLevels.set(level, count * 0.9);
+          for (const point of data.points) {
+            const level = roomLevel(point.observation.level);
+            if (level != null) pointLevels.set(level, (pointLevels.get(level) || 0) + 1);
+          }
+          if (++traillessBatches === 20 && visualization === "movement") setVisualization("heat");
+        }
         stats = batchStats;
         gameWon ||= data.won;
         const now = performance.now();

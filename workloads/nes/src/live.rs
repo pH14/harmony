@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 use std::{
-    collections::VecDeque,
     error::Error,
     fs,
     io::{BufRead, BufReader, Read, Write},
@@ -9,7 +8,7 @@ use std::{
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
     },
     thread,
@@ -51,7 +50,8 @@ const MAX_CONNECTIONS: usize = 64;
 const TRAILS_PER_TICK: usize = 256;
 const FINISHES_PER_TICK: usize = 32;
 const POINTS_PER_TICK: usize = 2_000;
-const HISTORY_POINTS: usize = 40_000;
+const GLANCE_STATES: usize = 1_000;
+const GLANCE_NEWEST: usize = 250;
 const STATES_PER_LOOKUP: usize = 12;
 const CLIENT_QUEUE: usize = 64;
 
@@ -89,7 +89,9 @@ pub fn native_game<G: ArcadeGame<Machine = NativeMachine>>(
 
 type Games<G> = Arc<dyn Fn() -> G + Send + Sync>;
 
-type Memory = Box<dyn Fn(&[u8]) -> std::result::Result<Vec<u8>, MachineError> + Send + Sync>;
+pub type MemoryView<V> = fn(&[u8]) -> std::result::Result<V, Box<dyn Error>>;
+
+type Observe<V> = Arc<dyn Fn(&[Vec<u8>]) -> Vec<Option<V>> + Send + Sync>;
 
 struct Shared<V> {
     feed: Option<Feed<V>>,
@@ -104,11 +106,11 @@ fn lock<V>(shared: &Mutex<Shared<V>>) -> MutexGuard<'_, Shared<V>> {
 
 struct Found<V> {
     id: u64,
-    observation: V,
-    digest: u64,
+    observation: Option<V>,
+    digest: Option<u64>,
     frames_at: Option<u64>,
     input: Vec<ButtonChord>,
-    snapshot: Option<Vec<u8>>,
+    raw: Option<Vec<u8>>,
 }
 
 struct Lookup<V> {
@@ -119,6 +121,7 @@ struct Lookup<V> {
 enum Event {
     Ready(Arc<str>),
     Viewer(SyncSender<Arc<str>>),
+    Glance(Vec<(u64, Vec<u8>)>),
     Finished,
 }
 
@@ -126,33 +129,64 @@ pub struct LiveWatch<G: ArcadeGame> {
     shared: SharedFeed<G::View>,
     events: Sender<Event>,
     lookups: Mutex<Receiver<Lookup<G::View>>>,
-    memory: Memory,
+    observe: Observe<G::View>,
     game: String,
+    viewers: Arc<AtomicUsize>,
+    glance: Arc<AtomicBool>,
+    recording: AtomicBool,
 }
 
-fn native_memory(
+fn native_observer<V: 'static>(
     rom: &[u8],
-    core_path: &Path,
-    core_sha256: &str,
+    request: &Request,
     execution_sha256: &str,
     bytes: usize,
-) -> Memory {
+    view: MemoryView<V>,
+) -> Observe<V> {
     let (rom, path, sha256, execution) = (
         rom.to_vec(),
-        core_path.to_path_buf(),
-        core_sha256.to_owned(),
+        request.core.clone(),
+        request.core_sha256.clone(),
         execution_sha256.to_owned(),
     );
-    Box::new(move |raw| {
-        let mut machine =
-            QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution)?;
+    let read = move |machine: &mut QuickNesMachine,
+                     raw: &[u8]|
+          -> std::result::Result<Vec<u8>, MachineError> {
         machine.restore_bytes(raw)?;
         let mut memory = machine.read_wram()?.to_vec();
         if bytes > memory.len() {
             memory.extend(machine.read_save_ram()?);
         }
         Ok(memory)
+    };
+    Arc::new(move |raws| {
+        let Ok(mut machine) =
+            QuickNesMachine::from_rom_bytes_with_identity(&rom, &path, &sha256, &execution)
+        else {
+            return raws.iter().map(|_| None).collect();
+        };
+        raws.iter()
+            .map(|raw| view(&read(&mut machine, raw).ok()?).ok())
+            .collect()
     })
+}
+
+fn glance<G: ArcadeGame>(campaign: &CampaignCoordinator<'_, G>) -> Vec<(u64, Vec<u8>)> {
+    let archive = campaign.archive();
+    let entries = archive.live_entry_count();
+    let newest = entries.saturating_sub(GLANCE_NEWEST);
+    let mut indices =
+        Sampler(campaign.executions() | 1).pick(newest, GLANCE_STATES - GLANCE_NEWEST);
+    indices.extend(newest..entries);
+    indices
+        .into_iter()
+        .filter_map(|index| {
+            Some((
+                archive.stable_id(index)?,
+                G::emulator_state(archive.entry_snapshot(index)?).to_vec(),
+            ))
+        })
+        .collect()
 }
 
 impl<G: ArcadeGame> LiveWatch<G> {
@@ -161,12 +195,16 @@ impl<G: ArcadeGame> LiveWatch<G> {
         G::ArchiveReport: Serialize,
     {
         let archive = campaign.archive();
-        let snapshot = archive
+        let (id, snapshot) = archive
             .index_of_id(0)
-            .and_then(|index| archive.entry_snapshot(index))
-            .ok_or("the live view needs a campaign that starts at genesis")?;
+            .or((archive.live_entry_count() > 0).then_some(0))
+            .and_then(|index| Some((archive.stable_id(index)?, archive.entry_snapshot(index)?)))
+            .ok_or("the live view found no archived state to start from")?;
         let raw = raw_state(G::emulator_state(snapshot))?;
-        let view = G::memory_view(&(self.memory)(&raw)?)?;
+        let view = (self.observe)(std::slice::from_ref(&raw))
+            .pop()
+            .flatten()
+            .ok_or("the live view could not read the first archived state")?;
         let snapshot = core_state(&raw);
         let digest = snapshot_digest(snapshot);
         {
@@ -175,7 +213,7 @@ impl<G: ArcadeGame> LiveWatch<G> {
             shared.stats = feed::stats(campaign);
         }
         let root = State {
-            id: 0,
+            id,
             observation: view,
             actions: Vec::new(),
             frames: 0,
@@ -207,18 +245,17 @@ impl<G: ArcadeGame> LiveWatch<G> {
                 .ids
                 .iter()
                 .filter_map(|&id| {
-                    let feed = shared.feed.as_ref()?;
+                    let feed = shared.feed.as_ref();
                     let index = archive.index_of_id(id)?;
                     Some(Found {
                         id,
-                        observation: feed.view(id)?,
-                        digest: feed.digest(id)?,
-                        frames_at: feed.frames_at(id),
+                        observation: feed.and_then(|feed| feed.view(id)),
+                        digest: feed.and_then(|feed| feed.digest(id)),
+                        frames_at: feed.and_then(|feed| feed.frames_at(id)),
                         input: archive.entry_input(index).ok()?.actions,
-                        snapshot: archive
+                        raw: archive
                             .entry_snapshot(index)
-                            .and_then(|snapshot| raw_state(G::emulator_state(snapshot)).ok())
-                            .map(|raw| core_state(&raw).to_vec()),
+                            .and_then(|snapshot| raw_state(G::emulator_state(snapshot)).ok()),
                     })
                 })
                 .collect();
@@ -239,25 +276,52 @@ where
         job: &JobSpec<G>,
         run: impl FnOnce() -> std::result::Result<JobOutcome<G>, Box<dyn Error>>,
     ) -> WatchedJob<G, Self::Note> {
-        run_noted(job, run)
+        if self.viewers.load(Ordering::Relaxed) > 0 {
+            return run_noted(job, run);
+        }
+        let outcome = run()?;
+        let note = Note {
+            reservation: outcome.reservation,
+            steps: Vec::new(),
+            trail: None,
+            next_level: 0,
+            execution_work: outcome.execution_work,
+            death: false,
+        };
+        Ok((outcome, note))
     }
 
     fn admitted(&self, note: Self::Note, campaign: &mut CampaignCoordinator<'_, G>) {
-        let admissions = campaign.take_admissions();
-        {
-            let mut shared = lock(&self.shared);
-            if let Some(feed) = shared.feed.as_mut() {
-                feed.note(note);
-                feed.admit(admissions);
-                feed.forget_dropped(campaign);
+        let watched = self.viewers.load(Ordering::Relaxed) > 0;
+        if watched != self.recording.swap(watched, Ordering::Relaxed) {
+            if watched {
+                campaign.watch_admissions();
+            } else {
+                campaign.unwatch_admissions();
+                if let Some(feed) = lock(&self.shared).feed.as_mut() {
+                    feed.forget_pending();
+                }
             }
-            shared.stats = feed::stats(campaign);
+        }
+        if watched {
+            let admissions = campaign.take_admissions();
+            {
+                let mut shared = lock(&self.shared);
+                if let Some(feed) = shared.feed.as_mut() {
+                    feed.note(note);
+                    feed.admit(admissions);
+                    feed.forget_dropped(campaign);
+                }
+                shared.stats = feed::stats(campaign);
+            }
+            if self.glance.swap(false, Ordering::AcqRel) {
+                let _ = self.events.send(Event::Glance(glance(campaign)));
+            }
         }
         self.serve(campaign);
     }
 
     fn start(&self, campaign: &mut CampaignCoordinator<'_, G>) -> Result<()> {
-        campaign.watch_admissions();
         self.root(campaign)
     }
 }
@@ -334,16 +398,26 @@ impl Sampler {
 
 struct Viewers {
     senders: Vec<SyncSender<Arc<str>>>,
+    waiting: Vec<SyncSender<Arc<str>>>,
+    count: Arc<AtomicUsize>,
+}
+
+fn delivered(sender: &SyncSender<Arc<str>>, message: &Arc<str>) -> bool {
+    !matches!(
+        sender.try_send(Arc::clone(message)),
+        Err(TrySendError::Disconnected(_))
+    )
 }
 
 impl Viewers {
     fn broadcast(&mut self, message: &Arc<str>) {
-        self.senders.retain(|sender| {
-            !matches!(
-                sender.try_send(Arc::clone(message)),
-                Err(TrySendError::Disconnected(_))
-            )
-        });
+        self.senders.retain(|sender| delivered(sender, message));
+        self.counted();
+    }
+
+    fn counted(&self) {
+        self.count
+            .store(self.senders.len() + self.waiting.len(), Ordering::Relaxed);
     }
 }
 
@@ -365,17 +439,33 @@ fn wall_now() -> Instant {
     Instant::now()
 }
 
-fn backlog<V: Serialize + Copy>(
+fn glance_json<V: Serialize>(
     stats: Stats,
-    history: &VecDeque<Point<V>>,
+    packed: &[(u64, Vec<u8>)],
+    observe: &Observe<V>,
     workers: u32,
 ) -> Arc<str> {
+    let (ids, raws): (Vec<u64>, Vec<Vec<u8>>) = packed
+        .iter()
+        .filter_map(|(id, packed)| Some((*id, raw_state(packed).ok()?)))
+        .unzip();
+    let points = ids
+        .into_iter()
+        .zip(observe(&raws))
+        .filter_map(|(id, observation)| {
+            Some(Point {
+                observation: observation?,
+                retained: Some(id),
+                frame: 0,
+            })
+        })
+        .collect();
     batch_json(
         &Batch {
             stats,
             deaths: 0,
             frames: 0,
-            points: history.iter().copied().collect(),
+            points,
             motion: Vec::new(),
             finishes: Vec::new(),
             exits: Vec::new(),
@@ -440,34 +530,56 @@ fn take_batch<V: Copy>(shared: &Mutex<Shared<V>>) -> Option<Batch<V>> {
     shared.feed.as_mut().map(|feed| feed.take_batch(stats))
 }
 
-fn feed_loop<V: Serialize + Copy>(
-    events: &Receiver<Event>,
-    shared: &Mutex<Shared<V>>,
+struct Feeding<'a, V> {
+    events: &'a Receiver<Event>,
+    shared: &'a Mutex<Shared<V>>,
+    observe: &'a Observe<V>,
+    glance: &'a AtomicBool,
     workers: u32,
-) {
+}
+
+fn feed_loop<V: Serialize + Copy>(feeding: &Feeding<'_, V>, mut viewers: Viewers) {
+    let Feeding {
+        events,
+        shared,
+        observe,
+        glance,
+        workers,
+    } = *feeding;
     let mut ready: Option<Arc<str>> = None;
-    let mut viewers = Viewers {
-        senders: Vec::new(),
-    };
-    let mut history: VecDeque<Point<V>> = VecDeque::new();
     let mut sampler = Sampler(0x9e37_79b9_7f4a_7c15);
     let mut next_tick = wall_now() + TICK;
     loop {
         let wait = next_tick.saturating_duration_since(wall_now());
         match events.recv_timeout(wait) {
             Ok(Event::Ready(message)) => {
-                let stats = lock(shared).stats;
-                viewers.broadcast(&message);
-                viewers.broadcast(&backlog(stats, &history, workers));
+                viewers.waiting.retain(|sender| delivered(sender, &message));
+                if !viewers.waiting.is_empty() {
+                    glance.store(true, Ordering::Release);
+                }
+                viewers.counted();
                 ready = Some(message);
             }
             Ok(Event::Viewer(sender)) => {
-                if let Some(ready) = &ready {
-                    let stats = lock(shared).stats;
-                    let _ = sender.try_send(Arc::clone(ready));
-                    let _ = sender.try_send(backlog(stats, &history, workers));
+                if let Some(ready) = &ready
+                    && delivered(&sender, ready)
+                {
+                    glance.store(true, Ordering::Release);
                 }
-                viewers.senders.push(sender);
+                viewers.waiting.push(sender);
+                viewers.counted();
+            }
+            Ok(Event::Glance(packed)) => {
+                if !viewers.waiting.is_empty() {
+                    let stats = lock(shared).stats;
+                    let message = glance_json(stats, &packed, observe, workers);
+                    for sender in std::mem::take(&mut viewers.waiting) {
+                        if delivered(&sender, &message) {
+                            viewers.senders.push(sender);
+                        }
+                    }
+                    viewers.counted();
+                }
             }
             Err(RecvTimeoutError::Timeout) => {}
             Ok(Event::Finished) | Err(RecvTimeoutError::Disconnected) => {
@@ -479,6 +591,9 @@ fn feed_loop<V: Serialize + Copy>(
                     batch.exits.clear();
                     viewers.broadcast(&batch_json(&batch, workers));
                 }
+                let mut everyone = std::mem::take(&mut viewers.waiting);
+                everyone.append(&mut viewers.senders);
+                viewers.senders = everyone;
                 let done = json!({"type": "limit", "won": won, "finished": true});
                 viewers.broadcast(&Arc::from(done.to_string()));
                 return;
@@ -491,14 +606,9 @@ fn feed_loop<V: Serialize + Copy>(
         let Some(batch) = take_batch(shared) else {
             continue;
         };
-        let batch = sampled(batch, &mut sampler);
-        for point in &batch.points {
-            if history.len() == HISTORY_POINTS {
-                history.pop_front();
-            }
-            history.push_back(*point);
+        if !viewers.senders.is_empty() {
+            viewers.broadcast(&batch_json(&sampled(batch, &mut sampler), workers));
         }
-        viewers.broadcast(&batch_json(&batch, workers));
     }
 }
 
@@ -551,7 +661,8 @@ struct Server<G: ArcadeGame> {
     events: Sender<Event>,
     lookups: Sender<Lookup<G::View>>,
     site: Option<PathBuf>,
-    games: Games<G>,
+    games: Option<Games<G>>,
+    observe: Observe<G::View>,
 }
 
 impl<G: ArcadeGame> Server<G> {
@@ -572,20 +683,37 @@ impl<G: ArcadeGame> Server<G> {
                 reply,
             })
             .ok()?;
-        let found = answer.recv_timeout(LOOKUP_WAIT).ok()?;
+        let mut found = answer.recv_timeout(LOOKUP_WAIT).ok()?;
+        let unseen: Vec<usize> = (0..found.len())
+            .filter(|&index| found[index].observation.is_none() && found[index].raw.is_some())
+            .collect();
+        let raws: Vec<Vec<u8>> = unseen
+            .iter()
+            .filter_map(|&index| found[index].raw.clone())
+            .collect();
+        for (index, observation) in unseen.into_iter().zip((self.observe)(&raws)) {
+            found[index].observation = observation;
+        }
         let mut replay: Option<(G, usize)> = None;
         let mut states = Vec::new();
         let mut answered = Vec::new();
         for found in found {
+            let snapshot = found.raw.as_deref().map(core_state);
+            let (Some(observation), Some(digest)) = (
+                found.observation,
+                found.digest.or(snapshot.map(snapshot_digest)),
+            ) else {
+                continue;
+            };
             let state = feed::archived_state(
                 found.id,
-                found.observation,
+                observation,
                 &[],
                 &found.input,
-                found.frames_at,
+                found.frames_at.filter(|_| self.games.is_some()),
                 |input| {
                     if replay.is_none() {
-                        let game = (self.games)();
+                        let game = (self.games.as_ref().ok_or("no replay game")?)();
                         let genesis = feed::genesis_actions(&game)?;
                         replay = Some((game, genesis));
                     }
@@ -594,7 +722,7 @@ impl<G: ArcadeGame> Server<G> {
                 },
             );
             if let Ok(state) = state {
-                states.push(state_json(&state, found.digest, found.snapshot.as_deref()));
+                states.push(state_json(&state, digest, snapshot));
                 answered.push(found.id);
             }
         }
@@ -619,11 +747,23 @@ impl<G: ArcadeGame> Server<G> {
             return Ok(());
         };
         let target = target.to_owned();
+        let (mut host, mut origin) = (None, None);
         loop {
             let mut header = String::new();
             if reader.read_line(&mut header)? == 0 || header == "\r\n" || header == "\n" {
                 break;
             }
+            if let Some((name, value)) = header.split_once(':') {
+                let value = Some(value.trim().to_owned());
+                if name.eq_ignore_ascii_case("host") {
+                    host = value;
+                } else if name.eq_ignore_ascii_case("origin") {
+                    origin = value;
+                }
+            }
+        }
+        if !local_request(host.as_deref(), origin.as_deref()) {
+            return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
         }
         if method != "GET" {
             return respond(
@@ -685,6 +825,33 @@ impl<G: ArcadeGame> Server<G> {
     }
 }
 
+fn loopback_authority(authority: &str) -> bool {
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+fn local_request(host: Option<&str>, origin: Option<&str>) -> bool {
+    host.is_some_and(loopback_authority)
+        && origin.is_none_or(|origin| {
+            origin
+                .strip_prefix("http://")
+                .is_some_and(loopback_authority)
+        })
+}
+
+fn process_start() -> Option<u64> {
+    let stat = fs::read_to_string("/proc/self/stat").ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
+}
+
 fn listen<G: ArcadeGame>(listener: &TcpListener, server: &Arc<Server<G>>) {
     let open = Arc::new(AtomicUsize::new(0));
     for stream in listener.incoming().flatten() {
@@ -716,40 +883,12 @@ where
         .live
         .as_deref()
         .ok_or("live evaluation needs a listen address")?;
-    let listener = TcpListener::bind(address)?;
-    let local = listener.local_addr()?;
-    if !local.ip().is_loopback() {
-        return Err(format!(
-            "the live view listens only on a loopback address, and {local} is not one; forward the port over SSH to watch from another machine"
-        )
-        .into());
-    }
-    eprintln!("live view listening on {local}");
     let request = &Request {
         mixture: draw_mixture_identifier(G::mixture()),
         ..request.clone()
     };
     let execution_sha256 =
         machine::quicknes::prepared_execution_sha256(&request.core, &request.core_sha256)?;
-    let shared: SharedFeed<G::View> = Arc::new(Mutex::new(Shared {
-        feed: None,
-        stats: Stats::default(),
-    }));
-    let (events, received) = mpsc::channel();
-    let (lookups, pending) = mpsc::channel();
-    let watch = LiveWatch::<G> {
-        shared: Arc::clone(&shared),
-        events: events.clone(),
-        lookups: Mutex::new(pending),
-        memory: native_memory(
-            rom,
-            &request.core,
-            &request.core_sha256,
-            &execution_sha256,
-            G::MEMORY_BYTES,
-        ),
-        game: id.to_owned(),
-    };
     let (game_rom, core, core_sha256, execution) = (
         rom.to_vec(),
         request.core.clone(),
@@ -757,34 +896,161 @@ where
         execution_sha256.clone(),
     );
     let games: Games<G> = Arc::new(move || native_game(&game_rom, &core, &core_sha256, &execution));
-    let workers = request.workers;
-    let feed = thread::spawn(move || feed_loop(&received, &shared, workers));
-    let server = Arc::new(Server {
-        events,
-        lookups,
-        site: request.live_site.clone(),
-        games: Arc::clone(&games),
-    });
-    thread::spawn(move || listen(&listener, &server));
-    let result = evaluate_watched(
-        games(),
-        G::run(),
+    let watched = Watched {
+        rom,
         request,
-        &execution_sha256,
+        execution_sha256: &execution_sha256,
         out,
         started,
-        &watch,
-    );
-    let _ = watch.events.send(Event::Finished);
-    let _ = feed.join();
-    result
+        id,
+        address,
+        view: G::memory_view,
+    };
+    watched.evaluate(games(), G::run(), Some(games))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_watching<G>(
+    game: G,
+    run: G::Run,
+    rom: &[u8],
+    request: &Request,
+    execution_sha256: &str,
+    out: &Path,
+    started: Instant,
+    id: &str,
+    view: MemoryView<G::View>,
+) -> Result<()>
+where
+    G: ArcadeGame,
+    G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+    G::Snapshot: EndpointIdentity,
+{
+    let watched = Watched {
+        rom,
+        request,
+        execution_sha256,
+        out,
+        started,
+        id,
+        address: "127.0.0.1:0",
+        view,
+    };
+    watched.evaluate(game, run, None)
+}
+
+struct Watched<'a, V> {
+    rom: &'a [u8],
+    request: &'a Request,
+    execution_sha256: &'a str,
+    out: &'a Path,
+    started: Instant,
+    id: &'a str,
+    address: &'a str,
+    view: MemoryView<V>,
+}
+
+impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
+    fn evaluate<G>(&self, game: G, run: G::Run, games: Option<Games<G>>) -> Result<()>
+    where
+        G: ArcadeGame<View = V>,
+        G::ArchiveReport: Serialize + serde::de::DeserializeOwned,
+        G::Snapshot: EndpointIdentity,
+    {
+        let listener = TcpListener::bind(self.address)?;
+        let local = listener.local_addr()?;
+        if !local.ip().is_loopback() {
+            return Err(format!(
+                "the live view listens only on a loopback address, and {local} is not one; forward the port over SSH to watch from another machine"
+            )
+            .into());
+        }
+        eprintln!("live view listening on {local}");
+        let record = self.out.join("live.json");
+        fs::write(
+            &record,
+            json!({
+                "address": local.to_string(),
+                "game": self.id,
+                "pid": std::process::id(),
+                "process_start": process_start(),
+            })
+            .to_string(),
+        )?;
+        let observe = native_observer(
+            self.rom,
+            self.request,
+            self.execution_sha256,
+            G::MEMORY_BYTES,
+            self.view,
+        );
+        let shared: SharedFeed<V> = Arc::new(Mutex::new(Shared {
+            feed: None,
+            stats: Stats::default(),
+        }));
+        let (events, received) = mpsc::channel();
+        let (lookups, pending) = mpsc::channel();
+        let viewers = Arc::new(AtomicUsize::new(0));
+        let glance = Arc::new(AtomicBool::new(false));
+        let watch = LiveWatch::<G> {
+            shared: Arc::clone(&shared),
+            events: events.clone(),
+            lookups: Mutex::new(pending),
+            observe: Arc::clone(&observe),
+            game: self.id.to_owned(),
+            viewers: Arc::clone(&viewers),
+            glance: Arc::clone(&glance),
+            recording: AtomicBool::new(false),
+        };
+        let workers = self.request.workers;
+        let feed = {
+            let observe = Arc::clone(&observe);
+            thread::spawn(move || {
+                feed_loop(
+                    &Feeding {
+                        events: &received,
+                        shared: &shared,
+                        observe: &observe,
+                        glance: &glance,
+                        workers,
+                    },
+                    Viewers {
+                        senders: Vec::new(),
+                        waiting: Vec::new(),
+                        count: viewers,
+                    },
+                );
+            })
+        };
+        let server = Arc::new(Server {
+            events,
+            lookups,
+            site: self.request.live_site.clone(),
+            games,
+            observe,
+        });
+        thread::spawn(move || listen(&listener, &server));
+        let result = evaluate_watched(
+            game,
+            run,
+            self.request,
+            self.execution_sha256,
+            self.out,
+            self.started,
+            &watch,
+        );
+        let _ = watch.events.send(Event::Finished);
+        let _ = feed.join();
+        let _ = fs::remove_file(record);
+        result
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Sampler, encode_snapshot, site_path};
+    use super::{Sampler, encode_snapshot, local_request, site_path};
 
     #[test]
     fn site_paths_stay_inside_the_site() {
@@ -799,6 +1065,32 @@ mod tests {
         );
         for target in ["/../secret", "/assets/../../secret", "/./index.html"] {
             assert_eq!(site_path(target), None, "{target}");
+        }
+    }
+
+    #[test]
+    fn only_loopback_hosts_and_origins_reach_the_server() {
+        for host in [
+            "127.0.0.1:8790",
+            "localhost:41000",
+            "[::1]:8790",
+            "localhost",
+        ] {
+            assert!(local_request(Some(host), None), "{host}");
+        }
+        assert!(local_request(
+            Some("127.0.0.1:8790"),
+            Some("http://localhost:8790")
+        ));
+        for (host, origin) in [
+            (None, None),
+            (Some("evil.example:8790"), None),
+            (Some("127.0.0.1.evil.example"), None),
+            (Some("127.0.0.1:8790"), Some("https://evil.example")),
+            (Some("127.0.0.1:8790"), Some("http://evil.example:8790")),
+            (Some("127.0.0.1:8790"), Some("null")),
+        ] {
+            assert!(!local_request(host, origin), "{host:?} {origin:?}");
         }
     }
 

@@ -22,6 +22,7 @@ async function post(path, body = {}) {
 
 function describe(run) {
   const minutes = Math.round((Date.now() / 1000 - run.started) / 60);
+  if (run.external) return `${run.game} on ${run.machine} · ${run.directory} · ${minutes} min`;
   const memory = `${(run.memory_mib / 1024).toFixed(1)} GiB`;
   return `${run.game} on ${run.machine} · ${run.workers} workers · ${memory} · seed ${run.seed} · ${minutes} min`;
 }
@@ -75,7 +76,7 @@ export async function nativeRuns(gameId, mount) {
       ...runs.map((run) => {
         const actions = element("span", { className: "native-actions" });
         if (run.watch && run.state === "running") actions.append(element("a", { href: run.watch, textContent: "Watch" }));
-        if (run.state === "running" || run.state === "starting") {
+        if (!run.external && (run.state === "running" || run.state === "starting")) {
           actions.append(
             element("button", {
               type: "button",

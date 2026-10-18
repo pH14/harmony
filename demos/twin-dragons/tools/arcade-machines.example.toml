@@ -8,9 +8,12 @@ roms = "~/arcade-roms"
 # One table per machine. `ssh` is any destination `ssh` accepts, such as a
 # Host alias from ~/.ssh/config. The machine needs Linux with systemd, Rust,
 # git, curl and a C++ compiler. `dir` holds the source, builds, ROMs and runs.
-# `workers` and `memory_mib` are the largest values the page offers.
+# `workers` and `memory_mib` are the largest values the page offers. `runs`
+# lists directories that hold other `nes-eval` campaigns; the page lists every
+# running campaign under them so it can be watched.
 [machines.example]
 ssh = "builder.example.com"
 dir = "/srv/harmony-arcade"
 workers = 8
 memory_mib = 16384
+runs = ["/srv/campaigns"]

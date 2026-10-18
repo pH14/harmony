@@ -1637,7 +1637,8 @@ where
         self.id_to_index.get(&id).copied()
     }
 
-    pub(crate) fn stable_id(&self, index: usize) -> Option<u64> {
+    #[must_use]
+    pub fn stable_id(&self, index: usize) -> Option<u64> {
         self.entries.get(index).map(|entry| entry.id)
     }
 

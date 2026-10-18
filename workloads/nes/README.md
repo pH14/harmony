@@ -296,29 +296,49 @@ protocol and validation machinery without copying the evaluation loop.
 
 ## Live view
 
+Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid, Twin
+Dragons or Famidash serves the arcade page's view of itself over HTTP on a
+loopback port. It prints `live view listening on 127.0.0.1:PORT` and writes
+`live.json` with the address, the page's game id, the process id and, on Linux,
+the process start time from `/proc/self/stat`, to its output directory. It
+removes the file when the campaign ends. A process killed by a signal leaves the
+file behind, and the start time keeps a reused process id from matching it. The
+server refuses any other address, and answers 403 to a request whose `Host` or
+`Origin` names another host: it has no authentication and can serve the ROM
+directory. To watch from another machine, forward the port over SSH, for
+example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
+[`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).
+
+The view costs nothing per job while no viewer is connected: workers skip the
+trail and per-action records, and the coordinator turns off admission records.
+Six paired one-worker runs of Famidash and Twin Dragons at 30,000 executions
+differed by 0.2% on average, within run-to-run noise. A connected viewer turns
+the records back on. A viewer that connects first gets a sample of the archive,
+up to 1,000 states with the newest 250 among them, decoded from their
+snapshots, so a long run shows where it has reached without keeping a history.
+
 A request with `live` set to a loopback address such as `127.0.0.1:8790` runs
-the campaign with `eval::evaluate_watched` and serves the arcade page's view of
-it over HTTP. The server refuses any other address: it has no authentication
-and serves the ROM directory. To watch from another machine, forward the port
-over SSH, for example `ssh -L 8790:127.0.0.1:8790 HOST`. `live_site` names a
-directory with the built arcade page and its `roms` directory, which the server
-serves at `/`. `GET /live/events` is a Server-Sent Events stream: a `ready`
-message with the root state, then one `batch` every 100 ms in the shape the
+the arcade game from genesis with its own draw mixture and a `Traced` core, as
+the browser does, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`,
+`resume` and `mixture`. `live_site` names a directory with the built arcade
+page and its `roms` directory, which the server serves at `/`. Other campaigns
+keep their own game setup and mixture, and their view has no motion trails;
+its root is the campaign's first archived state.
+
+`GET /live/events` is a Server-Sent Events stream: a `ready` message with the
+root state, the archive sample, then one `batch` every 100 ms in the shape the
 browser search worker posts, with at most 256 trails and 2,000 unretained points
-per batch, and a final `limit` message when the campaign ends. A viewer that
-connects late first receives up to 40,000 earlier points.
+per batch, and a final `limit` message when the campaign ends.
 `GET /live/states?ids=&request=` returns the controller input and core snapshot
 of up to 12 archived states. The coordinator thread reads them between
-admissions; the request thread replays a state's input through a fresh target
-when the archived input does not hold every frame the core ran, as the browser
-does. Requests are limited to 64 KiB with 10-second read and write timeouts,
-and the server holds at most 64 connections. Open
-`http://127.0.0.1:8790/?game=GAME&live` to watch. The live view supports Super
-Mario Bros., Mega Man 2, Metroid, Twin Dragons and the five Famidash groups:
-`famidash`, `famidash-community`, `famidash-b`, `famidash-c` and `famidash-d`,
-each with its group's ROM. It starts at genesis, uses the arcade game's own draw
-mixture, and rejects `stage`, `ai`, `root_input`, `metroid_terminal`, `resume`
-and `mixture`.
+admissions. In a `live` campaign, the request thread replays a state's input
+through a fresh target when the archived input does not hold every frame the
+core ran, as the browser does. Requests are limited to 64 KiB with 10-second
+read and write timeouts, and the server holds at most 64 connections. Open
+`http://127.0.0.1:8790/?game=GAME&live` to watch. The page ids are
+`super-mario-bros`, `mega-man-2`, `metroid`, `twin-dragons` and the five
+Famidash groups `famidash`, `famidash-community`, `famidash-b`, `famidash-c` and
+`famidash-d`; a Famidash campaign reports the group that holds its stage.
 
 ## Product CLI adapter
 
