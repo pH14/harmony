@@ -1477,6 +1477,9 @@ mod tests {
     #[test]
     #[cfg_attr(miri, ignore)]
     fn root_import_checks_the_independently_pinned_machine_commitment() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
         use std::os::unix::process::CommandExt;
         use std::process::Command;
         let directory = tempfile::tempdir().unwrap();
