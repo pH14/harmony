@@ -1,0 +1,6 @@
+{
+  "status": "assembled-vertical-motion-matches-unbounded-oracle",
+  "cases": 1245640,
+  "rom_sha256": "b73d3af8420569a7222c3c7573f379e761551473046072f2174cce3dd46d74bc",
+  "debug_sha256": "2ed95e468ef6df5890a05e44c1fac9fb37552aa8774b379c44eac3d374ba13ef"
+}

@@ -16,7 +16,8 @@ def run(rom, debug):
             segments[int(fields["id"])] = fields
         if line.startswith("sym\t") and "val" in fields:
             symbols[fields["name"].strip('"')] = fields
-    address = lambda name: int(symbols["_" + name]["val"], 0)
+    aliases = {"currplayer_y": "currplayer_rely", "currplayer_x": "currplayer_relx"}
+    address = lambda name: int(symbols["_" + (name if "_" + name in symbols else aliases.get(name, name))]["val"], 0)
     memory = bytearray(65536)
     for name in ("add_velocity_y_checked", "subtract_velocity_y_checked", "correct_y_from_a",
                  "checked_y_error", "enforce_checked_y_fault"):

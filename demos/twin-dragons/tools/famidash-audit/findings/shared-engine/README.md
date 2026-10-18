@@ -242,3 +242,59 @@ intentional wave D-block contacts. The retained `b-19-558` and `b-5-489/638`
 witnesses and contextual FCEUmm collision traces all read the solid tile with
 `dblocked == 1`; the engine deliberately permits that contact.
 `wave-solid-dispositions.json` records these decisions. No wall patch is needed.
+
+
+A fresh ordinary Dissonance clear on the broader checked-motion prototype is
+retained as `c19-motion-fixed-control.json.gz`: 7,295 frames, reaching the genuine
+level-complete state. FCEUmm matches the entire gameplay trace, with only intro
+frame 3 differing. This is a positive control for that prototype.
+
+The next confirmed surviving barrier miss is Sonar (B-Sides 0). Its background
+spike-bed tile, metatile 12, shares `COL_DEATH_BOTTOM` but was excluded from the
+pit-base guard. CPU probes at frames 1,799–1,802 pass from local `(6,8)` through
+`(9,11)` to the row below; they avoid the narrow original centre kernel. The
+ship continues below the strip. `b0-background-spike-witness.json.gz` and its
+collision trace preserve the input. A prototype assigning this tile to the
+existing `COL_PIT` family, preserving its ordinary point hitbox, dies at frame
+1,802 in both QuickNES and FCEUmm with an unchanged approach. The retained
+FCEUmm result differs only at intro frame 5. This family extension still needs
+fresh clearing controls and a systematic review of the other spike-bed assets.
+Consequently the checked-motion all-level run is exploratory as well: the
+three-clean-round goal remains at zero.
+
+
+The next prototype, `experimental-release-base-metadata.patch`, retains the
+original collision classes and uses a separate packed four-bit base mask for
+shared hazard tiles. A 128-byte table declares completed crossings of top,
+bottom, left and right bases. The engine caches the actual metatile with each
+collision sample; ordinary point kernels and narrow swept kernels remain the
+same. This supersedes the collision-alias prototype as the approach under test.
+The engine patch excludes the separate Fofii edits and D-side continuation
+assets needed for the combined search build.
+
+Forty tile definitions have 43 base edges verified across all 24 graphics
+variants (1,032 checks). Animated saw edges and four changing diagonal edges
+were excluded by that check. Three fully filled cloud tiles remain unannotated
+because their forgiving hitboxes do not define a distinct structural base.
+The C base geometry passes 1,583,104 exact cases, and the independent review
+detector passes the same reference on 1,557,504 crossings. Original point and
+narrow swept geometry pass 16,384 and 692,224 cases respectively. Every decoded
+level tile, compiled collision class, and packed base byte matches the source
+index for all 109 levels. Build identities are in
+`experimental-metadata-builds.json`. Playability and full searches remain
+required; this is not a production-approved patch.
+
+Fresh controls for the earlier Sonar-only base extension and the current
+upstream checked-motion Theory of Everything prototype are retained. FCEUmm
+matches the complete gameplay of both: Sonar clears in 5,090 frames (intro frame
+5 differs); current Theory of Everything clears in 4,971 (intro frame 3 differs).
+These controls apply to their recorded ROMs, not later prototype hashes.
+
+The completed carry-prototype inventory contains five surviving narrow spike
+contacts, all with a one-pixel fractional-camera discrepancy in CPU probes.
+Three retained inputs—B-Sides 18, main 18, and main 40—now die on their reviewed
+frames under the metadata/fraction repair, with unchanged approaches in both
+cores. Their contextual collision traces and replay results are retained here.
+B-Sides 30 and C-Sides 21 encounter an earlier repaired contact and still need
+that earlier contact assessed; they are not strict proofs for their originally
+reported frames. No clean round has been counted.

@@ -1,0 +1,39 @@
+{
+  "source_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "purpose": "experimental original collision classes with shared packed opaque spike-base metadata, narrow sweep, checked vertical motion, fractional camera carry and Fofii repair",
+  "source_changes": {
+    "LEVELS/LEVEL DATA/lvlset_B/fofii_fofii_fofii.tmx": "9da6a951f411eaf3a2b182e6904fe3c1e99383bd0e4f5f7a391b7c13b018319d",
+    "LEVELS/include/lvlset_B/EXPORTS/fofii_fofii_fofii.lz.bin": "720367e01870ae5384a3db5403b558dcb49126d41ecd71e91f983c68ee2bbf72",
+    "LEVELS/include/lvlset_B/all_level_data.s": "1c602b9b2ebb5c88fa7d7a96518807ff838565f967920a45ef906d7c5e17bfd9",
+    "LEVELS/include/lvlset_B/level_data_cache.json": "2cf55c57114857922903cc8c25fab0caeb9cbf0c569f3da3e9bcc3046460be2c",
+    "LEVELS/include/lvlset_D/EXPORTS/aftercatabath.lz.0.bin": "ac5d84c93dcd850a7a079fb344e89d5cd19d0159209855d30d514d039a6643e0",
+    "LEVELS/include/lvlset_D/EXPORTS/aftercatabath.lz.1.bin": "2784dff1a0f04b8be10e497887b9fbff5610f8c46fd169d6a06ef442f894afc5",
+    "LEVELS/include/lvlset_D/EXPORTS/windylandscape.lz.0.bin": "817ac8c3947779d915622eb43253076175bda62284ce6394025c9a1273940184",
+    "LIB/asm/nesdash.s": "c226970e2d07e1b7f03bdb2fe013d9ef715f24c88258c88e1201bfe1cb554bee",
+    "METATILES/metatiles.h": "e7eb6f7b106001d974f34a09567176f94572acfa9dbe511419fe07048cd1b483",
+    "METATILES/metatiles.s": "27e0b85e7b9c28e52ba1efde4a293b066ba9a5249e0cfa803cd7de998d856ff3",
+    "METATILES/metatiles_macro.inc": "98e03641775b887c04745ea346fe71c06aaff477cb52d5f26794ce0ccffa6e2e",
+    "SAUCE/famidash.h": "c39d87cd170e2a4c8ca86d9a1964ba8613dccf9c51bed51c81b4959d5a8d5570",
+    "SAUCE/functions/collision.h": "dca0a155fd9bf78d5feb532c4592bab110f2ccfcadcb9b329317c892e154535f",
+    "SAUCE/functions/reset_level.h": "aa407806e94541c7555e6f998697ac85b24c3bad2d351a6783d938534071ed61",
+    "SAUCE/functions/sprite_loading.h": "b8d6e9bf8af7df985f6cbe80b87b0625ad392d2db4ed4761a74f00613c867d9b",
+    "SAUCE/gamemodes/gamemode_ball.h": "c3f06794d22c0ce57fd1d6617227cd4c24687831467b14bdc5c6cf5ff27fb5d0",
+    "SAUCE/gamemodes/gamemode_cube.h": "374c1ee20b2614af09f796ae2e98db258a90ff88478aa2d241b2003c4f267244",
+    "SAUCE/gamemodes/gamemode_ship.h": "04de94e973286d1d4dde717a107b6246a2f8e92cb23db97066f54c91d92b0c9b",
+    "SAUCE/gamemodes/gamemode_spider.h": "f5644c392302235fa6b300bff8cfc8019baf5f15a5f4e1ebc61da82a824051b1",
+    "SAUCE/gamemodes/gamemode_wave.h": "3dd0028286a6414fe28bf5c844b8185fb4c7c72db8d6b426c8752c4cc3d35cc6",
+    "SAUCE/gamestates/state_game.h": "e06fdc9d7d600edc3c8f3ace6f7fcea1fab59c77ba7dbcdb34789600d0e6273b",
+    "METATILES/spike_bases.inc": "f58cd8b0da16d7a2e4f6580a710f6f0a063b2c58ff80fd53beaf33718dad818f",
+    "SAUCE/functions/base_crossing.h": "c7b2c3b72a1a5ef9f30471ff379d5510e8153867126a5cf3cf2628b689f2a620",
+    "SAUCE/functions/checked_motion.h": "da54dfa03a9178331340dd445b51528ecca50a35da0b004e0a0dee4c772d2728",
+    "SAUCE/functions/pit_crossing.h": "ea291c36505ccda7c9404016a46dc270dafeb954ec983d4112176744d11f6e20",
+    "SAUCE/functions/spike_sweep.h": "7bfe66d22cf6f0866cd427fa1c61080b39357a21fd7a2f9afca38bddc264b75c"
+  },
+  "roms": {
+    "main": "776a0d2442e1535b1ee8e48618fcf764bbe2909b731fd1ced9682d3e88482df3",
+    "b": "e010be7ed57ca7f0feb4958f78e1ab033d75ebbf35f5cf65409f255316f7ee17",
+    "c": "6969eb77a25edd478bb1346fb68295eb3ed8837f189e931dc290bd106bff6616",
+    "d": "3d7d2c940889cdf5adbf72ab79ffbd6766de4761cc62234abb6d2e46185f1142"
+  },
+  "patch_sha256": "4b29e2747b6f444ee0e27aa76b9a7fe1454ec6322237bacf77613f721c2b423d"
+}

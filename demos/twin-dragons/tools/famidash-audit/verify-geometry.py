@@ -71,6 +71,14 @@ def compare(index, roms, builds):
                 actual = rom[table:table + len(expected)]
                 assert len(expected) == 256 and actual == expected, "ROM collision classes differ from source index"
                 result["collision_tables"][side] = {"entries": len(expected), "sha256": hashlib.sha256(actual).hexdigest()}
+                if any("base_mask" in tile for tile in index["metatiles"]):
+                    masks = [tile.get("base_mask", 0) for tile in index["metatiles"]]
+                    assert all(isinstance(mask, int) and 0 <= mask <= 15 for mask in masks)
+                    expected_bases = bytes(masks[i] | (masks[i + 1] << 4) for i in range(0, 256, 2))
+                    start = machines[side][1]["_metatiles_bases"]
+                    actual_bases = rom[start:start + 128]
+                    assert actual_bases == expected_bases, "ROM spike-base metadata differs from source index"
+                    result["collision_tables"][side]["base_metadata_sha256"] = hashlib.sha256(actual_bases).hexdigest()
         rom, symbols = machines[side]
 
         def pointer(prefix, number):

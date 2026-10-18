@@ -7,6 +7,7 @@ from fractions import Fraction
 import hashlib
 import json
 from pathlib import Path
+import re
 import subprocess
 import tempfile
 
@@ -64,11 +65,14 @@ def run(source):
 #include <stdint.h>
 #define CODE_BANK_PUSH(x)
 #define CODE_BANK_POP()
+#define crossPRGBankJump0(fn) fn()
 #define LSB(x) ((x) & 255)
 #define do_if_in_range(v,a,b,code) do { if ((v)>=(a) && (v)<=(b)) code; } while(0)
 #include "METATILES/metatiles.h"
 unsigned char currplayer, wrap_mode, temp_x, temp_y, temp_room, collision, tmp2;
 unsigned char cube_data[2], pit_previous_room[2], pit_previous_x[2], pit_previous_y[2], pit_previous_collision[2];
+unsigned char collision_metatile, pit_previous_metatile[2];
+const unsigned char metatiles_bases[128] = {0};
 void bg_collision_sub(void) {}
 void check_pit_motion(void) {}
 #include "SAUCE/functions/spike_sweep.h"
@@ -106,7 +110,8 @@ unsigned char swept(unsigned char kind, unsigned char x, unsigned char y, signed
         library.swept.argtypes = [C.c_uint8] * 3 + [C.c_int8] * 2
         library.original.restype = library.swept.restype = C.c_uint8
         kinds, point_cases, sweep_cases = {}, 0, 0
-        for kind in range(64):
+        kind_count = int(re.search(r"ss_shapes\[(\d+)\]", header.read_text())[1])
+        for kind in range(kind_count):
             points = set()
             for x in range(16):
                 for y in range(16):
@@ -117,6 +122,18 @@ unsigned char swept(unsigned char kind, unsigned char x, unsigned char y, signed
                         points.add((x, y))
             if points:
                 kinds.setdefault(frozenset(points), kind)
+        alias_cases = 0
+        definitions = (source / "METATILES/metatiles.h").read_text()
+        for name, kind, original in [("COL_PIT", 62, 4), ("COL_PIT_TOP", 63, 3),
+                                     ("COL_FULL_FLOOR_SPIKE", 64, 8), ("COL_FULL_CEILING_SPIKE", 65, 8),
+                                     ("COL_FULL_LEFT_SPIKE", 66, 8), ("COL_FULL_RIGHT_SPIKE", 67, 8),
+                                     ("COL_LEFT_BASE_SPIKE", 68, 2), ("COL_RIGHT_BASE_SPIKE", 69, 1)]:
+            if kind >= kind_count or not re.search(rf"^#define\s+{name}\s", definitions, re.M):
+                continue
+            for x in range(16):
+                for y in range(16):
+                    assert library.original(kind, x, y) == library.original(original, x, y), (kind, original, x, y)
+                    alias_cases += 1
         deltas = [-16, -8, -5, -4, -3, -1, 0, 1, 3, 4, 5, 8, 16]
         for points, kind in kinds.items():
             bounds = rectangles(points)
@@ -129,7 +146,7 @@ unsigned char swept(unsigned char kind, unsigned char x, unsigned char y, signed
                             assert actual == expected, (kind, x, y, dx, dy, bounds, actual, expected)
                             sweep_cases += 1
         return {"status": "original-hitboxes-and-geometric-oracle-match", "point_cases": point_cases,
-                "sweep_cases": sweep_cases, "distinct_shapes": len(kinds),
+                "sweep_cases": sweep_cases, "alias_cases": alias_cases, "distinct_shapes": len(kinds),
                 "source_sha256": hashlib.sha256(header.read_bytes()).hexdigest()}
 
 

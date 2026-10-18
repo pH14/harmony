@@ -3,7 +3,28 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import { compress, expand, routeTape, suspect, tileAt } from "./runtime.mjs";
-import { collisionPoint, advanceCollisionPoint, players } from "./signals.mjs";
+import { collisionPoint, advanceCollisionPoint, players, pointCollision, signals, crossedBase } from "./signals.mjs";
+
+test("base review detects Sonar's traced crossing and preserves open tile edges", () => {
+  assert.equal(crossedBase({ x: 75, y: 895 }, { x: 78, y: 898 }, 64, 880, 2), 2);
+  assert.equal(crossedBase({ x: 78, y: 898 }, { x: 75, y: 895 }, 64, 880, 2), 2);
+  assert.equal(crossedBase({ x: 80, y: 894 }, { x: 81, y: 897 }, 64, 880, 2), 0);
+  assert.equal(crossedBase({ x: 75, y: 894 }, { x: 76, y: 895 }, 64, 880, 2), 0);
+  assert.equal(crossedBase({ x: 63, y: 885 }, { x: 66, y: 886 }, 64, 880, 4), 4);
+  assert.equal(crossedBase({ x: 78, y: 885 }, { x: 81, y: 886 }, 64, 880, 8), 8);
+  assert.equal(crossedBase({ x: 70, y: 879 }, { x: 71, y: 882 }, 64, 880, 1), 1);
+});
+
+test("new spike-base aliases retain their original audit hazard signals", () => {
+  for (const alias of ["COL_FULL_FLOOR_SPIKE", "COL_FULL_CEILING_SPIKE", "COL_FULL_LEFT_SPIKE", "COL_FULL_RIGHT_SPIKE"])
+    assert.equal(pointCollision({ collision: alias }), "COL_DEATH");
+  assert.equal(pointCollision({ collision: "COL_PIT_TOP" }), "COL_DEATH_TOP");
+  const layout = { width: 32, height: 1, top: 480, tiles: Array(32).fill(17) };
+  const tiles = Array.from({ length: 18 }, () => ({ collision: "COL_NONE", name: "EMPTY" }));
+  tiles[17] = { collision: "COL_FULL_CEILING_SPIKE", name: "SPIKE_TOP" };
+  const o = { x: 141, y: 480, state: 2, dead: false, debug: 0, invincible: 0, paused: 0 };
+  assert.ok(signals(o, layout, tiles).some(signal => signal.kind === "hazard-overlap"));
+});
 
 test("source review uses the live pose during the captured trail-rendering phase", () => {
   const r = new Uint8Array(readFileSync(new URL("../../../../workloads/nes-games/src/famidash/fixtures/trail-render.wram", import.meta.url)));

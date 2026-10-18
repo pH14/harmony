@@ -3,16 +3,17 @@ import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
 import { machine, hash, tileAt } from "./runtime.mjs";
-import { players, advanceCollisionPoint } from "./signals.mjs";
+import { players, advanceCollisionPoint, pointCollision, crossedBase } from "./signals.mjs";
 
 const [indexPath, roms, runtime, roundDirectory, output] = process.argv.slice(2);
 if (!output) throw new Error("review-round.mjs INDEX ROMS RUNTIME ROUND_DIRECTORY OUTPUT");
 const index = JSON.parse(await readFile(indexPath));
+const metatiles = index.metatiles.map(tile => ({ ...tile, collision: pointCollision(tile) }));
 await mkdir(output, { recursive: true });
 let ledger;
 try { ledger = JSON.parse(await readFile(join(output, "review.json"))); }
 catch { ledger = { schema: 1, cases: {}, entries: {}, mismatches: [], reviewed_candidates: 0, status: "review-in-progress" }; }
-if (ledger.detector_revision !== 9) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 9; }
+if (ledger.detector_revision !== 11) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 11; }
 ledger.status = "replay-in-progress";
 ledger.source_review_complete = false;
 let entryCount = Object.keys(ledger.entries).length, lastSavedAt = performance.now();
@@ -21,7 +22,7 @@ const coveredLevels = new Map();
 function fill(o, layout) {
   if (!o || o.dead || o.state !== 2 || o.debug || o.invincible || o.paused || o.x < 128) return null;
   const tile = tileAt(layout, o.x + 8, o.y + 8);
-  return tile && ["CHECKERBOARD_15", "X_NO_OUTLINE", "BLACK_NONE"].includes(index.metatiles[tile.id].name) ? tile : null;
+  return tile && ["CHECKERBOARD_15", "X_NO_OUTLINE", "BLACK_NONE"].includes(metatiles[tile.id].name) ? tile : null;
 }
 function intersection(a, b, left, top, right, bottom) {
   let low = 0, high = 1;
@@ -43,7 +44,7 @@ function hazards(a, b, previous, current, layout) {
   for (let y = Math.floor(Math.min(a.y, b.y) / 16) * 16; y <= Math.max(a.y, b.y); y += 16)
     for (let x = Math.floor(Math.min(a.x, b.x) / 16) * 16; x <= Math.max(a.x, b.x); x += 16) {
       const tile = tileAt(layout, x, y); if (!tile) continue;
-      const collision = index.metatiles[tile.id].collision;
+      const collision = metatiles[tile.id].collision;
       const box = collision === "COL_DEATH" ? [4, 4, 8, 11]
         : ["COL_DEATH_BOTTOM", "COL_PIT"].includes(collision) ? [5, 11, 7, 15]
         : collision === "COL_DEATH_TOP" ? [5, 0, 7, 5] : null;
@@ -57,7 +58,7 @@ function crossedHazardRow(trace, frame, player, layout) {
   if (!previous || current.y <= previous.y || current.x < 128) return null;
   const tile = tileAt(layout, current.x + 8, current.y + 8 - 16);
   if (!tile) return null;
-  const dangerous = id => ["COL_DEATH", "COL_DEATH_BOTTOM", "COL_PIT", "COL_DEATH_TOP"].includes(index.metatiles[id].collision);
+  const dangerous = id => ["COL_DEATH", "COL_DEATH_BOTTOM", "COL_PIT", "COL_DEATH_TOP"].includes(metatiles[id].collision);
   if (!dangerous(tile.id)) return null;
   for (const x of [current.x + 8 - 16, current.x + 8 + 16]) {
     const neighbor = tileAt(layout, x, current.y + 8 - 16);
@@ -153,10 +154,22 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
         }
         if (!o || o.dead || o.state !== 2 || o.debug || o.invincible || o.paused) continue;
         const survives = frame + 8 < trace.length && !trace.slice(frame, frame + 9).some(states => !states[player] || states[player].dead || states[player].state !== 2);
+        if (survives && previousCentre && centre && Math.abs(centre.x - previousCentre.x) <= 16 && Math.abs(centre.y - previousCentre.y) <= 16) {
+          for (let y = Math.floor(Math.min(previousCentre.y, centre.y) / 16) * 16; y <= Math.max(previousCentre.y, centre.y); y += 16) {
+            for (let x = Math.floor(Math.min(previousCentre.x, centre.x) / 16) * 16; x <= Math.max(previousCentre.x, centre.x); x += 16) {
+              const tile = tileAt(layout, x, y);
+              const mask = tile && crossedBase(previousCentre, centre, x, y, metatiles[tile.id].base_mask ?? 0);
+              if (!mask) continue;
+              const key = `${layout.side}:${layout.level}:base:${tile.column}:${tile.row}:${mask}:${player}`;
+              addEntry(key, { path, sha, frame: frame + 1, player, tile, observation: o, previous,
+                previous_probe: previousCentre, current_probe: centre, crossed_mask: mask }, 1, Math.min(trace.length - frame, 512));
+            }
+          }
+        }
         const solid = centre && tileAt(layout, centre.x, centre.y);
         const physicalTile = linearCentre && tileAt(layout, linearCentre.x, linearCentre.y);
         if (survives && centre && physicalTile && Math.abs(linearCentre.y - centre.y) === 256) {
-          const type = index.metatiles[physicalTile.id].collision, x = linearCentre.x & 15, y = linearCentre.y & 15;
+          const type = metatiles[physicalTile.id].collision, x = linearCentre.x & 15, y = linearCentre.y & 15;
           const hit = type === "COL_ALL" ? x >= 3 && x <= 12 && y >= 3 && y <= 12
             : type === "COL_DEATH" ? x >= 4 && x <= 8 && y >= 4 && y <= 11
             : ["COL_DEATH_BOTTOM", "COL_PIT"].includes(type) ? x >= 5 && x <= 7 && y >= 11
@@ -167,7 +180,7 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
               actual_probe: centre, physical_centre: linearCentre, requires_wave_dblock_review: o.mode === 6 }, 1, Math.min(trace.length - frame, 512));
           }
         }
-        if (survives && solid && index.metatiles[solid.id].collision === "COL_ALL" &&
+        if (survives && solid && metatiles[solid.id].collision === "COL_ALL" &&
             (centre.x & 15) >= 3 && (centre.x & 15) <= 12 && (centre.y & 15) >= 3 && (centre.y & 15) <= 12) {
           const key = `${layout.side}:${layout.level}:solid:${solid.column}:${solid.row}:${player}`;
           addEntry(key, { path, sha, frame: frame + 1, player, tile: solid, observation: o, previous,
