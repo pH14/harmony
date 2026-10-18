@@ -28,6 +28,7 @@ use environment::{
 use super::live::{checked_cached_attachment, vmm_target_commitment};
 use super::{CachedSnapshotReceipt, SnapshotAttachment};
 use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec};
+use crate::ancillary::parse_control_rights;
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
@@ -557,26 +558,19 @@ fn recv_with_fds(
         }
     };
     let mut fds = Vec::new();
-    // SAFETY: recvmsg filled msg_control with msg_controllen bytes of well-formed control
-    // headers; CMSG_FIRSTHDR and CMSG_NXTHDR stay within that range, and each SCM_RIGHTS
-    // payload holds descriptors the kernel just installed in this process for us to own.
-    unsafe {
-        let mut header = libc::CMSG_FIRSTHDR(&raw const message);
-        while !header.is_null() {
-            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let data = libc::CMSG_DATA(header);
-                let bytes = (*header).cmsg_len as usize - data.offset_from(header.cast()) as usize;
-                for index in 0..bytes / size_of::<RawFd>() {
-                    let raw = std::ptr::read_unaligned(data.cast::<RawFd>().add(index));
-                    fds.push(OwnedFd::from_raw_fd(raw));
-                }
-            }
-            header = libc::CMSG_NXTHDR(&raw const message, header);
-        }
-    }
+    // SAFETY: control owns initialized u64 storage of at least space bytes, which was the
+    // capacity supplied to recvmsg; the byte view cannot exceed that allocation.
+    let control_bytes = unsafe { std::slice::from_raw_parts(control.as_ptr().cast::<u8>(), space) };
+    let parsed = parse_control_rights(control_bytes, message.msg_controllen as usize, |raw| {
+        // SAFETY: only complete SCM_RIGHTS integers within both the supplied allocation and
+        // recvmsg's returned extent reach this callback; these are fresh descriptors installed
+        // by this recvmsg, and each is immediately assigned exactly one owning handle.
+        fds.push(unsafe { OwnedFd::from_raw_fd(raw) });
+    });
     if message.msg_flags & libc::MSG_CTRUNC != 0 {
         return Err(malformed("descriptors were truncated"));
     }
+    parsed?;
     #[cfg(not(target_os = "linux"))]
     for fd in &fds {
         set_cloexec(fd.as_raw_fd(), true)?;
@@ -1819,6 +1813,62 @@ mod tests {
             self.current = self.state(snapshot)?;
             Ok(())
         }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn truncated_rights_preserve_unrelated_descriptors_and_close_received_handles() {
+        const CHILD: &str = "HARMONY_TRUNCATED_RIGHTS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output=Command::new(std::env::current_exe().unwrap()).args(["--exact","session::worker::tests::truncated_rights_preserve_unrelated_descriptors_and_close_received_handles","--nocapture"]).env(CHILD,"1").output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (left, right) = UnixStream::pair().unwrap();
+        let (rights, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let sentinel = tempfile::tempfile().unwrap();
+        // SAFETY: fcntl F_GETFD only queries the existing descriptor and does not modify it.
+        let stdin_before = unsafe { libc::fcntl(0, libc::F_GETFD) };
+        assert!(
+            stdin_before >= 0,
+            "descriptor zero must be open for this regression"
+        );
+        let capacity = (control_space(MAX_FDS) - size_of::<libc::cmsghdr>()) / size_of::<RawFd>();
+        let excess = tempfile::tempfile().unwrap();
+        let mut fds = vec![rights.as_fd(); capacity];
+        fds.push(excess.as_fd());
+        assert_eq!(send_with_fds(&left, &[1], &fds).unwrap(), 1);
+        let error = recv_with_fds(&right, &mut [0; 1], None).unwrap_err();
+        assert!(
+            error.to_string().contains("descriptors were truncated"),
+            "{error}"
+        );
+        // SAFETY: fcntl F_GETFD only queries descriptor zero, just as before the receive.
+        assert_eq!(
+            unsafe { libc::fcntl(0, libc::F_GETFD) },
+            stdin_before,
+            "truncated padding must not become descriptor zero"
+        );
+        sentinel.metadata().unwrap();
+        drop(fds);
+        drop(rights);
+        drop(excess);
+        drop(left);
+        drop(right);
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap(),
+            0,
+            "all real received rights must close on refusal"
+        );
     }
 
     fn config() -> SessionConfig {

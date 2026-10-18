@@ -438,3 +438,15 @@ partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
 this API does not authenticate a previously consumed prefix or detect rollback.
 `EventHistory.count` counts normalized execution events and is not an SDK offset.
 Workload adapters own decoder checkpoints and lineage validation.
+
+Worker ancillary parsing bounds every header and complete descriptor integer by
+both the supplied control-buffer extent and recvmsg's actual `msg_controllen`.
+A truncated Darwin control header can retain its original larger `cmsg_len`;
+allocation padding is never interpreted as another descriptor. Complete returned
+SCM_RIGHTS handles become owned immediately and close on framing/truncation error;
+unrelated descriptors remain untouched. Pure native-layout parser tests run under
+Miri; the raw truncation regression runs in an isolated subprocess and checks
+received-right closure and descriptor-zero preservation. This does not claim to
+recover kernel-installed handles that the OS did not return: observed Darwin
+truncation can leave unreported handles, tracked separately from bounded parsing.
+The accepted worker descriptor cap and protocol remain unchanged.
