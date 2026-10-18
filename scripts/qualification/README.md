@@ -70,3 +70,81 @@ The registered cell names its finite instruction surface and checkpoint state.
 It does not grant qualification to arbitrary instructions, other backends or
 snapshot migration. Adding a relation requires a production adapter and evidence
 for that relation; local repetitions alone cannot satisfy a cross-host cell.
+
+## Composed Linux continuation
+
+`linux-continuation.json` and `../qualify-linux-continuation.py` define a
+separate x86 KVM Linux cell. Its retained static test executable drives the
+production VMM with an exact kernel and owned continuation initramfs. The
+bundle binds source, executable, both guest images, the guest CPU contract and
+registry by SHA-256. Execution never rebuilds the test executable. Every
+receipt retains the DMI instance UUID, CPU vendor and full `/proc/cpuinfo`,
+host kernel, execution log, artifact hashes and exact cut file hashes.
+
+The local arm first boots without capture, then compares a second boot with
+capture-and-continue. Capture explicitly retires the outstanding hardware
+completion through `prepare_snapshot`. Two fresh restores must produce the
+same guest record, including one with a 32 MiB host working set touched
+between guest steps. This varies host memory/cache pressure; it does not
+claim globally cold caches or all possible host loads. A reused restore
+first takes a guest `B` detour that changes memory, XMM15 and x87. It advances
+to a completion-free idle exit before restoring the original cut. Intel must
+reproduce the record. AMD's existing reused-vCPU admission refusal must be
+exact, preserve the detoured state and RAM, and leave the guest usable.
+
+The guest computes its own memory checksum, reads live SIMD and x87 values,
+waits on a Linux virtual timer, and reads guest clock and entropy values.
+Known initial memory and register constants prevent a broken fixture from
+comparing two empty observations. Planted RAM corruption and an omitted SIMD
+value in an otherwise valid canonical XSAVE image must each change the
+guest record. These controls execute in the same retained executable as the
+positive arms; snapshots and their shared state-hash inventory are not the
+observation oracle.
+
+The exporter retains RAM, encoded VM state, the expected guest record and
+the source backend's host core class. Importers validate those bytes before
+restoring into a fresh composed VMM. A core-class mismatch must produce the
+public `ContractMismatch` admission error, leave CPU, RAM, virtual time and
+serial state unchanged, then successfully restore and continue an admitted
+local snapshot in that same target. An arbitrary restore error never counts
+as an unsupported combination. Accepted imports must reproduce the exact
+exported guest record.
+
+Build and run on Linux x86-64 with Rust's musl target and `musl-gcc`:
+
+```sh
+bash consonance/harmony-linux/linux/build-continuation-initramfs.sh
+python3 scripts/qualify-linux-continuation.py bundle x3-bundle \
+  --kernel consonance/harmony-linux/build/bzImage \
+  --initramfs consonance/harmony-linux/build/initramfs-continuation.cpio.gz
+sudo cat /sys/class/dmi/id/product_uuid | tr '[:upper:]' '[:lower:]' > host-id
+python3 scripts/qualify-linux-continuation.py run x3-bundle x3-export \
+  --test linux_snapshot_continuation::composed_linux_snapshot_continuation \
+  --host-id-file host-id --ignored
+```
+
+Transfer the unchanged bundle and exporter directory to distinct hosts with
+the same source checkout. Each importer runs:
+
+```sh
+python3 scripts/qualify-linux-continuation.py run x3-bundle x3-import \
+  --test linux_snapshot_continuation::composed_linux_snapshot_continuation \
+  --host-id-file host-id --import-from x3-export --ignored
+python3 scripts/qualify-linux-continuation.py compare x3-bundle \
+  x3-export/receipt.json x3-qualification.json x3-imports/*/receipt.json
+```
+
+The hardware workflow runs six import replicas to sample both x86 vendors.
+The aggregate requires at least two distinct import hosts and a successful
+opposite-vendor import. An unlucky single-vendor allocation is inconclusive
+and fails the aggregate; explicit refusals are retained but cannot satisfy
+the supported cross-vendor requirement. Missing jobs, malformed receipts,
+changed artifacts, substituted cuts and contradictory observations also
+fail. Bounds that expire mean incomplete qualification, not a guest failure
+classification. Logs already written survive failure and are uploaded.
+
+This cell qualifies only the named finite Linux workload and actual admitted
+host pairs. It does not qualify arbitrary applications, nested virtualization,
+other backends, reused AMD restore, Arm Linux continuation, or a complete
+architectural register inventory. In particular, the Arm OS-lock regression
+and its debug-register table do not establish `KVM_GET_REG_LIST` coverage.
