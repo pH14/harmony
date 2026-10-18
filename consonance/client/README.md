@@ -431,14 +431,18 @@ Linux byte fields report actual live-code/vDSO reads, sealed executable code rea
 SHA-256 input and comparison input, with admission-only full-file reads/hashes
 separate. Successful partial reads remain counted on refusal. ELF/proc metadata,
 digest framing and cross-process child identity work are excluded. macOS exports
-`bytes_available=0` and omits Linux byte leaves, while reporting its kernel signing
-state, static-signing and image-census stage attempts. A telemetry query replaces
-cached child totals rather than adding them. `guard.child.telemetry_query_ok=0`
-means child values are the last successfully queried totals, not a final account
+no Linux byte leaves, while reporting its kernel signing state, static-signing and image-census stage attempts. A telemetry query replaces
+cached child totals rather than adding them. Cumulative
+`guard.child.telemetry_queries` and `guard.child.telemetry_query_failures` remain
+meaningful when added across sessions; failures remain visible after later queries.
+Child values are the last successfully queried totals, not a final account
 of work in a dead or refusing child. Parent checks for the query are immediately
 visible; child checks after its telemetry snapshot appear only on a later query.
-These counters do not enter identities, snapshots, EventHistory, certificates,
-retention budgets or search decisions.
+Inactive sites are omitted. Per-site `byte_measured_attempts` and
+`byte_unavailable_attempts` count strict attempts with and without byte accounting,
+respectively, so addition preserves availability coverage; fixture dispatches count
+neither. These counters do not enter identities, snapshots, EventHistory,
+certificates, retention budgets or search decisions.
 
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot

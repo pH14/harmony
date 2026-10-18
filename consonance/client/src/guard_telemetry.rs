@@ -89,6 +89,8 @@ struct SiteWork {
     elapsed_ns: u64,
     fixture_dispatches: u64,
     strict: GuardMeasurement,
+    byte_measured_attempts: u64,
+    byte_unavailable_attempts: u64,
     checks: DispatchWork,
     captures: DispatchWork,
 }
@@ -125,6 +127,14 @@ impl GuardTelemetry {
             GuardDispatch::Capture => work.captures.merge(strict),
             GuardDispatch::Check => work.checks.merge(strict),
         }
+        if strict.bytes.is_some() {
+            work.byte_measured_attempts =
+                work.byte_measured_attempts.saturating_add(strict.attempts);
+        } else {
+            work.byte_unavailable_attempts = work
+                .byte_unavailable_attempts
+                .saturating_add(strict.attempts);
+        }
         work.strict.merge(strict);
     }
 
@@ -136,6 +146,9 @@ impl GuardTelemetry {
         let mut out = Vec::new();
         for site in GuardSite::ALL {
             let work = sites[site as usize];
+            if work.dispatches == 0 {
+                continue;
+            }
             let key = format!("{prefix}.{}", site.name());
             let strict = work.strict;
             for (name, value) in [
@@ -155,7 +168,8 @@ impl GuardTelemetry {
                 ("kernel_state_checks", strict.kernel_state_checks),
                 ("static_signing_checks", strict.static_signing_checks),
                 ("image_censuses", strict.image_censuses),
-                ("bytes_available", u64::from(strict.bytes.is_some())),
+                ("byte_measured_attempts", work.byte_measured_attempts),
+                ("byte_unavailable_attempts", work.byte_unavailable_attempts),
             ] {
                 out.push((format!("{key}.{name}"), value));
             }
@@ -179,6 +193,37 @@ impl GuardTelemetry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn byte_coverage_is_additive_and_inactive_sites_are_absent() {
+        let telemetry = GuardTelemetry::default();
+        assert!(telemetry.counters("test").is_empty());
+        for bytes in [Some(host_code_identity::GuardBytes::default()), None, None] {
+            telemetry.record(
+                GuardSite::Admission,
+                GuardDispatch::Check,
+                GuardMeasurement {
+                    attempts: 1,
+                    bytes,
+                    ..GuardMeasurement::default()
+                },
+                false,
+                false,
+                0,
+            );
+        }
+        let counters = telemetry
+            .counters("test")
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(counters["test.admission.byte_measured_attempts"], 1);
+        assert_eq!(counters["test.admission.byte_unavailable_attempts"], 2);
+        assert!(
+            counters
+                .keys()
+                .all(|key| key.starts_with("test.admission."))
+        );
+    }
+
     #[test]
     fn capture_and_check_work_remain_separate_disjoint_stages() {
         let telemetry = GuardTelemetry::default();

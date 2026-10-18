@@ -1035,13 +1035,7 @@ mod guard_metric_tests {
         assert_eq!(before["test.sdk_request.dispatches"], 1);
         assert_eq!(before["test.sdk_request.strict_attempts"], 0);
         assert_eq!(before["test.sdk_request.fixture_dispatches"], 1);
-        assert_eq!(
-            separate
-                .counters("test")
-                .into_iter()
-                .collect::<BTreeMap<_, _>>()["test.sdk_request.dispatches"],
-            0
-        );
+        assert!(separate.counters("test").is_empty());
         let (result, entries, strict) =
             trace_checks(Some(1), || shared.check_at(GuardSite::SdkResponse));
         assert!(result.is_err());
@@ -1056,7 +1050,7 @@ mod guard_metric_tests {
         assert_eq!(guard.counters("test"), shared.counters("test"));
         #[cfg(target_os = "macos")]
         {
-            assert_eq!(after["test.sdk_response.bytes_available"], 0);
+            assert_eq!(after["test.sdk_response.byte_unavailable_attempts"], 0);
             assert!(!after.contains_key("test.sdk_response.live_exec_read_bytes"));
         }
     }
