@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import platform
 import re
@@ -130,7 +131,10 @@ def run(bundle_dir, output, replica, host_id_file):
     executable.chmod(0o755)
     results = {}
     for test in TESTS:
-        result = subprocess.run([str(executable.resolve()), test, "--ignored", "--exact", "--test-threads=1", "--nocapture"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180)
+        diagnostics = output.resolve() / "diagnostics" / test
+        diagnostics.mkdir(parents=True)
+        environment = {**os.environ, "X1_DIAGNOSTICS_DIR": str(diagnostics)}
+        result = subprocess.run([str(executable.resolve()), test, "--ignored", "--exact", "--test-threads=1", "--nocapture"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=180, env=environment)
         (output / f"{test}.log").write_text(result.stdout)
         if result.returncode or "test result: ok. 1 passed; 0 failed; 0 ignored;" not in result.stdout:
             raise ValueError(f"failed or unrun: {test}")

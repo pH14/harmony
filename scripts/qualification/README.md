@@ -49,6 +49,22 @@ keys, missing oracles, repeated hosts, mismatched artifacts and contradictory
 digests fail the check. A failed comparison records an inconclusive or divergent
 verdict rather than a passing cell.
 
+The X1 fixture explicitly initializes its code, stack and task-register segment
+types before guest entry. KVM reset defaults differ between AMD and Intel;
+retaining those defaults would compare different initial states. Checkpoint
+hashes retain the segment fields without masking them.
+
+Each oracle receives its own `X1_DIAGNOSTICS_DIR` below the report's
+`diagnostics` directory. Numbered run directories retain the initial and setup
+CPU states, each checkpoint's saved and logically canonical CPU states, exact
+hashed state text, RAM bytes, virtual-time fields and hashes, followed by the
+normalized log and interrupt schedule. Direct oracle invocations can opt in by
+setting this variable to an existing empty directory. Existing run directories
+are refused to preserve earlier witnesses. Files already emitted survive a
+failed oracle process, and the hardware workflow uploads the report tree even
+when execution fails. These files diagnose contradictions; they do not change
+the compared digest or qualify a failed cell.
+
 The registered cell names its finite instruction surface and checkpoint state.
 It does not grant qualification to arbitrary instructions, other backends or
 snapshot migration. Adding a relation requires a production adapter and evidence
