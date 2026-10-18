@@ -69,7 +69,11 @@ bit directly; backends without the query retain the full-state read. Idle
 handling uses the same query before deciding whether it may advance to a wake
 deadline. For KVM, idle reads the clockevent PPI and relevant CPU-interface
 registers directly and applies the same PPI deliverability rules as the
-userspace GIC. This bounded read remains available when pending SPI or routing
+userspace GIC. The live preemption test checks that LPIs are disabled and
+both native GICR table addresses are zero before projecting only their cache
+attributes to zero for the userspace PPI/SPI oracle. Those attributes control
+LPI tables and cannot affect this oracle; the actual native saved state remains
+intact for restore, register readback and guest interrupt acknowledgment. This bounded read remains available when pending SPI or routing
 state makes full snapshot capture inadmissible. A disabled, group-masked,
 priority-masked, or active clockevent PPI neither causes an immediate idle
 retry nor makes a future clockevent deadline an idle wakeup. KVM idle also
