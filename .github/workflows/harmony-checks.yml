@@ -176,6 +176,7 @@ jobs:
           }
           client_test session::tests::sealed_host_admits_public_session_identity
           client_test session::worker::tests::sealed_host_reexecs_a_public_worker
+          client_test session::worker::tests::shared_launcher_forks_session_telemetry_owners
           client_test session::uml::tests::clean_guest_exit_remains_a_terminal_shutdown
           client_test session::uml::tests::host_signal_abandons_instead_of_reporting_guest_shutdown
           client_test session::uml::tests::host_clone_status_abandons_instead_of_reporting_guest_shutdown
@@ -189,6 +190,8 @@ jobs:
           client_test image_identity::sealed_guard_tests::unexpected_executable_mapping_revokes_a_published_lease
           run_one cargo test --locked --target x86_64-unknown-linux-musl \
             -p host-code-identity --lib sealed_static::tests::cached_guard_rejects_unexpected_executable_mapping -- --exact
+          run_one cargo test --locked --target x86_64-unknown-linux-musl \
+            -p host-code-identity --lib sealed_static::tests::measured_read_hash_and_comparison_bytes_survive_refusal -- --exact
           run_one cargo test --locked --target x86_64-unknown-linux-musl \
             -p uml --lib recording::tests::sealed_host_admits_public_recording_round_trip -- --exact
           run_one cargo test --locked --target x86_64-unknown-linux-musl \

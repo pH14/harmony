@@ -70,9 +70,12 @@ Session, worker reexec and failure recovery, UML shutdown, timeout, branch,
 handler, and root-import commitment tests, executable-map rejection and cache
 revocation, Recording, and terminal console limits through
 `scripts/linux-sealed-test-runner.py`, which copies each test binary into a
-fully sealed executable memfd before execution. All 16 exact tests require
+fully sealed executable memfd before execution. All 18 exact tests require
 one test to start and pass. The musl positive tests fail if strict host
 admission is unavailable, so a missing runner cannot produce a green skip.
+The list includes shared-launcher telemetry-owner isolation, exact executable
+read/hash/comparison bytes and their partial-failure accounting, and mapping
+refusal with publication revocation.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed
