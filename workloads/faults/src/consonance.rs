@@ -698,16 +698,9 @@ impl FaultTarget {
             if live.key != self.config.key {
                 return Err("the current job session has a different identity".to_owned());
             }
-            if live.abandoned || live.session.abandoned() {
-                return Err("the current job session was abandoned".to_owned());
-            }
-            let result = live
-                .session
-                .state_hash()
-                .map_err(|error| format!("current job state hash: {error}"));
+            let result = live.state_hash_current();
             if live.abandoned || live.session.abandoned() {
                 *slot = None;
-                return Err("the current job session was abandoned while hashing".to_owned());
             }
             result
         })
@@ -1049,6 +1042,13 @@ impl FaultTarget {
         } else {
             FaultEndpointCertificate::KvmWholeState(self.state_hash_current()?)
         };
+        self.snapshot_with_endpoint(endpoint)
+    }
+
+    fn snapshot_with_endpoint(
+        &self,
+        endpoint: FaultEndpointCertificate,
+    ) -> Result<Option<FaultSnapshot>, String> {
         let snapshot = FaultSnapshot {
             actions: self.actions.clone(),
             prefix_certificates: self.prefix_certificates.clone(),
@@ -1069,13 +1069,25 @@ impl FaultTarget {
         self.apply_as(action, RunKind::New);
     }
 
+    pub fn apply_and_snapshot(
+        &mut self,
+        action: FaultAction,
+    ) -> Result<Option<FaultSnapshot>, String> {
+        let endpoint = self.apply_as(action, RunKind::New);
+        self.verify_integrity().map_err(|error| error.to_string())?;
+        match endpoint {
+            Some(endpoint) => self.snapshot_with_endpoint(endpoint),
+            None => Ok(None),
+        }
+    }
+
     pub fn apply_replayed(&mut self, action: FaultAction) {
         self.apply_as(action, RunKind::Replay);
     }
 
-    fn apply_as(&mut self, action: FaultAction, kind: RunKind) {
+    fn apply_as(&mut self, action: FaultAction, kind: RunKind) -> Option<FaultEndpointCertificate> {
         if self.failed || !self.observation.stop.is_continuable() {
-            return;
+            return None;
         }
         self.action_observations.clear();
         let previous_moment = self.observation.moment;
@@ -1089,28 +1101,34 @@ impl FaultTarget {
             observation
                 .park_reads
                 .retain(|read| read.moment > previous_moment);
-            let certificate = if kvm && observation.stop.is_continuable() {
-                let hash = live
-                    .session
-                    .state_hash()
-                    .map_err(|error| format!("fault action state hash: {error}"))?;
-                Some(replay_endpoint_certificate(
-                    hash,
-                    live.ordered_history()?,
-                    &observation,
-                    false,
-                )?)
+            let (endpoint, certificate) = if !observation.stop.is_continuable() {
+                (None, None)
+            } else if kvm {
+                let hash = live.state_hash_current()?;
+                (
+                    Some(FaultEndpointCertificate::KvmWholeState(hash)),
+                    Some(replay_endpoint_certificate(
+                        hash,
+                        live.ordered_history()?,
+                        &observation,
+                        false,
+                    )?),
+                )
             } else {
-                None
+                (
+                    Some(FaultEndpointCertificate::UmlWholeStateUnavailable),
+                    None,
+                )
             };
             Ok((
                 observation,
                 live.horizons_run.saturating_sub(before),
                 certificate,
+                endpoint,
             ))
         });
         match result {
-            Ok((observation, ran, certificate)) => {
+            Ok((observation, ran, certificate, endpoint)) => {
                 self.actions.push(action);
                 self.prefix_certificates.push(certificate);
                 self.execution_ticks = self
@@ -1119,6 +1137,7 @@ impl FaultTarget {
                 self.guest_horizons_run = self.guest_horizons_run.saturating_add(ran);
                 self.observation = observation.clone();
                 self.action_observations.push(observation);
+                endpoint
             }
             Err(error) => {
                 eprintln!("fault action {action:?} failed: {error}");
@@ -1131,6 +1150,7 @@ impl FaultTarget {
                     self.action_observations.push(observation);
                 }
                 self.failed = true;
+                None
             }
         }
     }
@@ -1242,6 +1262,20 @@ fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
 }
 
 impl Live {
+    fn state_hash_current(&mut self) -> Result<[u8; 32], String> {
+        if self.abandoned || self.session.abandoned() {
+            return Err("the current job session was abandoned".to_owned());
+        }
+        let result = self
+            .session
+            .state_hash()
+            .map_err(|error| format!("current job state hash: {error}"));
+        if self.abandoned || self.session.abandoned() {
+            return Err("the current job session was abandoned while hashing".to_owned());
+        }
+        result
+    }
+
     fn open(config: &Config) -> Result<Box<dyn SearchSession>, Box<dyn Error>> {
         if let Some(launch) = &config.uml {
             #[cfg(target_os = "linux")]
@@ -1923,6 +1957,8 @@ mod tests {
     #[derive(Debug)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
+        hash_calls: u64,
+        abandon_on_hash: bool,
         history: control_proto::EventHistory,
         history_hung: bool,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
@@ -1940,6 +1976,7 @@ mod tests {
         }
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
+            self.hash_calls += 1;
             self.hash.ok_or_else(|| "state hash unavailable".into())
         }
 
@@ -1955,7 +1992,7 @@ mod tests {
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
-            Vec::new()
+            vec![("test.hash_calls".to_owned(), self.hash_calls)]
         }
 
         fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
@@ -2062,7 +2099,7 @@ mod tests {
         }
 
         fn abandoned(&self) -> bool {
-            false
+            self.abandon_on_hash && self.hash_calls != 0
         }
     }
 
@@ -2074,6 +2111,8 @@ mod tests {
                 history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: None,
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: None,
@@ -2110,6 +2149,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some(commitment),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: target.0,
             run_hashes: None,
@@ -2456,6 +2497,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some(hash),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -2465,6 +2508,170 @@ mod tests {
             next_snap: 1,
         });
         live
+    }
+
+    fn scripted_capture_live(hashes: Vec<[u8; 32]>, abandon_on_hash: bool) -> Live {
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            history: control_proto::EventHistory::default(),
+            history_hung: false,
+            hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash,
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(hashes),
+            run_hung: false,
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        live
+    }
+
+    fn capture_hash_calls() -> u64 {
+        thread_telemetry()["vmm.test.hash_calls"]
+    }
+
+    #[test]
+    fn action_capture_hashes_once_and_standalone_snapshot_reads_the_live_endpoint() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
+        let before = capture_hash_calls();
+        let snapshot = target
+            .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture_hash_calls() - before, 1);
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
+        );
+        assert_eq!(
+            snapshot.prefix_certificates,
+            vec![Some(
+                replay_endpoint_certificate(
+                    [17; 32],
+                    snapshot.event_history.unwrap(),
+                    &snapshot.observation,
+                    false
+                )
+                .unwrap()
+            )]
+        );
+        let before = capture_hash_calls();
+        assert_eq!(target.snapshot().unwrap(), Some(snapshot.clone()));
+        assert_eq!(capture_hash_calls() - before, 1);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([23; 32])));
+        assert!(target.snapshot().unwrap_err().contains("final prefix"));
+        LIVE.with(|slot| slot.borrow_mut().as_mut().unwrap().key = [1; 32]);
+        assert!(
+            target
+                .snapshot()
+                .unwrap_err()
+                .contains("different identity")
+        );
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            live.key = [0; 32];
+            live.abandoned = true;
+        });
+        assert!(target.snapshot().unwrap_err().contains("abandoned"));
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        assert!(target.snapshot().unwrap_err().contains("unavailable"));
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::KvmWholeState([17; 32]))
+        );
+    }
+
+    #[test]
+    fn campaign_suffix_captures_each_action_with_one_hash() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| {
+            *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32], [23; 32]], false))
+        });
+        let origin = target.snapshot().unwrap().unwrap();
+        let before = capture_hash_calls();
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let result = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[action, action],
+            false,
+        )
+        .unwrap();
+        assert_eq!(capture_hash_calls() - before, 3);
+        assert_eq!(result.actions.len(), 2);
+        for (index, hash) in [[17; 32], [23; 32]].into_iter().enumerate() {
+            let snapshot = &result.actions[index].candidate.as_ref().unwrap().snapshot;
+            assert_eq!(snapshot.actions.len(), index + 1);
+            assert_eq!(
+                snapshot.endpoint,
+                Some(FaultEndpointCertificate::KvmWholeState(hash))
+            );
+        }
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn action_capture_discards_evidence_if_hashing_abandons_the_session() {
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], true)));
+        assert!(
+            target
+                .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+                .unwrap()
+                .is_none()
+        );
+        assert!(target.failed());
+        assert!(target.actions().is_empty());
+        assert!(target.prefix_certificates.is_empty());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        assert!(target.snapshot().unwrap().is_none());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+    }
+
+    #[test]
+    fn uml_action_capture_keeps_the_unavailable_certificate_without_hashing() {
+        let mut target = unbooted_target();
+        Arc::get_mut(&mut target.config).unwrap().uml = Some(UmlLaunch {
+            profile: PathBuf::new(),
+            expected_profile_identity_sha256: "fixture".into(),
+            expected_host: uml::HostIdentity {
+                architecture: "x86_64".into(),
+                processor: 0,
+                cpu_model: "fixture".into(),
+                cpu_features: String::new(),
+                boot_cpuinfo: String::new(),
+                auxv: uml::HostAuxv::default(),
+            },
+            initramfs: PathBuf::new(),
+            expected_initramfs_sha256: [0; 32],
+            memory_mib: DEFAULT_RAM_MIB,
+            kernel_arguments: Vec::new(),
+            work_parent: PathBuf::new(),
+            seed: SEED,
+            setup_budget: SETUP_BUDGET,
+            progress_limit: WALL_LIMIT,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
+        let before = capture_hash_calls();
+        let snapshot = target
+            .apply_and_snapshot(FaultOperation::Wait(std::num::NonZeroU16::MIN).into())
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture_hash_calls(), before);
+        assert_eq!(
+            snapshot.endpoint,
+            Some(FaultEndpointCertificate::UmlWholeStateUnavailable)
+        );
+        assert_eq!(snapshot.prefix_certificates, vec![None]);
+        LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]
@@ -2578,6 +2785,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
             current: 1,
             run_hashes: None,
@@ -2606,6 +2815,8 @@ mod tests {
                 history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![first_hash, [17; 32]]),
@@ -2683,6 +2894,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -2710,6 +2923,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -2790,6 +3005,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -2836,6 +3053,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(Vec::new()),
@@ -2870,6 +3089,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
@@ -2912,6 +3133,8 @@ mod tests {
                 history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![[17; 32]; depth]),
@@ -2964,6 +3187,8 @@ mod tests {
             history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
+            hash_calls: 0,
+            abandon_on_hash: false,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -2987,6 +3212,8 @@ mod tests {
                 history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
+                hash_calls: 0,
+                abandon_on_hash: false,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -3382,6 +3609,8 @@ mod tests {
         let install = |digest| {
             let mut live = hashed_live(endpoint);
             live.session = Box::new(TimedOutRestore {
+                hash_calls: 0,
+                abandon_on_hash: false,
                 history_hung: false,
                 hash: Some(endpoint),
                 history: control_proto::EventHistory { count: 2, digest },
@@ -3480,6 +3709,8 @@ mod tests {
             let certify = |digest, history_hung| {
                 let mut live = hashed_live([17; 32]);
                 live.session = Box::new(TimedOutRestore {
+                    hash_calls: 0,
+                    abandon_on_hash: false,
                     history_hung,
                     history: control_proto::EventHistory { count: 2, digest },
                     hash: Some([17; 32]),

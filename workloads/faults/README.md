@@ -417,7 +417,12 @@ captures its whole-state hash, cumulative ordered normalized-event commitment
 and count, and action-local observation before the next action. The v2 replay
 certificate binds the v1 history format separately from logical endpoint state.
 Changing an intermediate event with equal endpoint, observations, event count
-and final virtual time still changes this certificate. Restoring a KVM snapshot visits each prefix, including cached prefixes,
+and final virtual time still changes this certificate. Campaign suffix execution
+captures its candidate from that same bounded operation, using one whole-state
+hash for both the prefix certificate and candidate endpoint. No digest is cached
+across operations; standalone snapshot capture hashes the current live endpoint
+again and refuses missing, foreign, or abandoned sessions. Restoring a KVM
+snapshot visits each prefix, including cached prefixes,
 and checks its certificate before continuing. This also covers a resident
 keyframe whose first action diverges and later reconverges at its final
 endpoint. When a candidate is retained, the archive binds the certificates for
