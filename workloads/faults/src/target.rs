@@ -254,8 +254,7 @@ pub enum FaultEndpointCertificate {
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaultSnapshot {
-    pub actions: Vec<FaultAction>,
-    pub prefix_certificates: Vec<Option<[u8; 32]>>,
+    pub history: crate::history::FaultHistory,
     pub observation: FaultObservations,
     pub failed: bool,
     pub endpoint: Option<FaultEndpointCertificate>,
@@ -922,18 +921,21 @@ mod tests {
 
         for target in [None, ParkTarget::new(8, 16)] {
             let snapshot = FaultSnapshot {
-                actions: vec![FaultAction::new(
-                    FaultOperation::EventPark {
-                        node: 1,
-                        edges: 4096,
-                        hold_us: 1000,
-                        ticks: NonZeroU16::new(10).unwrap(),
-                        target,
-                    },
-                    NonZeroU16::new(256).unwrap(),
-                )],
-                prefix_certificates: vec![Some([17; 32])],
-                event_history: Some((0, [0; 32])),
+                history: crate::history::FaultHistory::fixture(
+                    &[FaultAction::new(
+                        FaultOperation::EventPark {
+                            node: 1,
+                            edges: 4096,
+                            hold_us: 1000,
+                            ticks: NonZeroU16::new(10).unwrap(),
+                            target,
+                        },
+                        NonZeroU16::new(256).unwrap(),
+                    )],
+                    &[Some([17; 32])],
+                    Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
+                    &(FaultObservations::default()),
+                ),
                 ..FaultSnapshot::default()
             };
             let bytes = postcard::to_allocvec(&snapshot).unwrap();

@@ -6,6 +6,7 @@ pub mod assertion;
 pub mod bundle;
 #[cfg(feature = "consonance")]
 pub mod chain;
+pub mod history;
 pub mod package;
 pub mod prepare;
 pub mod report;

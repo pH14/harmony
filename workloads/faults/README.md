@@ -409,66 +409,82 @@ retain the native 128-bit encoding.
 
 Each campaign job's recorded result digest binds its logical result to a tagged
 final endpoint certificate. The v2 result domain also binds v1 normalized-event
-history whenever a KVM whole-state endpoint is available, including terminal
-and zero-action jobs. Failed or unavailable endpoints retain an explicit absent
-history, and cannot substitute that absence for a whole-state endpoint. Every runnable KVM snapshot carries an action-aligned
-certificate for each prefix in its portable history. Each runnable KVM action
-captures its whole-state hash, cumulative ordered normalized-event commitment
-and count, and action-local observation before the next action. The v2 replay
-certificate binds the v1 history format separately from logical endpoint state.
-Changing an intermediate event with equal endpoint, observations, event count
-and final virtual time still changes this certificate. Campaign suffix execution
-captures its candidate from that same bounded operation, using one whole-state
-hash for both the prefix certificate and candidate endpoint. No digest is cached
-across operations; standalone snapshot capture hashes the current live endpoint
-again and refuses missing, foreign, or abandoned sessions. Restoring a KVM
-snapshot visits each prefix, including cached prefixes,
-and checks its certificate before continuing. This also covers a resident
-keyframe whose first action diverges and later reconverges at its final
-endpoint. When a candidate is retained, the archive binds the certificates for
-its action suffix, including actions whose own candidates were rejected or
-deduplicated. Jobs restored from an older keyframe compare each replayed KVM
-endpoint, ordered history and observation with that archive certificate before the next action.
-Fresh setup begins with the boot's event prefix; snapshots, including the root,
-retain that prefix. Replay and branch inherit captured history; reconstructed
-prefixes rebuild it, while resident keyframes and portable/cache imports restore
-it. Snapshot capture and diagnostic trace segmentation add no semantic events,
-and snapshot or schedule IDs never enter the commitment. Missing normalized
-history cannot be replaced by an empty commitment. UML snapshots explicitly
-carry no normalized-event commitment and remain uncertified for whole state.
-The VM stream/snapshot formats are v10/v8, UML formats v7/v4, and the action
-policy is `fault-action-duration-coverage-v5-event-history`; older contracts are
-refused.
-Missing, malformed, or conflicting KVM certificates stop the campaign.
-Restoring a KVM source snapshot checks its recorded prefix certificates before
-using its logical observation. Importing a KVM tree rebuilds each imported
-action, including paths with source snapshots, and compares each checkpointed
-endpoint before admitting it. A source entry digest covers the snapshot's
-prefix certificates when present. Reconstructed certificates without a
-source-bound digest describe the current executor; they do not establish the
-source run's intermediate states. Restoring either backend also
-reconstructs the SDK observation from the restored session,
-including the current action's park and read reports, and rejects a failed,
-terminal, or inconsistent saved observation. KVM
-certificates hash the current worker session's whole state, including RAM and
-device state. Action and candidate capture and final certification fail if that session is
-missing, foreign, abandoned, or unhashable; restore may rebuild the prefix in a
-new session but rejects an unhashable or mismatched endpoint. A failed KVM job
-records an explicit final whole-state-unavailable tag:
-its action observations and failure result remain checked, but the stream makes
-no claim about its final whole state. A whole-state hash scans guest RAM after
-each runnable action, for each candidate snapshot, at every restored KVM
-prefix, and for each action replayed from an evicted KVM parent. This extra
-work can be material for 1 GiB guests. A healthy job whose
-last action is runnable reuses that candidate's hash as its final certificate;
-zero-action and terminal jobs hash their final endpoint separately. Thus
-certification cost grows with configured RAM and the number of actions and
-jobs. UML records a distinct whole-state-unavailable tag for its candidates
-and final endpoints because that backend does not provide a whole-state hash;
-its restored candidate snapshots and replayed prefixes therefore have no
-physical-state check. The
-KVM and UML campaign stream and snapshot checkpoint formats are versioned
-separately for these certificates.
+history whenever a KVM whole-state endpoint is available, including terminal and
+zero-action jobs. Failed or unavailable endpoints explicitly carry no history;
+that absence cannot stand in for a whole-state endpoint.
+
+Every runnable snapshot carries a persistent, shared action history. Each node
+binds its parent history, action, actual endpoint evidence, action-local
+observation commitment, and observation boundary moments. KVM endpoint evidence
+includes the whole-state certificate and cumulative ordered normalized-event
+count and commitment; UML explicitly records that whole-state
+evidence is unavailable while still committing observations. Nodes are captured
+from stopped execution before their snapshots are published. Candidate clones
+share nodes, and snapshot/result identities hash their history roots rather than
+serializing every ancestor.
+
+A retained endpoint restores directly after comparing its independently captured
+history receipt with the requested history. This requires one endpoint replay and
+whole-state hash on KVM, regardless of action depth. An imported endpoint receives
+its receipt from the integrity-checked cache object, never from the caller's
+expected certificates. Missing suffixes execute and check each actual prefix
+before the next action or publication, so an intermediate divergence cannot be
+hidden by a converged final endpoint. Snapshot standalone capture still reads
+fresh live evidence; no whole-state digest is cached across operations.
+
+Fault caches use exact fixed-width action-path roots. The cache object commitment
+binds both the admitted machine target and opaque captured-history attachment;
+different histories for one action path quarantine the namespace even if final
+machine states agree. Page, inherited-page, omitted-page, host-image and lease
+checks remain enabled. This removes repeated historical VM work, not the data
+integrity scans required by those checks.
+
+Checkpoint histories use a validated flat encoding with explicit versions and
+iterative destruction. Restore canonicalizes validated expected histories into
+actual shared node allocations before rebuilding the memory ledger. Bootstrap
+imports use the admitted live genesis allocation. Before archive installation, a
+typed retention index normalizes a candidate's new tail against currently
+budget-owned nodes. Independent workers therefore
+share actual prefix allocations in both live execution and checkpoint resume.
+Index registration and pruning follow the ledger's first retain and final
+release, and index metadata is charged. Runtime accounting acquires only newly
+unique history nodes and releases them at physical snapshot removal,
+including inactive snapshots still needed by work in flight. Expected-history
+canonicalization does not grant captured execution authority. Branch roots use
+`HMROOT03` to preserve their independently pinned semantic object commitments.
+Old history, snapshot, stream, cache and root formats are refused. Missing,
+malformed, or conflicting certificates stop the campaign.
+
+The v2 replay certificate binds the v1 ordered-history format independently of
+logical endpoint state. An intermediate event change alters the certificate even
+when endpoint, observations, event count and final virtual time agree. Fresh setup
+preserves the boot event prefix. Replay, branch, portable import and cache import
+restore the captured prefix; snapshot capture and diagnostic segmentation add no
+semantic events. Snapshot and schedule IDs never enter that commitment. Missing
+KVM history cannot be replaced by an empty commitment. UML carries no ordered
+normalized-event commitment and remains uncertified for whole state.
+
+The VM stream/snapshot formats are v11/v9 and UML formats v8/v5. The action policy
+is `fault-action-duration-coverage-v5-event-history`; older contracts are refused.
+
+Restoring a source snapshot compares its independently captured receipt and
+reconstructs the SDK observation before using that saved observation, including
+the current action's park and read evidence. Tree import still rebuilds each
+imported action and checks source-bound checkpoint identities. A source entry
+digest commits its history root and ordered endpoint history. Reconstructed
+certificates without a source-bound digest describe the current executor; they
+do not establish the source run's intermediate states.
+
+Campaign suffix execution captures each runnable candidate and certificate in
+one bounded operation with one whole-state hash. Standalone snapshot capture
+hashes fresh live state. A healthy job whose last action is runnable reuses that
+candidate's hash for its final certificate; terminal and zero-action jobs obtain
+fresh final endpoint and ordered-history evidence. Missing, foreign, abandoned or
+unhashable sessions cannot supply certified KVM endpoints. Failed KVM jobs use an
+explicit whole-state-unavailable tag while preserving their checked logical
+observations; UML has a separate whole-state-unavailable tag. Whole-state hashes
+still scan RAM at fresh endpoint capture and replay of missing suffixes, and cache
+admission still verifies all required snapshot pages.
 
 Instrumentation actions become available automatically when the staged image
 contains the runtime bridge, nonempty event symbols, and an executable whose
