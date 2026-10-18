@@ -559,12 +559,11 @@ typed incomplete-attempt checks run before captured evidence is accepted. Termin
 failed or watchdog-interrupted prefixes cannot return an earlier successful
 snapshot. Source identity checks and every intermediate imported certificate remain
 mandatory; candidate construction still clones the owned observation projection.
-Parent reconstruction inside campaign jobs still verifies every archived prefix
-through the existing fresh endpoint check; removing that separate duplicate hash
-is a follow-up, not part of import or startup capture reuse.
-Standalone snapshot capture hashes fresh live state. A healthy job whose last
-action is runnable reuses that candidate's hash for its final certificate; terminal and zero-action jobs obtain
-fresh final endpoint and ordered-history evidence. Missing, foreign, abandoned or
+Parent reconstruction inside campaign jobs verifies every archived prefix through
+a fresh endpoint check. Standalone snapshot capture hashes fresh live state. A
+healthy job whose last action is runnable reuses that candidate's hash for its
+final certificate; terminal and zero-action jobs obtain fresh final endpoint and
+ordered-history evidence. Missing, foreign, abandoned or
 unhashable sessions cannot supply certified KVM endpoints. Failed KVM jobs use an
 explicit whole-state-unavailable tag while preserving their checked logical
 observations; UML has a separate whole-state-unavailable tag. Whole-state hashes
