@@ -63,7 +63,12 @@ await page.addInitScript((tourKey) => {
           window.tdTestNestedRetained = data.points.findLast(
             (point) => point.retained !== null && point.retained !== "2:0",
           )?.retained ?? window.tdTestNestedRetained;
+          for (const point of data.points)
+            if (point.retained !== null && point.retained !== "2:0")
+              (window.tdTestNestedRetainedAll ??= []).push(point.retained);
         }
+        if (data.type === "states" && data.request === -10)
+          window.tdTestNestedStates = data.states;
         if (
           data.type === "batch" &&
           data.active === 0 &&
@@ -958,12 +963,17 @@ try {
   );
   await page.evaluate(() => window.tdTestWorker.postMessage({ type: "pause" }));
   let nestedDescendant = null;
-  for (let attempt = 0; attempt < 20 && !nestedDescendant?.snapshot; attempt++) {
-    const nestedId = await page.evaluate(() => window.tdTestNestedRetained);
-    await page.evaluate((id) => window.tdTestWorker.postMessage({ type: "states", ids: [id], request: -10 }), nestedId);
-    await page.waitForFunction((id) => window.tdTestStates?.[0]?.id === id, nestedId);
-    nestedDescendant = await page.evaluate(() => window.tdTestStates[0]);
-    if (!nestedDescendant?.snapshot) await page.waitForTimeout(100);
+  for (let attempt = 0; attempt < 20 && !nestedDescendant; attempt++) {
+    const nestedIds = await page.evaluate(() => [...new Set(window.tdTestNestedRetainedAll)].reverse());
+    for (let start = 0; start < nestedIds.length && !nestedDescendant; start += 12) {
+      await page.evaluate((ids) => {
+        window.tdTestNestedStates = null;
+        window.tdTestWorker.postMessage({ type: "states", ids, request: -10 });
+      }, nestedIds.slice(start, start + 12));
+      await page.waitForFunction(() => window.tdTestNestedStates);
+      nestedDescendant = await page.evaluate(() => window.tdTestNestedStates.find((state) => state.snapshot) ?? null);
+    }
+    if (!nestedDescendant) await page.waitForTimeout(100);
   }
   assert.ok(nestedDescendant?.snapshot, "A retained nested descendant must still be in the archive");
   assert.deepEqual(nestedDescendant.actions.slice(0, nestedPrefix.length), nestedPrefix);
