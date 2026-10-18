@@ -520,6 +520,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(vmm) = &self.vmm {
             telemetry.exits.merge(&vmm.exit_telemetry());
             telemetry.hashes.merge(&vmm.hash_telemetry());
+            telemetry.sdk_dispatch.merge(&vmm.sdk_dispatch_telemetry());
             telemetry.physical.merge(&vmm.physical_telemetry());
         }
         (telemetry.exports, telemetry.export_pages) = self.export_telemetry.get();
@@ -535,6 +536,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Some(vmm) = self.vmm.take() {
             self.telemetry.exits.merge(&vmm.exit_telemetry());
             self.telemetry.hashes.merge(&vmm.hash_telemetry());
+            self.telemetry
+                .sdk_dispatch
+                .merge(&vmm.sdk_dispatch_telemetry());
             self.telemetry.physical.merge(&vmm.physical_telemetry());
         }
     }
@@ -2033,6 +2037,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 if use_remap {
                     self.telemetry.exits.merge(&fresh.exit_telemetry());
                     self.telemetry.hashes.merge(&fresh.hash_telemetry());
+                    self.telemetry
+                        .sdk_dispatch
+                        .merge(&fresh.sdk_dispatch_telemetry());
                     self.telemetry.physical.merge(&fresh.physical_telemetry());
                     drop(fresh);
                     fresh = (self.factory)()?;
@@ -2044,6 +2051,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Err(error) => {
                 self.telemetry.exits.merge(&fresh.exit_telemetry());
                 self.telemetry.hashes.merge(&fresh.hash_telemetry());
+                self.telemetry
+                    .sdk_dispatch
+                    .merge(&fresh.sdk_dispatch_telemetry());
                 self.telemetry.physical.merge(&fresh.physical_telemetry());
                 return Err(error.into());
             }
@@ -2073,6 +2083,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         if let Err(error) = prepared {
             self.telemetry.exits.merge(&fresh.exit_telemetry());
             self.telemetry.hashes.merge(&fresh.hash_telemetry());
+            self.telemetry
+                .sdk_dispatch
+                .merge(&fresh.sdk_dispatch_telemetry());
             self.telemetry.physical.merge(&fresh.physical_telemetry());
             return Err(error.into());
         }
@@ -5483,6 +5496,24 @@ mod tests {
     }
 
     #[test]
+    fn sdk_dispatch_retirement_carries_once_without_query_duplication() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        server.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
+        assert!(server.vmm_mut().unwrap().service_doorbell(1).is_err());
+        let before = server.host_telemetry().sdk_dispatch;
+        assert!(
+            before
+                .counters()
+                .contains(&("sdk_dispatch.unreadable.request_guard_calls".into(), 1))
+        );
+        assert_eq!(server.host_telemetry().sdk_dispatch, before);
+        server.retire_vmm();
+        assert_eq!(server.host_telemetry().sdk_dispatch, before);
+        server.retire_vmm();
+        assert_eq!(server.host_telemetry().sdk_dispatch, before);
+    }
+
+    #[test]
     fn in_place_restore_failure_preserves_retired_hash_and_exit_totals() {
         let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut server);
@@ -5501,7 +5532,16 @@ mod tests {
             .unwrap()
             .backend_mut()
             .set_physical_telemetry_for_test(physical);
+        server.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
+        assert!(server.vmm_mut().unwrap().service_doorbell(1).is_err());
         let before = server.host_telemetry();
+        assert!(
+            before
+                .sdk_dispatch
+                .counters()
+                .contains(&("sdk_dispatch.unreadable.request_guard_calls".into(), 1))
+        );
+        assert_eq!(server.host_telemetry().sdk_dispatch, before.sdk_dispatch);
         assert!(before.exits.guest_runs.count > 0);
         server
             .snapshot_meta
@@ -5514,9 +5554,11 @@ mod tests {
         assert_eq!(after.hashes, before.hashes);
         assert_eq!(after.exits, before.exits);
         assert_eq!(after.physical, before.physical);
+        assert_eq!(after.sdk_dispatch, before.sdk_dispatch);
         assert_eq!(server.in_place_fallbacks(), 0);
         server.retire_vmm();
         assert_eq!(server.host_telemetry().hashes, before.hashes);
+        assert_eq!(server.host_telemetry().sdk_dispatch, before.sdk_dispatch);
     }
 
     #[test]

@@ -20,6 +20,8 @@ use environment::{
     sdk::{self, CoverageOutcome, EventClass, ServiceOutcome},
 };
 
+use crate::sdk_telemetry::{Attribution, Callback, Kind, SdkDispatchTelemetry};
+
 pub type VcpuOf<B> = <<B as Backend>::A as Arch>::VcpuState;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,6 +363,7 @@ where
     pub(crate) virtual_time_progress: std::sync::Arc<std::sync::atomic::AtomicU64>,
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
     pub(crate) doorbell_exits: u64,
+    sdk_dispatch_telemetry: std::cell::RefCell<SdkDispatchTelemetry>,
     exit_telemetry: crate::host_telemetry::ExitTelemetry,
     hash_telemetry: std::cell::Cell<crate::host_telemetry::HashTelemetry>,
     pub(crate) deferred_virtual_time_checkpoints: bool,
@@ -438,6 +441,7 @@ where
             virtual_time_progress: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
             virtual_time_trace: None,
             doorbell_exits: 0,
+            sdk_dispatch_telemetry: std::cell::RefCell::default(),
             exit_telemetry: crate::host_telemetry::ExitTelemetry::default(),
             hash_telemetry: std::cell::Cell::default(),
             deferred_virtual_time_checkpoints: false,
@@ -467,6 +471,32 @@ where
             guard(site).map_err(VmmError::ContractViolation)?;
         }
         Ok(())
+    }
+
+    pub fn sdk_dispatch_telemetry(&self) -> SdkDispatchTelemetry {
+        self.sdk_dispatch_telemetry.borrow().clone()
+    }
+
+    fn measure_sdk_guard(&self, site: HostOperationSite) -> (Result<(), VmmError>, Callback) {
+        #[allow(clippy::disallowed_methods)]
+        let started = std::time::Instant::now();
+        self.measure_sdk_guard_using(site, || {
+            u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX)
+        })
+    }
+
+    fn measure_sdk_guard_using(
+        &self,
+        site: HostOperationSite,
+        elapsed: impl FnOnce() -> u64,
+    ) -> (Result<(), VmmError>, Callback) {
+        let result = self.check_host_operation_guard(site);
+        let work = Callback::measured(
+            self.host_operation_guard.is_some(),
+            result.is_err(),
+            elapsed(),
+        );
+        (result, work)
     }
 
     pub fn wire_vtime(&mut self, wiring: VtimeWiring) -> &mut Self {
@@ -2222,7 +2252,14 @@ where
         let mut response = [0; HC_PAGE];
         let len = encode_response(ServiceId::Sdk, opcode, seq, status, payload, &mut response)
             .map_err(|_| VmmError::ContractViolation("service answer cannot be encoded".into()))?;
-        self.write_doorbell_response(&response[..len])
+        self.write_attributed_response(
+            &response[..len],
+            Attribution::kind(match opcode {
+                2 => Kind::Coverage,
+                3 => Kind::Service,
+                _ => Kind::ResponseUnknown,
+            }),
+        )
     }
 
     pub(crate) fn resolve_service_binding_mismatch(&mut self) -> Result<(), VmmError> {
@@ -2371,7 +2408,15 @@ where
     }
 
     pub(crate) fn service_doorbell(&mut self, req_len: u32) -> Result<Step, VmmError> {
-        self.check_host_operation_guard(HostOperationSite::SdkRequest)?;
+        let (checked, callback) = self.measure_sdk_guard(HostOperationSite::SdkRequest);
+        if checked.is_err() {
+            self.sdk_dispatch_telemetry.borrow_mut().request(
+                Attribution::kind(Kind::Refused),
+                callback,
+                false,
+            );
+            checked?;
+        }
         let moment = self.effective_vns().unwrap_or(0);
         let req = if req_len as usize > HC_PAGE {
             Vec::new()
@@ -2379,6 +2424,7 @@ where
             self.guest_slice(REQ_GPA as u64, req_len as usize)
                 .map(<[u8]>::to_vec)
                 .ok_or_else(|| {
+                    self.sdk_dispatch_telemetry.borrow_mut().request(Attribution::kind(Kind::Unreadable), callback, false);
                     VmmError::ContractViolation(format!(
                         "doorbell request page {REQ_GPA:#x}+{req_len} is not backed — x86 keeps the \
                          transport ABI pages in the GPA-0 RAM; an arm64 boot must map them (a dedicated \
@@ -2406,6 +2452,15 @@ where
                     _ => false,
                 }
             });
+        self.sdk_dispatch_telemetry.borrow_mut().request(
+            if req_len as usize > HC_PAGE {
+                Attribution::kind(Kind::Unreadable)
+            } else {
+                Attribution::request(&req)
+            },
+            callback,
+            at_run_deadline && !sdk_decision,
+        );
         if at_run_deadline && !sdk_decision {
             let sdk = self.sdk.as_mut().ok_or_else(|| {
                 VmmError::ContractViolation(
@@ -2433,7 +2488,14 @@ where
         } else {
             self.dispatch_doorbell(moment, req, &mut resp)
         };
-        self.write_doorbell_response(&resp[..resp_len])?;
+        self.write_attributed_response(
+            &resp[..resp_len],
+            if req_len as usize > HC_PAGE {
+                Attribution::kind(Kind::Unreadable)
+            } else {
+                Attribution::request(req)
+            },
+        )?;
         match stop {
             Some(s) => {
                 if let Some(sdk) = self.sdk.as_mut() {
@@ -2469,8 +2531,21 @@ where
         db.as_mut_bytes().get_mut(off..end)
     }
 
+    #[cfg(test)]
     fn write_doorbell_response(&mut self, resp: &[u8]) -> Result<(), VmmError> {
-        self.check_host_operation_guard(HostOperationSite::SdkResponse)?;
+        self.write_attributed_response(resp, Attribution::kind(Kind::ResponseUnknown))
+    }
+
+    fn write_attributed_response(
+        &mut self,
+        resp: &[u8],
+        attribution: Attribution,
+    ) -> Result<(), VmmError> {
+        let (checked, callback) = self.measure_sdk_guard(HostOperationSite::SdkResponse);
+        self.sdk_dispatch_telemetry
+            .borrow_mut()
+            .response(attribution, callback);
+        checked?;
         let Some(dst) = self.guest_slice_mut(RESP_GPA as u64, resp.len()) else {
             return Err(VmmError::ContractViolation(format!(
                 "doorbell response page {RESP_GPA:#x}+{} is not backed",
@@ -4170,6 +4245,207 @@ mod tests {
         assert_eq!(vmm.drain_dirty_pages().unwrap(), Some(vec![]));
     }
 
+    fn sdk_attribution_counter(vmm: &Vmm<MockBackend>, name: &str) -> u64 {
+        vmm.sdk_dispatch_telemetry()
+            .counters()
+            .into_iter()
+            .find(|(key, _)| key == name)
+            .map_or(0, |(_, value)| value)
+    }
+
+    fn sdk_attribution_event(vmm: &mut Vmm<MockBackend>) -> u32 {
+        let mut frame = [0; HC_PAGE];
+        let mut payload = vec![1, 0, 0, 2, 0];
+        payload.extend(17_u64.to_le_bytes());
+        let n =
+            hypercall_proto::encode_request(ServiceId::Event, 1, 1, &payload, &mut frame).unwrap();
+        vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
+        n as u32
+    }
+
+    #[test]
+    fn sdk_dispatch_actual_guards_refusals_and_noncanonical_state() {
+        use std::sync::{Arc, Mutex};
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut vmm, 7);
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let captured = calls.clone();
+        vmm.set_host_operation_guard(Arc::new(move |site| {
+            captured.lock().unwrap().push(site);
+            Ok(())
+        }));
+        let n = sdk_attribution_event(&mut vmm);
+        let mut reference = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut reference, 7);
+        assert_eq!(n, sdk_attribution_event(&mut reference));
+        assert_eq!(
+            vmm.service_doorbell(n).unwrap(),
+            reference.service_doorbell(n).unwrap()
+        );
+        assert_eq!(vmm.state_hash().unwrap(), reference.state_hash().unwrap());
+        assert_eq!(vmm.sdk_events(), reference.sdk_events());
+        assert_eq!(
+            sdk_attribution_counter(&reference, "sdk_dispatch.event.request_guard_calls"),
+            0
+        );
+        assert_eq!(
+            sdk_attribution_counter(&reference, "sdk_dispatch.event.requests"),
+            1
+        );
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec![
+                HostOperationSite::SdkRequest,
+                HostOperationSite::SdkResponse
+            ]
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.request_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event_shape.2.9.0.response_guard_calls"),
+            1
+        );
+        let hash = vmm.state_hash().unwrap();
+        vmm.sdk_dispatch_telemetry.borrow_mut().request(
+            Attribution::kind(Kind::Unknown),
+            Callback::measured(true, true, 999),
+            false,
+        );
+        assert_eq!(vmm.state_hash().unwrap(), hash);
+        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkRequest, || 73);
+        assert_eq!(
+            sample,
+            Callback {
+                calls: 1,
+                errors: 0,
+                nanos: 73
+            }
+        );
+        vmm.set_host_operation_guard(Arc::new(|_| Err("refused".into())));
+        let before = vmm.sdk_events().len();
+        assert!(vmm.service_doorbell(n).is_err());
+        assert_eq!(vmm.sdk_events().len(), before);
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.predecode_refused.request_guard_errors"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            1
+        );
+        let (_, sample) = vmm.measure_sdk_guard_using(HostOperationSite::SdkRequest, || 89);
+        assert_eq!(
+            sample,
+            Callback {
+                calls: 1,
+                errors: 1,
+                nanos: 89
+            }
+        );
+        vmm.set_host_operation_guard(Arc::new(|site| {
+            if site == HostOperationSite::SdkResponse {
+                Err("response refused".into())
+            } else {
+                Ok(())
+            }
+        }));
+        let response = vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 64].to_vec();
+        assert!(vmm.service_doorbell(n).is_err());
+        assert_eq!(vmm.sdk_events().len(), before + 1);
+        assert_eq!(vmm.ram.as_bytes()[RESP_GPA..RESP_GPA + 64], response);
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_errors"),
+            1
+        );
+        vmm.set_host_operation_guard(Arc::new(|_| Ok(())));
+        vmm.service_doorbell(1).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.invalid.request_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.invalid.response_guard_calls"),
+            1
+        );
+        vmm.service_doorbell((HC_PAGE + 1) as u32).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.unreadable.request_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.unreadable.response_guard_calls"),
+            1
+        );
+    }
+
+    #[test]
+    fn sdk_dispatch_deferred_and_pending_response_ownership() {
+        let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
+        enable_nominal(&mut vmm, 7);
+        vmm.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
+        let n = sdk_attribution_event(&mut vmm);
+        vmm.run_deadline_vns = Some(0);
+        assert_eq!(vmm.service_doorbell(n).unwrap(), Step::SdkStop);
+        let pending = vmm.sdk_snapshot().unwrap().unwrap();
+        assert_eq!(vmm.step_until(Some(0)).unwrap(), Step::SdkStop);
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.deferred"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
+            0
+        );
+        vmm.sdk_restore_events(&pending);
+        vmm.step_until(Some(1)).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.requests"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
+            1
+        );
+        for opcode in [2, 3] {
+            let question = channel::Question::with_request_id(7, 8, vec![]).unwrap();
+            vmm.sdk.as_mut().unwrap().pending_stop = Some(if opcode == 2 {
+                SdkStop::CoverageDecision {
+                    moment: 0,
+                    seq: 9,
+                    question,
+                    ready: 1,
+                }
+            } else {
+                SdkStop::Decision {
+                    moment: 0,
+                    seq: 9,
+                    question,
+                }
+            });
+            vmm.write_service_response(opcode, 9, Status::BadRequest, &[])
+                .unwrap();
+            let kind = if opcode == 2 { "coverage" } else { "service" };
+            assert_eq!(
+                sdk_attribution_counter(&vmm, &format!("sdk_dispatch.{kind}.response_guard_calls")),
+                1
+            );
+            assert_eq!(
+                sdk_attribution_counter(&vmm, &format!("sdk_dispatch.{kind}.requests")),
+                0
+            );
+        }
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.event.response_guard_calls"),
+            1
+        );
+    }
+
     #[test]
     fn doorbell_response_write_is_drained_as_host_dirty() {
         let mut m = configured_mock(vec![]);
@@ -4448,6 +4724,7 @@ mod tests {
         let n =
             hypercall_proto::encode_request(ServiceId::Sdk, 2, 9, &request, &mut frame).unwrap();
         let mut vmm = build();
+        vmm.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
         vmm.ram.as_mut_bytes()[REQ_GPA..REQ_GPA + n].copy_from_slice(&frame[..n]);
         assert_eq!(vmm.service_doorbell(n as u32).unwrap(), Step::SdkStop);
         let question = channel::Question::with_request_id(
@@ -4477,7 +4754,16 @@ mod tests {
         let answer = channel::Answer::Data(64_u64.to_le_bytes().to_vec());
         vmm.sdk_snapshot_after_answer(0, &question, &answer, None)
             .unwrap();
+        let before = sdk_attribution_counter(&vmm, "sdk_dispatch.coverage.response_guard_calls");
         vmm.resolve_service_answer(answer.clone(), None).unwrap();
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.coverage.response_guard_calls"),
+            before + 1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&vmm, "sdk_dispatch.service.response_guard_calls"),
+            0
+        );
         let (header, payload) = decode(&vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
         assert_eq!(
             (header.opcode, header.seq, header.status),
@@ -5107,6 +5393,7 @@ mod tests {
             vmm
         };
         let mut source = build();
+        source.set_host_operation_guard(std::sync::Arc::new(|_| Ok(())));
         let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
         let stop = SdkStop::Decision {
             moment: 31,
@@ -5138,6 +5425,14 @@ mod tests {
         assert_eq!(
             restored.resolve_service_answer(answer, None).unwrap(),
             (31, question)
+        );
+        assert_eq!(
+            sdk_attribution_counter(&source, "sdk_dispatch.service.response_guard_calls"),
+            1
+        );
+        assert_eq!(
+            sdk_attribution_counter(&source, "sdk_dispatch.coverage.response_guard_calls"),
+            0
         );
         let source_response = source.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
         let restored_response = restored.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();

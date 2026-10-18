@@ -6,6 +6,7 @@ mod engine_state;
 pub mod exec;
 pub mod host_telemetry;
 pub mod portable_snapshot;
+pub mod sdk_telemetry;
 pub mod session_trace;
 pub mod snapshot;
 pub mod vendor;

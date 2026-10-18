@@ -190,6 +190,7 @@ impl HashWork {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostTelemetry {
+    pub sdk_dispatch: crate::sdk_telemetry::SdkDispatchTelemetry,
     pub exits: ExitTelemetry,
     pub hashes: HashTelemetry,
     pub verification: snapshot_store::VerificationTelemetry,
@@ -237,6 +238,7 @@ impl HostTelemetry {
             ("snapshot.import_pages".to_owned(), self.import_pages),
         ];
         self.hashes.counters(&mut out);
+        out.extend(self.sdk_dispatch.counters());
         out.extend(self.verification.counters());
         out.extend(self.copies.counters());
         out.extend(self.physical.counters());
