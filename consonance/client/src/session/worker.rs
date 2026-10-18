@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     error::Error,
     ffi::OsString,
-    io::{self, Read, Write},
+    io::{self, Write},
     net::Shutdown,
     os::{
         fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
@@ -15,6 +15,9 @@ use std::{
     ptr::NonNull,
     time::{Duration, Instant},
 };
+
+#[cfg(any(not(target_os = "macos"), test))]
+use std::io::Read;
 
 use control_proto::{
     Answer, DecisionId, Moment, Reply, Resolution, SnapId, StopConditions, StopMask, StopReason,
@@ -28,15 +31,18 @@ use environment::{
 use super::live::{checked_cached_attachment, vmm_target_commitment};
 use super::{CachedSnapshotReceipt, SnapshotAttachment};
 use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec};
+use crate::ancillary::parse_control_rights;
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
 pub const WORKER_FD_ENV: &str = "HARMONY_SESSION_WORKER_FD";
 const HEADER: usize = 16;
 const MAX_FDS: usize = 2 * ANCHOR_DEPTH as usize;
+#[cfg(target_os = "macos")]
+const DARWIN_CONTROL_CAPACITY: usize = 2048;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
-const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v1";
+const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v2";
 const IMAGE_HELLO_LIMIT: usize = 512;
 const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -47,7 +53,10 @@ const CONSOLE_TAIL: u8 = 3;
 const TELEMETRY: u8 = 4;
 const OWNED_PAGES: u8 = 5;
 const EXPORT: u8 = 6;
-const WRITE_EXTENT: u8 = 7;
+const NEED_EXTENT: u8 = 7;
+const EXTENT_READY: u8 = 18;
+const EXTENT_DENIED: u8 = 19;
+const EXPORT_FRAME_LIMIT: usize = 4096;
 const IMPORT: u8 = 8;
 const SNAPSHOT: u8 = 9;
 const DROP_SNAPSHOT: u8 = 10;
@@ -63,6 +72,7 @@ const FAILED: u8 = 1;
 const OTHER: u8 = 0;
 const HUNG: u8 = 1;
 const ABANDONED: u8 = 2;
+const INFRASTRUCTURE: u8 = 3;
 
 pub trait SearchSession: std::fmt::Debug {
     fn setup_handle(&self) -> (SnapId, u64);
@@ -154,35 +164,26 @@ pub trait SearchSession: std::fmt::Debug {
     }
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>>;
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>>;
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        let offset = usize::try_from(offset)?;
+        let mut events = self.sdk_events()?;
+        u32::try_from(events.len()).map_err(|_| "SDK event offset overflow")?;
+        if offset >= events.len() {
+            return Ok(Vec::new());
+        }
+        Ok(events.split_off(offset))
+    }
     fn abandoned(&self) -> bool;
 }
 
 trait ServedSession: SearchSession {
-    fn export_delta(
-        &self,
-        parent: Option<SnapId>,
-        target: SnapId,
-    ) -> Result<Vec<u8>, Box<dyn Error>>;
-    fn export_delta_attached(
+    fn export_delta_into(
         &self,
         parent: Option<SnapId>,
         target: SnapId,
         attachment: &SnapshotAttachment,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        let raw = self.export_delta(parent, target)?;
-        let delta = crate::cache::extent::read_extent(&raw)?;
-        let machine = super::live::raw_target_commitment(delta.sidecar)?;
-        let sidecar = super::attachment::encode(delta.sidecar, machine, attachment)?;
-        let len = crate::cache::extent::extent_len(
-            delta.pages.len(),
-            delta.reverted.len(),
-            sidecar.len(),
-        )
-        .ok_or("extent size overflows")?;
-        let mut out = vec![0; len];
-        crate::cache::extent::write_extent(&mut out, &delta.pages, &delta.reverted, &sidecar)?;
-        Ok(out)
-    }
+        allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>>;
     fn import_extents(
         &mut self,
         extents: &[&[u8]],
@@ -309,33 +310,50 @@ impl SearchSession for Session {
         Session::sdk_events(self)
     }
 
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        Session::sdk_events_since(self, offset)
+    }
+
     fn abandoned(&self) -> bool {
         Session::abandoned(self)
     }
 }
 
-impl ServedSession for Session {
-    fn export_delta(
-        &self,
-        parent: Option<SnapId>,
-        target: SnapId,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        self.write_delta(parent, target, |len| Ok(vec![0; len]), Vec::as_mut_slice)
-    }
+#[cfg(all(test, target_arch = "aarch64"))]
+pub(super) fn export_destination_for_test(
+    session: &Session,
+    index: &dyn CacheIndex,
+    parent: Option<SnapId>,
+    target: SnapId,
+    attachment: &SnapshotAttachment,
+) -> (crate::cache::WritableExtent, Vec<(usize, usize)>) {
+    let mut extent = None;
+    let mut allocations = Vec::new();
+    session
+        .export_delta_into(parent, target, attachment, &mut |len| {
+            let destination = index.extent(len)?;
+            let SharedRange { fd, offset, .. } = destination.shared_range();
+            let mut mapping = Mapping::new(fd, offset, len, true)?;
+            allocations.push((mapping.bytes_mut().as_ptr() as usize, len));
+            extent = Some(destination);
+            Ok(mapping)
+        })
+        .unwrap();
+    (extent.unwrap(), allocations)
+}
 
-    fn export_delta_attached(
+impl ServedSession for Session {
+    fn export_delta_into(
         &self,
         parent: Option<SnapId>,
         target: SnapId,
         attachment: &SnapshotAttachment,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        self.write_delta_attached(
-            parent,
-            target,
-            attachment,
-            |len| Ok(vec![0; len]),
-            Vec::as_mut_slice,
-        )
+        allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mapping =
+            self.write_delta_attached(parent, target, attachment, allocate, Mapping::bytes_mut)?;
+        drop(mapping);
+        Ok(())
     }
     fn import_extents(
         &mut self,
@@ -355,6 +373,21 @@ fn malformed(what: &str) -> io::Error {
         io::ErrorKind::InvalidData,
         format!("session worker frame: {what}"),
     )
+}
+
+fn transport_error(error: io::Error) -> SessionError {
+    if matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::UnexpectedEof
+    ) {
+        SessionError::Infrastructure(format!("session worker disconnected: {error}"))
+    } else {
+        SessionError::Control(format!("session worker: {error}"))
+    }
 }
 
 #[derive(Debug, Default)]
@@ -513,7 +546,20 @@ fn recv_with_fds(
     buffer: &mut [u8],
     deadline: Option<Instant>,
 ) -> io::Result<(usize, Vec<OwnedFd>)> {
+    #[cfg(target_os = "macos")]
+    let space = DARWIN_CONTROL_CAPACITY;
+    #[cfg(not(target_os = "macos"))]
     let space = control_space(MAX_FDS);
+    recv_with_fds_control_space(stream, buffer, deadline, space)
+}
+
+#[allow(clippy::disallowed_methods)]
+fn recv_with_fds_control_space(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+    space: usize,
+) -> io::Result<(usize, Vec<OwnedFd>)> {
     let mut control = vec![0_u64; space.div_ceil(size_of::<u64>())];
     let mut iov = libc::iovec {
         iov_base: buffer.as_mut_ptr().cast(),
@@ -544,25 +590,21 @@ fn recv_with_fds(
         }
     };
     let mut fds = Vec::new();
-    // SAFETY: recvmsg filled msg_control with msg_controllen bytes of well-formed control
-    // headers; CMSG_FIRSTHDR and CMSG_NXTHDR stay within that range, and each SCM_RIGHTS
-    // payload holds descriptors the kernel just installed in this process for us to own.
-    unsafe {
-        let mut header = libc::CMSG_FIRSTHDR(&raw const message);
-        while !header.is_null() {
-            if (*header).cmsg_level == libc::SOL_SOCKET && (*header).cmsg_type == libc::SCM_RIGHTS {
-                let data = libc::CMSG_DATA(header);
-                let bytes = (*header).cmsg_len as usize - data.offset_from(header.cast()) as usize;
-                for index in 0..bytes / size_of::<RawFd>() {
-                    let raw = std::ptr::read_unaligned(data.cast::<RawFd>().add(index));
-                    fds.push(OwnedFd::from_raw_fd(raw));
-                }
-            }
-            header = libc::CMSG_NXTHDR(&raw const message, header);
-        }
-    }
+    // SAFETY: control owns initialized u64 storage of at least space bytes, which was the
+    // capacity supplied to recvmsg; the byte view cannot exceed that allocation.
+    let control_bytes = unsafe { std::slice::from_raw_parts(control.as_ptr().cast::<u8>(), space) };
+    let parsed = parse_control_rights(control_bytes, message.msg_controllen as usize, |raw| {
+        // SAFETY: only complete SCM_RIGHTS integers within both the supplied allocation and
+        // recvmsg's returned extent reach this callback; these are fresh descriptors installed
+        // by this recvmsg, and each is immediately assigned exactly one owning handle.
+        fds.push(unsafe { OwnedFd::from_raw_fd(raw) });
+    });
     if message.msg_flags & libc::MSG_CTRUNC != 0 {
         return Err(malformed("descriptors were truncated"));
+    }
+    parsed?;
+    if fds.len() > MAX_FDS {
+        return Err(malformed("too many descriptors"));
     }
     #[cfg(not(target_os = "linux"))]
     for fd in &fds {
@@ -593,6 +635,7 @@ fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
     writer.write_all(body)
 }
 
+#[cfg(not(target_os = "macos"))]
 #[allow(clippy::disallowed_methods)]
 fn read_exact_until(
     stream: &UnixStream,
@@ -614,6 +657,38 @@ fn read_exact_until(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn read_frame_exact(
+    stream: &UnixStream,
+    mut buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    while !buffer.is_empty() {
+        let (size, rights) = recv_with_fds(stream, buffer, deadline)?;
+        if !rights.is_empty() {
+            return Err(malformed("unexpected descriptors after frame header"));
+        }
+        if size == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buffer = &mut buffer[size..];
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_frame_exact(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    if let Some(deadline) = deadline {
+        read_exact_until(stream, buffer, deadline)
+    } else {
+        (&*stream).read_exact(buffer)
+    }
+}
+
 fn recv_with_limit(
     stream: &UnixStream,
     limit: usize,
@@ -624,12 +699,7 @@ fn recv_with_limit(
     if received == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
-    let mut reader = stream;
-    if let Some(deadline) = deadline {
-        read_exact_until(stream, &mut header[received..], deadline)?;
-    } else {
-        reader.read_exact(&mut header[received..])?;
-    }
+    read_frame_exact(stream, &mut header[received..], deadline)?;
     let len = usize::try_from(u64::from_le_bytes(
         header[..8].try_into().expect("eight bytes"),
     ))
@@ -641,17 +711,16 @@ fn recv_with_limit(
         return Err(malformed("descriptor count"));
     }
     let mut body = vec![0; len];
-    if let Some(deadline) = deadline {
-        read_exact_until(stream, &mut body, deadline)?;
-    } else {
-        reader.read_exact(&mut body)?;
-    }
+    read_frame_exact(stream, &mut body, deadline)?;
     Ok((body, fds))
 }
 
 fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     recv_with_limit(stream, usize::MAX, None)
 }
+
+#[cfg(test)]
+thread_local! { static MAPPING_ATTEMPTS: Cell<usize> = const { Cell::new(0) }; }
 
 struct Mapping {
     base: NonNull<u8>,
@@ -661,25 +730,30 @@ struct Mapping {
 
 impl Mapping {
     fn new(fd: BorrowedFd<'_>, offset: usize, len: usize, writable: bool) -> io::Result<Self> {
-        if len == 0 {
-            return Err(malformed("empty extent"));
-        }
+        #[cfg(test)]
+        MAPPING_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
         // SAFETY: sysconf reads a constant system parameter.
         let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| io::Error::last_os_error())?;
-        let skip = offset % page;
-        let start = libc::off_t::try_from(offset - skip).map_err(|_| malformed("offset"))?;
+        let (start, skip, mapped_len) = crate::cache::segments::checked_mapping_range(
+            offset,
+            len,
+            crate::cache::segments::backing_len(fd)?,
+            page,
+        )?;
+        let start = libc::off_t::try_from(start).map_err(|_| malformed("offset"))?;
         let protection = if writable {
             libc::PROT_READ | libc::PROT_WRITE
         } else {
             libc::PROT_READ
         };
         // SAFETY: a fresh shared mapping of a descriptor the caller holds open aliases no Rust
-        // object; the kernel rejects a range beyond the file.
+        // object. The checked range fits the current backing; the owning coordinator keeps its
+        // allocation alive without truncating it for the entire exchange.
         let base = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                skip + len,
+                mapped_len,
                 protection,
                 libc::MAP_SHARED,
                 fd.as_raw_fd(),
@@ -858,6 +932,14 @@ pub struct WorkerSession {
     seed: u64,
     failed: Cell<bool>,
     counters: RefCell<Vec<(String, u64)>>,
+    exchanging: Cell<bool>,
+}
+
+struct Exchange<'a>(&'a Cell<bool>);
+impl Drop for Exchange<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }
 
 impl WorkerSession {
@@ -911,6 +993,7 @@ impl WorkerSession {
             seed: config.seed,
             failed: Cell::new(false),
             counters: RefCell::default(),
+            exchanging: Cell::new(false),
         };
         let mut request = Out::op(INIT);
         put_config(&mut request, config);
@@ -946,18 +1029,30 @@ impl WorkerSession {
         Ok(())
     }
 
+    fn begin_exchange(&self) -> Result<Exchange<'_>, Box<dyn Error>> {
+        if self.exchanging.replace(true) {
+            return Err("session worker exchange is already active".into());
+        }
+        Ok(Exchange(&self.exchanging))
+    }
+
     fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let _exchange = self.begin_exchange()?;
         self.check_loaded_image()?;
         let reply = send(&self.stream, &request.0, fds).and_then(|()| recv(&self.stream));
         let body = match reply {
             Ok((body, _)) => body,
             Err(error) => {
                 self.failed.set(true);
-                return Err(SessionError::Control(format!("session worker: {error}")).into());
+                return Err(transport_error(error).into());
             }
         };
         self.check_loaded_image()?;
-        let mut input = In(&body);
+        self.reply_status(&body)
+    }
+
+    fn reply_status(&self, body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut input = In(body);
         match input.u8()? {
             OK => Ok(input.0.to_vec()),
             FAILED => {
@@ -965,14 +1060,133 @@ impl WorkerSession {
                 let error = match kind {
                     HUNG => SessionError::Hung(Duration::from_nanos(input.u64()?)),
                     ABANDONED => SessionError::Abandoned,
-                    _ => SessionError::Control(input.string()?),
+                    INFRASTRUCTURE => SessionError::Infrastructure(input.string()?),
+                    OTHER => SessionError::Control(input.string()?),
+                    _ => return Err(malformed("reply error kind").into()),
                 };
+                input.finish()?;
                 if kind != OTHER {
                     self.failed.set(true);
                 }
                 Err(error.into())
             }
             _ => Err(malformed("reply status").into()),
+        }
+    }
+
+    fn export_extent(
+        &self,
+        index: &dyn CacheIndex,
+        parent: Option<SnapId>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+    ) -> Result<crate::cache::WritableExtent, Box<dyn Error>> {
+        let _exchange = self.begin_exchange()?;
+        self.check_loaded_image()?;
+        let mut denied = None;
+        let mut rejected = None;
+        let result: Result<Option<crate::cache::WritableExtent>, Box<dyn Error>> = (|| {
+            let mut request = Out::op(EXPORT);
+            request
+                .option(parent.map(|snap| snap.0))
+                .u64(target.0)
+                .bytes(&attachment.domain)
+                .bytes(&attachment.bytes);
+            send(&self.stream, &request.0, &[])?;
+            let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
+            self.check_loaded_image()?;
+            if !fds.is_empty() {
+                return Err(malformed("allocation request descriptors").into());
+            }
+            let mut input = In(&body);
+            if input.u8()? != NEED_EXTENT {
+                if body.first() != Some(&FAILED) {
+                    return Err(malformed("missing allocation request").into());
+                }
+                let mut failure = In(&body[1..]);
+                match failure.u8()? {
+                    HUNG => {
+                        failure.u64()?;
+                    }
+                    ABANDONED => {}
+                    OTHER | INFRASTRUCTURE => {
+                        failure.string()?;
+                    }
+                    _ => return Err(malformed("reply error kind").into()),
+                }
+                failure.finish()?;
+                rejected = Some(self.reply_status(&body).unwrap_err());
+                return Ok(None);
+            }
+            let len = input.len()?;
+            input.finish()?;
+            if len == 0 {
+                return Err(malformed("empty allocation request").into());
+            }
+            let extent = match index.extent(len) {
+                Ok(extent) => Some(extent),
+                Err(error) => {
+                    denied = Some(error);
+                    None
+                }
+            };
+            self.check_loaded_image()?;
+            if let Some(extent) = extent.as_ref() {
+                let SharedRange {
+                    fd,
+                    offset,
+                    len: usable,
+                } = extent.shared_range();
+                if usable < len {
+                    return Err(malformed("allocated range too short").into());
+                }
+                send(
+                    &self.stream,
+                    &Out::op(EXTENT_READY).len(offset).len(len).0,
+                    &[fd],
+                )?;
+            } else {
+                send(&self.stream, &Out::op(EXTENT_DENIED).0, &[])?;
+            }
+            let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
+            self.check_loaded_image()?;
+            if !fds.is_empty() {
+                return Err(malformed("completion descriptors").into());
+            }
+            if denied.is_some() {
+                let mut input = In(&body);
+                if input.u8()? != FAILED || input.u8()? != OTHER {
+                    return Err(malformed("allocation denial acknowledgement").into());
+                }
+                input.string()?;
+                input.finish()?;
+                return Ok(None);
+            }
+            let reply = self.reply_status(&body)?;
+            In(&reply).finish()?;
+            Ok(extent)
+        })();
+        match result {
+            Ok(Some(extent)) => Ok(extent),
+            Ok(None) => match rejected {
+                Some(error) => Err(error),
+                None => Err(denied.expect("denied allocation").into()),
+            },
+            Err(error) => {
+                self.failed.set(true);
+                let _ = self.stream.shutdown(Shutdown::Both);
+                if error.is::<SessionError>() {
+                    Err(error)
+                } else {
+                    match error.downcast::<io::Error>() {
+                        Ok(error) => Err(transport_error(*error).into()),
+                        Err(error) => Err(SessionError::Control(format!(
+                            "session worker export: {error}"
+                        ))
+                        .into()),
+                    }
+                }
+            }
         }
     }
 
@@ -1082,7 +1296,6 @@ impl SearchSession for WorkerSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.check_loaded_image()?;
         self.publish_snapshot_attached(
             index,
             namespace,
@@ -1104,23 +1317,9 @@ impl SearchSession for WorkerSession {
         attachment: &SnapshotAttachment,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.check_loaded_image()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
-        let reply = self.call(
-            Out::op(EXPORT)
-                .option(parent.map(|(snap, _)| snap.0))
-                .u64(target.0)
-                .bytes(&attachment.domain)
-                .bytes(&attachment.bytes),
-            &[],
-        )?;
-        let mut input = In(&reply);
-        let len = input.len()?;
-        input.finish()?;
-        let mut extent = index.extent(len)?;
-        let SharedRange { fd, offset, len } = extent.shared_range();
-        let reply = self.call(Out::op(WRITE_EXTENT).len(offset).len(len), &[fd])?;
-        In(&reply).finish()?;
+        let mut extent =
+            self.export_extent(index, parent.map(|(snap, _)| snap), target, attachment)?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
         self.check_loaded_image()?;
         let lease = index.publish(
@@ -1244,9 +1443,17 @@ impl SearchSession for WorkerSession {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-        let reply = self.call(&Out::op(SDK_EVENTS), &[])?;
+        self.sdk_events_since(0)
+    }
+
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        let reply = self.call(Out::op(SDK_EVENTS).u64(u64::from(offset)), &[])?;
         let mut input = In(&reply);
-        let events = (0..input.len()?)
+        let count = input.len()?;
+        offset
+            .checked_add(u32::try_from(count).map_err(|_| malformed("SDK event count overflows"))?)
+            .ok_or_else(|| malformed("SDK event offset overflows"))?;
+        let events = (0..count)
             .map(|_| {
                 let moment = input.u64()?;
                 let id = u32::try_from(input.u64()?).map_err(|_| malformed("event id"))?;
@@ -1291,7 +1498,6 @@ type Open<'a> = dyn FnMut(Init) -> Result<Box<dyn ServedSession>, Box<dyn Error>
 #[derive(Default)]
 struct Served {
     session: Option<Box<dyn ServedSession>>,
-    pending: Option<Vec<u8>>,
 }
 
 impl Served {
@@ -1307,39 +1513,22 @@ impl Served {
         body: &[u8],
         fds: &[OwnedFd],
         open: &mut Open<'_>,
+        allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
     ) -> Result<Out, Box<dyn Error>> {
         let mut input = In(body);
         let op = input.u8()?;
         let mut out = Out::default();
-        match op {
-            INIT => {
-                let init = take_init(&mut input)?;
-                input.finish()?;
-                if self.session.is_some() {
-                    return Err("session worker is already initialized".into());
-                }
-                let session = open(init)?;
-                let (setup, at) = session.setup_handle();
-                self.session = Some(session);
-                out.u64(setup.0).u64(at);
-                return Ok(out);
+        if op == INIT {
+            let init = take_init(&mut input)?;
+            input.finish()?;
+            if self.session.is_some() {
+                return Err("session worker is already initialized".into());
             }
-            WRITE_EXTENT => {
-                let offset = input.len()?;
-                let len = input.len()?;
-                input.finish()?;
-                let [fd] = fds else {
-                    return Err(malformed("an extent write carries one descriptor").into());
-                };
-                let pending = self.pending.take().ok_or("no exported delta is pending")?;
-                if pending.len() > len {
-                    return Err(malformed("extent is smaller than its delta").into());
-                }
-                let mut mapping = Mapping::new(fd.as_fd(), offset, len, true)?;
-                mapping.bytes_mut()[..pending.len()].copy_from_slice(&pending);
-                return Ok(out);
-            }
-            _ => {}
+            let session = open(init)?;
+            let (setup, at) = session.setup_handle();
+            self.session = Some(session);
+            out.u64(setup.0).u64(at);
+            return Ok(out);
         }
         let session = self.session()?;
         match op {
@@ -1382,9 +1571,10 @@ impl Served {
                     bytes: input.bytes()?.to_vec(),
                 };
                 input.finish()?;
-                let delta = session.export_delta_attached(parent, target, &attachment)?;
-                out.len(delta.len());
-                self.pending = Some(delta);
+                if !fds.is_empty() {
+                    return Err(malformed("export descriptors").into());
+                }
+                session.export_delta_into(parent, target, &attachment, allocate)?;
             }
             IMPORT => {
                 let near = SnapId(input.u64()?);
@@ -1451,8 +1641,13 @@ impl Served {
                     .map_err(|error| format!("encode stop reason: {error}"))?;
             }
             SDK_EVENTS => {
+                let offset = u32::try_from(input.u64()?)
+                    .map_err(|_| malformed("SDK event offset overflows"))?;
                 input.finish()?;
-                let events = session.sdk_events()?;
+                if !fds.is_empty() {
+                    return Err(malformed("SDK events carries no descriptors").into());
+                }
+                let events = session.sdk_events_since(offset)?;
                 out.len(events.len());
                 for (moment, id, bytes) in &events {
                     out.u64(*moment).u64(u64::from(*id)).bytes(bytes);
@@ -1482,6 +1677,9 @@ fn status(result: Result<Out, Box<dyn Error>>) -> Vec<u8> {
                 Some(SessionError::Abandoned) => {
                     out.u8(ABANDONED);
                 }
+                Some(SessionError::Infrastructure(detail)) => {
+                    out.u8(INFRASTRUCTURE).bytes(detail.as_bytes());
+                }
                 _ => {
                     out.u8(OTHER).bytes(error.to_string().as_bytes());
                 }
@@ -1497,14 +1695,61 @@ fn serve(
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
 ) -> Result<(), Box<dyn Error>> {
     let mut served = Served::default();
+    loaded_image_guard.check()?;
     loop {
-        loaded_image_guard.check()?;
         let (body, fds) = match recv(stream) {
             Ok(frame) => frame,
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let reply = status(served.handle(&body, &fds, open));
+        let mut requested = false;
+        let mut allocation_broken = None;
+        let mut allocate = |len| {
+            let result: Result<Option<Mapping>, Box<dyn Error>> = (|| {
+                if std::mem::replace(&mut requested, true) {
+                    return Err(malformed("repeated allocation").into());
+                }
+                loaded_image_guard.check()?;
+                send(stream, &Out::op(NEED_EXTENT).len(len).0, &[])?;
+                loaded_image_guard.check()?;
+                let (body, fds) = recv_with_limit(stream, EXPORT_FRAME_LIMIT, None)?;
+                loaded_image_guard.check()?;
+                let mut input = In(&body);
+                match input.u8()? {
+                    EXTENT_READY => {
+                        let offset = input.len()?;
+                        if input.len()? != len {
+                            return Err(malformed("destination length differs").into());
+                        }
+                        input.finish()?;
+                        let [fd] = fds.as_slice() else {
+                            return Err(malformed("destination requires one descriptor").into());
+                        };
+                        Ok(Some(Mapping::new(fd.as_fd(), offset, len, true)?))
+                    }
+                    EXTENT_DENIED => {
+                        input.finish()?;
+                        if !fds.is_empty() {
+                            return Err(malformed("denial descriptors").into());
+                        }
+                        Ok(None)
+                    }
+                    _ => Err(malformed("expected allocation response").into()),
+                }
+            })();
+            match result {
+                Ok(Some(mapping)) => Ok(mapping),
+                Ok(None) => Err("destination allocation denied".into()),
+                Err(error) => {
+                    allocation_broken = Some(error.to_string());
+                    Err(error)
+                }
+            }
+        };
+        let reply = status(served.handle(&body, &fds, open, &mut allocate));
+        if let Some(cause) = allocation_broken {
+            return Err(malformed(&format!("allocation exchange failed: {cause}")).into());
+        }
         loaded_image_guard.check()?;
         drop(fds);
         send(stream, &reply, &[])?;
@@ -1561,6 +1806,9 @@ mod tests {
     };
 
     const HANG: u64 = u64::MAX;
+    const HOST_FAILURE: u64 = u64::MAX - 1;
+    const GUEST_PANIC: u64 = u64::MAX - 2;
+    const GUEST_SHUTDOWN: u64 = u64::MAX - 3;
 
     #[derive(Debug, Default)]
     struct Fake {
@@ -1569,6 +1817,7 @@ mod tests {
         current: u8,
         runs: u64,
         quarantine_on_import: Option<Arc<LocalIndex>>,
+        sdk_history: Option<Vec<SdkEvent>>,
     }
 
     impl Fake {
@@ -1678,6 +1927,22 @@ mod tests {
             if deadline == HANG {
                 return Err(SessionError::Hung(Duration::from_secs(3)).into());
             }
+            if deadline == HOST_FAILURE {
+                return Err(SessionError::Infrastructure("owned host exited87".into()).into());
+            }
+            if let Some(kind) = match deadline {
+                GUEST_PANIC => Some(control_proto::CrashKind::Panic),
+                GUEST_SHUTDOWN => Some(control_proto::CrashKind::Shutdown),
+                _ => None,
+            } {
+                return Ok(StopReason::Crash {
+                    vtime: Moment(40),
+                    info: control_proto::CrashInfo {
+                        kind,
+                        detail: b"framed guest stop".to_vec(),
+                    },
+                });
+            }
             self.current = self.current.wrapping_add(1);
             self.runs += 1;
             Ok(StopReason::Deadline {
@@ -1713,7 +1978,10 @@ mod tests {
         }
 
         fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-            Ok(vec![(5, 7, vec![self.current])])
+            Ok(self
+                .sdk_history
+                .clone()
+                .unwrap_or_else(|| vec![(5, 7, vec![self.current])]))
         }
 
         fn abandoned(&self) -> bool {
@@ -1722,11 +1990,13 @@ mod tests {
     }
 
     impl ServedSession for Fake {
-        fn export_delta(
+        fn export_delta_into(
             &self,
             _: Option<SnapId>,
             target: SnapId,
-        ) -> Result<Vec<u8>, Box<dyn Error>> {
+            attachment: &SnapshotAttachment,
+            allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
+        ) -> Result<(), Box<dyn Error>> {
             let fill = self.state(target)?;
             let policy = ServiceConfig::default().encode();
             #[cfg(target_arch = "x86_64")]
@@ -1759,9 +2029,17 @@ mod tests {
             sidecar.extend_from_slice(&policy);
             sidecar.push(0);
             sidecar.push(0);
-            let mut out = vec![0; extent_len(1, 0, sidecar.len()).unwrap()];
-            write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &sidecar)?;
-            Ok(out)
+            let machine = super::super::live::raw_target_commitment(&sidecar)?;
+            let sidecar = super::super::attachment::encode(&sidecar, machine, attachment)?;
+            let mut out = allocate(extent_len(1, 0, sidecar.len()).unwrap())?;
+            write_extent(
+                out.bytes_mut(),
+                &[(0, &[fill; 32], &[fill; 4096])],
+                &[],
+                &sidecar,
+            )?;
+            drop(out);
+            Ok(())
         }
 
         fn import_extents(
@@ -1789,6 +2067,411 @@ mod tests {
             self.current = self.state(snapshot)?;
             Ok(())
         }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn live_task_descriptors() -> std::collections::BTreeSet<RawFd> {
+        let candidates: Vec<_> = std::fs::read_dir("/dev/fd")
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .parse::<RawFd>()
+                    .unwrap()
+            })
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|fd| {
+                // SAFETY: F_GETFD queries a candidate number without taking ownership or modifying it.
+                unsafe { libc::fcntl(*fd, libc::F_GETFD) >= 0 }
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn send_two_rights_headers(
+        stream: &UnixStream,
+        descriptor: BorrowedFd<'_>,
+    ) -> io::Result<usize> {
+        let space = control_space(1);
+        let mut control = crate::ancillary::tests::two_rights_control(descriptor.as_raw_fd());
+        let mut byte = [1_u8];
+        let mut iov = libc::iovec {
+            iov_base: byte.as_mut_ptr().cast(),
+            iov_len: 1,
+        };
+        // SAFETY: the integer/pointer fields of msghdr have a valid empty zero representation.
+        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+        message.msg_iov = &raw mut iov;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = (space * 2) as _;
+        // SAFETY: message describes only the live byte/iovec and initialized control allocation above.
+        let result = unsafe { libc::sendmsg(stream.as_raw_fd(), &raw const message, 0) };
+        usize::try_from(result).map_err(|_| io::Error::last_os_error())
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", not(miri)))]
+    #[allow(clippy::disallowed_methods)]
+    fn darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal() {
+        const CHILD: &str = "HARMONY_DARWIN_RIGHTS_BOUND_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            const TEST: &str = concat!(
+                "session::worker::tests::",
+                "darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal"
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(TEST)
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            print!("{stdout}");
+            return;
+        }
+        // SAFETY: rlimit contains integer fields with a valid zero representation.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: getrlimit writes one live correctly aligned rlimit without retaining its pointer.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) },
+            0
+        );
+        assert!(
+            limit.rlim_max >= 1024,
+            "the isolated qualification needs room for one maximum-size rights message"
+        );
+        if limit.rlim_cur < 1024 {
+            limit.rlim_cur = 1024;
+            // SAFETY: the initialized rlimit raises only this sacrificial child's soft FD limit within its existing hard limit.
+            assert_eq!(
+                unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) },
+                0
+            );
+        }
+        let baseline = live_task_descriptors();
+        {
+            let (sender, receiver) = UnixStream::pair().unwrap();
+            let descriptor = tempfile::tempfile().unwrap();
+            let active = live_task_descriptors();
+            for count in [64, 65, 72] {
+                let rights = vec![descriptor.as_fd(); count];
+                assert_eq!(send_with_fds(&sender, &[1], &rights).unwrap(), 1);
+                let received = recv_with_fds(
+                    &receiver,
+                    &mut [0; 1],
+                    Some(Instant::now() + Duration::from_secs(1)),
+                );
+                if count == MAX_FDS {
+                    assert_eq!(received.unwrap().1.len(), MAX_FDS);
+                } else {
+                    let error = received.unwrap_err();
+                    assert_eq!(
+                        live_task_descriptors(),
+                        active,
+                        "installed descriptor leak at {count}"
+                    );
+                    assert!(
+                        error.to_string().contains("too many descriptors"),
+                        "{error}"
+                    );
+                }
+                assert_eq!(
+                    live_task_descriptors(),
+                    active,
+                    "installed descriptor leak at {count}"
+                );
+            }
+            let mut maximum = 0;
+            for count in 73..=520 {
+                let rights = vec![descriptor.as_fd(); count];
+                match send_with_fds(&sender, &[1], &rights) {
+                    Ok(1) => {
+                        let error = recv_with_fds(
+                            &receiver,
+                            &mut [0; 1],
+                            Some(Instant::now() + Duration::from_secs(1)),
+                        )
+                        .unwrap_err();
+                        assert!(
+                            error.to_string().contains("too many descriptors"),
+                            "{count}: {error}"
+                        );
+                        maximum = count;
+                    }
+                    Err(error) => {
+                        assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+                        break;
+                    }
+                    other => panic!("unexpected send result {other:?}"),
+                }
+                assert_eq!(
+                    live_task_descriptors(),
+                    active,
+                    "installed descriptor leak at {count}"
+                );
+            }
+            assert!(
+                (73..520).contains(&maximum),
+                "a bounded maximum and oversized refusal must both execute"
+            );
+            println!("DARWIN_RIGHTS_MAXIMUM_ACCEPTED={maximum}");
+            assert_eq!(
+                send_two_rights_headers(&sender, descriptor.as_fd())
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EINVAL)
+            );
+            assert_eq!(live_task_descriptors(), active);
+            for value in [1, 2, 3] {
+                assert_eq!(
+                    send_with_fds(&sender, &[value], &[descriptor.as_fd()]).unwrap(),
+                    1
+                );
+            }
+            for value in [1, 2, 3] {
+                let mut bytes = [0; 16];
+                let (size, rights) = recv_with_fds(
+                    &receiver,
+                    &mut bytes,
+                    Some(Instant::now() + Duration::from_secs(1)),
+                )
+                .unwrap();
+                assert_eq!(&bytes[..size], &[value]);
+                assert_eq!(rights.len(), 1);
+                drop(rights);
+                assert_eq!(live_task_descriptors(), active);
+            }
+            assert_eq!(
+                send_with_fds(&sender, &[], &[descriptor.as_fd()]).unwrap(),
+                0
+            );
+            assert_eq!(
+                send_with_fds(&sender, &[9], &[descriptor.as_fd()]).unwrap(),
+                1
+            );
+            let (size, rights) = recv_with_fds(
+                &receiver,
+                &mut [0; 16],
+                Some(Instant::now() + Duration::from_secs(1)),
+            )
+            .unwrap();
+            assert_eq!(size, 0);
+            assert_eq!(rights.len(), 1);
+            drop(rights);
+            let mut bytes = [0; 16];
+            let (size, rights) = recv_with_fds(
+                &receiver,
+                &mut bytes,
+                Some(Instant::now() + Duration::from_secs(1)),
+            )
+            .unwrap();
+            assert_eq!(&bytes[..size], &[9]);
+            assert_eq!(rights.len(), 1);
+            drop(rights);
+            assert_eq!(live_task_descriptors(), active);
+        }
+        assert_eq!(live_task_descriptors(), baseline);
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", not(miri)))]
+    #[allow(clippy::disallowed_methods)]
+    fn darwin_frame_remainders_own_and_refuse_unexpected_rights() {
+        const CHILD: &str = "HARMONY_DARWIN_FRAME_RIGHTS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            const TEST: &str = concat!(
+                "session::worker::tests::",
+                "darwin_frame_remainders_own_and_refuse_unexpected_rights"
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(TEST)
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            print!("{stdout}");
+            return;
+        }
+        let baseline = live_task_descriptors();
+        for header_remainder in [true, false] {
+            for timed in [true, false] {
+                for count in [1, MAX_FDS + 8] {
+                    {
+                        let (mut sender, receiver) = UnixStream::pair().unwrap();
+                        let descriptor = tempfile::tempfile().unwrap();
+                        let active = live_task_descriptors();
+                        let mut header = [0_u8; HEADER];
+                        header[..8].copy_from_slice(&2_u64.to_le_bytes());
+                        if header_remainder {
+                            sender.write_all(&header[..1]).unwrap();
+                            assert_eq!(
+                                send_with_fds(
+                                    &sender,
+                                    &header[1..],
+                                    &vec![descriptor.as_fd(); count]
+                                )
+                                .unwrap(),
+                                HEADER - 1
+                            );
+                        } else {
+                            sender.write_all(&header).unwrap();
+                            sender.write_all(&[1]).unwrap();
+                            assert_eq!(
+                                send_with_fds(&sender, &[2], &vec![descriptor.as_fd(); count])
+                                    .unwrap(),
+                                1
+                            );
+                        }
+                        sender.shutdown(std::net::Shutdown::Write).unwrap();
+                        let deadline = timed.then(|| Instant::now() + Duration::from_secs(1));
+                        let result = recv_with_limit(&receiver, 2, deadline);
+                        assert_eq!(
+                            live_task_descriptors(),
+                            active,
+                            "unreported rights: header={header_remainder} timed={timed} count={count}"
+                        );
+                        let error = result.unwrap_err();
+                        assert!(
+                            error.to_string().contains(if count == 1 {
+                                "unexpected descriptors"
+                            } else {
+                                "too many descriptors"
+                            }),
+                            "{error}"
+                        );
+                    }
+                    assert_eq!(live_task_descriptors(), baseline);
+                }
+            }
+        }
+        {
+            let (mut sender, receiver) = UnixStream::pair().unwrap();
+            let mut header = [0_u8; HEADER];
+            header[..8].copy_from_slice(&2_u64.to_le_bytes());
+            sender.write_all(&header[..1]).unwrap();
+            sender.write_all(&header[1..]).unwrap();
+            sender.write_all(&[1, 2]).unwrap();
+            assert_eq!(recv_with_limit(&receiver, 2, None).unwrap().0, [1, 2]);
+            drop(sender);
+            assert_eq!(
+                recv_with_limit(&receiver, 2, None).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+        {
+            let (mut sender, receiver) = UnixStream::pair().unwrap();
+            assert_eq!(
+                read_frame_exact(&receiver, &mut [0; 1], Some(Instant::now()))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::TimedOut
+            );
+            sender.write_all(&[7]).unwrap();
+            sender.shutdown(Shutdown::Write).unwrap();
+            let mut body = [0; 2];
+            assert_eq!(
+                read_frame_exact(
+                    &receiver,
+                    &mut body,
+                    Some(Instant::now() + Duration::from_secs(1))
+                )
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            assert_eq!(body[0], 7);
+        }
+        assert_eq!(live_task_descriptors(), baseline);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn truncated_rights_preserve_unrelated_descriptors_and_close_received_handles() {
+        const CHILD: &str = "HARMONY_TRUNCATED_RIGHTS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            const CASE: &str = concat!(
+                "session::worker::tests::",
+                "truncated_rights_preserve_unrelated_descriptors_and_close_received_handles"
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(CASE)
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        let (left, right) = UnixStream::pair().unwrap();
+        let (rights, mut peer) = UnixStream::pair().unwrap();
+        peer.set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let sentinel = tempfile::tempfile().unwrap();
+        // SAFETY: fcntl F_GETFD only queries the existing descriptor and does not modify it.
+        let stdin_before = unsafe { libc::fcntl(0, libc::F_GETFD) };
+        assert!(
+            stdin_before >= 0,
+            "descriptor zero must be open for this regression"
+        );
+        let capacity = (control_space(MAX_FDS) - size_of::<libc::cmsghdr>()) / size_of::<RawFd>();
+        let excess = tempfile::tempfile().unwrap();
+        let mut fds = vec![rights.as_fd(); capacity];
+        fds.push(excess.as_fd());
+        assert_eq!(send_with_fds(&left, &[1], &fds).unwrap(), 1);
+        let error = recv_with_fds_control_space(&right, &mut [0; 1], None, control_space(MAX_FDS))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("descriptors were truncated"),
+            "{error}"
+        );
+        // SAFETY: fcntl F_GETFD only queries descriptor zero, just as before the receive.
+        assert_eq!(
+            unsafe { libc::fcntl(0, libc::F_GETFD) },
+            stdin_before,
+            "truncated padding must not become descriptor zero"
+        );
+        sentinel.metadata().unwrap();
+        drop(fds);
+        drop(rights);
+        drop(excess);
+        drop(left);
+        drop(right);
+        assert_eq!(
+            peer.read(&mut [0; 1]).unwrap(),
+            0,
+            "all real received rights must close on refusal"
+        );
     }
 
     fn config() -> SessionConfig {
@@ -1866,14 +2549,27 @@ mod tests {
         start: u8,
         quarantine_on_import: Option<Arc<LocalIndex>>,
     ) -> (WorkerSession, std::thread::JoinHandle<()>) {
+        threaded_with_abort(start, quarantine_on_import, false)
+    }
+
+    fn threaded_with_abort(
+        start: u8,
+        quarantine_on_import: Option<Arc<LocalIndex>>,
+        aborted_export: bool,
+    ) -> (WorkerSession, std::thread::JoinHandle<()>) {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
-            serve(
+            let result = serve(
                 &child,
                 &mut |init| Fake::open_quarantining(init, quarantine_on_import.clone()),
                 crate::image_identity::LoadedImageGuard::fixture(),
-            )
-            .unwrap()
+            );
+            match result {
+                Err(error) if aborted_export => {
+                    assert!(error.to_string().contains("allocation exchange failed"))
+                }
+                result => result.unwrap(),
+            }
         });
         let session = WorkerSession::connect(
             WorkerConnection {
@@ -1926,6 +2622,56 @@ mod tests {
         let mut session = spawned(3);
         assert_eq!(session.setup_handle(), (SnapId(1), 10));
         assert_eq!(session.state_hash().unwrap(), [3; 32]);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn sealed_worker_sigkill_is_infrastructure_and_guest_stops_are_framed() {
+        use std::os::unix::process::ExitStatusExt;
+
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        let mut session = spawned(3);
+        for (deadline, expected) in [
+            (GUEST_PANIC, control_proto::CrashKind::Panic),
+            (GUEST_SHUTDOWN, control_proto::CrashKind::Shutdown),
+        ] {
+            let stop = session.run_until(deadline).unwrap();
+            assert!(matches!(stop, StopReason::Crash { info, .. } if info.kind == expected));
+            assert!(!session.abandoned());
+        }
+        let pid = session.process_id().unwrap();
+        assert!(
+            Command::new("/bin/kill")
+                .args(["-KILL", &pid.to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let error = session.run_until(80).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<SessionError>(),
+            Some(SessionError::Infrastructure(detail)) if detail.contains("session worker disconnected")),
+            "{error}"
+        );
+        assert!(session.abandoned());
+        assert_eq!(
+            session.process.as_mut().unwrap().wait().unwrap().signal(),
+            Some(9)
+        );
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        drop(session);
+        eprintln!(
+            "worker transport provenance: SIGKILL infrastructure; framed guest panic/shutdown preserved"
+        );
     }
 
     fn kill(session: &WorkerSession) {
@@ -2015,6 +2761,201 @@ mod tests {
     }
 
     #[test]
+    fn sdk_suffix_transport_preserves_offsets_and_the_full_history_fallback() {
+        let (mut session, server) = threaded(3);
+        assert_eq!(session.sdk_events_since(0).unwrap(), vec![(5, 7, vec![3])]);
+        assert!(session.sdk_events_since(1).unwrap().is_empty());
+        assert!(session.sdk_events_since(u32::MAX).unwrap().is_empty());
+        assert_eq!(session.sdk_events().unwrap(), vec![(5, 7, vec![3])]);
+        drop(session);
+        server.join().unwrap();
+        let mut fake = Fake::default();
+        assert_eq!(
+            fake.sdk_events_since(0).unwrap(),
+            fake.sdk_events().unwrap()
+        );
+        assert!(fake.sdk_events_since(1).unwrap().is_empty());
+        assert!(fake.sdk_events_since(u32::MAX).unwrap().is_empty());
+        let history = vec![(5, 7, vec![3]), (5, 8, vec![4]), (9, 9, vec![5])];
+        fake.sdk_history = Some(history.clone());
+        assert_eq!(fake.sdk_events_since(1).unwrap(), history[1..]);
+        assert_eq!(fake.sdk_events_since(2).unwrap(), history[2..]);
+        let mut served = Served {
+            session: Some(Box::new(fake)),
+        };
+        let mut request = Out::op(SDK_EVENTS);
+        request.u64(2);
+        let reply = served
+            .handle(&request.0, &[], &mut Fake::open, &mut |_| {
+                panic!("unexpected SDK allocation")
+            })
+            .unwrap();
+        let mut input = In(&reply.0);
+        assert_eq!(input.len().unwrap(), 1);
+        assert_eq!(input.u64().unwrap(), 9);
+        assert_eq!(input.u64().unwrap(), 9);
+        assert_eq!(input.bytes().unwrap(), &[5]);
+        input.finish().unwrap();
+    }
+
+    #[test]
+    fn sdk_suffix_requests_reject_truncation_overflow_trailing_bytes_and_descriptors() {
+        let mut served = Served {
+            session: Some(Box::<Fake>::default()),
+        };
+        let mut too_large = Out::op(SDK_EVENTS);
+        too_large.u64(u64::from(u32::MAX) + 1);
+        let mut trailing = Out::op(SDK_EVENTS);
+        trailing.u64(0).u8(1);
+        for body in [vec![SDK_EVENTS], too_large.0, trailing.0] {
+            assert!(
+                served
+                    .handle(&body, &[], &mut Fake::open, &mut |_| panic!(
+                        "unexpected SDK allocation"
+                    ))
+                    .is_err()
+            );
+        }
+        let (left, _right) = UnixStream::pair().unwrap();
+        let fd: OwnedFd = left.into();
+        let mut request = Out::op(SDK_EVENTS);
+        request.u64(0);
+        assert!(
+            served
+                .handle(&request.0, &[fd], &mut Fake::open, &mut |_| panic!(
+                    "unexpected SDK allocation"
+                ))
+                .is_err()
+        );
+        assert!(
+            served
+                .handle(&request.0, &[], &mut Fake::open, &mut |_| panic!(
+                    "unexpected SDK allocation"
+                ))
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn sdk_suffix_replies_reject_malformed_rows_and_cursor_overflow() {
+        let mut trailing = Out::op(OK);
+        trailing.len(0).u8(1);
+        let mut bad_id = Out::op(OK);
+        bad_id.len(1).u64(5).u64(u64::from(u32::MAX) + 1).bytes(&[]);
+        let mut overflow = Out::op(OK);
+        overflow.len(1).u64(5).u64(7).bytes(&[]);
+        for (offset, reply) in [
+            (0, vec![OK]),
+            (0, trailing.0),
+            (0, bad_id.0),
+            (u32::MAX, overflow.0),
+        ] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let mut served = Served::default();
+                let (body, fds) = recv(&child).unwrap();
+                send(
+                    &child,
+                    &status(served.handle(&body, &fds, &mut Fake::open, &mut |_| {
+                        panic!("unexpected SDK allocation")
+                    })),
+                    &[],
+                )
+                .unwrap();
+                let (body, fds) = recv(&child).unwrap();
+                assert!(fds.is_empty());
+                let mut input = In(&body);
+                assert_eq!(input.u8().unwrap(), SDK_EVENTS);
+                assert_eq!(input.u64().unwrap(), u64::from(offset));
+                input.finish().unwrap();
+                send(&child, &reply, &[]).unwrap();
+            });
+            let mut session = WorkerSession::connect(
+                WorkerConnection {
+                    stream: parent,
+                    process: None,
+                    loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                },
+                &[3],
+                b"i",
+                &config(),
+                &[],
+                "fake",
+            )
+            .unwrap();
+            assert!(session.sdk_events_since(offset).is_err());
+            drop(session);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_complete_malformed_frame_from_a_live_worker_remains_control() {
+        let (parent, mut child) = UnixStream::pair().unwrap();
+        let (release, hold) = std::sync::mpsc::channel();
+        let (ready, complete) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let mut served = Served::default();
+            let (body, fds) = recv(&child).unwrap();
+            let reply = status(served.handle(&body, &fds, &mut Fake::open, &mut |_| {
+                panic!("unexpected setup allocation")
+            }));
+            send(&child, &reply, &[]).unwrap();
+            let (body, _) = recv(&child).unwrap();
+            assert_eq!(body[0], STATE_HASH);
+            let mut header = [0; HEADER];
+            header[..8].copy_from_slice(&1_u64.to_le_bytes());
+            header[8..].copy_from_slice(&1_u64.to_le_bytes());
+            child.write_all(&header).unwrap();
+            child.write_all(&[OK]).unwrap();
+            ready.send(()).unwrap();
+            hold.recv().unwrap();
+        });
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let error = session.state_hash().unwrap_err();
+        complete.recv().unwrap();
+        assert!(
+            matches!(error.downcast_ref::<SessionError>(),
+            Some(SessionError::Control(detail)) if detail.contains("descriptor count")),
+            "{error}"
+        );
+        assert!(session.abandoned());
+        release.send(()).unwrap();
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn a_worker_session_preserves_typed_infrastructure_failure_and_abandons() {
+        let (mut session, server) = threaded(3);
+        let error = session.run_until(HOST_FAILURE).unwrap_err();
+        assert!(matches!(error.downcast_ref::<SessionError>(),
+            Some(SessionError::Infrastructure(detail)) if detail == "owned host exited87"));
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn a_worker_session_forwards_every_call_and_its_errors() {
         let (mut session, server) = threaded(3);
         assert_eq!(session.setup_handle(), (SnapId(1), 10));
@@ -2091,6 +3032,707 @@ mod tests {
         assert_eq!(session.state_hash().unwrap(), [0x42; 32]);
         drop(session);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn rpc_refusal_prevents_request_send_and_reply_acceptance() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        for refusal in [1, 2] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            child
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let server = std::thread::spawn(move || {
+                if refusal == 1 {
+                    assert!(recv(&child).is_err());
+                } else {
+                    assert_eq!(recv(&child).unwrap().0, vec![STORE_BYTES]);
+                    send(&child, &Out::default().u8(OK).u64(42).0, &[]).unwrap();
+                }
+            });
+            let session = WorkerSession {
+                stream: parent,
+                process: None,
+                setup: (SnapId(1), 10),
+                seed: 0,
+                counters: RefCell::new(Vec::new()),
+                exchanging: Cell::new(false),
+                failed: std::cell::Cell::new(false),
+                loaded_image_guard: LoadedImageGuard::fixture(),
+            };
+            let (result, entries, strict) =
+                trace_checks(Some(refusal), || session.call(&Out::op(STORE_BYTES), &[]));
+            assert!(result.is_err());
+            assert_eq!((entries, strict), (refusal, 0));
+            assert!(session.failed.get());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn publication_checks_export_exchange_and_both_index_boundaries() {
+        use crate::image_identity::trace_checks;
+        for attached in [false, true] {
+            for refusal in [None, Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)] {
+                let index = LocalIndex::new(1 << 20);
+                let (session, server) = threaded_with_abort(3, None, true);
+                let (rpc, entries, strict) =
+                    trace_checks(None, || session.call(&Out::op(STORE_BYTES), &[]));
+                assert!(rpc.is_ok());
+                assert_eq!((entries, strict), (2, 0));
+                let (result, entries, strict) = trace_checks(refusal, || {
+                    if attached {
+                        session.publish_snapshot_attached(
+                            &index,
+                            namespace(),
+                            b"guard",
+                            None,
+                            SnapId(1),
+                            &SnapshotAttachment {
+                                domain: b"test".to_vec(),
+                                bytes: b"payload".to_vec(),
+                            },
+                            1,
+                        )
+                    } else {
+                        session.publish_snapshot(&index, namespace(), b"guard", None, SnapId(1), 1)
+                    }
+                });
+                assert_eq!(strict, 0);
+                assert_eq!(entries, refusal.unwrap_or(6));
+                if refusal.is_some() {
+                    assert!(result.is_err());
+                    assert!(index.lookup(namespace(), b"guard").is_none());
+                    assert_eq!(index.stats().leased, 0);
+                    assert!(session.call(&Out::op(STORE_BYTES), &[]).is_err());
+                } else {
+                    index.release(result.unwrap());
+                }
+                drop(session);
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn child_checks_initial_admission_and_each_response_even_on_handler_error() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        for frames in 0..=2 {
+            for valid in [false, true] {
+                let (parent, child) = UnixStream::pair().unwrap();
+                let server = std::thread::spawn(move || {
+                    let (result, entries, strict) = trace_checks(None, || {
+                        serve(
+                            &child,
+                            &mut |init| Fake::open_quarantining(init, None),
+                            LoadedImageGuard::fixture(),
+                        )
+                    });
+                    assert!(result.is_ok());
+                    assert_eq!((entries, strict), (2 * frames + 1, 0));
+                });
+                for frame in 0..frames {
+                    let mut request = Out::op(INIT);
+                    put_config(&mut request, &config());
+                    request.bytes(&[3]).bytes(b"i").len(0).bytes(b"fake");
+                    send(
+                        &parent,
+                        if valid && frame == 0 {
+                            &request.0
+                        } else if valid {
+                            &[STORE_BYTES]
+                        } else {
+                            &[255]
+                        },
+                        &[],
+                    )
+                    .unwrap();
+                    let (reply, _) = recv(&parent).unwrap();
+                    assert_eq!(reply[0], if valid { OK } else { FAILED });
+                }
+                drop(parent);
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn child_send_failure_stops_before_another_receive() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        let (parent, child) = UnixStream::pair().unwrap();
+        send(&parent, &[255], &[]).unwrap();
+        drop(parent);
+        let (result, entries, strict) = trace_checks(None, || {
+            serve(
+                &child,
+                &mut |_| panic!("unexpected open"),
+                LoadedImageGuard::fixture(),
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!((entries, strict), (2, 0));
+    }
+
+    #[test]
+    fn child_refusal_prevents_send_or_next_handler() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        for refusal in 1..=3 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let (result, entries, _) = trace_checks(Some(refusal), || {
+                    serve(
+                        &child,
+                        &mut |_| panic!("unexpected open"),
+                        LoadedImageGuard::fixture(),
+                    )
+                });
+                assert!(result.is_err());
+                assert_eq!(entries, refusal);
+            });
+            let _ = send(&parent, &[255], &[]);
+            if refusal == 3 {
+                assert_eq!(recv(&parent).unwrap().0[0], FAILED);
+                let _ = send(&parent, &[255], &[]);
+            }
+            assert!(recv(&parent).is_err());
+            server.join().unwrap();
+        }
+    }
+
+    #[derive(Debug)]
+    struct ExtentHook {
+        inner: LocalIndex,
+        hook: fn(),
+    }
+
+    impl CacheIndex for ExtentHook {
+        fn divergences(&self) -> Vec<Arc<crate::cache::CacheDivergence>> {
+            self.inner.divergences()
+        }
+        fn verify_namespace(&self, n: Namespace) -> Result<(), crate::cache::CacheError> {
+            self.inner.verify_namespace(n)
+        }
+        fn verify_integrity(&self) -> Result<(), crate::cache::CacheError> {
+            self.inner.verify_integrity()
+        }
+        fn verify_lease(&self, l: &Lease) -> Result<(), crate::cache::CacheError> {
+            self.inner.verify_lease(l)
+        }
+        fn lookup(&self, n: Namespace, k: &[u8]) -> Option<Lease> {
+            self.inner.lookup(n, k)
+        }
+        fn extent(
+            &self,
+            len: usize,
+        ) -> Result<crate::cache::WritableExtent, crate::cache::CacheError> {
+            (self.hook)();
+            self.inner.extent(len)
+        }
+        fn publish(
+            &self,
+            n: Namespace,
+            k: &[u8],
+            p: Option<&Lease>,
+            e: crate::cache::WritableExtent,
+            t: [u8; 32],
+            c: u64,
+        ) -> Result<Lease, crate::cache::CacheError> {
+            self.inner.publish(n, k, p, e, t, c)
+        }
+        fn target_commitment(&self, l: &Lease) -> Result<[u8; 32], crate::cache::CacheError> {
+            self.inner.target_commitment(l)
+        }
+        fn chain(&self, l: &Lease) -> Result<Vec<CommittedExtent>, crate::cache::CacheError> {
+            self.inner.chain(l)
+        }
+        fn release(&self, l: Lease) {
+            self.inner.release(l)
+        }
+        fn revoke(&self, l: Lease) {
+            self.inner.revoke(l)
+        }
+        fn report_store(&self, h: u64, b: u64) -> bool {
+            self.inner.report_store(h, b)
+        }
+        fn forget_store(&self, h: u64) {
+            self.inner.forget_store(h)
+        }
+        fn stats(&self) -> crate::cache::CacheStats {
+            self.inner.stats()
+        }
+    }
+
+    #[test]
+    fn allocation_callback_cannot_hide_refusal_poisoning_or_reenter_the_exchange() {
+        thread_local! { static SESSION: RefCell<Option<WorkerSession>> = const { RefCell::new(None) }; }
+        for case in 0..3 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let (result, writes) = crate::cache::extent::trace_writes(|| {
+                    serve(
+                        &child,
+                        &mut Fake::open,
+                        crate::image_identity::LoadedImageGuard::fixture(),
+                    )
+                });
+                if let Err(error) = result {
+                    assert!(error.to_string().contains("allocation exchange failed"));
+                }
+                writes.len()
+            });
+            let session = connected_to_script(parent);
+            SESSION.with(|slot| *slot.borrow_mut() = Some(session));
+            let hook = match case {
+                0 => crate::image_identity::refuse_next_check as fn(),
+                1 => || SESSION.with(|slot| slot.borrow().as_ref().unwrap().failed.set(true)),
+                _ => || {
+                    SESSION.with(|slot| {
+                        let borrow = slot.borrow();
+                        let session = borrow.as_ref().unwrap();
+                        assert!(
+                            session
+                                .call(&Out::op(STORE_BYTES), &[])
+                                .unwrap_err()
+                                .to_string()
+                                .contains("already active")
+                        );
+                    })
+                },
+            };
+            let index = ExtentHook {
+                inner: LocalIndex::new(1 << 20),
+                hook,
+            };
+            let (result, _, _) = crate::image_identity::trace_checks(None, || {
+                SESSION.with(|slot| {
+                    slot.borrow().as_ref().unwrap().publish_snapshot(
+                        &index,
+                        namespace(),
+                        b"callback",
+                        None,
+                        SnapId(1),
+                        1,
+                    )
+                })
+            });
+            if case < 2 {
+                if case == 1 {
+                    assert!(matches!(
+                        result.as_ref().unwrap_err().downcast_ref::<SessionError>(),
+                        Some(SessionError::Abandoned)
+                    ));
+                }
+                assert!(result.is_err());
+                assert_eq!(
+                    (
+                        index.stats().entries,
+                        index.stats().leased,
+                        index.stats().publishes
+                    ),
+                    (0, 0, 0)
+                );
+            } else {
+                index.release(result.unwrap());
+            }
+            SESSION.with(|slot| slot.borrow_mut().take());
+            assert_eq!(server.join().unwrap(), usize::from(case == 2));
+        }
+    }
+
+    #[test]
+    fn child_reverse_guards_refuse_before_the_next_send_receive_or_mapping() {
+        for refusal in 4..=6 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            parent
+                .set_read_timeout(Some(Duration::from_secs(1)))
+                .unwrap();
+            let server = std::thread::spawn(move || {
+                let ((result, writes), _, _) =
+                    crate::image_identity::trace_checks(Some(refusal), || {
+                        crate::cache::extent::trace_writes(|| {
+                            serve(
+                                &child,
+                                &mut Fake::open,
+                                crate::image_identity::LoadedImageGuard::fixture(),
+                            )
+                        })
+                    });
+                let error = result.unwrap_err().to_string();
+                assert!(error.contains("injected loaded-image refusal"), "{error}");
+                assert_eq!(MAPPING_ATTEMPTS.with(Cell::get), 0);
+                assert!(writes.is_empty());
+            });
+            send(&parent, &init_frame().0, &[]).unwrap();
+            assert_eq!(recv(&parent).unwrap().0[0], OK);
+            send(
+                &parent,
+                &Out::op(EXPORT).option(None).u64(1).bytes(b"").bytes(b"").0,
+                &[],
+            )
+            .unwrap();
+            if refusal != 4 {
+                let (body, fds) = recv(&parent).unwrap();
+                assert!(fds.is_empty());
+                let mut input = In(&body);
+                assert_eq!(input.u8().unwrap(), NEED_EXTENT);
+                let len = input.len().unwrap();
+                input.finish().unwrap();
+                if refusal == 6 {
+                    let destination = tempfile::tempfile().unwrap();
+                    destination.set_len(len as u64).unwrap();
+                    send(
+                        &parent,
+                        &Out::op(EXTENT_READY).len(0).len(len).0,
+                        &[destination.as_fd()],
+                    )
+                    .unwrap();
+                }
+            }
+            assert_eq!(
+                recv(&parent).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn export_postallocation_errors_keep_their_type_and_diagnostic_while_abandoning() {
+        for kind in [HUNG, ABANDONED, OTHER] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                recv(&child).unwrap();
+                send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+                assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+                send(&child, &Out::op(NEED_EXTENT).len(8192).0, &[]).unwrap();
+                let (_, fds) = recv(&child).unwrap();
+                assert_eq!(fds.len(), 1);
+                let mut reply = Out::op(FAILED);
+                reply.u8(kind);
+                if kind == HUNG {
+                    reply.u64(123);
+                }
+                if kind == OTHER {
+                    reply.bytes(b"child export diagnostic");
+                }
+                send(&child, &reply.0, &[]).unwrap();
+            });
+            let session = connected_to_script(parent);
+            let index = LocalIndex::new(1 << 20);
+            let error = session
+                .publish_snapshot(&index, namespace(), b"typed", None, SnapId(1), 1)
+                .unwrap_err();
+            match (kind, error.downcast_ref::<SessionError>()) {
+                (HUNG, Some(SessionError::Hung(limit))) => {
+                    assert_eq!(*limit, Duration::from_nanos(123))
+                }
+                (ABANDONED, Some(SessionError::Abandoned)) => {}
+                (OTHER, Some(SessionError::Control(message))) => {
+                    assert_eq!(message, "child export diagnostic")
+                }
+                _ => panic!("wrong error type: {error}"),
+            }
+            assert!(session.abandoned());
+            assert_eq!(index.stats().publishes, 0);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn oversized_export_failure_is_bounded_and_abandons_without_publication() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            recv(&child).unwrap();
+            send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+            assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+            let _ = send(
+                &child,
+                &Out::op(FAILED)
+                    .u8(OTHER)
+                    .bytes(&vec![b'x'; EXPORT_FRAME_LIMIT + 1])
+                    .0,
+                &[],
+            );
+            assert!(recv(&child).is_err());
+        });
+        let session = connected_to_script(parent);
+        let index = LocalIndex::new(1 << 20);
+        let error = session
+            .publish_snapshot(&index, namespace(), b"oversized", None, SnapId(1), 1)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("frame length exceeds limit"),
+            "{error}"
+        );
+        assert!(session.abandoned());
+        assert_eq!((index.stats().entries, index.stats().publishes), (0, 0));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn export_guard_counts_include_the_reverse_allocation_boundaries() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
+                serve(
+                    &child,
+                    &mut Fake::open,
+                    crate::image_identity::LoadedImageGuard::fixture(),
+                )
+            });
+            result.unwrap();
+            assert_eq!((entries, strict), (8, 0));
+        });
+        let session = connected_to_script(parent);
+        let index = LocalIndex::new(1 << 20);
+        let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
+            session.publish_snapshot(&index, namespace(), b"counts", None, SnapId(1), 1)
+        });
+        assert_eq!((entries, strict), (6, 0));
+        index.release(result.unwrap());
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn export_allocation_refusal_drains_and_preserves_the_source_session() {
+        let (mut session, server) = threaded(3);
+        let refused = LocalIndex::new(0);
+        assert!(
+            session
+                .publish_snapshot(&refused, namespace(), b"missing", None, SnapId(u64::MAX), 1)
+                .is_err()
+        );
+        assert!(!session.abandoned());
+        assert_eq!(session.state_hash().unwrap(), [3; 32]);
+        let error = session
+            .publish_snapshot(&refused, namespace(), b"refused", None, SnapId(1), 1)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::cache::CacheError>(),
+            Some(crate::cache::CacheError::Refused { .. })
+        ));
+        assert!(!session.abandoned());
+        assert_eq!(session.state_hash().unwrap(), [3; 32]);
+        let exchange = session.begin_exchange().unwrap();
+        assert!(
+            session
+                .call(&Out::op(STORE_BYTES), &[])
+                .unwrap_err()
+                .to_string()
+                .contains("already active")
+        );
+        drop(exchange);
+        let index = LocalIndex::new(1 << 20);
+        let lease = session
+            .publish_snapshot(&index, namespace(), b"valid", None, SnapId(1), 1)
+            .unwrap();
+        index.release(lease);
+        drop(session);
+        server.join().unwrap();
+    }
+
+    fn init_frame() -> Out {
+        let mut request = Out::op(INIT);
+        put_config(&mut request, &config());
+        request.bytes(&[3]).bytes(b"i").len(0).bytes(b"fake");
+        request
+    }
+
+    #[test]
+    fn export_destination_rejects_bad_frames_descriptors_and_backing_ranges() {
+        for case in 0..11 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                assert!(
+                    serve(
+                        &child,
+                        &mut Fake::open,
+                        crate::image_identity::LoadedImageGuard::fixture()
+                    )
+                    .is_err()
+                );
+            });
+            send(&parent, &init_frame().0, &[]).unwrap();
+            assert_eq!(recv(&parent).unwrap().0[0], OK);
+            send(
+                &parent,
+                &Out::op(EXPORT).option(None).u64(1).bytes(b"").bytes(b"").0,
+                &[],
+            )
+            .unwrap();
+            let (request, fds) = recv(&parent).unwrap();
+            assert!(fds.is_empty());
+            let mut input = In(&request);
+            assert_eq!(input.u8().unwrap(), NEED_EXTENT);
+            let len = input.len().unwrap();
+            input.finish().unwrap();
+            let named = tempfile::NamedTempFile::new().unwrap();
+            let file = named.as_file();
+            file.set_len(if case == 5 { 1 } else { len as u64 })
+                .unwrap();
+            let mut reply = Out::op(EXTENT_READY);
+            reply
+                .len(if case == 4 { usize::MAX } else { 0 })
+                .len(if case == 3 { len - 1 } else { len });
+            let read_only = std::fs::File::open(named.path()).unwrap();
+            let fd = file.as_fd();
+            match case {
+                0 => send(&parent, &reply.0, &[]).unwrap(),
+                1 => send(&parent, &reply.0, &[fd, fd]).unwrap(),
+                2 => {
+                    reply.u8(0);
+                    send(&parent, &reply.0, &[fd]).unwrap();
+                }
+                6 => send(&parent, &Out::op(EXTENT_DENIED).0, &[fd]).unwrap(),
+                7 => send(&parent, &Out::op(RUN_UNTIL).u64(42).0, &[]).unwrap(),
+                9 => send(&parent, &reply.0, &[read_only.as_fd()]).unwrap(),
+                10 => send(&parent, &vec![0; EXPORT_FRAME_LIMIT + 1], &[]).unwrap(),
+                8 => {
+                    parent.shutdown(Shutdown::Write).unwrap();
+                }
+                _ => send(&parent, &reply.0, &[fd]).unwrap(),
+            }
+            assert!(recv(&parent).is_err(), "case {case}");
+            server.join().unwrap();
+        }
+    }
+
+    fn connected_to_script(parent: UnixStream) -> WorkerSession {
+        WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn export_parent_rejects_unsolicited_or_repeated_allocations_and_bad_completion() {
+        for case in 0..8 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                assert_eq!(recv(&child).unwrap().0[0], INIT);
+                send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+                assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+                let file = tempfile::tempfile().unwrap();
+                let mut reply = Out::op(NEED_EXTENT);
+                reply.len(if case == 0 { 0 } else { 8192 });
+                if case == 1 {
+                    reply.u8(0);
+                }
+                if case == 7 {
+                    reply.0 = vec![0; EXPORT_FRAME_LIMIT + 1];
+                }
+                if case == 2 {
+                    reply.0 = vec![OK];
+                }
+                let descriptors = [file.as_fd()];
+                send(&child, &reply.0, if case == 3 { &descriptors } else { &[] }).unwrap();
+                if case < 4 || case == 7 {
+                    assert!(recv(&child).is_err());
+                    return;
+                }
+                let (_, fds) = recv(&child).unwrap();
+                assert_eq!(fds.len(), 1);
+                let completion = match case {
+                    4 => Out::op(NEED_EXTENT).len(8192).0.clone(),
+                    5 => Out::op(OK).u8(0).0.clone(),
+                    _ => Out::op(OK).0,
+                };
+                send(
+                    &child,
+                    &completion,
+                    if case == 6 { &descriptors } else { &[] },
+                )
+                .unwrap();
+            });
+            let session = connected_to_script(parent);
+            let index = LocalIndex::new(1 << 20);
+            assert!(
+                session
+                    .publish_snapshot(&index, namespace(), b"bad", None, SnapId(1), 1)
+                    .is_err()
+            );
+            assert!(session.abandoned());
+            assert_eq!(
+                (
+                    index.stats().entries,
+                    index.stats().leased,
+                    index.stats().publishes
+                ),
+                (0, 0, 0)
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn lost_final_ack_never_publishes_or_reuses_a_still_mapped_destination() {
+        use std::os::unix::fs::MetadataExt;
+        let (parent, child) = UnixStream::pair().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            recv(&child).unwrap();
+            send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+            assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+            send(&child, &Out::op(NEED_EXTENT).len(8192).0, &[]).unwrap();
+            let (body, fds) = recv(&child).unwrap();
+            let mut input = In(&body);
+            assert_eq!(input.u8().unwrap(), EXTENT_READY);
+            let offset = input.len().unwrap();
+            let len = input.len().unwrap();
+            let file = std::fs::File::from(fds[0].try_clone().unwrap());
+            let metadata = file.metadata().unwrap();
+            let mut writer = Mapping::new(file.as_fd(), offset, len, true).unwrap();
+            ready_tx
+                .send((metadata.dev(), metadata.ino(), offset, len))
+                .unwrap();
+            child.shutdown(Shutdown::Both).unwrap();
+            release_rx.recv().unwrap();
+            writer.bytes_mut().fill(0xab);
+        });
+        let session = connected_to_script(parent);
+        let index = LocalIndex::new(1 << 20);
+        assert!(
+            session
+                .publish_snapshot(&index, namespace(), b"uncertain", None, SnapId(1), 1)
+                .is_err()
+        );
+        let (device, inode, old_offset, old_len) = ready_rx.recv().unwrap();
+        assert!(session.abandoned());
+        assert_eq!(
+            (
+                index.stats().entries,
+                index.stats().leased,
+                index.stats().publishes
+            ),
+            (0, 0, 0)
+        );
+        let mut next = index.extent(old_len).unwrap();
+        let SharedRange { fd, offset, len } = next.shared_range();
+        let metadata = std::fs::File::from(fd.try_clone_to_owned().unwrap())
+            .metadata()
+            .unwrap();
+        if cfg!(target_os = "linux") {
+            assert!(
+                (device, inode) != (metadata.dev(), metadata.ino())
+                    || offset + len <= old_offset
+                    || old_offset + old_len <= offset
+            );
+        }
+        next.bytes_mut().fill(0xcd);
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        assert!(next.bytes_mut().iter().all(|byte| *byte == 0xcd));
     }
 
     #[test]
@@ -2299,14 +3941,89 @@ mod tests {
     }
 
     #[test]
+    fn early_export_infrastructure_failure_is_typed_and_retires_session() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let mut served = Served::default();
+            loop {
+                let (body, fds) = recv(&child).unwrap();
+                if body[0] == EXPORT {
+                    send(
+                        &child,
+                        &status(Err(SessionError::Infrastructure(
+                            "export host failure".into(),
+                        )
+                        .into())),
+                        &[],
+                    )
+                    .unwrap();
+                    return;
+                }
+                let reply = status(served.handle(&body, &fds, &mut Fake::open, &mut |_| {
+                    panic!("unexpected allocation")
+                }));
+                send(&child, &reply, &[]).unwrap();
+            }
+        });
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let index = LocalIndex::new(1 << 20);
+        let (snapshot, _) = session.snapshot().unwrap();
+        let error = session
+            .publish_snapshot(&index, namespace(), b"early-failure", None, snapshot, 1)
+            .unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<SessionError>(), Some(SessionError::Infrastructure(detail)) if detail == "export host failure")
+        );
+        assert!(session.abandoned());
+        assert!(matches!(
+            session
+                .state_hash()
+                .unwrap_err()
+                .downcast_ref::<SessionError>(),
+            Some(SessionError::Abandoned)
+        ));
+        assert_eq!(
+            (
+                index.stats().entries,
+                index.stats().leased,
+                index.stats().publishes
+            ),
+            (0, 0, 0)
+        );
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn a_worker_that_dies_before_acknowledging_a_write_publishes_nothing() {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
             let mut served = Served::default();
             loop {
                 let (body, fds) = recv(&child).unwrap();
-                let reply = status(served.handle(&body, &fds, &mut Fake::open));
-                if body[0] == WRITE_EXTENT {
+                let mut allocate = |len| {
+                    send(&child, &Out::op(NEED_EXTENT).len(len).0, &[])?;
+                    let (reply, fds) = recv(&child)?;
+                    let mut input = In(&reply);
+                    assert_eq!(input.u8()?, EXTENT_READY);
+                    let offset = input.len()?;
+                    assert_eq!(input.len()?, len);
+                    Mapping::new(fds[0].as_fd(), offset, len, true).map_err(Into::into)
+                };
+                let reply = status(served.handle(&body, &fds, &mut Fake::open, &mut allocate));
+                if body[0] == EXPORT {
                     return;
                 }
                 send(&child, &reply, &[]).unwrap();
@@ -2330,7 +4047,13 @@ mod tests {
         let error = session
             .publish_snapshot(&index, namespace(), b"key", None, snap, 1)
             .unwrap_err();
-        assert!(error.to_string().contains("session worker"), "{error}");
+        assert!(
+            matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Infrastructure(_))
+            ),
+            "{error}"
+        );
         server.join().unwrap();
         let stats = index.stats();
         assert_eq!((stats.entries, stats.leased, stats.publishes), (0, 0, 0));

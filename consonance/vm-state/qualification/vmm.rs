@@ -15,6 +15,7 @@ fn arm64_backend() -> MockArm64Backend {
             gic_ctlr_fixed_bits: 0,
             gicd_iidr: 0,
             gicd_typer2: 0,
+            register_identity: [0; 32],
         },
     });
     backend

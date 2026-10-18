@@ -161,3 +161,35 @@ The store uses ordered layer/page metadata wherever iteration is observable;
 content-addressed page lookup is private and lookup-only. Builder drops release
 any buffered page references. Oracle, stateful, integrity, copy-on-write,
 and performance-shape tests cover the storage semantics.
+
+## Physical integrity telemetry
+
+`Store::verification_telemetry` returns monotonic, saturating host counters,
+separate from `StoreStats` and budget policy. `snapshot.verify.page_requests`
+counts resolved page-record checks, including zero and alias requests;
+`memo_hits` counts resident slots already verified in the current read
+transaction. `zero_requests` counts implicit zero checks, which hash no resident
+bytes. `resident_hashes` and `resident_bytes` count actual BLAKE3 feeds. `ns` measures
+resident verification envelopes. Full verification includes layer traversal and
+memo checks in one batch. Full-image restore includes frame resolution and memo
+checks. Flattening times verification of the already resolved inherited records;
+materialization times verification of the already resolved frames. Those batches
+exclude initial record-map construction and subsequent image allocation/copying.
+Standalone checks time the individual digest. It is not pure BLAKE3 CPU time. Batches avoid clock
+reads per resident page and retain elapsed time on errors. This includes
+unchanged-page checks outside read transactions. Materialization keeps its
+existing per-frame checks; it does not acquire a new memoization policy.
+`errors` counts failed page-record integrity checks, including missing slots.
+Invalid snapshot/range validation before a page-record check is not a page hash
+attempt. VM-state verification has separate `vm_state_hashes`, `vm_state_bytes`,
+`vm_state_ns` and `vm_state_errors` leaves. New-page interning/seal hashes and the
+initial implicit-zero digest are creation work, not resident verification.
+Standalone per-hash clock reads and batch clock reads add measurement overhead.
+Clock granularity is platform-dependent; aggregate nanoseconds are not
+cycle-accurate page costs.
+
+Distinctness is per read transaction. A later transaction verifies a resident
+slot again, and corrupted pages still reject before use. Diagnostic queries
+never certify pages, extend memoization across operations, alter serialized
+state or affect retention. The VMM exposes these totals through its existing
+host telemetry map without adding them to snapshot payloads or StoreStats.

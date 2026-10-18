@@ -11,6 +11,25 @@ const MAGIC: [u8; 8] = *b"HMCACHE1";
 const HEADER: usize = 8 + 3 * 8 + 32;
 const ROW: usize = 8 + 32;
 
+#[cfg(all(test, feature = "in-process", not(miri)))]
+thread_local! {
+    static WRITES: std::cell::RefCell<Option<Vec<(usize, usize, usize)>>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, feature = "in-process", not(miri)))]
+pub(crate) fn trace_writes<T>(run: impl FnOnce() -> T) -> (T, Vec<(usize, usize, usize)>) {
+    struct Reset(Option<Vec<(usize, usize, usize)>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            WRITES.with(|writes| *writes.borrow_mut() = self.0.take());
+        }
+    }
+    let _reset = Reset(WRITES.with(|writes| writes.replace(Some(Vec::new()))));
+    let result = run();
+    let rows = WRITES.with(|writes| writes.borrow_mut().take().unwrap());
+    (result, rows)
+}
+
 pub type HashedPage<'a> = (u64, &'a [u8; 32], &'a [u8; PAGE]);
 
 #[derive(Debug)]
@@ -54,6 +73,12 @@ pub fn write_extent(
     if out.len() < len {
         return Err(CacheError::Malformed("extent is smaller than its delta"));
     }
+    #[cfg(all(test, feature = "in-process", not(miri)))]
+    WRITES.with(|writes| {
+        if let Some(rows) = writes.borrow_mut().as_mut() {
+            rows.push((out.as_ptr() as usize, len, pages.len() * PAGE));
+        }
+    });
     let mut counts = [0u8; 24];
     counts[..8].copy_from_slice(&(pages.len() as u64).to_le_bytes());
     counts[8..16].copy_from_slice(&(reverted.len() as u64).to_le_bytes());

@@ -8,6 +8,8 @@ mod checkpoint;
 mod filter;
 #[cfg(target_os = "linux")]
 mod replay;
+#[cfg(target_os = "linux")]
+mod state_diagnostics;
 
 #[cfg(target_os = "linux")]
 fn main() -> std::process::ExitCode {

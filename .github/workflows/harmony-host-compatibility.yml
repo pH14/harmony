@@ -85,6 +85,16 @@ jobs:
           cargo nextest run --manifest-path dissonance/Cargo.toml --workspace \
             --no-fail-fast 2>&1 | tee -a host-tests.log
           scripts/check-portable-tests.sh host-tests.log "$PORTABLE_TEST_FLOOR"
+      - name: Verify Darwin descriptor receive qualification
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          sed $'s/\033\[[0-9;]*m//g' host-tests.log > darwin-rights-tests.log
+          for test_name in \
+            darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal \
+            darwin_frame_remainders_own_and_refuse_unexpected_rights; do
+            grep -Eq "^[[:space:]]*PASS[[:space:]]+\[[^]]+\][[:space:]]+(\([[:space:]]*[0-9]+/[0-9]+\)[[:space:]]+)?consonance-client[[:space:]]+session::worker::tests::${test_name}$" darwin-rights-tests.log
+          done
       - name: Compare ARM and software SHA-256 in one executable
         run: |
           cargo fetch --locked

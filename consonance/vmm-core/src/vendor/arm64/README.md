@@ -28,14 +28,18 @@ shared TLB entries with no flush between them. After a `fork`, the parent then
 read the child's copy-on-write stack page. ARM KVM rejects any `ASIDBits` value
 other than the host's, so the baseline cannot hold one width for both backends.
 
-`contract::contract_hash` covers the policy with the backend's ASID width
-applied. A snapshot records that hash, and a restore into a backend with a
-different ASID width fails with `SnapshotError::ContractMismatch`, because the
-guest kernel has already sized its ASID allocator from the saved width. The
-fingerprint is initialized once per process for each ASID width, in separate
-thread-safe caches. Snapshot capture and validation reuse it without rebuilding
-the policy or allocating. The policy and virtual-time inputs are immutable for
-each width; changing either still changes the fingerprint in a new build.
+`contract::contract_hash` covers the frozen policy with the backend's ASID
+width applied, cached once per width. `runtime_contract_hash` additionally
+binds firmware/GIC configuration and `Arm64Caps::register_identity`, the
+backend's native register/configuration fingerprint. The v5 runtime domain
+invalidates older snapshots that lacked inventory admission. Snapshot restore,
+imported-artifact hash projection and cache state identity use that same runtime
+hash. A schema or native identity mismatch fails with
+`SnapshotError::ContractMismatch` before RAM, registers or devices change.
+KVM enumerates and classifies its actual initialized-vCPU register IDs; HVF
+binds its public configuration API and enforces fixed/inactive native state.
+The complete measured dispositions and the limits of HVF's non-enumerable API
+are documented in [vmm-backend](../../../../vmm-backend/README.md#arm-register-inventory-admission).
 
 Both arm64 backends refuse a baseline field above the host when the policy is
 applied, so a baseline that over-claims fails at boot. The ignored test
@@ -65,7 +69,11 @@ bit directly; backends without the query retain the full-state read. Idle
 handling uses the same query before deciding whether it may advance to a wake
 deadline. For KVM, idle reads the clockevent PPI and relevant CPU-interface
 registers directly and applies the same PPI deliverability rules as the
-userspace GIC. This bounded read remains available when pending SPI or routing
+userspace GIC. The live preemption test checks that LPIs are disabled and
+both native GICR table addresses are zero before projecting only their cache
+attributes to zero for the userspace PPI/SPI oracle. Those attributes control
+LPI tables and cannot affect this oracle; the actual native saved state remains
+intact for restore, register readback and guest interrupt acknowledgment. This bounded read remains available when pending SPI or routing
 state makes full snapshot capture inadmissible. A disabled, group-masked,
 priority-masked, or active clockevent PPI neither causes an immediate idle
 retry nor makes a future clockevent deadline an idle wakeup. KVM idle also

@@ -371,8 +371,10 @@ implementation metadata. Replay, branching, and continued search print a warning
 to stderr if the recording and current CPU differ or either identity is unknown,
 incomplete, or heterogeneous. Older manifests without this field warn as unknown;
 derived runs retain that uncertainty. Standard math libraries remain supported,
-and the warning does not block execution. Matching metadata is not proof of
-numerical equivalence. These warnings belong to CLI dispatch; lower-level APIs
+and the warning does not block execution. Native CPU behavior can change result
+bits or saved state, including x87 instruction-pointer metadata. Matching
+metadata is not proof of numerical or whole-state equivalence. These warnings
+belong to CLI dispatch; lower-level APIs
 do not automatically emit them. Snapshot, cache, and runner identities are
 unchanged, and existing incompatibility errors still apply.
 

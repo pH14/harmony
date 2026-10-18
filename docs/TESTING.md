@@ -76,6 +76,30 @@ inherit X1's cross-host result. O1/O2/O3 describe separate acceptance obligation
 there is not yet a production registry covering all three for every backend.
 UML `state_hash` remains unavailable and cannot satisfy whole-state O1.
 
+`scripts/qualification/linux-continuation.json` separately registers bounded
+O1/O2/O3 evidence for the owned x86 Linux continuation fixture. O1 compares the
+production whole-VMM hash at named READY and DONE cuts and at termination; the composed control
+portable-snapshot path also compares the separate cumulative event history.
+O2 checks the reviewed RAM checksum, XMM15 and x87 constants. O3 repeats two
+explicit seeds, requires different entropy and identical nonentropy readbacks,
+and requires equal positive continuation event counts and virtual time. Both
+runs must reach the owned guest's poweroff-idle terminal outcome. Missing,
+zero-work, same-seed and changed-latent-state controls prevent a vacuous cell.
+This is finite x86 KVM Linux evidence, not an oracle registry for every backend
+or a UML whole-state result.
+
+The registry states acceptance obligations, not a passing portability result.
+The final-source [9673f3336 hardware run](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD local/export and five AMD import arms, but one hosted import
+fails O1 at DONE despite matching READY and independent guest readbacks. A
+separate nested Intel execution of the identical retained binary and AMD cut
+reproduces the differing hash. The difference is x87's last-instruction pointer,
+including its saved copy in guest RAM. Cross-vendor whole-state identity remains
+unqualified; the strict assertion and aggregate continue to reject this result.
+The CPU portability warning remains advisory and standard libraries remain
+supported. This state-metadata witness adds to the numerical limits tracked in
+[#733](https://github.com/pH14/harmony/issues/733).
+
 The corpus has three families:
 
 - Microprograms isolate instruction, register, timer, interrupt, and guest

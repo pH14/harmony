@@ -42,7 +42,8 @@ pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{WorkerPoolError, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, Moment, TargetCounters, now, unix_seconds,
+    CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
+    unix_seconds,
 };
 
 #[path = "campaign_coordinator.rs"]
@@ -472,6 +473,15 @@ pub trait TargetExecution: CampaignTypes {
         action: &Self::Action,
         milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>>;
+    fn apply_action_and_snapshot(
+        &self,
+        target: &mut Self::Target,
+        action: &Self::Action,
+        milestones: &mut Self::Milestones,
+    ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
+        self.apply_action(target, action, milestones)?;
+        Ok(None)
+    }
     fn rollout_observations(&self, _target: &Self::Target) -> Vec<Self::Observations> {
         Vec::new()
     }
@@ -1810,8 +1820,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         .ok_or("whole-tree import parent snapshot was released early")?,
                 )?;
                 let mut terminal = false;
+                let mut captured_endpoint = None;
                 for (index, action) in suffix.iter().enumerate() {
-                    workload.apply_action(target, action, &mut milestones)?;
+                    captured_endpoint =
+                        workload.apply_action_and_snapshot(target, action, &mut milestones)?;
                     if workload
                         .rollout_outcome(run, target)?
                         .disposition
@@ -1820,12 +1832,18 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         terminal = true;
                         break;
                     }
-                    replay_certificates[index] = workload.current_replay_certificate(target)?;
+                    replay_certificates[index] = match captured_endpoint.as_ref() {
+                        Some(snapshot) => workload.candidate_replay_certificate(snapshot)?,
+                        None => workload.current_replay_certificate(target)?,
+                    };
                 }
                 if terminal {
                     None
                 } else {
-                    let rebuilt = workload.snapshot(target)?;
+                    let rebuilt = match captured_endpoint {
+                        Some(snapshot) => snapshot,
+                        None => workload.snapshot(target)?,
+                    };
                     if workload.candidate_replay_certificate(&rebuilt)?.is_some()
                         && replay_certificates.iter().any(Option::is_none)
                     {
@@ -2914,6 +2932,83 @@ struct CompletedJob<G: Workload + ?Sized> {
     held_since: Option<Moment>,
     pending: PendingJob<G>,
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
+}
+
+struct CompletedBuffer<K: Ord, V> {
+    entries: BTreeMap<K, V>,
+    telemetry: CompletedBufferTelemetry,
+    records: fn(&V) -> (u64, u64),
+}
+
+impl<K: Ord, V> CompletedBuffer<K, V> {
+    fn new(records: fn(&V) -> (u64, u64)) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            telemetry: CompletedBufferTelemetry::default(),
+            records,
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.entries.contains_key(&key) {
+            return Some(value);
+        }
+        let (actions, candidates) = (self.records)(&value);
+        self.entries.insert(key, value);
+        let stats = &mut self.telemetry;
+        stats.results_live = stats.results_live.saturating_add(1);
+        stats.actions_live = stats.actions_live.saturating_add(actions);
+        stats.candidates_live = stats.candidates_live.saturating_add(candidates);
+        stats.results_peak = stats.results_peak.max(stats.results_live);
+        stats.actions_peak = stats.actions_peak.max(stats.actions_live);
+        stats.candidates_peak = stats.candidates_peak.max(stats.candidates_live);
+        None
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let value = self.entries.remove(key)?;
+        let (actions, candidates) = (self.records)(&value);
+        let stats = &mut self.telemetry;
+        stats.results_live = stats
+            .results_live
+            .checked_sub(1)
+            .expect("completed result accounting");
+        stats.actions_live = stats
+            .actions_live
+            .checked_sub(actions)
+            .expect("completed action accounting");
+        stats.candidates_live = stats
+            .candidates_live
+            .checked_sub(candidates)
+            .expect("completed candidate accounting");
+        Some(value)
+    }
+}
+
+impl<K: Ord, V> std::ops::Deref for CompletedBuffer<K, V> {
+    type Target = BTreeMap<K, V>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u64) {
+    completed_result_records(&job.outcome)
+}
+
+fn completed_result_records<G: CampaignTypes + ?Sized>(
+    outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
+) -> (u64, u64) {
+    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
+        (
+            result.actions.len() as u64,
+            result
+                .actions
+                .iter()
+                .filter(|action| action.candidate.is_some())
+                .count() as u64,
+        )
+    })
 }
 
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
@@ -5208,6 +5303,9 @@ mod tests {
     }
     std::thread_local! {
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
+        static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     impl CampaignTypes for TestWorkload {
@@ -5429,7 +5527,30 @@ mod tests {
             target.apply(action);
             Ok(())
         }
+        fn apply_action_and_snapshot(
+            &self,
+            target: &mut Self::Target,
+            action: &Self::Action,
+            milestones: &mut Self::Milestones,
+        ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
+            self.apply_action(target, action, milestones)?;
+            if FUSED_IMPORT.with(|enabled| enabled.get())
+                && !OMIT_IMPORT_CAPTURE.with(|omitted| omitted.get() == Some(target.value))
+            {
+                IMPORT_CALLS.with(|calls| {
+                    let (captured, current, snapshots) = calls.get();
+                    calls.set((captured + 1, current, snapshots));
+                });
+                Ok(Some(target.value))
+            } else {
+                Ok(None)
+            }
+        }
         fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
+            IMPORT_CALLS.with(|calls| {
+                let (captured, current, snapshots) = calls.get();
+                calls.set((captured, current, snapshots + 1));
+            });
             target.snapshot()
         }
         fn candidate_replay_certificate(
@@ -5442,6 +5563,10 @@ mod tests {
             &self,
             target: &Self::Target,
         ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+            IMPORT_CALLS.with(|calls| {
+                let (captured, current, snapshots) = calls.get();
+                calls.set((captured, current + 1, snapshots));
+            });
             Ok(CERTIFIED_IMPORT.with(|enabled| {
                 (enabled.get()
                     && !OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.get() && target.value == 3))
@@ -7182,6 +7307,91 @@ mod tests {
     }
 
     #[test]
+    fn whole_tree_import_reuses_bounded_captures_and_keeps_every_prefix_certificate() {
+        for (fused, omitted) in [
+            (false, None),
+            (true, None),
+            (true, Some(3)),
+            (true, Some(6)),
+        ] {
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            };
+            let actions = vec![
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(3, 1),
+            ];
+            let source = TestArchiveReport {
+                entries: vec![
+                    ArchiveEntryReport {
+                        id: 0,
+                        parent_id: None,
+                        created_execution: 0,
+                        input: Input::default(),
+                        key: TestKey(0),
+                        milestones: (),
+                        snapshot_identity_sha256: None,
+                        selector: None,
+                    },
+                    ArchiveEntryReport {
+                        id: 1,
+                        parent_id: Some(0),
+                        created_execution: 0,
+                        input: Input {
+                            actions: actions.clone(),
+                        },
+                        key: TestKey(6),
+                        milestones: (),
+                        snapshot_identity_sha256: Some(
+                            workload.snapshot_identity_sha256(&6).unwrap(),
+                        ),
+                        selector: None,
+                    },
+                ],
+                marker: 0,
+            };
+            CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+            FUSED_IMPORT.with(|enabled| enabled.set(fused));
+            OMIT_IMPORT_CAPTURE.with(|capture| capture.set(omitted));
+            IMPORT_CALLS.with(|calls| calls.set((0, 0, 0)));
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.archive.set_memory_budget(usize::MAX, |_| 1);
+            let result =
+                core.import_tree(&workload, &(), &mut TestTarget::default(), &source, None);
+            FUSED_IMPORT.with(|enabled| enabled.set(false));
+            OMIT_IMPORT_CAPTURE.with(|capture| capture.set(None));
+            CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+            assert_eq!(result.unwrap().imported, 1);
+            assert_eq!(
+                IMPORT_CALLS.with(|calls| calls.get()),
+                match (fused, omitted) {
+                    (false, _) => (0, 3, 2),
+                    (true, None) => (3, 0, 1),
+                    (true, Some(3)) => (2, 1, 1),
+                    (true, Some(6)) => (2, 1, 2),
+                    _ => unreachable!(),
+                }
+            );
+            let child = core.archive.index_of_id(1).unwrap();
+            core.archive
+                .set_memory_budget(core.archive.history_memory_bytes() + 1, |_| 1);
+            for _ in 0..8 {
+                core.archive.maintain_memory_budget().unwrap();
+            }
+            assert!(core.archive.entries[child].snapshot.is_none());
+            let (_, replay, certificates, pin) = core.archive.pin_job_origin(child).unwrap();
+            assert_eq!(replay, actions);
+            assert_eq!(
+                certificates,
+                vec![Some([1; 32]), Some([3; 32]), Some([6; 32])]
+            );
+            core.archive.unpin_job_origin(pin);
+        }
+    }
+
+    #[test]
     fn whole_tree_import_certifies_evicted_replay_prefixes_with_or_without_source_snapshots() {
         let workload = TestWorkload {
             bootstrap_objective: false,
@@ -7877,6 +8087,90 @@ mod tests {
     }
 
     #[test]
+    fn completed_buffer_counts_owned_records_and_balances_removal() {
+        let result = |flags: &[bool]| {
+            Ok((
+                CampaignJobResult::<TestWorkload> {
+                    preparation_failure: None,
+                    actions: flags
+                        .iter()
+                        .map(|&candidate| CampaignActionResult {
+                            action: TestAction::new(1, 1),
+                            observations: Vec::new(),
+                            milestones: (),
+                            outcome: Outcome::default(),
+                            candidate: candidate.then_some(CampaignCandidate {
+                                key: TestKey(1),
+                                viable: false,
+                                snapshot: 1,
+                            }),
+                        })
+                        .collect(),
+                },
+                0,
+                String::new(),
+            ))
+        };
+        let mut buffer =
+            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>);
+        assert!(buffer.insert(2, result(&[true, false, true])).is_none());
+        assert!(
+            buffer
+                .insert(3, Err("failed worker result".into()))
+                .is_none()
+        );
+        assert!(buffer.insert(4, result(&[])).is_none());
+        assert_eq!(buffer.telemetry.results_live, 3);
+        assert_eq!(buffer.telemetry.actions_live, 3);
+        assert_eq!(buffer.telemetry.candidates_live, 2);
+        let before = buffer.telemetry;
+        assert!(buffer.insert(2, result(&[true])).is_some());
+        assert_eq!(buffer.telemetry, before);
+        assert!(buffer.remove(&99).is_none());
+        assert_eq!(buffer.telemetry, before);
+        assert!(buffer.remove(&2).unwrap().is_ok());
+        assert_eq!(buffer.telemetry.results_live, 2);
+        assert_eq!(buffer.telemetry.actions_live, 0);
+        assert_eq!(buffer.telemetry.candidates_live, 0);
+        assert!(buffer.remove(&3).unwrap().is_err());
+        buffer.remove(&4).unwrap().unwrap();
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.telemetry.results_live, 0);
+        assert_eq!(buffer.telemetry.results_peak, 3);
+        assert_eq!(buffer.telemetry.actions_peak, 3);
+        assert_eq!(buffer.telemetry.candidates_peak, 2);
+    }
+
+    #[test]
+    fn completed_buffer_reordering_changes_only_occupancy_not_admission_content() {
+        let run = |order: &[u64]| {
+            let mut buffer =
+                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)));
+            let mut next = 0;
+            let mut admitted = Vec::new();
+            for &reservation in order {
+                assert!(buffer.insert(reservation, reservation).is_none());
+                while let Some(value) = buffer.remove(&next) {
+                    admitted.push((next, value));
+                    next += 1;
+                }
+            }
+            assert!(buffer.is_empty());
+            assert_eq!(buffer.telemetry.results_live, 0);
+            assert_eq!(buffer.telemetry.actions_live, 0);
+            assert_eq!(buffer.telemetry.candidates_live, 0);
+            (admitted, buffer.telemetry)
+        };
+        let ordered = run(&[0, 1, 2]);
+        let reordered = run(&[2, 1, 0]);
+        assert_eq!(ordered.0, reordered.0);
+        assert_eq!(ordered.1.results_peak, 1);
+        assert_eq!(reordered.1.results_peak, 3);
+        assert_eq!(reordered.1.actions_peak, 3);
+        assert_eq!(reordered.1.candidates_peak, 2);
+    }
+
+    #[test]
     fn the_report_carries_worker_telemetry_that_replay_equality_ignores() {
         let config = three_worker_config();
         let workload = TestWorkload {
@@ -7907,10 +8201,25 @@ mod tests {
             live.0.execution_work - live.0.bootstrap_execution_work
         );
         assert!(telemetry.search_ns > 0);
+        assert!(telemetry.completed_buffer.results_peak > 0);
+        assert!(telemetry.completed_buffer.actions_peak > 0);
+        assert!(telemetry.completed_buffer.candidates_peak > 0);
+        assert_eq!(telemetry.completed_buffer.results_live, 0);
+        assert_eq!(telemetry.completed_buffer.actions_live, 0);
+        assert_eq!(telemetry.completed_buffer.candidates_live, 0);
+        let serialized = serde_json::to_value(telemetry).unwrap();
+        assert_eq!(
+            serialized["completed_buffer"]["results_peak"],
+            telemetry.completed_buffer.results_peak
+        );
         assert!(telemetry.coordinator["admissions"].as_u64() == Some(live.0.executions_completed));
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert!(replayed.0.telemetry.workers.is_empty());
+        assert_eq!(
+            serde_json::to_vec(&replayed.0).unwrap(),
+            serde_json::to_vec(&live.0).unwrap()
+        );
         assert_eq!(replayed, live);
     }
 

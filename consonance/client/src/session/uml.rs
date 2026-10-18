@@ -175,6 +175,58 @@ fn started() -> Instant {
     Instant::now()
 }
 
+fn session_error(error: &uml::SessionError, detail: String) -> SessionError {
+    let mut cause = error;
+    while let uml::SessionError::Boot { error, .. } = cause {
+        cause = error;
+    }
+    match cause {
+        uml::SessionError::Hung(limit) => SessionError::Hung(*limit),
+        uml::SessionError::Stopped(
+            uml::ExitReason::HostFailure
+            | uml::ExitReason::Signaled(_)
+            | uml::ExitReason::WallLimit
+            | uml::ExitReason::ConsoleLimit,
+        ) => SessionError::Infrastructure(detail),
+        _ => SessionError::Control(detail),
+    }
+}
+
+fn setup_point(
+    session: &mut uml::Session,
+    budget: u64,
+    progress_limit: Duration,
+) -> Result<u64, Box<dyn Error>> {
+    match session.run_to_snapshot_point(budget) {
+        Ok(Stop::SnapshotPoint(moment)) => Ok(moment),
+        Ok(Stop::Closed) => {
+            let reason = session
+                .settle_terminal_console(progress_limit)
+                .map_err(|error| {
+                    session_error(
+                        &error,
+                        format!("setup: {error}\n{}", session.console_tail()),
+                    )
+                })?;
+            Err(SessionError::Control(format!(
+                "the guest stopped at {reason:?} before the setup snapshot point\n{}",
+                session.console_tail()
+            ))
+            .into())
+        }
+        Ok(stop) => Err(SessionError::Control(format!(
+            "the guest stopped at {stop:?} before the setup snapshot point\n{}",
+            session.console_tail()
+        ))
+        .into()),
+        Err(error) => Err(session_error(
+            &error,
+            format!("setup: {error}\n{}", session.console_tail()),
+        )
+        .into()),
+    }
+}
+
 impl UmlSession {
     pub fn boot(config: &UmlLaunch, factory: ServiceFactory) -> Result<Self, Box<dyn Error>> {
         let (loaded_executable, loaded_image_guard) =
@@ -209,30 +261,17 @@ impl UmlSession {
             &checkpoints,
             None,
             Some(config.progress_limit),
-        )?;
-        session.branch(
-            config.seed,
-            handler(&factory, &ServiceConfig::default())?,
-            Vec::new(),
-            None,
-        )?;
-        let moment = match session.run_to_snapshot_point(config.setup_budget) {
-            Ok(Stop::SnapshotPoint(moment)) => moment,
-            Ok(stop) => {
-                return Err(SessionError::Control(format!(
-                    "the guest stopped at {stop:?} before the setup snapshot point\n{}",
-                    session.console_tail()
-                ))
-                .into());
-            }
-            Err(error) => {
-                return Err(SessionError::Control(format!(
-                    "setup: {error}\n{}",
-                    session.console_tail()
-                ))
-                .into());
-            }
-        };
+        )
+        .map_err(|error| session_error(&error, error.to_string()))?;
+        session
+            .branch(
+                config.seed,
+                handler(&factory, &ServiceConfig::default())?,
+                Vec::new(),
+                None,
+            )
+            .map_err(|error| session_error(&error, error.to_string()))?;
+        let moment = setup_point(&mut session, config.setup_budget, config.progress_limit)?;
         let mut this = Self {
             session: Some(session),
             loaded_image_guard,
@@ -434,11 +473,19 @@ impl UmlSession {
 
     fn abandon(&mut self, error: uml::SessionError) -> Box<dyn Error> {
         self.abandoned = true;
-        let tail = self
-            .session
-            .take()
-            .map(|session| session.console_tail())
-            .unwrap_or_default();
+        let (tail, terminal) = match self.session.take() {
+            Some(session) => {
+                let fallback = session.console_tail();
+                match session.kill() {
+                    Ok(exit) => (
+                        String::from_utf8_lossy(&exit.console).into_owned(),
+                        Some(exit.reason),
+                    ),
+                    Err(cleanup) => (format!("{fallback}\ncleanup: {cleanup}"), None),
+                }
+            }
+            None => (String::new(), None),
+        };
         if let uml::SessionError::Boot {
             error: boot_error,
             console,
@@ -448,17 +495,11 @@ impl UmlSession {
         {
             eprintln!("UML restore boot watchdog console:\n{console}");
         }
-        let hung = match &error {
-            uml::SessionError::Hung(limit) => Some(*limit),
-            uml::SessionError::Boot { error, .. } => match error.as_ref() {
-                uml::SessionError::Hung(limit) => Some(*limit),
-                _ => None,
-            },
-            _ => None,
-        };
-        match hung {
-            Some(limit) => SessionError::Hung(limit).into(),
-            None => SessionError::Control(format!("{error}\n{tail}")).into(),
+        let detail = format!("{error}\n{tail}");
+        if terminal == Some(uml::ExitReason::HostFailure) {
+            SessionError::Infrastructure(detail).into()
+        } else {
+            session_error(&error, detail).into()
         }
     }
 }
@@ -827,17 +868,25 @@ impl SearchSession for UmlSession {
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
+        self.sdk_events_since(0)
+    }
+
+    fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
         self.loaded_image_guard.check()?;
+        let offset = usize::try_from(offset)?;
         Ok(self
             .session
             .as_ref()
-            .map(|session| {
-                session
+            .map(|session| -> Result<_, Box<dyn Error>> {
+                u32::try_from(session.events().len()).map_err(|_| "SDK event offset overflow")?;
+                Ok(session
                     .events()
                     .iter()
+                    .skip(offset)
                     .map(|event| (event.moment, event.id, event.data.to_vec()))
-                    .collect()
+                    .collect())
             })
+            .transpose()?
             .unwrap_or_default())
     }
 
@@ -852,6 +901,49 @@ mod tests {
     use crate::cache::LocalIndex;
     use environment::input_spec::nominal_factory;
     use std::path::PathBuf;
+
+    #[test]
+    fn infrastructure_provenance_survives_boot_wrapping_without_text_matching() {
+        for reason in [
+            uml::ExitReason::HostFailure,
+            uml::ExitReason::Signaled(9),
+            uml::ExitReason::WallLimit,
+            uml::ExitReason::ConsoleLimit,
+        ] {
+            let mut error = uml::SessionError::Stopped(reason);
+            for _ in 0..3 {
+                assert!(matches!(
+                    session_error(&error, error.to_string()),
+                    SessionError::Infrastructure(_)
+                ));
+                error = uml::SessionError::Boot {
+                    error: Box::new(error),
+                    console: "retained console".into(),
+                };
+            }
+        }
+        for error in [
+            uml::SessionError::Stopped(uml::ExitReason::GuestPanic),
+            uml::SessionError::Stopped(uml::ExitReason::Exited(0)),
+            uml::SessionError::Protocol("HostFailure Signaled(9) exit87".into()),
+            uml::SessionError::Io(std::io::Error::other("HostFailure")),
+        ] {
+            assert!(matches!(
+                session_error(&error, error.to_string()),
+                SessionError::Control(_)
+            ));
+        }
+        let mut error = uml::SessionError::Hung(Duration::from_secs(3));
+        for _ in 0..3 {
+            assert!(
+                matches!(session_error(&error, error.to_string()), SessionError::Hung(limit) if limit == Duration::from_secs(3))
+            );
+            error = uml::SessionError::Boot {
+                error: Box::new(error),
+                console: String::new(),
+            };
+        }
+    }
 
     fn host() -> uml::HostIdentity {
         uml::HostIdentity {
@@ -916,6 +1008,46 @@ mod tests {
     #[test]
     #[cfg(target_os = "linux")]
     #[cfg_attr(miri, ignore)]
+    fn setup_terminal_status_preserves_host_provenance_and_guest_controls() {
+        if !crate::image_identity::strict_test_host_ready() {
+            return;
+        }
+        for (script, expected, infrastructure) in [
+            ("kill -KILL $$", "Signaled(9)", true),
+            ("exit 87", "HostFailure", true),
+            ("exit 86", "GuestPanic", false),
+            (
+                "printf 'HostFailure Signaled(9)\\n'; exit 0",
+                "Exited(0)",
+                false,
+            ),
+        ] {
+            let parent = tempfile::tempdir().unwrap();
+            let mut session = terminal_session(script, &parent);
+            let error = setup_point(
+                session.session.as_mut().unwrap(),
+                100,
+                Duration::from_secs(5),
+            )
+            .unwrap_err();
+            let detail = match error.downcast_ref::<SessionError>() {
+                Some(SessionError::Infrastructure(detail)) if infrastructure => detail,
+                Some(SessionError::Control(detail)) if !infrastructure => detail,
+                _ => panic!("script={script}: {error}"),
+            };
+            assert!(detail.contains(expected), "{detail}");
+            assert!(session.snapshots.is_empty());
+            drop(session);
+            assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
+        }
+        eprintln!(
+            "setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
     fn host_signal_abandons_instead_of_reporting_guest_shutdown() {
         if !crate::image_identity::strict_test_host_ready() {
             return;
@@ -925,7 +1057,7 @@ mod tests {
         let error = session.run_until(1).unwrap_err();
         assert!(matches!(
             error.downcast_ref::<SessionError>(),
-            Some(SessionError::Control(message)) if message.contains("Signaled(9)")
+            Some(SessionError::Infrastructure(message)) if message.contains("Signaled(9)")
         ));
         assert!(session.abandoned());
         assert!(matches!(
@@ -949,7 +1081,7 @@ mod tests {
         let error = session.run_until(1).unwrap_err();
         assert!(matches!(
             error.downcast_ref::<SessionError>(),
-            Some(SessionError::Control(message)) if message.contains("HostFailure")
+            Some(SessionError::Infrastructure(message)) if message.contains("HostFailure")
         ));
         assert!(session.abandoned());
     }

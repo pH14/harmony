@@ -10,6 +10,36 @@ pub(crate) enum LoadedImageGuard {
     TestFixture,
 }
 
+#[cfg(all(test, feature = "in-process"))]
+thread_local! {
+    static CHECK_TRACE: std::cell::Cell<(usize, usize, Option<usize>)> = const { std::cell::Cell::new((0, 0, None)) };
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn trace_checks<T>(
+    fail_at: Option<usize>,
+    run: impl FnOnce() -> T,
+) -> (T, usize, usize) {
+    struct Reset((usize, usize, Option<usize>));
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CHECK_TRACE.with(|trace| trace.set(self.0));
+        }
+    }
+    let _reset = Reset(CHECK_TRACE.with(|trace| trace.replace((0, 0, fail_at))));
+    let result = run();
+    let (entries, strict, _) = CHECK_TRACE.with(std::cell::Cell::get);
+    (result, entries, strict)
+}
+
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn refuse_next_check() {
+    CHECK_TRACE.with(|trace| {
+        let (entries, strict, _) = trace.get();
+        trace.set((entries, strict, Some(entries + 1)));
+    });
+}
+
 fn strict_host_identity() -> io::Result<String> {
     reject_loader_overrides()?;
     #[cfg(target_os = "linux")]
@@ -39,12 +69,27 @@ impl LoadedImageGuard {
     }
 
     pub(crate) fn check(self) -> io::Result<()> {
+        #[cfg(test)]
+        CHECK_TRACE.with(|trace| {
+            let (entries, strict, fail_at) = trace.get();
+            trace.set((entries + 1, strict, fail_at));
+            if fail_at == Some(entries + 1) {
+                Err(io::Error::other("injected loaded-image refusal"))
+            } else {
+                Ok(())
+            }
+        })?;
         let admitted = match self {
             Self::Strict(admitted) => admitted,
             #[cfg(test)]
             Self::TestFixture => return Ok(()),
         };
         reject_loader_overrides()?;
+        #[cfg(test)]
+        CHECK_TRACE.with(|trace| {
+            let (entries, strict, fail_at) = trace.get();
+            trace.set((entries, strict + 1, fail_at));
+        });
         admitted.check()
     }
 
@@ -588,6 +633,9 @@ mod sealed_guard_tests {
             return;
         }
         let guard = LoadedImageGuard::capture().unwrap();
+        let (result, entries, strict) = trace_checks(None, || guard.check());
+        result.unwrap();
+        assert_eq!((entries, strict), (1, 1));
         let index = LocalIndex::new(1 << 20);
         let namespace = Namespace::new(&[b"live-code"]);
         let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
@@ -601,7 +649,9 @@ mod sealed_guard_tests {
             .unwrap()
             .make_exec()
             .unwrap();
-        assert!(guard.check_published(&index, lease).is_err());
+        let (result, entries, strict) = trace_checks(None, || guard.check_published(&index, lease));
+        assert!(result.is_err());
+        assert_eq!((entries, strict), (1, 1));
         assert!(index.lookup(namespace, b"snapshot").is_none());
         assert_eq!((index.stats().entries, index.stats().leased), (0, 0));
         drop(mapping);

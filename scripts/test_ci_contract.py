@@ -22,6 +22,29 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
+    def test_client_miri_filesystem_access_is_limited_to_one_exact_test(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ".github/workflows/consonance-analysis.yml").read_text())["jobs"]
+        for name in ("miri", "miri-whole-crate"):
+            steps = jobs[name]["steps"]
+            scoped = [step for step in steps
+                      if "-Zmiri-disable-isolation" in step.get("env", {}).get("MIRIFLAGS", "")]
+            self.assertEqual(len(scoped), 1)
+            step = scoped[0]
+            self.assertIn("matrix.name == 'consonance-client'", step["if"])
+            self.assertIn("cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it -- --exact --ignored", step["run"])
+            self.assertIn("test result: ok. 1 passed;", step["run"])
+        target = next(row for row in miri_scope.selected_targets(["consonance/client/src/cache/segments.rs"])
+                      if row["name"] == "consonance-client")
+        self.assertNotIn("-Zmiri-disable-isolation", target["miriflags"])
+        whole = next(row for row in jobs["miri-whole-crate"]["strategy"]["matrix"]["include"]
+                     if row["name"] == "consonance-client")
+        self.assertNotIn("-Zmiri-disable-isolation", whole["miriflags"])
+        selected = next(step for step in jobs["miri-whole-crate"]["steps"]
+                        if step.get("name") == "Interpret borrowed descriptor metadata with filesystem access")
+        self.assertIn("env.SELECTED == 'true'", selected["if"])
+
     def test_uml_qualifier_artifact_is_static_musl_on_both_architectures(self):
         import yaml
 
@@ -49,7 +72,7 @@ class StructureTests(unittest.TestCase):
         jobs = yaml.safe_load((ROOT / ci_contract.CONSONANCE_UML.path).read_text())["jobs"]
         artifacts = jobs["artifacts"]
         steps = {step.get("name"): step for step in artifacts["steps"]}
-        panic = steps["Report a reviewed kernel panic through the public UML client"]
+        panic = steps["Report guest panics and distinguish setup host failures"]
         for architecture in ("X86_64", "AARCH64"):
             self.assertEqual(
                 panic["env"][f"CARGO_TARGET_{architecture}_UNKNOWN_LINUX_MUSL_RUNNER"],
@@ -57,6 +80,10 @@ class StructureTests(unittest.TestCase):
             )
         self.assertIn("--target ${{ matrix.architecture }}-unknown-linux-musl", panic["run"])
         self.assertIn("reviewed_kernel_panic_is_a_public_client_crash", panic["run"])
+        self.assertIn("setup_terminal_status_preserves_host_provenance_and_guest_controls", panic["run"])
+        self.assertIn("setup terminal provenance: signals/87 infrastructure; 86/0 guest; cleanup empty", panic["run"])
+        self.assertIn("sealed_worker_sigkill_is_infrastructure_and_guest_stops_are_framed", panic["run"])
+        self.assertIn("worker transport provenance: SIGKILL infrastructure; framed guest panic/shutdown preserved", panic["run"])
         fsgsbase = steps["Check native FS and GS bases across reused and fresh restores"]
         self.assertEqual(fsgsbase["if"], "matrix.architecture == 'x86_64'")
         self.assertEqual(
@@ -263,8 +290,8 @@ class StructureTests(unittest.TestCase):
         self.assertEqual((registered.trigger, registered.timeout_minutes,
                           registered.select), ("pr", 35, "harmony_languages"))
         self.assertTrue(registered.exception)
-        self.assertEqual(ci_contract.PR_EXTENDED_CHECK_BUDGETS,
-                         {(workflow.path, "C Investigation"): 35})
+        self.assertEqual(ci_contract.PR_EXTENDED_CHECK_BUDGETS[
+            (workflow.path, "C Investigation")], 35)
         self.assertEqual(investigation["timeout-minutes"], registered.timeout_minutes)
         self.assertEqual(jobs["check"]["timeout-minutes"], 15)
         self.assertNotIn("cli/tests/investigation.sh", str(jobs["check"]["steps"]))
@@ -277,6 +304,20 @@ class StructureTests(unittest.TestCase):
         self.assertIn("docker load --input language-image/c.tar", commands)
         self.assertIn("timeout -k 10 1800 bash cli/tests/investigation.sh", commands)
         self.assertNotIn("scripts/historical-search.sh", commands)
+
+    def test_only_the_backend_miri_variant_has_the_extended_budget(self):
+        import yaml
+
+        workflow = ci_contract.CONSONANCE_ANALYSIS
+        job = yaml.safe_load((ROOT / workflow.path).read_text())["jobs"]["miri"]
+        registered = next(job for job in workflow.jobs if job.name == "Miri — <Crate>")
+        self.assertEqual(registered.timeout_minutes, 30)
+        self.assertTrue(registered.exception)
+        self.assertEqual(ci_contract.pull_request_budget(workflow.path, registered.name), 30)
+        expression = "${{ matrix.name == 'vmm-backend' && 30 || 15 }}"
+        self.assertEqual(job["timeout-minutes"], expression)
+        self.assertEqual(ci_contract.PR_TIMEOUT_EXPRESSIONS,
+                         {(workflow.path, registered.name): expression})
 
     def test_release_guest_archive_carries_verified_runtime_pair(self):
         import yaml
@@ -631,6 +672,51 @@ class HostCompatibilityTests(unittest.TestCase):
         self.workflow = ci_contract.by_name("Checks / Harmony Host Compatibility")
         self.data = yaml.safe_load((ROOT / self.workflow.path).read_text())
         self.hosts = {key: job for key, job in self.data["jobs"].items() if key != "scope"}
+
+    def test_darwin_rights_qualification_requires_actual_pass_records(self):
+        job = self.hosts["macos-arm64"]
+        step = next(step for step in job["steps"]
+                    if step.get("name") == "Verify Darwin descriptor receive qualification")
+        script = step["run"]
+        self.assertIn('test "$(uname -m)" = arm64', script)
+        self.assertNotIn("cargo ", script)
+        for name in ci_contract.DARWIN_RIGHTS_QUALIFICATION_TESTS:
+            self.assertIn(name, script)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            uname = root / "uname"
+            uname.write_text("#!/bin/sh\nprintf 'arm64\\n'\n")
+            uname.chmod(0o755)
+            env = {**os.environ, "PATH": f"{root}:{os.environ['PATH']}"}
+            names = ci_contract.DARWIN_RIGHTS_QUALIFICATION_TESTS
+            cases = [
+                ("pass", [f"PASS [0.01s] consonance-client session::worker::tests::{name}"
+                          for name in names], True),
+                ("progress", [f"PASS [0.01s] ( 1/2) consonance-client session::worker::tests::{name}"
+                              for name in names], True),
+                ("colored", [
+                    "\033[32;1m        PASS\033[0m [   0.021s] (   1/1998) "
+                    "\033[35;1mconsonance-client\033[0m "
+                    "\033[36msession::worker::tests\033[0m\033[36m::\033[0m"
+                    f"\033[34;1m{name}\033[0m" for name in names
+                ], True),
+                ("missing", [], False),
+                ("failed", [f"FAIL [0.01s] consonance-client session::worker::tests::{name}"
+                            for name in names], False),
+                ("skipped", [f"SKIP [0.01s] consonance-client session::worker::tests::{name}"
+                             for name in names], False),
+            ]
+            for missing in names:
+                cases.append((missing, [
+                    f"PASS [0.01s] consonance-client session::worker::tests::{name}"
+                    for name in names if name != missing
+                ], False))
+            for label, lines, expected in cases:
+                with self.subTest(case=label):
+                    (root / "host-tests.log").write_text("\n".join(lines) + "\n")
+                    result = subprocess.run(["bash", "-c", script], cwd=root, env=env,
+                                            capture_output=True, text=True)
+                    self.assertEqual(result.returncode == 0, expected, result.stderr)
 
     def test_host_jobs_are_selected_and_bounded_on_every_pull_request(self):
         self.assertEqual(

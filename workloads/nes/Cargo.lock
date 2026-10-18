@@ -641,6 +641,7 @@ dependencies = [
  "kvm-ioctls",
  "libc",
  "rustix",
+ "sha2",
  "thiserror",
 ]
 

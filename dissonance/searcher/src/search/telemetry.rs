@@ -30,6 +30,16 @@ pub struct AdmissionWaits {
     pub idle_no_job_ns: u64,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct CompletedBufferTelemetry {
+    pub results_live: u64,
+    pub results_peak: u64,
+    pub actions_live: u64,
+    pub actions_peak: u64,
+    pub candidates_live: u64,
+    pub candidates_peak: u64,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CampaignTelemetry {
     pub bootstrap_ns: u64,
@@ -37,6 +47,7 @@ pub struct CampaignTelemetry {
     pub persistence_ns: u64,
     pub coordinator: serde_json::Value,
     pub admission: AdmissionWaits,
+    pub completed_buffer: CompletedBufferTelemetry,
     pub workers: Vec<WorkerTelemetry>,
     pub target: TargetCounters,
 }

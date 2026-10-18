@@ -85,6 +85,12 @@ readiness. It runs on pull requests so a broken macOS package is caught before
 release. The Arm64 Linux package job likewise checks readiness with the musl
 host beside its frontend.
 
+`Checks / Harmony Host Compatibility / macOS Arm64` runs the portable workspace
+suites on `macos-14`. Its existing `host-tests.log` must contain exact nextest
+PASS records for the Darwin descriptor receive-bound and frame-remainder
+qualification tests. Missing in-process feature selection, a skipped test or a
+failed test cannot satisfy this check. It does not add another Cargo build.
+
 `Checks / Harmony Host Compatibility` selects all three Linux Arm64 jobs through
 `rust_checks`. `Linux Arm64` compiles the backend and runs the portable
 Consonance and Harmony tests; `Linux Arm64 Dissonance` runs the portable
@@ -209,6 +215,10 @@ Every job declares a trigger class.
   consumers keep the 15-minute budget. The separate `C Investigation` job has
   a 35-minute exception for its bounded branch and search continuation under
   sealed-host identity checks.
+  The selected `vmm-backend` Miri checks have a 30-minute exception for
+  interpreted snapshot and register-inventory coverage; every other Miri
+  matrix target keeps 15 minutes. The registry binds the exact timeout
+  expression, so the extended budget cannot silently cover every variant.
   `PR_ARTIFACT_BUILD_BUDGETS` and `PR_EXTENDED_CHECK_BUDGETS` register these
   named exceptions; neither permits a full capability search on pull requests.
 - **`full`** jobs run on a schedule, a manual dispatch, or a path-filtered push
@@ -432,6 +442,18 @@ missing diversity, instability, or artifact mismatch fails. The bounded scope,
 compiler/library provenance, and exclusions are documented beside the
 [corpus](../scripts/qualification/native-math/README.md). This does not alter
 standard-library admission or advisory CPU replay warnings.
+
+The hardware workflow's Linux composed continuation jobs retain one static
+executable and its exact kernel/initramfs, export a completed Linux cut, and
+run fresh imports on six distinct runner instances. The required aggregate
+checks local uninterrupted/capture/fresh/reused controls, READY/DONE/terminal whole-VMM
+hashes, composed portable-snapshot histories, bounded RAM/SIMD/x87 goldens and
+two-seed sensitivity with equal positive work and exact guest termination. It
+retains independent timer/entropy observations and requires a successful Intel/AMD
+host-pair import. Documented admission refusals remain explicit evidence and
+cannot satisfy that supported migration requirement. The bounded registry,
+commands and exclusions are in
+[`scripts/qualification/README.md`](../scripts/qualification/README.md#composed-linux-continuation).
 
 The hardware workflow builds `x86_kvm_virtual_time` once as a static musl test
 executable and distributes the exact retained bytes to both X1 replicas. Each
@@ -690,6 +712,10 @@ is separate from repository lint.
 The Guest Memory job includes the nested driver’s portable arithmetic and
 mapping checks. Its mapping composition runs in the bounded Consonance Miri
 matrix; the full matrix interprets the driver library.
+The consonance-client Miri suite retains default filesystem isolation. A separate
+exact-test invocation permits filesystem access only for the borrowed descriptor
+metadata test, which creates and resizes a temporary file and checks that the
+descriptor remains open. Both pull-request and whole-crate jobs run that test.
 The host-code-identity Miri target exercises the loader callback's unsafe
 program-header copy with a synthetic record on pull requests that change that
 crate. Its whole library runs in scheduled Consonance analysis.

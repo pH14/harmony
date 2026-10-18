@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use environment::channel::{HandlerFingerprint, Question, ServiceHandler};
 use environment::input_spec::ServiceFactory;
 use hypercall_proto::MAX_FRAME;
+use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use sha2::{Digest, Sha256};
 use snapshot_store::{PAGE_SIZE, PageHash};
 use tempfile::TempDir;
@@ -481,7 +482,8 @@ impl Session {
             .prepare_resolution(request, moment, service, id, answer);
         check_host_guard(self.host_guard)?;
         let (services, response) = prepared.map_err(SessionError::BadResolution)?;
-        bridge::send(&self.socket, &response)?;
+        let sent = bridge::send(&self.socket, &response);
+        self.transport_result(sent)?;
         self.services = services;
         self.pending = None;
         self.serve(Until::Moment(deadline))
@@ -885,7 +887,8 @@ impl Session {
                     question: question.clone(),
                 });
             }
-            bridge::send(&self.socket, &self.response[..reply.length])?;
+            let sent = bridge::send(&self.socket, &self.response[..reply.length]);
+            self.transport_result(sent)?;
             let moment = self.services.latest;
             match reply.signal {
                 Some(_) if until == Until::End => {}
@@ -900,30 +903,73 @@ impl Session {
         }
     }
 
+    fn poll_bridge(&self, timeout: &Timespec) -> io::Result<PollFlags> {
+        let mut waiting = [PollFd::new(&self.socket, PollFlags::IN | PollFlags::RDHUP)];
+        match poll(&mut waiting, Some(timeout)) {
+            Ok(_) => Ok(waiting[0].revents()),
+            Err(rustix::io::Errno::INTR) => Ok(PollFlags::empty()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn disconnected(&mut self, waited: Instant) -> SessionError {
+        loop {
+            match self.guest.stopped() {
+                Ok(Some(reason)) => return SessionError::Stopped(reason),
+                Err(error) => return error.into(),
+                Ok(None) => {}
+            }
+            if let Some(limit) = self.progress_limit
+                && waited.elapsed() >= limit
+            {
+                return SessionError::Hung(limit);
+            }
+            std::thread::sleep(POLL);
+        }
+    }
+
+    fn transport_result<T>(&mut self, result: io::Result<T>) -> Result<T, SessionError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::ConnectionAborted
+                        | io::ErrorKind::NotConnected
+                        | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                Err(self.disconnected(now()))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn receive(&mut self) -> Result<usize, SessionError> {
         let waited = now();
+        let timeout = Timespec::try_from(POLL).map_err(io::Error::other)?;
         loop {
-            let mut poll = libc::pollfd {
-                fd: self.socket.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            let timeout = i32::try_from(POLL.as_millis()).unwrap_or(i32::MAX);
-            // SAFETY: `poll` is one live, writable pollfd for the call.
-            let ready = unsafe { libc::poll(&mut poll, 1, timeout) };
-            if ready < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() == io::ErrorKind::Interrupted {
-                    continue;
-                }
-                return Err(error.into());
-            }
-            if ready > 0 {
-                let length = bridge::receive(&self.socket, &mut self.request)?;
+            let ready = self.poll_bridge(&timeout)?;
+            if !ready.is_empty() {
+                let received = bridge::receive(&self.socket, &mut self.request);
+                let length = self.transport_result(received)?;
                 if length > self.request.len() {
                     return Err(SessionError::Protocol(format!("request of {length} bytes")));
                 }
-                return Ok(length);
+                if length != 0 {
+                    return Ok(length);
+                }
+                if self
+                    .poll_bridge(&Timespec::default())?
+                    .intersects(PollFlags::HUP | PollFlags::RDHUP)
+                {
+                    return Err(self.disconnected(waited));
+                }
+                return Err(SessionError::Protocol(
+                    "empty bridge packet from a live peer".into(),
+                ));
             }
             #[cfg(test)]
             if self.guest.pid() == TEST_TERMINAL_POLL_PID.load(Ordering::Acquire) {
@@ -943,19 +989,20 @@ impl Session {
         }
     }
 
-    fn send_control(&mut self, command: u32, flags: u64, image: bool) -> io::Result<()> {
+    fn send_control(&mut self, command: u32, flags: u64, image: bool) -> Result<(), SessionError> {
         let mut message = [0_u8; CONTROL_LEN];
         message[..4].copy_from_slice(&CONTROL_MAGIC.to_le_bytes());
         message[4..8].copy_from_slice(&command.to_le_bytes());
         message[8..].copy_from_slice(&flags.to_le_bytes());
-        if image {
+        let result = if image {
             send_with_fd(&self.socket, &message, &self.memory.image)
         } else {
             bridge::send(&self.socket, &message)
-        }
+        };
+        self.transport_result(result)
     }
 
-    fn send_continue(&mut self) -> io::Result<()> {
+    fn send_continue(&mut self) -> Result<(), SessionError> {
         self.send_control(CONTINUE, 0, false)
     }
 
@@ -1602,6 +1649,273 @@ mod tests {
             Err(SessionError::Memory(MemoryError::ForeignSnapshot))
         ));
         assert!(second.stats().is_none());
+    }
+
+    fn controlled_peer(
+        directory: &std::path::Path,
+        status: i32,
+        limit: Duration,
+    ) -> (Session, OwnedFd, std::path::PathBuf) {
+        controlled_peer_with_limits(directory, status, Some(limit), Duration::from_secs(5))
+    }
+
+    fn controlled_peer_with_limits(
+        directory: &std::path::Path,
+        status: i32,
+        limit: Option<Duration>,
+        wall_limit: Duration,
+    ) -> (Session, OwnedFd, std::path::PathBuf) {
+        let release = directory.join("release");
+        let mut launch = Launch::new(directory.to_path_buf());
+        launch.bridge = Some(bridge::Bridge::new(7));
+        launch.wall_limit = wall_limit;
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "while [ ! -e \"$1\" ]; do sleep 0.001; done; sleep 0.02; case \"$2\" in -*) kill -\"${2#-}\" $$;; *) exit \"$2\";; esac",
+                "checkpoint-peer",
+            ])
+            .arg(&release)
+            .arg(status.to_string())
+            .process_group(0);
+        let checkpoints = Checkpoints::new();
+        let mut session = Session::start_with_guard(
+            command,
+            launch.work_directory().unwrap(),
+            &launch,
+            &checkpoints,
+            None,
+            limit,
+            HostGuard::TestFixture,
+        )
+        .unwrap();
+        let (socket, peer) = bridge::socket_pair().unwrap();
+        session.socket = socket;
+        session.pending = Some(120_u64.to_le_bytes().to_vec());
+        rustix::fs::ftruncate(&session.memory.physmem, PHYSMEM_BYTES as u64).unwrap();
+        (session, peer, release)
+    }
+
+    fn memory_ack(peer: &OwnedFd, bitmap: bool) {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&CONTROL_MAGIC.to_le_bytes());
+        packet.extend_from_slice(&MEMORY.to_le_bytes());
+        packet.extend_from_slice(&(if bitmap { 0_i64 } else { MEMORY_ALL }).to_le_bytes());
+        bridge::send(peer, &packet).unwrap();
+        if bitmap {
+            bridge::send(peer, &[0; 8]).unwrap();
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn capture_and_restore_peer_closure_preserves_actual_child_status() {
+        for restore in [false, true] {
+            for final_ack in [false, true] {
+                for (status, expected) in [
+                    (0, ExitReason::Exited(0)),
+                    (86, ExitReason::GuestPanic),
+                    (87, ExitReason::HostFailure),
+                ] {
+                    let directory = tempfile::tempdir().unwrap();
+                    let (mut session, peer, release) =
+                        controlled_peer(directory.path(), status, Duration::from_secs(2));
+                    let saved = checkpoint(snapshot(&session.checkpoints, None, &[]), 7, Some(120));
+                    let responder = std::thread::spawn(move || {
+                        let mut packet = [0; CONTROL_LEN];
+                        assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+                        if final_ack {
+                            memory_ack(&peer, true);
+                            assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+                            assert_eq!(
+                                u32::from_le_bytes(packet[4..8].try_into().unwrap()),
+                                CONTINUE
+                            );
+                        }
+                        drop(peer);
+                        std::fs::write(release, []).unwrap();
+                    });
+                    let result = if restore {
+                        session.restore(&saved)
+                    } else {
+                        session.capture(Capture::default()).map(|_| ())
+                    };
+                    assert!(
+                        matches!(result, Err(SessionError::Stopped(reason)) if reason == expected),
+                        "restore={restore}, final_ack={final_ack}, status={status}: {result:?}"
+                    );
+                    responder.join().unwrap();
+                    let exit = session.kill().unwrap();
+                    assert!(exit.leftovers.is_empty());
+                    assert!(exit.work_removed);
+                }
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_decision_reply_preserves_status_and_does_not_publish_the_answer() {
+        use hypercall_proto::{ServiceId, encode_request};
+
+        for (status, expected) in [
+            (0, ExitReason::Exited(0)),
+            (86, ExitReason::GuestPanic),
+            (87, ExitReason::HostFailure),
+            (-9, ExitReason::Signaled(9)),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, release) =
+                controlled_peer(directory.path(), status, Duration::from_secs(2));
+            session
+                .services
+                .branch(7, Box::new(WaitingHandler), Vec::new(), None)
+                .unwrap();
+            let mut payload = 19_u16.to_le_bytes().to_vec();
+            payload.extend(7_u64.to_le_bytes());
+            payload.extend(b"choose");
+            let mut request = vec![0; STAMP_LEN + MAX_FRAME];
+            request[..STAMP_LEN].copy_from_slice(&120_u64.to_le_bytes());
+            let length =
+                encode_request(ServiceId::Sdk, 3, 1, &payload, &mut request[STAMP_LEN..]).unwrap();
+            request.truncate(STAMP_LEN + length);
+            let mut response = [0; MAX_FRAME];
+            assert!(matches!(
+                session
+                    .services
+                    .exchange(&request, &mut response)
+                    .unwrap()
+                    .signal,
+                Some(Signal::Decision(_))
+            ));
+            session.pending = Some(request);
+            let before = session.bridge_state_digest().unwrap();
+            drop(peer);
+            std::fs::write(release, []).unwrap();
+            let answer = environment::channel::Answer::Data(vec![42]).encode();
+            let error = session
+                .resolve_and_run(200, 120, 19, 7, &answer)
+                .unwrap_err();
+            assert!(
+                matches!(error, SessionError::Stopped(reason) if reason == expected),
+                "status={status}: {error}"
+            );
+            assert!(session.paused());
+            assert_eq!(session.bridge_state_digest().unwrap(), before);
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_live_control_peer_obeys_the_progress_limit() {
+        let directory = tempfile::tempdir().unwrap();
+        let limit = Duration::from_millis(25);
+        let (mut session, peer, _) = controlled_peer(directory.path(), 87, limit);
+        let responder = std::thread::spawn(move || {
+            let mut packet = [0; CONTROL_LEN];
+            assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+            drop(peer);
+        });
+        assert!(
+            matches!(session.capture(Capture::default()), Err(SessionError::Hung(got)) if got == limit)
+        );
+        responder.join().unwrap();
+        assert!(session.guest.stopped().unwrap().is_none());
+        let exit = session.kill().unwrap();
+        assert!(exit.leftovers.is_empty());
+        assert!(exit.work_removed);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_peer_without_progress_limit_still_obeys_the_owned_wall_limit() {
+        for send in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, _) =
+                controlled_peer_with_limits(directory.path(), 87, None, Duration::from_millis(25));
+            drop(peer);
+            let error = if send {
+                session.send_continue().unwrap_err()
+            } else {
+                session.receive().unwrap_err()
+            };
+            assert!(matches!(
+                error,
+                SessionError::Stopped(ExitReason::WallLimit)
+            ));
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn empty_and_malformed_live_control_packets_remain_protocol_errors() {
+        for frame in [Vec::new(), vec![1]] {
+            let directory = tempfile::tempdir().unwrap();
+            let (mut session, peer, _) =
+                controlled_peer(directory.path(), 87, Duration::from_secs(2));
+            let (release, hold) = std::sync::mpsc::channel();
+            let responder = std::thread::spawn(move || {
+                let mut packet = [0; CONTROL_LEN];
+                assert_eq!(bridge::receive(&peer, &mut packet).unwrap(), CONTROL_LEN);
+                bridge::send(&peer, &frame).unwrap();
+                hold.recv().unwrap();
+            });
+            assert!(matches!(
+                session.capture(Capture::default()),
+                Err(SessionError::Protocol(_))
+            ));
+            assert!(session.guest.stopped().unwrap().is_none());
+            release.send(()).unwrap();
+            responder.join().unwrap();
+            let exit = session.kill().unwrap();
+            assert!(exit.leftovers.is_empty());
+            assert!(exit.work_removed);
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn disconnected_sends_preserve_child_status_without_parsing_error_text() {
+        for (status, expected) in [
+            (0, ExitReason::Exited(0)),
+            (86, ExitReason::GuestPanic),
+            (87, ExitReason::HostFailure),
+        ] {
+            for operation in 0..6 {
+                let directory = tempfile::tempdir().unwrap();
+                let (mut session, peer, release) =
+                    controlled_peer(directory.path(), status, Duration::from_secs(2));
+                drop(peer);
+                std::fs::write(release, []).unwrap();
+                let error = match operation {
+                    0 => session.send_control(CAPTURE, 0, true),
+                    1 => session.send_continue(),
+                    other => session.transport_result(Err(io::Error::from(
+                        [
+                            io::ErrorKind::ConnectionReset,
+                            io::ErrorKind::ConnectionAborted,
+                            io::ErrorKind::NotConnected,
+                            io::ErrorKind::UnexpectedEof,
+                        ][other - 2],
+                    ))),
+                }
+                .unwrap_err();
+                assert!(
+                    matches!(error, SessionError::Stopped(reason) if reason == expected),
+                    "operation={operation}, status={status}: {error}"
+                );
+                let exit = session.kill().unwrap();
+                assert!(exit.leftovers.is_empty());
+                assert!(exit.work_removed);
+            }
+        }
     }
 
     #[test]

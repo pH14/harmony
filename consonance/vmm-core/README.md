@@ -27,6 +27,35 @@ Production Linux composition also copies the entry state's complete task
 register descriptor, including its defined busy 32-bit TSS type, instead of
 inheriting the host's KVM reset descriptor.
 
+`tests/linux_snapshot_continuation.rs` exercises the production Linux boot,
+completed-boundary capture and full RAM/VM-state restore APIs with the owned
+continuation initramfs. The guest's memory, SIMD, x87, clock and entropy
+readbacks supply an oracle independently of the snapshot encoder. Bounded O1
+also compares the production whole-state hash at READY, DONE and termination;
+O2 fixes RAM/SIMD/x87 goldens; O3 repeats two distinct seeds and requires changed
+entropy with equal nonentropy outputs and positive continuation work. A separate
+`ControlServer` portable snapshot path preserves the cumulative event history;
+raw `VmState` restore does not carry that history. The
+[qualification adapter](../../scripts/qualification/README.md#composed-linux-continuation)
+retains exact artifacts and cross-host admission outcomes. This bounded x86
+fixture does not establish a complete backend register inventory or qualify
+Arm Linux continuation.
+
+These are strict acceptance obligations, not a claim of universal portability.
+At source `9673f33363395f0850cd2cb5e704432d33434180`, the retained
+[hardware run](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD local/export and five AMD import arms. One hosted import matches
+READY and the independent guest record, then fails the DONE whole-state hash.
+The same retained executable and AMD cut reproduce that failure on nested Intel
+KVM. Intel records the post-cut `fstpl` address in x87's last-instruction pointer;
+the AMD expected state has zero there. The difference reaches guest RAM through
+the kernel's saved FPU image, as well as the VCPU and encoded snapshot. Neither
+guest-visible state nor RAM is normalized away. The strict cross-vendor oracle
+remains failing, so cross-vendor whole-state identity is unqualified. Standard
+libraries remain supported; CPU provenance warnings are advisory. This finite
+state witness complements the numerical portability limits in
+[#733](https://github.com/pH14/harmony/issues/733).
+
 `Vmm::run` repeatedly obtains one backend exit, classifies it through the
 architecture vendor, advances virtual time by the assigned integer duration,
 dispatches devices and protocol services, and completes any pending backend
@@ -112,6 +141,31 @@ adds snapshot seal, restore, export and import time and page counts, including
 those of VMs the server has already replaced. These are host wall-clock
 measurements for performance accounting; they never enter virtual time, state
 hashes, or snapshots.
+
+`hash.<site>.calls`, `ram_bytes`, `suffix_bytes`, `metadata_bytes`, `ns` and
+`errors` describe physical SHA-256 stages. Sites are `whole_request`,
+`checkpoint`, `portable_export`, `portable_import`, `sparse_base`,
+`portable_export_envelope` and `portable_import_envelope`. Whole requests and
+checkpoints count actual memory-preimage feeds; the portable export/import
+sites also include sparse target-page commitments. Sparse-base cache hits do
+not start another hash stage. A call starts when its stage is entered, and a
+failure retains any bytes already fed. RAM bytes count actual memory slices;
+suffix bytes count the whole-state suffix; metadata bytes count domain/length
+framing, page indexes and non-RAM portable-envelope sections. Portable envelope
+counters include only bytes actually hashed after successful reads/writes,
+excluding the trailing recorded digest. Their time includes codec and I/O waits.
+Whole-request and checkpoint time also includes vCPU state capture, readiness
+checks and suffix encoding; it is not pure digest CPU time.
+
+The leaves attribute each feed once; wrapper requests do not add another
+charge. Retiring or replaying a VMM never rewinds these host totals. Snapshot
+store verification appears under `snapshot.verify.*`, with distinct BLAKE3
+resident-page and VM-state work. Timings are nested diagnostic envelopes across
+hashing and storage, not additive elapsed time. Standalone codec/comparison
+helpers outside a ControlServer do not report into a server's telemetry. These
+fields do not enter event history, portable records, cache identities, hashes,
+retention charges or search policy. Existing snapshot page metrics keep their
+original meanings.
 
 Sparse delta export holds one snapshot-store read transaction across full
 setup/parent/target integrity verification, delta planning, target comparison,

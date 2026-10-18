@@ -2,6 +2,7 @@
 
 use std::os::fd::AsRawFd;
 
+use kvm_bindings::RegList;
 use kvm_bindings::{
     kvm_clear_dirty_log, kvm_clear_dirty_log__bindgen_ty_1, kvm_create_device, kvm_device_attr,
     kvm_enable_cap, kvm_run, kvm_userspace_memory_region, kvm_vcpu_init,
@@ -304,6 +305,34 @@ impl LiveKvm {
 }
 
 impl Arm64Kvm for LiveKvm {
+    fn register_list(&self) -> Result<Vec<u64>> {
+        let mut probe = RegList::new(0).map_err(|_| BackendError::InvalidState)?;
+        match self.vcpu.get_reg_list(&mut probe) {
+            Err(error) if error.errno() == libc::E2BIG => {}
+            Err(error) => return Err(kvm_err(error)),
+            Ok(()) => {
+                return Err(BackendError::Internal(
+                    "KVM returned an empty register inventory",
+                ));
+            }
+        }
+        let count =
+            usize::try_from(probe.as_fam_struct_ref().n).map_err(|_| BackendError::InvalidState)?;
+        if count == 0 || count > 4096 {
+            return Err(BackendError::Unsupported {
+                what: "ARM KVM register inventory size",
+            });
+        }
+        let mut registers = RegList::new(count).map_err(|_| BackendError::InvalidState)?;
+        self.vcpu.get_reg_list(&mut registers).map_err(kvm_err)?;
+        if registers.as_fam_struct_ref().n != count as u64 {
+            return Err(BackendError::Internal(
+                "ARM KVM register inventory changed during enumeration",
+            ));
+        }
+        Ok(registers.as_slice().to_vec())
+    }
+
     fn vcpu_init(&mut self) -> Result<()> {
         let mut kvi = kvm_vcpu_init::default();
         self._vm.get_preferred_target(&mut kvi).map_err(kvm_err)?;

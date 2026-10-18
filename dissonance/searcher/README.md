@@ -60,7 +60,13 @@ action between a parent and its imported candidate, including candidates loaded
 from source snapshots. It compares a checkpointed endpoint with the rebuilt
 endpoint before binding any certificates to the archive path. A later snapshot
 eviction can therefore replay the imported path with the same checks as a live
-campaign.
+campaign. `TargetExecution::apply_action_and_snapshot` can return the actual
+runnable snapshot captured by that action. Import uses its certificate for that
+prefix and retains the final capture as the rebuilt endpoint after checking the
+execution disposition. A workload returning no capture uses separate certificate
+and snapshot operations. Empty suffixes acquire a fresh snapshot; terminal or
+failed actions cannot reuse an earlier capture. These values remain local to the
+import operation and preserve all source identity and intermediate-prefix checks.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
@@ -774,6 +780,19 @@ wait time, and the workload's own counters from `TargetExecution::telemetry`,
 which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
+
+`telemetry.completed_buffer` reports live and peak `results`, `actions` and
+`candidates` counts for the current coordinator invocation; checkpoint resume
+starts fresh gauges and peaks. A result enters when the coordinator receives it
+and leaves when ordered admission removes it. Failed worker results count as one result
+with zero action/candidate records; candidates count every present optional
+candidate, including nonviable ones. Successful reports end with zero live
+counts; peaks include immediately admitted results as well as held results.
+Coordinator profile lines expose the same action/candidate live counts and all
+three peaks beside the existing `completed_buffered` result count.
+These are record counts, not heap bytes, unique snapshots or process RSS. They
+are runtime diagnostics excluded from checkpoint profiles, search decisions,
+report equality and the deterministic report/stream serialization.
 
 The last sidecar record of a run also carries `retained_diagnostics`, an
 optional workload census over the archive's cached active endpoints. Each

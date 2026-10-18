@@ -69,6 +69,11 @@ PR_ARTIFACT_BUILD_BUDGETS = {
 }
 PR_EXTENDED_CHECK_BUDGETS = {
     (f"{WORKFLOW_DIR}/harmony-workloads-languages-checks.yml", "C Investigation"): 35,
+    (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"): 30,
+}
+PR_TIMEOUT_EXPRESSIONS = {
+    (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"):
+        "${{ matrix.name == 'vmm-backend' && 30 || 15 }}",
 }
 
 
@@ -253,6 +258,8 @@ ARM64_BASELINE_TEST = (
 HOST_TESTS = {
     "macos-aarch64": (
         "vmm-backend::hvf_smoke *", ARM64_BASELINE_TEST,
+        "vmm-backend hvf::tests::fixed_register_inventory_refuses_capture_and_resets_restore",
+        "vmm-backend hvf::tests::sme_capture_requires_inactive_state_and_restore_clears_detour",
         "vmm-backend hvf::tests::failed_translation_flush_retires_mutated_vcpu",
         "vmm-backend hvf::tests::restore_rejects_hvc_from_guest_exception_vector",
         "vmm-backend hvf::tests::failed_guest_run_retires_uncounted_progress",
@@ -267,6 +274,7 @@ HOST_TESTS = {
         "vmm-backend::arm64_sysreg_snapshot psci_profile_matches_guest_hvc",
     ),
     "linux-aarch64": (
+        "vmm-backend arm64_kvm::inventory::tests::live_inventory_identity_and_fixed_state_are_enforced",
         "vmm-core::arm64_executable_restore live::executable_ram_restores_match_guest_continuations",
         ARM64_BASELINE_TEST,
         "vmm-core vendor::arm64::dispatch::tests::live_in_kernel_preemption_matches_guest_acknowledgment",
@@ -405,8 +413,12 @@ CONSONANCE_ANALYSIS = Workflow(
     triggers=("pull_request", "push", "schedule", "workflow_dispatch"),
     jobs=(
         Job("Change Selection", "pr", 5, selects=("miri_matrix", "kani")),
-        Job("Miri — <Crate>", "pr", 15, select="miri_matrix"),
+        Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
+            ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
+            exception="The backend's interpreted snapshot and register inventory "
+                      "checks exceed 15 minutes; other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
+            ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
             exception="Interpreting a whole unsafe crate under Miri takes hours, "
                       "so pull requests get the tests the change reaches."),
         Job("Coverage", "full", 30,
@@ -442,6 +454,13 @@ CONSONANCE_HARDWARE = Workflow(
         Job("Minimal Guest Determinism — Replica <N>", "full", 45,
             ignored_tests=("vmm-core::x86_kvm_virtual_time *",)),
         Job("Linux Guest Image", "full", 90),
+        Job("Retained Linux Continuation Executable", "full", 45),
+        Job("Linux Composed Continuation Export", "full", 30,
+            test_targets=("vmm-core:linux_snapshot_continuation",),
+            ignored_tests=("vmm-core::linux_snapshot_continuation composed_linux_snapshot_continuation",)),
+        Job("Linux Composed Continuation Import — Replica <N>", "full", 15,
+            ignored_tests=("vmm-core::linux_snapshot_continuation composed_linux_snapshot_continuation",)),
+        Job("Linux Composed Continuation Results", "full", 5),
         Job("Instruction Timing Sweep", "full", 60,
             test_targets=("vmm-core:n6_x86_instruction_sweep",),
             ignored_tests=("vmm-core::n6_x86_instruction_sweep *",)),
@@ -615,6 +634,11 @@ REPOSITORY_CHECKS = Workflow(
     ),
 )
 
+DARWIN_RIGHTS_QUALIFICATION_TESTS = (
+    "darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal",
+    "darwin_frame_remainders_own_and_refuse_unexpected_rights",
+)
+
 HARMONY_HOST_COMPATIBILITY = Workflow(
     path=f"{WORKFLOW_DIR}/harmony-host-compatibility.yml",
     name="Checks / Harmony Host Compatibility",
@@ -782,6 +806,7 @@ CONSONANCE_UML = Workflow(
                 "uml::host_failure_provenance *",
                 "uml::checkpoint_host_failure dirty_page_failure_after_a_published_checkpoint_is_infrastructure",
                 "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
+                "faults-workload consonance::infrastructure_tests::published_uml_host_failure_cannot_enter_a_campaign",
             ),
             select="rust_checks"),
         Job("UML Qualification — <Target>", "pr", 15, select="rust_checks"),

@@ -287,13 +287,115 @@ recorded identity. Each call is
 one length-prefixed request and reply. Guest hangs, abandoned sessions and other
 errors come back as the matching `SessionError`; a closed socket or a dead child
 marks the session abandoned. The index and every lease stay in the parent. A
-publish asks the child for the delta size, allocates the extent, and sends the
-segment's descriptor so the child writes the delta into the shared mapping; the
-parent publishes only after the child answers. An import sends one descriptor per
-extent in the chain, and the child maps each range read-only for that call.
-A child that dies mid-call therefore leaves no entry half-written and no lease
-held; its unpublished extent is freed like any abandoned extent. Dropping a
-`WorkerSession` closes the socket and reaps the child.
+publish starts one EXPORT conversation. The child computes the sparse delta once
+and sends NEED_EXTENT from its destination-allocation callback. The parent
+allocates a unique writable extent and returns EXTENT_READY with exactly one
+descriptor and the exact checked range. The child writes changed pages directly
+into that mapping, drops its writer and borrowed slices, and then acknowledges
+completion. The parent reads the extent and computes its commitment only after
+that acknowledgement. No complete serialized payload buffer or subsequent
+full-extent copy is retained in the child; page payloads still copy once into
+the destination, and metadata and sidecar allocations remain. The loaded-image
+handshake requires matching workers.
+An import sends one descriptor per extent in the chain, and the child maps each
+range read-only for that call. Dropping a `WorkerSession` closes the socket and
+reaps the child.
+
+Worker ancillary parsing bounds every header and complete descriptor integer by
+both the supplied control-buffer extent and recvmsg's actual `msg_controllen`.
+A truncated Darwin control header can retain its original larger `cmsg_len`;
+allocation padding is never interpreted as another descriptor. Complete returned
+SCM_RIGHTS handles become owned immediately and close on framing/truncation error;
+unrelated descriptors remain untouched. Pure native-layout parser tests run under
+Miri; the raw truncation regression runs in an isolated subprocess and checks
+received-right closure and descriptor-zero preservation. The native test checks
+ownership/refusal on every supported kernel; reproducing the original declared
+length mismatch depends on the kernel (observed on macOS 26.6.2). Synthetic
+parser tests force the mismatched bounds independently of kernel behavior. This does not claim to
+recover kernel-installed handles that the OS did not return: observed Darwin
+truncation can leave unreported handles, tracked separately from bounded parsing.
+The accepted worker descriptor cap and protocol remain unchanged.
+
+On Darwin, every worker frame read uses `recvmsg` with a separate 2048-byte
+control buffer, including header remainders and body bytes. All complete
+returned rights become owned before oversized messages are refused; rights
+after the initial header receive are malformed and close on refusal. A plain
+Darwin read can install rights without reporting them, so it cannot consume
+frame remainders safely. Linux retains its protocol-sized initial control
+buffer and plain remainder reads.
+
+The Darwin bound is a qualified XNU implementation assumption, not a universal
+ancillary-data API guarantee. Audited public releases
+[`xnu-10002.1.13`](https://github.com/apple-oss-distributions/xnu/tree/xnu-10002.1.13),
+[`xnu-11417.140.69`](https://github.com/apple-oss-distributions/xnu/tree/xnu-11417.140.69)
+and [`xnu-12377.121.6`](https://github.com/apple-oss-distributions/xnu/tree/xnu-12377.121.6)
+limit the complete send control allocation to one 2048-byte cluster, with a
+tighter LP64 expansion limit, accept one SCM_RIGHTS header covering that
+buffer, and preserve control record boundaries through receive. The bound
+combines [whole-control allocation](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_syscalls.c),
+[AF_UNIX header admission](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_usrreq.c)
+and [control receive boundaries](https://github.com/apple-oss-distributions/xnu/blob/xnu-12377.121.6/bsd/kern/uipc_socket.c).
+The per-mbuf 512-FD constant or socket high-water options alone do not prove it.
+
+Public XNU tags are not the shipped kernel binaries. Local native evidence is
+macOS 26.6.2, build 25G83, Darwin 25.6.0/XNU 12377.161.14~5, newer than every
+audited tag; no matching public source was inspected. The ordinary
+`Checks / Harmony Host Compatibility / macOS Arm64` job on `macos-14` checks
+exact PASS records in its existing workspace test log for both native Darwin
+qualification tests. Those records supply macOS 14 runtime evidence. Missing
+feature selection or a skipped test fails that check without another Cargo
+build. No macOS 15 native run was performed.
+
+Sacrificial subprocess tests cover protocol limits, maximum accepted and
+oversized kernel sends, multiple headers, queued sends, zero-data controls,
+and unexpected rights in header remainders/body bytes with and without a
+deadline. They compare live task-FD sets after closing only known owned handles.
+Unexpected MSG_CTRUNC still refuses the message; XNU can install descriptors
+omitted from truncated output, which this process cannot recover safely. Such
+behavior falls outside the qualified bound and is not repaired by closing
+guessed FD numbers. New macOS/XNU behavior requires requalification.
+
+The parent retains checks before EXPORT, after NEED_EXTENT, after the extent
+allocator callback before sending its descriptor, and after receiving completion.
+Publication retains its check after commitment calculation before the index
+callback, and its revoking check after that callback. Each allocation exchange
+permits only one destination request. Its frames are bounded to 4096 bytes and
+reject trailing bytes, unexpected descriptors, repeated requests, and ordinary
+commands. A same-session nested call is rejected before any socket operation.
+Child serving checks once before its first receive, after each handler/status
+result before sending, and after every successful send. Within the allocator
+callback it also checks before NEED_EXTENT, after sending that request, and
+after receiving the allocation response. Each retained boundary performs fresh
+live-code validation. Test counters distinguish guard entries from actual strict
+dispatches; fixture counts establish placement, while admitted-host tests
+establish strict mutation refusal. A publication retains six parent checks;
+INIT plus one successful EXPORT uses eight child checks in the transport fixture.
+An export uses four control frames. Copy elimination alone is not an end-to-end
+speedup claim.
+
+Allocation refusal sends EXTENT_DENIED without a descriptor and drains the
+child's failure acknowledgement before returning the original typed cache error.
+The source session remains usable after this synchronized refusal. Malformed
+frames, guard refusal, or uncertain completion abandon the exchange and publish
+nothing. The 4096-byte bound includes failure diagnostics: an oversized diagnostic
+abandons the session rather than preserving recoverability or allocating an
+unbounded reply. Typed child Hung/Abandoned errors retain their types while
+abandoning the exchange after a destination has been allocated. Any child failure
+after destination allocation abandons the session, including FAILED/OTHER; the
+same ordinary failure before allocation leaves the session usable.
+The parent never accesses or commits a destination while a successful
+child exchange still owns its writer mapping. A lost acknowledgement does not
+prove that the writer has exited: the current cache allocator uses append-only
+ranges and retires empty backing segments, so abandoned storage cannot alias a
+later allocation. Future range reuse would require a stronger writer-lifetime
+protocol. A child mapping can keep a retired segment alive after its charge is
+removed on either platform. On Linux, hole punching an abandoned range can also
+be followed by late writer refills outside cache accounting. The allocator's
+charge is not an inventory of those residual physical pages. The child checks
+offset arithmetic, slice length, exact required length, and current descriptor
+backing size before mapping. The size check
+cannot prevent later truncation; the coordinator must keep its backing allocation
+alive and untruncated throughout the active exchange.
 
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot
@@ -369,7 +471,21 @@ collector to finish before reporting the diagnostic tail. The kernel-owned exit
 status decides a panic; console text does not. Crash diagnostics report the
 settled ordinary exit status whether the bridge closure or process exit was
 seen first. A signaled host exit abandons the session instead of producing a
-guest crash or shutdown.
+guest crash or shutdown. Host exit87, host signals and launch resource limits
+return typed `SessionError::Infrastructure` errors, including wrapped restore
+boot failures. After setup, guest panic86 retains its guest crash classification.
+Before setup, guest exit and panic remain control errors with the actual terminal
+reason; they cannot form a runnable session. A host progress timeout remains `SessionError::Hung`; malformed replies remain control
+errors. Classification uses owned child status rather than diagnostic text.
+Abandonment reaps the guest and settles its console before returning diagnostics.
+`WorkerSession` preserves typed infrastructure errors through its v2 image hello
+and distinct error tag; they abandon the worker just as progress timeouts do. A
+worker transport disconnect is also infrastructure failure: legitimate guest exits
+arrive in framed stop replies. Complete malformed frames retain control/protocol
+error semantics. Native controls check an owned worker killed by SIGKILL and a
+malformed frame from a peer held alive; the Faults admission guard separately
+checks the resulting typed infrastructure error without requiring a test-only
+public worker factory.
 
 Durable roots use the `SearchSession` root methods, separately from the transient
 cache namespace. Hardware roots remain deltas against the verified deterministic
@@ -422,3 +538,19 @@ UML imported roots also retain their source index commitment. After validating
 and importing the checkpoint, the session recomputes the root-domain machine
 commitment and compares it with the pinned index record before installing a
 handle. Final host-image and lease checks remove a temporary handle on failure.
+
+`Session::sdk_events_since(offset)` and `SearchSession::sdk_events_since(offset)`
+return the SDK event suffix starting at the zero-based event index. Direct
+sessions retain the control protocol's checked pagination; process workers carry
+the offset in their SDK-events request and return only that suffix. UML skips
+prior events before copying payloads. `sdk_events()` explicitly requests offset
+zero. Backends using the trait's fallback fetch their complete SDK history and
+slice it; callers must distinguish that correctness fallback from native suffix
+transport when measuring cost.
+
+An offset at or beyond the available event count returns an empty suffix.
+Advancing a cursor beyond `u32::MAX` fails; a failed multi-page read returns no
+partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
+this API does not authenticate a previously consumed prefix or detect rollback.
+`EventHistory.count` counts normalized execution events and is not an SDK offset.
+Workload adapters own decoder checkpoints and lineage validation.

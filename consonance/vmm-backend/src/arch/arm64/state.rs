@@ -15,6 +15,12 @@ pub(crate) fn has_noncanonical_core_regs(core: &Arm64CoreRegs) -> bool {
     (core.pstate | core.spsr_el1) & PSTATE_UNSUPPORTED != 0
 }
 
+pub(crate) fn has_unsupported_execution_mode(core: &Arm64CoreRegs) -> bool {
+    [core.pstate, core.spsr_el1]
+        .into_iter()
+        .any(|value| !matches!(value & 0x1f, 0 | 4 | 5))
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Arm64VcpuState {
     pub core: Arm64CoreRegs,

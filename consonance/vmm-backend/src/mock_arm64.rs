@@ -56,6 +56,7 @@ const MOCK_ARM64_CAPS: MockArm64Caps = Capabilities {
         gic_ctlr_fixed_bits: 0,
         gicd_iidr: 0,
         gicd_typer2: 0,
+        register_identity: [0; 32],
     },
 };
 
@@ -481,6 +482,7 @@ mod tests {
                 gic_ctlr_fixed_bits: 0x88400,
                 gicd_iidr: 0x4b00_243b,
                 gicd_typer2: 0,
+                register_identity: [0; 32],
             },
         };
         let mock = MockArm64Backend::with_capabilities(caps);

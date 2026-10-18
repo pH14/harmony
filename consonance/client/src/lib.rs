@@ -1,5 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+#[cfg(all(
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        all(target_os = "macos", target_arch = "aarch64")
+    ),
+    any(test, all(feature = "in-process", not(miri)))
+))]
+mod ancillary;
 pub mod cache;
 pub mod catalog;
 #[cfg(any(target_os = "linux", test))]

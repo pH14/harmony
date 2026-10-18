@@ -20,7 +20,7 @@ pub fn replay_certificate(
     failed: bool,
 ) -> Result<[u8; 32], String> {
     postcard::to_allocvec(&(
-        "fault-replay-endpoint-v2",
+        "fault-replay-endpoint-v3",
         control_proto::EventHistory::VERSION,
         hash,
         history,

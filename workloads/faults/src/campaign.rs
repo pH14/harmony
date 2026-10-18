@@ -66,7 +66,7 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
-const HOST_FAILURE_POLICY: &str = "watchdog_incomplete_v1";
+const HOST_FAILURE_POLICY: &str = "host_incomplete_v2";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
 const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
@@ -333,30 +333,66 @@ fn outcome(target: &FaultTarget) -> Outcome {
 }
 
 #[derive(Debug)]
-struct WatchdogIncomplete {
+struct AttemptIncomplete {
     phase: &'static str,
+    cause: &'static str,
 }
 
-impl std::fmt::Display for WatchdogIncomplete {
+impl std::fmt::Display for AttemptIncomplete {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "fault campaign incomplete: host watchdog cutoff during {}; reservation not admitted",
-            self.phase
+            "fault campaign incomplete: {} during {}; reservation not admitted",
+            self.cause, self.phase
         )
     }
 }
 
-impl Error for WatchdogIncomplete {}
+impl Error for AttemptIncomplete {}
 
 pub(crate) fn require_completed_attempt(
     target: &FaultTarget,
     phase: &'static str,
 ) -> Result<(), Box<dyn Error>> {
-    if target.watchdog_cutoffs() != 0 {
-        return Err(Box::new(WatchdogIncomplete { phase }));
+    if target.watchdog_cutoffs() != 0 || target.infrastructure_failure() {
+        return Err(Box::new(AttemptIncomplete {
+            phase,
+            cause: if target.infrastructure_failure() {
+                "host infrastructure failure"
+            } else {
+                "guest progress watchdog cutoff"
+            },
+        }));
     }
     Ok(())
+}
+
+pub(crate) fn capture_replayed_prefix(
+    target: &mut FaultTarget,
+    actions: &[FaultAction],
+) -> Result<FaultSnapshot, Box<dyn Error>> {
+    let mut endpoint = None;
+    for (index, action) in actions.iter().enumerate() {
+        if index + 1 == actions.len() {
+            let captured = target.apply_replayed_and_snapshot(*action);
+            require_completed_attempt(target, "branch prefix replay")?;
+            endpoint = captured.map_err(|error| format!("certify branch endpoint: {error}"))?;
+        } else {
+            target.apply_replayed(*action);
+            require_completed_attempt(target, "branch prefix replay")?;
+        }
+    }
+    if target.actions().len() != actions.len() {
+        return Err("branch prefix terminated before its selected point".into());
+    }
+    let snapshot = if actions.is_empty() {
+        target
+            .snapshot()
+            .map_err(|error| format!("certify branch endpoint: {error}"))?
+    } else {
+        endpoint
+    };
+    snapshot.ok_or_else(|| "cannot search from a terminal point; rewind further".into())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -378,10 +414,10 @@ pub(crate) fn execute_job(
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
-        target.apply_replayed(*action);
+        let checked = target.apply_replayed_certified(*action, *certificate);
         target.verify_integrity()?;
         require_completed_attempt(target, "parent replay")?;
-        target.verify_replayed_endpoint(*certificate)?;
+        checked?;
     }
     let mut aggregate = parent_milestones;
     let mut actions = Vec::with_capacity(suffix.len());
@@ -829,6 +865,20 @@ impl TargetExecution for FaultWorkload {
         Ok(())
     }
 
+    fn apply_action_and_snapshot(
+        &self,
+        target: &mut FaultTarget,
+        action: &FaultAction,
+        aggregate: &mut FaultMilestones,
+    ) -> Result<Option<FaultSnapshot>, Box<dyn Error>> {
+        let captured = target.apply_and_snapshot(*action);
+        target.verify_integrity()?;
+        require_completed_attempt(target, "imported prefix execution")?;
+        let captured = captured?;
+        merge_action_milestones(aggregate, target);
+        Ok(captured)
+    }
+
     fn snapshot(&self, target: &mut FaultTarget) -> Result<FaultSnapshot, Box<dyn Error>> {
         target
             .snapshot()?
@@ -1009,10 +1059,19 @@ impl Evaluation for FaultWorkload {
         if action
             .observations
             .iter()
-            .any(|observation| observation.watchdog_cutoff)
+            .any(|observation| observation.watchdog_cutoff || observation.infrastructure_failure)
         {
-            return Err(Box::new(WatchdogIncomplete {
+            return Err(Box::new(AttemptIncomplete {
                 phase: "action evidence",
+                cause: if action
+                    .observations
+                    .iter()
+                    .any(|observation| observation.infrastructure_failure)
+                {
+                    "host infrastructure failure"
+                } else {
+                    "guest progress watchdog cutoff"
+                },
             }));
         }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
@@ -1581,13 +1640,21 @@ mod tests {
             .unwrap();
         }
         let before = serde_json::to_vec(&evidence).unwrap();
-        let error = game
-            .merge_action_evidence(&mut evidence, &result(vec![cutoff]), 0, || {
-                Err("no input".into())
-            })
-            .unwrap_err();
-        assert!(error.to_string().contains("campaign incomplete"), "{error}");
-        assert_eq!(serde_json::to_vec(&evidence).unwrap(), before);
+        for incomplete in [
+            cutoff,
+            FaultObservations {
+                infrastructure_failure: true,
+                ..FaultObservations::default()
+            },
+        ] {
+            let error = game
+                .merge_action_evidence(&mut evidence, &result(vec![incomplete]), 0, || {
+                    panic!("incomplete evidence requested a certified input")
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("campaign incomplete"), "{error}");
+            assert_eq!(serde_json::to_vec(&evidence).unwrap(), before);
+        }
         assert_eq!(
             evidence.park_thresholds.get(&2),
             Some(&ParkThresholds { armed: 1, fired: 1 })
@@ -1733,7 +1800,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_policies_require_watchdog_incompleteness() {
+    fn recorded_policies_require_typed_host_incompleteness() {
         let game = game();
         let mut policies = game.policies(&run(1, vec![1, 2]));
         assert_eq!(
@@ -1744,7 +1811,7 @@ mod tests {
         assert!(game.resolve_recorded(&policies).is_err());
         policies.insert(
             HOST_FAILURE_POLICY_FIELD.to_owned(),
-            "recoverable_cutoff".into(),
+            "watchdog_incomplete_v1".into(),
         );
         assert!(game.resolve_recorded(&policies).is_err());
     }

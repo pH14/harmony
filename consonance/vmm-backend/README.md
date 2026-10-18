@@ -467,6 +467,109 @@ The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
 covers all ten keys, capture refusal, and clean reused, fresh, and policy
 restores.
 
+## ARM register inventory admission
+
+`Arm64Kvm::register_list` enumerates the initialized vCPU with
+[`KVM_GET_REG_LIST`](https://docs.kernel.org/virt/kvm/api.html#kvm-get-reg-list).
+Enumeration failure, duplicate IDs, an unclassified ID, or a missing captured
+slot refuses policy installation before any write. Capture and restore repeat
+admission. This is a bounded inventory of the registers KVM actually lists for
+Harmony's PSCI-only, AArch64, non-SVE/non-PAuth vCPU initialization; it is not an
+assertion about every architectural register or arbitrary future KVM features.
+The measured Linux 6.18 ARM KVM inventory has 257 entries:
+
+| Disposition | Entries | State and enforcement |
+| --- | ---: | --- |
+| Captured | 159 | 37 AArch64 core slots, 34 SIMD/FP slots, the 19 `SYSREGS` fields, 66 debug slots, and three virtual-timer slots |
+| Fixed zero | 22 | ACTLR, DISR, physical timer control/compare; 14 reserved ID slots; four optional firmware bitmaps |
+| OS lock | 1 | OSLK must be clear at capture; restore clears it; read-only feature bits enter identity |
+| Immutable identity | 62 | Other listed CPU ID/cache registers and 14 demultiplexed CCSIDR selectors |
+| Firmware configuration | 4 | PSCI version and three SMCCC workaround values enter identity |
+| Excluded AArch32 | 8 | Four banked SPSRs, DBGVCR32, DACR32, IFSR32 and FPEXC32; capture and restore admit only AArch64 EL0/EL1 modes in both PSTATE and SPSR_EL1 |
+| Excluded physical counter | 1 | Native CNTPCT is external host time, outside the cooperative virtual-time interface; it is not replayed |
+
+The AArch32 exclusion also depends on the actual vCPU initialization, not just
+cut-time PSTATE checks. `vcpu_init_features` enables exactly PSCI, leaving
+`KVM_ARM_VCPU_EL1_32BIT` and nested EL2 disabled. KVM fixes EL1 to AArch64 via
+[HCR_EL2.RW](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/include/asm/kvm_emulate.h).
+Guest EL1 cannot change that hypervisor control. A transient AArch32 EL0
+execution cannot read or write privileged AArch32 banked SPSRs or those four
+EL2 views of EL1-only registers. Its shared GPR/SIMD state is captured normally;
+an AArch32 cut itself remains unsupported. In particular, KVM
+[skips FPEXC32 save/restore for AArch64 EL1](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kvm/hyp/include/hyp/switch.h),
+and Arm specifies that its enable bit applies only when EL1 is not AArch64.
+These controls prevent later AArch32 EL0 execution from observing omitted
+privileged banked state; masking the advertised ID alone would not suffice.
+
+The native physical counter exclusion is an explicit limit, not a claim that
+all EL1 timing instructions trap or that arbitrary counter-reading guests are
+deterministic. Standard libraries remain supported through the owned Linux
+clock interface. KVM register IDs must be interpreted as ABI identifiers:
+legacy virtual timer CVAL and counter IDs use encodings `0xdf02` and `0xdf1a`,
+respectively, rather than their architectural system-register names. The
+[Linux v6.18 register implementation](https://github.com/torvalds/linux/blob/v6.18/arch/arm64/kvm/sys_regs.c)
+provides the mapping, reserved-ID behavior, ACTLR access behavior, and immutable
+cache configuration used by this table.
+
+`sha2` hashes sorted IDs, dispositions, immutable values, firmware values and
+read-only OS-lock bits into `Arm64Caps::register_identity`; captured values are
+already owned by the snapshot. A changed schema or native value changes the
+runtime contract. Capture refuses unexpected identity drift; restore verifies
+the target identity before mutation. Restore resets the four transient fixed
+registers and OSLK, so a dirty detour does not itself prevent a clean restore.
+A failed register read or write propagates. This digest owns small admission
+metadata; the backend still does not hash guest RAM or the full machine.
+The core includes it in snapshot, imported-artifact and cache identity.
+
+HVF has no equivalent register-enumeration API. Its boundary is the public SDK
+configuration and state APIs, with an explicitly created and released vCPU
+configuration passed to the actual vCPU creation. Its fingerprint includes all
+14 documented configuration feature fields, both eight-entry CCSIDR arrays,
+and maximum guest streaming vector length when SME is present. This conservatively
+binds native configuration even where the guest policy masks a feature. HVF
+captures the modeled core, SIMD/FP, system/debug, virtual-timer and interrupt
+state; its userspace GIC and PSCI are modeled by the core. Native configuration
+with non-streaming SVE is unsupported because the record has no non-streaming
+predicate or extended vector storage. Physical timer APIs
+require `hv_gic_create`, and EL2 APIs require an EL2-enabled VM configuration;
+this backend enables neither. Those SDK fields are not silently read as zero.
+Direct REVIDR, CLIDR, AIDR, OSLSR and DISR reads are unavailable on the measured
+HVF host; cache geometry comes from the actual configuration API instead.
+
+HVF fixes ACTLR, SCXTNUM_EL0/EL1, TPIDR2_EL0, SMPRI_EL1 and SMCR_EL1 at zero,
+in addition to the ten pointer-authentication key halves. Creation verifies
+read/write/reset; capture refuses nonzero state; policy and restore reset it.
+SME capture requires PSTATE.SM=0 and PSTATE.ZA=0, independently of masked ID
+registers. Restore clears both before restoring Q registers and FPSR. Apple's
+[XNU SME documentation](https://github.com/apple-oss-distributions/xnu/blob/main/doc/arm/sme.md)
+states that enabling ZA clears ZA/ZT0; the HVF state setter clears streaming
+Z/P state on mode transitions. Inactive extended storage therefore cannot
+carry a prior detour into the next activation. This does not admit active
+streaming vectors, predicates, ZA or ZT0 into the portable record.
+
+SME APIs are resolved at runtime, avoiding a loader failure on older macOS.
+Only explicit `HV_UNSUPPORTED` means absent SME when the APIs exist. If all
+three SME symbols are absent, admission additionally requires a successful,
+exact integer-zero native `hw.optional.arm.FEAT_SME` read and zero SME in the
+unmodified configuration's PFR1. Arm's
+[hardware feature detection guide](https://learn.arm.com/learning-paths/laptops-and-desktops/kleidicv-on-mac/build-1/)
+defines this native zero as SME unavailable. Missing, malformed or failed reads,
+partial symbols, and nonzero native features refuse admission. This older
+preflight hashes 12 feature fields rather than 14; schemas do not compare
+equal. That preflight does not establish older-runtime admission: actual
+fixed-register access remains mandatory, including fields introduced in macOS
+15.2, and a framework rejecting those accesses refuses creation. The existing
+core baseline also requires ZFR0/SMFR0 register APIs introduced in macOS 15.2.
+Neither older-runtime admission nor active-SME hardware has been qualified by
+the current macOS 26.6 non-SME host receipt.
+
+The registered native inventory tests print each KVM disposition and exercise
+native identity drift, ACTLR reset, all six HVF fixed-register detours and the
+SME state boundary. An explicit `SME_ACTIVE_TEST=UNSUPPORTED` receipt is absence
+evidence only, not an active-SME pass. Portable controls cover unknown/missing/
+duplicate/failed enumeration before mutation, identity/schema differences,
+fixed-state detours, unsupported execution modes and imported hash rejection.
+
 ARM KVM handles `OSLAR_EL1` writes and `OSLSR_EL1` reads internally, bypassing
 userspace's unlock-only dispatcher rule. The portable debug record admits only
 an unlocked OS lock: capture reads `OSLSR_EL1` and refuses `OSLK` (bit 1), while

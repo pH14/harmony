@@ -375,7 +375,10 @@ full-state replay equivalence.
 
 The session records `watchdog_cutoffs` when a guest action or parent
 reconstruction exceeds its host progress bound, including fresh and in-place
-UML restores. A campaign treats any such cutoff as infrastructure incompleteness:
+UML restores. Typed session infrastructure errors and abandoned sessions carry
+an independent `infrastructure_failure` flag; they do not increment the timeout
+counter. Neither cause is guest bug evidence. A campaign treats either cause as
+infrastructure incompleteness:
 the affected reservation returns an error before admission, result certification,
 selection accounting, mixture updates or duration feedback. If a suffix already
 completed some actions, none of that job's actions or candidates are admitted.
@@ -385,8 +388,20 @@ The campaign stops with an explicit incomplete error instead of writing a
 completed report. Previously admitted stream records are flushed and existing
 search checkpoints remain available; the incomplete stream has no successful
 completion record. A later search can resume an earlier complete checkpoint.
-The recorded `host_failure_policy = watchdog_incomplete_v1` binds this behavior;
-streams and checkpoints with an absent or different policy are refused. Ordinary
+The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
+streams and checkpoints with an absent or different policy are refused, including
+the earlier watchdog-only policy. The execution and endpoint-certificate identities
+also advance because observations now encode the distinct infrastructure flag. The
+combined replay endpoint uses certificate domain v3, binding ordered event history
+and infrastructure-marked observations under one schema. Reading ordered history
+preserves typed host failures and rejects a known abandoned matching session as
+incomplete; missing or mismatched session identities remain ordinary errors. The
+shared hash helper retains the actual error even when that call retires the
+session: a timeout stays a timeout and a malformed reply stays an ordinary error.
+A successful hash from a session retired during the call cannot certify a
+continuation. These checks also cover receipt reconstruction and imported roots.
+Execution identity v10 separates the combined contract from the earlier receipt-only
+identity. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
 also an infrastructure failure. Completed reports still expose
 `execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
@@ -431,10 +446,67 @@ expected certificates. Missing suffixes execute and check each actual prefix
 before the next action or publication, so an intermediate divergence cannot be
 hidden by a converged final endpoint. Snapshot standalone capture still reads
 fresh live evidence; no whole-state digest is cached across operations.
+Parent replay compares every archived prefix certificate with the actual receipt
+captured by that same replayed action, without hashing the endpoint a second time.
+The campaign still checks integrity and the typed watchdog-cutoff check before
+accepting the comparison.
 Cached-child hits do not materialize the action prefix. New execution still
 materializes the actions required by branch configuration and window scheduling;
 that work scales with prefix length. Missing-prefix checks traverse the expected
 suffix once and compare borrowed receipts rather than repeatedly walking ancestors.
+
+SDK observation decoding keeps an actual-session cursor separate from the normalized
+ordered-event commitment: its offset counts every transported SDK tuple, including
+ignored events. Successful suffix batches update cumulative registers, assertion
+generations and hidden check passes atomically. Each action retains only parks
+and reads strictly after its actual parent's observation moment. Empty suffixes
+preserve the last tuple moment and repeated observations preserve action evidence.
+Branch and replay install a checkpoint from the selected actual captured Link;
+rollback, new sessions and failures cannot reuse another lineage's cursor.
+
+Captured observation attachments use `fault-observations-v1`, included in the exact
+cache namespace. Imported decoder checkpoints remain untrusted. When a pending
+checkpoint is retained, the normal required machine replay or branch reconstructs
+the full actual SDK history and compares all decoder state, including hidden maps
+and offset. If pressure has discarded the pending checkpoint, restoration instead
+reconstructs actual decoder state and validates the captured receipt without using
+the imported decoder. Missing local checkpoints use that same reconstruction path.
+First import and eviction fallback add full-history fetch and decode work, but no
+additional machine restore.
+Expected campaign snapshots and root payloads provide no decoder authority; fresh
+root imports start from offset zero. Whole-state and ordered-event certificates
+retain their existing formats and fresh integrity checks.
+
+Optional Link checkpoints have an internal 8 MiB retention cap, including for
+sessions without a shared index. This is a performance policy, not a logical
+retention setting. Under shared-cache pressure they are discarded before certified
+VM links. Restoring an evicted checkpoint enforces the cap and reports its charge
+without moving the selected VM Link. `report_store` includes session storage plus
+unique retained decoder allocations and checkpoint metadata. If a session does not
+expose storage bytes, the report still includes the optional checkpoint charge.
+Shared Arc state is charged once by physical identity; map storage uses a
+conservative per-entry bound,
+with owned string/vector capacities and Arc headers counted. Cached charges are
+computed at installation, not by rescanning maps on budget queries. Current working
+decoder and temporary decoding/accounting scratch remain target-private, as the
+previous full-history decoder scratch did; retained checkpoints sharing that state
+are still charged. Dropping optional checkpoints never changes serialized attachment
+bytes, actual receipts or leases.
+
+`observe.events` and `observe.payload_bytes` count successful suffix fetches;
+`observe.decoded_events` counts successful append transitions, including ignored
+records. Payload bytes exclude transport framing. `session.observe_decode` and
+`session.observe_projection` separate successful decode/infrastructure checks from
+capture projection. Full actual reconstruction at restore is reported separately
+as `session.observe_checkpoint_rebuild` and `observe.checkpoint_rebuild_*`, for both
+imports and local eviction fallback. Fetch counts can include batches subsequently
+rejected; failed decode/infrastructure attempts do not contribute completed timing
+samples. Checkpoint rebuild timing counts completed fetch/decode/infrastructure
+checks even when a subsequent decoder comparison or receipt-binding check rejects
+the reconstructed checkpoint. `observe.checkpoint_hits`,
+`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and fallback. `cache.resident_bytes`
+retains its VM-page meaning; `cache.observation_checkpoint_bytes` is the optional
+pool charge and `cache.charged_bytes` combines both reported gauges.
 
 Fault caches use exact fixed-width action-path roots. The cache object commitment
 binds both the admitted machine target and opaque captured-history attachment;
@@ -482,11 +554,20 @@ digest commits its history root and ordered endpoint history. Reconstructed
 certificates without a source-bound digest describe the current executor; they
 do not establish the source run's intermediate states.
 
-Campaign suffix execution captures each runnable candidate and certificate in
-one bounded operation with one whole-state hash. Standalone snapshot capture
-hashes fresh live state. A healthy job whose last action is runnable reuses that
-candidate's hash for its final certificate; terminal and zero-action jobs obtain
-fresh final endpoint and ordered-history evidence. Missing, foreign, abandoned or
+Campaign suffix execution and whole-tree import capture each runnable candidate
+and certificate in one bounded operation with one whole-state hash. Import keeps
+every action-prefix certificate and reuses its final captured snapshot. Starting
+a search from an explicit action prefix captures the final replayed action in
+that same operation; an empty prefix obtains fresh setup evidence. Integrity and
+typed incomplete-attempt checks run before captured evidence is accepted. Terminal,
+failed or watchdog-interrupted prefixes cannot return an earlier successful
+snapshot. Source identity checks and every intermediate imported certificate remain
+mandatory; candidate construction still clones the owned observation projection.
+Parent reconstruction inside campaign jobs verifies every archived prefix through
+a fresh endpoint check. Standalone snapshot capture hashes fresh live state. A
+healthy job whose last action is runnable reuses that candidate's hash for its
+final certificate; terminal and zero-action jobs obtain fresh final endpoint and
+ordered-history evidence. Missing, foreign, abandoned or
 unhashable sessions cannot supply certified KVM endpoints. Failed KVM jobs use an
 explicit whole-state-unavailable tag while preserving their checked logical
 observations; UML has a separate whole-state-unavailable tag. Whole-state hashes

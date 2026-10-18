@@ -15,15 +15,16 @@ use super::{
     CampaignEndRecord, CampaignExecutionOptions, CampaignJobRecord, CampaignJobResult,
     CampaignOrigin, CampaignOriginRecord, CampaignOutcome, CampaignProgressRecord,
     CampaignSkipRecord, CampaignSpliceRecord, CampaignStreamHeader, CampaignStreamRecord,
-    CampaignTypes, CompletedJob, CoordinatorCore, JobSpecRecord, LONGEST_SPLICE_TAIL,
-    LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
-    archive_entry_limit_is_valid, bootstrap_campaign, build_report, continuation_arrival,
-    continuation_attempt, derive_selection_seed, execution_work_delta, finish_record,
-    initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish, profile_elapsed,
-    profile_now, progress_checkpoint_due, progress_record, record_compaction_elapsed,
-    record_mixture_outcome, resolve_origin, restore_search_checkpoint, retained_archive_indexes,
-    stop_reservations_after_objective, stop_reservations_after_work_budget, stream_header,
-    write_live_progress, write_search_checkpoint,
+    CampaignTypes, CompletedBuffer, CompletedJob, CoordinatorCore, JobSpecRecord,
+    LONGEST_SPLICE_TAIL, LiveCoordinatorProfile, PendingJob, SelectedJob, StreamWriter, Workload,
+    archive_entry_limit_is_valid, bootstrap_campaign, build_report, completed_job_records,
+    continuation_arrival, continuation_attempt, derive_selection_seed, execution_work_delta,
+    finish_record, initial_draw_state, memory_is_within_reserve, mixture_weights, planned_finish,
+    profile_elapsed, profile_now, progress_checkpoint_due, progress_record,
+    record_compaction_elapsed, record_mixture_outcome, resolve_origin, restore_search_checkpoint,
+    retained_archive_indexes, stop_reservations_after_objective,
+    stop_reservations_after_work_budget, stream_header, write_live_progress,
+    write_search_checkpoint,
 };
 use crate::search::archive::{
     Archive, ArchiveKey, CampaignSpliceTail, Input, SelectorDraw, SelectorPath,
@@ -115,7 +116,7 @@ pub struct CampaignCoordinator<'a, G: Workload> {
     admitted: usize,
     planned_clock: u64,
     pending: BTreeMap<usize, PendingJob<G>>,
-    completed: BTreeMap<usize, CompletedJob<G>>,
+    completed: CompletedBuffer<usize, CompletedJob<G>>,
     schedule: BTreeSet<(u64, usize)>,
     queued: BTreeMap<(u64, usize), JobSpec<G>>,
     spec_records: BTreeMap<usize, JobSpecRecord<G>>,
@@ -306,7 +307,7 @@ where
             admitted,
             planned_clock,
             pending: BTreeMap::new(),
-            completed: BTreeMap::new(),
+            completed: CompletedBuffer::new(completed_job_records),
             schedule: BTreeSet::new(),
             queued: BTreeMap::new(),
             spec_records: BTreeMap::new(),
@@ -551,6 +552,7 @@ where
         if !self.completed.is_empty() || !self.schedule.is_empty() {
             return Err("campaign reorder window ended with an admission gap".into());
         }
+        self.telemetry.completed_buffer = self.completed.telemetry;
         if let Some(checkpoints) = self.checkpoints.as_mut() {
             write_search_checkpoint(
                 self.workload,
@@ -934,7 +936,7 @@ where
             )?;
             if let Some(host_times) = host_times {
                 eprintln!(
-                    "coordinator-profile executions={sequence} coordinator_cpu_ns={} coordinator_run_wait_ns={} idle_admission_order_ns={} idle_no_job_ns={} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
+                    "coordinator-profile executions={sequence} coordinator_cpu_ns={} coordinator_run_wait_ns={} idle_admission_order_ns={} idle_no_job_ns={} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} completed_buffered={} completed_actions_buffered={} completed_candidates_buffered={} completed_results_peak={} completed_actions_peak={} completed_candidates_peak={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
                     host_times.coordinator_cpu_ns,
                     host_times.coordinator_run_wait_ns,
                     host_times.idle_admission_order_ns,
@@ -968,6 +970,11 @@ where
                     core.archive.historical_entries_dropped(),
                     core.archive.input_reconstructions(),
                     completed.len(),
+                    completed.telemetry.actions_live,
+                    completed.telemetry.candidates_live,
+                    completed.telemetry.results_peak,
+                    completed.telemetry.actions_peak,
+                    completed.telemetry.candidates_peak,
                     counters.job_execution_work,
                     coordinator_profile.replay_jobs,
                     coordinator_profile.replay_actions,
