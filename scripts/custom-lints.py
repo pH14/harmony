@@ -1019,7 +1019,13 @@ def check_job_contract(rel_path: str, job_id: str, job: dict, registered, pr_tri
 
     violations = []
     timeout = job.get("timeout-minutes")
-    declared = isinstance(timeout, int) and not isinstance(timeout, bool)
+    expression = ci_contract.PR_TIMEOUT_EXPRESSIONS.get((rel_path, registered.name))
+    if expression is not None:
+        declared = timeout == expression
+        if declared:
+            timeout = registered.timeout_minutes
+    else:
+        declared = isinstance(timeout, int) and not isinstance(timeout, bool)
     runs_on_pr = pr_triggered and not _job_skips_pr(str(job.get("if", "")))
     if registered.trigger == "pr":
         if pr_triggered and not runs_on_pr:
@@ -2038,7 +2044,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "ci-pr-job-timeout": (
             f"Every job a pull request reaches must finish inside "
-            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes except registered artifact-build prerequisites, and every job's declared bound must "
+            f"{PR_JOB_MAX_TIMEOUT_MINUTES} minutes except registered artifact-build prerequisites and extended checks, and every job's declared bound must "
             "match the budget scripts/ci_contract.py records for it. Split the work, or "
             "register the long run as a schedule or dispatch job with its reason."
         ),
