@@ -3462,7 +3462,7 @@ mod tests {
                 let mut live = scripted_capture_live(vec![[17; 32]; depth], false);
                 live.session = Box::new(TimedOutRestore {
                     run_hashes: Some(vec![[17; 32]; depth]),
-                    history_hung: true,
+                    history_failure: Some(|| SessionError::Hung(WALL_LIMIT)),
                     ..fixture_session()
                 });
                 live.chain = Chain::new(
