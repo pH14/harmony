@@ -41,6 +41,21 @@ retains exact artifacts and cross-host admission outcomes. This bounded x86
 fixture does not establish a complete backend register inventory or qualify
 Arm Linux continuation.
 
+These are strict acceptance obligations, not a claim of universal portability.
+At source `9673f33363395f0850cd2cb5e704432d33434180`, the retained
+[hardware run](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD local/export and five AMD import arms. One hosted import matches
+READY and the independent guest record, then fails the DONE whole-state hash.
+The same retained executable and AMD cut reproduce that failure on nested Intel
+KVM. Intel records the post-cut `fstpl` address in x87's last-instruction pointer;
+the AMD expected state has zero there. The difference reaches guest RAM through
+the kernel's saved FPU image, as well as the VCPU and encoded snapshot. Neither
+guest-visible state nor RAM is normalized away. The strict cross-vendor oracle
+remains failing, so cross-vendor whole-state identity is unqualified. Standard
+libraries remain supported; CPU provenance warnings are advisory. This finite
+state witness complements the numerical portability limits in
+[#733](https://github.com/pH14/harmony/issues/733).
+
 `Vmm::run` repeatedly obtains one backend exit, classifies it through the
 architecture vendor, advances virtual time by the assigned integer duration,
 dispatches devices and protocol services, and completes any pending backend

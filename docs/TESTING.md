@@ -88,6 +88,18 @@ zero-work, same-seed and changed-latent-state controls prevent a vacuous cell.
 This is finite x86 KVM Linux evidence, not an oracle registry for every backend
 or a UML whole-state result.
 
+The registry states acceptance obligations, not a passing portability result.
+The final-source [9673f3336 hardware run](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD local/export and five AMD import arms, but one hosted import
+fails O1 at DONE despite matching READY and independent guest readbacks. A
+separate nested Intel execution of the identical retained binary and AMD cut
+reproduces the differing hash. The difference is x87's last-instruction pointer,
+including its saved copy in guest RAM. Cross-vendor whole-state identity remains
+unqualified; the strict assertion and aggregate continue to reject this result.
+The CPU portability warning remains advisory and standard libraries remain
+supported. This state-metadata witness adds to the numerical limits tracked in
+[#733](https://github.com/pH14/harmony/issues/733).
+
 The corpus has three families:
 
 - Microprograms isolate instruction, register, timer, interrupt, and guest

@@ -271,7 +271,10 @@ mod tests {
                     output.contains("warning: Replay CPU portability warning:"),
                     "{operation:?}: {output}"
                 );
-                assert!(output.contains("Native math may produce different result bits"));
+                assert!(output.contains(
+                    "Native CPU behavior may produce different result bits or saved state"
+                ));
+                assert!(output.contains("This warning does not block execution"));
             }
         }
     }

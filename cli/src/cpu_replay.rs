@@ -167,7 +167,7 @@ pub fn warning(recorded: &[CpuIdentity], current: &CpuIdentity) -> Option<String
         return None;
     };
     Some(format!(
-        "Replay CPU portability warning: {reason}. Native math may produce different result bits. This warning does not block execution; cross-CPU arithmetic is not qualified."
+        "Replay CPU portability warning: {reason}. Native CPU behavior may produce different result bits or saved state. This warning does not block execution; cross-CPU whole-state identity is not qualified."
     ))
 }
 
@@ -298,9 +298,10 @@ mod tests {
     }
 
     #[test]
-    fn model_microcode_and_features_each_trigger_a_warning() {
+    fn vendor_model_microcode_and_features_each_trigger_a_warning() {
         let identity = parse_linux("x86_64", linux_x86());
         for (from, to) in [
+            ("GenuineIntel", "AuthenticAMD"),
             ("model: 183", "model: 184"),
             ("0x12b", "0x12c"),
             ("avx", "avx2"),
@@ -309,6 +310,7 @@ mod tests {
             assert!(changed.complete);
             let message = warning(std::slice::from_ref(&identity), &changed).unwrap();
             assert!(message.contains("different result bits"));
+            assert!(message.contains("or saved state"));
             assert!(message.contains("This warning does not block execution"));
         }
     }
