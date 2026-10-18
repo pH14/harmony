@@ -53,7 +53,10 @@ const CONSOLE_TAIL: u8 = 3;
 const TELEMETRY: u8 = 4;
 const OWNED_PAGES: u8 = 5;
 const EXPORT: u8 = 6;
-const WRITE_EXTENT: u8 = 7;
+const NEED_EXTENT: u8 = 7;
+const EXTENT_READY: u8 = 18;
+const EXTENT_DENIED: u8 = 19;
+const EXPORT_FRAME_LIMIT: usize = 4096;
 const IMPORT: u8 = 8;
 const SNAPSHOT: u8 = 9;
 const DROP_SNAPSHOT: u8 = 10;
@@ -174,31 +177,13 @@ pub trait SearchSession: std::fmt::Debug {
 }
 
 trait ServedSession: SearchSession {
-    fn export_delta(
-        &self,
-        parent: Option<SnapId>,
-        target: SnapId,
-    ) -> Result<Vec<u8>, Box<dyn Error>>;
-    fn export_delta_attached(
+    fn export_delta_into(
         &self,
         parent: Option<SnapId>,
         target: SnapId,
         attachment: &SnapshotAttachment,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        let raw = self.export_delta(parent, target)?;
-        let delta = crate::cache::extent::read_extent(&raw)?;
-        let machine = super::live::raw_target_commitment(delta.sidecar)?;
-        let sidecar = super::attachment::encode(delta.sidecar, machine, attachment)?;
-        let len = crate::cache::extent::extent_len(
-            delta.pages.len(),
-            delta.reverted.len(),
-            sidecar.len(),
-        )
-        .ok_or("extent size overflows")?;
-        let mut out = vec![0; len];
-        crate::cache::extent::write_extent(&mut out, &delta.pages, &delta.reverted, &sidecar)?;
-        Ok(out)
-    }
+        allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>>;
     fn import_extents(
         &mut self,
         extents: &[&[u8]],
@@ -334,28 +319,41 @@ impl SearchSession for Session {
     }
 }
 
-impl ServedSession for Session {
-    fn export_delta(
-        &self,
-        parent: Option<SnapId>,
-        target: SnapId,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        self.write_delta(parent, target, |len| Ok(vec![0; len]), Vec::as_mut_slice)
-    }
+#[cfg(all(test, target_arch = "aarch64"))]
+pub(super) fn export_destination_for_test(
+    session: &Session,
+    index: &dyn CacheIndex,
+    parent: Option<SnapId>,
+    target: SnapId,
+    attachment: &SnapshotAttachment,
+) -> (crate::cache::WritableExtent, Vec<(usize, usize)>) {
+    let mut extent = None;
+    let mut allocations = Vec::new();
+    session
+        .export_delta_into(parent, target, attachment, &mut |len| {
+            let destination = index.extent(len)?;
+            let SharedRange { fd, offset, .. } = destination.shared_range();
+            let mut mapping = Mapping::new(fd, offset, len, true)?;
+            allocations.push((mapping.bytes_mut().as_ptr() as usize, len));
+            extent = Some(destination);
+            Ok(mapping)
+        })
+        .unwrap();
+    (extent.unwrap(), allocations)
+}
 
-    fn export_delta_attached(
+impl ServedSession for Session {
+    fn export_delta_into(
         &self,
         parent: Option<SnapId>,
         target: SnapId,
         attachment: &SnapshotAttachment,
-    ) -> Result<Vec<u8>, Box<dyn Error>> {
-        self.write_delta_attached(
-            parent,
-            target,
-            attachment,
-            |len| Ok(vec![0; len]),
-            Vec::as_mut_slice,
-        )
+        allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
+    ) -> Result<(), Box<dyn Error>> {
+        let mapping =
+            self.write_delta_attached(parent, target, attachment, allocate, Mapping::bytes_mut)?;
+        drop(mapping);
+        Ok(())
     }
     fn import_extents(
         &mut self,
@@ -729,25 +727,29 @@ struct Mapping {
 
 impl Mapping {
     fn new(fd: BorrowedFd<'_>, offset: usize, len: usize, writable: bool) -> io::Result<Self> {
-        if len == 0 {
-            return Err(malformed("empty extent"));
-        }
+        let file = std::fs::File::from(fd.try_clone_to_owned()?);
         // SAFETY: sysconf reads a constant system parameter.
         let page = usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) })
             .map_err(|_| io::Error::last_os_error())?;
-        let skip = offset % page;
-        let start = libc::off_t::try_from(offset - skip).map_err(|_| malformed("offset"))?;
+        let (start, skip, mapped_len) = crate::cache::segments::checked_mapping_range(
+            offset,
+            len,
+            file.metadata()?.len(),
+            page,
+        )?;
+        let start = libc::off_t::try_from(start).map_err(|_| malformed("offset"))?;
         let protection = if writable {
             libc::PROT_READ | libc::PROT_WRITE
         } else {
             libc::PROT_READ
         };
         // SAFETY: a fresh shared mapping of a descriptor the caller holds open aliases no Rust
-        // object; the kernel rejects a range beyond the file.
+        // object. The checked range fits the current backing; the owning coordinator keeps its
+        // allocation alive without truncating it for the entire exchange.
         let base = unsafe {
             libc::mmap(
                 std::ptr::null_mut(),
-                skip + len,
+                mapped_len,
                 protection,
                 libc::MAP_SHARED,
                 fd.as_raw_fd(),
@@ -926,6 +928,14 @@ pub struct WorkerSession {
     seed: u64,
     failed: Cell<bool>,
     counters: RefCell<Vec<(String, u64)>>,
+    exchanging: Cell<bool>,
+}
+
+struct Exchange<'a>(&'a Cell<bool>);
+impl Drop for Exchange<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }
 
 impl WorkerSession {
@@ -979,6 +989,7 @@ impl WorkerSession {
             seed: config.seed,
             failed: Cell::new(false),
             counters: RefCell::default(),
+            exchanging: Cell::new(false),
         };
         let mut request = Out::op(INIT);
         put_config(&mut request, config);
@@ -1014,7 +1025,15 @@ impl WorkerSession {
         Ok(())
     }
 
+    fn begin_exchange(&self) -> Result<Exchange<'_>, Box<dyn Error>> {
+        if self.exchanging.replace(true) {
+            return Err("session worker exchange is already active".into());
+        }
+        Ok(Exchange(&self.exchanging))
+    }
+
     fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let _exchange = self.begin_exchange()?;
         self.check_loaded_image()?;
         let reply = send(&self.stream, &request.0, fds).and_then(|()| recv(&self.stream));
         let body = match reply {
@@ -1025,7 +1044,11 @@ impl WorkerSession {
             }
         };
         self.check_loaded_image()?;
-        let mut input = In(&body);
+        self.reply_status(&body)
+    }
+
+    fn reply_status(&self, body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
+        let mut input = In(body);
         match input.u8()? {
             OK => Ok(input.0.to_vec()),
             FAILED => {
@@ -1034,14 +1057,122 @@ impl WorkerSession {
                     HUNG => SessionError::Hung(Duration::from_nanos(input.u64()?)),
                     ABANDONED => SessionError::Abandoned,
                     INFRASTRUCTURE => SessionError::Infrastructure(input.string()?),
-                    _ => SessionError::Control(input.string()?),
+                    OTHER => SessionError::Control(input.string()?),
+                    _ => return Err(malformed("reply error kind").into()),
                 };
+                input.finish()?;
                 if kind != OTHER {
                     self.failed.set(true);
                 }
                 Err(error.into())
             }
             _ => Err(malformed("reply status").into()),
+        }
+    }
+
+    fn export_extent(
+        &self,
+        index: &dyn CacheIndex,
+        parent: Option<SnapId>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+    ) -> Result<crate::cache::WritableExtent, Box<dyn Error>> {
+        let _exchange = self.begin_exchange()?;
+        self.check_loaded_image()?;
+        let mut denied = None;
+        let mut rejected = None;
+        let result: Result<Option<crate::cache::WritableExtent>, Box<dyn Error>> = (|| {
+            let mut request = Out::op(EXPORT);
+            request
+                .option(parent.map(|snap| snap.0))
+                .u64(target.0)
+                .bytes(&attachment.domain)
+                .bytes(&attachment.bytes);
+            send(&self.stream, &request.0, &[])?;
+            let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
+            self.check_loaded_image()?;
+            if !fds.is_empty() {
+                return Err(malformed("allocation request descriptors").into());
+            }
+            let mut input = In(&body);
+            if input.u8()? != NEED_EXTENT {
+                if body.first() != Some(&FAILED) {
+                    return Err(malformed("missing allocation request").into());
+                }
+                let mut failure = In(&body[1..]);
+                match failure.u8()? {
+                    HUNG => {
+                        failure.u64()?;
+                    }
+                    ABANDONED => {}
+                    OTHER => {
+                        failure.string()?;
+                    }
+                    _ => return Err(malformed("reply error kind").into()),
+                }
+                failure.finish()?;
+                rejected = Some(self.reply_status(&body).unwrap_err());
+                return Ok(None);
+            }
+            let len = input.len()?;
+            input.finish()?;
+            if len == 0 {
+                return Err(malformed("empty allocation request").into());
+            }
+            let extent = match index.extent(len) {
+                Ok(extent) => Some(extent),
+                Err(error) => {
+                    denied = Some(error);
+                    None
+                }
+            };
+            self.check_loaded_image()?;
+            if let Some(extent) = extent.as_ref() {
+                let SharedRange {
+                    fd,
+                    offset,
+                    len: usable,
+                } = extent.shared_range();
+                if usable < len {
+                    return Err(malformed("allocated range too short").into());
+                }
+                send(
+                    &self.stream,
+                    &Out::op(EXTENT_READY).len(offset).len(len).0,
+                    &[fd],
+                )?;
+            } else {
+                send(&self.stream, &Out::op(EXTENT_DENIED).0, &[])?;
+            }
+            let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
+            self.check_loaded_image()?;
+            if !fds.is_empty() {
+                return Err(malformed("completion descriptors").into());
+            }
+            if denied.is_some() {
+                let mut input = In(&body);
+                if input.u8()? != FAILED || input.u8()? != OTHER {
+                    return Err(malformed("allocation denial acknowledgement").into());
+                }
+                input.string()?;
+                input.finish()?;
+                return Ok(None);
+            }
+            let reply = self.reply_status(&body)?;
+            In(&reply).finish()?;
+            Ok(extent)
+        })();
+        match result {
+            Ok(Some(extent)) => Ok(extent),
+            Ok(None) => match rejected {
+                Some(error) => Err(error),
+                None => Err(denied.expect("denied allocation").into()),
+            },
+            Err(error) => {
+                self.failed.set(true);
+                let _ = self.stream.shutdown(Shutdown::Both);
+                Err(SessionError::Control(format!("session worker export: {error}")).into())
+            }
         }
     }
 
@@ -1173,21 +1304,8 @@ impl SearchSession for WorkerSession {
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
-        let reply = self.call(
-            Out::op(EXPORT)
-                .option(parent.map(|(snap, _)| snap.0))
-                .u64(target.0)
-                .bytes(&attachment.domain)
-                .bytes(&attachment.bytes),
-            &[],
-        )?;
-        let mut input = In(&reply);
-        let len = input.len()?;
-        input.finish()?;
-        let mut extent = index.extent(len)?;
-        let SharedRange { fd, offset, len } = extent.shared_range();
-        let reply = self.call(Out::op(WRITE_EXTENT).len(offset).len(len), &[fd])?;
-        In(&reply).finish()?;
+        let mut extent =
+            self.export_extent(index, parent.map(|(snap, _)| snap), target, attachment)?;
         let target_commitment = vmm_target_commitment(&mut extent)?;
         self.check_loaded_image()?;
         let lease = index.publish(
@@ -1366,7 +1484,6 @@ type Open<'a> = dyn FnMut(Init) -> Result<Box<dyn ServedSession>, Box<dyn Error>
 #[derive(Default)]
 struct Served {
     session: Option<Box<dyn ServedSession>>,
-    pending: Option<Vec<u8>>,
 }
 
 impl Served {
@@ -1382,39 +1499,22 @@ impl Served {
         body: &[u8],
         fds: &[OwnedFd],
         open: &mut Open<'_>,
+        allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
     ) -> Result<Out, Box<dyn Error>> {
         let mut input = In(body);
         let op = input.u8()?;
         let mut out = Out::default();
-        match op {
-            INIT => {
-                let init = take_init(&mut input)?;
-                input.finish()?;
-                if self.session.is_some() {
-                    return Err("session worker is already initialized".into());
-                }
-                let session = open(init)?;
-                let (setup, at) = session.setup_handle();
-                self.session = Some(session);
-                out.u64(setup.0).u64(at);
-                return Ok(out);
+        if op == INIT {
+            let init = take_init(&mut input)?;
+            input.finish()?;
+            if self.session.is_some() {
+                return Err("session worker is already initialized".into());
             }
-            WRITE_EXTENT => {
-                let offset = input.len()?;
-                let len = input.len()?;
-                input.finish()?;
-                let [fd] = fds else {
-                    return Err(malformed("an extent write carries one descriptor").into());
-                };
-                let pending = self.pending.take().ok_or("no exported delta is pending")?;
-                if pending.len() > len {
-                    return Err(malformed("extent is smaller than its delta").into());
-                }
-                let mut mapping = Mapping::new(fd.as_fd(), offset, len, true)?;
-                mapping.bytes_mut()[..pending.len()].copy_from_slice(&pending);
-                return Ok(out);
-            }
-            _ => {}
+            let session = open(init)?;
+            let (setup, at) = session.setup_handle();
+            self.session = Some(session);
+            out.u64(setup.0).u64(at);
+            return Ok(out);
         }
         let session = self.session()?;
         match op {
@@ -1457,9 +1557,10 @@ impl Served {
                     bytes: input.bytes()?.to_vec(),
                 };
                 input.finish()?;
-                let delta = session.export_delta_attached(parent, target, &attachment)?;
-                out.len(delta.len());
-                self.pending = Some(delta);
+                if !fds.is_empty() {
+                    return Err(malformed("export descriptors").into());
+                }
+                session.export_delta_into(parent, target, &attachment, allocate)?;
             }
             IMPORT => {
                 let near = SnapId(input.u64()?);
@@ -1587,7 +1688,54 @@ fn serve(
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let reply = status(served.handle(&body, &fds, open));
+        let mut requested = false;
+        let mut allocation_broken = false;
+        let mut allocate = |len| {
+            let result: Result<Option<Mapping>, Box<dyn Error>> = (|| {
+                if std::mem::replace(&mut requested, true) {
+                    return Err(malformed("repeated allocation").into());
+                }
+                loaded_image_guard.check()?;
+                send(stream, &Out::op(NEED_EXTENT).len(len).0, &[])?;
+                loaded_image_guard.check()?;
+                let (body, fds) = recv_with_limit(stream, EXPORT_FRAME_LIMIT, None)?;
+                loaded_image_guard.check()?;
+                let mut input = In(&body);
+                match input.u8()? {
+                    EXTENT_READY => {
+                        let offset = input.len()?;
+                        if input.len()? != len {
+                            return Err(malformed("destination length differs").into());
+                        }
+                        input.finish()?;
+                        let [fd] = fds.as_slice() else {
+                            return Err(malformed("destination requires one descriptor").into());
+                        };
+                        Ok(Some(Mapping::new(fd.as_fd(), offset, len, true)?))
+                    }
+                    EXTENT_DENIED => {
+                        input.finish()?;
+                        if !fds.is_empty() {
+                            return Err(malformed("denial descriptors").into());
+                        }
+                        Ok(None)
+                    }
+                    _ => Err(malformed("expected allocation response").into()),
+                }
+            })();
+            match result {
+                Ok(Some(mapping)) => Ok(mapping),
+                Ok(None) => Err("destination allocation denied".into()),
+                Err(error) => {
+                    allocation_broken = true;
+                    Err(error)
+                }
+            }
+        };
+        let reply = status(served.handle(&body, &fds, open, &mut allocate));
+        if allocation_broken {
+            return Err(malformed("allocation exchange failed").into());
+        }
         loaded_image_guard.check()?;
         drop(fds);
         send(stream, &reply, &[])?;
@@ -1828,11 +1976,13 @@ mod tests {
     }
 
     impl ServedSession for Fake {
-        fn export_delta(
+        fn export_delta_into(
             &self,
             _: Option<SnapId>,
             target: SnapId,
-        ) -> Result<Vec<u8>, Box<dyn Error>> {
+            attachment: &SnapshotAttachment,
+            allocate: &mut dyn FnMut(usize) -> Result<Mapping, Box<dyn Error>>,
+        ) -> Result<(), Box<dyn Error>> {
             let fill = self.state(target)?;
             let policy = ServiceConfig::default().encode();
             #[cfg(target_arch = "x86_64")]
@@ -1865,9 +2015,17 @@ mod tests {
             sidecar.extend_from_slice(&policy);
             sidecar.push(0);
             sidecar.push(0);
-            let mut out = vec![0; extent_len(1, 0, sidecar.len()).unwrap()];
-            write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &sidecar)?;
-            Ok(out)
+            let machine = super::super::live::raw_target_commitment(&sidecar)?;
+            let sidecar = super::super::attachment::encode(&sidecar, machine, attachment)?;
+            let mut out = allocate(extent_len(1, 0, sidecar.len()).unwrap())?;
+            write_extent(
+                out.bytes_mut(),
+                &[(0, &[fill; 32], &[fill; 4096])],
+                &[],
+                &sidecar,
+            )?;
+            drop(out);
+            Ok(())
         }
 
         fn import_extents(
@@ -2377,14 +2535,27 @@ mod tests {
         start: u8,
         quarantine_on_import: Option<Arc<LocalIndex>>,
     ) -> (WorkerSession, std::thread::JoinHandle<()>) {
+        threaded_with_abort(start, quarantine_on_import, false)
+    }
+
+    fn threaded_with_abort(
+        start: u8,
+        quarantine_on_import: Option<Arc<LocalIndex>>,
+        aborted_export: bool,
+    ) -> (WorkerSession, std::thread::JoinHandle<()>) {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
-            serve(
+            let result = serve(
                 &child,
                 &mut |init| Fake::open_quarantining(init, quarantine_on_import.clone()),
                 crate::image_identity::LoadedImageGuard::fixture(),
-            )
-            .unwrap()
+            );
+            match result {
+                Err(error) if aborted_export => {
+                    assert!(error.to_string().contains("allocation exchange failed"))
+                }
+                result => result.unwrap(),
+            }
         });
         let session = WorkerSession::connect(
             WorkerConnection {
@@ -2847,6 +3018,7 @@ mod tests {
                 setup: (SnapId(1), 10),
                 seed: 0,
                 counters: RefCell::new(Vec::new()),
+                exchanging: Cell::new(false),
                 failed: std::cell::Cell::new(false),
                 loaded_image_guard: LoadedImageGuard::fixture(),
             };
@@ -2860,12 +3032,12 @@ mod tests {
     }
 
     #[test]
-    fn publication_checks_both_rpcs_and_both_index_boundaries() {
+    fn publication_checks_export_exchange_and_both_index_boundaries() {
         use crate::image_identity::trace_checks;
         for attached in [false, true] {
             for refusal in [None, Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)] {
                 let index = LocalIndex::new(1 << 20);
-                let (session, server) = threaded(3);
+                let (session, server) = threaded_with_abort(3, None, true);
                 let (rpc, entries, strict) =
                     trace_checks(None, || session.call(&Out::op(STORE_BYTES), &[]));
                 assert!(rpc.is_ok());
@@ -2987,6 +3159,406 @@ mod tests {
             assert!(recv(&parent).is_err());
             server.join().unwrap();
         }
+    }
+
+    #[derive(Debug)]
+    struct ExtentHook {
+        inner: LocalIndex,
+        hook: fn(),
+    }
+
+    impl CacheIndex for ExtentHook {
+        fn divergences(&self) -> Vec<Arc<crate::cache::CacheDivergence>> {
+            self.inner.divergences()
+        }
+        fn verify_namespace(&self, n: Namespace) -> Result<(), crate::cache::CacheError> {
+            self.inner.verify_namespace(n)
+        }
+        fn verify_integrity(&self) -> Result<(), crate::cache::CacheError> {
+            self.inner.verify_integrity()
+        }
+        fn verify_lease(&self, l: &Lease) -> Result<(), crate::cache::CacheError> {
+            self.inner.verify_lease(l)
+        }
+        fn lookup(&self, n: Namespace, k: &[u8]) -> Option<Lease> {
+            self.inner.lookup(n, k)
+        }
+        fn extent(
+            &self,
+            len: usize,
+        ) -> Result<crate::cache::WritableExtent, crate::cache::CacheError> {
+            (self.hook)();
+            self.inner.extent(len)
+        }
+        fn publish(
+            &self,
+            n: Namespace,
+            k: &[u8],
+            p: Option<&Lease>,
+            e: crate::cache::WritableExtent,
+            t: [u8; 32],
+            c: u64,
+        ) -> Result<Lease, crate::cache::CacheError> {
+            self.inner.publish(n, k, p, e, t, c)
+        }
+        fn target_commitment(&self, l: &Lease) -> Result<[u8; 32], crate::cache::CacheError> {
+            self.inner.target_commitment(l)
+        }
+        fn chain(&self, l: &Lease) -> Result<Vec<CommittedExtent>, crate::cache::CacheError> {
+            self.inner.chain(l)
+        }
+        fn release(&self, l: Lease) {
+            self.inner.release(l)
+        }
+        fn revoke(&self, l: Lease) {
+            self.inner.revoke(l)
+        }
+        fn report_store(&self, h: u64, b: u64) -> bool {
+            self.inner.report_store(h, b)
+        }
+        fn forget_store(&self, h: u64) {
+            self.inner.forget_store(h)
+        }
+        fn stats(&self) -> crate::cache::CacheStats {
+            self.inner.stats()
+        }
+    }
+
+    #[test]
+    fn allocation_callback_cannot_hide_refusal_poisoning_or_reenter_the_exchange() {
+        thread_local! { static SESSION: RefCell<Option<WorkerSession>> = const { RefCell::new(None) }; }
+        for case in 0..3 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let (result, writes) = crate::cache::extent::trace_writes(|| {
+                    serve(
+                        &child,
+                        &mut Fake::open,
+                        crate::image_identity::LoadedImageGuard::fixture(),
+                    )
+                });
+                if let Err(error) = result {
+                    assert!(error.to_string().contains("allocation exchange failed"));
+                }
+                writes.len()
+            });
+            let session = connected_to_script(parent);
+            SESSION.with(|slot| *slot.borrow_mut() = Some(session));
+            let hook = match case {
+                0 => crate::image_identity::refuse_next_check as fn(),
+                1 => || SESSION.with(|slot| slot.borrow().as_ref().unwrap().failed.set(true)),
+                _ => || {
+                    SESSION.with(|slot| {
+                        let borrow = slot.borrow();
+                        let session = borrow.as_ref().unwrap();
+                        assert!(
+                            session
+                                .call(&Out::op(STORE_BYTES), &[])
+                                .unwrap_err()
+                                .to_string()
+                                .contains("already active")
+                        );
+                    })
+                },
+            };
+            let index = ExtentHook {
+                inner: LocalIndex::new(1 << 20),
+                hook,
+            };
+            let (result, _, _) = crate::image_identity::trace_checks(None, || {
+                SESSION.with(|slot| {
+                    slot.borrow().as_ref().unwrap().publish_snapshot(
+                        &index,
+                        namespace(),
+                        b"callback",
+                        None,
+                        SnapId(1),
+                        1,
+                    )
+                })
+            });
+            if case < 2 {
+                assert!(result.is_err());
+                assert_eq!(
+                    (
+                        index.stats().entries,
+                        index.stats().leased,
+                        index.stats().publishes
+                    ),
+                    (0, 0, 0)
+                );
+            } else {
+                index.release(result.unwrap());
+            }
+            SESSION.with(|slot| slot.borrow_mut().take());
+            assert_eq!(server.join().unwrap(), usize::from(case == 2));
+        }
+    }
+
+    #[test]
+    fn export_guard_counts_include_the_reverse_allocation_boundaries() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = std::thread::spawn(move || {
+            let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
+                serve(
+                    &child,
+                    &mut Fake::open,
+                    crate::image_identity::LoadedImageGuard::fixture(),
+                )
+            });
+            result.unwrap();
+            assert_eq!((entries, strict), (8, 0));
+        });
+        let session = connected_to_script(parent);
+        let index = LocalIndex::new(1 << 20);
+        let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
+            session.publish_snapshot(&index, namespace(), b"counts", None, SnapId(1), 1)
+        });
+        assert_eq!((entries, strict), (6, 0));
+        index.release(result.unwrap());
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn export_allocation_refusal_drains_and_preserves_the_source_session() {
+        let (mut session, server) = threaded(3);
+        let refused = LocalIndex::new(0);
+        assert!(
+            session
+                .publish_snapshot(&refused, namespace(), b"missing", None, SnapId(u64::MAX), 1)
+                .is_err()
+        );
+        assert!(!session.abandoned());
+        assert_eq!(session.state_hash().unwrap(), [3; 32]);
+        let error = session
+            .publish_snapshot(&refused, namespace(), b"refused", None, SnapId(1), 1)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::cache::CacheError>(),
+            Some(crate::cache::CacheError::Refused { .. })
+        ));
+        assert!(!session.abandoned());
+        assert_eq!(session.state_hash().unwrap(), [3; 32]);
+        let exchange = session.begin_exchange().unwrap();
+        assert!(
+            session
+                .call(&Out::op(STORE_BYTES), &[])
+                .unwrap_err()
+                .to_string()
+                .contains("already active")
+        );
+        drop(exchange);
+        let index = LocalIndex::new(1 << 20);
+        let lease = session
+            .publish_snapshot(&index, namespace(), b"valid", None, SnapId(1), 1)
+            .unwrap();
+        index.release(lease);
+        drop(session);
+        server.join().unwrap();
+    }
+
+    fn init_frame() -> Out {
+        let mut request = Out::op(INIT);
+        put_config(&mut request, &config());
+        request.bytes(&[3]).bytes(b"i").len(0).bytes(b"fake");
+        request
+    }
+
+    #[test]
+    fn export_destination_rejects_bad_frames_descriptors_and_backing_ranges() {
+        for case in 0..11 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                assert!(
+                    serve(
+                        &child,
+                        &mut Fake::open,
+                        crate::image_identity::LoadedImageGuard::fixture()
+                    )
+                    .is_err()
+                );
+            });
+            send(&parent, &init_frame().0, &[]).unwrap();
+            assert_eq!(recv(&parent).unwrap().0[0], OK);
+            send(
+                &parent,
+                &Out::op(EXPORT).option(None).u64(1).bytes(b"").bytes(b"").0,
+                &[],
+            )
+            .unwrap();
+            let (request, fds) = recv(&parent).unwrap();
+            assert!(fds.is_empty());
+            let mut input = In(&request);
+            assert_eq!(input.u8().unwrap(), NEED_EXTENT);
+            let len = input.len().unwrap();
+            input.finish().unwrap();
+            let named = tempfile::NamedTempFile::new().unwrap();
+            let file = named.as_file();
+            file.set_len(if case == 5 { 1 } else { len as u64 })
+                .unwrap();
+            let mut reply = Out::op(EXTENT_READY);
+            reply
+                .len(if case == 4 { usize::MAX } else { 0 })
+                .len(if case == 3 { len - 1 } else { len });
+            let read_only = std::fs::File::open(named.path()).unwrap();
+            let fd = file.as_fd();
+            match case {
+                0 => send(&parent, &reply.0, &[]).unwrap(),
+                1 => send(&parent, &reply.0, &[fd, fd]).unwrap(),
+                2 => {
+                    reply.u8(0);
+                    send(&parent, &reply.0, &[fd]).unwrap();
+                }
+                6 => send(&parent, &Out::op(EXTENT_DENIED).0, &[fd]).unwrap(),
+                7 => send(&parent, &Out::op(RUN_UNTIL).u64(42).0, &[]).unwrap(),
+                9 => send(&parent, &reply.0, &[read_only.as_fd()]).unwrap(),
+                10 => send(&parent, &vec![0; EXPORT_FRAME_LIMIT + 1], &[]).unwrap(),
+                8 => {
+                    parent.shutdown(Shutdown::Write).unwrap();
+                }
+                _ => send(&parent, &reply.0, &[fd]).unwrap(),
+            }
+            assert!(recv(&parent).is_err(), "case {case}");
+            server.join().unwrap();
+        }
+    }
+
+    fn connected_to_script(parent: UnixStream) -> WorkerSession {
+        WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn export_parent_rejects_unsolicited_or_repeated_allocations_and_bad_completion() {
+        for case in 0..8 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                assert_eq!(recv(&child).unwrap().0[0], INIT);
+                send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+                assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+                let file = tempfile::tempfile().unwrap();
+                let mut reply = Out::op(NEED_EXTENT);
+                reply.len(if case == 0 { 0 } else { 8192 });
+                if case == 1 {
+                    reply.u8(0);
+                }
+                if case == 7 {
+                    reply.0 = vec![0; EXPORT_FRAME_LIMIT + 1];
+                }
+                if case == 2 {
+                    reply.0 = vec![OK];
+                }
+                let descriptors = [file.as_fd()];
+                send(&child, &reply.0, if case == 3 { &descriptors } else { &[] }).unwrap();
+                if case < 4 || case == 7 {
+                    assert!(recv(&child).is_err());
+                    return;
+                }
+                let (_, fds) = recv(&child).unwrap();
+                assert_eq!(fds.len(), 1);
+                let completion = match case {
+                    4 => Out::op(NEED_EXTENT).len(8192).0.clone(),
+                    5 => Out::op(OK).u8(0).0.clone(),
+                    _ => Out::op(OK).0,
+                };
+                send(
+                    &child,
+                    &completion,
+                    if case == 6 { &descriptors } else { &[] },
+                )
+                .unwrap();
+            });
+            let session = connected_to_script(parent);
+            let index = LocalIndex::new(1 << 20);
+            assert!(
+                session
+                    .publish_snapshot(&index, namespace(), b"bad", None, SnapId(1), 1)
+                    .is_err()
+            );
+            assert!(session.abandoned());
+            assert_eq!(
+                (
+                    index.stats().entries,
+                    index.stats().leased,
+                    index.stats().publishes
+                ),
+                (0, 0, 0)
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn lost_final_ack_never_publishes_or_reuses_a_still_mapped_destination() {
+        use std::os::unix::fs::MetadataExt;
+        let (parent, child) = UnixStream::pair().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = std::thread::spawn(move || {
+            recv(&child).unwrap();
+            send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+            assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+            send(&child, &Out::op(NEED_EXTENT).len(8192).0, &[]).unwrap();
+            let (body, fds) = recv(&child).unwrap();
+            let mut input = In(&body);
+            assert_eq!(input.u8().unwrap(), EXTENT_READY);
+            let offset = input.len().unwrap();
+            let len = input.len().unwrap();
+            let file = std::fs::File::from(fds[0].try_clone().unwrap());
+            let metadata = file.metadata().unwrap();
+            let mut writer = Mapping::new(file.as_fd(), offset, len, true).unwrap();
+            ready_tx
+                .send((metadata.dev(), metadata.ino(), offset, len))
+                .unwrap();
+            child.shutdown(Shutdown::Both).unwrap();
+            release_rx.recv().unwrap();
+            writer.bytes_mut().fill(0xab);
+        });
+        let session = connected_to_script(parent);
+        let index = LocalIndex::new(1 << 20);
+        assert!(
+            session
+                .publish_snapshot(&index, namespace(), b"uncertain", None, SnapId(1), 1)
+                .is_err()
+        );
+        let (device, inode, old_offset, old_len) = ready_rx.recv().unwrap();
+        assert!(session.abandoned());
+        assert_eq!(
+            (
+                index.stats().entries,
+                index.stats().leased,
+                index.stats().publishes
+            ),
+            (0, 0, 0)
+        );
+        let mut next = index.extent(old_len).unwrap();
+        let SharedRange { fd, offset, len } = next.shared_range();
+        let metadata = std::fs::File::from(fd.try_clone_to_owned().unwrap())
+            .metadata()
+            .unwrap();
+        if cfg!(target_os = "linux") {
+            assert!(
+                (device, inode) != (metadata.dev(), metadata.ino())
+                    || offset + len <= old_offset
+                    || old_offset + old_len <= offset
+            );
+        }
+        next.bytes_mut().fill(0xcd);
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        assert!(next.bytes_mut().iter().all(|byte| *byte == 0xcd));
     }
 
     #[test]
@@ -3201,8 +3773,17 @@ mod tests {
             let mut served = Served::default();
             loop {
                 let (body, fds) = recv(&child).unwrap();
-                let reply = status(served.handle(&body, &fds, &mut Fake::open));
-                if body[0] == WRITE_EXTENT {
+                let mut allocate = |len| {
+                    send(&child, &Out::op(NEED_EXTENT).len(len).0, &[])?;
+                    let (reply, fds) = recv(&child)?;
+                    let mut input = In(&reply);
+                    assert_eq!(input.u8()?, EXTENT_READY);
+                    let offset = input.len()?;
+                    assert_eq!(input.len()?, len);
+                    Mapping::new(fds[0].as_fd(), offset, len, true).map_err(Into::into)
+                };
+                let reply = status(served.handle(&body, &fds, &mut Fake::open, &mut allocate));
+                if body[0] == EXPORT {
                     return;
                 }
                 send(&child, &reply, &[]).unwrap();

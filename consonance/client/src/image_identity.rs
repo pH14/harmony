@@ -32,6 +32,14 @@ pub(crate) fn trace_checks<T>(
     (result, entries, strict)
 }
 
+#[cfg(all(test, feature = "in-process"))]
+pub(crate) fn refuse_next_check() {
+    CHECK_TRACE.with(|trace| {
+        let (entries, strict, _) = trace.get();
+        trace.set((entries, strict, Some(entries + 1)));
+    });
+}
+
 fn strict_host_identity() -> io::Result<String> {
     reject_loader_overrides()?;
     #[cfg(target_os = "linux")]
