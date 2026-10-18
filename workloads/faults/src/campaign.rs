@@ -367,6 +367,34 @@ pub(crate) fn require_completed_attempt(
     Ok(())
 }
 
+pub(crate) fn capture_replayed_prefix(
+    target: &mut FaultTarget,
+    actions: &[FaultAction],
+) -> Result<FaultSnapshot, Box<dyn Error>> {
+    let mut endpoint = None;
+    for (index, action) in actions.iter().enumerate() {
+        if index + 1 == actions.len() {
+            let captured = target.apply_replayed_and_snapshot(*action);
+            require_completed_attempt(target, "branch prefix replay")?;
+            endpoint = captured.map_err(|error| format!("certify branch endpoint: {error}"))?;
+        } else {
+            target.apply_replayed(*action);
+            require_completed_attempt(target, "branch prefix replay")?;
+        }
+    }
+    if target.actions().len() != actions.len() {
+        return Err("branch prefix terminated before its selected point".into());
+    }
+    let snapshot = if actions.is_empty() {
+        target
+            .snapshot()
+            .map_err(|error| format!("certify branch endpoint: {error}"))?
+    } else {
+        endpoint
+    };
+    snapshot.ok_or_else(|| "cannot search from a terminal point; rewind further".into())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
     target: &mut FaultTarget,
@@ -835,6 +863,20 @@ impl TargetExecution for FaultWorkload {
         require_completed_attempt(target, "imported prefix execution")?;
         merge_action_milestones(aggregate, target);
         Ok(())
+    }
+
+    fn apply_action_and_snapshot(
+        &self,
+        target: &mut FaultTarget,
+        action: &FaultAction,
+        aggregate: &mut FaultMilestones,
+    ) -> Result<Option<FaultSnapshot>, Box<dyn Error>> {
+        let captured = target.apply_and_snapshot(*action);
+        target.verify_integrity()?;
+        require_completed_attempt(target, "imported prefix execution")?;
+        let captured = captured?;
+        merge_action_milestones(aggregate, target);
+        Ok(captured)
     }
 
     fn snapshot(&self, target: &mut FaultTarget) -> Result<FaultSnapshot, Box<dyn Error>> {
