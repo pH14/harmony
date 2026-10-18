@@ -2872,6 +2872,7 @@ mod tests {
         assert_eq!(fake.sdk_events_since(2).unwrap(), history[2..]);
         let mut served = Served {
             session: Some(Box::new(fake)),
+            ..Served::default()
         };
         let mut request = Out::op(SDK_EVENTS);
         request.u64(2);
@@ -2892,6 +2893,7 @@ mod tests {
     fn sdk_suffix_requests_reject_truncation_overflow_trailing_bytes_and_descriptors() {
         let mut served = Served {
             session: Some(Box::<Fake>::default()),
+            ..Served::default()
         };
         let mut too_large = Out::op(SDK_EVENTS);
         too_large.u64(u64::from(u32::MAX) + 1);
