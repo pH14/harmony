@@ -784,4 +784,6 @@ extents charged. The result is latched; repeated shutdown and Drop do not poll o
 signal that owner again. Background quarantine reaping retains its existing rules.
 Direct in-process sessions have no external child. UML delegates to its owned
 Guest teardown and records an idempotent receipt; successful group cleanup uses
-the existing launcher checks, not a new guarantee about arbitrary descendants.
+the existing launcher checks, not a new guarantee about arbitrary descendants. An
+abandoned UML session refuses shutdown confirmation even after removing its live
+Guest; normal confirmed shutdown remains idempotent.
