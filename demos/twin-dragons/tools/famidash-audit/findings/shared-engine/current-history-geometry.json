@@ -1,0 +1,62 @@
+{
+  "schema": 1,
+  "status": "verified",
+  "levels": [
+    {
+      "side": "main",
+      "level": 11,
+      "name": "theoryofeverything",
+      "tile_count": 49362,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "main",
+      "level": 7,
+      "name": "timemachine",
+      "tile_count": 26892,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "b",
+      "level": 10,
+      "name": "fofii_fofii_fofii",
+      "tile_count": 32430,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    },
+    {
+      "side": "d",
+      "level": 19,
+      "name": "sonicwave",
+      "tile_count": 42336,
+      "continuations": [
+        4
+      ],
+      "differences": 0,
+      "examples": []
+    }
+  ],
+  "collision_tables": {
+    "main": {
+      "entries": 256,
+      "sha256": "5f4b9b72ac731c4f4ae7ceb3ba9d78f6f443221f2cdb61a7dabe061fd9033580",
+      "base_metadata_sha256": "7d4fb558a25500b01f6421188372f00f551c7a3ead08c3002eb79d94d4005649"
+    },
+    "b": {
+      "entries": 256,
+      "sha256": "5f4b9b72ac731c4f4ae7ceb3ba9d78f6f443221f2cdb61a7dabe061fd9033580",
+      "base_metadata_sha256": "7d4fb558a25500b01f6421188372f00f551c7a3ead08c3002eb79d94d4005649"
+    },
+    "d": {
+      "entries": 256,
+      "sha256": "5f4b9b72ac731c4f4ae7ceb3ba9d78f6f443221f2cdb61a7dabe061fd9033580",
+      "base_metadata_sha256": "7d4fb558a25500b01f6421188372f00f551c7a3ead08c3002eb79d94d4005649"
+    }
+  },
+  "index_sha256": "3f270ac378200fcfb8e0d3c581c733b8cd0cf15239d990bc95f082c8e52c5766"
+}

@@ -336,3 +336,46 @@ actual reset 40 released frames later. Fixed campaign replay checks now require
 committed death followed by a reset, rather than accepting a transient flag.
 The next complete Dissonance search is running on these frozen ROMs. The
 three-consecutive-clean-round count remains zero.
+
+
+The history guard has also been ported to upstream `541d68f` as
+`experimental-current-history.patch`. All four standard ROM sets build at the
+original 786,448-byte size. A dedicated collision segment shares the existing
+sound-effects bank after its unchanged audio data. The selected shared levels'
+ROM geometry and metadata match their index, and the exact point, sweep and
+base oracles pass. Current Fofii and Theory of Everything failing inputs die
+at frames 1,317 and 1,428 respectively in both cores, with unchanged gameplay
+approaches and confirmed level resets. This is a source proposal under broader
+validation, not a submitted upstream change.
+
+The next source review found a distinct level boundary gap in Theory of
+Everything. A UFO can pass around a stair corner formed by adjacent pit tiles
+and enter the closed `BLACK_NONE` component at columns 243–270, rows 55–56.
+It crosses neither a narrow hazard kernel nor a declared opaque base, so the
+continuous collision repair alone cannot close it. The official release input
+survives to frame 1,567 below the course; both cores agree. Current upstream
+also reproduces it. The component contains no sprite; coin 1 is at column 263,
+row 45, ten rows above. The CPU collision trace and source diagram are retained.
+
+`toe-stair-release.patch` and `toe-stair-current.patch` propose one left-facing
+spike at column 245, row 55. Both release and current upstream repairs kill the
+input at frame 1,436 with unchanged gameplay approaches in QuickNES and FCEUmm,
+then reset normally. A fresh repaired release control clears in 4,977 frames
+and matches FCEUmm throughout gameplay. The current source is shared by A and
+HUGE; both require regenerated exports. Coin-route coverage and the remaining
+HUGE validation are still required before proposing the data change upstream.
+The release exporter repacked data into a bank already occupied by music. The
+4136-byte changed payload has exactly its original length, so this experimental
+release build preserves the original generated level/sprite bank assignments;
+all 109 decoded levels and bank capacities are verified after linking.
+
+`boundary-corners.py` generalizes this source review without editing levels.
+It inventories interior cells where equal-facing spike bases form a stair
+corner, including each connected fill component and its sprites. There are
+325 locations in 24 installed levels, not 325 confirmed bugs. For example,
+similar Deadlocked cells are in a component containing a teleport exit and
+pads; blocking that component without reviewing its route would be wrong.
+The inventory is a way to select ordinary-input reproductions and explicitly
+review intent. It is not an instruction to turn decorative fill solid.
+The all-level history build sweep continues as an exploratory inventory and
+is disqualified from the clean-round count by the confirmed stair escape.

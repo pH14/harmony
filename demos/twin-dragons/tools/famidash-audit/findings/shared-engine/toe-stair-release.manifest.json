@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/theoryofeverything.tmx",
+      "before_sha256": "5b30b9f76500d008a1a5c1080ffb5cee42032c5d965c927cff97d58b9ed9a378",
+      "after_sha256": "4152a922db936aaac5237d9fd76963282bf43e8946a92d80f8beef0c1189a727",
+      "edits": [
+        {
+          "column": 245,
+          "row": 55,
+          "from_gid": 112,
+          "to_gid": 27
+        }
+      ]
+    }
+  ],
+  "status": "source-proposal-needs-export-build-and-replay",
+  "evidence": [
+    "Official release input survives staircase boundary into closed decorative component at frame1435, independent CPU probes and both cores reproduce.",
+    "Component rows55..56 columns243..270 contains no coin or teleport sprite; coin1 is ten rows above it. Proposed local barrier requires export/build/failing-input and legal/coin controls."
+  ]
+}

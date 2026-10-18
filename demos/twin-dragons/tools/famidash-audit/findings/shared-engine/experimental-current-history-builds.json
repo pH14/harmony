@@ -1,0 +1,16 @@
+{
+  "revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "roms": {
+    "famidash-c-sides.dbg": "31008118ab1395bba63a767524bf150a70d94ca8a1ee40594ebf8bbf80350dfd",
+    "famidash.nes": "f1a0e0cd4e50b77453b94279861c992fbfd804f73e82c00f16cca3332b40aa81",
+    "famidash-d-sides.dbg": "f3688c362202796d84cf22b53ca787a03a5ef8cb44cdd7754f188a46094915bf",
+    "famidash-b-sides.dbg": "577cb1de210a5818204b392a40fcb20074b69801cc25dc022d500b5b7c32a7b5",
+    "famidash-d-sides.nes": "cc03456dc9bbeec5a6969bd02c8b534be818c0193d9137a4391c57cec2ad06ea",
+    "famidash-c-sides.nes": "946b59922638fd4124b1c4ad74a75e90256132135f9fd1129876385d6ae9c52e",
+    "famidash.dbg": "83b116a6b25fe881ca944f0942b6d0f4dedffd84b48d4e2349d83eb2fd129f8e",
+    "famidash-b-sides.nes": "5764a74f59cb09a37f588c7b715e83a6b7cd0335951151c470d83b8d6f963bca"
+  },
+  "compiler": "cc65 6bd01e8",
+  "bank": "COLLISION_BANK shares the SFX region after unchanged sound data",
+  "data": "requires separate Fofii source/export edits"
+}

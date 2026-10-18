@@ -63,6 +63,9 @@ The ledger records executions, frontiers, clears and candidates separately.
 A searched level is not a reviewed level. `review-round.mjs` verifies saved
 endpoints and inventories entry signals, including both players in dual
 mode, partial hazards, persistent solid overlap and horizontal escapes.
+`boundary-corners.py INDEX OUTPUT` inventories shared spike stair patterns and
+the sprites in their fill components for intent review. It never edits levels
+or classifies topology alone as a bug.
 `components.py` groups connected decorative fill across visual styles for
 source review; its schema 2 records the index and review hashes. Detector
 signals never automatically become bug reports or tile edits. Repeated mechanical
