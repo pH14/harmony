@@ -447,6 +447,35 @@ completion. macOS can conservatively retain a released range's charge until its
 remaining segment extents are dropped; Linux may reclaim a proved-retired range
 with hole punching.
 
+Worker framing work uses `transport.parent.<group>.<send|receive>` and
+`transport.child.loop.<group>.<send|receive>`. Fixed groups are hello, setup, run,
+observe, snapshot, identity, replay, export, import, telemetry and unknown. All
+allocation-handshake frames remain in export. The parent knows the outstanding
+request group; the child classifies a fully received request by opcode, and failed
+or incomplete new requests use unknown. Parent hello accounting transfers into
+the established session; child hello accounting shares its serving-loop owner.
+Failed startup has no returned session report.
+
+Each direction reports frame `attempts`, framing `completed`, framing `errors`,
+actual `header_bytes`, `body_bytes` and `fd_handles`. Bytes are positive local
+socket syscall results, including partial progress before failure. A complete
+frame has a 16-byte header; descriptors are excluded from bytes and counted once
+on positive sendmsg or when recovered from recvmsg. Truncated ancillary data counts
+only recovered handles, not unobservable discarded descriptors. Mapping shared
+ranges, kernel copies, network traffic and peer application acceptance are not
+measured by these fields. Framing completion does not imply protocol, operation
+or post-I/O guard success. Pre-I/O guard refusal records no transport attempt.
+Inactive groups are omitted and counters saturate; concurrent field snapshots
+are approximate. Existing interruption, EOF and deadline behavior is preserved.
+
+Parent and child totals describe opposite endpoints and must not be added as
+unique traffic. Child snapshots replace cached totals on successful telemetry
+queries; its response encoding/send appears in a later query. Parent query I/O
+is immediately visible. Failed queries preserve the last child snapshot, so a dead
+child's final work may be unavailable. These diagnostics are not serialized into
+snapshots, certificates, identities, retention or search policy; no protocol
+format changes are involved.
+
 Guard work is observational, per owner, and exported by bounded site. Direct
 Session and UML totals use `guard.session.<site>`. A WorkerSession reports its own
 checks as `guard.parent.<site>`, the child's session/core checks as

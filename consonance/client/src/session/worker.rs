@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod work;
+
 use std::{
     cell::{Cell, RefCell},
     error::Error,
@@ -13,6 +15,7 @@ use std::{
     path::PathBuf,
     process::{Child, Command, Stdio},
     ptr::NonNull,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -497,7 +500,12 @@ fn control_space(fds: usize) -> usize {
     unsafe { libc::CMSG_SPACE(data) as usize }
 }
 
-fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<usize> {
+fn send_with_fds(
+    stream: &UnixStream,
+    bytes: &[u8],
+    fds: &[BorrowedFd<'_>],
+    delta: &mut work::Delta,
+) -> io::Result<usize> {
     let raw: Vec<RawFd> = fds.iter().map(AsRawFd::as_raw_fd).collect();
     let data = size_of_val(raw.as_slice());
     let space = if raw.is_empty() {
@@ -531,6 +539,10 @@ fn send_with_fds(stream: &UnixStream, bytes: &[u8], fds: &[BorrowedFd<'_>]) -> i
         // SAFETY: message, its iovec and its control buffer stay alive and unmoved for the call.
         let sent = unsafe { libc::sendmsg(stream.as_raw_fd(), &raw const message, SEND_FLAGS) };
         if let Ok(sent) = usize::try_from(sent) {
+            delta.header = delta.header.saturating_add(sent as u64);
+            if sent != 0 {
+                delta.fds = delta.fds.saturating_add(fds.len() as u64);
+            }
             return Ok(sent);
         }
         let error = io::Error::last_os_error();
@@ -545,12 +557,13 @@ fn recv_with_fds(
     stream: &UnixStream,
     buffer: &mut [u8],
     deadline: Option<Instant>,
+    delta: &mut work::Delta,
 ) -> io::Result<(usize, Vec<OwnedFd>)> {
     #[cfg(target_os = "macos")]
     let space = DARWIN_CONTROL_CAPACITY;
     #[cfg(not(target_os = "macos"))]
     let space = control_space(MAX_FDS);
-    recv_with_fds_control_space(stream, buffer, deadline, space)
+    recv_with_fds_control_space(stream, buffer, deadline, space, delta)
 }
 
 #[allow(clippy::disallowed_methods)]
@@ -559,6 +572,7 @@ fn recv_with_fds_control_space(
     buffer: &mut [u8],
     deadline: Option<Instant>,
     space: usize,
+    delta: &mut work::Delta,
 ) -> io::Result<(usize, Vec<OwnedFd>)> {
     let mut control = vec![0_u64; space.div_ceil(size_of::<u64>())];
     let mut iov = libc::iovec {
@@ -589,6 +603,7 @@ fn recv_with_fds_control_space(
             return Err(error);
         }
     };
+    delta.header = delta.header.saturating_add(received as u64);
     let mut fds = Vec::new();
     // SAFETY: control owns initialized u64 storage of at least space bytes, which was the
     // capacity supplied to recvmsg; the byte view cannot exceed that allocation.
@@ -599,6 +614,7 @@ fn recv_with_fds_control_space(
         // by this recvmsg, and each is immediately assigned exactly one owning handle.
         fds.push(unsafe { OwnedFd::from_raw_fd(raw) });
     });
+    delta.fds = delta.fds.saturating_add(fds.len() as u64);
     if message.msg_flags & libc::MSG_CTRUNC != 0 {
         return Err(malformed("descriptors were truncated"));
     }
@@ -625,14 +641,19 @@ fn set_cloexec(fd: RawFd, on: bool) -> io::Result<()> {
 #[cfg(test)]
 thread_local! { static FAIL_AFTER_FD_HEADER: Cell<bool> = const { Cell::new(false) }; }
 
-fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
+fn send_raw(
+    stream: &UnixStream,
+    body: &[u8],
+    fds: &[BorrowedFd<'_>],
+    delta: &mut work::Delta,
+) -> io::Result<()> {
     if fds.len() > MAX_FDS {
         return Err(malformed("too many descriptors"));
     }
     let mut header = [0_u8; HEADER];
     header[..8].copy_from_slice(&(body.len() as u64).to_le_bytes());
     header[8..].copy_from_slice(&(fds.len() as u64).to_le_bytes());
-    let sent = send_with_fds(stream, &header, fds)?;
+    let sent = send_with_fds(stream, &header, fds, delta)?;
     #[cfg(test)]
     if !fds.is_empty() && FAIL_AFTER_FD_HEADER.with(|fail| fail.replace(false)) {
         return Err(io::Error::other(
@@ -640,30 +661,28 @@ fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
         ));
     }
     let mut writer = stream;
-    writer.write_all(&header[sent..])?;
-    writer.write_all(body)
+    work::write_all_counted(&header[sent..], &mut delta.header, |bytes| {
+        writer.write(bytes)
+    })?;
+    work::write_all_counted(body, &mut delta.body, |bytes| writer.write(bytes))
 }
 
 #[cfg(not(target_os = "macos"))]
 #[allow(clippy::disallowed_methods)]
 fn read_exact_until(
     stream: &UnixStream,
-    mut buffer: &mut [u8],
+    buffer: &mut [u8],
     deadline: Instant,
+    count: &mut u64,
 ) -> io::Result<()> {
-    while !buffer.is_empty() {
+    work::read_exact_counted(buffer, count, false, |buffer| {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             return Err(io::ErrorKind::TimedOut.into());
         }
         stream.set_read_timeout(Some(remaining))?;
-        let size = (&*stream).read(buffer)?;
-        if size == 0 {
-            return Err(io::ErrorKind::UnexpectedEof.into());
-        }
-        buffer = &mut buffer[size..];
-    }
-    Ok(())
+        (&*stream).read(buffer)
+    })
 }
 
 #[cfg(target_os = "macos")]
@@ -671,9 +690,15 @@ fn read_frame_exact(
     stream: &UnixStream,
     mut buffer: &mut [u8],
     deadline: Option<Instant>,
+    count: &mut u64,
+    fd_count: &mut u64,
 ) -> io::Result<()> {
     while !buffer.is_empty() {
-        let (size, rights) = recv_with_fds(stream, buffer, deadline)?;
+        let mut delta = work::Delta::default();
+        let result = recv_with_fds(stream, buffer, deadline, &mut delta);
+        *count = count.saturating_add(delta.header);
+        *fd_count = fd_count.saturating_add(delta.fds);
+        let (size, rights) = result?;
         if !rights.is_empty() {
             return Err(malformed("unexpected descriptors after frame header"));
         }
@@ -690,25 +715,34 @@ fn read_frame_exact(
     stream: &UnixStream,
     buffer: &mut [u8],
     deadline: Option<Instant>,
+    count: &mut u64,
+    _fd_count: &mut u64,
 ) -> io::Result<()> {
     if let Some(deadline) = deadline {
-        read_exact_until(stream, buffer, deadline)
+        read_exact_until(stream, buffer, deadline, count)
     } else {
-        (&*stream).read_exact(buffer)
+        work::read_exact_counted(buffer, count, true, |bytes| (&*stream).read(bytes))
     }
 }
 
-fn recv_with_limit(
+fn recv_raw(
     stream: &UnixStream,
     limit: usize,
     deadline: Option<Instant>,
+    delta: &mut work::Delta,
 ) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     let mut header = [0_u8; HEADER];
-    let (received, fds) = recv_with_fds(stream, &mut header, deadline)?;
+    let (received, fds) = recv_with_fds(stream, &mut header, deadline, delta)?;
     if received == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
-    read_frame_exact(stream, &mut header[received..], deadline)?;
+    read_frame_exact(
+        stream,
+        &mut header[received..],
+        deadline,
+        &mut delta.header,
+        &mut delta.fds,
+    )?;
     let len = usize::try_from(u64::from_le_bytes(
         header[..8].try_into().expect("eight bytes"),
     ))
@@ -720,10 +754,52 @@ fn recv_with_limit(
         return Err(malformed("descriptor count"));
     }
     let mut body = vec![0; len];
-    read_frame_exact(stream, &mut body, deadline)?;
+    read_frame_exact(stream, &mut body, deadline, &mut delta.body, &mut delta.fds)?;
     Ok((body, fds))
 }
 
+fn send_measured(
+    stream: &UnixStream,
+    body: &[u8],
+    fds: &[BorrowedFd<'_>],
+    owner: &work::Work,
+    group: work::Group,
+) -> io::Result<()> {
+    let mut delta = work::Delta::default();
+    let result = send_raw(stream, body, fds, &mut delta);
+    owner.record(group, false, delta, result.is_ok());
+    result
+}
+fn receive_measured(
+    stream: &UnixStream,
+    limit: usize,
+    deadline: Option<Instant>,
+    owner: &work::Work,
+    group: Option<work::Group>,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    let mut delta = work::Delta::default();
+    let result = recv_raw(stream, limit, deadline, &mut delta);
+    let group = group.unwrap_or_else(|| {
+        result
+            .as_ref()
+            .map_or(work::Group::Unknown, |(body, _)| work::Group::request(body))
+    });
+    owner.record(group, true, delta, result.is_ok());
+    result
+}
+#[cfg(test)]
+fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
+    send_raw(stream, body, fds, &mut work::Delta::default())
+}
+#[cfg(test)]
+fn recv_with_limit(
+    stream: &UnixStream,
+    limit: usize,
+    deadline: Option<Instant>,
+) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
+    recv_raw(stream, limit, deadline, &mut work::Delta::default())
+}
+#[cfg(test)]
 fn recv(stream: &UnixStream) -> io::Result<(Vec<u8>, Vec<OwnedFd>)> {
     recv_with_limit(stream, usize::MAX, None)
 }
@@ -833,13 +909,14 @@ impl WorkerLauncher {
     #[allow(clippy::disallowed_methods)]
     #[cfg(test)]
     fn spawn(&self) -> io::Result<(Child, UnixStream)> {
-        self.spawn_guarded(&self.loaded_image_guard)
+        self.spawn_guarded(&self.loaded_image_guard, &work::Work::default())
     }
 
     #[allow(clippy::disallowed_methods)]
     fn spawn_guarded(
         &self,
         loaded_image_guard: &crate::image_identity::LoadedImageGuard,
+        transport: &work::Work,
     ) -> io::Result<(Child, UnixStream)> {
         loaded_image_guard.check_at(crate::image_identity::GuardSite::LauncherBefore)?;
         crate::image_identity::reject_loader_overrides()?;
@@ -876,7 +953,13 @@ impl WorkerLauncher {
         drop(child);
         let deadline = Instant::now() + IMAGE_HELLO_TIMEOUT;
         let check = check.and_then(|()| {
-            let (body, fds) = recv_with_limit(&parent, IMAGE_HELLO_LIMIT, Some(deadline))?;
+            let (body, fds) = receive_measured(
+                &parent,
+                IMAGE_HELLO_LIMIT,
+                Some(deadline),
+                transport,
+                Some(work::Group::Hello),
+            )?;
             if !fds.is_empty() {
                 return Err(malformed("worker image hello carries descriptors"));
             }
@@ -942,6 +1025,7 @@ fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
 }
 
 struct WorkerConnection {
+    transport: Arc<work::Work>,
     stream: UnixStream,
     process: Option<Child>,
     #[cfg(test)]
@@ -964,6 +1048,7 @@ pub struct WorkerSession {
     telemetry_query_failures: Cell<u64>,
     exchanging: Cell<bool>,
     retained_export: RefCell<Vec<crate::cache::WritableExtent>>,
+    transport: Arc<work::Work>,
 }
 
 struct Exchange<'a>(&'a Cell<bool>);
@@ -983,8 +1068,9 @@ impl WorkerSession {
         service: &str,
     ) -> Result<Self, Box<dyn Error>> {
         let loaded_image_guard = launcher.loaded_image_guard.fork();
+        let transport = Arc::new(work::Work::default());
         let (process, stream) = launcher
-            .spawn_guarded(&loaded_image_guard)
+            .spawn_guarded(&loaded_image_guard, &transport)
             .map_err(|error| {
                 SessionError::Control(format!(
                     "start session worker {}: {error}",
@@ -998,6 +1084,7 @@ impl WorkerSession {
                 #[cfg(test)]
                 owner: None,
                 loaded_image_guard,
+                transport,
             },
             kernel,
             initramfs,
@@ -1021,6 +1108,7 @@ impl WorkerSession {
             #[cfg(test)]
             owner,
             loaded_image_guard,
+            transport,
         } = connection;
         loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
         crate::writer_lifetime::reap_worker_quarantine(1);
@@ -1035,6 +1123,7 @@ impl WorkerSession {
             failed: Cell::new(false),
             counters: RefCell::default(),
             exchanging: Cell::new(false),
+            transport,
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
             retained_export: RefCell::new(Vec::new()),
@@ -1086,7 +1175,22 @@ impl WorkerSession {
     fn call(&self, request: &Out, fds: &[BorrowedFd<'_>]) -> Result<Vec<u8>, Box<dyn Error>> {
         let _exchange = self.begin_exchange()?;
         self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
-        let reply = send(&self.stream, &request.0, fds).and_then(|()| recv(&self.stream));
+        let reply = send_measured(
+            &self.stream,
+            &request.0,
+            fds,
+            &self.transport,
+            work::Group::request(&request.0),
+        )
+        .and_then(|()| {
+            receive_measured(
+                &self.stream,
+                usize::MAX,
+                None,
+                &self.transport,
+                Some(work::Group::request(&request.0)),
+            )
+        });
         let body = match reply {
             Ok((body, _)) => body,
             Err(error) => {
@@ -1140,8 +1244,20 @@ impl WorkerSession {
                 .u64(target.0)
                 .bytes(&attachment.domain)
                 .bytes(&attachment.bytes);
-            send(&self.stream, &request.0, &[])?;
-            let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
+            send_measured(
+                &self.stream,
+                &request.0,
+                &[],
+                &self.transport,
+                work::Group::Export,
+            )?;
+            let (body, fds) = receive_measured(
+                &self.stream,
+                EXPORT_FRAME_LIMIT,
+                None,
+                &self.transport,
+                Some(work::Group::Export),
+            )?;
             self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExtentRequested)?;
             if !fds.is_empty() {
                 return Err(malformed("allocation request descriptors").into());
@@ -1189,15 +1305,29 @@ impl WorkerSession {
                     return Err(malformed("allocated range too short").into());
                 }
                 destination.exposed = true;
-                send(
+                send_measured(
                     &self.stream,
                     &Out::op(EXTENT_READY).len(offset).len(len).0,
                     &[fd],
+                    &self.transport,
+                    work::Group::Export,
                 )?;
             } else {
-                send(&self.stream, &Out::op(EXTENT_DENIED).0, &[])?;
+                send_measured(
+                    &self.stream,
+                    &Out::op(EXTENT_DENIED).0,
+                    &[],
+                    &self.transport,
+                    work::Group::Export,
+                )?;
             }
-            let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
+            let (body, fds) = receive_measured(
+                &self.stream,
+                EXPORT_FRAME_LIMIT,
+                None,
+                &self.transport,
+                Some(work::Group::Export),
+            )?;
             self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExportCompleted)?;
             if !fds.is_empty() {
                 return Err(malformed("completion descriptors").into());
@@ -1389,6 +1519,7 @@ impl SearchSession for WorkerSession {
         }
         let mut counters = self.counters.borrow().clone();
         counters.extend(self.loaded_image_guard.counters("guard.parent"));
+        counters.extend(self.transport.counters("transport.parent"));
         counters.push((
             "guard.child.telemetry_queries".into(),
             self.telemetry_queries.get(),
@@ -1626,6 +1757,7 @@ type Open<'a> = dyn FnMut(Init) -> Result<Box<dyn ServedSession>, Box<dyn Error>
 
 #[derive(Default)]
 struct Served {
+    transport: Arc<work::Work>,
     loaded_image_guard: Option<crate::image_identity::LoadedImageGuard>,
     session: Option<Box<dyn ServedSession>>,
 }
@@ -1679,6 +1811,7 @@ impl Served {
             TELEMETRY => {
                 input.finish()?;
                 let mut counters = session.telemetry_counters();
+                counters.extend(self.transport.counters("transport.child.loop"));
                 if let Some(guard) = &self.loaded_image_guard {
                     counters.extend(guard.counters("guard.child.loop"));
                 }
@@ -1822,18 +1955,28 @@ fn status(result: Result<Out, Box<dyn Error>>) -> Vec<u8> {
     }
 }
 
+#[cfg(test)]
 fn serve(
     stream: &UnixStream,
     open: &mut Open<'_>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
 ) -> Result<(), Box<dyn Error>> {
+    serve_measured(stream, open, loaded_image_guard, Arc::default())
+}
+fn serve_measured(
+    stream: &UnixStream,
+    open: &mut Open<'_>,
+    loaded_image_guard: crate::image_identity::LoadedImageGuard,
+    transport: Arc<work::Work>,
+) -> Result<(), Box<dyn Error>> {
     let mut served = Served {
         loaded_image_guard: Some(loaded_image_guard.clone()),
+        transport: Arc::clone(&transport),
         ..Served::default()
     };
     loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildReceive)?;
     loop {
-        let (body, fds) = match recv(stream) {
+        let (body, fds) = match receive_measured(stream, usize::MAX, None, &transport, None) {
             Ok(frame) => frame,
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
             Err(error) => return Err(error.into()),
@@ -1846,9 +1989,21 @@ fn serve(
                     return Err(malformed("repeated allocation").into());
                 }
                 loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildExtentBefore)?;
-                send(stream, &Out::op(NEED_EXTENT).len(len).0, &[])?;
+                send_measured(
+                    stream,
+                    &Out::op(NEED_EXTENT).len(len).0,
+                    &[],
+                    &transport,
+                    work::Group::Export,
+                )?;
                 loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildExtentSent)?;
-                let (body, fds) = recv_with_limit(stream, EXPORT_FRAME_LIMIT, None)?;
+                let (body, fds) = receive_measured(
+                    stream,
+                    EXPORT_FRAME_LIMIT,
+                    None,
+                    &transport,
+                    Some(work::Group::Export),
+                )?;
                 loaded_image_guard
                     .check_at(crate::image_identity::GuardSite::ChildExtentReceived)?;
                 let mut input = In(&body);
@@ -1889,7 +2044,7 @@ fn serve(
         }
         loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
         drop(fds);
-        send(stream, &reply, &[])?;
+        send_measured(stream, &reply, &[], &transport, work::Group::request(&body))?;
         loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildSent)?;
     }
 }
@@ -1926,8 +2081,9 @@ fn serve_inherited_with_open(open: &mut Open<'_>) -> Result<(), Box<dyn Error>> 
     let mut hello = Out::default();
     hello.bytes(IMAGE_HELLO).bytes(identity.as_bytes());
     loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
-    send(&stream, &hello.0, &[])?;
-    serve(&stream, open, loaded_image_guard)
+    let transport = Arc::new(work::Work::default());
+    send_measured(&stream, &hello.0, &[], &transport, work::Group::Hello)?;
+    serve_measured(&stream, open, loaded_image_guard, transport)
 }
 
 #[cfg(test)]
@@ -2357,11 +2513,15 @@ mod tests {
             let active = live_task_descriptors();
             for count in [64, 65, 72] {
                 let rights = vec![descriptor.as_fd(); count];
-                assert_eq!(send_with_fds(&sender, &[1], &rights).unwrap(), 1);
+                assert_eq!(
+                    send_with_fds(&sender, &[1], &rights, &mut work::Delta::default()).unwrap(),
+                    1
+                );
                 let received = recv_with_fds(
                     &receiver,
                     &mut [0; 1],
                     Some(Instant::now() + Duration::from_secs(1)),
+                    &mut work::Delta::default(),
                 );
                 if count == MAX_FDS {
                     assert_eq!(received.unwrap().1.len(), MAX_FDS);
@@ -2386,12 +2546,13 @@ mod tests {
             let mut maximum = 0;
             for count in 73..=520 {
                 let rights = vec![descriptor.as_fd(); count];
-                match send_with_fds(&sender, &[1], &rights) {
+                match send_with_fds(&sender, &[1], &rights, &mut work::Delta::default()) {
                     Ok(1) => {
                         let error = recv_with_fds(
                             &receiver,
                             &mut [0; 1],
                             Some(Instant::now() + Duration::from_secs(1)),
+                            &mut work::Delta::default(),
                         )
                         .unwrap_err();
                         assert!(
@@ -2426,7 +2587,13 @@ mod tests {
             assert_eq!(live_task_descriptors(), active);
             for value in [1, 2, 3] {
                 assert_eq!(
-                    send_with_fds(&sender, &[value], &[descriptor.as_fd()]).unwrap(),
+                    send_with_fds(
+                        &sender,
+                        &[value],
+                        &[descriptor.as_fd()],
+                        &mut work::Delta::default()
+                    )
+                    .unwrap(),
                     1
                 );
             }
@@ -2436,6 +2603,7 @@ mod tests {
                     &receiver,
                     &mut bytes,
                     Some(Instant::now() + Duration::from_secs(1)),
+                    &mut work::Delta::default(),
                 )
                 .unwrap();
                 assert_eq!(&bytes[..size], &[value]);
@@ -2444,17 +2612,30 @@ mod tests {
                 assert_eq!(live_task_descriptors(), active);
             }
             assert_eq!(
-                send_with_fds(&sender, &[], &[descriptor.as_fd()]).unwrap(),
+                send_with_fds(
+                    &sender,
+                    &[],
+                    &[descriptor.as_fd()],
+                    &mut work::Delta::default()
+                )
+                .unwrap(),
                 0
             );
             assert_eq!(
-                send_with_fds(&sender, &[9], &[descriptor.as_fd()]).unwrap(),
+                send_with_fds(
+                    &sender,
+                    &[9],
+                    &[descriptor.as_fd()],
+                    &mut work::Delta::default()
+                )
+                .unwrap(),
                 1
             );
             let (size, rights) = recv_with_fds(
                 &receiver,
                 &mut [0; 16],
                 Some(Instant::now() + Duration::from_secs(1)),
+                &mut work::Delta::default(),
             )
             .unwrap();
             assert_eq!(size, 0);
@@ -2465,6 +2646,7 @@ mod tests {
                 &receiver,
                 &mut bytes,
                 Some(Instant::now() + Duration::from_secs(1)),
+                &mut work::Delta::default(),
             )
             .unwrap();
             assert_eq!(&bytes[..size], &[9]);
@@ -2636,9 +2818,18 @@ mod tests {
         let excess = tempfile::tempfile().unwrap();
         let mut fds = vec![rights.as_fd(); capacity];
         fds.push(excess.as_fd());
-        assert_eq!(send_with_fds(&left, &[1], &fds).unwrap(), 1);
-        let error = recv_with_fds_control_space(&right, &mut [0; 1], None, control_space(MAX_FDS))
-            .unwrap_err();
+        assert_eq!(
+            send_with_fds(&left, &[1], &fds, &mut work::Delta::default()).unwrap(),
+            1
+        );
+        let error = recv_with_fds_control_space(
+            &right,
+            &mut [0; 1],
+            None,
+            control_space(MAX_FDS),
+            &mut work::Delta::default(),
+        )
+        .unwrap_err();
         assert!(
             error.to_string().contains("descriptors were truncated"),
             "{error}"
@@ -2660,6 +2851,74 @@ mod tests {
             0,
             "all real received rights must close on refusal"
         );
+    }
+
+    #[test]
+    fn measured_frames_count_exact_bytes_fds_and_failed_partial_bodies() {
+        let (left, right) = UnixStream::pair().unwrap();
+        let sent = work::Work::default();
+        let received = work::Work::default();
+        let file = tempfile::tempfile().unwrap();
+        send_measured(
+            &left,
+            &[IMPORT, 7, 8],
+            &[file.as_fd(), file.as_fd()],
+            &sent,
+            work::Group::Import,
+        )
+        .unwrap();
+        let (body, fds) = receive_measured(&right, 32, None, &received, None).unwrap();
+        assert_eq!(body, [IMPORT, 7, 8]);
+        assert_eq!(fds.len(), 2);
+        let tx = sent.counters("t").into_iter().collect::<BTreeMap<_, _>>();
+        let rx = received
+            .counters("t")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        for (name, value) in [
+            ("attempts", 1),
+            ("completed", 1),
+            ("errors", 0),
+            ("header_bytes", 16),
+            ("body_bytes", 3),
+            ("fd_handles", 2),
+        ] {
+            assert_eq!(tx[&format!("t.import.send.{name}")], value);
+            assert_eq!(rx[&format!("t.import.receive.{name}")], value);
+        }
+        let mut truncated = [0; HEADER];
+        truncated[..8].copy_from_slice(&5u64.to_le_bytes());
+        (&left).write_all(&truncated).unwrap();
+        (&left).write_all(&[1, 2]).unwrap();
+        left.shutdown(Shutdown::Write).unwrap();
+        let error = receive_measured(&right, 32, None, &received, None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+        let rx = received
+            .counters("t")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(rx["t.unknown.receive.header_bytes"], 16);
+        assert_eq!(rx["t.unknown.receive.body_bytes"], 2);
+        assert_eq!(rx["t.unknown.receive.completed"], 0);
+        assert_eq!(rx["t.unknown.receive.errors"], 1);
+    }
+
+    #[test]
+    fn measured_header_rejections_preserve_actual_io() {
+        for (len, declared_fds, limit) in [(9, 0, 8), (0, 1, 8)] {
+            let (left, right) = UnixStream::pair().unwrap();
+            let owner = work::Work::default();
+            let mut header = [0; HEADER];
+            header[..8].copy_from_slice(&(len as u64).to_le_bytes());
+            header[8..].copy_from_slice(&(declared_fds as u64).to_le_bytes());
+            (&left).write_all(&header).unwrap();
+            assert!(receive_measured(&right, limit, None, &owner, None).is_err());
+            let values = owner.counters("t").into_iter().collect::<BTreeMap<_, _>>();
+            assert_eq!(values["t.unknown.receive.header_bytes"], 16);
+            assert_eq!(values["t.unknown.receive.body_bytes"], 0);
+            assert_eq!(values["t.unknown.receive.fd_handles"], 0);
+            assert_eq!(values["t.unknown.receive.errors"], 1);
+        }
     }
 
     fn config() -> SessionConfig {
@@ -2765,6 +3024,7 @@ mod tests {
                 process: None,
                 owner: Some(Box::new(server.clone())),
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
             },
             &[start],
             b"i",
@@ -3089,6 +3349,7 @@ mod tests {
                     process: None,
                     owner: Some(Box::new(server.clone())),
                     loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                    transport: Arc::default(),
                 },
                 &[3],
                 b"i",
@@ -3186,7 +3447,7 @@ mod tests {
             session
                 .telemetry_counters()
                 .into_iter()
-                .filter(|(name, _)| !name.starts_with("guard."))
+                .filter(|(name, _)| !name.starts_with("guard.") && !name.starts_with("transport."))
                 .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)]
         );
@@ -3228,7 +3489,7 @@ mod tests {
             session
                 .telemetry_counters()
                 .into_iter()
-                .filter(|(name, _)| !name.starts_with("guard."))
+                .filter(|(name, _)| !name.starts_with("guard.") && !name.starts_with("transport."))
                 .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)],
             "the last counters outlive the worker"
@@ -3273,6 +3534,11 @@ mod tests {
         );
         assert_eq!(b["guard.child.loop.receive.dispatches"], 1);
         assert_eq!(b["guard.child.telemetry_queries"], 2);
+        assert_eq!(b["transport.parent.telemetry.send.completed"], 2);
+        assert_eq!(b["transport.child.loop.telemetry.receive.completed"], 2);
+        assert_eq!(b["transport.child.loop.telemetry.send.completed"], 1);
+        assert_eq!(b["transport.parent.telemetry.send.header_bytes"], 32);
+        assert_eq!(b["transport.parent.telemetry.send.body_bytes"], 2);
         assert_eq!(b["guard.child.telemetry_query_failures"], 0);
         assert_eq!(b["guard.child.session.fixture.dispatches"], b["runs"]);
         assert!(!b.contains_key("guard.session.fixture.dispatches"));
@@ -3365,6 +3631,7 @@ mod tests {
                 seed: 0,
                 counters: RefCell::new(Vec::new()),
                 exchanging: Cell::new(false),
+                transport: Arc::default(),
                 telemetry_queries: Cell::new(0),
                 telemetry_query_failures: Cell::new(0),
                 failed: std::cell::Cell::new(false),
@@ -4057,6 +4324,7 @@ mod tests {
                 process: None,
                 owner: Some(Box::new(server.clone())),
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
             },
             &[3],
             b"i",
@@ -4192,6 +4460,7 @@ writer.close()
         drop(child);
         let mut session = WorkerSession::connect(
             WorkerConnection {
+                transport: Arc::default(),
                 stream: parent,
                 process: Some(process),
                 owner: None,
@@ -4316,6 +4585,7 @@ writer.close()
             telemetry_query_failures: Cell::new(0),
             exchanging: Cell::new(false),
             retained_export: RefCell::new(vec![index.extent(4096).unwrap()]),
+            transport: Arc::default(),
         };
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
@@ -4399,7 +4669,8 @@ writer.close()
             assert_eq!(recv(&child).unwrap().0[0], EXPORT);
             send(&child, &Out::op(NEED_EXTENT).len(8192).0, &[]).unwrap();
             let mut header = [0; HEADER];
-            let (received, fds) = recv_with_fds(&child, &mut header, None).unwrap();
+            let (received, fds) =
+                recv_with_fds(&child, &mut header, None, &mut work::Delta::default()).unwrap();
             (&child).read_exact(&mut header[received..]).unwrap();
             assert_eq!(fds.len(), 1);
             let mut writer = Mapping::new(fds[0].as_fd(), 0, 8192, true).unwrap();
@@ -4787,6 +5058,7 @@ writer.close()
                 process: None,
                 owner: Some(Box::new(server.clone())),
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
             },
             &[3],
             b"i",
