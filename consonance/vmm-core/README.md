@@ -1026,3 +1026,35 @@ recording or publishing anything. Canonical Data encoding is one tag byte plus
 the data, so at most MAX_PAYLOAD - 1 data bytes fit. Oversized local responses
 return MalformedEnvironment with the question still pending, matching explicit
 resolution, rather than reaching a writer failure that retires the VM.
+
+SDK dispatch attribution partitions existing request and response guard callback
+calls, errors, and outer callback nanoseconds by bounded generic wire-operation
+bins. It does not add checks, RPCs, copied-byte estimates, or canonical state.
+The outer duration includes callback bookkeeping and overlaps session guard
+metrics; inner strict-check time and executable-read bytes are unavailable by
+operation. Request counts include unreadable and predecode-refused attempts;
+callback counts/time do not count successful response writes or semantic
+outcomes. The first scope has no separate semantic-status/write-success or
+copy-byte counters. An absent guard contributes zero callback calls, not a measured
+successful check. Request refusals before reading guest memory remain explicitly
+unclassified. Invalid frames and unreadable/oversize requests have separate
+bins; a valid frame's
+operation bin does not imply a semantically valid payload.
+
+Up to 32 exact event shapes retain namespace byte, data length, and optional
+first data byte. These are opaque wire witnesses, not workload register meanings.
+Known shapes keep their slots; unseen shapes after capacity go to an explicit
+aggregate overflow. Shape rows plus overflow cover eligible Event.emit requests
+and response callbacks, and are subsets of operation totals, not additional work.
+No inference of zero is valid for missing shapes when overflow is nonzero.
+
+Deferred doorbells charge the original request once; later completion derives
+response attribution from the retained request without another request check.
+Pending service and coverage responses use their actual response operation.
+Requests and responses need not balance within a query interval. Attribution is
+cumulative host work, includes setup, survives VMM retirement through the existing
+telemetry owner, and is never restored from a snapshot. Worker telemetry queries
+replace previous cumulative child values and preserve the last values on error.
+Neither worker sums nor these breakdowns are additive to shared cache totals or
+the existing guard timers. This measurement establishes no batching speedup or
+permission to remove publication, deadline, interrupt, or image-check boundaries.

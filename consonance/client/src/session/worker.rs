@@ -3400,6 +3400,70 @@ mod tests {
     }
 
     #[test]
+    fn sdk_dispatch_child_snapshots_replace_cumulative_values_and_survive_query_failure() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let server = FixtureThread::spawn(move || {
+            let mut served = Served::default();
+            let (body, fds) = recv(&child).unwrap();
+            send(
+                &child,
+                &status(served.handle(&body, &fds, &mut Fake::open, &mut |_| panic!("allocation"))),
+                &[],
+            )
+            .unwrap();
+            for value in [5, 7] {
+                let (body, fds) = recv(&child).unwrap();
+                assert_eq!(body, [TELEMETRY]);
+                assert!(fds.is_empty());
+                let mut out = Out::op(OK);
+                out.len(2)
+                    .bytes(b"sdk_dispatch.event.request_guard_calls")
+                    .u64(value)
+                    .bytes(b"sdk_dispatch.event_shape.2.9.0.request_guard_calls")
+                    .u64(value);
+                send(&child, &out.0, &[]).unwrap();
+            }
+            let (body, fds) = recv(&child).unwrap();
+            assert_eq!(body, [TELEMETRY]);
+            assert!(fds.is_empty());
+            send(&child, &[OK], &[]).unwrap();
+        });
+        let session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                owner: Some(Box::new(server.clone())),
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        for expected in [5, 7, 7] {
+            let values = session.telemetry_counters();
+            for key in [
+                "sdk_dispatch.event.request_guard_calls",
+                "sdk_dispatch.event_shape.2.9.0.request_guard_calls",
+            ] {
+                assert_eq!(
+                    values
+                        .iter()
+                        .filter(|(name, _)| name == key)
+                        .map(|(_, value)| *value)
+                        .collect::<Vec<_>>(),
+                    [expected]
+                );
+            }
+        }
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn telemetry_query_decode_and_transport_errors_preserve_the_last_child_snapshot() {
         for transport_failure in [false, true] {
             let (parent, child) = UnixStream::pair().unwrap();
