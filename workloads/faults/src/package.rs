@@ -587,6 +587,7 @@ mod live {
             "watchdog_cutoffs": archive.watchdog_cutoffs,
             "execution_failures": campaign_report.campaign.execution_failures,
             "telemetry": campaign_report.campaign.telemetry,
+            "snapshot_cache_locks": cache.lock_counters().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
             "snapshot_cache": cache
                 .stats()
                 .counters()
