@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 use crate::search::archive::{
     Archive, ArchiveCandidate, ArchiveEntryReport, ArchiveKey, CampaignSpliceTail,
     ContinuationAccounting, Edge, Input, Position, ProgressPoint, RetentionPolicy,
-    SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath,
+    SELECTOR_IDENTIFIER, SelectorAccounting, SelectorDraw, SelectorPath, SnapshotRetention,
     retention_policy_from_identifier, retention_policy_identifier,
 };
 use crate::search::checkpoint::{
@@ -427,15 +427,8 @@ pub trait TargetExecution: CampaignTypes {
     }
     fn action_cost_fn(&self) -> fn(&Self::Action) -> u64;
     fn snapshot_memory_charge(snapshot: &Self::Snapshot) -> usize;
-    fn snapshot_shared_allocations(
-        _snapshot: &Self::Snapshot,
-        _visit: &mut dyn FnMut(usize, usize) -> bool,
-    ) {
-    }
-    fn canonicalize_restored_snapshots(
-        _snapshots: &mut [(u64, Self::Snapshot)],
-    ) -> Result<(), Box<dyn Error>> {
-        Ok(())
+    fn snapshot_retention() -> Option<Box<dyn SnapshotRetention<Self::Snapshot>>> {
+        None
     }
     fn apply_action(
         &self,
@@ -1484,7 +1477,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
     ) -> Self {
         let mut archive = Archive::new(workload.action_cost_fn());
         archive.max_entries = archive_entry_limit;
-        archive.set_snapshot_shared_allocations(G::snapshot_shared_allocations);
+        archive.set_snapshot_retention(G::snapshot_retention());
         if let Some(memory_budget_mib) = memory_budget_mib {
             let total = memory_budget_mib.saturating_mul(1024 * 1024);
             let draw_reserve = workload
@@ -1698,7 +1691,7 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
         self.archive.preserve_inactive_snapshots(true)?;
         self.bootstrap(workload, run, target)?;
         let genesis_id = 0;
-        let mut checkpointed = checkpoint
+        let checkpointed = checkpoint
             .map(|checkpoint| {
                 checkpoint
                     .entries
@@ -1707,16 +1700,6 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        if !checkpointed.is_empty() {
-            let genesis = self.archive.entries[genesis_id]
-                .snapshot
-                .as_deref()
-                .ok_or("whole-tree import lost its genesis snapshot")?
-                .clone();
-            checkpointed.insert(0, (self.archive.entries[genesis_id].id, genesis));
-            G::canonicalize_restored_snapshots(&mut checkpointed)?;
-            checkpointed.remove(0);
-        }
         let checkpointed = checkpointed.into_iter().collect::<BTreeMap<_, _>>();
         let mut counts = TreeImportCounts::default();
         let mut index_of: BTreeMap<u64, usize> = BTreeMap::new();
@@ -4490,13 +4473,11 @@ fn restore_search_checkpoint<G: Workload>(
     let restored_counters: CampaignCounters = reader.next()?;
     let profile: LiveCoordinatorProfile = reader.next()?;
     let in_flight: Vec<InFlightJob<G>> = reader.next()?;
-    let mut snapshots = reader.snapshots::<G::Snapshot>()?;
+    let snapshots = reader.snapshots::<G::Snapshot>()?;
     reader.finish()?;
-    G::canonicalize_restored_snapshots(&mut snapshots)?;
     core.restore_state(state)?;
     core.archive = archive;
-    core.archive
-        .set_snapshot_shared_allocations(G::snapshot_shared_allocations);
+    core.archive.set_snapshot_retention(G::snapshot_retention());
     let charge: fn(&G::Snapshot) -> usize = G::snapshot_memory_charge;
     core.archive
         .restore_runtime(workload.action_cost_fn(), Some(charge), snapshots)?;

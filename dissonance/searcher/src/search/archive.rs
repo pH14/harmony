@@ -30,6 +30,7 @@ fn retain_marked<T>(values: Vec<T>, keep: &[bool]) -> Vec<T> {
         .collect()
 }
 
+#[cfg(test)]
 type SnapshotSharedAllocations<S> = fn(&S, &mut dyn FnMut(usize, usize) -> bool);
 
 struct SharedAllocation {
@@ -38,19 +39,23 @@ struct SharedAllocation {
 }
 
 #[derive(Default)]
-struct SharedSnapshotMemory {
+pub struct SharedSnapshotMemory {
     allocations: BTreeMap<usize, SharedAllocation>,
     bytes: usize,
 }
 
 impl SharedSnapshotMemory {
-    fn entry_charge(bytes: usize) -> usize {
+    pub fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    pub fn entry_charge(bytes: usize) -> usize {
         bytes
             .checked_add(size_of::<(usize, SharedAllocation)>() + 64)
             .expect("shared snapshot allocation charge overflow")
     }
 
-    fn retain(&mut self, identity: usize, bytes: usize) -> bool {
+    pub fn retain(&mut self, identity: usize, bytes: usize) -> bool {
         if let Some(allocation) = self.allocations.get_mut(&identity) {
             assert_eq!(
                 allocation.bytes, bytes,
@@ -71,7 +76,7 @@ impl SharedSnapshotMemory {
         true
     }
 
-    fn release(&mut self, identity: usize, bytes: usize) -> bool {
+    pub fn release(&mut self, identity: usize, bytes: usize) -> bool {
         let allocation = self
             .allocations
             .get_mut(&identity)
@@ -93,6 +98,47 @@ impl SharedSnapshotMemory {
             .checked_sub(Self::entry_charge(bytes))
             .expect("shared snapshot memory charge underflow");
         true
+    }
+}
+
+pub trait SnapshotRetention<S> {
+    fn canonicalize(&mut self, snapshot: &mut S) -> Result<(), &'static str>;
+    fn retain(&mut self, snapshot: &S, memory: &mut SharedSnapshotMemory);
+    fn release(&mut self, snapshot: &S, memory: &mut SharedSnapshotMemory);
+    fn clear(&mut self);
+    fn standalone_bytes(&self, snapshot: &S) -> usize;
+    fn metadata_bytes(&self) -> usize {
+        0
+    }
+}
+
+#[cfg(test)]
+struct PointerSnapshotRetention<S> {
+    visit: SnapshotSharedAllocations<S>,
+}
+
+#[cfg(test)]
+impl<S> SnapshotRetention<S> for PointerSnapshotRetention<S> {
+    fn canonicalize(&mut self, _snapshot: &mut S) -> Result<(), &'static str> {
+        Ok(())
+    }
+    fn retain(&mut self, snapshot: &S, memory: &mut SharedSnapshotMemory) {
+        (self.visit)(snapshot, &mut |identity, bytes| {
+            memory.retain(identity, bytes)
+        });
+    }
+    fn release(&mut self, snapshot: &S, memory: &mut SharedSnapshotMemory) {
+        (self.visit)(snapshot, &mut |identity, bytes| {
+            memory.release(identity, bytes)
+        });
+    }
+    fn clear(&mut self) {}
+    fn standalone_bytes(&self, snapshot: &S) -> usize {
+        let mut memory = SharedSnapshotMemory::default();
+        (self.visit)(snapshot, &mut |identity, bytes| {
+            memory.retain(identity, bytes)
+        });
+        memory.bytes()
     }
 }
 
@@ -597,7 +643,7 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     #[serde(skip)]
     snapshot_memory_charge: Option<fn(&S) -> usize>,
     #[serde(skip)]
-    snapshot_shared_allocations: Option<SnapshotSharedAllocations<S>>,
+    snapshot_retention: Option<Box<dyn SnapshotRetention<S>>>,
     #[serde(skip)]
     shared_snapshot_memory: SharedSnapshotMemory,
     #[serde(skip)]
@@ -1207,7 +1253,7 @@ where
             liveness_anchor_reactivations: 0,
             resident_snapshot_bytes: 0,
             snapshot_memory_charge: None,
-            snapshot_shared_allocations: None,
+            snapshot_retention: None,
             shared_snapshot_memory: SharedSnapshotMemory::default(),
             liveness_anchor_shared_bytes: None,
             resident_snapshot_order: VecDeque::new(),
@@ -1229,23 +1275,35 @@ where
         self.snapshot_memory_charge = Some(charge);
     }
 
-    pub(crate) fn set_snapshot_shared_allocations(&mut self, visit: SnapshotSharedAllocations<S>) {
-        self.snapshot_shared_allocations = Some(visit);
-        self.rebuild_shared_snapshot_memory();
+    pub(crate) fn set_snapshot_retention(
+        &mut self,
+        retention: Option<Box<dyn SnapshotRetention<S>>>,
+    ) {
+        assert!(self.entries.iter().all(|entry| entry.snapshot.is_none()));
+        self.snapshot_retention = retention;
     }
 
-    fn rebuild_shared_snapshot_memory(&mut self) {
+    #[cfg(test)]
+    fn set_snapshot_shared_allocations(&mut self, visit: SnapshotSharedAllocations<S>)
+    where
+        S: 'static,
+    {
+        self.set_snapshot_retention(Some(Box::new(PointerSnapshotRetention { visit })));
+    }
+
+    fn rebuild_shared_snapshot_memory(&mut self) -> Result<(), &'static str> {
         self.shared_snapshot_memory = SharedSnapshotMemory::default();
-        if let Some(visit) = self.snapshot_shared_allocations {
-            for entry in &self.entries {
-                if let Some(snapshot) = &entry.snapshot {
-                    visit(snapshot, &mut |identity, bytes| {
-                        self.shared_snapshot_memory.retain(identity, bytes)
-                    });
+        if let Some(retention) = &mut self.snapshot_retention {
+            retention.clear();
+            for entry in &mut self.entries {
+                if let Some(snapshot) = &mut entry.snapshot {
+                    retention.canonicalize(Arc::make_mut(snapshot))?;
+                    retention.retain(snapshot, &mut self.shared_snapshot_memory);
                 }
             }
         }
         self.cache_liveness_anchor_shared_bytes();
+        Ok(())
     }
 
     fn cache_liveness_anchor_shared_bytes(&mut self) {
@@ -1254,13 +1312,9 @@ where
             .and_then(|id| self.index_of_id(id))
             .and_then(|index| self.entries[index].snapshot.as_deref())
             .map(|snapshot| {
-                let mut memory = SharedSnapshotMemory::default();
-                if let Some(visit) = self.snapshot_shared_allocations {
-                    visit(snapshot, &mut |identity, bytes| {
-                        memory.retain(identity, bytes)
-                    });
-                }
-                memory.bytes
+                self.snapshot_retention
+                    .as_ref()
+                    .map_or(0, |retention| retention.standalone_bytes(snapshot))
             });
     }
 
@@ -1269,10 +1323,8 @@ where
         if self.liveness_anchor == Some(self.entries[id].id) {
             self.liveness_anchor_shared_bytes = None;
         }
-        if let Some(visit) = self.snapshot_shared_allocations {
-            visit(&snapshot, &mut |identity, bytes| {
-                self.shared_snapshot_memory.release(identity, bytes)
-            });
+        if let Some(retention) = &mut self.snapshot_retention {
+            retention.release(&snapshot, &mut self.shared_snapshot_memory);
         }
         Some(snapshot)
     }
@@ -1939,16 +1991,24 @@ where
         self.id_to_index.get(&stable_id).copied()
     }
 
-    fn index_retained_input(
+    fn commit_retained_input(
         &mut self,
-        parent_id: Option<usize>,
+        ancestor: usize,
         suffix: &[A],
         stable_id: u64,
-    ) -> Result<(usize, usize), &'static str> {
-        let node = self.input_index_start(parent_id);
-        let (node, inserted) = self.input_index.ensure_path(node, suffix)?;
+        certificates: Option<&[Option<[u8; 32]>]>,
+    ) -> (usize, usize) {
+        let (node, inserted) = self
+            .input_index
+            .ensure_path(ancestor, suffix)
+            .expect("validated input prefix disappeared during admission");
+        if let Some(certificates) = certificates {
+            self.input_index
+                .bind_certificates(ancestor, suffix, certificates)
+                .expect("validated replay certificates changed during admission");
+        }
         self.input_index.set_owner(node, Some(stable_id));
-        Ok((node, inserted))
+        (node, inserted)
     }
 
     fn prefix_node_memory_charge() -> usize {
@@ -2329,7 +2389,7 @@ where
                 .ok_or("a checkpoint snapshot names a missing archive entry")?;
             self.entries[index].snapshot = Some(Arc::new(snapshot));
         }
-        self.rebuild_shared_snapshot_memory();
+        self.rebuild_shared_snapshot_memory()?;
         self.resident_snapshot_bytes = 0;
         self.inflight_snapshot_bytes = 0;
         self.inflight_snapshot_charges.clear();
@@ -2527,7 +2587,7 @@ where
         previous: Option<K>,
         execution: u64,
         candidate: ArchiveCandidate<T, K, M>,
-        snapshot: S,
+        mut snapshot: S,
         certificates: Option<&[Option<[u8; 32]>]>,
     ) -> Result<(Option<usize>, K), Box<dyn Error>> {
         let ArchiveCandidate {
@@ -2580,6 +2640,31 @@ where
             .zip(&ranked)
             .filter_map(|(id, retained)| (!retained).then_some(id))
             .collect();
+        let id = self.entries.len();
+        let stable_id = self.next_entry_id;
+        let next_entry_id = self
+            .next_entry_id
+            .checked_add(1)
+            .ok_or("archive stable id space exhausted")?;
+        let parent_input_len = parent_id.map_or(0, |parent| self.entries[parent].input_len);
+        let input_len = parent_input_len
+            .checked_add(suffix.as_ref().len())
+            .ok_or("archive candidate input length overflow")?;
+        let ancestor = self.input_index_start(parent_id);
+        if !self
+            .input_index
+            .nodes
+            .get(ancestor)
+            .is_some_and(Option::is_some)
+        {
+            return Err("input prefix starts at a missing node".into());
+        }
+        let suffix_len = suffix.as_ref().len();
+        if let Some(retention) = &mut self.snapshot_retention {
+            retention.canonicalize(&mut snapshot)?;
+            retention.retain(&snapshot, &mut self.shared_snapshot_memory);
+        }
+        let snapshot_charge = self.snapshot_charge(&snapshot);
         let population_retirements = self
             .active_count
             .saturating_sub(self.max_entries)
@@ -2592,12 +2677,20 @@ where
                 if self.active_count == 1 && self.deactivate_liveness_anchor_for_admission() {
                     continue;
                 }
+                if let Some(retention) = &mut self.snapshot_retention {
+                    retention.release(&snapshot, &mut self.shared_snapshot_memory);
+                }
                 return Err("archive population limit cannot retire an entry".into());
             }
         }
         if self.active_count >= self.max_entries {
+            if let Some(retention) = &mut self.snapshot_retention {
+                retention.release(&snapshot, &mut self.shared_snapshot_memory);
+            }
             return Err("archive population limit did not retire an entry".into());
         }
+        let (input_node, new_nodes) =
+            self.commit_retained_input(ancestor, suffix.as_ref(), stable_id, certificates);
         if won_preferences.len() > 1 {
             self.portfolio_cross_improvements = self.portfolio_cross_improvements.saturating_add(1);
         }
@@ -2667,34 +2760,11 @@ where
             self.replacement_cost_displaced = self.replacement_cost_displaced.saturating_add(1);
             self.deactivate(replaced);
         }
-        let id = self.entries.len();
-        let stable_id = self.next_entry_id;
-        self.next_entry_id = self
-            .next_entry_id
-            .checked_add(1)
-            .ok_or("archive stable id space exhausted")?;
-        let snapshot_charge = self.snapshot_charge(&snapshot);
-        let parent_input_len = parent_id.map_or(0, |parent| self.entries[parent].input_len);
-        let input_len = parent_input_len
-            .checked_add(suffix.as_ref().len())
-            .ok_or("archive candidate input length overflow")?;
+        self.next_entry_id = next_entry_id;
         self.historical_input_actions = self.historical_input_actions.saturating_add(input_len);
         self.stored_input_actions = self
             .stored_input_actions
             .saturating_add(suffix.as_ref().len());
-        let (input_node, new_nodes) =
-            self.index_retained_input(parent_id, suffix.as_ref(), stable_id)?;
-        if let Some(certificates) = certificates {
-            let ancestor = self.input_index_start(parent_id);
-            self.input_index
-                .bind_certificates(ancestor, suffix.as_ref(), certificates)?;
-        }
-        let suffix_len = suffix.as_ref().len();
-        if let Some(visit) = self.snapshot_shared_allocations {
-            visit(&snapshot, &mut |identity, bytes| {
-                self.shared_snapshot_memory.retain(identity, bytes)
-            });
-        }
         self.entries.push(ArchiveEntry {
             id: stable_id,
             parent_id: parent_id.map(|parent| self.entries[parent].id),
@@ -3204,6 +3274,13 @@ where
             .checked_add(self.inflight_snapshot_bytes)
             .expect("resident snapshot charge overflow")
             .checked_add(self.shared_snapshot_memory.bytes)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    self.snapshot_retention
+                        .as_ref()
+                        .map_or(0, |retention| retention.metadata_bytes()),
+                )
+            })
             .expect("resident shared snapshot charge overflow")
     }
 
@@ -3627,10 +3704,8 @@ where
             };
             reports.push(report);
             if let Some(snapshot) = entry.snapshot {
-                if let Some(visit) = self.snapshot_shared_allocations {
-                    visit(&snapshot, &mut |identity, bytes| {
-                        self.shared_snapshot_memory.release(identity, bytes)
-                    });
+                if let Some(retention) = &mut self.snapshot_retention {
+                    retention.release(&snapshot, &mut self.shared_snapshot_memory);
                 }
                 snapshots.push((
                     snapshot_id,
@@ -3855,8 +3930,8 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, MAX_TIER_RANK_SHIFT, SelectorAccounting,
-        SelectorDraw, SelectorPath, SharedSnapshotMemory, TierCells, WeightedSet,
-        checked_tier_rank_shift, tier_weight,
+        SelectorDraw, SelectorPath, SharedSnapshotMemory, SnapshotRetention, TierCells,
+        WeightedSet, checked_tier_rank_shift, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -4566,6 +4641,93 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CanonicalMemoryRetention {
+        nodes: BTreeMap<usize, Arc<MemoryNode>>,
+    }
+
+    impl SnapshotRetention<SharedMemorySnapshot> for CanonicalMemoryRetention {
+        fn canonicalize(
+            &mut self,
+            snapshot: &mut SharedMemorySnapshot,
+        ) -> Result<(), &'static str> {
+            let mut tail = Vec::new();
+            let mut current = Some(Arc::clone(&snapshot.node));
+            let mut parent = None;
+            while let Some(node) = current {
+                snapshot
+                    .visits
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if let Some(canonical) = self.nodes.get(&node.bytes) {
+                    if node.parent.as_ref().map(|node| node.bytes)
+                        != canonical.parent.as_ref().map(|node| node.bytes)
+                    {
+                        return Err("fixture history identity collision");
+                    }
+                    parent = Some(Arc::clone(canonical));
+                    break;
+                }
+                current = node.parent.clone();
+                tail.push(node);
+            }
+            for node in tail.into_iter().rev() {
+                let matches = match (&node.parent, &parent) {
+                    (None, None) => true,
+                    (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+                    _ => false,
+                };
+                parent = Some(if matches {
+                    node
+                } else {
+                    Arc::new(MemoryNode {
+                        parent,
+                        bytes: node.bytes,
+                    })
+                });
+            }
+            snapshot.node = parent.ok_or("fixture history is empty")?;
+            Ok(())
+        }
+        fn retain(&mut self, snapshot: &SharedMemorySnapshot, memory: &mut SharedSnapshotMemory) {
+            let mut node = Some(&snapshot.node);
+            while let Some(current) = node {
+                if !memory.retain(Arc::as_ptr(current) as usize, current.bytes) {
+                    break;
+                }
+                assert!(
+                    self.nodes
+                        .insert(current.bytes, Arc::clone(current))
+                        .is_none()
+                );
+                node = current.parent.as_ref();
+            }
+        }
+        fn release(&mut self, snapshot: &SharedMemorySnapshot, memory: &mut SharedSnapshotMemory) {
+            let mut node = Some(&snapshot.node);
+            while let Some(current) = node {
+                if !memory.release(Arc::as_ptr(current) as usize, current.bytes) {
+                    break;
+                }
+                assert!(self.nodes.remove(&current.bytes).is_some());
+                node = current.parent.as_ref();
+            }
+        }
+        fn clear(&mut self) {
+            self.nodes.clear();
+        }
+        fn standalone_bytes(&self, snapshot: &SharedMemorySnapshot) -> usize {
+            let mut total = 0;
+            SharedMemorySnapshot::visit(snapshot, &mut |_, bytes| {
+                total += SharedSnapshotMemory::entry_charge(bytes) + 128;
+                true
+            });
+            total
+        }
+        fn metadata_bytes(&self) -> usize {
+            self.nodes.len() * 128
+        }
+    }
+
     fn shared_memory_archive() -> Archive<u8, FlatKey, (), SharedMemorySnapshot> {
         let mut archive = Archive::new(|_| 1);
         archive.set_memory_budget(usize::MAX, |_| 7);
@@ -4693,7 +4855,7 @@ mod tests {
         let mut restored: Archive<u8, FlatKey, (), SharedMemorySnapshot> =
             postcard::from_bytes(&serialized).unwrap();
         assert!(restored.shared_snapshot_memory.allocations.is_empty());
-        assert!(restored.snapshot_shared_allocations.is_none());
+        assert!(restored.snapshot_retention.is_none());
         restored.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
         restored
             .restore_runtime(
@@ -4719,11 +4881,13 @@ mod tests {
     #[test]
     fn shared_snapshot_checkpoint_canonicalization_preserves_budget_eviction() {
         let mut archive = shared_memory_archive();
+        archive.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
         let root = SharedMemorySnapshot::root(17);
         insert_shared_snapshot(&mut archive, 0, root.clone());
-        insert_shared_snapshot(&mut archive, 1, root.child(19));
-        insert_shared_snapshot(&mut archive, 2, root.child(23));
+        insert_shared_snapshot(&mut archive, 1, SharedMemorySnapshot::root(17).child(19));
+        insert_shared_snapshot(&mut archive, 2, SharedMemorySnapshot::root(17).child(23));
         archive.establish_liveness_anchor();
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 3);
         let metadata = postcard::to_allocvec(&archive).unwrap();
         let paths = vec![
             (0_u64, vec![17_usize]),
@@ -4732,30 +4896,19 @@ mod tests {
         ];
         let snapshot_bytes = postcard::to_allocvec(&paths).unwrap();
         let decoded: Vec<(u64, Vec<usize>)> = postcard::from_bytes(&snapshot_bytes).unwrap();
-        let mut canonical = BTreeMap::<Vec<usize>, SharedMemorySnapshot>::new();
         let snapshots = decoded
             .into_iter()
             .map(|(id, path)| {
                 let mut snapshot = SharedMemorySnapshot::root(path[0]);
-                for depth in 1..=path.len() {
-                    let prefix = path[..depth].to_vec();
-                    snapshot = canonical
-                        .entry(prefix)
-                        .or_insert_with(|| {
-                            if depth == 1 {
-                                snapshot.clone()
-                            } else {
-                                snapshot.child(path[depth - 1])
-                            }
-                        })
-                        .clone();
+                for bytes in &path[1..] {
+                    snapshot = snapshot.child(*bytes);
                 }
                 (id, snapshot)
             })
             .collect();
         let mut resumed: Archive<u8, FlatKey, (), SharedMemorySnapshot> =
             postcard::from_bytes(&metadata).unwrap();
-        resumed.set_snapshot_shared_allocations(SharedMemorySnapshot::visit);
+        resumed.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
         resumed
             .restore_runtime(|_| 1, Some(|_| 7), snapshots)
             .unwrap();
@@ -4783,6 +4936,198 @@ mod tests {
         assert_eq!(
             archive.shared_snapshot_memory.bytes,
             resumed.shared_snapshot_memory.bytes
+        );
+    }
+
+    #[test]
+    fn canonical_snapshot_admission_walks_only_the_new_tail() {
+        let mut archive = shared_memory_archive();
+        archive.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
+        let mut history = SharedMemorySnapshot::root(17);
+        for bytes in 100..228 {
+            history = history.child(bytes);
+        }
+        insert_shared_snapshot(&mut archive, 0, history.clone());
+        let visits = history.visits();
+        insert_shared_snapshot(&mut archive, 1, history.clone());
+        assert_eq!(history.visits() - visits, 1);
+        let child = history.child(999);
+        let visits = history.visits();
+        insert_shared_snapshot(&mut archive, 2, child);
+        assert_eq!(history.visits() - visits, 2);
+        let visits = history.visits();
+        for _ in 0..32 {
+            let _ = archive.resident_memory_bytes();
+        }
+        assert_eq!(history.visits(), visits);
+    }
+
+    #[test]
+    fn replacing_the_sole_deep_history_owner_visits_only_the_incoming_tail() {
+        let mut archive = shared_memory_archive();
+        archive.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
+        insert_shared_snapshot(&mut archive, 9, SharedMemorySnapshot::root(1));
+        archive.establish_liveness_anchor();
+        let mut parent = SharedMemorySnapshot::root(17);
+        for bytes in 100..228 {
+            parent = parent.child(bytes);
+        }
+        let candidate = |suffix| ArchiveCandidate {
+            suffix,
+            key: FlatKey([0, 0, 0, 0]),
+            milestones: (),
+        };
+        let old = archive
+            .insert(None, 0, candidate(vec![0, 0, 0]), parent.clone())
+            .unwrap()
+            .unwrap();
+        archive
+            .insert(
+                None,
+                0,
+                candidate(vec![1, 1]),
+                SharedMemorySnapshot::root(88),
+            )
+            .unwrap()
+            .unwrap();
+        let visits = parent.visits();
+        let incoming = parent.child(999);
+        let new = archive
+            .insert(None, 0, candidate(vec![2]), incoming)
+            .unwrap()
+            .unwrap();
+        assert!(!archive.active[old]);
+        assert!(archive.entries[old].snapshot.is_none());
+        assert_eq!(parent.visits() - visits, 2);
+        assert!(Arc::ptr_eq(
+            archive.entries[new]
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .node
+                .parent
+                .as_ref()
+                .unwrap(),
+            &parent.node
+        ));
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 132);
+    }
+
+    #[test]
+    fn population_admission_failure_releases_the_provisional_history_root() {
+        let mut archive = shared_memory_archive();
+        archive.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
+        archive.max_entries = 0;
+        let candidate = ArchiveCandidate {
+            suffix: vec![0],
+            key: FlatKey([0, 0, 0, 0]),
+            milestones: (),
+        };
+        assert!(
+            archive
+                .insert(None, 0, candidate, SharedMemorySnapshot::root(17))
+                .is_err()
+        );
+        assert_eq!(archive.shared_snapshot_memory.bytes(), 0);
+        assert_eq!(
+            archive
+                .snapshot_retention
+                .as_ref()
+                .unwrap()
+                .metadata_bytes(),
+            0
+        );
+        assert!(archive.entries.is_empty());
+        assert!(archive.input_index.walk(0, &[0]).is_none());
+        archive.max_entries = 1;
+        insert_shared_snapshot(&mut archive, 1, SharedMemorySnapshot::root(19));
+        assert_eq!(archive.entries[0].id, 0);
+        insert_shared_snapshot(&mut archive, 0, SharedMemorySnapshot::root(17));
+        assert_eq!(archive.entries.len(), 2);
+        assert_eq!(
+            archive
+                .input_index
+                .materialize(archive.entries[0].input_node, 1),
+            Some(vec![1])
+        );
+        assert_eq!(
+            archive
+                .input_index
+                .materialize(archive.entries[1].input_node, 1),
+            Some(vec![0])
+        );
+    }
+
+    #[test]
+    fn canonical_snapshot_registry_discards_failed_and_rejected_candidates() {
+        let mut archive = shared_memory_archive();
+        archive.set_snapshot_retention(Some(Box::<CanonicalMemoryRetention>::default()));
+        insert_shared_snapshot(&mut archive, 0, SharedMemorySnapshot::root(17));
+        let before = archive.resident_snapshot_bytes();
+        let candidate = || ArchiveCandidate {
+            suffix: vec![9],
+            key: FlatKey([1, 1, 0, 0]),
+            milestones: (),
+        };
+        assert!(
+            archive
+                .insert(
+                    None,
+                    0,
+                    candidate(),
+                    SharedMemorySnapshot::root(99).child(17)
+                )
+                .is_err()
+        );
+        assert!(archive.input_index.walk(0, &[9]).is_none());
+        assert_eq!(archive.resident_snapshot_bytes(), before);
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 1);
+        let duplicate = ArchiveCandidate {
+            suffix: vec![0],
+            key: FlatKey([0, 0, 0, 0]),
+            milestones: (),
+        };
+        archive
+            .insert(None, 0, duplicate, SharedMemorySnapshot::root(101))
+            .unwrap();
+        assert_eq!(archive.resident_snapshot_bytes(), before);
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 1);
+        let candidate = |suffix| ArchiveCandidate {
+            suffix,
+            key: FlatKey([0, 0, 0, 0]),
+            milestones: (),
+        };
+        archive
+            .insert(
+                None,
+                0,
+                candidate(vec![1, 1]),
+                SharedMemorySnapshot::root(101),
+            )
+            .unwrap()
+            .unwrap();
+        let before = archive.resident_snapshot_bytes();
+        assert!(
+            archive
+                .insert(
+                    None,
+                    0,
+                    candidate(vec![2, 2, 2]),
+                    SharedMemorySnapshot::root(103)
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(archive.resident_snapshot_bytes(), before);
+        assert_eq!(archive.shared_snapshot_memory.allocations.len(), 2);
+        archive.take_entry_reports_and_snapshots();
+        assert_eq!(
+            archive
+                .snapshot_retention
+                .as_ref()
+                .unwrap()
+                .metadata_bytes(),
+            0
         );
     }
 
