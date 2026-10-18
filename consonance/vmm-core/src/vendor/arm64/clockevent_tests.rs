@@ -275,3 +275,165 @@ fn idle_irq_mask_error_does_not_advance_time_or_fall_back() {
     assert_eq!(vmm.terminal_reason(), None);
     assert_eq!((vmm.backend.reads, vmm.backend.saves), (1, 0));
 }
+
+#[test]
+#[cfg_attr(miri, ignore = "control snapshot replay uses mapped storage")]
+fn raw_exit_delivers_after_unmask_at_unchanged_clock_and_records_the_boundary() {
+    use super::super::board::{GICD, PL011, PVCLOCK_PPI};
+    use vmm_backend::Arm64MockCompletion;
+    const CUT_VNS: u64 = 10 + 254 * 10_000;
+    let mut reference_history = None;
+    for exit in [
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(GICD.0),
+            size: 4,
+            write: None,
+        }),
+        Exit::Arch(vmm_backend::Arm64Exit::Sysreg {
+            sysreg: OSLAR_EL1,
+            write: Some(0),
+        }),
+        Exit::Common(CommonExit::Mmio {
+            gpa: Gpa(GICD.0),
+            size: 4,
+            write: Some(0b10),
+        }),
+    ] {
+        let mut vmm = machine(Some(true), true);
+        vmm.deferred_virtual_time_checkpoints = true;
+        let gic = vmm.devices.gic.as_mut().unwrap();
+        gic.mmio_write(gicv3::GicFrame::Dist, 0, 0b10, 0).unwrap();
+        gic.mmio_write(gicv3::GicFrame::Redist, 0x1_0080, 1 << PVCLOCK_PPI, 0)
+            .unwrap();
+        gic.mmio_write(gicv3::GicFrame::Redist, 0x1_0100, 1 << PVCLOCK_PPI, 0)
+            .unwrap();
+        gic.set_pmr(0xff);
+        gic.set_group1_enabled(true);
+        vmm.vtime.as_mut().unwrap().advance_virtual_time(10);
+        vmm.service_arm_clockevent_due().unwrap();
+        vmm.virtual_time_trace
+            .as_mut()
+            .unwrap()
+            .finish(10, None)
+            .unwrap();
+        for _ in 1..255 {
+            vmm.backend
+                .inner
+                .extend_exits([Exit::Common(CommonExit::Mmio {
+                    gpa: Gpa(PL011.0),
+                    size: 4,
+                    write: Some(65),
+                })]);
+            assert_eq!(vmm.step().unwrap(), Step::Continued);
+        }
+        assert!(!vmm.devices.clockevent.line_asserted);
+        assert_eq!(vmm.devices.gic.as_ref().unwrap().peek_interrupt(), None);
+        let history = vmm.event_history().unwrap();
+        vmm.backend.inner.extend_exits([exit.clone()]);
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        assert_eq!(vmm.event_history().unwrap(), history);
+        assert_eq!(vmm.effective_vns().unwrap(), CUT_VNS);
+        let raw_before = vmm.virtual_time_trace().unwrap().raw_log().len();
+        vmm.backend.mask = Some(false);
+        vmm.backend.inner.set_state(Arm64VcpuState::default());
+        vmm.backend.inner.extend_exits([exit.clone()]);
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        assert_eq!(vmm.effective_vns().unwrap(), CUT_VNS);
+        assert!(vmm.devices.clockevent.line_asserted);
+        assert_eq!(vmm.devices.clockevent.assertions, 1);
+        assert_eq!(vmm.devices.clockevent.deadline, None);
+        assert_eq!(
+            vmm.devices.gic.as_ref().unwrap().peek_interrupt(),
+            Some(PVCLOCK_PPI)
+        );
+        if matches!(exit, Exit::Common(CommonExit::Mmio { write: None, .. })) {
+            assert_eq!(
+                vmm.backend.inner.completions().last(),
+                Some(&Arm64MockCompletion::Read(0x52))
+            );
+        }
+        let trace = vmm.virtual_time_trace().unwrap();
+        assert_eq!(trace.event_history().count, history.count + 1);
+        let event = trace.normalized_log().events.last().unwrap();
+        assert_eq!(event.class, NormalizedEventClass::InterruptDelivery);
+        assert_eq!(event.vns_after, CUT_VNS);
+        assert_eq!(event.interrupts.len(), 1);
+        assert_eq!(event.interrupts[0].interrupt_id, PVCLOCK_PPI);
+        assert_eq!(trace.raw_log().len(), raw_before + 1);
+        assert!(vmm.virtual_time_checkpoint_due(255));
+        assert_eq!(event.state_hash, None);
+        crate::virtual_time::check_delivery_placement(trace.schedule(), trace.normalized_log())
+            .unwrap();
+        let committed = vmm.event_history().unwrap();
+        if let Some(expected) = reference_history {
+            assert_eq!(committed, expected);
+        } else {
+            reference_history = Some(committed);
+        }
+        vmm.checkpoint_virtual_time_trace_at(255, [42; 32]).unwrap();
+        assert_eq!(vmm.event_history(), Some(committed));
+        vmm.wire_snapshot_hashing();
+        let mut server = crate::control::ControlServer::new(
+            vmm,
+            Box::new(|| {
+                let mut fresh = machine(Some(false), false);
+                fresh
+                    .virtual_time_trace
+                    .as_mut()
+                    .unwrap()
+                    .finish(0, None)
+                    .unwrap();
+                fresh.wire_snapshot_hashing();
+                Ok(fresh)
+            }),
+        );
+        assert!(matches!(
+            server
+                .handle(&control_proto::Request::Hello(crate::control::server_caps()))
+                .unwrap(),
+            Ok(control_proto::Reply::Hello(_))
+        ));
+        if matches!(exit, Exit::Common(CommonExit::Mmio { write: Some(_), .. })) {
+            let snap = match server
+                .handle(&control_proto::Request::Snapshot)
+                .unwrap()
+                .unwrap()
+            {
+                control_proto::Reply::Snapshot { id, .. } => id,
+                other => panic!("unexpected snapshot reply {other:?}"),
+            };
+            assert_eq!(server.vmm().unwrap().event_history(), Some(committed));
+            server
+                .vmm_mut()
+                .unwrap()
+                .restore_event_history(Default::default())
+                .unwrap();
+            assert_eq!(
+                server
+                    .handle(&control_proto::Request::Replay(snap))
+                    .unwrap(),
+                Ok(control_proto::Reply::Unit)
+            );
+        }
+        let vmm = server.vmm_mut().unwrap();
+        assert_eq!(vmm.event_history(), Some(committed));
+        assert_eq!(vmm.effective_vns().unwrap(), CUT_VNS);
+        assert!(vmm.devices.clockevent.line_asserted);
+        assert_eq!(vmm.devices.clockevent.deadline, None);
+        assert_eq!(
+            vmm.devices.gic.as_ref().unwrap().peek_interrupt(),
+            Some(PVCLOCK_PPI)
+        );
+        vmm.backend
+            .inner
+            .extend_exits([Exit::Common(CommonExit::Mmio {
+                gpa: Gpa(PL011.0),
+                size: 4,
+                write: Some(65),
+            })]);
+        assert_eq!(vmm.step().unwrap(), Step::Continued);
+        assert_eq!(vmm.effective_vns().unwrap(), CUT_VNS + 10_000);
+        assert_eq!(vmm.devices.clockevent.assertions, 1);
+        assert_eq!(vmm.event_history().unwrap().count, history.count + 2);
+    }
+}

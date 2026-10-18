@@ -317,11 +317,17 @@ Every V-time-wired VMM maintains a v1 ordered normalized-event commitment:
 advances a SHA-256 chain under `consonance.ordered-event-history.v1`, committing
 the preceding digest, checked cumulative count, event class, payload digest,
 virtual time after completion, and ordered interrupt deadline/vector pairs.
-Delivery outside an active normalized event is rejected before consuming the
-clockevent schedule. The association of an interrupt with its completing event
-is semantic; local trace event indexes, schedule indexes, backend debug strings, diagnostic
+Delivery outside an active guest-exit context is rejected before consuming the
+clockevent schedule. ARM GIC and trapped-system-register exits normally remain
+raw-only. If such an exit actually delivers a clockevent, it becomes an
+`irq_delivery` normalized event at that exact boundary, with no V-time charge
+and no backend-specific raw payload. The interrupt is neither deferred to the
+next normalized exit nor left uncommitted across capture. The association of
+an interrupt with its completing event is semantic; local trace event indexes,
+schedule indexes, backend debug strings, diagnostic
 checkpoint hashes, and session segment labels are excluded. Raw-only backend
-exits do not consume a normalized ordinal. Count overflow fails the event.
+exits without semantic delivery do not consume a normalized ordinal. Count
+overflow fails the event.
 This is a constant-size history commitment, separate from logical VM state;
 the existing diagnostic log remains available independently.
 
