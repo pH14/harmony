@@ -1965,7 +1965,7 @@ mod tests {
         }
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
-            if self.run_hung {
+            if self.run_hung && self.run_hashes.as_ref().is_none_or(Vec::is_empty) {
                 return Err(SessionError::Hung(WALL_LIMIT).into());
             }
             if let Some(hashes) = &mut self.run_hashes {
@@ -2571,7 +2571,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_job_replay_cutoff_is_a_preparation_failure() {
+    fn campaign_job_reconstruction_cutoff_is_incomplete() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             actions: Vec::new(),
@@ -2590,16 +2590,23 @@ mod tests {
             &[],
             false,
         )
-        .unwrap();
-        assert!(result.actions.is_empty());
-        let observations = result.preparation_failure.unwrap();
-        assert_eq!(observations.len(), 1);
-        assert!(observations[0].watchdog_cutoff);
+        .unwrap_err();
+        assert!(
+            result.to_string().contains("campaign incomplete"),
+            "{result}"
+        );
+        assert!(
+            result.to_string().contains("parent reconstruction"),
+            "{result}"
+        );
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(!target.found_bug());
+        assert!(target.snapshot().unwrap().is_none());
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
     #[test]
-    fn campaign_job_replayed_action_cutoff_is_a_preparation_failure() {
+    fn campaign_job_replayed_action_cutoff_is_incomplete() {
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
             actions: Vec::new(),
@@ -2629,11 +2636,15 @@ mod tests {
             &[],
             false,
         )
-        .unwrap();
-        assert!(result.actions.is_empty());
-        let observations = result.preparation_failure.unwrap();
-        assert_eq!(observations.len(), 1);
-        assert!(observations[0].watchdog_cutoff);
+        .unwrap_err();
+        assert!(
+            result.to_string().contains("campaign incomplete"),
+            "{result}"
+        );
+        assert!(result.to_string().contains("parent replay"), "{result}");
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(!target.found_bug());
+        assert!(target.snapshot().unwrap().is_none());
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
@@ -2671,6 +2682,43 @@ mod tests {
         .unwrap_err()
         .to_string();
         assert!(error.contains("replayed fault prefix stopped"), "{error}");
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn campaign_suffix_cutoff_discards_the_entire_unadmitted_job() {
+        let first = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
+        let second = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
+        let mut target = unbooted_target();
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            hash: Some([17; 32]),
+            events: BTreeMap::new(),
+            current: 1,
+            run_hashes: Some(vec![[17; 32]]),
+            run_hung: true,
+            snapshots: BTreeMap::from([(1, [17; 32])]),
+            moment: 0,
+            next_snap: 1,
+        });
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        let origin = target.snapshot().unwrap().unwrap();
+        let result = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[],
+            &[],
+            crate::archive::FaultMilestones::default(),
+            &[first, second],
+            false,
+        );
+        let error = result.expect_err("no partial job may be certified or admitted");
+        assert!(error.to_string().contains("campaign incomplete"), "{error}");
+        assert!(error.to_string().contains("suffix execution"), "{error}");
+        assert_eq!(target.actions(), &[first]);
+        assert_eq!(target.watchdog_cutoffs(), 1);
+        assert!(target.snapshot().unwrap().is_none());
+        assert!(!target.found_bug());
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
