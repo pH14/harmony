@@ -1151,7 +1151,6 @@ impl SearchSession for WorkerSession {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.check_loaded_image()?;
         self.publish_snapshot_attached(
             index,
             namespace,
@@ -1173,7 +1172,6 @@ impl SearchSession for WorkerSession {
         attachment: &SnapshotAttachment,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
-        self.check_loaded_image()?;
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
         let reply = self.call(
             Out::op(EXPORT)
@@ -1582,8 +1580,8 @@ fn serve(
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
 ) -> Result<(), Box<dyn Error>> {
     let mut served = Served::default();
+    loaded_image_guard.check()?;
     loop {
-        loaded_image_guard.check()?;
         let (body, fds) = match recv(stream) {
             Ok(frame) => frame,
             Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
@@ -2825,6 +2823,170 @@ mod tests {
         assert_eq!(session.state_hash().unwrap(), [0x42; 32]);
         drop(session);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn rpc_refusal_prevents_request_send_and_reply_acceptance() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        for refusal in [1, 2] {
+            let (parent, child) = UnixStream::pair().unwrap();
+            child
+                .set_read_timeout(Some(Duration::from_millis(100)))
+                .unwrap();
+            let server = std::thread::spawn(move || {
+                if refusal == 1 {
+                    assert!(recv(&child).is_err());
+                } else {
+                    assert_eq!(recv(&child).unwrap().0, vec![STORE_BYTES]);
+                    send(&child, &Out::default().u8(OK).u64(42).0, &[]).unwrap();
+                }
+            });
+            let session = WorkerSession {
+                stream: parent,
+                process: None,
+                setup: (SnapId(1), 10),
+                seed: 0,
+                counters: RefCell::new(Vec::new()),
+                failed: std::cell::Cell::new(false),
+                loaded_image_guard: LoadedImageGuard::fixture(),
+            };
+            let (result, entries, strict) =
+                trace_checks(Some(refusal), || session.call(&Out::op(STORE_BYTES), &[]));
+            assert!(result.is_err());
+            assert_eq!((entries, strict), (refusal, 0));
+            assert!(session.failed.get());
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn publication_checks_both_rpcs_and_both_index_boundaries() {
+        use crate::image_identity::trace_checks;
+        for attached in [false, true] {
+            for refusal in [None, Some(1), Some(2), Some(3), Some(4), Some(5), Some(6)] {
+                let index = LocalIndex::new(1 << 20);
+                let (session, server) = threaded(3);
+                let (rpc, entries, strict) =
+                    trace_checks(None, || session.call(&Out::op(STORE_BYTES), &[]));
+                assert!(rpc.is_ok());
+                assert_eq!((entries, strict), (2, 0));
+                let (result, entries, strict) = trace_checks(refusal, || {
+                    if attached {
+                        session.publish_snapshot_attached(
+                            &index,
+                            namespace(),
+                            b"guard",
+                            None,
+                            SnapId(1),
+                            &SnapshotAttachment {
+                                domain: b"test".to_vec(),
+                                bytes: b"payload".to_vec(),
+                            },
+                            1,
+                        )
+                    } else {
+                        session.publish_snapshot(&index, namespace(), b"guard", None, SnapId(1), 1)
+                    }
+                });
+                assert_eq!(strict, 0);
+                assert_eq!(entries, refusal.unwrap_or(6));
+                if refusal.is_some() {
+                    assert!(result.is_err());
+                    assert!(index.lookup(namespace(), b"guard").is_none());
+                    assert_eq!(index.stats().leased, 0);
+                    assert!(session.call(&Out::op(STORE_BYTES), &[]).is_err());
+                } else {
+                    index.release(result.unwrap());
+                }
+                drop(session);
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn child_checks_initial_admission_and_each_response_even_on_handler_error() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        for frames in 0..=2 {
+            for valid in [false, true] {
+                let (parent, child) = UnixStream::pair().unwrap();
+                let server = std::thread::spawn(move || {
+                    let (result, entries, strict) = trace_checks(None, || {
+                        serve(
+                            &child,
+                            &mut |init| Fake::open_quarantining(init, None),
+                            LoadedImageGuard::fixture(),
+                        )
+                    });
+                    assert!(result.is_ok());
+                    assert_eq!((entries, strict), (2 * frames + 1, 0));
+                });
+                for frame in 0..frames {
+                    let mut request = Out::op(INIT);
+                    put_config(&mut request, &config());
+                    request.bytes(&[3]).bytes(b"i").len(0).bytes(b"fake");
+                    send(
+                        &parent,
+                        if valid && frame == 0 {
+                            &request.0
+                        } else if valid {
+                            &[STORE_BYTES]
+                        } else {
+                            &[255]
+                        },
+                        &[],
+                    )
+                    .unwrap();
+                    let (reply, _) = recv(&parent).unwrap();
+                    assert_eq!(reply[0], if valid { OK } else { FAILED });
+                }
+                drop(parent);
+                server.join().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn child_send_failure_stops_before_another_receive() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        let (parent, child) = UnixStream::pair().unwrap();
+        send(&parent, &[255], &[]).unwrap();
+        drop(parent);
+        let (result, entries, strict) = trace_checks(None, || {
+            serve(
+                &child,
+                &mut |_| panic!("unexpected open"),
+                LoadedImageGuard::fixture(),
+            )
+        });
+        assert!(result.is_err());
+        assert_eq!((entries, strict), (2, 0));
+    }
+
+    #[test]
+    fn child_refusal_prevents_send_or_next_handler() {
+        use crate::image_identity::{LoadedImageGuard, trace_checks};
+        for refusal in 1..=3 {
+            let (parent, child) = UnixStream::pair().unwrap();
+            let server = std::thread::spawn(move || {
+                let (result, entries, _) = trace_checks(Some(refusal), || {
+                    serve(
+                        &child,
+                        &mut |_| panic!("unexpected open"),
+                        LoadedImageGuard::fixture(),
+                    )
+                });
+                assert!(result.is_err());
+                assert_eq!(entries, refusal);
+            });
+            let _ = send(&parent, &[255], &[]);
+            if refusal == 3 {
+                assert_eq!(recv(&parent).unwrap().0[0], FAILED);
+                let _ = send(&parent, &[255], &[]);
+            }
+            assert!(recv(&parent).is_err());
+            server.join().unwrap();
+        }
     }
 
     #[test]
