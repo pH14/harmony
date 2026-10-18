@@ -299,9 +299,12 @@ protocol and validation machinery without copying the evaluation loop.
 Every `nes-eval` campaign of Super Mario Bros., Mega Man 2, Metroid, Twin
 Dragons or Famidash serves the arcade page's view of itself over HTTP on a
 loopback port. It prints `live view listening on 127.0.0.1:PORT` and writes
-`live.json` with the address, the page's game id and the process id to its
-output directory, and removes the file when the campaign ends. The server
-refuses any other address: it has no authentication and can serve the ROM
+`live.json` with the address, the page's game id, the process id and, on Linux,
+the process start time from `/proc/self/stat`, to its output directory. It
+removes the file when the campaign ends. A process killed by a signal leaves the
+file behind, and the start time keeps a reused process id from matching it. The
+server refuses any other address, and answers 403 to a request whose `Host` or
+`Origin` names another host: it has no authentication and can serve the ROM
 directory. To watch from another machine, forward the port over SSH, for
 example `ssh -L 8790:127.0.0.1:PORT HOST`, or use the arcade launcher in
 [`demos/twin-dragons`](../../demos/twin-dragons/README.md#native-runs).

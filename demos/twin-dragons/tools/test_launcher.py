@@ -63,12 +63,17 @@ class LauncherTest(unittest.TestCase):
 
     def test_found_runs_come_from_live_records(self) -> None:
         machine = self.config().machines["example"]
-        record = '{"address":"127.0.0.1:4100","game":"metroid","pid":42}'
+        record = '{"address":"127.0.0.1:4100","game":"metroid","pid":42,"process_start":7}'
         listing = "\n".join(
             [
                 f"/srv/runs/a/campaign/live.json\t1700000000\t{record}",
                 '/srv/runs/b/live.json\t1700000000\t{"address":"127.0.0.1:1","game":"stb"}',
                 "/srv/runs/c/live.json\t1700000000\tnot json",
+                "/srv/runs/d/live.json\t1700000000\t[42]",
+                '/srv/runs/e/live.json\t1700000000\t{"address":["x"],"game":"metroid","pid":4}',
+                '/srv/runs/f/live.json\t1700000000\t{"address":"10.0.0.1:80","game":"metroid","pid":4}',
+                '/srv/runs/g/live.json\t1700000000\t{"address":"127.0.0.1:1","game":["metroid"]}',
+                f"/srv/runs/h/live.json\tsoon\t{record}",
             ]
         )
         (run,) = launcher.external_runs(machine, listing)
@@ -77,6 +82,8 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(run.started, 1700000000.0)
         self.assertRegex(run.id, r"^found-[0-9a-f]{10}$")
         self.assertEqual(launcher.external_runs(machine, listing)[0].id, run.id)
+        other = launcher.Machine("other", "other", "/srv", 1, 1024, ("/srv/runs",))
+        self.assertNotEqual(launcher.external_runs(other, listing)[0].id, run.id)
         described = run.describe()
         self.assertTrue(described["external"])
         self.assertNotIn("workers", described)

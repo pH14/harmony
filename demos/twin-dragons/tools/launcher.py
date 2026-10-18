@@ -313,7 +313,9 @@ for dir in "$@"; do
 done | while read -r file; do
   case $file in "$own"*) continue ;; esac
   pid=$(grep -o '"pid":[0-9]*' "$file" | cut -d : -f 2)
+  start=$(grep -o '"process_start":[0-9]*' "$file" | cut -d : -f 2)
   case $(cat "/proc/${pid:-0}/comm" 2>/dev/null) in nes-eval*) ;; *) continue ;; esac
+  [ -n "$start" ] && [ "$(sed 's/.*) //' "/proc/$pid/stat" | cut -d ' ' -f 20)" = "$start" ] || continue
   printf '%s\\t%s\\t%s\\n' "$file" "$(stat -c %Y "$file")" "$(cat "$file")"
 done
 """
@@ -325,15 +327,21 @@ def external_runs(machine: Machine, listing: str) -> list[Run]:
         path, modified, record = (row.split("\t") + ["", ""])[:3]
         try:
             live = json.loads(record)
-            game, address = str(live["game"]), str(live["address"])
-        except (ValueError, KeyError):
+            started = float(modified)
+        except ValueError:
             continue
-        if game not in GAMES:
+        if not isinstance(live, dict):
             continue
-        digest = hashlib.sha256(f"{path}:{live.get('pid')}".encode()).hexdigest()[:10]
+        game, address, pid = live.get("game"), live.get("address"), live.get("pid")
+        if not isinstance(game, str) or not isinstance(address, str) or not isinstance(pid, int):
+            continue
+        if game not in GAMES or not re.fullmatch(r"127\.0\.0\.1:\d{1,5}", address):
+            continue
+        key = f"{machine.name}:{path}:{pid}:{live.get('process_start')}"
+        digest = hashlib.sha256(key.encode()).hexdigest()[:10]
         directory = str(Path(path).parent)
         run = Run(f"found-{digest}", game, machine.name, directory=directory)
-        run.started = float(modified or 0)
+        run.started = started
         run.message = f"live view listening on {address}"
         runs.append(run)
     return runs
@@ -477,8 +485,12 @@ class Launcher:
     def scan(self) -> None:
         while True:
             for machine in self.config.machines.values():
-                if machine.runs:
+                if not machine.runs:
+                    continue
+                try:
                     self.scan_machine(machine)
+                except Exception as error:
+                    print(f"{machine.name}: scan failed: {error}", file=sys.stderr)
             time.sleep(SCAN_SECONDS)
 
     def scan_machine(self, machine: Machine) -> None:

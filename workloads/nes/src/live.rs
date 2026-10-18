@@ -747,11 +747,23 @@ impl<G: ArcadeGame> Server<G> {
             return Ok(());
         };
         let target = target.to_owned();
+        let (mut host, mut origin) = (None, None);
         loop {
             let mut header = String::new();
             if reader.read_line(&mut header)? == 0 || header == "\r\n" || header == "\n" {
                 break;
             }
+            if let Some((name, value)) = header.split_once(':') {
+                let value = Some(value.trim().to_owned());
+                if name.eq_ignore_ascii_case("host") {
+                    host = value;
+                } else if name.eq_ignore_ascii_case("origin") {
+                    origin = value;
+                }
+            }
+        }
+        if !local_request(host.as_deref(), origin.as_deref()) {
+            return respond(&mut stream, "403 Forbidden", "text/plain", b"forbidden");
         }
         if method != "GET" {
             return respond(
@@ -811,6 +823,33 @@ impl<G: ArcadeGame> Server<G> {
             None => respond(&mut stream, "404 Not Found", "text/plain", b"not found"),
         }
     }
+}
+
+fn loopback_authority(authority: &str) -> bool {
+    let host = match authority.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => authority,
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
+fn local_request(host: Option<&str>, origin: Option<&str>) -> bool {
+    host.is_some_and(loopback_authority)
+        && origin.is_none_or(|origin| {
+            origin
+                .strip_prefix("http://")
+                .is_some_and(loopback_authority)
+        })
+}
+
+fn process_start() -> Option<u64> {
+    let stat = fs::read_to_string("/proc/self/stat").ok()?;
+    stat.rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()
 }
 
 fn listen<G: ArcadeGame>(listener: &TcpListener, server: &Arc<Server<G>>) {
@@ -930,8 +969,13 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
         let record = self.out.join("live.json");
         fs::write(
             &record,
-            json!({"address": local.to_string(), "game": self.id, "pid": std::process::id()})
-                .to_string(),
+            json!({
+                "address": local.to_string(),
+                "game": self.id,
+                "pid": std::process::id(),
+                "process_start": process_start(),
+            })
+            .to_string(),
         )?;
         let observe = native_observer(
             self.rom,
@@ -1006,7 +1050,7 @@ impl<V: Serialize + Copy + Send + 'static> Watched<'_, V> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use super::{Sampler, encode_snapshot, site_path};
+    use super::{Sampler, encode_snapshot, local_request, site_path};
 
     #[test]
     fn site_paths_stay_inside_the_site() {
@@ -1021,6 +1065,32 @@ mod tests {
         );
         for target in ["/../secret", "/assets/../../secret", "/./index.html"] {
             assert_eq!(site_path(target), None, "{target}");
+        }
+    }
+
+    #[test]
+    fn only_loopback_hosts_and_origins_reach_the_server() {
+        for host in [
+            "127.0.0.1:8790",
+            "localhost:41000",
+            "[::1]:8790",
+            "localhost",
+        ] {
+            assert!(local_request(Some(host), None), "{host}");
+        }
+        assert!(local_request(
+            Some("127.0.0.1:8790"),
+            Some("http://localhost:8790")
+        ));
+        for (host, origin) in [
+            (None, None),
+            (Some("evil.example:8790"), None),
+            (Some("127.0.0.1.evil.example"), None),
+            (Some("127.0.0.1:8790"), Some("https://evil.example")),
+            (Some("127.0.0.1:8790"), Some("http://evil.example:8790")),
+            (Some("127.0.0.1:8790"), Some("null")),
+        ] {
+            assert!(!local_request(host, origin), "{host:?} {origin:?}");
         }
     }
 
