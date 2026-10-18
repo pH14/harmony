@@ -64,6 +64,7 @@ def run(source):
 #include <stdint.h>
 #define CODE_BANK_PUSH(x)
 #define CODE_BANK_POP()
+#define LSB(x) ((x) & 255)
 #define do_if_in_range(v,a,b,code) do { if ((v)>=(a) && (v)<=(b)) code; } while(0)
 #include "METATILES/metatiles.h"
 unsigned char currplayer, wrap_mode, temp_x, temp_y, temp_room, collision, tmp2;
@@ -92,6 +93,9 @@ unsigned char swept(unsigned char kind, unsigned char x, unsigned char y, signed
     if (ss_shapes[kind] && !(((temp_x ^ x) | (temp_y ^ y)) & 240) && ss_same_tile_clear()) return 0;
 """
     program = program.replace("FAST_REJECT", fast_reject)
+    if "#define SPIKE_LINEAR_Y 1" in header.read_text():
+        program = program.replace("unsigned char currplayer, wrap_mode, temp_x, temp_y, temp_room, collision, tmp2;",
+                                  "unsigned char currplayer, wrap_mode, temp_x, temp_room, collision, tmp2; unsigned short temp_y;")
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         (root / "oracle.c").write_text(program)

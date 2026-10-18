@@ -1,0 +1,88 @@
+{
+  "input": "/workspace/famidash-soak/c19-movement-wrap-witness.json.gz",
+  "frame": 2359,
+  "changes": [
+    {
+      "frame": 2359,
+      "previous_y_hi": 6,
+      "y_hi": 255,
+      "pc": "0xb29b",
+      "address": "0xb29b",
+      "previous_read": {
+        "pc": "0xb299",
+        "address": "0xb29a",
+        "value": 107
+      },
+      "A": 255,
+      "X": 0,
+      "Y": 0,
+      "temp_x": 229,
+      "temp_y": 48,
+      "temp_room": 3,
+      "cube_data": [
+        0,
+        0
+      ]
+    },
+    {
+      "frame": 2359,
+      "previous_y_hi": 255,
+      "y_hi": 253,
+      "pc": "0xbeae",
+      "address": "0xbeb0",
+      "previous_read": {
+        "pc": "0xbeae",
+        "address": "0xbeaf",
+        "value": 107
+      },
+      "A": 253,
+      "X": 2,
+      "Y": 1,
+      "temp_x": 1,
+      "temp_y": 5,
+      "temp_room": 3,
+      "cube_data": [
+        0,
+        0
+      ]
+    },
+    {
+      "frame": 2359,
+      "previous_y_hi": 253,
+      "y_hi": 255,
+      "pc": "0xa094",
+      "address": "0xa096",
+      "previous_read": {
+        "pc": "0xa094",
+        "address": "0xa095",
+        "value": 107
+      },
+      "A": 255,
+      "X": 0,
+      "Y": 2,
+      "temp_x": 1,
+      "temp_y": 5,
+      "temp_room": 3,
+      "cube_data": [
+        0,
+        0
+      ]
+    }
+  ],
+  "endpoint": {
+    "level": 19,
+    "state": 2,
+    "x": 7167,
+    "y": 974,
+    "camera": 719,
+    "vy": -1594,
+    "mode": 2,
+    "gravity": 255,
+    "mini": 0,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  }
+}

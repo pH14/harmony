@@ -20,6 +20,8 @@ const m = process.env.FAMIDASH_SYMBOLS
 if (m.levelName && m.levelName(level) !== layout.name)
   throw new Error(`level index ${level} selects ${m.levelName(level)}, expected ${layout.name}`);
 const targetLevel = layout.release_target_level ?? level;
+const targetSide = layout.release_target_side ?? side;
+if (!["main", "b", "c", "d"].includes(targetSide)) throw new Error("unknown release target side");
 if (targetLevel !== level) {
   if (!m.mapTargetLevel) throw new Error("level aliases require a symbol-based memory adapter");
   m.mapTargetLevel(level, targetLevel);
@@ -44,7 +46,7 @@ globalThis.harmonyCores = { 0: { ...m.core, rom, reset: () => m.core.restore(pow
   memory: () => m.ram().slice(), ramView: m.ram,
   frames(buttons, frames) { const data = new Uint8Array(frames * 2048); for (let i = 0; i < frames; i++) { m.core.step(buttons, 1); data.set(m.ram(), i * 2048); } return data; } } };
 if (m.adapter) Object.assign(globalThis.harmonyCores[0], m.adapter);
-const game = side === "main" ? level >= 22 ? "famidash-community" : "famidash" : `famidash-${side}`;
+const game = targetSide === "main" ? targetLevel >= 22 ? "famidash-community" : "famidash" : `famidash-${targetSide}`;
 const identity = `quicknes-browser:${m.core.revision}`, seen = new Set(), cells = new Set(), modes = new Set();
 const toolHashes = Object.fromEntries(await Promise.all(
   ["soak-level.mjs", "runtime.mjs", "signals.mjs", "symbol-runtime.mjs"].map(async name =>
@@ -56,7 +58,8 @@ const report = { schema: 1, engine: "dissonance-wasm-single-level", side, level,
   mixture, setup: { menu_delay: menuDelay, startup_released_frames: startupFrames }, roots: [], candidates: [], inspected: 0, unavailable: 0,
   max_x: 0, dual_inspected: 0, cleared: false, coverage_cells: 0, modes: [], status: "running" };
 if (m.adapter) report.target_layout = { kind: "symbol-based linear coordinates normalized for the release target",
-  debug_sha256: m.debug_sha256, symbols: m.symbols, startup_released_frames: 180, actual_level: level, release_target_level: targetLevel };
+  debug_sha256: m.debug_sha256, symbols: m.symbols, startup_released_frames: 180,
+  actual_side: side, actual_level: level, release_target_side: targetSide, release_target_level: targetLevel };
 const seed = (round * 1000003 + ["main", "b", "c", "d"].indexOf(side) * 1009 + level * 101) >>> 0;
 const routes = JSON.parse(await readFile(new URL(`../famidash-routes/${side}.json`, import.meta.url)));
 function positive(value, name) {

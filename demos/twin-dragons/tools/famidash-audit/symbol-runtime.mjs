@@ -36,7 +36,8 @@ export async function symbolMachine(rom, runtime, debugFile) {
   };
   const names = ["gameState", "level", "player_relx", "player_rely", "scroll_x", "scroll_y",
     "player_vel_y", "player_gravity", "player_mini", "gamemode", "dual", "cube_data", "DEBUG_MODE",
-    "invincible_counter", "pauseStatus", "wrap_mode", "coins", "speed", "scroll_y_subpx"];
+    "invincible_counter", "pauseStatus", "wrap_mode", "coins", "speed", "scroll_y_subpx",
+    "currplayer", "currplayer_relx", "currplayer_rely", "skipProcessingCubeRotationLogic"];
   const locations = Object.fromEntries(names.map(name => [name, address(name)]));
   const m = await machine(rom, runtime), powerOn = m.core.capture();
   const targetLevels = new Map();
@@ -59,6 +60,9 @@ export async function symbolMachine(rom, runtime, debugFile) {
       ["gamemode", 0x7a, 1], ["dual", 0x96, 1], ["cube_data", 0x7b, 2], ["speed", 0x45e, 1],
       ["scroll_y_subpx", 0x4a8, 1], ["DEBUG_MODE", 0x595, 1], ["invincible_counter", 0x4a1, 1],
       ["pauseStatus", 0x5b5, 1]]) result.set(r.slice(a[name], a[name] + count), target);
+    for (const [name, target, count] of [["currplayer", 0x462, 1], ["currplayer_relx", 0x68, 2],
+      ["currplayer_rely", 0x6a, 2], ["skipProcessingCubeRotationLogic", 0x5aa, 1]])
+      result.set(r.slice(a[name], a[name] + count), target);
     result[0x47b] = targetLevels.get(r[a.level]) ?? r[a.level];
     const camera = v.getUint16(a.scroll_y, true);
     result[0x4a6] = camera % 240; result[0x4a7] = Math.floor(camera / 240);

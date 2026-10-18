@@ -1,0 +1,11 @@
+{
+  "status": "independent-live-trail-pose-matches",
+  "frame": 5571,
+  "live_pose": {
+    "x": 22334,
+    "y": 797
+  },
+  "drawing_trails": 1,
+  "rom_sha256": "42b9fb24ebe312dde651f51296aba6c0e942ec20ab6fb3dd5c41fc77c5a429fc",
+  "core_sha256": "3bd01f64d9dc262ecbd750d39e165c5623e54d191cc7fdb0a608e1914c84e478"
+}

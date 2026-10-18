@@ -204,3 +204,41 @@ A fresh Dissonance control clears the repaired ROM in 3,764 frames with coins
 replay reports are retained here. Both B and HUGE export and build successfully; `current-fofii-builds.json`
 records their ROM identities and sizes. These are B-side replay proofs; HUGE
 replay and broader objective coverage remain separate checks.
+
+
+The next discovered release root is signed vertical integration. In Sonic Wave
+(C-Sides 19), `common_gravity_routine` adds velocity -1594 to a position just above
+zero on frame 2,359. The 16-bit result wraps to screen Y 255, and play continues
+below the course. `c19-movement-wrap-witness.json.gz` retains the ordinary
+Dissonance input; the collision and write traces identify the actual store.
+`experimental-release-motion-isolated.patch` applies on top of the earlier
+`experimental-release-collision.patch` combined search source, including its
+separate data repairs. It changes only the common integration path and its fault
+handling. Both retained independent-core replay results die at frame 2,359 with
+an unchanged approach (FCEUmm differs only at intro frame 3).
+
+The broader checked-motion prototype covers addition, subtraction, and signed
+collision ejection. `check-vertical-motion.py` executes its assembled helpers
+against unbounded arithmetic; 1,245,640 cases pass. It also preserves the
+intentional wrap/debug/invincibility exemptions. This remains experimental:
+fresh clearing runs and the complete candidate inventory are still required.
+The combined prototype changes lag before the old Sonic Wave input's escape;
+that input is only a strict repair proof for the isolated patch.
+
+Nightmare's retained contextual CPU trace proves another release coordinate
+error: fractional player/camera carry is lost before collision sampling. Current
+upstream already includes that carry. `check-centre-carry.py --fractional` checks
+both carry classes across all camera, screen-Y, supported hitbox-height and mini
+combinations: 2,949,120 assembled cases pass on the checked-motion prototype.
+
+The original combined search completed all 109 levels with 11,850,000 executions
+and 83,342 candidates. Its later carry-corrected successor completed all 109
+with 11,865,000 executions and 82,182 candidates. Both remain exploratory because
+they lack the newly discovered signed-integration repair. No clean round has
+been counted.
+
+The three remaining solid-overlap entries in the broad combined search are
+intentional wave D-block contacts. The retained `b-19-558` and `b-5-489/638`
+witnesses and contextual FCEUmm collision traces all read the solid tile with
+`dblocked == 1`; the engine deliberately permits that contact.
+`wave-solid-dispositions.json` records these decisions. No wall patch is needed.

@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import { compress, expand, routeTape, suspect, tileAt } from "./runtime.mjs";
-import { collisionPoint, advanceCollisionPoint } from "./signals.mjs";
+import { collisionPoint, advanceCollisionPoint, players } from "./signals.mjs";
+
+test("source review uses the live pose during the captured trail-rendering phase", () => {
+  const r = new Uint8Array(readFileSync(new URL("../../../../workloads/nes-games/src/famidash/fixtures/trail-render.wram", import.meta.url)));
+  const m = { ram: () => r, observe: () => ({ x: 22314, y: 789, camera: 678, dual: 0 }) };
+  assert.deepEqual([players(m)[0].x, players(m)[0].y], [22314, 789]);
+  assert.deepEqual([players(m, true)[0].x, players(m, true)[0].y], [22334, 797]);
+});
 
 test("lag repeats the last collision sample rather than inventing horizontal motion", () => {
   const before = { x: 5211, y: 771, camera: 601, mode: 0, mini: 1 };
@@ -33,6 +41,13 @@ test("dual wave estimates match the second player's independently traced collisi
   const current = { ...previous, x: 9401, y: 807 };
   assert.deepEqual(collisionPoint(previous, current), { x: 9404, y: 814 });
   assert.deepEqual(collisionPoint(previous, { ...current, player: 0 }), { x: 9400, y: 811 });
+});
+
+test("fractional camera carry matches Nightmare's traced centre conversion", () => {
+  const previous = { x: 4817, y: 667, camera: 603, mode: 0, mini: 0, fractional_y_carry: 0 };
+  const current = { ...previous, x: 4820, y: 660, camera: 603, fractional_y_carry: 1 };
+  assert.deepEqual(collisionPoint(previous, current, true), { x: 4823, y: 667 });
+  assert.deepEqual(collisionPoint(previous, current, true, true), { x: 4823, y: 668 });
 });
 
 test("map-builder assistance cannot become an upstream gameplay witness", () => {

@@ -36,6 +36,9 @@ def run(args):
     assert size and death_size and 0x8000 <= sub < sub + size <= 0x10000
     locations = {name: symbols[f"_{name}"][0] for name in
                  ["temp_x", "temp_y", "Generic", "currplayer", "currplayer_mini", "gamemode"]}
+    locations.update({name: symbols[f"_{name}"][0] for name in
+                      ["wrap_mode", "dblocked", "scroll_y", "scroll_y_subpx"]})
+    locations["relative_y"] = symbols["_currplayer_rely" if "target_layout" in witness else "_currplayer_y"][0]
     assert all(0 <= value < 2044 for value in locations.values())
     core = SymbolFceumm(args.core, args.rom, witness["target_layout"]) if "target_layout" in witness else Fceumm(args.core, args.rom)
     core.startup_frames = witness["options"].get("fceumm_startup_released_frames", 180)
@@ -65,7 +68,12 @@ def run(args):
                             "address": address, "metatile": value, "sample_x_low": ram[locations["temp_x"]],
                             "sample_world_y": y, "generic": list(ram[generic:generic + 4]),
                             "player": ram[locations["currplayer"]], "mini": ram[locations["currplayer_mini"]],
-                            "mode": ram[locations["gamemode"]]})
+                            "mode": ram[locations["gamemode"]], "wrap_mode": ram[locations["wrap_mode"]],
+                            "dblocked": ram[locations["dblocked"] + ram[locations["currplayer"]]],
+                            "camera_at_probe": ram[locations["scroll_y"]] + ram[locations["scroll_y"] + 1] * (256 if "target_layout" in witness else 240),
+                            "camera_subpixel": ram[locations["scroll_y_subpx"]],
+                            "relative_y_fixed": ram[locations["relative_y"]] + 256 * ram[locations["relative_y"] + 1],
+                            "fractional_camera_carry": (ram[locations["relative_y"]] + ram[locations["scroll_y_subpx"]]) >> 8})
         return value
 
     lib.SetReadHandler.argtypes = [C.c_int32, C.c_int32, read_type]

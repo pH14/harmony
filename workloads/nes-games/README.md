@@ -39,6 +39,18 @@ stream. Archive entries record a snapshot digest from `snapshot_identity_sha256`
 and an archive checkpoint must match those digests. SMB hashes the logical
 snapshot identity; the other games hash the serialized snapshot.
 
+Famidash temporarily changes its stored player coordinates while drawing
+trail copies. If a video-frame boundary interrupts that work, those values
+describe a trail sprite. Its decoder uses the live primary-player coordinates
+while `skipProcessingCubeRotationLogic` is set, player zero is active, and
+dual mode is off. The captured RAM fixture and ordinary Dissonance input in
+`src/famidash/fixtures/trail-render.*` reproduce the interrupted drawing phase
+with the audited release collision prototype. The original release uses the
+same RAM addresses and drawing code. The fixture's metadata records the exact
+ROM and core hashes; it is not evidence that every observed escape is a
+display error. The RAM fixture derives from Famidash by TFDSoft under the
+[MIT license](../../demos/twin-dragons/tools/famidash-audit/LICENSE-FAMIDASH.txt).
+
 Each game's recorded emulator policy ends with a hash field. The native
 constructors take the core hash and the prepared execution hash from
 `machine::quicknes::prepared_execution_sha256`, record both, and load every

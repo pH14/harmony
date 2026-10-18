@@ -1,0 +1,26 @@
+[
+  {
+    "side_level": "b-19",
+    "candidate": 558,
+    "frame": 2336,
+    "disposition": "intentional-wave-dblock-surface",
+    "evidence": "b-19-558-dblock-trace.json",
+    "reason": "Independent CPU trace observes the actual solid tile with the explicit wave D-block exemption active. The source collision handler permits this contact."
+  },
+  {
+    "side_level": "b-5",
+    "candidate": 489,
+    "frame": 3828,
+    "disposition": "intentional-wave-dblock-surface",
+    "evidence": "b-5-489-dblock-trace.json",
+    "reason": "Independent CPU trace observes the actual solid tile with the explicit wave D-block exemption active. The source collision handler permits this contact."
+  },
+  {
+    "side_level": "b-5",
+    "candidate": 638,
+    "frame": 3291,
+    "disposition": "intentional-wave-dblock-surface",
+    "evidence": "b-5-638-dblock-trace.json",
+    "reason": "Independent CPU trace observes the actual solid tile with the explicit wave D-block exemption active. The source collision handler permits this contact."
+  }
+]

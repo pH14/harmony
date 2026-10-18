@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 
-def run(rom, debug):
+def run(rom, debug, fractional=False):
     spec = importlib.util.spec_from_file_location("geometry", Path(__file__).with_name("verify-geometry.py"))
     geometry = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(geometry)
@@ -37,7 +37,7 @@ def run(rom, debug):
             elif op in (0xa6, 0xa5, 0xa9, 0x65, 0x69, 0x90, 0xb0, 0xf0, 0xd0, 0xc9, 0x85, 0x86, 0xe5, 0xe9):
                 arg = code[pc]
                 pc += 1
-            elif op not in (0x18, 0x38, 0xe8, 0x4a):
+            elif op not in (0x18, 0x38, 0xe8, 0x4a, 0xaa, 0x8a):
                 raise AssertionError(f"unmodeled opcode {op:02x} at ROM offset {entry + pc - 1:x}")
             if op in (0xae, 0xa6):
                 x = ram[arg]
@@ -69,6 +69,10 @@ def run(rom, debug):
             elif op == 0x4a:
                 carry, a = a & 1, a >> 1
                 zero = a == 0
+            elif op == 0xaa:
+                x, zero = a, a == 0
+            elif op == 0x8a:
+                a, zero = x, x == 0
             elif op in (0x85, 0x8d):
                 ram[arg] = a
             elif op in (0x86, 0x8e):
@@ -78,6 +82,7 @@ def run(rom, debug):
         raise AssertionError("coordinate stores not reached")
 
     cases = 0
+    fractions = [(0, 0), (1, 255)] if fractional else [(0, 0)]
     for camera in range(960):
         ram[scroll], ram[scroll + 1] = camera % 240, camera // 240
         for relative in range(256):
@@ -87,13 +92,16 @@ def run(rom, debug):
                 for mini in (0, 1):
                     ram[symbols["_currplayer_mini"]] = mini
                     offset = height // 2 + ((16 - height) // 2 if mini else 0)
-                    value = camera + relative + offset
-                    expected = value // 240 * 256 + value % 240
-                    actual = execute()
-                    assert actual == expected, (camera, relative, height, mini, actual, expected)
-                    cases += 1
+                    for relative_fraction, camera_fraction in fractions:
+                        ram[symbols["_currplayer_y"]] = relative_fraction
+                        ram[symbols["_scroll_y_subpx"]] = camera_fraction
+                        value = camera + relative + offset + ((relative_fraction + camera_fraction) >> 8)
+                        expected = value // 240 * 256 + value % 240
+                        actual = execute()
+                        assert actual == expected, (camera, relative, height, mini, relative_fraction, camera_fraction, actual, expected)
+                        cases += 1
     return {"status": "assembled-centre-conversion-matches-linear-oracle", "cases": cases,
-            "heights": [7, 8, 15], "rom_sha256": hashlib.sha256(data).hexdigest(),
+            "heights": [7, 8, 15], "fractional_carry_classes": len(fractions), "rom_sha256": hashlib.sha256(data).hexdigest(),
             "debug_sha256": hashlib.sha256(debug.read_bytes()).hexdigest(), "entry_rom_offset": entry}
 
 
@@ -102,7 +110,8 @@ if __name__ == "__main__":
     parser.add_argument("rom", type=Path)
     parser.add_argument("debug", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--fractional", action="store_true")
     args = parser.parse_args()
-    result = run(args.rom, args.debug)
+    result = run(args.rom, args.debug, args.fractional)
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps(result))

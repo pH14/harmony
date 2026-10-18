@@ -12,7 +12,7 @@ await mkdir(output, { recursive: true });
 let ledger;
 try { ledger = JSON.parse(await readFile(join(output, "review.json"))); }
 catch { ledger = { schema: 1, cases: {}, entries: {}, mismatches: [], reviewed_candidates: 0, status: "review-in-progress" }; }
-if (ledger.detector_revision !== 7) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 7; }
+if (ledger.detector_revision !== 9) { ledger.cases = {}; ledger.entries = {}; ledger.mismatches = []; ledger.reviewed_candidates = 0; ledger.detector_revision = 9; }
 ledger.status = "replay-in-progress";
 ledger.source_review_complete = false;
 let entryCount = Object.keys(ledger.entries).length, lastSavedAt = performance.now();
@@ -108,7 +108,7 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
     const trace = prefix ? prefix.trace.slice() : [], validatedPrefixFrames = trace.length, created = [];
     for (let i = (prefix?.action ?? -1) + 1; i < candidate.actions.length; i++) {
       const action = candidate.actions[i];
-      for (let f = 0; f < action.frames; f++) { m.core.step(action.buttons, 1); trace.push(players(m)); }
+      for (let f = 0; f < action.frames; f++) { m.core.step(action.buttons, 1); trace.push(players(m, true)); }
       if (i % 32 === 31 || i === candidate.actions.length - 1) {
         const cached = { state: m.core.capture(), trace: trace.slice(), covered: false };
         prefixes.set(keys[i], cached); created.push(cached);
@@ -116,22 +116,22 @@ for (const directory of (await readdir(roundDirectory, { withFileTypes: true }))
         while (prefixes.size > limit) prefixes.delete(prefixes.keys().next().value);
       }
     }
-    const endpoint = trace.at(-1)?.[candidate.player];
+    const endpoint = players(m)[candidate.player];
     const mismatches = Object.keys(candidate.observation).filter(k => candidate.observation[k] !== endpoint?.[k]);
     if (mismatches.length) {
       ledger.mismatches.push({ path, sha, mismatches, expected: candidate.observation, actual: endpoint });
       ledger.cases[sha] = { path, disposition: "replay-mismatch" }; continue;
     }
     let tail = 0;
-    for (; tail < 16; tail++) { m.core.step(0, 1); const states = players(m); trace.push(states); if (states[0].dead || states[0].state !== 2) break; }
+    for (; tail < 16; tail++) { m.core.step(0, 1); const states = players(m, true); trace.push(states); if (states[0].dead || states[0].state !== 2) break; }
     const before = entryCount;
     for (const player of [0, 1]) {
       let start = null, centre = null, linearCentre = null;
       for (let frame = 0; frame < trace.length; frame++) {
         const o = trace[frame][player], previous = trace[frame - 1]?.[player];
         const previousCentre = centre;
-        centre = advanceCollisionPoint(previous, o, centre, index.centre_coordinates === "linear");
-        linearCentre = advanceCollisionPoint(previous, o, linearCentre, true);
+        centre = advanceCollisionPoint(previous, o, centre, index.centre_coordinates === "linear", !!index.centre_fractional_carry);
+        linearCentre = advanceCollisionPoint(previous, o, linearCentre, true, true);
         const tile = fill(o, layout), previousTile = fill(previous, layout);
         if (tile && previousTile && tile.id !== previousTile.id) {
           const key = `${layout.side}:${layout.level}:fill:${tile.column}:${tile.row}:style:${player}`;

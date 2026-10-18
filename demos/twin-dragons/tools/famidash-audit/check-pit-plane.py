@@ -81,6 +81,30 @@ int check_guard(int old_x, int new_x, int delta, int local_y, int old_is_pit, in
     return cube_data[0] & 1;
 }
 '''
+    if "#define PIT_LINEAR_Y 1" in header.read_text():
+        program = program.replace("uint8_t temp_x, temp_y, temp_room, collision, currplayer;",
+                                  "uint8_t temp_x, temp_room, collision, currplayer, pit_previous_room[2]; uint16_t temp_y;")
+        program = program.replace("pit_low_room = 1;", "")
+        start = program.index("int check_guard(")
+        end = program.index("\n}\n", start) + 3
+        program = program[:start] + r'''
+int check_guard(int old_x, int new_x, int delta, int local_y, int old_is_pit, int new_is_pit,
+                int upwards, int room_wrap) {
+    int high_y = (room_wrap ? 512 : 272) + local_y;
+    int low_y = high_y - delta;
+    int previous_y = upwards ? high_y : low_y;
+    currplayer = 0; cube_data[0] = 0; collision_teleported[0] = wrap_mode = 0;
+    current_is_pit = new_is_pit;
+    pit_previous_x[0] = upwards ? new_x : old_x;
+    pit_previous_y[0] = previous_y & 255;
+    pit_previous_room[0] = previous_y >> 8;
+    pit_previous_collision[0] = upwards ? 0 : (old_is_pit ? COL_PIT : 0);
+    temp_x = upwards ? old_x : new_x; temp_y = upwards ? low_y : high_y;
+    collision = upwards && old_is_pit ? COL_PIT : 0;
+    check_pit_motion();
+    return cube_data[0] & 1;
+}
+''' + program[end:]
     cases = 0
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory)

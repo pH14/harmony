@@ -32,6 +32,10 @@ const CUBE_DATA: usize = 0x7b;
 const DUAL: usize = 0x96;
 const PLAYER_X: usize = 0x043d;
 const PLAYER_Y: usize = 0x0441;
+const CURRENT_PLAYER_X: usize = 0x68;
+const CURRENT_PLAYER_Y: usize = 0x6a;
+const CURRENT_PLAYER: usize = 0x0462;
+const DRAWING_PLAYER_TRAILS: usize = 0x05aa;
 const PLAYER_VELOCITY_Y: usize = 0x0449;
 const PLAYER_GRAVITY: usize = 0x044d;
 const PLAYER_MINI: usize = 0x044f;
@@ -856,6 +860,25 @@ pub fn decode_state(wram: &[u8], stage: Stage) -> Result<FamidashMechanicalState
     let level = byte(wram, LEVEL)?;
     let paused = byte(wram, PAUSED)? != 0;
     let playing = game_state == GAME_STATE_PLAYING;
+    let drawing_primary_trails = byte(wram, DRAWING_PLAYER_TRAILS)? != 0
+        && byte(wram, CURRENT_PLAYER)? == 0
+        && byte(wram, DUAL)? == 0;
+    let player_x = byte(
+        wram,
+        if drawing_primary_trails {
+            CURRENT_PLAYER_X + 1
+        } else {
+            PLAYER_X + 1
+        },
+    )?;
+    let player_y = byte(
+        wram,
+        if drawing_primary_trails {
+            CURRENT_PLAYER_Y + 1
+        } else {
+            PLAYER_Y + 1
+        },
+    )?;
     let scroll_x = long(wram, SCROLL_X)?;
     let past_end = stage
         .side
@@ -863,15 +886,15 @@ pub fn decode_state(wram: &[u8], stage: Stage) -> Result<FamidashMechanicalState
         .is_some_and(|length| scroll_x > i32::from(length) * LEVEL_LENGTH_UNIT);
     let dead = playing
         && (past_end
-            || byte(wram, PLAYER_X + 1)? > DEATH_CHECK_SCREEN_X
+            || player_x > DEATH_CHECK_SCREEN_X
                 && (byte(wram, CUBE_DATA)? & DEATH != 0
                     || byte(wram, CUBE_DATA + 1)? & DEATH != 0));
     let gameplay = if playing && !dead && !paused {
         let [fine_y, screen_y] = word(wram, SCROLL_Y)?.to_le_bytes();
         let camera_y = i32::from(screen_y) * SCREEN_HEIGHT + i32::from(fine_y);
         Some(FamidashGameplayState {
-            x: scroll_x.saturating_add(i32::from(byte(wram, PLAYER_X + 1)?)),
-            y: camera_y + i32::from(byte(wram, PLAYER_Y + 1)?),
+            x: scroll_x.saturating_add(i32::from(player_x)),
+            y: camera_y + i32::from(player_y),
             scroll_x,
             camera_y,
             camera_subpixel: byte(wram, SCROLL_Y_SUBPIXEL)?,
@@ -958,6 +981,16 @@ mod tests {
         assert_eq!(gameplay.x, 1_080);
         assert_eq!(gameplay.camera_y, 2 * 240 + 0xef);
         assert_eq!(gameplay.y, 2 * 240 + 0xef + 178);
+    }
+
+    #[test]
+    fn drawing_trail_copies_does_not_move_the_observed_player() {
+        let wram = include_bytes!("fixtures/trail-render.wram");
+        let stage = Stage::new(Side::Main, 38, 38).unwrap();
+        let state = decode_state(wram, stage).unwrap();
+        let gameplay = state.gameplay.unwrap();
+        assert_eq!((gameplay.x, gameplay.y), (22_334, 797));
+        assert!(!state.dead);
     }
 
     #[test]
