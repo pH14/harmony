@@ -136,7 +136,7 @@ exception.
  static bool irqs_suspended;
  #ifdef CONFIG_UML_TIME_TRAVEL_SUPPORT
  static bool irqs_pending;
-@@ -263,32 +265,42 @@
+@@ -263,32 +265,47 @@
  	if (!to_free)
  		return;
  
@@ -158,13 +158,19 @@ exception.
  		/* will modify (instead of add) if needed */
 -		os_add_epoll_fd(events, entry->fd, entry);
 +		*result = os_add_epoll_fd(events, entry->fd, entry);
-+		entry->epoll_registered = *result == 0;
++		if (!*result)
++			entry->epoll_registered = true;
  		return true;
  	}
  
- 	os_del_epoll_fd(entry->fd);
-+	entry->epoll_registered = false;
+-	os_del_epoll_fd(entry->fd);
 +	*result = 0;
++	if (entry->epoll_registered) {
++		*result = os_checkpoint_delete_irq(entry->fd);
++		if (*result < 0)
++			os_host_failure();
++	}
++	entry->epoll_registered = false;
  	return false;
 +}
 +
@@ -181,7 +187,7 @@ exception.
  		return NULL;
  	remove_irq_entry(entry, false);
  	return entry;
-@@ -432,16 +444,43 @@
+@@ -432,16 +449,43 @@
  	entry = update_or_remove_irq_entry(entry);
  out:
  	raw_spin_unlock_irqrestore(&irq_lock, flags);
@@ -447,7 +453,6 @@ exception.
 +	local_irq_save(irq);
 +	mark_untracked();
 +	initial_thread_cb(os_checkpoint_capture, &args);
-+	os_checkpoint_close_fd(fd);
 +	open_stacks();
 +	if (um_checkpoint_resumed) {
 +		um_checkpoint_resumed = 0;
@@ -457,6 +462,7 @@ exception.
 +		*ack = UM_CONTROL_RESTORE;
 +		return 0;
 +	}
++	os_checkpoint_close_fd(fd);
 +	local_irq_restore(irq);
 +	return args.result;
 +}

@@ -176,7 +176,7 @@ int main(int argc, char **argv)
 	}
 done:
 	if (result)
-		perror("checkpoint host-fault supervisor");
+		fprintf(stderr, "checkpoint host-fault supervision failed (errno=%d)\n", errno);
 	if (child > 0 && !reaped) {
 		kill(child, SIGKILL);
 		while (waitpid(child, NULL, 0) < 0 && errno == EINTR) {}

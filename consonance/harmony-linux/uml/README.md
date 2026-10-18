@@ -171,6 +171,10 @@ an absent epoll registration is a valid removal result. Each IRQ entry retains
 its actual successful-registration state in the checkpoint. Only those entries
 are removed and reconstructed; an unpollable null console remains unregistered,
 while failure to reconstruct a previously registered descriptor abandons.
+Failed ADD/MOD preserves an existing registration; zero-event removal clears
+the flag only after successful or already-absent deletion. A resumed capture
+does not close its saved image descriptor number: restore has already closed
+the current image, and that saved number may now belong to another resource.
 
 The compiled boundary regressions execute both carried patch postimages with
 injected host failures and successful/expected-absence controls. Qualification

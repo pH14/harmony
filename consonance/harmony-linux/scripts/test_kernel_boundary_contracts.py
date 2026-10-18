@@ -437,16 +437,28 @@ static int os_add_epoll_fd(int events, int fd, void *data) {
  struct irq_entry *entry=data;
  assert(entry->fd==fd);
  assert(events==(fd==10 ? 21 : 42)); adds++;
- return (failure==2 && fd==20) || (failure==3 && fd==10) ? -1 : 0;
+ return (failure==2 && fd==20) || ((failure==3 || failure==6) && fd==10) ? -1 : 0;
 }
-static int os_del_epoll_fd(int fd) { assert(fd==30); deletes++; return -1; }
+static int os_checkpoint_delete_irq(int fd) { assert(fd==30); deletes++; return failure==4 ? -1 : 0; }
 static void os_host_failure(void) HELPER
 static bool update_irq_entry_result(struct irq_entry *entry, int *result) RESULT
 static bool update_irq_entry(struct irq_entry *entry) WRAPPER
 void um_irq_checkpoint_attach(void) ATTACH
 int main(int argc, char **argv) {
  assert(argc==2); failure=atoi(argv[1]);
+ if(failure==6) {
+  assert(update_irq_entry(&entries[0]));
+  assert(entries[0].epoll_registered);
+  return 0;
+ }
+ if(failure==4 || failure==5) {
+  entries[2].epoll_registered=true;
+  assert(!update_irq_entry(&entries[2]));
+  assert(!entries[2].epoll_registered && deletes==1);
+  return 0;
+ }
  if(failure==3) {
+  entries[0].epoll_registered=false;
   assert(update_irq_entry(&entries[0]));
   assert(!entries[0].epoll_registered);
   um_irq_checkpoint_attach();
@@ -459,7 +471,7 @@ int main(int argc, char **argv) {
  assert(update_irq_entry(&entries[0]));
  assert(entries[0].epoll_registered);
  assert(!update_irq_entry(&entries[2]));
- assert(!entries[2].epoll_registered && deletes==1);
+ assert(!entries[2].epoll_registered && deletes==0);
  return 0;
 }
 '''
@@ -470,7 +482,9 @@ int main(int argc, char **argv) {
                     source = source.replace(key, value)
                 self.compile_run(source, ("0",))
                 self.compile_run(source, ("3",))
-                for failure in (1, 2):
+                self.compile_run(source, ("5",))
+                self.compile_run(source, ("6",))
+                for failure in (1, 2, 4):
                     self.compile_run(source, (str(failure),), expected=87)
                 # Removing either checkpoint check must permit the bad restore
                 # and fail the reserved infrastructure-exit oracle.
@@ -600,6 +614,73 @@ int main(int argc,char **argv) {
                 self.assertNotEqual(old, source)
                 with self.assertRaises(AssertionError):
                     self.compile_run(old, ("3",), expected=87)
+
+    def test_uml_resumed_capture_does_not_close_its_stale_image_descriptor(self):
+        for series in ("um", "um-arm64"):
+            with self.subTest(series=series):
+                source = r'''#include <assert.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <unistd.h>
+#define UM_CONTROL_CAPTURE 1
+#define UM_CONTROL_RESTORE 2
+#define MAX_STUB_FDS 2
+struct um_checkpoint_args { long result; };
+static int mode,closes,saves,restores,callbacks,opened,rebuilt,attached;
+static int stub_fds[MAX_STUB_FDS],um_checkpoint_resumed;
+static void replace_descriptor(const char *name) {
+ int file=open(name,O_RDONLY); assert(file>=0);
+ if(file!=7) { assert(dup2(file,7)==7); assert(close(file)==0); }
+}
+static int um_checkpoint_stub_fds(int *fds,int capacity) {
+ assert(fds==stub_fds && capacity==MAX_STUB_FDS); return mode==3?-12:1;
+}
+static void os_checkpoint_close_fd(int fd) { assert(fd==7); closes++; assert(close(fd)==0); }
+static void fill_args(struct um_checkpoint_args *args,int fd,unsigned long long flags,int count) {
+ assert(fd==7 && flags==0 && count==1); args->result=0;
+}
+#define local_irq_save(irq) do { (irq)=3; saves++; } while(0)
+#define local_irq_restore(irq) do { assert((irq)==3); restores++; } while(0)
+static void mark_untracked(void) {}
+static void os_checkpoint_capture(void *args) {}
+static void initial_thread_cb(void (*callback)(void *),struct um_checkpoint_args *args) {
+ assert(callback==os_checkpoint_capture); callbacks++;
+ args->result=mode==2?-12:0;
+ if(mode==1) {
+  assert(close(7)==0);
+  replace_descriptor("/dev/zero");
+  um_checkpoint_resumed=1;
+ }
+}
+static void open_stacks(void) { opened++; }
+static void um_checkpoint_rebuild_stubs(void) { assert(!um_checkpoint_resumed); rebuilt++; }
+static void um_irq_checkpoint_attach(void) { attached++; }
+static long capture(unsigned long long flags,int fd,unsigned int *ack) CAPTURE_BODY
+int main(int argc,char **argv) {
+ assert(argc==2); mode=atoi(argv[1]); replace_descriptor("/dev/null");
+ unsigned int ack=0; long result=capture(0,7,&ack);
+ assert(result==((mode==2 || mode==3)?-12:0));
+ assert(closes==(mode==1?0:1));
+ assert(saves==(mode==3?0:1) && restores==saves && callbacks==saves && opened==saves);
+ assert(rebuilt==(mode==1) && attached==rebuilt);
+ assert(ack==(mode==1?UM_CONTROL_RESTORE:UM_CONTROL_CAPTURE));
+ if(mode==1) {
+  char byte=1; assert(fcntl(7,F_GETFD)>=0); assert(read(7,&byte,1)==1 && byte==0); assert(close(7)==0);
+ }
+ return 0;
+}
+'''
+                body = function(postimage(PATCHES / series / "0008-um-harmony-checkpoint.patch",
+                                          "arch/um/kernel/skas/checkpoint.c"), "capture")
+                current = source.replace("CAPTURE_BODY", body)
+                for mode in range(4):
+                    self.compile_run(current, (str(mode),))
+                stale = body.replace("\n\tos_checkpoint_close_fd(fd);\n\tlocal_irq_restore(irq);\n\treturn args.result;",
+                                     "\n\tlocal_irq_restore(irq);\n\treturn args.result;")
+                stale = stale.replace("\topen_stacks();", "\tos_checkpoint_close_fd(fd);\n\topen_stacks();")
+                self.assertNotEqual(stale, body)
+                with self.assertRaises(AssertionError):
+                    self.compile_run(source.replace("CAPTURE_BODY", stale), ("1",))
 
     def test_uml_checkpoint_checks_x86_tls_heap_and_boot_restore(self):
         for series, provenance in [("um", "0016-um-harmony-host-failure-provenance.patch"),

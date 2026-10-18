@@ -41,7 +41,12 @@ fn injected(control: &Path) -> Result<(), Box<dyn Error>> {
     let digest = published.digest()?;
     assert!(published.bytes()? > 0);
     let before = session.events().to_vec();
-    session.restore(&published)?;
+    session.restore(&published).map_err(|error| {
+        io::Error::other(format!(
+            "normal restore failed: {error}; console: {}",
+            session.console_tail()
+        ))
+    })?;
     assert_eq!(session.events(), before);
     supervisor.write_all(b"A")?;
     let mut acknowledgement = [0];
