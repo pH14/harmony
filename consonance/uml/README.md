@@ -128,7 +128,19 @@
   The primitive exits directly without invoking guest panic notifiers or guest
   cleanup; the launcher then reaps the process group. Host mmap, socketpair,
   clone, futex, ptrace and register-transport failures in that substrate abandon
-  execution. Guest-generated invalid traps retain their guest signal path.
+  execution. Checkpoint dirty-bitmap allocation, direct-map protection and
+  unprotection, address-space reconstruction, interrupt async/epoll
+  re-registration and removal, signal-mask restoration and child-signal draining,
+  descriptor cleanup, stub termination/reaping, host TLS/heap reconstruction,
+  and destructive host-memory restore failures use that same infrastructure
+  status. Each IRQ entry records whether epoll registration actually succeeded;
+  restore only reconstructs those registrations, preserving unpollable null
+  console descriptors without exempting errors on previously registered fds.
+  Missing epoll registrations remain valid during removal. Linux
+  interrupted closes release their descriptor and are not retried; interrupted
+  waits are retried. Dirty-page fault
+  diagnostics use only signal-safe writes before the direct exit.
+  Guest-generated invalid traps retain their guest signal path.
   The client abandons host failures without publishing a guest shutdown or crash. A
   guest whose virtual time
   stops moving for the progress limit fails with `SessionError::Hung`. The
