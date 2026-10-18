@@ -2,12 +2,15 @@
 
 use crate::arch::arm64::{
     Arm64, Arm64AsidBits, Arm64GicIdleState, Arm64GicState, Arm64VcpuState, GicIntId,
-    canonicalize_core_regs, has_noncanonical_core_regs,
+    canonicalize_core_regs, has_noncanonical_core_regs, has_unsupported_execution_mode,
 };
 use crate::backend::Backend;
 use crate::error::{BackendError, Result};
 use crate::exit::{Capabilities, CommonExit, Exit, ExitCounts, StoreCompletions};
 use crate::types::{Gpa, MpState};
+
+#[path = "arm64_kvm_inventory.rs"]
+mod inventory;
 
 pub(crate) const KVM_EXIT_MMIO: u32 = 6;
 pub(crate) const KVM_EXIT_SYSTEM_EVENT: u32 = 24;
@@ -498,6 +501,7 @@ const CNTVCT_EL0: u64 = sysreg_id(3, 3, 14, 3, 2);
 const CNTP_CTL_EL0: u64 = sysreg_id(3, 3, 14, 2, 1);
 const CNTP_CVAL_EL0: u64 = sysreg_id(3, 3, 14, 2, 2);
 const DISR_EL1: u64 = sysreg_id(3, 0, 12, 1, 1);
+const ACTLR_EL1: u64 = sysreg_id(3, 0, 1, 0, 1);
 const OSLSR_EL1: u64 = sysreg_id(2, 0, 1, 1, 4);
 const OSLSR_OSLK: u64 = 1 << 1;
 const MDCCINT_EL1: u64 = sysreg_id(2, 0, 0, 2, 0);
@@ -964,6 +968,7 @@ fn validate_vgic_host<K: Arm64Kvm + ?Sized>(k: &K, s: &Arm64GicState) -> Result<
 
 pub(crate) fn validate_restore_vcpu_state(s: &Arm64VcpuState) -> Result<()> {
     if has_noncanonical_core_regs(&s.core)
+        || has_unsupported_execution_mode(&s.core)
         || s.debug.trap_debug_exceptions
         || s.debug.trap_debug_reg_accesses
         || s.debug.mdccint_el1 & !MDCCINT_WRITABLE_BITS != 0
@@ -1080,6 +1085,12 @@ fn unlock_os_lock<K: Arm64Kvm + ?Sized>(k: &mut K) -> Result<()> {
 }
 
 pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
+    inventory::validate(k.register_list()?)?;
+    if k.get_one_reg(ACTLR_EL1)? != 0 {
+        return Err(BackendError::Unsupported {
+            what: "save ARM KVM with noncanonical ACTLR_EL1",
+        });
+    }
     let mut s = Arm64VcpuState::default();
     for i in 0..31u64 {
         s.core.x[i as usize] = k.get_one_reg(core_reg(i * 2))?;
@@ -1090,6 +1101,11 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
     s.core.sp_el1 = k.get_one_reg(core_reg(CORE_SP_EL1))?;
     s.core.elr_el1 = k.get_one_reg(core_reg(CORE_ELR_EL1))?;
     s.core.spsr_el1 = k.get_one_reg(core_reg(CORE_SPSR_EL1))?;
+    if has_unsupported_execution_mode(&s.core) {
+        return Err(BackendError::Unsupported {
+            what: "ARM KVM supports only EL0/EL1 AArch64 execution state",
+        });
+    }
     canonicalize_core_regs(&mut s.core);
     for &(id, sel) in SYSREGS {
         *sys_field(&mut s.sysregs, sel) = k.get_one_reg(id)?;
@@ -1139,6 +1155,7 @@ pub(crate) fn save_vcpu<K: Arm64Kvm + ?Sized>(k: &K) -> Result<Arm64VcpuState> {
 
 pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) -> Result<()> {
     validate_restore_vcpu_state(s)?;
+    inventory::validate(k.register_list()?)?;
     validate_vgic_host(k, s.gic.as_ref().ok_or(BackendError::InvalidState)?)?;
     for i in 0..31u64 {
         k.set_one_reg(core_reg(i * 2), s.core.x[i as usize])?;
@@ -1173,6 +1190,7 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
         k.set_one_reg(dbgwcr(index), s.debug.watchpoint_control[index as usize])?;
     }
     unlock_os_lock(k)?;
+    k.set_one_reg(ACTLR_EL1, 0)?;
     k.set_one_reg(MDCCINT_EL1, s.debug.mdccint_el1)?;
     k.set_one_reg(MDSCR_EL1, s.debug.mdscr_el1)?;
     k.set_one_reg(DISR_EL1, 0)?;
@@ -1189,6 +1207,8 @@ pub(crate) fn restore_vcpu<K: Arm64Kvm + ?Sized>(k: &mut K, s: &Arm64VcpuState) 
 
 pub trait Arm64Kvm {
     fn vcpu_init(&mut self) -> Result<()>;
+
+    fn register_list(&self) -> Result<Vec<u64>>;
 
     fn asid_bits(&self) -> Arm64AsidBits;
 
@@ -1282,6 +1302,7 @@ pub struct Arm64KvmBackend<K: Arm64Kvm> {
     gic_ctlr_fixed_bits: u64,
     gicd_iidr: u32,
     gicd_typer2: u32,
+    register_identity: [u8; 32],
 }
 
 impl<K: Arm64Kvm> Arm64KvmBackend<K> {
@@ -1308,6 +1329,7 @@ impl<K: Arm64Kvm> Arm64KvmBackend<K> {
             gic_ctlr_fixed_bits: 0,
             gicd_iidr: 0,
             gicd_typer2: 0,
+            register_identity: [0; 32],
         }
     }
 
@@ -1485,6 +1507,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 
     fn set_policy(&mut self, policy: &crate::arch::arm64::Arm64Policy) -> Result<()> {
         self.ensure_healthy()?;
+        let registers = inventory::validate(self.kvm.register_list()?)?;
+        inventory::validate_policy(policy, &registers)?;
         self.state_poisoned = true;
         self.kvm
             .set_one_reg(KVM_REG_ARM_PSCI_VERSION, KVM_ARM_PSCI_1_0)?;
@@ -1514,6 +1538,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
         )?)
         .map_err(|_| BackendError::InvalidState)?;
         self.kvm.set_one_reg(CNTV_CTL_EL0, 0)?;
+        self.kvm.set_one_reg(ACTLR_EL1, 0)?;
         self.kvm.set_one_reg(DISR_EL1, 0)?;
         unlock_os_lock(&mut self.kvm)?;
         self.kvm.set_one_reg(CNTP_CTL_EL0, 0)?;
@@ -1530,6 +1555,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             }
         }
         let _ = &policy.sysreg_traps;
+        self.register_identity = inventory::identity(&self.kvm, &registers, true)?;
         self.configured = true;
         self.state_poisoned = false;
         Ok(())
@@ -1736,12 +1762,32 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
             return Err(BackendError::PendingCompletion);
         }
         self.settle_mmio()?;
-        save_vcpu(&self.kvm)
+        let state = save_vcpu(&self.kvm)?;
+        if self.configured
+            && inventory::identity(
+                &self.kvm,
+                &inventory::validate(self.kvm.register_list()?)?,
+                true,
+            )? != self.register_identity
+        {
+            return Err(BackendError::Unsupported {
+                what: "ARM KVM immutable register identity changed",
+            });
+        }
+        Ok(state)
     }
 
     fn validate_restore_state(&self, state: &Arm64VcpuState) -> Result<()> {
         self.ensure_healthy()?;
         validate_restore_vcpu_state(state)?;
+        let registers = inventory::validate(self.kvm.register_list()?)?;
+        if self.configured
+            && inventory::identity(&self.kvm, &registers, false)? != self.register_identity
+        {
+            return Err(BackendError::Unsupported {
+                what: "ARM KVM immutable register identity changed",
+            });
+        }
         validate_vgic_host(
             &self.kvm,
             state.gic.as_ref().ok_or(BackendError::InvalidState)?,
@@ -1791,6 +1837,7 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
                 gic_ctlr_fixed_bits: self.gic_ctlr_fixed_bits,
                 gicd_iidr: self.gicd_iidr,
                 gicd_typer2: self.gicd_typer2,
+                register_identity: self.register_identity,
             },
         }
     }
@@ -1799,6 +1846,8 @@ impl<K: Arm64Kvm> Backend for Arm64KvmBackend<K> {
 #[cfg(any(test, feature = "mock"))]
 #[derive(Debug, Default)]
 pub struct FakeKvm {
+    pub register_inventory: Option<Vec<u64>>,
+    pub register_inventory_failure: bool,
     #[cfg(test)]
     state_reads: std::sync::atomic::AtomicUsize,
     cancellation: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -1905,6 +1954,16 @@ impl FakeKvm {
 
 #[cfg(any(test, feature = "mock"))]
 impl Arm64Kvm for FakeKvm {
+    fn register_list(&self) -> Result<Vec<u64>> {
+        if self.register_inventory_failure {
+            return Err(BackendError::Internal("fake KVM register inventory failed"));
+        }
+        Ok(self
+            .register_inventory
+            .clone()
+            .unwrap_or_else(inventory::fake_registers))
+    }
+
     fn cancellation_flag(&self) -> Option<std::sync::Arc<std::sync::atomic::AtomicBool>> {
         self.cancellation.clone()
     }

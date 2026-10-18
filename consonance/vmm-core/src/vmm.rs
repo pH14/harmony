@@ -3295,6 +3295,24 @@ mod tests {
                 .project_state_blob_suffix_from_snapshot(&snapshot, &sdk)
                 .unwrap();
             assert_eq!(projected, live);
+            let mut other_backend =
+                MockArm64Backend::with_capabilities(vmm_backend::Capabilities {
+                    name: "mock-arm64",
+                    arch: vmm_backend::Arm64Caps {
+                        register_identity: [0x91; 32],
+                        ..vmm.backend.capabilities().arch
+                    },
+                });
+            other_backend.set_policy(&Arm64Policy::default()).unwrap();
+            let mut other = Vmm::new(other_backend, GuestRam::new(TEST_RAM).unwrap());
+            let before = other.save_vm_state().unwrap();
+            let ram = other.guest_memory().to_vec();
+            assert!(matches!(
+                other.project_state_blob_suffix_from_snapshot(&snapshot, &sdk),
+                Err(VmmError::Snapshot(SnapshotError::ContractMismatch))
+            ));
+            assert_eq!(other.save_vm_state().unwrap(), before);
+            assert_eq!(other.guest_memory(), ram);
             let mut mismatched = snapshot.clone();
             mismatched.contract_hash[0] ^= 1;
             assert!(matches!(
