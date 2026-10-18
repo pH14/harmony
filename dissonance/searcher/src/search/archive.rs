@@ -144,7 +144,8 @@ pub fn retention_policy_from_identifier(
     }
 }
 
-pub const SELECTOR_IDENTIFIER: &str = "tier_progress_cascade_pace_yield_cell_recent_count_decay_v2";
+pub const SELECTOR_IDENTIFIER: &str =
+    "tier_progress_cascade_pace_stale_lineage_rank_floor_yield_cell_recent_count_decay_v4";
 
 const TIER_RANK_CAP: u8 = 8;
 
@@ -167,6 +168,30 @@ fn count_decay(draws: u64) -> u64 {
         .saturating_pow(COUNT_DECAY_EXPONENT)
         .max(1);
     (COUNT_DECAY_SCALE / divisor).max(1)
+}
+
+#[must_use]
+fn rank_floor(floor_weight: u64, rank: usize, accounting: &SelectorAccounting) -> u64 {
+    let draws = accounting.cell_selections;
+    let stale = draws.saturating_sub(accounting.frontier_mark);
+    let rises = accounting.frontier_rises;
+    let decay = u128::from(
+        u64::try_from(rank)
+            .unwrap_or(u64::MAX)
+            .saturating_add(1)
+            .saturating_pow(COUNT_DECAY_EXPONENT),
+    );
+    let numerator = u128::from(floor_weight) * u128::from(stale) * u128::from(rises);
+    let denominator =
+        (u128::from(stale) * u128::from(rises) + u128::from(draws)).saturating_mul(decay);
+    numerator
+        .checked_div(denominator)
+        .map_or(0, |floor| u64::try_from(floor).unwrap_or(u64::MAX))
+}
+
+#[must_use]
+fn floor_rank(rank: usize, lineage_ranks: usize) -> usize {
+    rank.saturating_sub(lineage_ranks.saturating_sub(1))
 }
 
 #[must_use]
@@ -243,6 +268,16 @@ pub struct SelectorAccounting {
     pub draws_by_cell: BTreeMap<String, u64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tier_runs: BTreeMap<String, TierRuns>,
+    #[serde(default)]
+    pub frontier_rises: u64,
+    #[serde(default)]
+    pub frontier_mark: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_ancestor: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lineage_ranks: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub falling_floor: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub portfolio: Option<PortfolioAccounting>,
 }
@@ -505,6 +540,8 @@ pub struct Archive<A: Ord, K: ArchiveKey, M, S> {
     tiers: BTreeMap<K::Progress, TierCells<K>>,
     #[serde(skip)]
     parent_index: Vec<usize>,
+    #[serde(skip)]
+    entry_depth: Vec<u32>,
     preserve_inactive_snapshots: bool,
     metadata_pins: BTreeMap<u64, u32>,
     inflight_snapshot_pins: BTreeMap<u64, u32>,
@@ -1103,6 +1140,7 @@ where
             active_ids: ActiveIds::default(),
             tiers: BTreeMap::new(),
             parent_index: Vec::new(),
+            entry_depth: Vec::new(),
             preserve_inactive_snapshots: false,
             metadata_pins: BTreeMap::new(),
             inflight_snapshot_pins: BTreeMap::new(),
@@ -1594,6 +1632,7 @@ where
         self.active_ids = ActiveIds::default();
         self.tiers.clear();
         self.parent_index = Vec::new();
+        self.entry_depth = Vec::new();
         if selector_indexed {
             self.rebuild_selector_index();
         }
@@ -1802,6 +1841,7 @@ where
             column(&self.lineages, entries),
             column(&self.deepest_leaf, entries),
             column(&self.parent_index, entries),
+            column(&self.entry_depth, entries),
             column(&self.snapshot_selectable, entries),
             column(&self.keyframe, entries),
             column(&self.keyframe_id, entries),
@@ -2123,14 +2163,67 @@ where
     fn sync_parent_index(&mut self) {
         if self.parent_index.len() > self.entries.len() {
             self.parent_index.clear();
+            self.entry_depth.clear();
         }
         for index in self.parent_index.len()..self.entries.len() {
             let parent = self.entries[index]
                 .parent_id
                 .and_then(|parent| self.id_to_index.get(&parent).copied())
                 .unwrap_or(usize::MAX);
+            let depth = self
+                .entry_depth
+                .get(parent)
+                .map_or(0, |depth| depth.saturating_add(1));
             self.parent_index.push(parent);
+            self.entry_depth.push(depth);
         }
+    }
+
+    fn common_ancestor(&self, mut first: usize, mut second: usize) -> Option<usize> {
+        while first != second {
+            if self.entry_depth[first] >= self.entry_depth[second] {
+                first = self.parent_index[first];
+            } else {
+                second = self.parent_index[second];
+            }
+            if first == usize::MAX || second == usize::MAX {
+                return None;
+            }
+        }
+        Some(first)
+    }
+
+    fn record_top_ancestor(&mut self, index: usize, frontier_rose: bool) {
+        let key = self.entries[index].key;
+        let in_top = self
+            .live_progress
+            .is_some_and(|(deepest, _)| deepest.progress() == key.progress());
+        let accounting = &self.selector_accounting;
+        let ancestor = if frontier_rose {
+            Some(index)
+        } else if in_top {
+            accounting
+                .top_ancestor
+                .and_then(|id| self.id_to_index.get(&id).copied())
+                .and_then(|ancestor| self.common_ancestor(ancestor, index))
+        } else {
+            return;
+        };
+        self.selector_accounting.top_ancestor = ancestor.map(|ancestor| self.entries[ancestor].id);
+    }
+
+    fn lineage_ranks(&self) -> usize {
+        self.selector_accounting
+            .top_ancestor
+            .and_then(|id| self.id_to_index.get(&id))
+            .map_or(0, |index| {
+                self.tiers
+                    .range((
+                        std::ops::Bound::Excluded(self.entries[*index].key.progress()),
+                        std::ops::Bound::Unbounded,
+                    ))
+                    .count()
+            })
     }
 
     #[must_use]
@@ -2585,18 +2678,28 @@ where
         self.cost_in_group.push(candidate_cost_in_group);
         self.replacement_preferences.push(replacement_preferences);
         self.in_place_lengths.push(0);
-        match &mut self.live_progress {
+        let frontier_rose = match &mut self.live_progress {
             Some((deepest, cheapest)) => match key.progress().cmp(&deepest.progress()) {
                 Ordering::Greater => {
                     *deepest = key;
                     *cheapest = candidate_cost_in_group;
+                    true
                 }
                 Ordering::Equal => {
                     *cheapest = (*cheapest).min(candidate_cost_in_group);
+                    false
                 }
-                Ordering::Less => {}
+                Ordering::Less => false,
             },
-            None => self.live_progress = Some((key, candidate_cost_in_group)),
+            None => {
+                self.live_progress = Some((key, candidate_cost_in_group));
+                true
+            }
+        };
+        if frontier_rose {
+            let accounting = &mut self.selector_accounting;
+            accounting.frontier_rises = accounting.frontier_rises.saturating_add(1);
+            accounting.frontier_mark = accounting.cell_selections;
         }
         self.selected.push(0);
         self.productive.push(0);
@@ -2604,6 +2707,7 @@ where
         self.opened_slot.push(new_slot);
         self.deepest_leaf.push((key, id));
         self.sync_parent_index();
+        self.record_top_ancestor(id, frontier_rose);
         let mut ancestor = parent_id.unwrap_or(usize::MAX);
         while let Some(previous) = self.deepest_leaf.get(ancestor).copied() {
             if leaf_order(previous, (key, id)) != Ordering::Less {
@@ -2865,8 +2969,7 @@ where
         }
     }
 
-    fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
-        let tiers = self.tiers.len();
+    fn falling_block(&self) -> (usize, u32) {
         let mut ranked = self.tiers.keys().rev().copied().peekable();
         let mut floor = 0_usize;
         let mut halvings = 0;
@@ -2877,12 +2980,23 @@ where
             }
             floor += 1;
         }
+        (floor, halvings)
+    }
+
+    fn draw_tier(&self, rand: &mut RomuDuoJrRand) -> Result<(K::Progress, u8), Box<dyn Error>> {
+        let tiers = self.tiers.len();
+        let (floor, halvings) = self.falling_block();
         let floor_weight = (tier_weight(u8::try_from(floor).unwrap_or(u8::MAX)) >> halvings).max(1);
+        let lineage_ranks = self.lineage_ranks();
         let weights = (0..tiers).map(|rank| {
             if rank <= floor {
                 floor_weight
             } else {
-                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX))
+                tier_weight(u8::try_from(rank).unwrap_or(u8::MAX)).max(rank_floor(
+                    floor_weight,
+                    floor_rank(rank, lineage_ranks),
+                    &self.selector_accounting,
+                ))
             }
         });
         let index = draw_weighted(rand, weights)?;
@@ -3462,7 +3576,12 @@ where
 
     #[must_use]
     pub fn selector_counters(&self) -> SelectorAccounting {
-        self.selector_accounting.clone()
+        let mut accounting = self.selector_accounting.clone();
+        if !self.tiers.is_empty() {
+            accounting.lineage_ranks = u64::try_from(self.lineage_ranks()).ok();
+            accounting.falling_floor = u64::try_from(self.falling_block().0).ok();
+        }
+        accounting
     }
 
     pub fn selector_report(&self) -> SelectorAccounting {
@@ -3742,7 +3861,7 @@ mod tests {
         ActiveIds, Archive, ArchiveCandidate, ArchiveKey, CellMembers, CellState,
         HISTORY_COMPACTION_MIN_DROPS, HISTORY_COMPACTION_SHARE, Input, InputIndex,
         MAINTENANCE_QUANTUM, MAX_ENTRIES_PER_KEY, SelectorAccounting, SelectorDraw, SelectorPath,
-        TIER_RANK_SHIFT, TierCells, WeightedSet, tier_weight,
+        TIER_RANK_SHIFT, TierCells, WeightedSet, floor_rank, rank_floor, tier_weight,
     };
     use crate::search::{draw::SUFFIX_DOUBLING_LIMIT, rand::RomuDuoJrRand};
     use serde::{Deserialize, Serialize};
@@ -8748,6 +8867,144 @@ mod tests {
     fn a_tier_that_keeps_winning_at_its_usual_gap_keeps_its_weight() {
         let counts = top_tier_with_a_busy_rank_below(4096, 255, 64);
         assert!(counts[0] > counts[1] * 5, "{counts:?}");
+    }
+
+    #[test]
+    fn a_rank_far_below_a_farming_top_draws_while_the_ranks_between_only_farm() {
+        let mut archive = TestArchive::new(|_| 1);
+        for minor in 0..12_u8 {
+            for place in 0..64_u16 {
+                let mut key = probe_key(1, minor, place, 0);
+                key.state_fingerprint = minor;
+                archive.prepare_selection();
+                archive
+                    .insert(
+                        None,
+                        0,
+                        ArchiveCandidate {
+                            suffix: vec![minor],
+                            key,
+                            milestones: (),
+                        },
+                        (),
+                    )
+                    .expect("insert tier cell")
+                    .expect("retain tier cell");
+            }
+        }
+        for minor in 0..12_u8 {
+            archive.restart_tier_run((1, minor));
+        }
+        let mut rand = RomuDuoJrRand::with_seed(0x7ea1_0017);
+        let mut since_win = [0_u64; 12];
+        let mut reached = None;
+        for draw_index in 0..1_u64 << 22 {
+            let (id, draw) = archive.select_parent(&mut rand).expect("a tier draw");
+            archive.record_selection(id, &draw);
+            let progress = archive.entries[id].key.progress();
+            let minor = usize::from(progress.1);
+            let gap = match minor {
+                11 if archive.tier_runs(progress).yields < 2048 => 64,
+                11 => 21_700,
+                2..=10 => 113,
+                _ => u64::MAX,
+            };
+            since_win[minor] += 1;
+            if since_win[minor] == gap {
+                since_win[minor] = 0;
+                let new_cell = archive.tier_runs(progress).yields.is_multiple_of(4);
+                let runs = archive.tier_runs_mut(progress);
+                runs.yields += 1;
+                runs.cells += u64::from(new_cell);
+                runs.wins += 1;
+                runs.dry = 0;
+            }
+            if minor == 1 && archive.tier_runs(progress).draws == 256 {
+                reached = Some(draw_index);
+                break;
+            }
+        }
+        let reached = reached.expect("rank 10 drew 256 times within 2^22 draws");
+        assert!(
+            reached < 1 << 18,
+            "rank 10 drew 256 times only after {reached} draws"
+        );
+    }
+
+    #[test]
+    fn tiers_above_the_top_tiers_common_ancestor_share_the_first_floor_rank() {
+        let ranks = |lineage_ranks| {
+            (0..6)
+                .map(|rank| floor_rank(rank, lineage_ranks))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ranks(0), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(ranks(1), [0, 1, 2, 3, 4, 5]);
+        assert_eq!(ranks(4), [0, 0, 0, 0, 1, 2]);
+        let accounting = SelectorAccounting {
+            cell_selections: 1_000,
+            frontier_rises: 10,
+            frontier_mark: 0,
+            ..SelectorAccounting::default()
+        };
+        assert_eq!(
+            rank_floor(1 << 20, floor_rank(5, 4), &accounting),
+            rank_floor(1 << 20, 2, &accounting)
+        );
+        assert!(
+            rank_floor(1 << 20, floor_rank(3, 4), &accounting)
+                > 8 * rank_floor(1 << 20, 3, &accounting)
+        );
+    }
+
+    #[test]
+    fn the_top_tiers_common_ancestor_follows_its_entries_and_resets_at_a_rise() {
+        let mut archive = TestArchive::new(|_| 1);
+        let insert = |archive: &mut TestArchive, parent: Option<usize>, minor: u8| {
+            let mut key = probe_key(
+                1,
+                minor,
+                u16::try_from(archive.entries.len()).expect("place"),
+                0,
+            );
+            key.state_fingerprint = u8::try_from(archive.entries.len()).expect("fingerprint");
+            archive.prepare_selection();
+            archive
+                .insert(
+                    parent,
+                    0,
+                    ArchiveCandidate {
+                        suffix: vec![key.state_fingerprint],
+                        key,
+                        milestones: (),
+                    },
+                    (),
+                )
+                .expect("insert lineage entry")
+                .expect("retain lineage entry")
+        };
+        let root = insert(&mut archive, None, 0);
+        let first = insert(&mut archive, Some(root), 1);
+        let second = insert(&mut archive, Some(first), 2);
+        insert(&mut archive, Some(second), 3);
+        assert_eq!(archive.lineage_ranks(), 0);
+        insert(&mut archive, Some(second), 3);
+        assert_eq!(archive.lineage_ranks(), 1);
+        let branch = insert(&mut archive, Some(first), 3);
+        assert_eq!(archive.lineage_ranks(), 2);
+        insert(&mut archive, Some(first), 2);
+        assert_eq!(archive.lineage_ranks(), 2);
+        let mut restored: TestArchive =
+            postcard::from_bytes(&postcard::to_stdvec(&archive).expect("encode archive"))
+                .expect("decode archive");
+        restored
+            .restore_runtime(|_| 1, None, Vec::new())
+            .expect("restore archive");
+        assert_eq!(restored.lineage_ranks(), 2);
+        insert(&mut restored, Some(root), 3);
+        assert_eq!(restored.lineage_ranks(), 3);
+        insert(&mut archive, Some(branch), 4);
+        assert_eq!(archive.lineage_ranks(), 0);
     }
 
     #[test]
