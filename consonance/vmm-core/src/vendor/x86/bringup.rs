@@ -176,6 +176,7 @@ fn apply_linux_entry(state: &mut VcpuState, entry: &VcpuState) {
     state.sregs.fs = entry.sregs.fs;
     state.sregs.gs = entry.sregs.gs;
     state.sregs.ss = entry.sregs.ss;
+    state.sregs.tr = entry.sregs.tr;
     state.sregs.gdt = entry.sregs.gdt;
     state.sregs.cr0 = entry.sregs.cr0;
     state.sregs.cr2 = entry.sregs.cr2;
@@ -581,6 +582,24 @@ mod tests {
         assert_eq!(state.sregs.gdt.base, 0x6000);
         assert_eq!(state.msrs.get(&0xC000_0080), Some(&entry.sregs.efer));
         assert!(matches!(state.mp_state, MpState::Runnable));
+    }
+
+    #[test]
+    fn linux_entry_replaces_vendor_dependent_task_register_reset_state() {
+        let entry = entry::long_mode_entry(0x10_0200, 0x7000, 0x1000, 0x6000);
+        let mut amd = VcpuState::default();
+        amd.sregs.tr = vmm_backend::Segment {
+            base: 0x1234,
+            limit: 0x4321,
+            type_: 3,
+            ..entry.sregs.tr
+        };
+        let mut intel = amd.clone();
+        intel.sregs.tr.type_ = 11;
+        apply_linux_entry(&mut amd, &entry);
+        apply_linux_entry(&mut intel, &entry);
+        assert_eq!(amd, intel);
+        assert_eq!(amd.sregs.tr, entry.sregs.tr);
     }
 
     #[test]

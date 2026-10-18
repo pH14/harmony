@@ -3,6 +3,7 @@ import copy
 import importlib.util
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -156,6 +157,30 @@ class QualificationTests(unittest.TestCase):
         path.write_text('{"cells": [], "cells": [1]}')
         with self.assertRaisesRegex(ValueError, "duplicate"):
             Q.read(path)
+
+    def test_failed_execution_retains_its_owned_diagnostics_and_log(self):
+        bundle = self.root / "bundle"
+        bundle.mkdir()
+        executable = bundle / "x86_kvm_virtual_time"
+        executable.write_text(
+            f"#!{sys.executable}\n"
+            "import os, pathlib, sys\n"
+            "root = pathlib.Path(os.environ['X1_DIAGNOSTICS_DIR'])\n"
+            "(root / 'partial-state.txt').write_text('retained before failure')\n"
+            "print('deliberate execution failure')\n"
+            "sys.exit(1)\n"
+        )
+        output = self.root / "execution"
+        with patch.object(Q.platform, "system", return_value="Linux"), patch.object(Q.platform, "machine", return_value="x86_64"):
+            with self.assertRaisesRegex(ValueError, "failed or unrun"):
+                Q.run(bundle, output, "1", self.root / "unused-host-id")
+            witness = output / "diagnostics" / Q.TESTS[0] / "partial-state.txt"
+            self.assertEqual(witness.read_text(), "retained before failure")
+            self.assertIn("deliberate execution failure", (output / f"{Q.TESTS[0]}.log").read_text())
+            self.assertFalse((output / "receipt.json").exists())
+            with self.assertRaises(FileExistsError):
+                Q.run(bundle, output, "1", self.root / "unused-host-id")
+            self.assertEqual(witness.read_text(), "retained before failure")
 
 
 if __name__ == "__main__":
