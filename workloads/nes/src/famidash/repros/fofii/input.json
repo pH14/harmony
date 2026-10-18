@@ -1,0 +1,325 @@
+{
+  "game": "famidash-b",
+  "level": 6,
+  "rom_sha256": "47623468b4f7ca3c85cbd1c55f11c5d59ad5502dcfd71b1cbfe82d4b85413781",
+  "frames": 1463,
+  "endpoint": {
+    "x": 4268,
+    "y": 897
+  },
+  "fixed_death_frame": 1317,
+  "actions": [
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 32
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 23
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 23
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 31
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 15
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 16
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 32
+    },
+    {
+      "buttons": 1,
+      "frames": 16
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 32
+    },
+    {
+      "buttons": 1,
+      "frames": 9
+    },
+    {
+      "buttons": 0,
+      "frames": 7
+    },
+    {
+      "buttons": 1,
+      "frames": 4
+    },
+    {
+      "buttons": 0,
+      "frames": 8
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 4
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 7
+    },
+    {
+      "buttons": 1,
+      "frames": 4
+    },
+    {
+      "buttons": 0,
+      "frames": 4
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 14
+    },
+    {
+      "buttons": 1,
+      "frames": 10
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 8
+    },
+    {
+      "buttons": 1,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 8
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 7
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 8
+    },
+    {
+      "buttons": 1,
+      "frames": 24
+    },
+    {
+      "buttons": 0,
+      "frames": 8
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 24
+    },
+    {
+      "buttons": 1,
+      "frames": 16
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 24
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 7
+    },
+    {
+      "buttons": 1,
+      "frames": 8
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 16
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 15
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 23
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 31
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 23
+    },
+    {
+      "buttons": 1,
+      "frames": 1
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 11
+    },
+    {
+      "buttons": 1,
+      "frames": 3
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 40
+    },
+    {
+      "buttons": 0,
+      "frames": 32
+    }
+  ]
+}

@@ -192,3 +192,10 @@ it alive. `HARMONY_QUICKNES_CORE` names the core.
 The browser demo in
 `demos/twin-dragons` runs the same workload and starts later levels by writing
 the level number at level select.
+
+## Reproduced game bugs
+
+The [Fofii pit escape](repros/fofii/README.md) includes a controller input,
+QuickNES and independent FCEUmm runners, and a tested upstream level-data
+patch. The official B-Sides 1.2.8 ROM lets the cube fall through an unguarded
+pit into non-colliding decoration beneath the course.
