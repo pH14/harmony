@@ -65,6 +65,7 @@ static int cleanup(void)
 {
 	int leftovers = 0;
 	for (;;) {
+		while (waitpid(-1, NULL, __WALL | WNOHANG) > 0) {}
 		char path[80];
 		snprintf(path, sizeof(path), "/proc/self/task/%ld/children", (long)getpid());
 		FILE *children = fopen(path, "r");
@@ -72,6 +73,8 @@ static int cleanup(void)
 			return -1;
 		int pid, found = 0;
 		while (fscanf(children, "%d", &pid) == 1) {
+			if (waitpid(pid, NULL, __WALL | WNOHANG) == pid)
+				continue;
 			found = 1;
 			leftovers = 1;
 			if (getpgid(pid) == pid)

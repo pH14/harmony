@@ -615,6 +615,54 @@ int main(int argc,char **argv) {
                 with self.assertRaises(AssertionError):
                     self.compile_run(old, ("3",), expected=87)
 
+    @unittest.skipUnless(sys.platform == "linux", "requires native Linux seccomp notifications")
+    def test_checkpoint_fault_supervisor_reaps_dead_children_but_refuses_live_orphans(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            helper = root / "supervisor"
+            fixture = PATCHES.parents[2] / "uml/tests/fixtures/checkpoint_host_fault.c"
+            subprocess.run([os.environ.get("CC", "cc"), "-O2", "-Wall", "-Wextra", "-Werror",
+                            str(fixture), "-o", str(helper)], check=True, capture_output=True, text=True)
+            child = root / "child.py"
+            child.write_text(r'''import ctypes,errno,mmap,os,socket,sys,time
+page=mmap.mmap(-1,4096,prot=mmap.PROT_READ|mmap.PROT_WRITE)
+address=ctypes.addressof(ctypes.c_char.from_buffer(page))
+libc=ctypes.CDLL(None,use_errno=True)
+libc.mprotect.argtypes=[ctypes.c_void_p,ctypes.c_size_t,ctypes.c_int]
+assert libc.mprotect(address,4096,7)==0
+control=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM)
+control.connect(os.environ["HARMONY_UML_FAULT_CONTROL"])
+control.sendall(b"A")
+assert control.recv(1)==b"A"
+assert libc.mprotect(address,4096,7)==-1 and ctypes.get_errno()==errno.ENOMEM
+mode=sys.argv[1]
+if mode!="normal":
+ reader,writer=os.pipe()
+ pid=os.fork()
+ if not pid:
+  os.close(reader)
+  os.write(writer,b"ready")
+  os.close(writer)
+  if mode=="live":time.sleep(30)
+  os._exit(0)
+ os.close(writer)
+ assert os.read(reader,5)==b"ready"
+ os.close(reader)
+ if mode=="dead":
+  deadline=time.monotonic()+5
+  while True:
+   state=open(f"/proc/{pid}/stat").read().rsplit(")",1)[1].split()[0]
+   if state=="Z":break
+   assert time.monotonic()<deadline
+   time.sleep(.001)
+''')
+            for mode, expected in [("normal", 0), ("dead", 0), ("live", 1)]:
+                with self.subTest(mode=mode):
+                    result = subprocess.run([str(helper), str(root / "control.sock"), sys.executable,
+                                             str(child), mode], capture_output=True, text=True, timeout=15)
+                    self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+                    self.assertIn("armed=1 continued=1 denied=1 status=0 leftovers=" + str(expected), result.stderr)
+
     def test_uml_resumed_capture_does_not_close_its_stale_image_descriptor(self):
         for series in ("um", "um-arm64"):
             with self.subTest(series=series):
