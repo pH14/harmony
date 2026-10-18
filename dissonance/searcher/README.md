@@ -732,6 +732,19 @@ which the report also sums across workers. Report equality and the report's
 serialized form leave telemetry out, so a replayed report stays byte-identical;
 a caller that wants it writes it separately.
 
+`telemetry.completed_buffer` reports live and peak `results`, `actions` and
+`candidates` counts for the current coordinator invocation; checkpoint resume
+starts fresh gauges and peaks. A result enters when the coordinator receives it
+and leaves when ordered admission removes it. Failed worker results count as one result
+with zero action/candidate records; candidates count every present optional
+candidate, including nonviable ones. Successful reports end with zero live
+counts; peaks include immediately admitted results as well as held results.
+Coordinator profile lines expose the same action/candidate live counts and all
+three peaks beside the existing `completed_buffered` result count.
+These are record counts, not heap bytes, unique snapshots or process RSS. They
+are runtime diagnostics excluded from checkpoint profiles, search decisions,
+report equality and the deterministic report/stream serialization.
+
 The last sidecar record of a run also carries `retained_diagnostics`, an
 optional workload census over the archive's cached active endpoints. Each
 endpoint is offered with the number of times the selector drew it, so a census

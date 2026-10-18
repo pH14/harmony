@@ -42,8 +42,8 @@ pub const LONGEST_SPLICE_TAIL: usize = 128;
 use crate::search::parallel::{WorkerPoolError, with_worker_pool};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
-    CampaignTelemetry, HostTimes, IdleClock, IdleReason, TargetCounters, nanos_since, now,
-    thread_schedstat,
+    CampaignTelemetry, CompletedBufferTelemetry, HostTimes, IdleClock, IdleReason, TargetCounters,
+    nanos_since, now, thread_schedstat,
 };
 
 pub type CampaignOutcome<G> = (
@@ -2860,6 +2860,83 @@ struct CompletedJob<G: Workload + ?Sized> {
     outcome: Result<(CampaignJobResult<G>, u64, String), String>,
 }
 
+struct CompletedBuffer<K: Ord, V> {
+    entries: BTreeMap<K, V>,
+    telemetry: CompletedBufferTelemetry,
+    records: fn(&V) -> (u64, u64),
+}
+
+impl<K: Ord, V> CompletedBuffer<K, V> {
+    fn new(records: fn(&V) -> (u64, u64)) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            telemetry: CompletedBufferTelemetry::default(),
+            records,
+        }
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Option<V> {
+        if self.entries.contains_key(&key) {
+            return Some(value);
+        }
+        let (actions, candidates) = (self.records)(&value);
+        self.entries.insert(key, value);
+        let stats = &mut self.telemetry;
+        stats.results_live = stats.results_live.saturating_add(1);
+        stats.actions_live = stats.actions_live.saturating_add(actions);
+        stats.candidates_live = stats.candidates_live.saturating_add(candidates);
+        stats.results_peak = stats.results_peak.max(stats.results_live);
+        stats.actions_peak = stats.actions_peak.max(stats.actions_live);
+        stats.candidates_peak = stats.candidates_peak.max(stats.candidates_live);
+        None
+    }
+
+    fn remove(&mut self, key: &K) -> Option<V> {
+        let value = self.entries.remove(key)?;
+        let (actions, candidates) = (self.records)(&value);
+        let stats = &mut self.telemetry;
+        stats.results_live = stats
+            .results_live
+            .checked_sub(1)
+            .expect("completed result accounting");
+        stats.actions_live = stats
+            .actions_live
+            .checked_sub(actions)
+            .expect("completed action accounting");
+        stats.candidates_live = stats
+            .candidates_live
+            .checked_sub(candidates)
+            .expect("completed candidate accounting");
+        Some(value)
+    }
+}
+
+impl<K: Ord, V> std::ops::Deref for CompletedBuffer<K, V> {
+    type Target = BTreeMap<K, V>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+fn completed_job_records<G: Workload + ?Sized>(job: &CompletedJob<G>) -> (u64, u64) {
+    completed_result_records(&job.outcome)
+}
+
+fn completed_result_records<G: CampaignTypes + ?Sized>(
+    outcome: &Result<(CampaignJobResult<G>, u64, String), String>,
+) -> (u64, u64) {
+    outcome.as_ref().map_or((0, 0), |(result, _, _)| {
+        (
+            result.actions.len() as u64,
+            result
+                .actions
+                .iter()
+                .filter(|action| action.candidate.is_some())
+                .count() as u64,
+        )
+    })
+}
+
 fn replay_suffix_limit(drawn: bool, recorded: Option<u8>) -> Result<Option<u8>, Box<dyn Error>> {
     match (drawn, recorded) {
         (true, Some(limit)) if (1..=SUFFIX_DOUBLING_LIMIT).contains(&limit) => Ok(Some(limit)),
@@ -3722,7 +3799,8 @@ where
 
             let pipeline_depth = config.window;
             let mut pending = BTreeMap::<usize, PendingJob<G>>::new();
-            let mut completed = BTreeMap::<usize, CompletedJob<G>>::new();
+            let mut completed =
+                CompletedBuffer::<usize, CompletedJob<G>>::new(completed_job_records);
             let mut schedule = BTreeSet::<(u64, usize)>::new();
             let mut running = 0_usize;
             for job in resumed_in_flight.take().unwrap_or_default() {
@@ -4099,7 +4177,7 @@ where
                         )?;
                         if let Some(host_times) = host_times {
                             eprintln!(
-                                "coordinator-profile executions={sequence} coordinator_cpu_ns={} coordinator_run_wait_ns={} idle_admission_order_ns={} idle_no_job_ns={} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} completed_buffered={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
+                                "coordinator-profile executions={sequence} coordinator_cpu_ns={} coordinator_run_wait_ns={} idle_admission_order_ns={} idle_no_job_ns={} receive_wait_ns={} admission_ns={} bookkeeping_ns={} history_compaction_ns={} stream_write_ns={} selection_ns={} receives={} admissions={} selections={} entries={} active_entries={} historical_input_actions={} stored_input_actions={} input_index_nodes={} resident_snapshots={} resident_snapshot_bytes={} entry_metadata_memory_bytes={} input_index_memory_bytes={} cell_memory_bytes={} history_memory_bytes={} draw_state_memory_bytes={} resident_memory_bytes={} snapshot_evictions={} history_compactions={} historical_entries_dropped={} input_reconstructions={} completed_buffered={} completed_actions_buffered={} completed_candidates_buffered={} completed_results_peak={} completed_actions_peak={} completed_candidates_peak={} job_execution_work={} replay_jobs={} replay_actions={} replay_cost={} suffix_actions={} suffix_cost={}",
                                 host_times.coordinator_cpu_ns,
                                 host_times.coordinator_run_wait_ns,
                                 host_times.idle_admission_order_ns,
@@ -4133,6 +4211,11 @@ where
                                 core.archive.historical_entries_dropped(),
                                 core.archive.input_reconstructions(),
                                 completed.len(),
+                                completed.telemetry.actions_live,
+                                completed.telemetry.candidates_live,
+                                completed.telemetry.results_peak,
+                                completed.telemetry.actions_peak,
+                                completed.telemetry.candidates_peak,
                                 counters.job_execution_work,
                                 coordinator_profile.replay_jobs,
                                 coordinator_profile.replay_actions,
@@ -4228,6 +4311,7 @@ where
             if !completed.is_empty() || !schedule.is_empty() {
                 return Err("campaign reorder window ended with an admission gap".into());
             }
+            telemetry.completed_buffer = completed.telemetry;
             if let Some(checkpoints) = checkpoints.as_mut() {
                 write_search_checkpoint(
                     workload,
@@ -8875,6 +8959,90 @@ mod tests {
     }
 
     #[test]
+    fn completed_buffer_counts_owned_records_and_balances_removal() {
+        let result = |flags: &[bool]| {
+            Ok((
+                CampaignJobResult::<TestWorkload> {
+                    preparation_failure: None,
+                    actions: flags
+                        .iter()
+                        .map(|&candidate| CampaignActionResult {
+                            action: TestAction::new(1, 1),
+                            observations: Vec::new(),
+                            milestones: (),
+                            outcome: Outcome::default(),
+                            candidate: candidate.then_some(CampaignCandidate {
+                                key: TestKey(1),
+                                viable: false,
+                                snapshot: 1,
+                            }),
+                        })
+                        .collect(),
+                },
+                0,
+                String::new(),
+            ))
+        };
+        let mut buffer =
+            super::CompletedBuffer::new(super::completed_result_records::<TestWorkload>);
+        assert!(buffer.insert(2, result(&[true, false, true])).is_none());
+        assert!(
+            buffer
+                .insert(3, Err("failed worker result".into()))
+                .is_none()
+        );
+        assert!(buffer.insert(4, result(&[])).is_none());
+        assert_eq!(buffer.telemetry.results_live, 3);
+        assert_eq!(buffer.telemetry.actions_live, 3);
+        assert_eq!(buffer.telemetry.candidates_live, 2);
+        let before = buffer.telemetry;
+        assert!(buffer.insert(2, result(&[true])).is_some());
+        assert_eq!(buffer.telemetry, before);
+        assert!(buffer.remove(&99).is_none());
+        assert_eq!(buffer.telemetry, before);
+        assert!(buffer.remove(&2).unwrap().is_ok());
+        assert_eq!(buffer.telemetry.results_live, 2);
+        assert_eq!(buffer.telemetry.actions_live, 0);
+        assert_eq!(buffer.telemetry.candidates_live, 0);
+        assert!(buffer.remove(&3).unwrap().is_err());
+        buffer.remove(&4).unwrap().unwrap();
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.telemetry.results_live, 0);
+        assert_eq!(buffer.telemetry.results_peak, 3);
+        assert_eq!(buffer.telemetry.actions_peak, 3);
+        assert_eq!(buffer.telemetry.candidates_peak, 2);
+    }
+
+    #[test]
+    fn completed_buffer_reordering_changes_only_occupancy_not_admission_content() {
+        let run = |order: &[u64]| {
+            let mut buffer =
+                super::CompletedBuffer::new(|value: &u64| (*value, u64::from(*value > 0)));
+            let mut next = 0;
+            let mut admitted = Vec::new();
+            for &reservation in order {
+                assert!(buffer.insert(reservation, reservation).is_none());
+                while let Some(value) = buffer.remove(&next) {
+                    admitted.push((next, value));
+                    next += 1;
+                }
+            }
+            assert!(buffer.is_empty());
+            assert_eq!(buffer.telemetry.results_live, 0);
+            assert_eq!(buffer.telemetry.actions_live, 0);
+            assert_eq!(buffer.telemetry.candidates_live, 0);
+            (admitted, buffer.telemetry)
+        };
+        let ordered = run(&[0, 1, 2]);
+        let reordered = run(&[2, 1, 0]);
+        assert_eq!(ordered.0, reordered.0);
+        assert_eq!(ordered.1.results_peak, 1);
+        assert_eq!(reordered.1.results_peak, 3);
+        assert_eq!(reordered.1.actions_peak, 3);
+        assert_eq!(reordered.1.candidates_peak, 2);
+    }
+
+    #[test]
     fn the_report_carries_worker_telemetry_that_replay_equality_ignores() {
         let config = three_worker_config();
         let workload = TestWorkload {
@@ -8905,10 +9073,25 @@ mod tests {
             live.0.execution_work - live.0.bootstrap_execution_work
         );
         assert!(telemetry.search_ns > 0);
+        assert!(telemetry.completed_buffer.results_peak > 0);
+        assert!(telemetry.completed_buffer.actions_peak > 0);
+        assert!(telemetry.completed_buffer.candidates_peak > 0);
+        assert_eq!(telemetry.completed_buffer.results_live, 0);
+        assert_eq!(telemetry.completed_buffer.actions_live, 0);
+        assert_eq!(telemetry.completed_buffer.candidates_live, 0);
+        let serialized = serde_json::to_value(telemetry).unwrap();
+        assert_eq!(
+            serialized["completed_buffer"]["results_peak"],
+            telemetry.completed_buffer.results_peak
+        );
         assert!(telemetry.coordinator["admissions"].as_u64() == Some(live.0.executions_completed));
         let replayed =
             replay_campaign_checkpointed(&workload, &stream, None, None).expect("replay");
         assert!(replayed.0.telemetry.workers.is_empty());
+        assert_eq!(
+            serde_json::to_vec(&replayed.0).unwrap(),
+            serde_json::to_vec(&live.0).unwrap()
+        );
         assert_eq!(replayed, live);
     }
 
