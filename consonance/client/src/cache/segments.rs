@@ -396,6 +396,17 @@ impl Drop for WritableExtent {
     }
 }
 
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
+#[derive(Debug)]
+pub(crate) struct BackingWitness(std::sync::Weak<Segment>);
+
+#[cfg(any(all(feature = "in-process", not(miri)), test))]
+impl BackingWitness {
+    pub(crate) fn same_backing(&self, other: &Self) -> bool {
+        std::sync::Weak::ptr_eq(&self.0, &other.0)
+    }
+}
+
 #[derive(Clone)]
 pub struct CommittedExtent {
     extent: Arc<Extent>,
@@ -413,6 +424,11 @@ impl std::fmt::Debug for CommittedExtent {
 }
 
 impl CommittedExtent {
+    #[cfg(any(all(feature = "in-process", not(miri)), test))]
+    pub(crate) fn backing_witness(&self) -> BackingWitness {
+        BackingWitness(Arc::downgrade(&self.segment))
+    }
+
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         let extent = &self.extent;

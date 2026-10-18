@@ -750,3 +750,26 @@ they are not part of the worker telemetry getter. Callers that also collect
 ownership gauges must place those queries outside work-counter phase snapshots.
 Parent and child counter snapshots bracket different response-publication points;
 the fixed telemetry request's framing and guard work remain observable.
+
+
+Accepted process-worker imports expose cumulative `cache_import.parent.*`
+counters without changing the descriptor protocol or mapping work. `extent_references`
+counts N chain references; `backing_occurrences` sums U distinct parent Segment
+allocations per import, and `duplicate_references` sums N−U. These are allocation
+identities, independent of descriptor numbers, allocator-local segment IDs, and
+contents. They do not measure globally unique kernel backing objects.
+
+`recent_backing_hits` and `recent_backing_misses` classify each current distinct
+allocation against the prior per-worker window, before refreshing it in first
+reference order. The window retains at most 128 weak allocation witnesses;
+`recent_window_evictions` counts capacity removals. Weak witnesses preserve control
+block identity without retaining mappings, descriptors, extents, or page storage.
+A fresh worker starts with an empty window. Hits indicate bounded recent recurrence,
+not lifetime reuse; misses include first sightings and evicted allocations.
+
+`accepted_imports` advances only after the final lease check. `measured_imports`
+counts accepted layouts of at most 64 references. Larger accepted layouts advance
+`unmeasured_overlimit` without changing the window or N/U totals. All counters
+saturate at u64 maximum. Refused and interrupted imports contribute nothing.
+These counters add no ownership RPCs, mapping deduplication, registration cache,
+or admission authority. Descriptor and mapping counters still report actual work.

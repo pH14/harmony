@@ -41,7 +41,7 @@ use crate::copy_work::{CopySite, CopyWork};
 
 pub const WORKER_FD_ENV: &str = "HARMONY_SESSION_WORKER_FD";
 const HEADER: usize = 16;
-const MAX_FDS: usize = 2 * ANCHOR_DEPTH as usize;
+const MAX_FDS: usize = crate::import_reuse::REFERENCE_LIMIT;
 #[cfg(target_os = "macos")]
 const DARWIN_CONTROL_CAPACITY: usize = 2048;
 const EXIT_POLL: Duration = Duration::from_millis(5);
@@ -1090,6 +1090,7 @@ pub struct WorkerSession {
     retained_export: RefCell<Vec<crate::cache::WritableExtent>>,
     copies: Arc<CopyWork>,
     transport: Arc<work::Work>,
+    import_reuse: crate::import_reuse::ImportReuse,
 }
 
 struct Exchange<'a>(&'a Cell<bool>);
@@ -1165,6 +1166,7 @@ impl WorkerSession {
             counters: RefCell::default(),
             exchanging: Cell::new(false),
             copies: Arc::default(),
+            import_reuse: Default::default(),
             transport,
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
@@ -1577,6 +1579,7 @@ impl SearchSession for WorkerSession {
         counters.extend(self.loaded_image_guard.counters("guard.parent"));
         counters.extend(self.transport.counters("transport.parent"));
         counters.extend(self.copies.counters("copy.parent"));
+        counters.extend(self.import_reuse.counters());
         counters.push((
             "guard.child.telemetry_queries".into(),
             self.telemetry_queries.get(),
@@ -1705,6 +1708,7 @@ impl SearchSession for WorkerSession {
             let _ = self.drop_snapshot(snap.0);
             return Err(error.into());
         }
+        self.import_reuse.accepted(&chain);
         Ok(CachedSnapshotReceipt {
             snapshot: snap.0,
             moment: snap.1,
@@ -4127,7 +4131,8 @@ mod tests {
                 .into_iter()
                 .filter(|(name, _)| !name.starts_with("guard.")
                     && !name.starts_with("transport.")
-                    && !name.starts_with("copy."))
+                    && !name.starts_with("copy.")
+                    && !name.starts_with("cache_import."))
                 .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)]
         );
@@ -4171,7 +4176,8 @@ mod tests {
                 .into_iter()
                 .filter(|(name, _)| !name.starts_with("guard.")
                     && !name.starts_with("transport.")
-                    && !name.starts_with("copy."))
+                    && !name.starts_with("copy.")
+                    && !name.starts_with("cache_import."))
                 .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)],
             "the last counters outlive the worker"
@@ -4316,6 +4322,7 @@ mod tests {
                 counters: RefCell::new(Vec::new()),
                 exchanging: Cell::new(false),
                 copies: Arc::default(),
+                import_reuse: Default::default(),
                 transport: Arc::default(),
                 telemetry_queries: Cell::new(0),
                 telemetry_query_failures: Cell::new(0),
@@ -5298,6 +5305,7 @@ writer.close()
             exchanging: Cell::new(false),
             retained_export: RefCell::new(vec![index.extent(4096).unwrap()]),
             copies: Arc::default(),
+            import_reuse: Default::default(),
             transport: Arc::default(),
         };
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();
@@ -5471,6 +5479,101 @@ writer.close()
     }
 
     #[test]
+    fn accepted_worker_imports_report_references_backings_and_session_recurrence() {
+        let index = LocalIndex::new(1 << 20);
+        let (mut source, source_server) = threaded(3);
+        let (mut destination, destination_server) = threaded(50);
+        let (mut other, other_server) = threaded(70);
+        let space = Namespace::exact(&[b"import-layout"]);
+        let mut snapshots = Vec::new();
+        let mut leases = Vec::new();
+        for step in 0..4u8 {
+            source.run_until(40 + u64::from(step)).unwrap();
+            let (snapshot, _) = source.snapshot().unwrap();
+            let parent = snapshots
+                .last()
+                .zip(leases.last())
+                .map(|(snap, lease)| (*snap, lease));
+            let lease = source
+                .publish_snapshot(&index, space, &[step], parent, snapshot, 1)
+                .unwrap();
+            snapshots.push(snapshot);
+            leases.push(lease);
+        }
+        let lease = leases.last().unwrap();
+        let chain = index.chain(lease).unwrap();
+        assert_eq!(chain.len(), 4);
+        assert!(
+            chain
+                .iter()
+                .all(|extent| extent.span().0 == chain[0].span().0)
+        );
+        destination.import_cached(&index, lease, SnapId(1)).unwrap();
+        destination.import_cached(&index, lease, SnapId(1)).unwrap();
+        let telemetry: BTreeMap<_, _> = destination.telemetry_counters().into_iter().collect();
+        for (name, value) in [
+            ("accepted_imports", 2),
+            ("measured_imports", 2),
+            ("extent_references", 8),
+            ("backing_occurrences", 2),
+            ("duplicate_references", 6),
+            ("recent_backing_hits", 1),
+            ("recent_backing_misses", 1),
+            ("unmeasured_overlimit", 0),
+        ] {
+            assert_eq!(telemetry[&format!("cache_import.parent.{name}")], value);
+        }
+        assert_eq!(telemetry["transport.parent.import.send.fd_handles"], 8);
+        assert_eq!(telemetry["copy.child.loop.import_mapping.attempts"], 8);
+        assert_eq!(
+            destination.state_hash().unwrap(),
+            source.state_hash().unwrap()
+        );
+        other.import_cached(&index, lease, SnapId(1)).unwrap();
+        let fresh: BTreeMap<_, _> = other.telemetry_counters().into_iter().collect();
+        assert_eq!(fresh["cache_import.parent.recent_backing_hits"], 0);
+        assert_eq!(fresh["cache_import.parent.recent_backing_misses"], 1);
+        for lease in leases {
+            index.release(lease);
+        }
+        drop((source, destination, other));
+        source_server.join().unwrap();
+        destination_server.join().unwrap();
+        other_server.join().unwrap();
+    }
+
+    #[test]
+    fn refused_import_guards_do_not_record_accepted_backings() {
+        for refusal in [1, 2] {
+            let index = LocalIndex::new(1 << 20);
+            let (mut source, source_server) = threaded(3);
+            let (mut destination, destination_server) = threaded(50);
+            let (snapshot, _) = source.snapshot().unwrap();
+            let lease = source
+                .publish_snapshot(&index, namespace(), b"guarded", None, snapshot, 1)
+                .unwrap();
+            let (result, checks, strict) =
+                crate::image_identity::trace_checks(Some(refusal), || {
+                    destination.import_cached(&index, &lease, SnapId(1))
+                });
+            assert!(result.is_err());
+            assert_eq!((checks, strict), (refusal, 0));
+            assert!(
+                destination
+                    .import_reuse
+                    .counters()
+                    .iter()
+                    .all(|(_, value)| *value == 0)
+            );
+            assert!(destination.failed.get());
+            index.release(lease);
+            drop((source, destination));
+            source_server.join().unwrap();
+            destination_server.join().unwrap();
+        }
+    }
+
+    #[test]
     fn a_published_extent_imports_in_another_worker() {
         let index = LocalIndex::new(1 << 20);
         let (mut first, first_server) = threaded(3);
@@ -5556,6 +5659,7 @@ writer.close()
             )
             .unwrap();
         let before = destination.store_bytes();
+        let layout_before = destination.import_reuse.counters();
         let error = destination
             .import_cached_receipt(&index, &bad, SnapId(1))
             .unwrap_err();
@@ -5582,6 +5686,7 @@ writer.close()
                 .contains("cached machine commitment differs")
         );
         assert_eq!(destination.store_bytes(), before);
+        assert_eq!(destination.import_reuse.counters(), layout_before);
         index.release(wrong_machine);
         index.release(bad);
         index.release(lease);
@@ -5643,6 +5748,13 @@ writer.close()
             Some(crate::cache::CacheError::Quarantined { .. })
         ));
         assert_eq!(second.store_bytes(), Some(4096));
+        assert!(
+            second
+                .import_reuse
+                .counters()
+                .iter()
+                .all(|(_, value)| *value == 0)
+        );
         assert_eq!(index.divergences().len(), 1);
         index.release(lease);
         drop((first, second));
