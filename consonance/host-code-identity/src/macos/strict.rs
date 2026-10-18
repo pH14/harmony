@@ -7,6 +7,7 @@ use std::mem::size_of;
 use std::os::fd::AsRawFd;
 use std::ptr;
 
+use crate::GuardMeasurement;
 use sha2::{Digest, Sha256};
 
 use super::{Generation, copy_mapped, dyld_metadata, generation, generation_is_stable, refused};
@@ -340,15 +341,28 @@ fn strict_shared_cache_uuid() -> io::Result<([u8; 16], Generation)> {
 
 impl StrictMacosExecutableGuard {
     pub fn capture() -> io::Result<(String, Self)> {
+        Self::capture_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn capture_measured(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
+        crate::guard_work::measured(work, Self::capture_inner)
+    }
+
+    fn capture_inner(work: &mut GuardMeasurement) -> io::Result<(String, Self)> {
+        work.bytes = None;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (start_status, loaded_cdhash) = kernel_code_state()?;
         let file = File::open(std::env::current_exe()?)?;
+        work.static_signing_checks = work.static_signing_checks.saturating_add(1);
         let static_cdhash = strict_static_cdhash(&file)?;
         if loaded_cdhash != static_cdhash {
             return Err(refused(
                 "macOS validated file differs from the loaded executable",
             ));
         }
+        work.image_censuses = work.image_censuses.saturating_add(1);
         let (cache_uuid, generation) = strict_shared_cache_uuid()?;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (finish_status, finish_cdhash) = kernel_code_state()?;
         if start_status != finish_status || loaded_cdhash != finish_cdhash {
             return Err(refused(
@@ -372,8 +386,20 @@ impl StrictMacosExecutableGuard {
     }
 
     pub fn check(self) -> io::Result<()> {
+        self.check_measured(&mut GuardMeasurement::default())
+    }
+
+    pub fn check_measured(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        crate::guard_work::measured(work, |work| self.check_inner(work))
+    }
+
+    fn check_inner(self, work: &mut GuardMeasurement) -> io::Result<()> {
+        work.bytes = None;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (start_status, start_cdhash) = kernel_code_state()?;
+        work.image_censuses = work.image_censuses.saturating_add(1);
         let (cache_uuid, generation) = strict_shared_cache_uuid()?;
+        work.kernel_state_checks = work.kernel_state_checks.saturating_add(1);
         let (finish_status, finish_cdhash) = kernel_code_state()?;
         if start_status != finish_status
             || start_cdhash != finish_cdhash
