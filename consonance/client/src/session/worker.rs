@@ -3044,7 +3044,7 @@ mod tests {
             (u32::MAX, overflow.0),
         ] {
             let (parent, child) = UnixStream::pair().unwrap();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 let mut served = Served::default();
                 let (body, fds) = recv(&child).unwrap();
                 send(
@@ -3067,6 +3067,7 @@ mod tests {
                 WorkerConnection {
                     stream: parent,
                     process: None,
+                    owner: Some(Box::new(server.clone())),
                     loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
                 },
                 &[3],
