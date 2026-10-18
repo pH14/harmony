@@ -5787,7 +5787,7 @@ mod tests {
             let mut live = hashed_live([17; 32]);
             let mut session = fixture_session();
             session.abandon_on_hash = !history;
-            session.history_hung = history;
+            session.history_failure = history.then_some(|| SessionError::Hung(WALL_LIMIT));
             live.session = Box::new(session);
             LIVE.with(|slot| *slot.borrow_mut() = Some(live));
             crate::job_observation::new_generation();
