@@ -2238,7 +2238,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(ServeError::Poisoned)?
             .resolve_service_answer(response, local)
         {
-            self.retire_vmm();
+            self.retire_failed_vmm();
             return Err(error.into());
         }
         self.recorded = recorded;
@@ -12028,6 +12028,87 @@ mod tests {
         );
         assert!(server.vmm().is_none());
         assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    fn service_answer_guard_failure_preserves_prior_observations_for_local_and_explicit_runs() {
+        for local in [true, false] {
+            let frame = local_service_frame();
+            let mut server = deadline_chain_server(&frame, local_service_spec(local, 0x11));
+            let event = (0, 91, vec![1, 2, 3]);
+            let vmm = server.vmm_mut().unwrap();
+            let mut channel = vmm.sdk_snapshot().unwrap().unwrap();
+            channel.events.push(event.clone());
+            vmm.sdk_restore_events(&channel);
+            let responses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = responses.clone();
+            server.set_host_operation_guard(Arc::new(move |site| {
+                if site == HostOperationSite::SdkResponse
+                    && observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+                {
+                    return Err("injected answer guard failure".into());
+                }
+                Ok(())
+            }));
+            let until = StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            };
+            let first = server.handle(&Request::Run {
+                until,
+                resolve: None,
+            });
+            let failed = if local {
+                first
+            } else {
+                assert!(matches!(
+                    first,
+                    Ok(Ok(Reply::Stop(StopReason::Decision { .. })))
+                ));
+                server.handle(&Request::Run {
+                    until,
+                    resolve: Some(control_proto::Resolution {
+                        vtime: Moment(10_000),
+                        service: 19,
+                        id: control_proto::DecisionId(77),
+                        answer: control_proto::Answer(
+                            environment::channel::Answer::Data(vec![0x11]).encode(),
+                        ),
+                    }),
+                })
+            };
+            assert!(
+                matches!(failed, Err(ServeError::Vmm(VmmError::ContractViolation(reason)))
+                if reason == "injected answer guard failure")
+            );
+            assert_eq!(responses.load(std::sync::atomic::Ordering::SeqCst), 2);
+            assert!(server.vmm().is_none());
+            assert!(server.recorded.answers().is_empty());
+            let counters = server.host_telemetry().counters();
+            for again in [false, true] {
+                if again {
+                    assert!(matches!(
+                        server.handle(&Request::Run {
+                            until,
+                            resolve: None
+                        }),
+                        Err(ServeError::Poisoned)
+                    ));
+                }
+                assert_eq!(
+                    server.handle(&Request::Console { offset: 0 }).unwrap(),
+                    Ok(Reply::Console {
+                        total: 1,
+                        chunk: vec![b'x']
+                    })
+                );
+                assert_eq!(
+                    server.handle(&Request::SdkEvents { offset: 0 }).unwrap(),
+                    Ok(Reply::SdkEvents(vec![event.clone()]))
+                );
+                assert_eq!(server.host_telemetry().counters(), counters);
+            }
+        }
     }
 
     #[test]
