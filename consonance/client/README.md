@@ -143,8 +143,15 @@ import its pages over a setup with different RAM.
 VMM's logical XSAVE identity projection. Hash that copy when comparing
 snapshots for identity, and restore from the original.
 
-Embedded complete portable snapshots use format version 7; sparse sidecars use
-version 9. Older embedded versions are rejected. The outer sparse archive layout
+`Session::event_history` and `SearchSession::event_history` return the cumulative
+v1 normalized-event count and commitment through both in-process control and
+worker transport. Snapshot replay, portable imports and cache imports restore
+the captured history; diagnostic trace retirement does not reset it. A backend
+without normalized history returns an explicit unavailable error. UML does not
+supply this certificate.
+
+Embedded complete portable snapshots use format version 8; sparse sidecars use
+version 10. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw
@@ -196,7 +203,9 @@ bytes remain in the extent for restore. Sparse delta export derives the
 sidecar's target-pages digest from all target pages that differ from setup,
 independently of the selected parent;
 the sidecar also carries the setup RAM digest, canonical state suffix, VM
-state, SDK state, policy and control state. Publication rejects a sidecar
+state, SDK state, policy, control state and the separate ordered event-history
+commitment/count. Equal logical endpoints reached through different normalized
+histories therefore conflict under the same cache key. Publication rejects a sidecar
 without that target-pages digest. For UML checkpoints, the commitment binds
 the cache identity to the checkpoint digest, which covers logical memory and
 bridge/service state. The cache compares commitments while holding its index

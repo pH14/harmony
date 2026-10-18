@@ -35,6 +35,8 @@ mod hvf;
 mod kvm;
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
 mod kvm_affinity;
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), test))]
+mod kvm_cpuid;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 mod kvm_sys;
 

@@ -3,6 +3,7 @@
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct CpuidModel {
     pub entries: Vec<CpuidEntry>,
+    pub emulated_features: Vec<CpuidEntry>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
