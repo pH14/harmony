@@ -18,7 +18,13 @@ pub use segments::{CommittedExtent, PageSegments, SEGMENT_BYTES, WritableExtent}
 pub const ANCHOR_DEPTH: u32 = 32;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct Namespace([u8; 32]);
+pub struct Namespace([u8; 32], KeyMode);
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum KeyMode {
+    Prefix,
+    Exact,
+}
 
 impl Namespace {
     #[must_use]
@@ -28,13 +34,25 @@ impl Namespace {
 
     #[must_use]
     pub fn new(parts: &[&[u8]]) -> Self {
+        Self::with_mode(parts, KeyMode::Prefix)
+    }
+
+    #[must_use]
+    pub fn exact(parts: &[&[u8]]) -> Self {
+        Self::with_mode(parts, KeyMode::Exact)
+    }
+
+    fn with_mode(parts: &[&[u8]], mode: KeyMode) -> Self {
         let mut digest = Sha256::new();
-        digest.update(b"consonance-snapshot-cache-namespace-v1");
+        digest.update(match mode {
+            KeyMode::Prefix => b"consonance-snapshot-cache-namespace-v1".as_slice(),
+            KeyMode::Exact => b"consonance-snapshot-cache-exact-namespace-v1".as_slice(),
+        });
         for part in parts {
             digest.update((part.len() as u64).to_le_bytes());
             digest.update(part);
         }
-        Self(digest.finalize().into())
+        Self(digest.finalize().into(), mode)
     }
 }
 
@@ -237,9 +255,12 @@ impl State {
         Ok(chain)
     }
 
-    fn longest_prefix(&self, namespace: Namespace, key: &[u8]) -> Option<u64> {
+    fn lookup_key(&self, namespace: Namespace, key: &[u8]) -> Option<u64> {
         self.verify_namespace(namespace).ok()?;
         let keys = self.keys.get(&namespace)?;
+        if namespace.1 == KeyMode::Exact {
+            return keys.get(key).copied();
+        }
         let mut probe = key;
         loop {
             let (found, id) = keys
@@ -461,7 +482,7 @@ impl CacheIndex for LocalIndex {
     fn lookup(&self, namespace: Namespace, key: &[u8]) -> Option<Lease> {
         let mut state = self.state();
         state.stats.lookups += 1;
-        let id = state.longest_prefix(namespace, key)?;
+        let id = state.lookup_key(namespace, key)?;
         state.stats.hits += 1;
         state.lease(id).ok()
     }
@@ -509,10 +530,15 @@ impl CacheIndex for LocalIndex {
             if parent.namespace != namespace {
                 return Err(CacheError::NamespaceMismatch);
             }
-            if !key.starts_with(&parent.key) || key.len() <= parent.key.len() {
+            if namespace.1 == KeyMode::Prefix
+                && (!key.starts_with(&parent.key) || key.len() <= parent.key.len())
+            {
                 return Err(CacheError::Malformed("parent key is not a prefix"));
             }
-            Ok(parent.depth + 1)
+            parent
+                .depth
+                .checked_add(1)
+                .ok_or(CacheError::Malformed("cache chain depth overflows"))
         })();
         let depth = match validated {
             Ok(depth) => depth,
@@ -771,6 +797,126 @@ mod tests {
                 .collect(),
             resolved.sidecar.to_vec(),
         )
+    }
+
+    #[test]
+    fn exact_keys_resolve_the_supplied_parent_and_never_match_a_prefix() {
+        let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let prefix = Namespace::new(&[b"opaque"]);
+        assert_ne!(space.as_bytes(), prefix.as_bytes());
+        let root = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let child = put(&index, space, &[3; 32], Some(&root), &[(1, 2)], &[]).unwrap();
+        assert_eq!(child.depth(), 1);
+        assert_eq!(resolved(&index, &child).0, vec![(0, 1), (1, 2)]);
+        assert_eq!(index.chain(&child).unwrap().len(), 2);
+        let found = index.lookup(space, &[3; 32]).unwrap();
+        assert_eq!(found, child);
+        index.release(found);
+        let mut longer = vec![3; 32];
+        longer.push(0);
+        for probe in [&longer[..], &[3; 31][..], &[][..]] {
+            assert!(index.lookup(space, probe).is_none());
+        }
+        assert!(index.lookup(prefix, &[3; 32]).is_none());
+        index.release(child);
+        index.release(root);
+    }
+
+    #[test]
+    fn exact_parent_checks_reject_foreign_revoked_and_other_namespace_leases() {
+        let index = LocalIndex::new(1 << 20);
+        let other = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let foreign = put(&other, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&foreign), &[(1, 2)], &[]),
+            Err(CacheError::ForeignLease)
+        ));
+        let wrong = put(
+            &index,
+            Namespace::exact(&[b"other"]),
+            &[9; 32],
+            None,
+            &[(0, 1)],
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&wrong), &[(1, 2)], &[]),
+            Err(CacheError::NamespaceMismatch)
+        ));
+        let prefix = put(
+            &index,
+            Namespace::new(&[b"opaque"]),
+            &[9; 32],
+            None,
+            &[(0, 1)],
+            &[],
+        )
+        .unwrap();
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&prefix), &[(1, 2)], &[]),
+            Err(CacheError::NamespaceMismatch)
+        ));
+        let root = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let revoked = index.lookup(space, &[9; 32]).unwrap();
+        index.revoke(root);
+        assert!(matches!(
+            put(&index, space, &[3; 32], Some(&revoked), &[(1, 2)], &[]),
+            Err(CacheError::UnknownLease(_))
+        ));
+        index.release(revoked);
+        index.release(prefix);
+        index.release(wrong);
+        other.release(foreign);
+    }
+
+    #[test]
+    fn exact_duplicate_ancestor_does_not_reparent_or_create_a_cycle() {
+        let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let root = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let child = put(&index, space, &[3; 32], Some(&root), &[(0, 2)], &[]).unwrap();
+        let duplicate = put(&index, space, &[9; 32], Some(&child), &[(0, 1)], &[]).unwrap();
+        assert_eq!(duplicate, root);
+        assert_eq!(index.chain(&duplicate).unwrap().len(), 1);
+        assert_eq!(index.chain(&child).unwrap().len(), 2);
+        assert_eq!(resolved(&index, &duplicate).0, vec![(0, 1)]);
+        assert_eq!(resolved(&index, &child).0, vec![(0, 2)]);
+        assert_eq!(index.stats().entries, 2);
+        index.release(duplicate);
+        index.release(child);
+        index.release(root);
+    }
+
+    #[test]
+    fn conflicting_exact_key_quarantines_both_actual_witness_chains() {
+        let index = LocalIndex::new(1 << 20);
+        let space = Namespace::exact(&[b"opaque"]);
+        let parent = put(&index, space, &[9; 32], None, &[(0, 1)], &[]).unwrap();
+        let first = put(&index, space, &[3; 32], Some(&parent), &[(1, 2)], &[]).unwrap();
+        let error = put(&index, space, &[3; 32], Some(&parent), &[(1, 3)], &[]).unwrap_err();
+        let CacheError::DivergentDuplicate { evidence } = error else {
+            panic!("expected divergent duplicate")
+        };
+        assert_eq!(evidence.existing.chain.len(), 2);
+        assert_eq!(evidence.published.chain.len(), 2);
+        assert_ne!(
+            evidence.existing.target_commitment,
+            evidence.published.target_commitment
+        );
+        assert!(matches!(
+            index.target_commitment(&first),
+            Err(CacheError::Quarantined { .. })
+        ));
+        assert!(index.lookup(space, &[3; 32]).is_none());
+        assert!(matches!(
+            put(&index, space, &[7; 32], Some(&parent), &[(1, 4)], &[]),
+            Err(CacheError::Quarantined { .. })
+        ));
+        index.release(first);
+        index.release(parent);
     }
 
     #[test]
