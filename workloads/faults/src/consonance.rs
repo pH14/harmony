@@ -880,10 +880,11 @@ impl FaultTarget {
         validate_snapshot_prefix_certificates(snapshot, self.config.uml.is_some())?;
         let rebuilt = with_live(&self.config, |live| {
             live.fit_store(1)?;
+            let mut previous_moment = None;
             if expected.is_some() && snapshot.actions.len() > 1 {
                 let root = live.chain.point(live.chain.local(&[]));
                 live.replay(root.snap)?;
-                let mut previous_moment = live.observe(FaultStop::Deadline)?.moment;
+                let mut prefix_moment = live.observe(FaultStop::Deadline)?.moment;
                 for index in 0..snapshot.actions.len() - 1 {
                     let prefix = &snapshot.actions[..=index];
                     let at = live.chain.local(prefix);
@@ -900,24 +901,21 @@ impl FaultTarget {
                         .state_hash()
                         .map_err(|error| format!("restored fault prefix state hash: {error}"))?;
                     let mut observation = live.observe(FaultStop::Deadline)?;
-                    observation
-                        .parks
-                        .retain(|park| park.moment > previous_moment);
+                    observation.parks.retain(|park| park.moment > prefix_moment);
                     observation
                         .park_reads
-                        .retain(|read| read.moment > previous_moment);
+                        .retain(|read| read.moment > prefix_moment);
                     let actual = replay_endpoint_certificate(hash, &observation, false)?;
                     if Some(actual) != snapshot.prefix_certificates[index] {
                         return Err(
                             "restored fault prefix differs from its snapshot certificate".into(),
                         );
                     }
-                    previous_moment = observation.moment;
+                    prefix_moment = observation.moment;
                 }
+                previous_moment = Some(prefix_moment);
             }
-            let previous_moment = if snapshot.actions.is_empty() {
-                None
-            } else {
+            if previous_moment.is_none() && !snapshot.actions.is_empty() {
                 let prefix = &snapshot.actions[..snapshot.actions.len() - 1];
                 let at = live.chain.local(prefix);
                 let previous = if live.chain.depth(at) == prefix.len() {
@@ -928,8 +926,8 @@ impl FaultTarget {
                     )?
                 };
                 live.replay(previous.snap)?;
-                Some(live.observe(FaultStop::Deadline)?.moment)
-            };
+                previous_moment = Some(live.observe(FaultStop::Deadline)?.moment);
+            }
             match live.ensure_prefix(&snapshot.actions)? {
                 Ok(cached) => {
                     live.replay(cached.snap)?;
@@ -2675,35 +2673,56 @@ mod tests {
     }
 
     #[test]
-    fn restoring_a_cached_certified_path_does_not_rebuild_it() {
-        let first = FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into();
-        let second = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
-        let mut target = unbooted_target();
-        let mut live = hashed_live([17; 32]);
-        live.session = Box::new(TimedOutRestore {
-            hash: Some([17; 32]),
-            events: BTreeMap::new(),
-            current: 1,
-            run_hashes: Some(vec![[17; 32], [17; 32]]),
-            run_hung: false,
-            snapshots: BTreeMap::from([(1, [17; 32])]),
-            moment: 0,
-            next_snap: 1,
-        });
-        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
-        target.apply(first);
-        target.apply(second);
-        let snapshot = target.snapshot().unwrap().unwrap();
-        assert_eq!(snapshot.actions, vec![first, second]);
-        let links = LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links());
-        assert_eq!(links, 3);
-        target.restore(&snapshot).unwrap();
-        assert_eq!(target.observation(), &snapshot.observation);
-        assert_eq!(
-            LIVE.with(|slot| slot.borrow().as_ref().unwrap().chain.links()),
-            links
-        );
-        LIVE.with(|slot| slot.borrow_mut().take());
+    fn restoring_a_cached_certified_path_observes_each_required_prefix_once() {
+        let actions = [
+            FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()).into(),
+            FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into(),
+        ];
+        for depth in 0..=actions.len() {
+            let mut target = unbooted_target();
+            let mut live = hashed_live([17; 32]);
+            live.session = Box::new(TimedOutRestore {
+                hash: Some([17; 32]),
+                events: BTreeMap::new(),
+                current: 1,
+                run_hashes: Some(vec![[17; 32]; depth]),
+                run_hung: false,
+                snapshots: BTreeMap::from([(1, [17; 32])]),
+                moment: 0,
+                next_snap: 1,
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            for action in &actions[..depth] {
+                target.apply(*action);
+            }
+            let snapshot = target.snapshot().unwrap().unwrap();
+            assert_eq!(snapshot.actions, actions[..depth]);
+            let before = LIVE.with(|slot| {
+                let slot = slot.borrow();
+                let live = slot.as_ref().unwrap();
+                (
+                    live.chain.links(),
+                    live.telemetry.restores.count,
+                    live.telemetry.observations.count,
+                    live.horizons_run,
+                )
+            });
+            assert_eq!(before.0, depth + 1);
+            target.restore(&snapshot).unwrap();
+            assert_eq!(target.observation(), &snapshot.observation);
+            LIVE.with(|slot| {
+                let slot = slot.borrow();
+                let live = slot.as_ref().unwrap();
+                assert_eq!(live.chain.links(), before.0);
+                assert_eq!(live.horizons_run, before.3);
+                assert_eq!(live.telemetry.restores.count - before.1, depth as u64 + 1);
+                assert_eq!(
+                    live.telemetry.observations.count - before.2,
+                    depth as u64 + 1
+                );
+            });
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
     }
 
     #[test]
