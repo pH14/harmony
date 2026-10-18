@@ -588,20 +588,33 @@ impl Drop for Live {
         if let Some(shared) = self.chain.shared() {
             shared.index.forget_store(self.holder);
         }
-        let counters = self.counters(false);
+        let counters = self.work_counters();
         let _ = RETIRED.try_with(|retired| add_counters(&mut retired.borrow_mut(), counters));
     }
 }
 
 #[must_use]
-pub fn thread_telemetry() -> BTreeMap<String, u64> {
+pub fn thread_work_telemetry() -> BTreeMap<String, u64> {
     let mut counters = RETIRED.with(|retired| retired.borrow().clone());
     LIVE.with(|slot| {
         if let Some(live) = slot.borrow().as_ref() {
-            add_counters(&mut counters, live.counters(true));
+            add_counters(&mut counters, live.work_counters());
         }
     });
     counters
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ThreadResidencyDiagnostics {
+    pub entries: usize,
+    pub resident_bytes: Option<u64>,
+    pub observation_checkpoint_bytes: usize,
+    pub charged_bytes: Option<u64>,
+}
+
+#[must_use]
+pub fn thread_residency_diagnostics() -> Option<ThreadResidencyDiagnostics> {
+    LIVE.with(|slot| slot.borrow().as_ref().map(Live::residency_diagnostics))
 }
 
 #[derive(Debug)]
@@ -1414,7 +1427,7 @@ impl Live {
         Ok(live)
     }
 
-    fn counters(&self, resident: bool) -> Vec<(String, u64)> {
+    fn work_counters(&self) -> Vec<(String, u64)> {
         let t = &self.telemetry;
         let mut out = vec![
             ("boot.count".to_owned(), t.boot.count),
@@ -1478,25 +1491,6 @@ impl Live {
             ("shared.publish.ns".to_owned(), t.publishes.nanos),
             ("shared.refusals".to_owned(), t.refusals),
         ]);
-        if resident {
-            let bytes = self
-                .chain
-                .points()
-                .filter_map(|point| self.session.snapshot_owned_pages(point.snap))
-                .sum::<u64>()
-                .saturating_mul(4096);
-            out.push(("cache.entries".to_owned(), self.chain.links() as u64));
-            let checkpoint_bytes = self.chain.observation_checkpoint_bytes() as u64;
-            out.push((
-                "cache.observation_checkpoint_bytes".to_owned(),
-                checkpoint_bytes,
-            ));
-            out.push(("cache.resident_bytes".to_owned(), bytes));
-            out.push((
-                "cache.charged_bytes".to_owned(),
-                bytes.saturating_add(checkpoint_bytes),
-            ));
-        }
         out.extend(
             self.session
                 .telemetry_counters()
@@ -1504,6 +1498,24 @@ impl Live {
                 .map(|(name, value)| (format!("vmm.{name}"), value)),
         );
         out
+    }
+
+    fn residency_diagnostics(&self) -> ThreadResidencyDiagnostics {
+        let mut resident_bytes = Some(0u64);
+        for point in self.chain.points() {
+            let pages = self.session.snapshot_owned_pages(point.snap);
+            resident_bytes = resident_bytes
+                .zip(pages)
+                .and_then(|(bytes, pages)| bytes.checked_add(pages.checked_mul(4096)?));
+        }
+        let observation_checkpoint_bytes = self.chain.observation_checkpoint_bytes();
+        ThreadResidencyDiagnostics {
+            entries: self.chain.links(),
+            resident_bytes,
+            observation_checkpoint_bytes,
+            charged_bytes: resident_bytes
+                .and_then(|bytes| bytes.checked_add(observation_checkpoint_bytes as u64)),
+        }
     }
 
     fn ordered_history(&mut self) -> Result<(u64, [u8; 32]), String> {
@@ -2446,6 +2458,28 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct ResidencyQueries {
+        owned: Vec<SnapId>,
+        stores: usize,
+        missing: Option<SnapId>,
+        oversized: bool,
+    }
+
+    struct ResidencyFixture;
+
+    impl Drop for ResidencyFixture {
+        fn drop(&mut self) {
+            LIVE.with(|slot| slot.borrow_mut().take());
+            RESIDENCY_QUERIES.with(|slot| slot.borrow_mut().take());
+            RETIRED.with(|retired| retired.borrow_mut().clear());
+        }
+    }
+
+    thread_local! {
+        static RESIDENCY_QUERIES: RefCell<Option<ResidencyQueries>> = const { RefCell::new(None) };
+    }
+
     thread_local! {
         static AFTER_RUN_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
     }
@@ -2525,12 +2559,26 @@ mod tests {
             ]
         }
 
-        fn snapshot_owned_pages(&self, _: SnapId) -> Option<u64> {
-            None
+        fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let queries = slot.as_mut()?;
+                queries.owned.push(snapshot);
+                (queries.missing != Some(snapshot)).then_some(if queries.oversized {
+                    u64::MAX
+                } else {
+                    1
+                })
+            })
         }
 
         fn store_bytes(&self) -> Option<u64> {
-            None
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let queries = slot.as_mut()?;
+                queries.stores += 1;
+                Some(8192)
+            })
         }
 
         fn publish_snapshot(
@@ -3238,6 +3286,161 @@ mod tests {
         live
     }
 
+    #[test]
+    fn work_telemetry_never_queries_residency_across_depths_and_pruning() {
+        let _fixture = ResidencyFixture;
+        for depth in [0, 1, 8, 32, 64] {
+            LIVE.with(|slot| slot.borrow_mut().take());
+            RETIRED.with(|retired| retired.borrow_mut().clear());
+            RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
+            let mut live = hashed_live([17; 32]);
+            let mut receipt = fixture_genesis();
+            for step in 1..=depth {
+                receipt = receipt
+                    .extend(
+                        FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
+                        receipt.endpoint(),
+                        crate::history::fixture_event_history(receipt.endpoint()),
+                        &FaultObservations::default(),
+                    )
+                    .unwrap();
+                live.chain
+                    .push_history(
+                        Point {
+                            snap: SnapId(step as u64 + 1),
+                            moment: step as u64,
+                        },
+                        None,
+                        receipt.clone(),
+                    )
+                    .unwrap();
+            }
+            let points: Vec<_> = live.chain.points().map(|point| point.snap).collect();
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let work = thread_work_telemetry();
+            assert!(work.contains_key("vmm.test.hash_calls"));
+            assert!(!work.contains_key("cache.entries"));
+            RESIDENCY_QUERIES.with(|slot| {
+                let queries = slot.borrow();
+                let queries = queries.as_ref().unwrap();
+                assert!(queries.owned.is_empty());
+                assert_eq!(queries.stores, 0);
+            });
+            let diagnostics = thread_residency_diagnostics().unwrap();
+            assert_eq!(diagnostics.entries, points.len());
+            assert_eq!(diagnostics.resident_bytes, Some(points.len() as u64 * 4096));
+            assert_eq!(
+                diagnostics.charged_bytes,
+                diagnostics
+                    .resident_bytes
+                    .map(|bytes| bytes + diagnostics.observation_checkpoint_bytes as u64)
+            );
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut queries = slot.borrow_mut();
+                let queries = queries.as_mut().unwrap();
+                assert_eq!(queries.owned, points);
+                assert_eq!(queries.stores, 0);
+                queries.owned.clear();
+            });
+            LIVE.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let live = slot.as_mut().unwrap();
+                let dropped = live.chain.truncate(1);
+                live.drop_snapshots(dropped).unwrap();
+            });
+            let _ = thread_work_telemetry();
+            RESIDENCY_QUERIES
+                .with(|slot| assert!(slot.borrow().as_ref().unwrap().owned.is_empty()));
+            assert_eq!(thread_residency_diagnostics().unwrap().entries, 1);
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut queries = slot.borrow_mut();
+                let queries = queries.as_mut().unwrap();
+                assert_eq!(queries.owned, [SnapId(1)]);
+                queries.owned.clear();
+                queries.missing = Some(SnapId(1));
+            });
+            let missing = thread_residency_diagnostics().unwrap();
+            assert_eq!(missing.resident_bytes, None);
+            assert_eq!(missing.charged_bytes, None);
+            RESIDENCY_QUERIES.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let queries = slot.as_mut().unwrap();
+                queries.owned.clear();
+                queries.missing = None;
+                queries.oversized = true;
+            });
+            let oversized = thread_residency_diagnostics().unwrap();
+            assert_eq!(oversized.resident_bytes, None);
+            assert_eq!(oversized.charged_bytes, None);
+            LIVE.with(|slot| slot.borrow_mut().take());
+            assert_eq!(thread_residency_diagnostics(), None);
+            let retired = thread_work_telemetry();
+            assert!(retired.contains_key("vmm.test.hash_calls"));
+            assert!(!retired.contains_key("cache.entries"));
+            RESIDENCY_QUERIES.with(|slot| {
+                let queries = slot.borrow();
+                assert_eq!(queries.as_ref().unwrap().owned, [SnapId(1)]);
+                assert_eq!(queries.as_ref().unwrap().stores, 0);
+            });
+            RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = None);
+        }
+    }
+
+    #[test]
+    fn budget_reporting_remains_separate_from_work_and_residency() {
+        let _fixture = ResidencyFixture;
+        RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = Some(ResidencyQueries::default()));
+        let index = Arc::new(consonance_client::cache::LocalIndex::new(usize::MAX));
+        let mut live = hashed_live([17; 32]);
+        live.holder = 91;
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 0,
+            },
+            Some(Shared {
+                index: index.clone(),
+                namespace: Namespace::exact(&[b"telemetry-budget"]),
+            }),
+        );
+        let decoder = SdkDecoder::default();
+        let observation =
+            FaultObservations::new(decoder.moment(), decoder.capture(), FaultStop::Deadline);
+        let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);
+        let receipt = HistoryReceipt::genesis(
+            [0; 32],
+            endpoint,
+            crate::history::fixture_event_history(endpoint),
+            &observation,
+        )
+        .unwrap();
+        live.chain.certify(0, receipt.clone()).unwrap();
+        live.chain
+            .set_observation_checkpoint(
+                0,
+                ObservationCheckpoint::capture(&receipt, decoder).unwrap(),
+            )
+            .unwrap();
+        let checkpoints = live.chain.observation_checkpoint_bytes();
+        assert!(checkpoints > 0);
+        let _ = live.work_counters();
+        RESIDENCY_QUERIES.with(|slot| assert_eq!(slot.borrow().as_ref().unwrap().stores, 0));
+        live.fit_store(1).unwrap();
+        assert_eq!(index.stats().stored, 8192 + checkpoints);
+        RESIDENCY_QUERIES.with(|slot| {
+            let slot = slot.borrow();
+            assert_eq!(slot.as_ref().unwrap().stores, 1);
+            assert!(slot.as_ref().unwrap().owned.is_empty());
+        });
+        let diagnostics = live.residency_diagnostics();
+        assert_eq!(diagnostics.resident_bytes, Some(4096));
+        assert_eq!(diagnostics.observation_checkpoint_bytes, checkpoints);
+        assert_eq!(diagnostics.charged_bytes, Some(4096 + checkpoints as u64));
+        drop(live);
+        assert_eq!(index.stats().stored, 0);
+        RESIDENCY_QUERIES.with(|slot| *slot.borrow_mut() = None);
+    }
+
     fn scripted_capture_live(hashes: Vec<[u8; 32]>, abandon_on_hash: bool) -> Live {
         scripted_capture_live_event_history(
             hashes,
@@ -3308,7 +3511,7 @@ mod tests {
     }
 
     fn capture_hash_calls() -> u64 {
-        thread_telemetry()["vmm.test.hash_calls"]
+        thread_work_telemetry()["vmm.test.hash_calls"]
     }
 
     fn capture_fixture_workload(target: &FaultTarget) -> crate::campaign::FaultWorkload {
@@ -3534,8 +3737,8 @@ mod tests {
                 *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; depth], false));
             });
             let before = capture_hash_calls();
-            let replay_before = thread_telemetry()["run.replay.count"];
-            let new_before = thread_telemetry()["run.new.count"];
+            let replay_before = thread_work_telemetry()["run.replay.count"];
+            let new_before = thread_work_telemetry()["run.new.count"];
             let snapshot =
                 crate::campaign::capture_replayed_prefix(&mut target, &vec![action; depth])
                     .unwrap();
@@ -3544,10 +3747,10 @@ mod tests {
             assert_eq!(snapshot.observation, *target.observation());
             if depth != 0 {
                 assert_eq!(
-                    thread_telemetry()["run.replay.count"] - replay_before,
+                    thread_work_telemetry()["run.replay.count"] - replay_before,
                     depth as u64
                 );
-                assert_eq!(thread_telemetry()["run.new.count"] - new_before, 0);
+                assert_eq!(thread_work_telemetry()["run.new.count"] - new_before, 0);
             }
             assert_eq!(target.snapshot().unwrap(), Some(snapshot));
             assert_eq!(capture_hash_calls() - before, depth.max(1) as u64 + 1);
@@ -4984,7 +5187,7 @@ mod tests {
                 live.chain.certify(0, fixture_genesis()).unwrap();
                 LIVE.with(|slot| *slot.borrow_mut() = Some(live));
             }
-            let before = thread_telemetry();
+            let before = thread_work_telemetry();
             assert!(
                 target
                     .restore(&forged)
@@ -4992,7 +5195,7 @@ mod tests {
                     .to_string()
                     .contains("prefix")
             );
-            let after = thread_telemetry();
+            let after = thread_work_telemetry();
             assert_eq!(
                 after["session.restore.count"],
                 before["session.restore.count"]
@@ -5372,11 +5575,11 @@ mod tests {
                     importer.chain.certify(0, fixture_genesis()).unwrap();
                     LIVE.with(|slot| *slot.borrow_mut() = Some(importer));
                 }
-                let before = thread_telemetry();
+                let before = thread_work_telemetry();
                 target.restore(&snapshot).unwrap();
                 assert!(target.actions.get().is_none());
                 assert_eq!(target.observation(), &snapshot.observation);
-                let after = thread_telemetry();
+                let after = thread_work_telemetry();
                 for key in [
                     "session.restore.count",
                     "session.observe.count",

@@ -743,3 +743,10 @@ component. Child copies replace cached totals on query just like child transport
 Child query-response copies become visible at the next query; the parent's own
 response-decoding copy is visible in the current query. These counters do not
 enter StoreStats, identity, certificates, memory budgets or search policy.
+
+Reading worker telemetry sends one guarded TELEMETRY request. Explicit
+`snapshot_owned_pages` and `store_bytes` calls send separate Snapshot-group RPCs;
+they are not part of the worker telemetry getter. Callers that also collect
+ownership gauges must place those queries outside work-counter phase snapshots.
+Parent and child counter snapshots bracket different response-publication points;
+the fixed telemetry request's framing and guard work remain observable.

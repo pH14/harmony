@@ -836,7 +836,7 @@ impl TargetExecution for FaultWorkload {
     }
 
     fn telemetry(&self, _target: &FaultTarget) -> TargetCounters {
-        crate::consonance::thread_telemetry()
+        crate::consonance::thread_work_telemetry()
     }
 
     fn action_cost_fn(&self) -> fn(&FaultAction) -> u64 {
