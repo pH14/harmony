@@ -777,3 +777,11 @@ faults-standing-coverage-v3 and faults-debug-terminal-v2.
 The generic local-answer capability requires unchanged captured handler state;
 the inactive standing debug response satisfies it. Stateful local responses are
 rejected before publication. Active debug remains on the external path.
+
+Coordinator measurement can read `coordinator_retired_work_telemetry` only when
+the calling thread has no LIVE session. The accessor rejects before any session
+query and returns an owned copy of retired counters. This supports bootstrap
+attribution after explicit coordinator finalization without creating a session,
+querying a closed child, or measuring shared cache counters twice. It does not
+finalize a session or imply teardown success; the lifecycle receipt remains
+independent. Ordinary thread work and residency diagnostics are unchanged.

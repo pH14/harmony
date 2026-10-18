@@ -620,6 +620,15 @@ pub fn thread_work_telemetry() -> BTreeMap<String, u64> {
     counters
 }
 
+pub fn coordinator_retired_work_telemetry() -> Result<BTreeMap<String, u64>, String> {
+    LIVE.with(|slot| {
+        if slot.borrow().is_some() {
+            return Err("coordinator telemetry requires no live session".to_owned());
+        }
+        Ok(RETIRED.with(|retired| retired.borrow().clone()))
+    })
+}
+
 pub fn begin_coordinator_session() -> Result<(), Box<dyn Error>> {
     COORDINATOR_SESSION.with(|active| {
         if active.replace(true) {
@@ -3539,6 +3548,30 @@ mod tests {
             next_snap: 1,
         });
         live
+    }
+
+    #[test]
+    fn coordinator_retired_telemetry_refuses_live_before_session_query() {
+        let _fixture = ResidencyFixture;
+        let counters =
+            BTreeMap::from([("vmm.sdk_dispatch.event.request_guard_calls".to_owned(), 17)]);
+        RETIRED.with(|retired| *retired.borrow_mut() = counters.clone());
+        assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(true));
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(true));
+        let result = std::panic::catch_unwind(coordinator_retired_work_telemetry);
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(false));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
+        LIVE.with(|slot| {
+            let mut live = slot.borrow_mut().take().unwrap();
+            live.final_counters = Some(Vec::new());
+        });
+        assert!(result.unwrap().unwrap_err().contains("no live session"));
+        assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
+        let mut owned = coordinator_retired_work_telemetry().unwrap();
+        owned.clear();
+        assert_eq!(coordinator_retired_work_telemetry().unwrap(), counters);
     }
 
     #[test]
