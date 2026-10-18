@@ -850,11 +850,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse target pages differ",
             ));
         }
-        if self
-            .vmm
-            .as_ref()
-            .is_some_and(|vmm| vmm.event_history().is_some() != portable.event_history.is_some())
-        {
+        let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
+            "portable VM state restore validation unavailable",
+        ))?;
+        if live.event_history().is_some() != portable.event_history.is_some() {
             return Err(PortableSnapshotError::Malformed(
                 "snapshot event history availability",
             ));
@@ -1016,11 +1015,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         )
         .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
         let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
-        if self
-            .vmm
-            .as_ref()
-            .is_some_and(|vmm| vmm.event_history().is_some() != portable.event_history.is_some())
-        {
+        let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
+            "portable VM state restore validation unavailable",
+        ))?;
+        if live.event_history().is_some() != portable.event_history.is_some() {
             return Err(PortableSnapshotError::Malformed(
                 "snapshot event history availability",
             ));
@@ -1958,11 +1956,17 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 fresh.reseed_entropy(s0)?;
             }
         }
-        if let Some(history) = self
+        let history = self
             .snapshot_meta
             .get(&snap.0)
-            .and_then(|meta| meta.event_history)
-        {
+            .and_then(|meta| meta.event_history);
+        if history.is_some() != fresh.event_history().is_some() {
+            return Err(VmmError::ContractViolation(
+                "restored event history availability differs".into(),
+            )
+            .into());
+        }
+        if let Some(history) = history {
             fresh.restore_event_history(history)?;
         }
         self.vmm = Some(fresh);
@@ -14512,5 +14516,25 @@ mod tests {
         ));
         assert_eq!(destination.snapshot_store_stats(), before);
         assert_eq!(destination.latest_snapshot(), Some(base));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot restore uses mapped storage")]
+    fn restore_never_inherits_an_uncaptured_history() {
+        for mode in [RestoreMode::Memcpy, RestoreMode::InPlace] {
+            let mut server = server(vec![]);
+            hello(&mut server);
+            let base = snap(&mut server);
+            server.set_restore_mode(mode);
+            server.snapshot_meta.get_mut(&base.0).unwrap().event_history = None;
+            let error = server.handle(&Request::Replay(base)).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("restored event history availability differs"),
+                "{error}"
+            );
+            assert!(server.vmm().is_none());
+        }
     }
 }
