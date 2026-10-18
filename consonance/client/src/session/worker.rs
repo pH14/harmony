@@ -4051,6 +4051,65 @@ mod tests {
     }
 
     #[test]
+    fn work_counter_reads_use_one_guarded_rpc_and_no_ownership_queries() {
+        for retained in [1, 8, 32] {
+            let (mut session, server) = threaded(3);
+            let snapshots: Vec<_> = (0..retained)
+                .map(|_| session.snapshot().unwrap().0)
+                .collect();
+            let before: BTreeMap<_, _> = session
+                .transport
+                .counters("transport.parent")
+                .into_iter()
+                .collect();
+            let guards_before: BTreeMap<_, _> = session
+                .loaded_image_guard
+                .counters("g")
+                .into_iter()
+                .collect();
+            let counters = session.telemetry_counters();
+            assert!(counters.iter().any(|(name, _)| name == "runs"));
+            let after: BTreeMap<_, _> = session
+                .transport
+                .counters("transport.parent")
+                .into_iter()
+                .collect();
+            for (group, expected) in [("telemetry", 1), ("snapshot", 0)] {
+                let name = format!("transport.parent.{group}.send.attempts");
+                assert_eq!(
+                    after.get(&name).copied().unwrap_or(0)
+                        - before.get(&name).copied().unwrap_or(0),
+                    expected
+                );
+            }
+            let guards_after: BTreeMap<_, _> = session
+                .loaded_image_guard
+                .counters("g")
+                .into_iter()
+                .collect();
+            for site in ["rpc_before", "rpc_after"] {
+                let name = format!("g.{site}.fixture_dispatches");
+                assert_eq!(
+                    guards_after[&name] - guards_before.get(&name).copied().unwrap_or(0),
+                    1
+                );
+            }
+            for snapshot in snapshots {
+                assert_eq!(session.snapshot_owned_pages(snapshot), Some(1));
+            }
+            let diagnosed: BTreeMap<_, _> = session
+                .transport
+                .counters("transport.parent")
+                .into_iter()
+                .collect();
+            let key = "transport.parent.snapshot.send.attempts";
+            assert_eq!(diagnosed[key] - after[key], retained);
+            drop(session);
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
     fn a_worker_session_forwards_every_call_and_its_errors() {
         let (mut session, server) = threaded(3);
         assert_eq!(session.setup_handle(), (SnapId(1), 10));

@@ -227,10 +227,24 @@ the other workers keep running the jobs behind it until it is admitted.
 Each worker reports its time through the campaign `telemetry`: boot, new
 action runs, prefix rebuilds, and replayed actions, each in host and virtual
 time. It also reports session restore, branch, seal, observation, and drop
-time; the chain's exact hits, ancestor hits, misses, evictions, entries, and
-resident bytes; shared cache imports and publications with their time, and
-refused publications; and the VMM's exit, guest-run, and snapshot counters under
-`vmm.`. `campaign-summary.json` includes the whole telemetry record.
+time; the chain's exact hits, ancestor hits, misses and evictions; shared cache
+imports and publications with their time, and refused publications; and the VMM's exit, guest-run, and snapshot counters under
+`vmm.`. `campaign-summary.json` includes the work telemetry record. The campaign uses
+`thread_work_telemetry`, which collects cumulative work without querying snapshot
+ownership or store size. `thread_residency_diagnostics` explicitly samples the
+live chain's entries, page bytes and observation-checkpoint charge. These typed
+gauges are absent after the live session retires and are never accumulated into
+work counters; unavailable ownership or arithmetic overflow makes page and total
+charge unavailable. Each live point is queried once, so worker mode performs
+real guarded ownership RPCs. Collect these diagnostics separately from phase
+counter snapshots. Actual store-budget enforcement continues to query store
+bytes and report them to the shared index independently of either telemetry API.
+
+Work-counter reads in worker mode still perform one guarded TELEMETRY RPC. Its
+framing and guard work remain observable, and parent/child snapshots occur at
+different points around response publication. These reads are not atomic or free.
+Counter getters do not estimate or subtract their own cost. Host timing, gauges
+and physical request counts do not affect logical selection or certificates.
 The shared session watchdog follows deterministic virtual-time progress, so a
 slowly advancing instrumented guest can finish a long action while one stuck
 at a virtual moment still times out. Replay can apply explicit, bounded Wait
@@ -508,9 +522,10 @@ rejected; failed decode/infrastructure attempts do not contribute completed timi
 samples. Checkpoint rebuild timing counts completed fetch/decode/infrastructure
 checks even when a subsequent decoder comparison or receipt-binding check rejects
 the reconstructed checkpoint. `observe.checkpoint_hits`,
-`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and fallback. `cache.resident_bytes`
-retains its VM-page meaning; `cache.observation_checkpoint_bytes` is the optional
-pool charge and `cache.charged_bytes` combines both reported gauges.
+`observe.checkpoint_evictions` and `observe.full_rebuilds` distinguish reuse and
+fallback. Explicit residency diagnostics retain the VM-page meaning of
+`resident_bytes`; `observation_checkpoint_bytes` is the optional pool charge and
+`charged_bytes` combines both live gauges.
 
 Fault caches use exact fixed-width action-path roots. The cache object commitment
 binds both the admitted machine target and opaque captured-history attachment;
