@@ -523,6 +523,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         (telemetry.exports, telemetry.export_pages) = self.export_telemetry.get();
         telemetry.hashes.merge(&self.hash_telemetry.get());
         telemetry.verification = self.engine.store().verification_telemetry();
+        telemetry.copies = self.engine.store().copy_telemetry();
         telemetry.restore_fallbacks = self.in_place_fallbacks;
         telemetry
     }

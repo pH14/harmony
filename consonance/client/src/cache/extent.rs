@@ -60,11 +60,46 @@ fn checksum(counts: &[u8], body: &[u8]) -> [u8; 32] {
     digest.finalize().into()
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ExtentWrites {
+    pub encoded_bytes: u64,
+    pub metadata_copy_bytes: u64,
+    pub page_copy_bytes: u64,
+}
+impl ExtentWrites {
+    pub fn merge(&mut self, other: Self) {
+        self.encoded_bytes = self.encoded_bytes.saturating_add(other.encoded_bytes);
+        self.metadata_copy_bytes = self
+            .metadata_copy_bytes
+            .saturating_add(other.metadata_copy_bytes);
+        self.page_copy_bytes = self.page_copy_bytes.saturating_add(other.page_copy_bytes);
+    }
+    pub fn counters(self) -> Vec<(String, u64)> {
+        [
+            ("encoded_bytes", self.encoded_bytes),
+            ("metadata_copy_bytes", self.metadata_copy_bytes),
+            ("page_copy_bytes", self.page_copy_bytes),
+        ]
+        .into_iter()
+        .map(|(key, value)| (format!("copy.session.extent.{key}"), value))
+        .collect()
+    }
+}
 pub fn write_extent(
     out: &mut [u8],
     pages: &[HashedPage<'_>],
     reverted: &[u64],
     sidecar: &[u8],
+) -> Result<(), CacheError> {
+    write_extent_measured(out, pages, reverted, sidecar, &mut ExtentWrites::default())
+}
+
+pub fn write_extent_measured(
+    out: &mut [u8],
+    pages: &[HashedPage<'_>],
+    reverted: &[u64],
+    sidecar: &[u8],
+    work: &mut ExtentWrites,
 ) -> Result<(), CacheError> {
     let data = page_offset(pages.len(), reverted.len(), sidecar.len())
         .ok_or(CacheError::Malformed("extent size overflow"))?;
@@ -87,22 +122,30 @@ pub fn write_extent(
     for &(gfn, hash, _) in pages {
         out[at..at + 8].copy_from_slice(&gfn.to_le_bytes());
         out[at + 8..at + ROW].copy_from_slice(hash);
+        work.metadata_copy_bytes = work.metadata_copy_bytes.saturating_add(ROW as u64);
         at += ROW;
     }
     for gfn in reverted {
         out[at..at + 8].copy_from_slice(&gfn.to_le_bytes());
+        work.metadata_copy_bytes = work.metadata_copy_bytes.saturating_add(8);
         at += 8;
     }
     out[at..at + sidecar.len()].copy_from_slice(sidecar);
+    work.metadata_copy_bytes = work
+        .metadata_copy_bytes
+        .saturating_add(sidecar.len() as u64);
     at += sidecar.len();
     let sum = checksum(&counts, &out[HEADER..at]);
     out[..8].copy_from_slice(&MAGIC);
     out[8..32].copy_from_slice(&counts);
     out[32..HEADER].copy_from_slice(&sum);
+    work.metadata_copy_bytes = work.metadata_copy_bytes.saturating_add(HEADER as u64);
     for (index, &(_, _, page)) in pages.iter().enumerate() {
         let start = data + index * PAGE;
         out[start..start + PAGE].copy_from_slice(page);
+        work.page_copy_bytes = work.page_copy_bytes.saturating_add(PAGE as u64);
     }
+    work.encoded_bytes = work.encoded_bytes.saturating_add(len as u64);
     Ok(())
 }
 
@@ -202,6 +245,29 @@ pub fn resolve<'a>(chain: &[Delta<'a>]) -> Result<Resolved<'a>, CacheError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn measured_extent_counts_actual_output_copies_and_excludes_padding() {
+        let page = [7; PAGE];
+        let hash = [3; 32];
+        let pages = [(0, &hash, &page)];
+        let len = extent_len(1, 1, 3).unwrap();
+        let mut output = vec![0; len];
+        let mut work = ExtentWrites::default();
+        write_extent_measured(&mut output, &pages, &[2], b"sdk", &mut work).unwrap();
+        assert_eq!(
+            work,
+            ExtentWrites {
+                encoded_bytes: len as u64,
+                metadata_copy_bytes: (HEADER + ROW + 8 + 3) as u64,
+                page_copy_bytes: PAGE as u64
+            }
+        );
+        let prior = work;
+        assert!(write_extent_measured(&mut [0; 1], &pages, &[], b"sdk", &mut work).is_err());
+        assert_eq!(work, prior);
+        assert_eq!(read_extent(&output).unwrap().pages[0].2, &page);
+    }
+
     use super::*;
 
     fn page(fill: u8) -> ([u8; 32], [u8; PAGE]) {

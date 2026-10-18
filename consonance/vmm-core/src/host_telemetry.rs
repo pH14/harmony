@@ -193,6 +193,7 @@ pub struct HostTelemetry {
     pub exits: ExitTelemetry,
     pub hashes: HashTelemetry,
     pub verification: snapshot_store::VerificationTelemetry,
+    pub copies: snapshot_store::CopyTelemetry,
     pub seals: Cost,
     pub seal_pages: u64,
     pub restores: Cost,
@@ -236,6 +237,7 @@ impl HostTelemetry {
         ];
         self.hashes.counters(&mut out);
         out.extend(self.verification.counters());
+        out.extend(self.copies.counters());
         let mut total = Cost::default();
         for (site, cost) in &self.exits.exits {
             total.merge(*cost);

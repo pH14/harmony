@@ -193,3 +193,12 @@ slot again, and corrupted pages still reject before use. Diagnostic queries
 never certify pages, extend memoization across operations, alter serialized
 state or affect retention. The VMM exposes these totals through its existing
 host telemetry map without adding them to snapshot payloads or StoreStats.
+
+`copy_telemetry()` is runtime-only, cumulative per Store and separate from
+StoreStats. It counts actual new owned page payload copies at interning and
+public read-into-buffer copies. Intern calls and successful equal-content hits
+are distinct: a hit increments references without copying payload; zero and
+unchanged writes may bypass interning. Copies remain counted after a discarded
+builder or later failure. Borrowed transaction reads copy no payload. These are
+explicit copy-site bytes, not allocator traffic, resident memory, hash input,
+or import-row counts, and never influence retention or snapshot commitments.

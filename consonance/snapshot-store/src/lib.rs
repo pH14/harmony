@@ -150,9 +150,31 @@ impl VerificationTelemetry {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CopyTelemetry {
+    pub intern_calls: u64,
+    pub intern_hits: u64,
+    pub intern_copy_bytes: u64,
+    pub read_copy_bytes: u64,
+}
+impl CopyTelemetry {
+    pub fn counters(self) -> Vec<(String, u64)> {
+        [
+            ("intern_calls", self.intern_calls),
+            ("intern_hits", self.intern_hits),
+            ("intern_copy_bytes", self.intern_copy_bytes),
+            ("read_copy_bytes", self.read_copy_bytes),
+        ]
+        .into_iter()
+        .map(|(name, value)| (format!("snapshot.copy.{name}"), value))
+        .collect()
+    }
+}
+
 pub struct Store {
     cfg: StoreConfig,
     verification: std::cell::Cell<VerificationTelemetry>,
+    copies: std::cell::Cell<CopyTelemetry>,
     verification_batch_depth: std::cell::Cell<usize>,
     store_id: u64,
     next_id: u64,
@@ -211,6 +233,16 @@ impl Store {
         self.page_verifications.get()
     }
 
+    pub fn copy_telemetry(&self) -> CopyTelemetry {
+        self.copies.get()
+    }
+
+    fn note_copy(&self, update: impl FnOnce(&mut CopyTelemetry)) {
+        let mut value = self.copies.get();
+        update(&mut value);
+        self.copies.set(value);
+    }
+
     pub fn verification_telemetry(&self) -> VerificationTelemetry {
         self.verification.get()
     }
@@ -248,6 +280,7 @@ impl Store {
         Store {
             cfg,
             verification: std::cell::Cell::default(),
+            copies: std::cell::Cell::default(),
             verification_batch_depth: std::cell::Cell::new(0),
             store_id: NEXT_STORE_ID
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
@@ -382,6 +415,7 @@ impl Store {
             return Err(StoreError::BadPageLength { len: out.len() });
         }
         out.copy_from_slice(self.read_transaction().read_page(snap, gfn)?);
+        self.note_copy(|t| t.read_copy_bytes = t.read_copy_bytes.saturating_add(out.len() as u64));
         Ok(())
     }
 
@@ -888,6 +922,7 @@ impl Store {
         data: &[u8],
         gfn: u64,
     ) -> Result<NonZeroUsize, StoreError> {
+        self.note_copy(|t| t.intern_calls = t.intern_calls.saturating_add(1));
         if let Some(&id) = self.page_index.get(&hash) {
             let entry = self
                 .pages
@@ -898,6 +933,7 @@ impl Store {
                 return Err(StoreError::PageIntegrity { gfn });
             }
             entry.refs = entry.refs.saturating_add(1);
+            self.note_copy(|t| t.intern_hits = t.intern_hits.saturating_add(1));
             return Ok(id);
         }
         let entry = PageEntry {
@@ -905,6 +941,9 @@ impl Store {
             data: data.into(),
             refs: 1,
         };
+        self.note_copy(|t| {
+            t.intern_copy_bytes = t.intern_copy_bytes.saturating_add(data.len() as u64)
+        });
         let id = match self.free_pages.pop() {
             Some(id) => {
                 self.pages[id.get() - 1] = Some(entry);
@@ -1300,6 +1339,41 @@ impl DeltaBuilder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_telemetry_counts_only_executed_payload_copies() {
+        let mut store = Store::new(cfg(4));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[7; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[7; PAGE_SIZE]).unwrap();
+        builder.write_page(2, &[0; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(vec![]);
+        assert_eq!(
+            store.copy_telemetry(),
+            CopyTelemetry {
+                intern_calls: 2,
+                intern_hits: 1,
+                intern_copy_bytes: PAGE_SIZE as u64,
+                read_copy_bytes: 0
+            }
+        );
+        store.read_transaction().read_page(snap, 0).unwrap();
+        assert_eq!(store.copy_telemetry().read_copy_bytes, 0);
+        let mut out = [0; PAGE_SIZE];
+        store.read_page(snap, 0, &mut out).unwrap();
+        assert_eq!(out, [7; PAGE_SIZE]);
+        assert_eq!(store.copy_telemetry().read_copy_bytes, PAGE_SIZE as u64);
+        assert!(store.read_page(snap, 0, &mut [0; 1]).is_err());
+        assert_eq!(store.copy_telemetry().read_copy_bytes, PAGE_SIZE as u64);
+        let mut builder = store.derive(snap).unwrap();
+        builder.write_page(3, &[9; PAGE_SIZE]).unwrap();
+        drop(builder);
+        assert_eq!(
+            store.copy_telemetry().intern_copy_bytes,
+            2 * PAGE_SIZE as u64
+        );
+        assert_eq!(store.copy_telemetry().intern_hits, 1);
+    }
 
     fn cfg(mem_pages: u64) -> StoreConfig {
         StoreConfig { mem_pages }
