@@ -66,6 +66,8 @@ const KEY_POLICY_FIELD: &str = "key_policy";
 const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
+const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
+const HOST_FAILURE_POLICY: &str = "watchdog_incomplete_v1";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
 const ACTION_FORMAT: &str = "fault-action-duration-coverage-v4";
@@ -282,6 +284,33 @@ fn outcome(target: &FaultTarget) -> Outcome {
     }
 }
 
+#[derive(Debug)]
+struct WatchdogIncomplete {
+    phase: &'static str,
+}
+
+impl std::fmt::Display for WatchdogIncomplete {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "fault campaign incomplete: host watchdog cutoff during {}; reservation not admitted",
+            self.phase
+        )
+    }
+}
+
+impl Error for WatchdogIncomplete {}
+
+fn require_completed_attempt(
+    target: &FaultTarget,
+    phase: &'static str,
+) -> Result<(), Box<dyn Error>> {
+    if target.watchdog_cutoffs() != 0 {
+        return Err(Box::new(WatchdogIncomplete { phase }));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_job(
     target: &mut FaultTarget,
@@ -296,18 +325,14 @@ pub(crate) fn execute_job(
         return Err("fault replay certificate count does not match its action path".into());
     }
     target.restore(origin_snapshot)?;
+    require_completed_attempt(target, "parent reconstruction")?;
     for (action, certificate) in replay.iter().zip(replay_certificates) {
-        if target.failed() && target.watchdog_cutoffs() != 0 {
-            break;
-        }
         if outcome(target).disposition.is_terminal() {
             return Err("fault replay stopped before its archived parent endpoint".into());
         }
         target.apply_replayed(*action);
         target.verify_integrity()?;
-        if target.failed() && target.watchdog_cutoffs() != 0 {
-            break;
-        }
+        require_completed_attempt(target, "parent replay")?;
         target.verify_replayed_endpoint(*certificate)?;
     }
     let mut aggregate = parent_milestones;
@@ -326,6 +351,7 @@ pub(crate) fn execute_job(
     for action in suffix {
         target.apply(*action);
         target.verify_integrity()?;
+        require_completed_attempt(target, "suffix execution")?;
         merge_action_milestones(&mut aggregate, target);
         let observations = target.last_action_observations().to_vec();
         let raw_outcome = outcome(target);
@@ -427,6 +453,7 @@ impl Reporting for FaultWorkload {
         result: &FaultCampaignJobResult,
         target: &Self::Target,
     ) -> Result<String, Box<dyn Error>> {
+        require_completed_attempt(target, "result certification")?;
         let endpoint = if self.config.uml().is_some() {
             FaultEndpointCertificate::UmlWholeStateUnavailable
         } else if target.failed() {
@@ -484,6 +511,7 @@ impl InputPolicy for FaultWorkload {
             (DURATION_POLICY_FIELD, DURATION_IDENTIFIER),
             (REPLACEMENT_POLICY_FIELD, REPLACEMENT_IDENTIFIER),
             (TERMINAL_POLICY_FIELD, TERMINAL_POLICY_IDENTIFIER),
+            (HOST_FAILURE_POLICY_FIELD, HOST_FAILURE_POLICY),
         ]
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value.to_owned()))
@@ -1582,6 +1610,23 @@ mod tests {
         let mut wrong = policies;
         wrong.insert(TERMINAL_POLICY_FIELD.to_owned(), "deadline".to_owned());
         assert!(game.resolve_recorded(&wrong).is_err());
+    }
+
+    #[test]
+    fn recorded_policies_require_watchdog_incompleteness() {
+        let game = game();
+        let mut policies = game.policies(&run(1, vec![1, 2]));
+        assert_eq!(
+            policies.get(HOST_FAILURE_POLICY_FIELD).unwrap(),
+            HOST_FAILURE_POLICY
+        );
+        policies.remove(HOST_FAILURE_POLICY_FIELD);
+        assert!(game.resolve_recorded(&policies).is_err());
+        policies.insert(
+            HOST_FAILURE_POLICY_FIELD.to_owned(),
+            "recoverable_cutoff".into(),
+        );
+        assert!(game.resolve_recorded(&policies).is_err());
     }
 
     #[test]
