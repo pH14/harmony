@@ -710,6 +710,7 @@ fn cpuid_entries_maps_fields_and_significant_flag() {
                 edx: 4,
             },
         ],
+        ..Default::default()
     };
     let out = cpuid_entries(&model);
     assert_eq!(out.len(), 2);
@@ -1153,6 +1154,7 @@ fn sysenter_policy_follows_host_la57_and_guest_vendor() {
             ecx: u32::from_le_bytes(vendor[8..].try_into().unwrap()),
             ..Default::default()
         }],
+        ..Default::default()
     };
     assert!(!guest_intel_vendor(&model(b"AuthenticAMD")));
     assert!(!guest_intel_vendor(&model(b"HygonGenuine")));

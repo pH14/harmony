@@ -15,23 +15,39 @@ fn digest<T: Serialize>(domain: &str, value: &T) -> Result<[u8; 32], String> {
 
 pub fn replay_certificate(
     hash: [u8; 32],
+    history: (u64, [u8; 32]),
     observation: &FaultObservations,
     failed: bool,
 ) -> Result<[u8; 32], String> {
-    postcard::to_allocvec(&("fault-replay-endpoint-v1", hash, observation, failed))
-        .map(|bytes| Sha256::digest(bytes).into())
-        .map_err(|error| format!("encode fault replay endpoint: {error}"))
+    postcard::to_allocvec(&(
+        "fault-replay-endpoint-v2",
+        control_proto::EventHistory::VERSION,
+        hash,
+        history,
+        observation,
+        failed,
+    ))
+    .map(|bytes| Sha256::digest(bytes).into())
+    .map_err(|error| format!("encode fault replay endpoint: {error}"))
 }
 
 pub fn endpoint_certificate(
     endpoint: FaultEndpointCertificate,
+    event_history: Option<(u64, [u8; 32])>,
     observation: &FaultObservations,
 ) -> Result<Option<[u8; 32]>, String> {
     match endpoint {
-        FaultEndpointCertificate::KvmWholeState(hash) => {
-            replay_certificate(hash, observation, false).map(Some)
+        FaultEndpointCertificate::KvmWholeState(hash) => replay_certificate(
+            hash,
+            event_history.ok_or("KVM endpoint lacks ordered event history")?,
+            observation,
+            false,
+        )
+        .map(Some),
+        FaultEndpointCertificate::UmlWholeStateUnavailable if event_history.is_none() => Ok(None),
+        FaultEndpointCertificate::UmlWholeStateUnavailable => {
+            Err("UML endpoint unexpectedly carries ordered event history".to_owned())
         }
-        FaultEndpointCertificate::UmlWholeStateUnavailable => Ok(None),
         FaultEndpointCertificate::KvmUnavailableAfterFailure => {
             Err("failed endpoints cannot certify fault history".to_owned())
         }
@@ -47,6 +63,7 @@ pub struct HistoryReceipt {
     action: Option<FaultAction>,
     endpoint: FaultEndpointCertificate,
     certificate: Option<[u8; 32]>,
+    event_history: Option<(u64, [u8; 32])>,
     observation_commitment: [u8; 32],
     previous_moment: u64,
     moment: u64,
@@ -58,6 +75,7 @@ impl HistoryReceipt {
     pub fn genesis(
         domain: [u8; 32],
         endpoint: FaultEndpointCertificate,
+        event_history: Option<(u64, [u8; 32])>,
         observation: &FaultObservations,
     ) -> Result<Self, String> {
         let mut out = Self {
@@ -67,7 +85,8 @@ impl HistoryReceipt {
             parent_path: None,
             action: None,
             endpoint,
-            certificate: endpoint_certificate(endpoint, observation)?,
+            certificate: endpoint_certificate(endpoint, event_history, observation)?,
+            event_history,
             observation_commitment: digest("fault-history-observation-v1", observation)?,
             previous_moment: observation.moment,
             moment: observation.moment,
@@ -83,6 +102,7 @@ impl HistoryReceipt {
         &self,
         action: FaultAction,
         endpoint: FaultEndpointCertificate,
+        event_history: Option<(u64, [u8; 32])>,
         observation: &FaultObservations,
     ) -> Result<Self, String> {
         if std::mem::discriminant(&self.endpoint) != std::mem::discriminant(&endpoint) {
@@ -98,7 +118,8 @@ impl HistoryReceipt {
             parent_path: Some(self.path),
             action: Some(action),
             endpoint,
-            certificate: endpoint_certificate(endpoint, observation)?,
+            certificate: endpoint_certificate(endpoint, event_history, observation)?,
+            event_history,
             observation_commitment: digest("fault-history-observation-v1", observation)?,
             previous_moment: self.moment,
             moment: observation.moment,
@@ -128,6 +149,7 @@ impl HistoryReceipt {
                 self.path,
                 self.endpoint,
                 self.certificate,
+                self.event_history,
                 self.observation_commitment,
                 self.previous_moment,
                 self.moment,
@@ -144,9 +166,13 @@ impl HistoryReceipt {
             || self.path != self.path_digest()?
             || self.root != self.root_digest()?
             || !matches!(
-                (self.endpoint, self.certificate),
-                (FaultEndpointCertificate::KvmWholeState(_), Some(_))
-                    | (FaultEndpointCertificate::UmlWholeStateUnavailable, None)
+                (self.endpoint, self.certificate, self.event_history),
+                (FaultEndpointCertificate::KvmWholeState(_), Some(_), Some(_))
+                    | (
+                        FaultEndpointCertificate::UmlWholeStateUnavailable,
+                        None,
+                        None
+                    )
             )
         {
             return Err("malformed fault history receipt".to_owned());
@@ -190,6 +216,9 @@ impl HistoryReceipt {
     }
     pub fn endpoint(&self) -> FaultEndpointCertificate {
         self.endpoint
+    }
+    pub fn event_history(&self) -> Option<(u64, [u8; 32])> {
+        self.event_history
     }
     pub fn certificate(&self) -> Option<[u8; 32]> {
         self.certificate
@@ -505,11 +534,20 @@ impl Default for FaultHistory {
             HistoryReceipt::genesis(
                 [0; 32],
                 FaultEndpointCertificate::KvmWholeState([0; 32]),
+                Some((0, [0; 32])),
                 &FaultObservations::default(),
             )
             .expect("default history receipt"),
         )
         .expect("default genesis")
+    }
+}
+
+#[cfg(test)]
+pub fn fixture_event_history(endpoint: FaultEndpointCertificate) -> Option<(u64, [u8; 32])> {
+    match endpoint {
+        FaultEndpointCertificate::KvmWholeState(_) => Some((0, [0; 32])),
+        _ => None,
     }
 }
 
@@ -528,13 +566,24 @@ impl FaultHistory {
             FaultObservations::default()
         };
         let mut history = Self::genesis(
-            HistoryReceipt::genesis([0; 32], endpoint, &genesis_observation).unwrap(),
+            HistoryReceipt::genesis(
+                [0; 32],
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &genesis_observation,
+            )
+            .unwrap(),
         )
         .unwrap();
         for (index, action) in actions.iter().enumerate() {
             let mut receipt = history
                 .receipt()
-                .extend(*action, endpoint, observation)
+                .extend(
+                    *action,
+                    endpoint,
+                    crate::history::fixture_event_history(endpoint),
+                    observation,
+                )
                 .unwrap();
             if let Some(certificate) = certificates.get(index) {
                 receipt.certificate = *certificate;
@@ -558,13 +607,24 @@ mod tests {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         let other = FaultOperation::Wait(std::num::NonZeroU16::new(2).unwrap()).into();
         let root = FaultHistory::genesis(
-            HistoryReceipt::genesis([3; 32], endpoint, &observation).unwrap(),
+            HistoryReceipt::genesis(
+                [3; 32],
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap(),
         )
         .unwrap();
         let prefix = root
             .push(
                 root.receipt()
-                    .extend(action, endpoint, &observation)
+                    .extend(
+                        action,
+                        endpoint,
+                        crate::history::fixture_event_history(endpoint),
+                        &observation,
+                    )
                     .unwrap(),
             )
             .unwrap();
@@ -572,7 +632,12 @@ mod tests {
             .push(
                 prefix
                     .receipt()
-                    .extend(action, endpoint, &observation)
+                    .extend(
+                        action,
+                        endpoint,
+                        crate::history::fixture_event_history(endpoint),
+                        &observation,
+                    )
                     .unwrap(),
             )
             .unwrap();
@@ -580,11 +645,18 @@ mod tests {
             .push(
                 prefix
                     .receipt()
-                    .extend(other, endpoint, &observation)
+                    .extend(
+                        other,
+                        endpoint,
+                        crate::history::fixture_event_history(endpoint),
+                        &observation,
+                    )
                     .unwrap(),
             )
             .unwrap();
         let mut snapshots = [left, right].map(|history| crate::target::FaultSnapshot {
+            event_history: crate::history::fixture_event_history(endpoint),
+
             history: postcard::from_bytes(&postcard::to_allocvec(&history).unwrap()).unwrap(),
             observation: observation.clone(),
             failed: false,
@@ -641,7 +713,13 @@ mod tests {
         let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);
         let observation = FaultObservations::default();
         let root = FaultHistory::genesis(
-            HistoryReceipt::genesis([3; 32], endpoint, &observation).unwrap(),
+            HistoryReceipt::genesis(
+                [3; 32],
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap(),
         )
         .unwrap();
         let child = root
@@ -650,6 +728,7 @@ mod tests {
                     .extend(
                         FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
                         endpoint,
+                        crate::history::fixture_event_history(endpoint),
                         &observation,
                     )
                     .unwrap(),
@@ -661,6 +740,8 @@ mod tests {
         let mut retention = FaultHistoryRetention::default();
         let mut memory = SharedSnapshotMemory::default();
         let mut seed = crate::target::FaultSnapshot {
+            event_history: crate::history::fixture_event_history(endpoint),
+
             history: root.clone(),
             observation,
             failed: false,
@@ -682,17 +763,51 @@ mod tests {
     fn unavailable_machine_evidence_still_binds_intermediate_observations() {
         let endpoint = FaultEndpointCertificate::UmlWholeStateUnavailable;
         let observation = FaultObservations::default();
-        let root = HistoryReceipt::genesis([3; 32], endpoint, &observation).unwrap();
+        let root = HistoryReceipt::genesis(
+            [3; 32],
+            endpoint,
+            crate::history::fixture_event_history(endpoint),
+            &observation,
+        )
+        .unwrap();
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
-        let first = root.extend(action, endpoint, &observation).unwrap();
+        let first = root
+            .extend(
+                action,
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap();
         let mut different = observation.clone();
         different.alive = 7;
-        let divergent = root.extend(action, endpoint, &different).unwrap();
+        let divergent = root
+            .extend(
+                action,
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &different,
+            )
+            .unwrap();
         assert_ne!(first.root(), divergent.root());
         assert_eq!(first.certificate(), None);
         assert_eq!(divergent.certificate(), None);
-        let converged = first.extend(action, endpoint, &observation).unwrap();
-        let divergent_converged = divergent.extend(action, endpoint, &observation).unwrap();
+        let converged = first
+            .extend(
+                action,
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap();
+        let divergent_converged = divergent
+            .extend(
+                action,
+                endpoint,
+                crate::history::fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap();
         assert_ne!(converged.root(), divergent_converged.root());
         assert_eq!(converged.endpoint(), endpoint);
         assert_eq!(divergent_converged.endpoint(), endpoint);
@@ -704,7 +819,13 @@ mod tests {
             let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);
             let mut observation = FaultObservations::default();
             let mut history = FaultHistory::genesis(
-                HistoryReceipt::genesis([3; 32], endpoint, &observation).unwrap(),
+                HistoryReceipt::genesis(
+                    [3; 32],
+                    endpoint,
+                    crate::history::fixture_event_history(endpoint),
+                    &observation,
+                )
+                .unwrap(),
             )
             .unwrap();
             let root = history.clone();
@@ -717,6 +838,7 @@ mod tests {
                             .extend(
                                 FaultOperation::Wait(std::num::NonZeroU16::MIN).into(),
                                 endpoint,
+                                crate::history::fixture_event_history(endpoint),
                                 &observation,
                             )
                             .unwrap(),

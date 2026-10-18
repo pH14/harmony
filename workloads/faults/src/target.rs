@@ -258,6 +258,7 @@ pub struct FaultSnapshot {
     pub observation: FaultObservations,
     pub failed: bool,
     pub endpoint: Option<FaultEndpointCertificate>,
+    pub event_history: Option<(u64, [u8; 32])>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

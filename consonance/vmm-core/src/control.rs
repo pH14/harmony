@@ -185,6 +185,7 @@ pub struct PortableSnapshotReceipt {
     pub sdk_events: u64,
     pub trace_events: u64,
     pub trace_schedules: u64,
+    pub event_history: Option<control_proto::EventHistory>,
     pub tainted: bool,
     pub state_hash: [u8; 32],
 }
@@ -251,6 +252,7 @@ struct SnapshotMeta {
     sdk_events: u64,
     trace_events: u64,
     trace_schedules: u64,
+    event_history: Option<control_proto::EventHistory>,
     tainted: bool,
     state_hash: Option<[u8; 32]>,
     base_ram_digest: std::cell::Cell<Option<[u8; 32]>>,
@@ -697,6 +699,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events: meta.sdk_events,
                 trace_events: meta.trace_events,
                 trace_schedules: meta.trace_schedules,
+                event_history: meta.event_history,
                 tainted: meta.tainted,
                 base_ram_digest,
                 state_blob_suffix: &meta.state_blob_suffix,
@@ -847,6 +850,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 "sparse target pages differ",
             ));
         }
+        let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
+            "portable VM state restore validation unavailable",
+        ))?;
+        if live.event_history().is_some() != portable.event_history.is_some() {
+            return Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability",
+            ));
+        }
         let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
@@ -913,6 +924,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events: portable.sdk_events,
                 trace_events: portable.trace_events,
                 trace_schedules: portable.trace_schedules,
+                event_history: portable.event_history,
                 tainted: portable.tainted,
                 state_hash: None,
                 base_ram_digest: std::cell::Cell::new(None),
@@ -936,6 +948,10 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 .snapshot_meta
                 .get(&id)
                 .map_or(0, |meta| meta.trace_schedules),
+            event_history: self
+                .snapshot_meta
+                .get(&id)
+                .and_then(|meta| meta.event_history),
             tainted: self.tainted_snaps.contains(&id),
         })
     }
@@ -968,6 +984,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_events: meta.sdk_events,
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
+            event_history: meta.event_history,
             tainted: meta.tainted,
             state_hash,
         }
@@ -978,6 +995,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_events: meta.sdk_events,
             trace_events: meta.trace_events,
             trace_schedules: meta.trace_schedules,
+            event_history: meta.event_history,
             tainted: meta.tainted,
             state_hash,
         })
@@ -997,6 +1015,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         )
         .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
         let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
+        let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
+            "portable VM state restore validation unavailable",
+        ))?;
+        if live.event_history().is_some() != portable.event_history.is_some() {
+            return Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability",
+            ));
+        }
         let sdk = validate_control_import_sections(portable.sdk.as_ref(), &portable.control_state)?;
         let decoded = <<B::A as Vendor>::Snapshot as SnapshotRecords>::decode(&portable.vm_state)
             .map_err(SnapshotError::from)?;
@@ -1051,6 +1077,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events: portable.sdk_events,
                 trace_events: portable.trace_events,
                 trace_schedules: portable.trace_schedules,
+                event_history: portable.event_history,
                 tainted: portable.tainted,
                 state_hash: Some(portable.state_hash),
                 base_ram_digest: std::cell::Cell::new(None),
@@ -1065,6 +1092,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         })
@@ -1200,6 +1228,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                     self.recorded = recorded;
                 }
                 self.run(until)
+            }
+            Request::EventHistory => {
+                let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
+                Ok(vmm
+                    .event_history()
+                    .map(Reply::EventHistory)
+                    .ok_or(ControlError::Unsupported))
             }
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
@@ -1483,6 +1518,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 trace.schedule().len() as u64,
             )
         });
+        let event_history = vmm.event_history();
         let control = self.capture_control_state();
         let control_state = control.encode_and_append_hash(&mut state_blob_suffix);
         append_taint_hash(&mut state_blob_suffix, self.timeline_tainted);
@@ -1529,6 +1565,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 sdk_events,
                 trace_events,
                 trace_schedules,
+                event_history,
                 tainted: self.timeline_tainted,
                 state_hash: None,
                 base_ram_digest: std::cell::Cell::new(None),
@@ -1918,6 +1955,19 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             } else if let Some(&s0) = reseeds.get(&restored_floor) {
                 fresh.reseed_entropy(s0)?;
             }
+        }
+        let history = self
+            .snapshot_meta
+            .get(&snap.0)
+            .and_then(|meta| meta.event_history);
+        if history.is_some() != fresh.event_history().is_some() {
+            return Err(VmmError::ContractViolation(
+                "restored event history availability differs".into(),
+            )
+            .into());
+        }
+        if let Some(history) = history {
+            fresh.restore_event_history(history)?;
         }
         self.vmm = Some(fresh);
         self.session_trace_start = if seed.is_some() {
@@ -5085,7 +5135,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 12,
+            caps.protocol_version, 13,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);
@@ -7175,6 +7225,7 @@ mod tests {
             sdk_events: 0,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -7204,6 +7255,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -7246,6 +7298,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
@@ -7867,6 +7920,7 @@ mod tests {
                 sdk_events: 1,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
@@ -7939,6 +7993,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -7981,6 +8036,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: sidecar.tainted,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -8042,6 +8098,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -8086,6 +8143,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: sidecar.tainted,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -8155,6 +8213,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: false,
             state_hash: portable.state_hash,
         }
@@ -8200,6 +8259,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: false,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -8359,6 +8419,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
         }
@@ -8412,6 +8473,7 @@ mod tests {
             sdk_events: portable.sdk_events,
             trace_events: portable.trace_events,
             trace_schedules: portable.trace_schedules,
+            event_history: portable.event_history,
             tainted: portable.tainted,
             state_hash: portable.state_hash,
             control_state: &portable.control_state,
@@ -8441,6 +8503,7 @@ mod tests {
                 sdk_events: sidecar.sdk_events,
                 trace_events: sidecar.trace_events,
                 trace_schedules: sidecar.trace_schedules,
+                event_history: sidecar.event_history,
                 tainted: sidecar.tainted,
                 base_ram_digest: sidecar.base_ram_digest,
                 state_blob_suffix: &sidecar.state_blob_suffix,
@@ -14326,5 +14389,152 @@ mod tests {
         assert_eq!(sparse_state.load(Ordering::SeqCst), 7);
         assert_eq!(*sparse_reseeds.lock().unwrap(), vec![5, 0]);
         assert_aliased_service_cannot_certify(&mut sparse_dest);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
+    fn ordered_history_survives_capture_retirement_restore_and_portable_import() {
+        let history = |server: &mut ControlServer<MockBackend>| match server
+            .handle(&Request::EventHistory)
+            .unwrap()
+            .unwrap()
+        {
+            Reply::EventHistory(history) => history,
+            other => panic!("unexpected history reply {other:?}"),
+        };
+        let mut source = server(vec![]);
+        hello(&mut source);
+        let original = history(&mut source);
+        assert_eq!(original.count, 1);
+        let endpoint = hash(&mut source);
+        let base = snap(&mut source);
+        assert_eq!(history(&mut source), original);
+        source.finish_session_trace_segment();
+        source.take_session_virtual_time_trace();
+        assert_eq!(history(&mut source), original);
+        let changed = control_proto::EventHistory {
+            digest: [99; 32],
+            ..original
+        };
+        source
+            .vmm_mut()
+            .unwrap()
+            .restore_event_history(changed)
+            .unwrap();
+        assert_eq!(hash(&mut source), endpoint);
+        let target = snap(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(target, &mut full).unwrap();
+        let sparse = source.export_sparse_snapshot(base, target).unwrap();
+        assert_eq!(
+            source.handle(&Request::Replay(base)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut source), original);
+        assert_eq!(hash(&mut source), endpoint);
+        let mut destination = server(vec![]);
+        hello(&mut destination);
+        let near = snap(&mut destination);
+        let imported = destination
+            .import_portable_snapshot(full.as_slice())
+            .unwrap();
+        assert_eq!(imported.event_history, Some(changed));
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut destination), changed);
+        assert_eq!(hash(&mut destination), endpoint);
+        let imported = destination.import_sparse_snapshot(near, sparse).unwrap();
+        assert_eq!(imported.event_history, Some(changed));
+        assert_eq!(
+            destination.handle(&Request::Replay(imported.id)).unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut destination), changed);
+        assert_eq!(hash(&mut destination), endpoint);
+        assert_eq!(
+            destination
+                .handle(&Request::Branch {
+                    snap: imported.id,
+                    env: seeded_env(7)
+                })
+                .unwrap(),
+            Ok(Reply::Unit)
+        );
+        assert_eq!(history(&mut destination), changed);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "portable snapshots use mapped storage")]
+    fn missing_ordered_history_is_rejected_before_importing_a_handle() {
+        let mut source = server(vec![]);
+        hello(&mut source);
+        let target = snap(&mut source);
+        let mut full = Vec::new();
+        source.export_portable_snapshot(target, &mut full).unwrap();
+        let portable = super::PortableSnapshot::read_from(full.as_slice(), RAM).unwrap();
+        let mut missing = Vec::new();
+        super::PortableSnapshotRef {
+            memory: &portable.memory,
+            vm_state: &portable.vm_state,
+            sdk: portable.sdk.as_ref(),
+            policy: &portable.policy,
+            control_state: &portable.control_state,
+            at: portable.at,
+            sdk_events: portable.sdk_events,
+            trace_events: portable.trace_events,
+            trace_schedules: portable.trace_schedules,
+            event_history: None,
+            tainted: portable.tainted,
+            state_hash: portable.state_hash,
+        }
+        .write_to(&mut missing)
+        .unwrap();
+        let mut destination = server(vec![]);
+        hello(&mut destination);
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_portable_snapshot(missing.as_slice()),
+            Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), None);
+        let mut sparse = source.export_sparse_snapshot(target, target).unwrap();
+        assert_eq!(sparse.sidecar[sparse.sidecar.len() - 41], 1);
+        sparse.sidecar.truncate(sparse.sidecar.len() - 41);
+        sparse.sidecar.push(0);
+        let base = snap(&mut destination);
+        let before = destination.snapshot_store_stats();
+        assert!(matches!(
+            destination.import_sparse_snapshot(base, sparse),
+            Err(PortableSnapshotError::Malformed(
+                "snapshot event history availability"
+            ))
+        ));
+        assert_eq!(destination.snapshot_store_stats(), before);
+        assert_eq!(destination.latest_snapshot(), Some(base));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "snapshot restore uses mapped storage")]
+    fn restore_never_inherits_an_uncaptured_history() {
+        for mode in [RestoreMode::Memcpy, RestoreMode::InPlace] {
+            let mut server = server(vec![]);
+            hello(&mut server);
+            let base = snap(&mut server);
+            server.set_restore_mode(mode);
+            server.snapshot_meta.get_mut(&base.0).unwrap().event_history = None;
+            let error = server.handle(&Request::Replay(base)).unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("restored event history availability differs"),
+                "{error}"
+            );
+            assert!(server.vmm().is_none());
+        }
     }
 }

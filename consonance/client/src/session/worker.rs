@@ -42,6 +42,7 @@ const IMAGE_HELLO_TIMEOUT: Duration = Duration::from_secs(15);
 
 const INIT: u8 = 1;
 const STATE_HASH: u8 = 2;
+const EVENT_HISTORY: u8 = 17;
 const CONSOLE_TAIL: u8 = 3;
 const TELEMETRY: u8 = 4;
 const OWNED_PAGES: u8 = 5;
@@ -66,6 +67,9 @@ const ABANDONED: u8 = 2;
 pub trait SearchSession: std::fmt::Debug {
     fn setup_handle(&self) -> (SnapId, u64);
     fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>>;
+    fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+        Err("ordered event history is unavailable for this backend".into())
+    }
     fn cache_identity(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         self.state_hash()
     }
@@ -194,6 +198,10 @@ impl SearchSession for Session {
 
     fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
         Session::state_hash(self)
+    }
+
+    fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+        Session::event_history(self)
     }
 
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -1013,6 +1021,23 @@ impl SearchSession for WorkerSession {
             .map_err(|_| malformed("state hash"))?)
     }
 
+    fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+        let reply = self.call(&Out::op(EVENT_HISTORY), &[])?;
+        if reply.len() != 40 {
+            return Err(malformed("event history").into());
+        }
+        Ok(control_proto::EventHistory {
+            count: u64::from_le_bytes(
+                reply[..8]
+                    .try_into()
+                    .map_err(|_| malformed("event count"))?,
+            ),
+            digest: reply[8..]
+                .try_into()
+                .map_err(|_| malformed("event digest"))?,
+        })
+    }
+
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
         self.call(&Out::op(CONSOLE_TAIL), &[])
     }
@@ -1318,6 +1343,12 @@ impl Served {
         }
         let session = self.session()?;
         match op {
+            EVENT_HISTORY => {
+                input.finish()?;
+                let history = session.event_history()?;
+                out.0.extend_from_slice(&history.count.to_le_bytes());
+                out.0.extend_from_slice(&history.digest);
+            }
             STATE_HASH => {
                 input.finish()?;
                 out.0.extend_from_slice(&session.state_hash()?);
@@ -1576,6 +1607,13 @@ mod tests {
             Ok([self.current; 32])
         }
 
+        fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+            Ok(control_proto::EventHistory {
+                count: self.runs,
+                digest: [self.current; 32],
+            })
+        }
+
         fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
             Ok(b"tail".to_vec())
         }
@@ -1709,7 +1747,7 @@ mod tests {
             sidecar.extend_from_slice(b"HMSESS01");
             sidecar.extend_from_slice(&[0; 32]);
             sidecar.extend_from_slice(b"HMSSNAP1");
-            sidecar.extend_from_slice(&9u16.to_le_bytes());
+            sidecar.extend_from_slice(&10u16.to_le_bytes());
             sidecar.extend_from_slice(&4u16.to_le_bytes());
             for len in [vm_state.len() as u64, 0, policy.len() as u64, 1, 0] {
                 sidecar.extend_from_slice(&len.to_le_bytes());
@@ -1719,6 +1757,7 @@ mod tests {
             sidecar.extend_from_slice(&[fill; 32]);
             sidecar.extend_from_slice(&vm_state);
             sidecar.extend_from_slice(&policy);
+            sidecar.push(0);
             sidecar.push(0);
             let mut out = vec![0; extent_len(1, 0, sidecar.len()).unwrap()];
             write_extent(&mut out, &[(0, &[fill; 32], &[fill; 4096])], &[], &sidecar)?;
@@ -1859,6 +1898,22 @@ mod tests {
         ])
         .unwrap();
         WorkerSession::spawn(&launcher, &[start], b"i", &config(), &[], "fake").unwrap()
+    }
+
+    #[test]
+    fn worker_transports_ordered_event_history() {
+        let (mut session, server) = threaded_quarantining(3, None);
+        assert_eq!(
+            session.event_history().unwrap(),
+            control_proto::EventHistory {
+                count: 0,
+                digest: [3; 32]
+            }
+        );
+        session.run_until(20).unwrap();
+        assert_eq!(session.event_history().unwrap().count, 1);
+        drop(session);
+        server.join().unwrap();
     }
 
     #[test]

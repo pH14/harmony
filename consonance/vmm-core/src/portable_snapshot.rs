@@ -14,7 +14,7 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 7;
+const VERSION: u16 = 8;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -28,7 +28,7 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 9;
+const SPARSE_VERSION: u16 = 10;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_FLAG_TARGET_PAGES: u16 = 1 << 2;
@@ -41,7 +41,7 @@ const MAX_SPARSE_SIDECAR_LEN: usize = MAX_VM_STATE_LEN
     .saturating_add(MAX_CONTROL_LEN)
     .saturating_add(MAX_POLICY_LEN)
     .saturating_add(MAX_SUFFIX_LEN)
-    .saturating_add(160);
+    .saturating_add(201);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SparsePortableSnapshot {
@@ -63,6 +63,7 @@ pub struct SparsePortableSnapshotReceipt {
     pub sdk_events: u64,
     pub trace_events: u64,
     pub trace_schedules: u64,
+    pub event_history: Option<control_proto::EventHistory>,
     pub tainted: bool,
 }
 
@@ -83,6 +84,7 @@ pub(crate) struct SparsePortableSidecar {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) base_ram_digest: [u8; 32],
     pub(crate) target_pages_digest: Option<[u8; 32]>,
@@ -98,6 +100,7 @@ pub(crate) struct SparsePortableSidecarRef<'a> {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) base_ram_digest: [u8; 32],
     pub(crate) state_blob_suffix: &'a [u8],
@@ -113,6 +116,7 @@ pub(crate) struct PortableSnapshot {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
     pub(crate) control_state: Vec<u8>,
@@ -127,6 +131,7 @@ pub(crate) struct PortableSnapshotRef<'a> {
     pub(crate) sdk_events: u64,
     pub(crate) trace_events: u64,
     pub(crate) trace_schedules: u64,
+    pub(crate) event_history: Option<control_proto::EventHistory>,
     pub(crate) tainted: bool,
     pub(crate) state_hash: [u8; 32],
     pub(crate) control_state: &'a [u8],
@@ -158,6 +163,35 @@ pub enum PortableSnapshotError {
     Snapshot(#[from] SnapshotError),
     #[error("unknown portable snapshot handle {0}")]
     UnknownSnapshot(u64),
+}
+
+fn write_event_history<W: Write>(
+    writer: &mut W,
+    history: Option<control_proto::EventHistory>,
+) -> Result<(), PortableSnapshotError> {
+    writer.write_all(&[u8::from(history.is_some())])?;
+    if let Some(history) = history {
+        put_u64(writer, history.count)?;
+        writer.write_all(&history.digest)?;
+    }
+    Ok(())
+}
+
+fn read_event_history<R: Read>(
+    reader: &mut R,
+) -> Result<Option<control_proto::EventHistory>, PortableSnapshotError> {
+    let mut tag = [0];
+    reader.read_exact(&mut tag)?;
+    match tag[0] {
+        0 => Ok(None),
+        1 => {
+            let count = get_u64(reader)?;
+            let mut digest = [0; 32];
+            reader.read_exact(&mut digest)?;
+            Ok(Some(control_proto::EventHistory { count, digest }))
+        }
+        _ => Err(PortableSnapshotError::Malformed("event history presence")),
+    }
 }
 
 impl PortableSnapshotRef<'_> {
@@ -197,6 +231,7 @@ impl PortableSnapshotRef<'_> {
         }
         out.write_all(&policy)?;
         out.write_all(self.control_state)?;
+        write_event_history(&mut out, self.event_history)?;
         out.flush()?;
         let digest = out.finish();
         writer.write_all(&digest)?;
@@ -251,6 +286,7 @@ impl PortableSnapshot {
         let sdk_bytes = read_vec(&mut input, sdk_len)?;
         let policy_bytes = read_vec(&mut input, policy_len)?;
         let control_state = read_vec(&mut input, control_len)?;
+        let event_history = read_event_history(&mut input)?;
         let calculated = input.finish();
         let mut recorded = [0; 32];
         reader.read_exact(&mut recorded)?;
@@ -272,6 +308,7 @@ impl PortableSnapshot {
             sdk_events,
             trace_events,
             trace_schedules,
+            event_history,
             tainted: flags & FLAG_TAINTED != 0,
             state_hash,
             control_state,
@@ -340,6 +377,7 @@ fn encode_sparse_sidecar_with_vm_state(
             sdk_events: sidecar.sdk_events,
             trace_events: sidecar.trace_events,
             trace_schedules: sidecar.trace_schedules,
+            event_history: sidecar.event_history,
             tainted: sidecar.tainted,
             base_ram_digest: sidecar.base_ram_digest,
             state_blob_suffix: &sidecar.state_blob_suffix,
@@ -401,6 +439,7 @@ pub(crate) fn encode_sparse_sidecar_with_target_pages(
     out.extend_from_slice(&policy);
     out.extend_from_slice(sidecar.state_blob_suffix);
     out.extend_from_slice(sidecar.control_state);
+    write_event_history(&mut out, sidecar.event_history)?;
     Ok(out)
 }
 
@@ -446,6 +485,17 @@ pub(crate) fn decode_sparse_sidecar(
     let policy_bytes = input.section(policy_len)?;
     let state_blob_suffix = input.section(suffix_len)?;
     let control_state = input.section(control_len)?;
+    let history_tag = input.take(1)?[0];
+    let event_history = match history_tag {
+        0 => None,
+        1 => {
+            let count = input.u64()?;
+            let mut digest = [0; 32];
+            digest.copy_from_slice(input.take(32)?);
+            Some(control_proto::EventHistory { count, digest })
+        }
+        _ => return Err(PortableSnapshotError::Malformed("event history presence")),
+    };
     input.finish("sparse sidecar")?;
     let sdk = has_sdk.then(|| decode_sdk(&sdk_bytes)).transpose()?;
     let policy = ServiceConfig::decode(&policy_bytes)?;
@@ -457,6 +507,7 @@ pub(crate) fn decode_sparse_sidecar(
         sdk_events,
         trace_events,
         trace_schedules,
+        event_history,
         tainted: flags & SPARSE_FLAG_TAINTED != 0,
         base_ram_digest,
         target_pages_digest,
@@ -484,7 +535,7 @@ pub fn sparse_delta_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], Portab
     };
     let logical_sidecar = encode_sparse_sidecar_with_vm_state(&decoded, &vm_state)?;
     let mut digest = Sha256::new();
-    digest.update(b"consonance-sparse-delta-target-commitment-v2\0");
+    digest.update(b"consonance-sparse-delta-target-commitment-v3\0");
     digest.update(&logical_sidecar);
     Ok(digest.finalize().into())
 }
@@ -951,6 +1002,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: true,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"state-suffix",
@@ -971,6 +1023,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"state-suffix",
@@ -1127,6 +1180,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: true,
                 state_hash: [0xa5; 32],
                 control_state: control,
@@ -1155,6 +1209,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: true,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
@@ -1202,6 +1257,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: &suffix,
@@ -1247,6 +1303,7 @@ mod tests {
             sdk_events: 65,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [0xa5; 32],
             control_state: &[],
@@ -1265,6 +1322,7 @@ mod tests {
             sdk_events: 65,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: &[],
@@ -1353,14 +1411,14 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 7);
+        assert_eq!(VERSION, 8);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 9);
+        assert_eq!(SPARSE_VERSION, 10);
         assert_eq!(
             (
                 SPARSE_FLAG_SDK,
@@ -1378,10 +1436,10 @@ mod tests {
                 + MAX_CONTROL_LEN
                 + MAX_POLICY_LEN
                 + MAX_SUFFIX_LEN
-                + 160
+                + 201
         );
 
-        for old_version in [1_u16, 2, 3, 4, 5, 6, VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, VERSION + 1] {
             let mut old = encoded();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             refresh_digest(&mut old);
@@ -1404,6 +1462,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             state_hash: [0xa5; 32],
             control_state: &[],
@@ -1429,6 +1488,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             state_hash: [0xa5; 32],
             control_state,
@@ -1470,7 +1530,7 @@ mod tests {
             116,
             vm_state_start,
             sdk_last_threshold,
-            left.len() - 33,
+            left.len() - 34,
         ] {
             let mut right = left.clone();
             right[index] ^= 1;
@@ -1521,6 +1581,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
@@ -1539,6 +1600,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
@@ -1599,6 +1661,7 @@ mod tests {
                 sdk_events: decoded.sdk_events,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 state_hash: decoded.state_hash,
                 control_state: &decoded.control_state,
@@ -1636,6 +1699,7 @@ mod tests {
                 sdk_events: decoded.sdk_events,
                 trace_events: decoded.trace_events,
                 trace_schedules: decoded.trace_schedules,
+                event_history: decoded.event_history,
                 tainted: decoded.tainted,
                 base_ram_digest: decoded.base_ram_digest,
                 state_blob_suffix: &decoded.state_blob_suffix,
@@ -1677,7 +1741,7 @@ mod tests {
         ));
 
         let mut corrupted = good;
-        let body_last = corrupted.len() - 33;
+        let body_last = corrupted.len() - 34;
         corrupted[body_last] ^= 1;
         assert!(matches!(
             PortableSnapshot::read_from(corrupted.as_slice(), 8192),
@@ -1733,7 +1797,7 @@ mod tests {
             decode_sparse_sidecar(&bad_version),
             Err(PortableSnapshotError::BadVersion(u16::MAX))
         ));
-        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, SPARSE_VERSION + 1] {
+        for old_version in [1_u16, 2, 3, 4, 5, 6, 7, 8, 9, SPARSE_VERSION + 1] {
             let mut old = original.clone();
             old[8..10].copy_from_slice(&old_version.to_le_bytes());
             assert!(matches!(
@@ -1761,6 +1825,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"canonical-suffix",
@@ -1785,6 +1850,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: false,
             base_ram_digest: [0xa5; 32],
             state_blob_suffix: b"canonical-suffix",
@@ -1869,6 +1935,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 state_hash: [0; 32],
                 control_state: &[],
@@ -1887,6 +1954,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",
@@ -1921,6 +1989,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [7; 32],
             control_state: &[],
@@ -1956,6 +2025,7 @@ mod tests {
                 sdk_events: 0,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 state_hash: [0; 32],
                 control_state: &[],
@@ -2063,6 +2133,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [0; 32],
             control_state: &[],
@@ -2102,6 +2173,7 @@ mod tests {
             sdk_events: 0,
             trace_events: 0,
             trace_schedules: 0,
+            event_history: None,
             tainted: false,
             state_hash: [0; 32],
             control_state: &[],
@@ -2257,6 +2329,7 @@ mod tests {
             sdk_events: 2,
             trace_events: 17,
             trace_schedules: 5,
+            event_history: None,
             tainted: true,
             state_hash: [0xa5; 32],
             control_state: &[],
@@ -2322,6 +2395,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 17,
                 trace_schedules: 5,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: suffix,
@@ -2403,7 +2477,7 @@ mod tests {
         let vm_state_start = memory_start + memory_len;
         let sdk_start = vm_state_start + vm_state_len;
         let policy_start = sdk_start + sdk_len;
-        assert_eq!(policy_start + policy_len + 32, original.len());
+        assert_eq!(policy_start + policy_len + 1 + 32, original.len());
         for index in [memory_start, vm_state_start, sdk_start, policy_start] {
             let mut planted = original.clone();
             planted[index] ^= 1;
@@ -2506,6 +2580,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 state_hash: [0; 32],
                 control_state: &[],
@@ -2522,6 +2597,7 @@ mod tests {
                 sdk_events: 2,
                 trace_events: 0,
                 trace_schedules: 0,
+                event_history: None,
                 tainted: false,
                 base_ram_digest: [0xa5; 32],
                 state_blob_suffix: b"suffix",

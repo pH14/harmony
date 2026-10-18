@@ -430,6 +430,72 @@ mod live_kvm {
         );
     }
 
+    #[test]
+    #[ignore = "live KVM frozen CPU contract; requires /dev/kvm"]
+    fn production_cpuid_is_preserved_by_native_capability_admission() {
+        require_kvm();
+        let model = contract::cpuid_model();
+        let queries = [
+            (0, 0),
+            (1, 0),
+            (6, 0),
+            (7, 0),
+            (0xd, 0),
+            (0xd, 1),
+            (0xd, 2),
+            (0x8000_0001, 0),
+            (0x8000_0007, 0),
+            (0x8000_0008, 0),
+        ];
+        let mut ram = GuestRam::new(MMIO_RAM_LEN).unwrap();
+        let mut program = Vec::new();
+        for (slot, &(leaf, subleaf)) in queries.iter().enumerate() {
+            program.extend_from_slice(&[0x66, 0xb8]);
+            program.extend_from_slice(&u32::to_le_bytes(leaf));
+            program.extend_from_slice(&[0x66, 0xb9]);
+            program.extend_from_slice(&u32::to_le_bytes(subleaf));
+            program.extend_from_slice(&[0x0f, 0xa2]);
+            for (offset, modrm) in [(0, 0x06), (4, 0x1e), (8, 0x0e), (12, 0x16)] {
+                program.extend_from_slice(&[0x66, 0x89, modrm]);
+                program.extend_from_slice(&u16::to_le_bytes((0x2000 + slot * 16 + offset) as u16));
+            }
+        }
+        program.push(0xf4);
+        put_bytes(ram.as_mut_bytes(), MMIO_CODE_GPA, &program);
+        let mut machine = compose(
+            ram,
+            KvmBackend::new().unwrap(),
+            install_mmio_entry::<KvmBackend>,
+        );
+        let initial = machine.vcpu_record().unwrap();
+        assert_eq!(
+            machine.step().unwrap(),
+            Step::Terminal(TerminalReason::Idle)
+        );
+        for (slot, &(leaf, subleaf)) in queries.iter().enumerate() {
+            let base = model
+                .entries
+                .iter()
+                .find(|e| e.leaf == leaf && e.subleaf == subleaf)
+                .copied()
+                .unwrap();
+            let expected = contract::resolve_cpuid(base, initial.sregs.cr4, initial.xcr0);
+            let observed: Vec<_> = machine.guest_memory()[0x2000 + slot * 16..0x2010 + slot * 16]
+                .chunks_exact(4)
+                .map(|bytes| u32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect();
+            assert_eq!(
+                observed,
+                [expected.eax, expected.ebx, expected.ecx, expected.edx],
+                "CPUID {leaf:#x}.{subleaf}"
+            );
+        }
+        println!(
+            "KVM_CPUID_CONTRACT queries={} guest_execution=pass frozen_model=unchanged",
+            queries.len()
+        );
+    }
+
     fn amd_compatible_host() -> bool {
         std::fs::read_to_string("/proc/cpuinfo")
             .expect("read host CPU vendor")

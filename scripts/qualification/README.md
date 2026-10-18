@@ -1,5 +1,10 @@
 # Host SHA qualification
 
+The separate [native math corpus](native-math/README.md) retains one static
+executable and exact arithmetic observations across AMD/Intel hosts. It reports
+bounded agreements and differences while preserving standard math support and
+advisory replay CPU warnings.
+
 `python3 scripts/qualify-host-sha256.py --check` first builds `oci-support`, `unison`, and `searcher` independently, with no VMM feature
 unification. It reads compiler-artifact features from each actual target build
 and requires ARM acceleration on native ARM64 Linux/macOS, existing defaults on

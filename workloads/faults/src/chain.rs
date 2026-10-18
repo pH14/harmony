@@ -233,6 +233,9 @@ mod tests {
         HistoryReceipt::genesis(
             [3; 32],
             FaultEndpointCertificate::KvmWholeState([17; 32]),
+            crate::history::fixture_event_history(FaultEndpointCertificate::KvmWholeState(
+                [17; 32],
+            )),
             &FaultObservations::default(),
         )
         .unwrap()
@@ -246,6 +249,7 @@ mod tests {
             .extend(
                 FaultOperation::Wait(std::num::NonZeroU16::new(ticks).unwrap()).into(),
                 parent.endpoint(),
+                crate::history::fixture_event_history(parent.endpoint()),
                 &observation,
             )
             .unwrap()
@@ -272,7 +276,12 @@ mod tests {
             ..FaultObservations::default()
         };
         let divergent = root()
-            .extend(first.action().unwrap(), first.endpoint(), &observation)
+            .extend(
+                first.action().unwrap(),
+                first.endpoint(),
+                crate::history::fixture_event_history(first.endpoint()),
+                &observation,
+            )
             .unwrap();
         assert_eq!(divergent.path(), first.path());
         assert_eq!(chain.certified(&divergent), None);
