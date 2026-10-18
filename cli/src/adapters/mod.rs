@@ -95,6 +95,13 @@ pub fn select(workload: &Workload) -> Result<&'static dyn Package> {
         .ok_or_else(|| format!("unknown workload package {:?}", workload.package).into())
 }
 pub fn dispatch(request: Request) -> Result<u8> {
+    dispatch_with_diagnostics(request, &mut std::io::stderr())
+}
+
+fn dispatch_with_diagnostics(
+    request: Request,
+    diagnostics: &mut impl std::io::Write,
+) -> Result<u8> {
     if !matches!(
         request.operation,
         Operation::Inspect | Operation::Timeline | Operation::Logs
@@ -121,7 +128,7 @@ pub fn dispatch(request: Request) -> Result<u8> {
             &manifest.cpu_provenance,
             &crate::cpu_replay::CpuIdentity::current(),
         ) {
-            eprintln!("warning: {warning}");
+            let _ = writeln!(diagnostics, "warning: {warning}");
         }
     }
     package.execute(request)
@@ -153,14 +160,19 @@ mod tests {
         fn supports(&self, op: Operation) -> bool {
             matches!(
                 op,
-                Operation::Prepare | Operation::Search | Operation::Replay | Operation::Branch
+                Operation::Prepare
+                    | Operation::Search
+                    | Operation::Replay
+                    | Operation::Branch
+                    | Operation::Resume
+                    | Operation::Inspect
             )
         }
         fn init(&self, _: &Path, _: Option<String>, _: Option<String>) -> Result<()> {
             Ok(())
         }
         fn execute(&self, request: Request) -> Result<u8> {
-            if request.operation == Operation::Prepare {
+            if matches!(request.operation, Operation::Prepare | Operation::Inspect) {
                 return Ok(0);
             }
             let parent = request
@@ -203,6 +215,65 @@ mod tests {
         })
         .unwrap_err();
         assert!(error.to_string().contains("packaged strict host"));
+    }
+
+    #[test]
+    fn saved_execution_emits_cpu_warning_without_blocking_and_inspection_is_quiet() {
+        let root = tempfile::tempdir().unwrap();
+        let mut config = Config::default();
+        config.workload.package = "counter".into();
+        Counter.validate_runner(&mut config).unwrap();
+        let original = root.path().join("original");
+        dispatch(Request {
+            operation: Operation::Search,
+            config: config.clone(),
+            destination: Destination {
+                out: Some(original.clone()),
+                name: None,
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        let mut recorded = Manifest::read(&original).unwrap();
+        recorded.cpu_provenance.clear();
+        recorded.save(&original).unwrap();
+        for operation in [
+            Operation::Replay,
+            Operation::Branch,
+            Operation::Resume,
+            Operation::Search,
+            Operation::Inspect,
+        ] {
+            let mut diagnostics = Vec::new();
+            let result = dispatch_with_diagnostics(
+                Request {
+                    operation,
+                    config: config.clone(),
+                    selection: Some(Selection {
+                        run: original.display().to_string(),
+                        finding: None,
+                    }),
+                    destination: Destination {
+                        out: Some(root.path().join(format!("{operation:?}"))),
+                        name: None,
+                    },
+                    ..Default::default()
+                },
+                &mut diagnostics,
+            )
+            .unwrap();
+            assert_eq!(result, 0);
+            let output = String::from_utf8(diagnostics).unwrap();
+            if operation == Operation::Inspect {
+                assert!(output.is_empty());
+            } else {
+                assert!(
+                    output.contains("warning: Replay CPU portability warning:"),
+                    "{operation:?}: {output}"
+                );
+                assert!(output.contains("Native math may produce different result bits"));
+            }
+        }
     }
 
     #[test]
@@ -283,7 +354,7 @@ mod tests {
         let refused = root.path().join("refused");
         assert!(
             crate::workflow::saved(Request {
-                operation: Operation::Resume,
+                operation: Operation::Run,
                 selection: Some(Selection {
                     run: original.display().to_string(),
                     finding: None

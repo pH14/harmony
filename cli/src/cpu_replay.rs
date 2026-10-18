@@ -12,6 +12,8 @@ pub struct CpuIdentity {
     pub implementations: BTreeSet<BTreeMap<String, String>>,
     #[serde(default)]
     pub complete: bool,
+    #[serde(default)]
+    pub hybrid: bool,
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -59,6 +61,7 @@ impl CpuIdentity {
             architecture: architecture.to_owned(),
             implementations: BTreeSet::new(),
             complete: false,
+            hybrid: false,
         }
     }
 
@@ -70,9 +73,20 @@ impl CpuIdentity {
         }
         #[cfg(all(not(miri), target_os = "linux"))]
         {
-            std::fs::read_to_string("/proc/cpuinfo")
+            let identity = std::fs::read_to_string("/proc/cpuinfo")
                 .map(|text| parse_linux(architecture, &text))
-                .unwrap_or_else(|_| Self::unknown(architecture))
+                .unwrap_or_else(|_| Self::unknown(architecture));
+            #[cfg(target_arch = "x86_64")]
+            {
+                let maximum = std::arch::x86_64::__cpuid(0).eax;
+                let hybrid =
+                    maximum >= 7 && std::arch::x86_64::__cpuid_count(7, 0).edx & (1 << 15) != 0;
+                identity.with_hybrid_hint(hybrid)
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            {
+                identity
+            }
         }
         #[cfg(all(not(miri), target_os = "macos"))]
         {
@@ -104,19 +118,32 @@ impl CpuIdentity {
         }
     }
 
-    fn homogeneous_complete(&self) -> bool {
-        self.complete
-            && !self.architecture.is_empty()
-            && self.implementations.len() == 1
-            && self
-                .implementations
-                .first()
-                .is_some_and(|fields| !fields.is_empty())
+    #[cfg(any(all(target_os = "linux", target_arch = "x86_64", not(miri)), test))]
+    fn with_hybrid_hint(mut self, hybrid: bool) -> Self {
+        self.hybrid = hybrid;
+        self.complete &= !hybrid;
+        self
+    }
+
+    fn hybrid_topology(&self) -> bool {
+        self.hybrid
+            || self.implementations.iter().any(|fields| {
+                fields
+                    .get("hw.nperflevels")
+                    .and_then(|levels| levels.parse::<u64>().ok())
+                    .is_some_and(|levels| levels > 1)
+            })
+    }
+
+    fn heterogeneous(&self) -> bool {
+        self.implementations.len() > 1 || self.hybrid_topology()
     }
 }
 
 pub fn warning(recorded: &[CpuIdentity], current: &CpuIdentity) -> Option<String> {
-    let reason = if recorded.is_empty()
+    let reason = if current.heterogeneous() || recorded.iter().any(CpuIdentity::heterogeneous) {
+        "the observed host has multiple CPU implementation classes"
+    } else if recorded.is_empty()
         || !current.complete
         || current.architecture.is_empty()
         || current.implementations.is_empty()
@@ -126,14 +153,9 @@ pub fn warning(recorded: &[CpuIdentity], current: &CpuIdentity) -> Option<String
                 || identity.architecture.is_empty()
                 || identity.implementations.is_empty()
                 || identity.implementations.iter().any(BTreeMap::is_empty)
-        }) {
-        "the recorded or current CPU identity is missing or incomplete"
-    } else if !current.homogeneous_complete()
-        || recorded
-            .iter()
-            .any(|identity| !identity.homogeneous_complete())
+        })
     {
-        "the observed host has multiple CPU implementation classes"
+        "the recorded or current CPU identity is missing or incomplete"
     } else if recorded
         .iter()
         .any(|identity| identity.architecture != current.architecture)
@@ -243,6 +265,7 @@ fn parse_macos(architecture: &str, text: &str) -> CpuIdentity {
             BTreeSet::from([fields])
         },
         complete,
+        hybrid: false,
     }
 }
 
@@ -338,6 +361,33 @@ mod tests {
     }
 
     #[test]
+    fn linux_cpuid_hybrid_hint_warns_even_when_all_cpu_identity_fields_match() {
+        let text = linux_x86();
+        let identity = parse_linux(
+            "x86_64",
+            &format!("{text}\n{}", text.replace("processor: 0", "processor: 1")),
+        )
+        .with_hybrid_hint(true);
+        assert_eq!(identity.implementations.len(), 1);
+        assert!(identity.hybrid);
+        assert!(!identity.complete);
+        let message = warning(std::slice::from_ref(&identity), &identity).unwrap();
+        assert!(message.contains("multiple CPU implementation classes"));
+        assert!(!message.contains("missing or incomplete"));
+        assert!(
+            warning(&[], &identity)
+                .unwrap()
+                .contains("multiple CPU implementation classes")
+        );
+        let homogeneous = parse_linux("x86_64", linux_x86());
+        assert!(
+            warning(&[identity], &homogeneous)
+                .unwrap()
+                .contains("multiple CPU implementation classes")
+        );
+    }
+
+    #[test]
     fn incomplete_secondary_cpu_cannot_be_hidden_by_a_complete_primary() {
         let identity = parse_linux("x86_64", &format!("{}\nprocessor: 1\n", linux_x86()));
         assert_eq!(identity.implementations.len(), 1);
@@ -400,7 +450,17 @@ mod tests {
             &mac_x86().replace("hw.nperflevels: 1", "hw.nperflevels: 2"),
         );
         assert!(!identity.complete);
-        assert!(warning(std::slice::from_ref(&identity), &identity).is_some());
+        let message = warning(std::slice::from_ref(&identity), &identity).unwrap();
+        assert!(message.contains("multiple CPU implementation classes"));
+        assert!(!message.contains("missing or incomplete"));
+    }
+
+    #[test]
+    fn unknown_identity_keeps_the_missing_identity_warning_reason() {
+        let unknown = CpuIdentity::unknown("x86_64");
+        let message = warning(std::slice::from_ref(&unknown), &unknown).unwrap();
+        assert!(message.contains("missing or incomplete"));
+        assert!(!message.contains("multiple CPU implementation classes"));
     }
 
     #[test]
@@ -428,6 +488,17 @@ mod tests {
             serde_json::from_slice::<CpuIdentity>(&encoded).unwrap(),
             current
         );
+        let mut legacy = serde_json::to_value(&current).unwrap();
+        legacy.as_object_mut().unwrap().remove("hybrid");
+        assert_eq!(
+            serde_json::from_value::<CpuIdentity>(legacy).unwrap(),
+            current
+        );
+        let hybrid = current.with_hybrid_hint(true);
+        let encoded = serde_json::to_vec(&hybrid).unwrap();
+        let decoded = serde_json::from_slice::<CpuIdentity>(&encoded).unwrap();
+        assert_eq!(decoded, hybrid);
+        assert!(warning(std::slice::from_ref(&decoded), &decoded).is_some());
     }
 
     #[test]
