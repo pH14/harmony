@@ -411,6 +411,18 @@ CONSONANCE_ANALYSIS = Workflow(
     ),
 )
 
+CONSONANCE_NATIVE_MATH = Workflow(
+    path=f"{WORKFLOW_DIR}/consonance-native-math-qualification.yml",
+    name="Checks / Consonance / Native Math Qualification",
+    owner="Consonance",
+    triggers=("schedule", "workflow_dispatch"),
+    jobs=(
+        Job("Retained Native Math Executable", "full", 10),
+        Job("Pinned Native Math — Replica <N>", "full", 10),
+        Job("Bounded Native Math Results", "full", 10),
+    ),
+)
+
 CONSONANCE_HARDWARE = Workflow(
     path=f"{WORKFLOW_DIR}/consonance-hardware-qualification.yml",
     name="Checks / Consonance / Hardware Qualification",
@@ -784,6 +796,7 @@ WORKFLOWS = (
     CONSONANCE_CHECKS,
     CONSONANCE_ANALYSIS,
     CONSONANCE_HARDWARE,
+    CONSONANCE_NATIVE_MATH,
     CONSONANCE_RUNTIME,
     CONSONANCE_NESTED_HOST,
     CONSONANCE_XSAVE,
