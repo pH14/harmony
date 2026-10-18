@@ -1434,7 +1434,23 @@ mod policy_diagnostic {
         assert!(!backend.cpuid_installed);
         assert!(backend.nested_state_config.is_none());
         backend.state_mutation_guard.ensure_healthy().unwrap();
-        backend.set_policy(&X86Policy::default()).unwrap();
+        backend
+            .set_policy(&X86Policy {
+                cpuid: CpuidModel {
+                    entries: vec![CpuidEntry {
+                        leaf: 1,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+                msr_filter: MsrFilter {
+                    allow_inkernel: vec![MsrRange {
+                        base: 0x174,
+                        count: 3,
+                    }],
+                },
+            })
+            .unwrap();
         backend.save().unwrap();
         println!("KVM_CPUID_PREFLIGHT nested={format:?} rejected_before_mutation=pass");
     }
