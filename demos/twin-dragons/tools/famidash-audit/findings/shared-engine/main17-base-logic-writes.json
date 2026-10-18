@@ -1,0 +1,442 @@
+{
+  "input": "/workspace/famidash-soak/main17-metadata-base-witness.json.gz",
+  "case_sha256": "a7162e553a655467fbe49f85a3db018104c5344d3404bca3838d06be5e3d6832",
+  "rom_sha256": "776a0d2442e1535b1ee8e48618fcf764bbe2909b731fd1ced9682d3e88482df3",
+  "debug_sha256": "455189a140706132d06128b63486c7c171a86e008a0e9f715d7026de80d7833c",
+  "frame": 4940,
+  "intro_differences": [
+    5,
+    6
+  ],
+  "changes": [
+    {
+      "previous_flags": null,
+      "flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        8,
+        3
+      ],
+      "pc": "0xe53e",
+      "address": "0xe53e",
+      "previous_read": null,
+      "registers": [
+        39,
+        0,
+        0
+      ],
+      "context": {
+        "checked_y_fault": 0,
+        "cube_data": 0,
+        "collision": 8,
+        "collision_metatile": 28,
+        "currplayer_y": [
+          249,
+          75
+        ],
+        "currplayer_vel_y": [
+          138,
+          251
+        ],
+        "eject_D": 15,
+        "eject_U": 255,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_axis": 1,
+        "ss_base_remaining": 0,
+        "ss_old_x": 210,
+        "ss_old_y": 15,
+        "ss_origin_x": 254,
+        "ss_origin_y": 1,
+        "ss_dx": 4,
+        "ss_dy": 2,
+        "pit_previous_y": 10,
+        "pit_previous_collision": 8,
+        "pit_previous_metatile": 28,
+        "ss_x0": 254,
+        "ss_x1": 14,
+        "ss_y0": 241,
+        "ss_y1": 242,
+        "ss_abs_dx": 4,
+        "ss_abs_dy": 2,
+        "ss_base_open": 0,
+        "pit_previous_room": 3
+      }
+    },
+    {
+      "previous_flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        8,
+        3
+      ],
+      "flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        8,
+        255
+      ],
+      "pc": "0x8377",
+      "address": "0x837a",
+      "previous_read": {
+        "pc": "0x8377",
+        "address": "0x8379",
+        "value": 5
+      },
+      "registers": [
+        255,
+        181,
+        72
+      ],
+      "context": {
+        "checked_y_fault": 0,
+        "cube_data": 0,
+        "collision": 8,
+        "collision_metatile": 28,
+        "currplayer_y": [
+          249,
+          75
+        ],
+        "currplayer_vel_y": [
+          138,
+          251
+        ],
+        "eject_D": 15,
+        "eject_U": 255,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_axis": 1,
+        "ss_base_remaining": 0,
+        "ss_old_x": 210,
+        "ss_old_y": 15,
+        "ss_origin_x": 254,
+        "ss_origin_y": 1,
+        "ss_dx": 4,
+        "ss_dy": 2,
+        "pit_previous_y": 10,
+        "pit_previous_collision": 8,
+        "pit_previous_metatile": 28,
+        "ss_x0": 254,
+        "ss_x1": 14,
+        "ss_y0": 241,
+        "ss_y1": 242,
+        "ss_abs_dx": 4,
+        "ss_abs_dy": 2,
+        "ss_base_open": 0,
+        "pit_previous_room": 255
+      }
+    },
+    {
+      "previous_flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        8,
+        255
+      ],
+      "flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        0,
+        255
+      ],
+      "pc": "0xfabb",
+      "address": "0xfabb",
+      "previous_read": {
+        "pc": "0xfab9",
+        "address": "0xfaba",
+        "value": 129
+      },
+      "registers": [
+        0,
+        47,
+        0
+      ],
+      "context": {
+        "checked_y_fault": 0,
+        "cube_data": 0,
+        "collision": 0,
+        "collision_metatile": 47,
+        "currplayer_y": [
+          111,
+          80
+        ],
+        "currplayer_vel_y": [
+          118,
+          4
+        ],
+        "eject_D": 15,
+        "eject_U": 255,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_axis": 1,
+        "ss_base_remaining": 0,
+        "ss_old_x": 210,
+        "ss_old_y": 15,
+        "ss_origin_x": 254,
+        "ss_origin_y": 1,
+        "ss_dx": 4,
+        "ss_dy": 2,
+        "pit_previous_y": 10,
+        "pit_previous_collision": 8,
+        "pit_previous_metatile": 28,
+        "ss_x0": 254,
+        "ss_x1": 14,
+        "ss_y0": 241,
+        "ss_y1": 242,
+        "ss_abs_dx": 4,
+        "ss_abs_dy": 2,
+        "ss_base_open": 0,
+        "pit_previous_room": 255
+      }
+    },
+    {
+      "previous_flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        0,
+        255
+      ],
+      "flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        0,
+        3
+      ],
+      "pc": "0x8680",
+      "address": "0x8683",
+      "previous_read": {
+        "pc": "0x8680",
+        "address": "0x8682",
+        "value": 5
+      },
+      "registers": [
+        3,
+        0,
+        0
+      ],
+      "context": {
+        "checked_y_fault": 0,
+        "cube_data": 0,
+        "collision": 0,
+        "collision_metatile": 47,
+        "currplayer_y": [
+          111,
+          80
+        ],
+        "currplayer_vel_y": [
+          118,
+          4
+        ],
+        "eject_D": 15,
+        "eject_U": 255,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_axis": 1,
+        "ss_base_remaining": 0,
+        "ss_old_x": 210,
+        "ss_old_y": 15,
+        "ss_origin_x": 254,
+        "ss_origin_y": 1,
+        "ss_dx": 4,
+        "ss_dy": 2,
+        "pit_previous_y": 15,
+        "pit_previous_collision": 8,
+        "pit_previous_metatile": 28,
+        "ss_x0": 254,
+        "ss_x1": 14,
+        "ss_y0": 241,
+        "ss_y1": 242,
+        "ss_abs_dx": 4,
+        "ss_abs_dy": 2,
+        "ss_base_open": 0,
+        "pit_previous_room": 3
+      }
+    },
+    {
+      "previous_flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        8,
+        0,
+        3
+      ],
+      "flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        0,
+        0,
+        3
+      ],
+      "pc": "0x868d",
+      "address": "0x868d",
+      "previous_read": {
+        "pc": "0x868a",
+        "address": "0x868c",
+        "value": 5
+      },
+      "registers": [
+        0,
+        0,
+        0
+      ],
+      "context": {
+        "checked_y_fault": 0,
+        "cube_data": 0,
+        "collision": 0,
+        "collision_metatile": 47,
+        "currplayer_y": [
+          111,
+          80
+        ],
+        "currplayer_vel_y": [
+          118,
+          4
+        ],
+        "eject_D": 15,
+        "eject_U": 255,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_axis": 1,
+        "ss_base_remaining": 0,
+        "ss_old_x": 210,
+        "ss_old_y": 15,
+        "ss_origin_x": 254,
+        "ss_origin_y": 1,
+        "ss_dx": 4,
+        "ss_dy": 2,
+        "pit_previous_y": 15,
+        "pit_previous_collision": 0,
+        "pit_previous_metatile": 28,
+        "ss_x0": 254,
+        "ss_x1": 14,
+        "ss_y0": 241,
+        "ss_y1": 242,
+        "ss_abs_dx": 4,
+        "ss_abs_dy": 2,
+        "ss_base_open": 0,
+        "pit_previous_room": 3
+      }
+    },
+    {
+      "previous_flags": [
+        0,
+        0,
+        0,
+        1,
+        28,
+        0,
+        0,
+        3
+      ],
+      "flags": [
+        0,
+        0,
+        0,
+        1,
+        47,
+        0,
+        0,
+        3
+      ],
+      "pc": "0x8690",
+      "address": "0x8693",
+      "previous_read": {
+        "pc": "0x8690",
+        "address": "0x8692",
+        "value": 5
+      },
+      "registers": [
+        47,
+        0,
+        0
+      ],
+      "context": {
+        "checked_y_fault": 0,
+        "cube_data": 0,
+        "collision": 0,
+        "collision_metatile": 47,
+        "currplayer_y": [
+          111,
+          80
+        ],
+        "currplayer_vel_y": [
+          118,
+          4
+        ],
+        "eject_D": 15,
+        "eject_U": 255,
+        "ss_type": 0,
+        "ss_metatile": 0,
+        "ss_base_axis": 1,
+        "ss_base_remaining": 0,
+        "ss_old_x": 210,
+        "ss_old_y": 15,
+        "ss_origin_x": 254,
+        "ss_origin_y": 1,
+        "ss_dx": 4,
+        "ss_dy": 2,
+        "pit_previous_y": 15,
+        "pit_previous_collision": 0,
+        "pit_previous_metatile": 47,
+        "ss_x0": 254,
+        "ss_x1": 14,
+        "ss_y0": 241,
+        "ss_y1": 242,
+        "ss_abs_dx": 4,
+        "ss_abs_dy": 2,
+        "ss_base_open": 0,
+        "pit_previous_room": 3
+      }
+    }
+  ],
+  "endpoint": {
+    "level": 17,
+    "state": 2,
+    "x": 14335,
+    "y": 726,
+    "camera": 646,
+    "vy": 1142,
+    "mode": 6,
+    "gravity": 0,
+    "mini": 1,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  }
+}

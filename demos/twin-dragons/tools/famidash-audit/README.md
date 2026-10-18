@@ -85,7 +85,8 @@ resets that counter. Bounded searches cannot prove absence of every bug.
 traces. `export-witness.mjs` retains ordinary failing input and a full fresh trace;
 `dissonance-replay.mjs` and `fceumm.py` verify it in separate emulators. A
 repair must kill at the reviewed escape, preserve the approach, and precede
-any later original death. `compare-controls.mjs` records completion and coin
+any later original death. Fixed campaign checks also require death to remain
+committed and the level to reset within 180 released frames. `compare-controls.mjs` records completion and coin
 collection for paired reference, discovered clearing and retained coin paths.
 A timing divergence needs investigation; an old route can itself exploit a
 bug and is not automatically an intended-playability requirement.

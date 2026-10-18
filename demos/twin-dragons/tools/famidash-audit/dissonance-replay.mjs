@@ -44,6 +44,21 @@ if (fixed) {
   assert.ok(originalDeath < 0 || frames < originalDeath + 1, "the original later death is not a repair");
 } else assert.equal(frames, witness.trace.length);
 const endpoint = m.observe();
+let resetConfirmation = null;
+if (fixed) {
+  for (let after = 1; after <= 180; after++) {
+    m.core.step(0, 1);
+    const state = m.observe();
+    assert.notEqual(state.state, 3, "the dying input must not complete the level");
+    if (after <= 2) assert.ok(state.dead, "the death flag must remain set through the next logic frames");
+    if (after > 2 && !state.dead && state.x < endpoint.x - 128
+      && Math.abs(state.x - witness.trace[0].x) <= 256) {
+      resetConfirmation = { released_frames_after_death: after, endpoint: state };
+      break;
+    }
+  }
+  assert.ok(resetConfirmation, "the repaired input must actually reset to the level start");
+}
 let controlFrames = null;
 if (witness.control_actions) {
   const control = await replay(m, witness.options.side, witness.target_level, expand(witness.control_actions));
@@ -53,4 +68,4 @@ if (witness.control_actions) {
   controlFrames = control.length;
 }
 console.log(JSON.stringify({ status: fixed ? "patched-campaign-replay-verified" : "campaign-replay-verified",
-  frames, endpoint, comparison_start_frame: introFrames + 1, intro_difference_frames: introDifferences, control_frames: controlFrames, case_sha256: hash(bytes), rom_sha256: m.rom_sha256 }));
+  frames, endpoint, reset_confirmation: resetConfirmation, comparison_start_frame: introFrames + 1, intro_difference_frames: introDifferences, control_frames: controlFrames, case_sha256: hash(bytes), rom_sha256: m.rom_sha256 }));

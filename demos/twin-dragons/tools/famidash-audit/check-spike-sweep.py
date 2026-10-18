@@ -72,6 +72,7 @@ def run(source):
 unsigned char currplayer, wrap_mode, temp_x, temp_y, temp_room, collision, tmp2;
 unsigned char cube_data[2], pit_previous_room[2], pit_previous_x[2], pit_previous_y[2], pit_previous_collision[2];
 unsigned char collision_metatile, pit_previous_metatile[2];
+unsigned char gamemode, currplayer_mini, pit_previous_mode[2], pit_previous_mini[2];
 const unsigned char metatiles_bases[128] = {0};
 void bg_collision_sub(void) {}
 void check_pit_motion(void) {}

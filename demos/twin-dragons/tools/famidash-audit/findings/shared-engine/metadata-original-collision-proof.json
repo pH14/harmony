@@ -1,0 +1,21 @@
+{
+  "status": "all-original-collision-classes-preserved-byte-for-byte",
+  "builds": [
+    {
+      "side": "main",
+      "collision_sha256": "2b5b4ee72c3a8670c3000fd288abccaf3d866ecb73e0090391596fd52a7e2331"
+    },
+    {
+      "side": "b-sides",
+      "collision_sha256": "2b5b4ee72c3a8670c3000fd288abccaf3d866ecb73e0090391596fd52a7e2331"
+    },
+    {
+      "side": "c-sides",
+      "collision_sha256": "2b5b4ee72c3a8670c3000fd288abccaf3d866ecb73e0090391596fd52a7e2331"
+    },
+    {
+      "side": "d-sides",
+      "collision_sha256": "2b5b4ee72c3a8670c3000fd288abccaf3d866ecb73e0090391596fd52a7e2331"
+    }
+  ]
+}

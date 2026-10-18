@@ -1,0 +1,56 @@
+{
+  "purpose": "original-release-negative-control",
+  "first_difference": {
+    "frame": 454,
+    "original_game": {
+      "level": 21,
+      "state": 2,
+      "x": 1069,
+      "y": 880,
+      "camera": 694,
+      "vy": 881,
+      "mode": 6,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": true,
+      "debug": 0,
+      "invincible": 0,
+      "paused": 0
+    },
+    "prototype": {
+      "level": 21,
+      "state": 2,
+      "x": 1069,
+      "y": 880,
+      "camera": 694,
+      "vy": 881,
+      "mode": 6,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": false,
+      "debug": 0,
+      "invincible": 0,
+      "paused": 0
+    }
+  },
+  "endpoint_frame": 454,
+  "endpoint": {
+    "level": 21,
+    "state": 2,
+    "x": 1069,
+    "y": 880,
+    "camera": 694,
+    "vy": 881,
+    "mode": 6,
+    "gravity": 0,
+    "mini": 0,
+    "dual": 0,
+    "dead": true,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "rom_sha256": "ab24fedcfcf8d5f3e1f29958b3cd783ea986f7a5dcfe5ddc1fbd177cad756934"
+}

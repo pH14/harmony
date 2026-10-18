@@ -295,6 +295,44 @@ contacts, all with a one-pixel fractional-camera discrepancy in CPU probes.
 Three retained inputs—B-Sides 18, main 18, and main 40—now die on their reviewed
 frames under the metadata/fraction repair, with unchanged approaches in both
 cores. Their contextual collision traces and replay results are retained here.
-B-Sides 30 and C-Sides 21 encounter an earlier repaired contact and still need
-that earlier contact assessed; they are not strict proofs for their originally
-reported frames. No clean round has been counted.
+The original official ROMs independently reproduce all three contacts; the
+`*-official-*` witnesses record those identities. B-Sides 30 also has a real
+earlier collision at frame 596: the original centre query is one pixel above
+the physical centre and misses a bottom half slab. Both cores confirm the
+repair at that frame with the approach unchanged.
+
+C-Sides 21 candidate 412 is withdrawn as an upstream finding. The official
+ROM already kills that input at frame 454. An earlier prototype changed pit
+collision classes without updating every body-collision handler, making the
+later route reachable only in that prototype. The metadata build restores
+all 256 original collision bytes in every ROM; the byte-for-byte comparison
+and original-input negative control are retained. No clean round has been
+counted.
+
+
+The isolated original-release integration proof now includes C-Sides 18 Eon.
+The official ROM wraps vertically at frame 2,777 after a signed velocity
+addition. The minimal checked-add repair kills at the same frame with an
+unchanged approach in QuickNES and FCEUmm. An official C-Sides 19 witness
+also demonstrates the wrap, but its input diverges earlier under the isolated
+repair; it is evidence of the original failure, not a strict paired fix proof.
+
+A search on the metadata prototype found a surviving right-base crossing in
+Theory of Everything 2 (main 17), at frame 4,940. A redundant wave portal
+cleared history while the player was already a mini wave. CPU RAM writes
+confirm that the history invalidation skipped the crossing test. The isolated
+conditional-wave reset repair stops that input at the crossing in both cores.
+This is a gap in the proposed history guard, not a separate portal bug in the
+released engine, which has no such guard.
+
+`experimental-release-history.patch` generalizes the repair by recording mode
+and size with each player's collision sample. Actual shape changes invalidate
+comparison centrally; redundant portals retain it. Dual and single portals
+invalidate only a player whose position is spawned or resynchronized, and
+teleports invalidate only actual displacement. The latest combined build
+preserves all 109 levels' indexed geometry, original collision classes and
+base metadata. Both cores kill the TOE2 witness at frame 4,940 and confirm an
+actual reset 40 released frames later. Fixed campaign replay checks now require
+committed death followed by a reset, rather than accepting a transient flag.
+The next complete Dissonance search is running on these frozen ROMs. The
+three-consecutive-clean-round count remains zero.

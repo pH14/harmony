@@ -230,6 +230,18 @@ def verify_campaign(core, witness, fixed, intro_frames):
         assert original_death is None or len(trace) < original_death, "the original later death is not a repair"
     else:
         assert len(trace) == len(witness["trace"])
+    reset_confirmation = None
+    if fixed:
+        for after in range(1, 181):
+            core.step(0)
+            state = core.observe()
+            assert state["state"] != 3, "the dying input must not complete the level"
+            if after <= 2:
+                assert state["dead"], "the death flag must remain set through the next logic frames"
+            if after > 2 and not state["dead"] and state["x"] < trace[-1]["x"] - 128 and abs(state["x"] - witness["trace"][0]["x"]) <= 256:
+                reset_confirmation = {"released_frames_after_death": after, "endpoint": state}
+                break
+        assert reset_confirmation, "the repaired input must actually reset to the level start"
     control_status = "not-included-in-campaign-witness"
     if "control_actions" in witness:
         control = core.replay(witness["options"]["side"], witness["target_level"], witness["control_actions"])
@@ -239,7 +251,7 @@ def verify_campaign(core, witness, fixed, intro_frames):
         assert trace_hash(control[intro_frames:]) == expected_hash, "clearing control changed"
         control_status = "verified"
     return {"schema": 1, "status": "patched-campaign-replay-verified" if fixed else "independent-campaign-replay-verified",
-            "frames": len(trace), "endpoint": trace[-1], "comparison_start_frame": intro_frames + 1,
+            "frames": len(trace), "endpoint": trace[-1], "reset_confirmation": reset_confirmation, "comparison_start_frame": intro_frames + 1,
             "intro_difference_frames": differences, "clearing_control": control_status,
             "rom_sha256": hashlib.sha256(core.rom).hexdigest()}
 
