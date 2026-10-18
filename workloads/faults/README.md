@@ -550,10 +550,20 @@ digest commits its history root and ordered endpoint history. Reconstructed
 certificates without a source-bound digest describe the current executor; they
 do not establish the source run's intermediate states.
 
-Campaign suffix execution captures each runnable candidate and certificate in
-one bounded operation with one whole-state hash. Standalone snapshot capture
-hashes fresh live state. A healthy job whose last action is runnable reuses that
-candidate's hash for its final certificate; terminal and zero-action jobs obtain
+Campaign suffix execution and whole-tree import capture each runnable candidate
+and certificate in one bounded operation with one whole-state hash. Import keeps
+every action-prefix certificate and reuses its final captured snapshot. Starting
+a search from an explicit action prefix captures the final replayed action in
+that same operation; an empty prefix obtains fresh setup evidence. Integrity and
+typed incomplete-attempt checks run before captured evidence is accepted. Terminal,
+failed or watchdog-interrupted prefixes cannot return an earlier successful
+snapshot. Source identity checks and every intermediate imported certificate remain
+mandatory; candidate construction still clones the owned observation projection.
+Parent reconstruction inside campaign jobs still verifies every archived prefix
+through the existing fresh endpoint check; removing that separate duplicate hash
+is a follow-up, not part of import or startup capture reuse.
+Standalone snapshot capture hashes fresh live state. A healthy job whose last
+action is runnable reuses that candidate's hash for its final certificate; terminal and zero-action jobs obtain
 fresh final endpoint and ordered-history evidence. Missing, foreign, abandoned or
 unhashable sessions cannot supply certified KVM endpoints. Failed KVM jobs use an
 explicit whole-state-unavailable tag while preserving their checked logical

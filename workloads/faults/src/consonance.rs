@@ -1075,7 +1075,22 @@ impl FaultTarget {
         &mut self,
         action: FaultAction,
     ) -> Result<Option<FaultSnapshot>, String> {
-        let endpoint = self.apply_as(action, RunKind::New);
+        self.apply_and_snapshot_as(action, RunKind::New)
+    }
+
+    pub fn apply_replayed_and_snapshot(
+        &mut self,
+        action: FaultAction,
+    ) -> Result<Option<FaultSnapshot>, String> {
+        self.apply_and_snapshot_as(action, RunKind::Replay)
+    }
+
+    fn apply_and_snapshot_as(
+        &mut self,
+        action: FaultAction,
+        kind: RunKind,
+    ) -> Result<Option<FaultSnapshot>, String> {
+        let endpoint = self.apply_as(action, kind);
         self.verify_integrity().map_err(|error| error.to_string())?;
         match endpoint {
             Some(endpoint) => {
@@ -2444,6 +2459,7 @@ mod tests {
         current: u64,
         run_hashes: Option<Vec<[u8; 32]>>,
         run_hung: bool,
+        terminal_when_exhausted: bool,
         snapshots: BTreeMap<u64, [u8; 32]>,
         moment: u64,
         next_snap: u64,
@@ -2698,6 +2714,11 @@ mod tests {
             }
             if let Some(hashes) = &mut self.run_hashes {
                 if hashes.is_empty() {
+                    if self.terminal_when_exhausted {
+                        return Ok(StopReason::Quiescent {
+                            vtime: control_proto::Moment(self.moment),
+                        });
+                    }
                     return Err("scripted run has no state hash".into());
                 }
                 self.hash = Some(hashes.remove(0));
@@ -2774,6 +2795,7 @@ mod tests {
                 current: 1,
                 run_hashes: None,
                 run_hung: false,
+                terminal_when_exhausted: false,
                 snapshots: BTreeMap::new(),
                 moment: 0,
                 next_snap: 1,
@@ -2826,6 +2848,7 @@ mod tests {
             current: target.0,
             run_hashes: None,
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(target.0, commitment)]),
             moment: 0,
             next_snap: target.0,
@@ -3189,6 +3212,7 @@ mod tests {
             current: 1,
             run_hashes: None,
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::new(),
             moment: 0,
             next_snap: 1,
@@ -3224,6 +3248,7 @@ mod tests {
             current: 1,
             run_hashes: None,
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -3256,6 +3281,7 @@ mod tests {
             current: 1,
             run_hashes: Some(hashes),
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -3265,6 +3291,249 @@ mod tests {
 
     fn capture_hash_calls() -> u64 {
         thread_telemetry()["vmm.test.hash_calls"]
+    }
+
+    fn capture_fixture_workload(target: &FaultTarget) -> crate::campaign::FaultWorkload {
+        let backend = target
+            .config
+            .uml
+            .as_ref()
+            .map_or(GuestBackend::Vm, |launch| {
+                GuestBackend::Uml(Box::new(UmlGuest {
+                    profile: launch.profile.clone(),
+                    profile_identity_sha256: launch.expected_profile_identity_sha256.clone(),
+                    host: launch.expected_host.clone(),
+                    identity: "fixture-uml".into(),
+                    work_parent: PathBuf::new(),
+                }))
+            });
+        crate::campaign::fixture_workload(
+            &[],
+            &[],
+            &FaultConfig {
+                knobs: Vec::new(),
+                ram_mib: DEFAULT_RAM_MIB,
+                backend,
+                root: None,
+            },
+        )
+    }
+
+    #[test]
+    fn import_capture_hashes_every_actual_prefix_once_and_keeps_certificates() {
+        use searcher::search::campaign::TargetExecution;
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for depth in [1, 3] {
+            let mut target = unbooted_target();
+            let workload = capture_fixture_workload(&target);
+            let hashes = (0..depth).map(|at| [17 + at as u8; 32]).collect::<Vec<_>>();
+            LIVE.with(|slot| {
+                *slot.borrow_mut() = Some(scripted_capture_live_event_history(
+                    hashes.clone(),
+                    false,
+                    control_proto::EventHistory {
+                        count: 3,
+                        digest: [11; 32],
+                    },
+                ))
+            });
+            let before = capture_hash_calls();
+            let mut milestones = crate::archive::FaultMilestones::default();
+            let mut certificates = Vec::new();
+            let mut endpoint = None;
+            for (at, hash) in hashes.iter().enumerate() {
+                let snapshot = workload
+                    .apply_action_and_snapshot(&mut target, &action, &mut milestones)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(capture_hash_calls() - before, at as u64 + 1);
+                assert_eq!(snapshot.history.len(), at + 1);
+                assert_eq!(snapshot.event_history, Some((3, [11; 32])));
+                assert_eq!(
+                    snapshot.endpoint,
+                    Some(FaultEndpointCertificate::KvmWholeState(*hash))
+                );
+                let certificate = workload
+                    .candidate_replay_certificate(&snapshot)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(certificate, snapshot.history.certificates()[at].unwrap());
+                certificates.push(Some(certificate));
+                assert_eq!(snapshot.history.certificates(), certificates);
+                endpoint = Some(snapshot);
+            }
+            assert_eq!(capture_hash_calls() - before, depth as u64);
+            assert_eq!(Some(workload.snapshot(&mut target).unwrap()), endpoint);
+            assert_eq!(capture_hash_calls() - before, depth as u64 + 1);
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
+    }
+
+    #[test]
+    fn bounded_import_and_startup_capture_refuse_stale_success_after_stops() {
+        use searcher::search::campaign::TargetExecution;
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for startup in [false, true] {
+            for failure in ["terminal", "ordinary", "watchdog"] {
+                let mut target = unbooted_target();
+                let workload = capture_fixture_workload(&target);
+                let mut live = hashed_live([17; 32]);
+                live.session = Box::new(TimedOutRestore {
+                    run_hashes: Some(vec![[17; 32]]),
+                    run_hung: failure == "watchdog",
+                    terminal_when_exhausted: failure == "terminal",
+                    ..fixture_session()
+                });
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+                let mut milestones = crate::archive::FaultMilestones::default();
+                if startup {
+                    let result =
+                        crate::campaign::capture_replayed_prefix(&mut target, &[action, action]);
+                    assert!(result.is_err(), "startup {failure}");
+                    if failure == "watchdog" {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("campaign incomplete")
+                        );
+                    }
+                } else {
+                    let first = workload
+                        .apply_action_and_snapshot(&mut target, &action, &mut milestones)
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(first.history.len(), 1);
+                    let result =
+                        workload.apply_action_and_snapshot(&mut target, &action, &mut milestones);
+                    if failure == "watchdog" {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("campaign incomplete")
+                        );
+                    } else {
+                        assert!(result.unwrap().is_none(), "import {failure}");
+                    }
+                }
+                assert_eq!(target.history.len(), 1);
+                assert_eq!(target.watchdog_cutoffs() != 0, failure == "watchdog");
+                assert_eq!(target.failed(), failure != "terminal");
+                assert!(target.snapshot().unwrap().is_none());
+                LIVE.with(|slot| slot.borrow_mut().take());
+            }
+        }
+    }
+
+    #[test]
+    fn startup_capture_rejects_early_terminal_and_unavailable_empty_endpoint() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut target = unbooted_target();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(hashed_live([17; 32])));
+        assert!(
+            crate::campaign::capture_replayed_prefix(&mut target, &[action, action])
+                .unwrap_err()
+                .to_string()
+                .contains("terminated before")
+        );
+        assert_eq!(target.actions().len(), 1);
+        assert!(!target.failed());
+        LIVE.with(|slot| slot.borrow_mut().take());
+        let mut target = unbooted_target();
+        assert!(
+            crate::campaign::capture_replayed_prefix(&mut target, &[])
+                .unwrap_err()
+                .to_string()
+                .contains("unavailable")
+        );
+        assert_eq!(target.history.len(), 0);
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn replay_and_import_capture_preserve_uml_unavailability_without_kvm_hashing() {
+        use searcher::search::campaign::TargetExecution;
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for startup in [false, true] {
+            for depth in [0, 1, 3] {
+                let mut target = unbooted_uml_target();
+                let workload = capture_fixture_workload(&target);
+                let mut live = scripted_capture_live(vec![[17; 32]; depth], false);
+                live.session = Box::new(TimedOutRestore {
+                    run_hashes: Some(vec![[17; 32]; depth]),
+                    history_hung: true,
+                    ..fixture_session()
+                });
+                live.chain = Chain::new(
+                    Point {
+                        snap: SnapId(1),
+                        moment: 0,
+                    },
+                    None,
+                );
+                live.chain
+                    .certify(0, target.history.receipt().clone())
+                    .unwrap();
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+                let before = capture_hash_calls();
+                let snapshot = if startup {
+                    crate::campaign::capture_replayed_prefix(&mut target, &vec![action; depth])
+                        .unwrap()
+                } else {
+                    let mut milestones = crate::archive::FaultMilestones::default();
+                    let mut endpoint = None;
+                    for _ in 0..depth {
+                        endpoint = workload
+                            .apply_action_and_snapshot(&mut target, &action, &mut milestones)
+                            .unwrap();
+                    }
+                    endpoint.unwrap_or_else(|| workload.snapshot(&mut target).unwrap())
+                };
+                assert_eq!(capture_hash_calls(), before);
+                assert_eq!(snapshot.history.len(), depth);
+                assert_eq!(
+                    snapshot.endpoint,
+                    Some(FaultEndpointCertificate::UmlWholeStateUnavailable)
+                );
+                assert_eq!(snapshot.event_history, None);
+                assert_eq!(
+                    workload.candidate_replay_certificate(&snapshot).unwrap(),
+                    None
+                );
+                assert_eq!(snapshot.history.certificates(), vec![None; depth]);
+                LIVE.with(|slot| slot.borrow_mut().take());
+            }
+        }
+    }
+
+    #[test]
+    fn branch_prefix_capture_hashes_each_action_once_and_empty_setup_freshly() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for depth in [0, 1, 3] {
+            let mut target = unbooted_target();
+            LIVE.with(|slot| {
+                *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]; depth], false));
+            });
+            let before = capture_hash_calls();
+            let replay_before = thread_telemetry()["run.replay.count"];
+            let new_before = thread_telemetry()["run.new.count"];
+            let snapshot =
+                crate::campaign::capture_replayed_prefix(&mut target, &vec![action; depth])
+                    .unwrap();
+            assert_eq!(capture_hash_calls() - before, depth.max(1) as u64);
+            assert_eq!(snapshot.history.len(), depth);
+            assert_eq!(snapshot.observation, *target.observation());
+            if depth != 0 {
+                assert_eq!(
+                    thread_telemetry()["run.replay.count"] - replay_before,
+                    depth as u64
+                );
+                assert_eq!(thread_telemetry()["run.new.count"] - new_before, 0);
+            }
+            assert_eq!(target.snapshot().unwrap(), Some(snapshot));
+            assert_eq!(capture_hash_calls() - before, depth.max(1) as u64 + 1);
+        }
     }
 
     #[test]
@@ -3603,6 +3872,7 @@ mod tests {
             current: 1,
             run_hashes: None,
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::new(),
             moment: 0,
             next_snap: 2,
@@ -3644,6 +3914,7 @@ mod tests {
                 current: 1,
                 run_hashes: Some(vec![first_hash, [17; 32]]),
                 run_hung: false,
+                terminal_when_exhausted: false,
                 snapshots: BTreeMap::from([(1, [17; 32])]),
                 moment: 0,
                 next_snap: 1,
@@ -3734,6 +4005,7 @@ mod tests {
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -3774,6 +4046,7 @@ mod tests {
             current: 1,
             run_hashes: Some(vec![[23; 32], [17; 32]]),
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -3875,6 +4148,7 @@ mod tests {
             current: 1,
             run_hashes: None,
             run_hung: true,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -3938,6 +4212,7 @@ mod tests {
             current: 1,
             run_hashes: Some(Vec::new()),
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -3985,6 +4260,7 @@ mod tests {
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
             run_hung: true,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -4330,6 +4606,7 @@ mod tests {
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -4896,6 +5173,7 @@ mod tests {
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
             run_hung: false,
+            terminal_when_exhausted: false,
             snapshots: BTreeMap::from([(1, [17; 32])]),
             moment: 0,
             next_snap: 1,
@@ -4935,6 +5213,7 @@ mod tests {
                 current: 1,
                 run_hashes: Some(vec![[23; 32], [17; 32]]),
                 run_hung: false,
+                terminal_when_exhausted: false,
                 snapshots: BTreeMap::from([(1, [17; 32])]),
                 moment: 0,
                 next_snap: 1,
@@ -5834,6 +6113,7 @@ mod tests {
                 current: 1,
                 run_hashes: Some(vec![endpoint]),
                 run_hung: false,
+                terminal_when_exhausted: false,
                 snapshots: BTreeMap::from([(1, endpoint)]),
                 moment: 0,
                 next_snap: 1,
@@ -5944,6 +6224,7 @@ mod tests {
                     current: 1,
                     run_hashes: None,
                     run_hung: false,
+                    terminal_when_exhausted: false,
                     snapshots: BTreeMap::new(),
                     moment: 0,
                     next_snap: 1,

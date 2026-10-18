@@ -503,17 +503,7 @@ mod live {
             super::SearchStart::Actions(actions) => {
                 let mut target =
                     FaultTarget::fresh(&artifacts.kernel, &artifacts.initramfs, &config)?;
-                for action in actions {
-                    target.apply_replayed(*action);
-                    crate::campaign::require_completed_attempt(&target, "branch prefix replay")?;
-                }
-                if target.actions().len() != actions.len() {
-                    return Err("branch prefix terminated before its selected point".into());
-                }
-                let snapshot = target
-                    .snapshot()
-                    .map_err(|error| format!("certify branch endpoint: {error}"))?
-                    .ok_or("cannot search from a terminal point; rewind further")?;
+                let snapshot = crate::campaign::capture_replayed_prefix(&mut target, actions)?;
                 let snapshots = SnapshotCheckpoint {
                     format: game.checkpoint_format().into(),
                     entries: vec![SnapshotCheckpointEntry { id: 0, snapshot }],

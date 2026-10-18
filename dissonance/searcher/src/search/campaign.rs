@@ -436,6 +436,15 @@ pub trait TargetExecution: CampaignTypes {
         action: &Self::Action,
         milestones: &mut Self::Milestones,
     ) -> Result<(), Box<dyn Error>>;
+    fn apply_action_and_snapshot(
+        &self,
+        target: &mut Self::Target,
+        action: &Self::Action,
+        milestones: &mut Self::Milestones,
+    ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
+        self.apply_action(target, action, milestones)?;
+        Ok(None)
+    }
     fn rollout_observations(&self, _target: &Self::Target) -> Vec<Self::Observations> {
         Vec::new()
     }
@@ -1774,8 +1783,10 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         .ok_or("whole-tree import parent snapshot was released early")?,
                 )?;
                 let mut terminal = false;
+                let mut captured_endpoint = None;
                 for (index, action) in suffix.iter().enumerate() {
-                    workload.apply_action(target, action, &mut milestones)?;
+                    captured_endpoint =
+                        workload.apply_action_and_snapshot(target, action, &mut milestones)?;
                     if workload
                         .rollout_outcome(run, target)?
                         .disposition
@@ -1784,12 +1795,18 @@ impl<G: Workload + ?Sized> CoordinatorCore<G> {
                         terminal = true;
                         break;
                     }
-                    replay_certificates[index] = workload.current_replay_certificate(target)?;
+                    replay_certificates[index] = match captured_endpoint.as_ref() {
+                        Some(snapshot) => workload.candidate_replay_certificate(snapshot)?,
+                        None => workload.current_replay_certificate(target)?,
+                    };
                 }
                 if terminal {
                     None
                 } else {
-                    let rebuilt = workload.snapshot(target)?;
+                    let rebuilt = match captured_endpoint {
+                        Some(snapshot) => snapshot,
+                        None => workload.snapshot(target)?,
+                    };
                     if workload.candidate_replay_certificate(&rebuilt)?.is_some()
                         && replay_certificates.iter().any(Option::is_none)
                     {
@@ -6075,6 +6092,8 @@ mod tests {
     }
     std::thread_local! {
         static CERTIFIED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static FUSED_IMPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
     impl CampaignTypes for TestWorkload {
@@ -6296,7 +6315,28 @@ mod tests {
             target.apply(action);
             Ok(())
         }
+        fn apply_action_and_snapshot(
+            &self,
+            target: &mut Self::Target,
+            action: &Self::Action,
+            milestones: &mut Self::Milestones,
+        ) -> Result<Option<Self::Snapshot>, Box<dyn Error>> {
+            self.apply_action(target, action, milestones)?;
+            if FUSED_IMPORT.with(|enabled| enabled.get()) {
+                IMPORT_CALLS.with(|calls| {
+                    let (captured, current, snapshots) = calls.get();
+                    calls.set((captured + 1, current, snapshots));
+                });
+                Ok(Some(target.value))
+            } else {
+                Ok(None)
+            }
+        }
         fn snapshot(&self, target: &mut Self::Target) -> Result<Self::Snapshot, Box<dyn Error>> {
+            IMPORT_CALLS.with(|calls| {
+                let (captured, current, snapshots) = calls.get();
+                calls.set((captured, current, snapshots + 1));
+            });
             target.snapshot()
         }
         fn candidate_replay_certificate(
@@ -6309,6 +6349,10 @@ mod tests {
             &self,
             target: &Self::Target,
         ) -> Result<Option<[u8; 32]>, Box<dyn Error>> {
+            IMPORT_CALLS.with(|calls| {
+                let (captured, current, snapshots) = calls.get();
+                calls.set((captured, current + 1, snapshots));
+            });
             Ok(CERTIFIED_IMPORT.with(|enabled| {
                 (enabled.get()
                     && !OMIT_TEST_PREFIX_CERTIFICATE.with(|omit| omit.get() && target.value == 3))
@@ -8046,6 +8090,78 @@ mod tests {
             reports.len(),
             usize::try_from(counts.imported).expect("imported count") + 1
         );
+    }
+
+    #[test]
+    fn whole_tree_import_reuses_bounded_captures_and_keeps_every_prefix_certificate() {
+        for fused in [false, true] {
+            let workload = TestWorkload {
+                bootstrap_objective: false,
+                targets: None,
+            };
+            let actions = vec![
+                TestAction::new(1, 1),
+                TestAction::new(2, 1),
+                TestAction::new(3, 1),
+            ];
+            let source = TestArchiveReport {
+                entries: vec![
+                    ArchiveEntryReport {
+                        id: 0,
+                        parent_id: None,
+                        created_execution: 0,
+                        input: Input::default(),
+                        key: TestKey(0),
+                        milestones: (),
+                        snapshot_identity_sha256: None,
+                        selector: None,
+                    },
+                    ArchiveEntryReport {
+                        id: 1,
+                        parent_id: Some(0),
+                        created_execution: 0,
+                        input: Input {
+                            actions: actions.clone(),
+                        },
+                        key: TestKey(6),
+                        milestones: (),
+                        snapshot_identity_sha256: Some(
+                            workload.snapshot_identity_sha256(&6).unwrap(),
+                        ),
+                        selector: None,
+                    },
+                ],
+                marker: 0,
+            };
+            CERTIFIED_IMPORT.with(|enabled| enabled.set(true));
+            FUSED_IMPORT.with(|enabled| enabled.set(fused));
+            IMPORT_CALLS.with(|calls| calls.set((0, 0, 0)));
+            let mut core = CoordinatorCore::new(&workload, &(), 32_768, None);
+            core.archive.set_memory_budget(usize::MAX, |_| 1);
+            let result =
+                core.import_tree(&workload, &(), &mut TestTarget::default(), &source, None);
+            FUSED_IMPORT.with(|enabled| enabled.set(false));
+            CERTIFIED_IMPORT.with(|enabled| enabled.set(false));
+            assert_eq!(result.unwrap().imported, 1);
+            assert_eq!(
+                IMPORT_CALLS.with(|calls| calls.get()),
+                if fused { (3, 0, 1) } else { (0, 3, 2) }
+            );
+            let child = core.archive.index_of_id(1).unwrap();
+            core.archive
+                .set_memory_budget(core.archive.history_memory_bytes() + 1, |_| 1);
+            for _ in 0..8 {
+                core.archive.maintain_memory_budget().unwrap();
+            }
+            assert!(core.archive.entries[child].snapshot.is_none());
+            let (_, replay, certificates, pin) = core.archive.pin_job_origin(child).unwrap();
+            assert_eq!(replay, actions);
+            assert_eq!(
+                certificates,
+                vec![Some([1; 32]), Some([3; 32]), Some([6; 32])]
+            );
+            core.archive.unpin_job_origin(pin);
+        }
     }
 
     #[test]

@@ -60,7 +60,13 @@ action between a parent and its imported candidate, including candidates loaded
 from source snapshots. It compares a checkpointed endpoint with the rebuilt
 endpoint before binding any certificates to the archive path. A later snapshot
 eviction can therefore replay the imported path with the same checks as a live
-campaign.
+campaign. `TargetExecution::apply_action_and_snapshot` can return the actual
+runnable snapshot captured by that action. Import uses its certificate for that
+prefix and retains the final capture as the rebuilt endpoint after checking the
+execution disposition. A workload returning no capture uses separate certificate
+and snapshot operations. Empty suffixes acquire a fresh snapshot; terminal or
+failed actions cannot reuse an earlier capture. These values remain local to the
+import operation and preserve all source identity and intermediate-prefix checks.
 It also checks the fixed executor and selection-seed derivation labels. The stream and
 completed report record the loaded Harmony executable identity separately from the
 workload identity. Linux reads the loaded image through `/proc/self/exe`; macOS reads
