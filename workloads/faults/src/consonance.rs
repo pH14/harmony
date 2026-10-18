@@ -1268,16 +1268,20 @@ fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
 impl Live {
     fn state_hash_current(&mut self) -> Result<[u8; 32], String> {
         if self.abandoned || self.session.abandoned() {
-            return Err(format!("{INFRASTRUCTURE_FAILURE}the current job session was abandoned"));
+            return Err(format!(
+                "{INFRASTRUCTURE_FAILURE}the current job session was abandoned"
+            ));
         }
-        let result = self
+        let hash = self
             .session
             .state_hash()
-            .map_err(|error| session_failure("current job state hash", error.as_ref()));
+            .map_err(|error| session_failure("current job state hash", error.as_ref()))?;
         if self.abandoned || self.session.abandoned() {
-            return Err(format!("{INFRASTRUCTURE_FAILURE}the current job session was abandoned while hashing"));
+            return Err(format!(
+                "{INFRASTRUCTURE_FAILURE}the current job session was abandoned while hashing"
+            ));
         }
-        result
+        Ok(hash)
     }
 
     fn open(config: &Config) -> Result<Box<dyn SearchSession>, Box<dyn Error>> {
@@ -2431,6 +2435,7 @@ mod tests {
         run_events: Option<Vec<consonance_client::session::SdkEvent>>,
         abandon_on_hash: bool,
         hash_failure: bool,
+        hash_error: Option<fn() -> SessionError>,
         history: control_proto::EventHistory,
         history_failure: Option<fn() -> SessionError>,
         histories: BTreeMap<u64, control_proto::EventHistory>,
@@ -2450,6 +2455,9 @@ mod tests {
 
         fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
             self.hash_calls += 1;
+            if let Some(error) = self.hash_error {
+                return Err(error().into());
+            }
             if self.hash_failure {
                 return Err("ordinary hash failure".into());
             }
@@ -2755,6 +2763,7 @@ mod tests {
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
+                hash_error: None,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: None,
@@ -2804,6 +2813,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: target.0,
             run_hashes: None,
@@ -3164,6 +3174,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -3197,6 +3208,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -3227,6 +3239,7 @@ mod tests {
             run_events: None,
             abandon_on_hash,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(hashes),
@@ -3571,6 +3584,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
             current: 1,
             run_hashes: None,
@@ -3609,6 +3623,7 @@ mod tests {
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
+                hash_error: None,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![first_hash, [17; 32]]),
@@ -3696,6 +3711,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -3733,6 +3749,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -3831,6 +3848,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: None,
@@ -3891,6 +3909,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(Vec::new()),
@@ -3935,6 +3954,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
@@ -4278,6 +4298,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: true,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32]]),
@@ -4841,6 +4862,7 @@ mod tests {
             run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
+            hash_error: None,
             events: BTreeMap::new(),
             current: 1,
             run_hashes: Some(vec![[17; 32], [17; 32]]),
@@ -4877,6 +4899,7 @@ mod tests {
                 run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
+                hash_error: None,
                 events: BTreeMap::new(),
                 current: 1,
                 run_hashes: Some(vec![[23; 32], [17; 32]]),
@@ -5149,12 +5172,16 @@ mod tests {
     #[test]
     fn replay_certificate_v3_refuses_reused_v2_domains() {
         let hash = [17; 32];
-        let history = (2, [23; 32]);
+        let history = (0, [0; 32]);
         let observation = FaultObservations::default();
         let certificate = replay_endpoint_certificate(hash, history, &observation, false).unwrap();
         let mut snapshot = FaultSnapshot {
-            actions: vec![FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
-            prefix_certificates: vec![Some(certificate)],
+            history: FaultHistory::fixture(
+                &[FaultOperation::Wait(std::num::NonZeroU16::MIN).into()],
+                &[Some(certificate)],
+                Some(FaultEndpointCertificate::KvmWholeState(hash)),
+                &observation,
+            ),
             observation: observation.clone(),
             failed: false,
             endpoint: Some(FaultEndpointCertificate::KvmWholeState(hash)),
@@ -5174,7 +5201,12 @@ mod tests {
             ))
             .unwrap(),
         ] {
-            snapshot.prefix_certificates[0] = Some(Sha256::digest(previous).into());
+            snapshot.history = FaultHistory::fixture(
+                &snapshot.history.actions(),
+                &[Some(Sha256::digest(previous).into())],
+                snapshot.endpoint,
+                &observation,
+            );
             assert!(
                 validate_snapshot_prefix_certificates(&snapshot, false)
                     .unwrap_err()
@@ -5184,8 +5216,161 @@ mod tests {
     }
 
     #[test]
+    fn retiring_hash_calls_preserve_the_returned_failure_cause() {
+        for failure in [
+            Some((|| SessionError::Hung(WALL_LIMIT)) as fn() -> SessionError),
+            Some(
+                (|| SessionError::Infrastructure("host disconnected".into()))
+                    as fn() -> SessionError,
+            ),
+            Some(
+                (|| SessionError::Control("malformed complete reply".into()))
+                    as fn() -> SessionError,
+            ),
+            None,
+        ] {
+            let mut live = hashed_live([17; 32]);
+            live.session = Box::new(TimedOutRestore {
+                hash_error: failure,
+                abandon_on_hash: true,
+                ..fixture_session()
+            });
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let error = unbooted_target().state_hash_current().unwrap_err();
+            let expected =
+                failure.map(|failure| session_failure("current job state hash", &failure()));
+            if let Some(expected) = expected {
+                assert_eq!(error, expected);
+            } else {
+                assert!(error.starts_with(INFRASTRUCTURE_FAILURE), "{error}");
+                assert!(error.contains("abandoned while hashing"), "{error}");
+            }
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        }
+    }
+
+    #[test]
+    fn receipt_reconstruction_and_imported_roots_preserve_host_failure_provenance() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        for rooted in [false, true] {
+            for history_failure in [false, true] {
+                for failure in [
+                    None,
+                    Some((|| SessionError::Hung(WALL_LIMIT)) as fn() -> SessionError),
+                    Some(
+                        (|| SessionError::Infrastructure("owned worker disconnected".into()))
+                            as fn() -> SessionError,
+                    ),
+                    Some((|| SessionError::Abandoned) as fn() -> SessionError),
+                    Some(
+                        (|| SessionError::Control("malformed complete reply".into()))
+                            as fn() -> SessionError,
+                    ),
+                ] {
+                    let mut source_target = unbooted_target();
+                    LIVE.with(|slot| {
+                        *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false))
+                    });
+                    let mut snapshot = source_target.apply_and_snapshot(action).unwrap().unwrap();
+                    let mut source = LIVE.with(|slot| slot.borrow_mut().take().unwrap());
+                    let mut session = fixture_session();
+                    session.run_hashes = Some(vec![[17; 32]]);
+                    let mut live = hashed_live([17; 32]);
+                    if rooted {
+                        let point = source.chain.point(source.chain.links() - 1);
+                        let root = export_root(source.session.as_mut(), point.snap, [17; 32], &[])
+                            .unwrap();
+                        let (imported, moment, _) = import_root(&mut session, &root).unwrap();
+                        session.replay_snapshot(imported).unwrap();
+                        session.moment = moment;
+                        snapshot.history = FaultHistory::genesis(
+                            HistoryReceipt::genesis(
+                                [0; 32],
+                                snapshot.endpoint.unwrap(),
+                                snapshot.event_history,
+                                &snapshot.observation,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        live.chain = Chain::new(
+                            Point {
+                                snap: imported,
+                                moment,
+                            },
+                            None,
+                        );
+                        live.chain
+                            .certify(0, snapshot.history.receipt().clone())
+                            .unwrap();
+                        live.setup = imported;
+                    }
+                    drop(source);
+                    session.hash_calls = 0;
+                    if history_failure {
+                        session.history_failure = failure;
+                    } else {
+                        session.hash_error = failure;
+                        session.abandon_on_hash = failure.is_some();
+                    }
+                    live.session = Box::new(session);
+                    LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+                    validate_snapshot_prefix_certificates(&snapshot, false).unwrap();
+                    let before = thread_telemetry();
+                    let mut target = unbooted_target();
+                    let result = target.restore(&snapshot);
+                    let after = thread_telemetry();
+                    assert_eq!(
+                        after["run.rebuild.count"] - before["run.rebuild.count"],
+                        u64::from(!rooted)
+                    );
+                    assert!(after["vmm.test.hash_calls"] > before["vmm.test.hash_calls"]);
+                    if let Some(failure) = failure {
+                        let failure = failure();
+                        let ordinary = matches!(failure, SessionError::Control(_));
+                        let watchdog = matches!(failure, SessionError::Hung(_));
+                        if ordinary {
+                            assert!(
+                                result
+                                    .unwrap_err()
+                                    .to_string()
+                                    .contains("malformed complete reply")
+                            );
+                            assert!(!target.infrastructure_failure());
+                            assert_eq!(target.watchdog_cutoffs(), 0);
+                        } else {
+                            result.unwrap();
+                            assert_eq!(target.infrastructure_failure(), !watchdog);
+                            assert_eq!(target.watchdog_cutoffs(), u64::from(watchdog));
+                            assert!(target.actions().is_empty());
+                            assert!(!target.found_bug());
+                            assert!(target.snapshot().unwrap().is_none());
+                            assert_eq!(target.execution_ticks(), 17);
+                            assert!(
+                                crate::campaign::require_completed_attempt(
+                                    &target,
+                                    "receipt reconstruction"
+                                )
+                                .unwrap_err()
+                                .to_string()
+                                .contains("reservation not admitted")
+                            );
+                        }
+                    } else {
+                        result.unwrap();
+                        assert_eq!(target.history, snapshot.history);
+                        assert!(!target.failed());
+                    }
+                    LIVE.with(|slot| slot.borrow_mut().take());
+                }
+            }
+        }
+    }
+
+    #[test]
     fn ordered_history_preserves_typed_host_failure_before_admission() {
         let snapshot = FaultSnapshot {
+            history: FaultHistory::genesis(fixture_genesis()).unwrap(),
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
@@ -5299,6 +5484,7 @@ mod tests {
         };
         let mut target = unbooted_target();
         let snapshot = FaultSnapshot {
+            history: FaultHistory::genesis(fixture_genesis()).unwrap(),
             endpoint: Some(FaultEndpointCertificate::KvmWholeState([17; 32])),
             event_history: Some((0, [0; 32])),
             ..FaultSnapshot::default()
@@ -5518,6 +5704,7 @@ mod tests {
             live.session = Box::new(TimedOutRestore {
                 histories: BTreeMap::new(),
                 hash_failure: false,
+                hash_error: None,
 
                 hash_calls: 0,
                 replay_calls: 0,
@@ -5626,6 +5813,7 @@ mod tests {
                 live.session = Box::new(TimedOutRestore {
                     histories: BTreeMap::new(),
                     hash_failure: false,
+                    hash_error: None,
 
                     hash_calls: 0,
                     replay_calls: 0,

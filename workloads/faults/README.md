@@ -395,7 +395,13 @@ also advance because observations now encode the distinct infrastructure flag. T
 combined replay endpoint uses certificate domain v3, binding ordered event history
 and infrastructure-marked observations under one schema. Reading ordered history
 preserves typed host failures and rejects a known abandoned matching session as
-incomplete; missing or mismatched session identities remain ordinary errors. Ordinary
+incomplete; missing or mismatched session identities remain ordinary errors. The
+shared hash helper retains the actual error even when that call retires the
+session: a timeout stays a timeout and a malformed reply stays an ordinary error.
+A successful hash from a session retired during the call cannot certify a
+continuation. These checks also cover receipt reconstruction and imported roots.
+Execution identity v10 separates the combined contract from the earlier receipt-only
+identity. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
 also an infrastructure failure. Completed reports still expose
 `execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
