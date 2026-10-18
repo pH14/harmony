@@ -788,6 +788,7 @@ CONSONANCE_UML = Workflow(
                 "uml::host_failure_provenance *",
                 "uml::checkpoint_host_failure dirty_page_failure_after_a_published_checkpoint_is_infrastructure",
                 "uml::fsgsbase_restore direct_fs_gs_bases_survive_reused_and_fresh_restore",
+                "faults-workload consonance::infrastructure_tests::published_uml_host_failure_cannot_enter_a_campaign",
             ),
             select="rust_checks"),
         Job("UML Qualification — <Target>", "pr", 15, select="rust_checks"),

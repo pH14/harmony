@@ -25,8 +25,14 @@ def main() -> None:
     archive = bytearray()
     add_entry(archive, 1, "dev", 0o040755)
     add_entry(archive, 2, "dev/console", 0o020600, major=5, minor=1)
-    add_entry(archive, 3, "init", 0o100755, fixture)
-    add_entry(archive, 4, "TRAILER!!!", 0)
+    name = sys.argv[3].lstrip("/") if len(sys.argv) > 3 else "init"
+    parents = list(Path(name).parents)[:-1]
+    inode = 3
+    for parent in reversed(parents):
+        add_entry(archive, inode, str(parent), 0o040755)
+        inode += 1
+    add_entry(archive, inode, name, 0o100755, fixture)
+    add_entry(archive, inode + 1, "TRAILER!!!", 0)
     with output.open("wb") as target, gzip.GzipFile(fileobj=target, mode="wb",
                                                      filename="", mtime=0,
                                                      compresslevel=9) as zipped:

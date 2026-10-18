@@ -375,7 +375,10 @@ full-state replay equivalence.
 
 The session records `watchdog_cutoffs` when a guest action or parent
 reconstruction exceeds its host progress bound, including fresh and in-place
-UML restores. A campaign treats any such cutoff as infrastructure incompleteness:
+UML restores. Typed session infrastructure errors and abandoned sessions carry
+an independent `infrastructure_failure` flag; they do not increment the timeout
+counter. Neither cause is guest bug evidence. A campaign treats either cause as
+infrastructure incompleteness:
 the affected reservation returns an error before admission, result certification,
 selection accounting, mixture updates or duration feedback. If a suffix already
 completed some actions, none of that job's actions or candidates are admitted.
@@ -385,8 +388,10 @@ The campaign stops with an explicit incomplete error instead of writing a
 completed report. Previously admitted stream records are flushed and existing
 search checkpoints remain available; the incomplete stream has no successful
 completion record. A later search can resume an earlier complete checkpoint.
-The recorded `host_failure_policy = watchdog_incomplete_v1` binds this behavior;
-streams and checkpoints with an absent or different policy are refused. Ordinary
+The recorded `host_failure_policy = host_incomplete_v2` binds this behavior;
+streams and checkpoints with an absent or different policy are refused, including
+the earlier watchdog-only policy. The execution and endpoint-certificate identities
+also advance because observations now encode the distinct infrastructure flag. Ordinary
 guest terminal outcomes retain their existing meaning. An outer CLI timeout is
 also an infrastructure failure. Completed reports still expose
 `execution_failures` and `watchdog_cutoffs`; a host cutoff cannot contribute to
