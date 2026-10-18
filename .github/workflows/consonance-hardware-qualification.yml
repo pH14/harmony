@@ -381,9 +381,142 @@ jobs:
           path: x2-hunt-report.txt
           if-no-files-found: error
 
+  x3-artifact:
+    name: Retained Linux Continuation Executable
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: guest-image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x86-guest-image
+          path: nix-guest-output
+      - name: Verify locked Linux image
+        run: (cd nix-guest-output && sha256sum -c guest-image-report.txt)
+      - name: Install retained executable toolchain
+        run: |
+          rustup toolchain install "${HARMONY_RUST_TOOLCHAIN}" --profile minimal --target x86_64-unknown-linux-musl
+          rustup default "${HARMONY_RUST_TOOLCHAIN}"
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build owned PID 1 and retain one execution artifact
+        run: |
+          source consonance/harmony-linux/linux/versions.lock
+          mkdir -p consonance/harmony-linux/dl
+          curl --fail --location --retry 3 "$KERNEL_URL" -o "consonance/harmony-linux/dl/$(basename "$KERNEL_URL")"
+          bash consonance/harmony-linux/linux/build-continuation-initramfs.sh
+          python3 scripts/qualify-linux-continuation.py bundle x3-bundle \
+            --kernel nix-guest-output/x86_64/bzImage \
+            --initramfs consonance/harmony-linux/build/initramfs-continuation.cpio.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: x3-executable
+          path: x3-bundle
+          if-no-files-found: error
+
+  x3-export:
+    name: Linux Composed Continuation Export
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: x3-artifact
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x3-executable
+          path: x3-bundle
+      - name: Run local continuation arms and retain a completed cut
+        run: |
+          sudo chmod 666 /dev/kvm
+          sudo cat /sys/class/dmi/id/product_uuid | tr '[:upper:]' '[:lower:]' > "$RUNNER_TEMP/host-instance-id"
+          python3 scripts/qualify-linux-continuation.py run x3-bundle x3-export \
+            --test linux_snapshot_continuation::composed_linux_snapshot_continuation \
+            --host-id-file "$RUNNER_TEMP/host-instance-id" --ignored
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x3-export
+          path: x3-export
+          if-no-files-found: error
+
+  x3-import:
+    name: Linux Composed Continuation Import — Replica ${{ matrix.replica }}
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: [x3-artifact, x3-export]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: x3-executable
+          path: x3-bundle
+      - uses: actions/download-artifact@v4
+        with:
+          name: x3-export
+          path: x3-export
+      - name: Import exact retained Linux snapshot on another host
+        run: |
+          sudo chmod 666 /dev/kvm
+          sudo cat /sys/class/dmi/id/product_uuid | tr '[:upper:]' '[:lower:]' > "$RUNNER_TEMP/host-instance-id"
+          python3 scripts/qualify-linux-continuation.py run x3-bundle x3-import \
+            --test linux_snapshot_continuation::composed_linux_snapshot_continuation \
+            --host-id-file "$RUNNER_TEMP/host-instance-id" --import-from x3-export --ignored
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x3-import-${{ matrix.replica }}
+          path: x3-import
+          if-no-files-found: error
+
+  x3-compare:
+    name: Linux Composed Continuation Results
+    if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: [x3-export, x3-import]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require complete export and import jobs
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: python3 -c 'import json, os; assert all(job["result"] == "success" for job in json.loads(os.environ["JOB_RESULTS"]).values())'
+      - uses: actions/download-artifact@v4
+        with:
+          name: x3-executable
+          path: x3-bundle
+      - uses: actions/download-artifact@v4
+        with:
+          name: x3-export
+          path: x3-export
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: x3-import-*
+          path: x3-imports
+      - name: Require supported cross-vendor continuation
+        run: |
+          python3 scripts/qualify-linux-continuation.py compare x3-bundle \
+            x3-export/receipt.json x3-qualification.json x3-imports/*/receipt.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x3-qualification
+          path: x3-qualification.json
+          if-no-files-found: error
+
   check:
     name: Results
-    needs: [probe, x1-artifact, x1-minimal-guest, guest-image, n6-instruction-sweep, go-runtime, x2-linux-virtual_time, x2-intel-hunt, snapshot-hardware]
+    needs: [probe, x1-artifact, x1-minimal-guest, guest-image, n6-instruction-sweep, go-runtime, x2-linux-virtual_time, x2-intel-hunt, snapshot-hardware, x3-artifact, x3-export, x3-import, x3-compare]
     if: always() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 45

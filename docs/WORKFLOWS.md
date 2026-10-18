@@ -434,6 +434,16 @@ compiler/library provenance, and exclusions are documented beside the
 [corpus](../scripts/qualification/native-math/README.md). This does not alter
 standard-library admission or advisory CPU replay warnings.
 
+The hardware workflow's Linux composed continuation jobs retain one static
+executable and its exact kernel/initramfs, export a completed Linux cut, and
+run fresh imports on six distinct runner instances. The required aggregate
+checks local uninterrupted/capture/fresh/reused controls and guest-originated
+RAM/SIMD/x87/timer/entropy observations, then requires a successful Intel/AMD
+host-pair import. Documented admission refusals remain explicit evidence and
+cannot satisfy that supported migration requirement. The bounded registry,
+commands and exclusions are in
+[`scripts/qualification/README.md`](../scripts/qualification/README.md#composed-linux-continuation).
+
 The hardware workflow builds `x86_kvm_virtual_time` once as a static musl test
 executable and distributes the exact retained bytes to both X1 replicas. Each
 replica runs the registered repeatability, placement and negative-control tests
