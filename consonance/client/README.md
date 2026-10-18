@@ -414,13 +414,14 @@ retains refused admission work when that boundary needs observation.
 Sites are `admission`, `session_boundary`, `launcher_before/after`,
 `rpc_before/after`, `receive`, `handled`, `sent`, `publication_before/after`,
 `control_before/after`, and `sdk_request/response`. Direct export uses four
-parent sites: `export_before` before EXPORT, `extent_requested` after NEED_EXTENT,
+parent sites: `export_before` before EXPORT, `extent_requested` after the first
+reply (NEED_EXTENT or FAILED),
 `extent_allocated` after the allocator callback before FD handoff, and
 `export_completed` after completion reception. The child reverse exchange uses
 `extent_before` before NEED_EXTENT, `extent_sent` after that send before waiting,
-and `extent_received` after the allocation response before mapping. These sites
-count the existing checks; they add no guard calls or new protocol transitions. The serving loop's `receive`
-check is its one initial check; each `sent` check also covers the next receive.
+and `extent_received` after the allocation response before mapping. The serving
+loop's `receive` check is its one initial check; each `sent` check also covers the
+next receive.
 Unclassified public session boundaries remain explicit `session_boundary` entries.
 Core hook tags describe generic control/SDK boundaries; executable policy remains
 in the client. Each site exports dispatch attempts, errors and host `ns`, fixture
