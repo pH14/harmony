@@ -37,6 +37,7 @@ use super::{SdkEvent, Session, SessionConfig, SessionError, service_branch_spec}
 use crate::ancillary::parse_control_rights;
 use crate::cache::segments::SharedRange;
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
+use crate::copy_work::{CopySite, CopyWork};
 
 pub const WORKER_FD_ENV: &str = "HARMONY_SESSION_WORKER_FD";
 const HEADER: usize = 16;
@@ -394,11 +395,17 @@ fn transport_error(error: io::Error) -> SessionError {
 }
 
 #[derive(Debug, Default)]
-struct Out(Vec<u8>);
+struct Out(Vec<u8>, Option<Arc<CopyWork>>);
 
 impl Out {
+    fn measured(op: u8, owner: &Arc<CopyWork>) -> Self {
+        Self(vec![op], Some(Arc::clone(owner)))
+    }
+    fn measured_empty(owner: &Arc<CopyWork>) -> Self {
+        Self(Vec::new(), Some(Arc::clone(owner)))
+    }
     fn op(op: u8) -> Self {
-        Self(vec![op])
+        Self(vec![op], None)
     }
 
     fn u8(&mut self, value: u8) -> &mut Self {
@@ -418,6 +425,9 @@ impl Out {
     fn bytes(&mut self, value: &[u8]) -> &mut Self {
         self.len(value.len());
         self.0.extend_from_slice(value);
+        if let Some(owner) = &self.1 {
+            owner.copied(CopySite::Encode, value.len());
+        }
         self
     }
 
@@ -432,6 +442,11 @@ impl Out {
 struct In<'a>(&'a [u8]);
 
 impl<'a> In<'a> {
+    fn owned_bytes(&mut self, owner: &CopyWork) -> io::Result<Vec<u8>> {
+        let bytes = self.bytes()?.to_vec();
+        owner.copied(CopySite::Decode, bytes.len());
+        Ok(bytes)
+    }
     fn take(&mut self, len: usize) -> io::Result<&'a [u8]> {
         if self.0.len() < len {
             return Err(malformed("truncated"));
@@ -814,7 +829,31 @@ struct Mapping {
 }
 
 impl Mapping {
+    #[cfg(test)]
     fn new(fd: BorrowedFd<'_>, offset: usize, len: usize, writable: bool) -> io::Result<Self> {
+        Self::measured(fd, offset, len, writable, &CopyWork::default())
+    }
+    fn measured(
+        fd: BorrowedFd<'_>,
+        offset: usize,
+        len: usize,
+        writable: bool,
+        work: &CopyWork,
+    ) -> io::Result<Self> {
+        work.mapping_attempt(writable);
+        let result = Self::new_inner(fd, offset, len, writable, work);
+        if result.is_err() {
+            work.mapping_result(writable, None);
+        }
+        result
+    }
+    fn new_inner(
+        fd: BorrowedFd<'_>,
+        offset: usize,
+        len: usize,
+        writable: bool,
+        work: &CopyWork,
+    ) -> io::Result<Self> {
         #[cfg(test)]
         MAPPING_ATTEMPTS.with(|attempts| attempts.set(attempts.get() + 1));
         // SAFETY: sysconf reads a constant system parameter.
@@ -849,6 +888,7 @@ impl Mapping {
             return Err(io::Error::last_os_error());
         }
         let base = NonNull::new(base.cast::<u8>()).ok_or_else(io::Error::last_os_error)?;
+        work.mapping_result(writable, Some((len, mapped_len)));
         Ok(Self { base, skip, len })
     }
 
@@ -1048,6 +1088,7 @@ pub struct WorkerSession {
     telemetry_query_failures: Cell<u64>,
     exchanging: Cell<bool>,
     retained_export: RefCell<Vec<crate::cache::WritableExtent>>,
+    copies: Arc<CopyWork>,
     transport: Arc<work::Work>,
 }
 
@@ -1123,12 +1164,13 @@ impl WorkerSession {
             failed: Cell::new(false),
             counters: RefCell::default(),
             exchanging: Cell::new(false),
+            copies: Arc::default(),
             transport,
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
             retained_export: RefCell::new(Vec::new()),
         };
-        let mut request = Out::op(INIT);
+        let mut request = Out::measured(INIT, &session.copies);
         put_config(&mut request, config);
         request
             .bytes(kernel)
@@ -1205,7 +1247,11 @@ impl WorkerSession {
     fn reply_status(&self, body: &[u8]) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut input = In(body);
         match input.u8()? {
-            OK => Ok(input.0.to_vec()),
+            OK => {
+                let result = input.0.to_vec();
+                self.copies.copied(CopySite::Decode, result.len());
+                Ok(result)
+            }
             FAILED => {
                 let kind = input.u8()?;
                 let error = match kind {
@@ -1238,7 +1284,7 @@ impl WorkerSession {
         let mut rejected = None;
         let mut destination = crate::writer_lifetime::ExportDestination::new(&self.retained_export);
         let result: Result<bool, Box<dyn Error>> = (|| {
-            let mut request = Out::op(EXPORT);
+            let mut request = Out::measured(EXPORT, &self.copies);
             request
                 .option(parent.map(|snap| snap.0))
                 .u64(target.0)
@@ -1307,7 +1353,10 @@ impl WorkerSession {
                 destination.exposed = true;
                 send_measured(
                     &self.stream,
-                    &Out::op(EXTENT_READY).len(offset).len(len).0,
+                    &Out::measured(EXTENT_READY, &self.copies)
+                        .len(offset)
+                        .len(len)
+                        .0,
                     &[fd],
                     &self.transport,
                     work::Group::Export,
@@ -1315,7 +1364,7 @@ impl WorkerSession {
             } else {
                 send_measured(
                     &self.stream,
-                    &Out::op(EXTENT_DENIED).0,
+                    &Out::measured(EXTENT_DENIED, &self.copies).0,
                     &[],
                     &self.transport,
                     work::Group::Export,
@@ -1458,7 +1507,7 @@ impl SearchSession for WorkerSession {
     }
 
     fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>> {
-        let reply = self.call(&Out::op(STATE_HASH), &[])?;
+        let reply = self.call(&Out::measured(STATE_HASH, &self.copies), &[])?;
         Ok(reply
             .as_slice()
             .try_into()
@@ -1466,7 +1515,7 @@ impl SearchSession for WorkerSession {
     }
 
     fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
-        let reply = self.call(&Out::op(EVENT_HISTORY), &[])?;
+        let reply = self.call(&Out::measured(EVENT_HISTORY, &self.copies), &[])?;
         if reply.len() != 40 {
             return Err(malformed("event history").into());
         }
@@ -1483,7 +1532,7 @@ impl SearchSession for WorkerSession {
     }
 
     fn console_tail(&mut self) -> Result<Vec<u8>, Box<dyn Error>> {
-        self.call(&Out::op(CONSOLE_TAIL), &[])
+        self.call(&Out::measured(CONSOLE_TAIL, &self.copies), &[])
     }
 
     fn telemetry_counters(&self) -> Vec<(String, u64)> {
@@ -1498,7 +1547,10 @@ impl SearchSession for WorkerSession {
         self.telemetry_queries
             .set(self.telemetry_queries.get().saturating_add(1));
         let mut fresh = false;
-        if let Ok(Ok(counters)) = self.call(&Out::op(TELEMETRY), &[]).map(decode) {
+        if let Ok(Ok(counters)) = self
+            .call(&Out::measured(TELEMETRY, &self.copies), &[])
+            .map(decode)
+        {
             fresh = true;
             self.counters.replace(
                 counters
@@ -1507,6 +1559,10 @@ impl SearchSession for WorkerSession {
                         let name = name.strip_prefix("guard.session.").map_or_else(
                             || name.clone(),
                             |suffix| format!("guard.child.session.{suffix}"),
+                        );
+                        let name = name.strip_prefix("copy.session.").map_or_else(
+                            || name.clone(),
+                            |suffix| format!("copy.child.session.{suffix}"),
                         );
                         (name, value)
                     })
@@ -1520,6 +1576,7 @@ impl SearchSession for WorkerSession {
         let mut counters = self.counters.borrow().clone();
         counters.extend(self.loaded_image_guard.counters("guard.parent"));
         counters.extend(self.transport.counters("transport.parent"));
+        counters.extend(self.copies.counters("copy.parent"));
         counters.push((
             "guard.child.telemetry_queries".into(),
             self.telemetry_queries.get(),
@@ -1532,7 +1589,12 @@ impl SearchSession for WorkerSession {
     }
 
     fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
-        let reply = self.call(Out::op(OWNED_PAGES).u64(snapshot.0), &[]).ok()?;
+        let reply = self
+            .call(
+                Out::measured(OWNED_PAGES, &self.copies).u64(snapshot.0),
+                &[],
+            )
+            .ok()?;
         let mut input = In(&reply);
         let pages = input.option().ok()?;
         input.finish().ok()?;
@@ -1540,7 +1602,9 @@ impl SearchSession for WorkerSession {
     }
 
     fn store_bytes(&self) -> Option<u64> {
-        let reply = self.call(&Out::op(STORE_BYTES), &[]).ok()?;
+        let reply = self
+            .call(&Out::measured(STORE_BYTES, &self.copies), &[])
+            .ok()?;
         let mut input = In(&reply);
         let bytes = input.u64().ok()?;
         input.finish().ok()?;
@@ -1627,7 +1691,7 @@ impl SearchSession for WorkerSession {
             checked_cached_attachment(&extents, index.target_commitment(lease)?)?;
         let ranges: Vec<SharedRange<'_>> =
             chain.iter().map(CommittedExtent::shared_range).collect();
-        let mut request = Out::op(IMPORT);
+        let mut request = Out::measured(IMPORT, &self.copies);
         request.u64(near.0).len(ranges.len());
         for range in &ranges {
             request.len(range.offset).len(range.len);
@@ -1651,11 +1715,11 @@ impl SearchSession for WorkerSession {
     }
 
     fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
-        self.call_unit(Out::op(REPLAY).u64(snapshot.0))
+        self.call_unit(Out::measured(REPLAY, &self.copies).u64(snapshot.0))
     }
 
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
-        self.call_unit(Out::op(DROP_SNAPSHOT).u64(snapshot.0))
+        self.call_unit(Out::measured(DROP_SNAPSHOT, &self.copies).u64(snapshot.0))
     }
 
     fn branch_with_service(
@@ -1667,11 +1731,15 @@ impl SearchSession for WorkerSession {
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
         let spec = service_branch_spec(self.seed, config, payloads, effects, coverage_schedule)?;
-        self.call_unit(Out::op(BRANCH).u64(snapshot.0).bytes(&spec.encode()))
+        self.call_unit(
+            Out::measured(BRANCH, &self.copies)
+                .u64(snapshot.0)
+                .bytes(&spec.encode()),
+        )
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
-        let reply = self.call(Out::op(RUN_UNTIL).u64(deadline), &[])?;
+        let reply = self.call(Out::measured(RUN_UNTIL, &self.copies).u64(deadline), &[])?;
         match decode_reply(&reply) {
             Ok(Some((_, Ok(Reply::Stop(stop)), consumed))) if consumed == reply.len() => Ok(stop),
             _ => Err(malformed("stop reason").into()),
@@ -1684,7 +1752,7 @@ impl SearchSession for WorkerSession {
         resolution: Resolution,
     ) -> Result<StopReason, Box<dyn Error>> {
         let reply = self.call(
-            Out::op(RUN_RESOLVING)
+            Out::measured(RUN_RESOLVING, &self.copies)
                 .u64(deadline)
                 .u64(resolution.vtime.0)
                 .u64(u64::from(resolution.service))
@@ -1699,7 +1767,7 @@ impl SearchSession for WorkerSession {
     }
 
     fn snapshot(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
-        self.call_snap(&Out::op(SNAPSHOT))
+        self.call_snap(&Out::measured(SNAPSHOT, &self.copies))
     }
 
     fn sdk_events(&mut self) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
@@ -1707,7 +1775,10 @@ impl SearchSession for WorkerSession {
     }
 
     fn sdk_events_since(&mut self, offset: u32) -> Result<Vec<SdkEvent>, Box<dyn Error>> {
-        let reply = self.call(Out::op(SDK_EVENTS).u64(u64::from(offset)), &[])?;
+        let reply = self.call(
+            Out::measured(SDK_EVENTS, &self.copies).u64(u64::from(offset)),
+            &[],
+        )?;
         let mut input = In(&reply);
         let count = input.len()?;
         offset
@@ -1717,7 +1788,11 @@ impl SearchSession for WorkerSession {
             .map(|_| {
                 let moment = input.u64()?;
                 let id = u32::try_from(input.u64()?).map_err(|_| malformed("event id"))?;
-                Ok((moment, id, input.bytes()?.to_vec()))
+                {
+                    let bytes = input.bytes()?.to_vec();
+                    self.copies.copied(CopySite::Decode, bytes.len());
+                    Ok((moment, id, bytes))
+                }
             })
             .collect::<io::Result<Vec<_>>>()?;
         input.finish()?;
@@ -1737,12 +1812,12 @@ struct Init {
     service: String,
 }
 
-fn take_init(input: &mut In<'_>) -> io::Result<Init> {
+fn take_init(input: &mut In<'_>, copies: &CopyWork) -> io::Result<Init> {
     let config = take_config(input)?;
-    let kernel = input.bytes()?.to_vec();
-    let initramfs = input.bytes()?.to_vec();
+    let kernel = input.owned_bytes(copies)?;
+    let initramfs = input.owned_bytes(copies)?;
     let setup_payloads = (0..input.len()?)
-        .map(|_| Ok(input.bytes()?.to_vec()))
+        .map(|_| input.owned_bytes(copies))
         .collect::<io::Result<Vec<_>>>()?;
     Ok(Init {
         kernel,
@@ -1757,6 +1832,7 @@ type Open<'a> = dyn FnMut(Init) -> Result<Box<dyn ServedSession>, Box<dyn Error>
 
 #[derive(Default)]
 struct Served {
+    copies: Arc<CopyWork>,
     transport: Arc<work::Work>,
     loaded_image_guard: Option<crate::image_identity::LoadedImageGuard>,
     session: Option<Box<dyn ServedSession>>,
@@ -1779,9 +1855,9 @@ impl Served {
     ) -> Result<Out, Box<dyn Error>> {
         let mut input = In(body);
         let op = input.u8()?;
-        let mut out = Out::default();
+        let mut out = Out::measured_empty(&self.copies);
         if op == INIT {
-            let init = take_init(&mut input)?;
+            let init = take_init(&mut input, &self.copies)?;
             input.finish()?;
             if self.session.is_some() {
                 return Err("session worker is already initialized".into());
@@ -1792,6 +1868,7 @@ impl Served {
             out.u64(setup.0).u64(at);
             return Ok(out);
         }
+        let copies = Arc::clone(&self.copies);
         let session = self.session()?;
         match op {
             EVENT_HISTORY => {
@@ -1812,6 +1889,7 @@ impl Served {
                 input.finish()?;
                 let mut counters = session.telemetry_counters();
                 counters.extend(self.transport.counters("transport.child.loop"));
+                counters.extend(self.copies.counters("copy.child.loop"));
                 if let Some(guard) = &self.loaded_image_guard {
                     counters.extend(guard.counters("guard.child.loop"));
                 }
@@ -1833,8 +1911,8 @@ impl Served {
                 let parent = input.option()?.map(SnapId);
                 let target = SnapId(input.u64()?);
                 let attachment = SnapshotAttachment {
-                    domain: input.bytes()?.to_vec(),
-                    bytes: input.bytes()?.to_vec(),
+                    domain: input.owned_bytes(&copies)?,
+                    bytes: input.owned_bytes(&copies)?,
                 };
                 input.finish()?;
                 if !fds.is_empty() {
@@ -1850,7 +1928,9 @@ impl Served {
                 }
                 let mappings = fds
                     .iter()
-                    .map(|fd| Mapping::new(fd.as_fd(), input.len()?, input.len()?, false))
+                    .map(|fd| {
+                        Mapping::measured(fd.as_fd(), input.len()?, input.len()?, false, &copies)
+                    })
                     .collect::<io::Result<Vec<_>>>()?;
                 input.finish()?;
                 let extents: Vec<&[u8]> = mappings.iter().map(Mapping::bytes).collect();
@@ -1892,7 +1972,7 @@ impl Served {
                 let service = u16::try_from(input.u64()?)
                     .map_err(|_| malformed("service namespace overflows"))?;
                 let id = DecisionId(input.u64()?);
-                let answer = Answer(input.bytes()?.to_vec());
+                let answer = Answer(input.owned_bytes(&copies)?);
                 input.finish()?;
                 let stop = session.run_resolving(
                     deadline,
@@ -1925,16 +2005,22 @@ impl Served {
     }
 }
 
+#[cfg(test)]
 fn status(result: Result<Out, Box<dyn Error>>) -> Vec<u8> {
+    status_measured(result, &Arc::default())
+}
+
+fn status_measured(result: Result<Out, Box<dyn Error>>, work: &Arc<CopyWork>) -> Vec<u8> {
     match result {
         Ok(out) => {
             let mut body = Vec::with_capacity(out.0.len() + 1);
             body.push(OK);
             body.extend_from_slice(&out.0);
+            work.copied(CopySite::Status, out.0.len());
             body
         }
         Err(error) => {
-            let mut out = Out::op(FAILED);
+            let mut out = Out::measured(FAILED, work);
             match error.downcast_ref::<SessionError>() {
                 Some(SessionError::Hung(limit)) => {
                     out.u8(HUNG)
@@ -1983,6 +2069,7 @@ fn serve_measured(
         };
         let mut requested = false;
         let mut allocation_broken = None;
+        let copies = Arc::clone(&served.copies);
         let mut allocate = |len| {
             let result: Result<Option<Mapping>, Box<dyn Error>> = (|| {
                 if std::mem::replace(&mut requested, true) {
@@ -2017,7 +2104,13 @@ fn serve_measured(
                         let [fd] = fds.as_slice() else {
                             return Err(malformed("destination requires one descriptor").into());
                         };
-                        Ok(Some(Mapping::new(fd.as_fd(), offset, len, true)?))
+                        Ok(Some(Mapping::measured(
+                            fd.as_fd(),
+                            offset,
+                            len,
+                            true,
+                            &copies,
+                        )?))
                     }
                     EXTENT_DENIED => {
                         input.finish()?;
@@ -2038,7 +2131,7 @@ fn serve_measured(
                 }
             }
         };
-        let reply = status(served.handle(&body, &fds, open, &mut allocate));
+        let reply = status_measured(served.handle(&body, &fds, open, &mut allocate), &copies);
         if let Some(cause) = allocation_broken {
             return Err(malformed(&format!("allocation exchange failed: {cause}")).into());
         }
@@ -2212,6 +2305,7 @@ mod tests {
             vec![
                 ("runs".to_owned(), self.runs),
                 ("guard.session.fixture.dispatches".to_owned(), self.runs),
+                ("copy.session.fixture.bytes".to_owned(), self.runs),
             ]
         }
 
@@ -3076,6 +3170,80 @@ mod tests {
     }
 
     #[test]
+    fn explicit_copy_sites_and_mapping_spans_are_disjoint() {
+        let owner = Arc::new(CopyWork::default());
+        let mut out = Out::measured(7, &owner);
+        out.u64(42).bytes(b"hello");
+        let length = out.0.len();
+        let reply = status_measured(Ok(out), &owner);
+        let counters = owner.counters("c").into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(counters["c.encoded_payload_bytes"], 5);
+        assert_eq!(counters["c.status_payload_bytes"], length as u64);
+        let mut encoded = Out::default();
+        encoded.bytes(b"data");
+        assert_eq!(In(&encoded.0).owned_bytes(&owner).unwrap(), b"data");
+        assert_eq!(
+            owner.counters("c").into_iter().collect::<BTreeMap<_, _>>()["c.decoded_payload_bytes"],
+            4
+        );
+        assert_eq!(reply.len(), length + 1);
+        let file = tempfile::tempfile().unwrap();
+        file.set_len(8192).unwrap();
+        let prior = owner.counters("c").into_iter().collect::<BTreeMap<_, _>>();
+        let mapping = Mapping::measured(file.as_fd(), 3, 8, false, &owner).unwrap();
+        assert_eq!(mapping.bytes().len(), 8);
+        assert!(Mapping::measured(file.as_fd(), 8190, 8, false, &owner).is_err());
+        let after = owner.counters("c").into_iter().collect::<BTreeMap<_, _>>();
+        assert_eq!(after["c.import_mapping.attempts"], 2);
+        assert_eq!(after["c.import_mapping.errors"], 1);
+        assert_eq!(after["c.import_mapping.range_bytes"], 8);
+        assert_eq!(after["c.import_mapping.span_bytes"], 11);
+        for name in [
+            "encoded_payload_bytes",
+            "status_payload_bytes",
+            "decoded_payload_bytes",
+        ] {
+            assert_eq!(after[&format!("c.{name}")], prior[&format!("c.{name}")]);
+        }
+    }
+
+    #[test]
+    fn sdk_worker_counts_actual_status_and_event_payload_copies() {
+        let (mut session, server) = threaded(3);
+        let before = session
+            .copies
+            .counters("c")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(session.sdk_events_since(0).unwrap(), vec![(5, 7, vec![3])]);
+        let after = session
+            .copies
+            .counters("c")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            after["c.decoded_payload_bytes"] - before["c.decoded_payload_bytes"],
+            34
+        );
+        assert_eq!(
+            after["c.encoded_payload_bytes"],
+            before["c.encoded_payload_bytes"]
+        );
+        assert!(session.sdk_events_since(1).unwrap().is_empty());
+        let empty = session
+            .copies
+            .counters("c")
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(
+            empty["c.decoded_payload_bytes"] - after["c.decoded_payload_bytes"],
+            8
+        );
+        drop(session);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn transport_queries_replace_child_snapshot_without_duplicate_or_added_totals() {
         let (mut session, server) = threaded(3);
         for expected in [1, 2] {
@@ -3838,7 +4006,9 @@ mod tests {
             session
                 .telemetry_counters()
                 .into_iter()
-                .filter(|(name, _)| !name.starts_with("guard.") && !name.starts_with("transport."))
+                .filter(|(name, _)| !name.starts_with("guard.")
+                    && !name.starts_with("transport.")
+                    && !name.starts_with("copy."))
                 .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)]
         );
@@ -3880,7 +4050,9 @@ mod tests {
             session
                 .telemetry_counters()
                 .into_iter()
-                .filter(|(name, _)| !name.starts_with("guard.") && !name.starts_with("transport."))
+                .filter(|(name, _)| !name.starts_with("guard.")
+                    && !name.starts_with("transport.")
+                    && !name.starts_with("copy."))
                 .collect::<Vec<_>>(),
             vec![("runs".to_owned(), 1)],
             "the last counters outlive the worker"
@@ -3933,6 +4105,8 @@ mod tests {
         assert_eq!(b["guard.child.telemetry_query_failures"], 0);
         assert_eq!(b["guard.child.session.fixture.dispatches"], b["runs"]);
         assert!(!b.contains_key("guard.session.fixture.dispatches"));
+        assert_eq!(b["copy.child.session.fixture.bytes"], b["runs"]);
+        assert!(!b.contains_key("copy.session.fixture.bytes"));
         assert_eq!(b["guard.parent.rpc_before.strict_attempts"], 0);
         assert_eq!(
             b["guard.parent.rpc_before.fixture_dispatches"],
@@ -4022,6 +4196,7 @@ mod tests {
                 seed: 0,
                 counters: RefCell::new(Vec::new()),
                 exchanging: Cell::new(false),
+                copies: Arc::default(),
                 transport: Arc::default(),
                 telemetry_queries: Cell::new(0),
                 telemetry_query_failures: Cell::new(0),
@@ -4998,6 +5173,7 @@ writer.close()
             telemetry_query_failures: Cell::new(0),
             exchanging: Cell::new(false),
             retained_export: RefCell::new(vec![index.extent(4096).unwrap()]),
+            copies: Arc::default(),
             transport: Arc::default(),
         };
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();

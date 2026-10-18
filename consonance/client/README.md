@@ -691,3 +691,41 @@ partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
 this API does not authenticate a previously consumed prefix or detect rollback.
 `EventHistory.count` counts normalized execution events and is not an SDK offset.
 Workload adapters own decoder checkpoints and lineage validation.
+
+Explicit worker copies use `copy.parent.*` and `copy.child.loop.*` with independent
+owners; internal serializer clones share their owner's counters. `encoded_payload_bytes`
+counts `Out::bytes` payload extensions (excluding scalar field encoding),
+`status_payload_bytes` counts the successful reply-body copy into its status
+wrapper, and `decoded_payload_bytes` counts owned INIT/setup/attachment/answer
+payload fields, parent status stripping, and parent SDK-event payload decoding.
+Each actual site counts after its copy, even if later decoding/validation fails.
+Other string decoding, branch reproducer internals, buffer growth/allocator moves,
+Session sidecar construction and kernel copies are excluded: this is an inventory
+of these explicit sites, not all memory traffic or allocated bytes. The same
+payload can legitimately appear at several distinct copying sites.
+
+`copy.child.loop.import_mapping.*` and `export_mapping.*` report mapping attempts,
+errors, successful logical `range_bytes` and actual requested `span_bytes` (which
+includes alignment skip). Successful mappings preceding later failure remain
+counted. They describe repeated virtual mappings, not resident bytes or reads or
+copies; borrowing their slices records no copy. The parent currently creates no
+such mappings. `copy.session.extent.*` (renamed `copy.child.session.extent.*` through
+a worker) counts the completed logical `encoded_bytes` and actual output
+`metadata_copy_bytes` / `page_copy_bytes` at the final extent writer. Padding is
+part of encoded length but not copied metadata. No E-byte temporary output buffer
+or temporary-to-extent copy exists in direct export, and no such charge is inferred.
+Sidecar/row allocations remain separate and are not estimated from output length.
+
+`snapshot.copy.*` is the Session's Store-owned cumulative page-copy work, forwarded
+once through core telemetry. `intern_calls` includes calls that later fail;
+`intern_hits` counts reused equal resident payloads with no new owned copy;
+`intern_copy_bytes` counts actual new owned page copies, including copies whose
+builder is later discarded. Zero or unchanged writes can bypass interning.
+`read_copy_bytes` counts the public Store read-into-buffer copy, while borrowed
+transaction reads count zero. Generic Store totals include boot/capture/restore
+work and are not labelled import-only bytes; existing import page counts still
+mean merged rows, not physical copying. Store, worker and Session owners are
+runtime-only, do not rewind on snapshot restore, and have no global shared-index
+component. Child copies replace cached totals on query just like child transport;
+query response copies become visible at the next query. These counters do not
+enter StoreStats, identity, certificates, memory budgets or search policy.

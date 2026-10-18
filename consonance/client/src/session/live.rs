@@ -14,7 +14,7 @@ use vmm_backend::Backend;
 use vmm_core::control::{ControlServer, RestoreMode, VmmFactory, server_caps};
 use vmm_core::portable_snapshot::sparse_delta_target_commitment;
 
-use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
+use crate::cache::extent::{ExtentWrites, extent_len, read_extent, resolve, write_extent_measured};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace, WritableExtent};
 use crate::watchdog::Watchdog;
 
@@ -102,6 +102,7 @@ pub struct Session {
     image_identity: [u8; 32],
     config: SessionConfig,
     snapshot_times: BTreeMap<SnapId, u64>,
+    extent_writes: std::cell::Cell<ExtentWrites>,
     abandoned: bool,
 }
 
@@ -276,6 +277,7 @@ impl Session {
             setup_at: setup.at,
             image_identity,
             config,
+            extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(genesis.id, genesis.at), (setup.id, setup.at)]),
             abandoned,
         })
@@ -444,7 +446,18 @@ impl Session {
         let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
         let mut out = allocate(len)?;
-        write_extent(bytes(&mut out), &delta.pages, &delta.reverted, &sidecar)?;
+        let mut work = ExtentWrites::default();
+        let result = write_extent_measured(
+            bytes(&mut out),
+            &delta.pages,
+            &delta.reverted,
+            &sidecar,
+            &mut work,
+        );
+        let mut total = self.extent_writes.get();
+        total.merge(work);
+        self.extent_writes.set(total);
+        result?;
         self.loaded_image_guard.check()?;
         Ok(out)
     }
@@ -704,6 +717,7 @@ impl Session {
     pub fn telemetry_counters(&self) -> Vec<(String, u64)> {
         let mut counters = self.client.transport().host_telemetry().counters();
         counters.extend(self.loaded_image_guard.counters("guard.session"));
+        counters.extend(self.extent_writes.get().counters());
         counters
     }
 
@@ -1132,6 +1146,7 @@ mod tests {
             setup_at: setup.at,
             image_identity,
             config,
+            extent_writes: std::cell::Cell::default(),
             snapshot_times: BTreeMap::from([(setup.id, setup.at)]),
             abandoned: false,
         }
@@ -1232,6 +1247,7 @@ mod tests {
                 .unwrap();
             let (target, _) = source.snapshot().unwrap();
             let before = source.client.transport().host_telemetry().exports.count;
+            let before_writes = source.extent_writes.get();
             let ((mut extent, allocations), writes) = trace_writes(|| {
                 super::super::worker::export_destination_for_test(
                     &source,
@@ -1247,6 +1263,20 @@ mod tests {
             );
             assert_eq!(allocations.len(), 1);
             let actual = read_extent(extent.bytes_mut()).unwrap();
+            let after_writes = source.extent_writes.get();
+            assert_eq!(
+                after_writes.page_copy_bytes - before_writes.page_copy_bytes,
+                (actual.pages.len() * 4096) as u64
+            );
+            assert_eq!(
+                after_writes.metadata_copy_bytes - before_writes.metadata_copy_bytes,
+                (64 + actual.pages.len() * 40 + actual.reverted.len() * 8 + actual.sidecar.len())
+                    as u64
+            );
+            assert_eq!(
+                after_writes.encoded_bytes - before_writes.encoded_bytes,
+                allocations[0].1 as u64
+            );
             assert_eq!(
                 writes,
                 vec![(
