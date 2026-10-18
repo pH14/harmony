@@ -89,6 +89,13 @@ prints readiness and powers off; the archive contains no libvoidstar or dynamic
 dependencies. `build-initramfs.sh --busybox FILE` selects that binary explicitly;
 the standalone builder still builds its own BusyBox.
 
+Failed N6 builds from the locked platform builder preserve the rejected guest
+binaries, generated assembly/header and entropy-audit logs under
+`OUTPUT/diagnostics/n6` before deleting the temporary build workspace. The
+`guest-images` flake alias uses this platform builder. Retained diagnostics do
+not turn a failed build into a qualified guest bundle; its exit status remains
+nonzero and the strict executable-byte entropy audit still applies.
+
 ## x86 XSAVE behavior
 
 The guest kernel canonicalizes complete XSAVE buffers while keeping AVX. The
