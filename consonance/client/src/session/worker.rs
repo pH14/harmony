@@ -3543,15 +3543,15 @@ mod tests {
     fn export_destination_rejects_bad_frames_descriptors_and_backing_ranges() {
         for case in 0..11 {
             let (parent, child) = UnixStream::pair().unwrap();
+            let (finished, completion) = std::sync::mpsc::channel();
             let server = std::thread::spawn(move || {
-                assert!(
-                    serve(
-                        &child,
-                        &mut Fake::open,
-                        crate::image_identity::LoadedImageGuard::fixture()
-                    )
-                    .is_err()
-                );
+                let result = serve(
+                    &child,
+                    &mut Fake::open,
+                    crate::image_identity::LoadedImageGuard::fixture(),
+                )
+                .map_err(|error| error.to_string());
+                let _ = finished.send(result);
             });
             send(&parent, &init_frame().0, &[]).unwrap();
             assert_eq!(recv(&parent).unwrap().0[0], OK);
@@ -3587,14 +3587,28 @@ mod tests {
                 6 => send(&parent, &Out::op(EXTENT_DENIED).0, &[fd]).unwrap(),
                 7 => send(&parent, &Out::op(RUN_UNTIL).u64(42).0, &[]).unwrap(),
                 9 => send(&parent, &reply.0, &[read_only.as_fd()]).unwrap(),
-                10 => send(&parent, &vec![0; EXPORT_FRAME_LIMIT + 1], &[]).unwrap(),
+                10 => {
+                    let mut header = [0_u8; HEADER];
+                    header[..8].copy_from_slice(&((EXPORT_FRAME_LIMIT + 1) as u64).to_le_bytes());
+                    (&parent).write_all(&header).unwrap();
+                }
                 8 => {
                     parent.shutdown(Shutdown::Write).unwrap();
                 }
                 _ => send(&parent, &reply.0, &[fd]).unwrap(),
             }
-            assert!(recv(&parent).is_err(), "case {case}");
+            let result = completion.recv_timeout(Duration::from_secs(5));
+            if result.is_err() {
+                let _ = parent.shutdown(Shutdown::Both);
+            }
             server.join().unwrap();
+            let error = result
+                .unwrap_or_else(|error| panic!("case {case} did not refuse the frame: {error}"))
+                .unwrap_err();
+            if case == 10 {
+                assert!(error.contains("frame length exceeds limit"), "{error}");
+            }
+            assert!(recv(&parent).is_err(), "case {case}");
         }
     }
 
