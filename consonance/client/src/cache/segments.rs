@@ -141,9 +141,9 @@ impl Segment {
             return false;
         };
         // SAFETY: fallocate only changes the file behind a descriptor this segment owns, and
-        // only within a retired extent range with no parent Rust references. KEEP_SIZE preserves
-        // mapped addresses and length. An uncertain child writer can still access this range;
-        // the allocator never reuses it, although late writes can refill these uncharged pages.
+        // only within a retired extent range with no parent Rust references. Potential export
+        // writers retain their WritableExtent, so this cannot release an uncertain writer's range.
+        // KEEP_SIZE preserves the addresses and lengths of the remaining segment mappings.
         unsafe {
             libc::fallocate(
                 self.backing.as_raw_fd(),

@@ -748,6 +748,9 @@ pub use live::{Session, host_minor_faults};
     not(miri)
 ))]
 mod worker;
+pub use crate::writer_lifetime::{
+    WorkerQuarantineStats, reap_worker_quarantine, worker_quarantine_stats,
+};
 #[cfg(all(
     any(
         all(

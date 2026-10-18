@@ -622,6 +622,9 @@ fn set_cloexec(fd: RawFd, on: bool) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! { static FAIL_AFTER_FD_HEADER: Cell<bool> = const { Cell::new(false) }; }
+
 fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<()> {
     if fds.len() > MAX_FDS {
         return Err(malformed("too many descriptors"));
@@ -630,6 +633,12 @@ fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
     header[..8].copy_from_slice(&(body.len() as u64).to_le_bytes());
     header[8..].copy_from_slice(&(fds.len() as u64).to_le_bytes());
     let sent = send_with_fds(stream, &header, fds)?;
+    #[cfg(test)]
+    if !fds.is_empty() && FAIL_AFTER_FD_HEADER.with(|fail| fail.replace(false)) {
+        return Err(io::Error::other(
+            "injected failure after descriptor transfer",
+        ));
+    }
     let mut writer = stream;
     writer.write_all(&header[sent..])?;
     writer.write_all(body)
@@ -935,6 +944,8 @@ fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
 struct WorkerConnection {
     stream: UnixStream,
     process: Option<Child>,
+    #[cfg(test)]
+    owner: Option<Box<dyn crate::writer_lifetime::ExitOwner>>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
 }
 
@@ -942,6 +953,8 @@ struct WorkerConnection {
 pub struct WorkerSession {
     stream: UnixStream,
     process: Option<Child>,
+    #[cfg(test)]
+    owner: Option<Box<dyn crate::writer_lifetime::ExitOwner>>,
     loaded_image_guard: crate::image_identity::LoadedImageGuard,
     setup: (SnapId, u64),
     seed: u64,
@@ -950,6 +963,7 @@ pub struct WorkerSession {
     telemetry_queries: Cell<u64>,
     telemetry_query_failures: Cell<u64>,
     exchanging: Cell<bool>,
+    retained_export: RefCell<Vec<crate::cache::WritableExtent>>,
 }
 
 struct Exchange<'a>(&'a Cell<bool>);
@@ -981,6 +995,8 @@ impl WorkerSession {
             WorkerConnection {
                 stream,
                 process: Some(process),
+                #[cfg(test)]
+                owner: None,
                 loaded_image_guard,
             },
             kernel,
@@ -1002,12 +1018,17 @@ impl WorkerSession {
         let WorkerConnection {
             stream,
             process,
+            #[cfg(test)]
+            owner,
             loaded_image_guard,
         } = connection;
         loaded_image_guard.check_at(crate::image_identity::GuardSite::Admission)?;
+        crate::writer_lifetime::reap_worker_quarantine(1);
         let mut session = Self {
             stream,
             process,
+            #[cfg(test)]
+            owner,
             loaded_image_guard,
             setup: (SnapId(0), 0),
             seed: config.seed,
@@ -1016,6 +1037,7 @@ impl WorkerSession {
             exchanging: Cell::new(false),
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
+            retained_export: RefCell::new(Vec::new()),
         };
         let mut request = Out::op(INIT);
         put_config(&mut request, config);
@@ -1110,7 +1132,8 @@ impl WorkerSession {
         self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExportBefore)?;
         let mut denied = None;
         let mut rejected = None;
-        let result: Result<Option<crate::cache::WritableExtent>, Box<dyn Error>> = (|| {
+        let mut destination = crate::writer_lifetime::ExportDestination::new(&self.retained_export);
+        let result: Result<bool, Box<dyn Error>> = (|| {
             let mut request = Out::op(EXPORT);
             request
                 .option(parent.map(|snap| snap.0))
@@ -1141,14 +1164,14 @@ impl WorkerSession {
                 }
                 failure.finish()?;
                 rejected = Some(self.reply_status(&body).unwrap_err());
-                return Ok(None);
+                return Ok(false);
             }
             let len = input.len()?;
             input.finish()?;
             if len == 0 {
                 return Err(malformed("empty allocation request").into());
             }
-            let extent = match index.extent(len) {
+            destination.extent = match index.extent(len) {
                 Ok(extent) => Some(extent),
                 Err(error) => {
                     denied = Some(error);
@@ -1156,7 +1179,7 @@ impl WorkerSession {
                 }
             };
             self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExtentAllocated)?;
-            if let Some(extent) = extent.as_ref() {
+            if let Some(extent) = destination.extent.as_ref() {
                 let SharedRange {
                     fd,
                     offset,
@@ -1165,6 +1188,7 @@ impl WorkerSession {
                 if usable < len {
                     return Err(malformed("allocated range too short").into());
                 }
+                destination.exposed = true;
                 send(
                     &self.stream,
                     &Out::op(EXTENT_READY).len(offset).len(len).0,
@@ -1185,15 +1209,18 @@ impl WorkerSession {
                 }
                 input.string()?;
                 input.finish()?;
-                return Ok(None);
+                return Ok(false);
             }
             let reply = self.reply_status(&body)?;
             In(&reply).finish()?;
-            Ok(extent)
+            Ok(true)
         })();
         match result {
-            Ok(Some(extent)) => Ok(extent),
-            Ok(None) => match rejected {
+            Ok(true) => Ok(destination
+                .extent
+                .take()
+                .expect("allocated export destination")),
+            Ok(false) => match rejected {
                 Some(error) => Err(error),
                 None => Err(denied.expect("denied allocation").into()),
             },
@@ -1215,6 +1242,14 @@ impl WorkerSession {
         }
     }
 
+    #[must_use]
+    pub fn retained_export_bytes(&self) -> u64 {
+        self.retained_export
+            .borrow()
+            .iter()
+            .fold(0u64, |sum, extent| sum.saturating_add(extent.len() as u64))
+    }
+
     fn call_snap(&self, request: &Out) -> Result<(SnapId, u64), Box<dyn Error>> {
         let reply = self.call(request, &[])?;
         let mut input = In(&reply);
@@ -1232,18 +1267,34 @@ impl WorkerSession {
 
 impl Drop for WorkerSession {
     fn drop(&mut self) {
+        use crate::writer_lifetime::{ExitPoll, poll_worker, retain_worker};
         let _ = self.stream.shutdown(Shutdown::Both);
-        let Some(mut process) = self.process.take() else {
+        let owner = self
+            .process
+            .take()
+            .map(|process| Box::new(process) as Box<dyn crate::writer_lifetime::ExitOwner>);
+        #[cfg(test)]
+        let owner = owner.or_else(|| self.owner.take());
+        let extents = std::mem::take(self.retained_export.get_mut());
+        if owner.is_none() && extents.is_empty() {
             return;
-        };
-        for _ in 0..EXIT_POLLS {
-            if !matches!(process.try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(EXIT_POLL);
         }
-        let _ = process.kill();
-        let _ = process.wait();
+        let id = retain_worker(owner, extents);
+        for _ in 0..EXIT_POLLS {
+            match poll_worker(&id, false) {
+                ExitPoll::Exited | ExitPoll::Ambiguous => return,
+                ExitPoll::Running => std::thread::sleep(EXIT_POLL),
+            }
+        }
+        if poll_worker(&id, true) != ExitPoll::Running {
+            return;
+        }
+        for _ in 0..10 {
+            match poll_worker(&id, false) {
+                ExitPoll::Exited | ExitPoll::Ambiguous => return,
+                ExitPoll::Running => std::thread::sleep(EXIT_POLL),
+            }
+        }
     }
 }
 
@@ -1866,6 +1917,54 @@ mod tests {
         LocalIndex,
         extent::{extent_len, read_extent, resolve, write_extent},
     };
+
+    #[derive(Clone, Debug)]
+    struct FixtureThread(std::sync::Arc<std::sync::Mutex<FixtureJoin>>);
+    #[derive(Debug)]
+    struct FixtureJoin {
+        handle: Option<std::thread::JoinHandle<()>>,
+        result: Option<std::thread::Result<()>>,
+        joined: bool,
+    }
+    impl FixtureThread {
+        fn spawn(run: impl FnOnce() + Send + 'static) -> Self {
+            Self(std::sync::Arc::new(std::sync::Mutex::new(FixtureJoin {
+                handle: Some(std::thread::spawn(run)),
+                result: None,
+                joined: false,
+            })))
+        }
+        fn join(self) -> std::thread::Result<()> {
+            let mut state = self.0.lock().unwrap();
+            if let Some(handle) = state.handle.take() {
+                state.result = Some(handle.join());
+                state.joined = true;
+            }
+            state.result.take().expect("fixture join result")
+        }
+    }
+    impl crate::writer_lifetime::ExitOwner for FixtureThread {
+        fn try_exited(&mut self) -> io::Result<bool> {
+            let mut state = self.0.lock().unwrap();
+            if state.joined {
+                return Ok(true);
+            }
+            if state
+                .handle
+                .as_ref()
+                .is_some_and(std::thread::JoinHandle::is_finished)
+            {
+                let handle = state.handle.take().unwrap();
+                state.result = Some(handle.join());
+                state.joined = true;
+                return Ok(true);
+            }
+            Ok(false)
+        }
+        fn terminate(&mut self) -> io::Result<()> {
+            Err(io::Error::other("fixture thread has no signal operation"))
+        }
+    }
 
     const HANG: u64 = u64::MAX;
     const HOST_FAILURE: u64 = u64::MAX - 1;
@@ -2606,14 +2705,14 @@ mod tests {
         assert!(take_config(&mut In(&bytes.0)).is_err());
     }
 
-    fn threaded(start: u8) -> (WorkerSession, std::thread::JoinHandle<()>) {
+    fn threaded(start: u8) -> (WorkerSession, FixtureThread) {
         threaded_quarantining(start, None)
     }
 
     fn threaded_quarantining(
         start: u8,
         quarantine_on_import: Option<Arc<LocalIndex>>,
-    ) -> (WorkerSession, std::thread::JoinHandle<()>) {
+    ) -> (WorkerSession, FixtureThread) {
         threaded_with_abort(start, quarantine_on_import, false)
     }
 
@@ -2621,9 +2720,9 @@ mod tests {
         start: u8,
         quarantine_on_import: Option<Arc<LocalIndex>>,
         aborted_export: bool,
-    ) -> (WorkerSession, std::thread::JoinHandle<()>) {
+    ) -> (WorkerSession, FixtureThread) {
         let (parent, child) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
+        let server = FixtureThread::spawn(move || {
             let result = serve(
                 &child,
                 &mut |init| Fake::open_quarantining(init, quarantine_on_import.clone()),
@@ -2640,6 +2739,7 @@ mod tests {
             WorkerConnection {
                 stream: parent,
                 process: None,
+                owner: Some(Box::new(server.clone())),
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             },
             &[start],
@@ -2835,7 +2935,7 @@ mod tests {
         let (left, right) = UnixStream::pair().unwrap();
         let (file, _) = UnixStream::pair().unwrap();
         let body = vec![7_u8; 1 << 20];
-        let sender = std::thread::spawn(move || {
+        let sender = FixtureThread::spawn(move || {
             send(&left, &body, &[file.as_fd(), file.as_fd()]).unwrap();
             send(&left, b"", &[]).unwrap();
         });
@@ -3225,7 +3325,7 @@ mod tests {
             child
                 .set_read_timeout(Some(Duration::from_millis(100)))
                 .unwrap();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 if refusal == 1 {
                     assert!(recv(&child).is_err());
                 } else {
@@ -3236,6 +3336,8 @@ mod tests {
             let session = WorkerSession {
                 stream: parent,
                 process: None,
+                owner: Some(Box::new(server.clone())),
+                retained_export: RefCell::new(Vec::new()),
                 setup: (SnapId(1), 10),
                 seed: 0,
                 counters: RefCell::new(Vec::new()),
@@ -3371,7 +3473,7 @@ mod tests {
         for frames in 0..=2 {
             for valid in [false, true] {
                 let (parent, child) = UnixStream::pair().unwrap();
-                let server = std::thread::spawn(move || {
+                let server = FixtureThread::spawn(move || {
                     let (result, entries, strict) = trace_checks(None, || {
                         serve(
                             &child,
@@ -3429,7 +3531,7 @@ mod tests {
         use crate::image_identity::{LoadedImageGuard, trace_checks};
         for refusal in 1..=3 {
             let (parent, child) = UnixStream::pair().unwrap();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 let (result, entries, _) = trace_checks(Some(refusal), || {
                     serve(
                         &child,
@@ -3518,7 +3620,8 @@ mod tests {
         thread_local! { static SESSION: RefCell<Option<WorkerSession>> = const { RefCell::new(None) }; }
         for case in 0..3 {
             let (parent, child) = UnixStream::pair().unwrap();
-            let server = std::thread::spawn(move || {
+            let (writes_tx, writes_rx) = std::sync::mpsc::channel();
+            let server = FixtureThread::spawn(move || {
                 let (result, writes) = crate::cache::extent::trace_writes(|| {
                     serve(
                         &child,
@@ -3529,9 +3632,9 @@ mod tests {
                 if let Err(error) = result {
                     assert!(error.to_string().contains("allocation exchange failed"));
                 }
-                writes.len()
+                writes_tx.send(writes.len()).unwrap();
             });
-            let session = connected_to_script(parent);
+            let session = connected_to_script(parent, &server);
             SESSION.with(|slot| *slot.borrow_mut() = Some(session));
             let hook = match case {
                 0 => crate::image_identity::refuse_next_check as fn(),
@@ -3574,6 +3677,10 @@ mod tests {
                     ));
                 }
                 assert!(result.is_err());
+                SESSION.with(|slot| {
+                    assert_eq!(slot.borrow().as_ref().unwrap().retained_export_bytes(), 0)
+                });
+                assert_eq!(index.stats().charged, 0);
                 assert_eq!(
                     (
                         index.stats().entries,
@@ -3586,7 +3693,8 @@ mod tests {
                 index.release(result.unwrap());
             }
             SESSION.with(|slot| slot.borrow_mut().take());
-            assert_eq!(server.join().unwrap(), usize::from(case == 2));
+            server.join().unwrap();
+            assert_eq!(writes_rx.recv().unwrap(), usize::from(case == 2));
         }
     }
 
@@ -3597,7 +3705,7 @@ mod tests {
             parent
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 let guard = crate::image_identity::LoadedImageGuard::fixture();
                 let ((result, writes), _, _) =
                     crate::image_identity::trace_checks(Some(refusal), || {
@@ -3686,7 +3794,7 @@ mod tests {
     fn export_postallocation_errors_keep_their_type_and_diagnostic_while_abandoning() {
         for kind in [HUNG, ABANDONED, OTHER] {
             let (parent, child) = UnixStream::pair().unwrap();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 recv(&child).unwrap();
                 send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
                 assert_eq!(recv(&child).unwrap().0[0], EXPORT);
@@ -3703,7 +3811,7 @@ mod tests {
                 }
                 send(&child, &reply.0, &[]).unwrap();
             });
-            let session = connected_to_script(parent);
+            let session = connected_to_script(parent, &server);
             let index = LocalIndex::new(1 << 20);
             let error = session
                 .publish_snapshot(&index, namespace(), b"typed", None, SnapId(1), 1)
@@ -3727,7 +3835,7 @@ mod tests {
     #[test]
     fn oversized_export_failure_is_bounded_and_abandons_without_publication() {
         let (parent, child) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
+        let server = FixtureThread::spawn(move || {
             recv(&child).unwrap();
             send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
             assert_eq!(recv(&child).unwrap().0[0], EXPORT);
@@ -3741,7 +3849,7 @@ mod tests {
             );
             assert!(recv(&child).is_err());
         });
-        let session = connected_to_script(parent);
+        let session = connected_to_script(parent, &server);
         let index = LocalIndex::new(1 << 20);
         let error = session
             .publish_snapshot(&index, namespace(), b"oversized", None, SnapId(1), 1)
@@ -3758,7 +3866,7 @@ mod tests {
     #[test]
     fn export_guard_counts_include_the_reverse_allocation_boundaries() {
         let (parent, child) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
+        let server = FixtureThread::spawn(move || {
             let guard = crate::image_identity::LoadedImageGuard::fixture();
             let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
                 serve(&child, &mut Fake::open, guard.clone())
@@ -3790,7 +3898,7 @@ mod tests {
                 8
             );
         });
-        let session = connected_to_script(parent);
+        let session = connected_to_script(parent, &server);
         let index = LocalIndex::new(1 << 20);
         let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
             session.publish_snapshot(&index, namespace(), b"counts", None, SnapId(1), 1)
@@ -3851,7 +3959,7 @@ mod tests {
         for case in 0..11 {
             let (parent, child) = UnixStream::pair().unwrap();
             let (finished, completion) = std::sync::mpsc::channel();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 let result = serve(
                     &child,
                     &mut Fake::open,
@@ -3919,11 +4027,12 @@ mod tests {
         }
     }
 
-    fn connected_to_script(parent: UnixStream) -> WorkerSession {
+    fn connected_to_script(parent: UnixStream, server: &FixtureThread) -> WorkerSession {
         WorkerSession::connect(
             WorkerConnection {
                 stream: parent,
                 process: None,
+                owner: Some(Box::new(server.clone())),
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             },
             &[3],
@@ -3939,7 +4048,7 @@ mod tests {
     fn export_parent_rejects_unsolicited_or_repeated_allocations_and_bad_completion() {
         for case in 0..8 {
             let (parent, child) = UnixStream::pair().unwrap();
-            let server = std::thread::spawn(move || {
+            let server = FixtureThread::spawn(move || {
                 assert_eq!(recv(&child).unwrap().0[0], INIT);
                 send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
                 assert_eq!(recv(&child).unwrap().0[0], EXPORT);
@@ -3975,7 +4084,7 @@ mod tests {
                 )
                 .unwrap();
             });
-            let session = connected_to_script(parent);
+            let session = connected_to_script(parent, &server);
             let index = LocalIndex::new(1 << 20);
             assert!(
                 session
@@ -3995,13 +4104,207 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct AmbiguousChild {
+        child: Child,
+        first: bool,
+        signals: Arc<std::sync::atomic::AtomicUsize>,
+        exited: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl crate::writer_lifetime::ExitOwner for AmbiguousChild {
+        fn try_exited(&mut self) -> io::Result<bool> {
+            if std::mem::replace(&mut self.first, false) {
+                return Err(io::Error::other("injected ambiguous wait"));
+            }
+            let exited = self.child.try_wait()?.is_some();
+            self.exited
+                .store(exited, std::sync::atomic::Ordering::SeqCst);
+            Ok(exited)
+        }
+        fn terminate(&mut self) -> io::Result<()> {
+            self.signals
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.child.kill()
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    #[allow(clippy::disallowed_methods)]
+    fn actual_process_writer_stays_charged_and_unpunched_until_confirmed_exit() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let directory = tempfile::tempdir().unwrap();
+        let (parent, child) = UnixStream::pair().unwrap();
+        parent
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let raw = child.as_raw_fd();
+        let mut command = Command::new("python3");
+        command
+            .arg("-c")
+            .arg(
+                r#"
+import array,mmap,os,pathlib,socket,struct,sys,time
+s=socket.socket(fileno=int(sys.argv[1])); work=pathlib.Path(sys.argv[2])
+def exact(n):
+    out=b''
+    while len(out)<n:
+        part=s.recv(n-len(out))
+        if not part: raise RuntimeError('unexpected EOF')
+        out+=part
+    return out
+def receive():
+    header,ancillary,_,_=s.recvmsg(16,socket.CMSG_SPACE(256))
+    header+=exact(16-len(header))
+    length,count=struct.unpack('<QQ',header)
+    descriptors=[]
+    for level,kind,data in ancillary:
+        if level==socket.SOL_SOCKET and kind==socket.SCM_RIGHTS:
+            row=array.array('i');row.frombytes(data);descriptors.extend(row)
+    assert len(descriptors)==count
+    return exact(length),descriptors
+def send(body): s.sendall(struct.pack('<QQ',len(body),0)+body)
+body,_=receive();assert body[0]==1
+send(struct.pack('<BQQ',0,1,10))
+body,_=receive();assert body[0]==6
+send(struct.pack('<BQ',7,8192))
+body,fds=receive();assert body[0]==18 and len(fds)==1
+start,length=struct.unpack('<QQ',body[1:]);assert length==8192
+skip=start%mmap.ALLOCATIONGRANULARITY
+writer=mmap.mmap(fds[0],skip+length,access=mmap.ACCESS_WRITE,offset=start-skip)
+writer[skip:skip+length]=b'Z'*length
+s.close()
+deadline=time.monotonic()+10
+while not (work/'write').exists() and time.monotonic()<deadline:time.sleep(.005)
+if writer[skip:skip+length]!=b'Z'*length:(work/'punched').write_text('unexpected reclamation')
+writer[skip:skip+length]=b'\xab'*length
+writer.flush();(work/'written').write_text('done')
+while not (work/'exit').exists() and time.monotonic()<deadline:time.sleep(.005)
+writer.close()
+"#,
+            )
+            .arg(raw.to_string())
+            .arg(directory.path());
+        // SAFETY: child owns raw until spawn completes; the post-fork closure only invokes
+        // async-signal-safe fcntl on that inherited descriptor.
+        unsafe {
+            command.pre_exec(move || set_cloexec(raw, false));
+        }
+        let process = command.spawn().unwrap();
+        drop(child);
+        let signals = Arc::new(AtomicUsize::new(0));
+        let exited = Arc::new(AtomicBool::new(false));
+        let session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: None,
+                owner: Some(Box::new(AmbiguousChild {
+                    child: process,
+                    first: true,
+                    signals: signals.clone(),
+                    exited: exited.clone(),
+                })),
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        let index = LocalIndex::new(3 * 4096);
+        let mut keeper = index.extent(4096).unwrap();
+        keeper.bytes_mut().fill(0xcd);
+        assert!(
+            session
+                .publish_snapshot(&index, namespace(), b"uncertain", None, SnapId(1), 1)
+                .is_err()
+        );
+        assert!(session.abandoned());
+        assert_eq!(session.retained_export_bytes(), 8192);
+        assert_eq!(index.stats().charged, 3 * 4096);
+        assert!(index.extent(1).is_err());
+        drop(session);
+        assert!(!exited.load(Ordering::SeqCst));
+        assert_eq!(signals.load(Ordering::SeqCst), 0);
+        let retained = crate::writer_lifetime::worker_quarantine_stats();
+        assert!(
+            retained.retained_extents >= 1
+                && retained.retained_bytes >= 8192
+                && retained.ambiguous_workers >= 1
+        );
+        assert_eq!(index.stats().charged, 3 * 4096);
+        std::fs::write(directory.path().join("write"), b"go").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !directory.path().join("written").exists() {
+            assert!(Instant::now() < deadline, "writer did not reach barrier");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!directory.path().join("punched").exists());
+        assert!(keeper.bytes_mut().iter().all(|byte| *byte == 0xcd));
+        assert_eq!(index.stats().charged, 3 * 4096);
+        assert_eq!(signals.load(Ordering::SeqCst), 0);
+        std::fs::write(directory.path().join("exit"), b"go").unwrap();
+        while !exited.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "worker exit was not confirmed");
+            crate::writer_lifetime::reap_worker_quarantine(64);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(signals.load(Ordering::SeqCst), 0);
+        if crate::cache::segments::RELEASES_EXTENTS {
+            assert_eq!(index.stats().charged, 4096);
+        }
+        drop(keeper);
+        assert_eq!(index.stats().charged, 0);
+        assert!(index.extent(8192).is_ok());
+        assert_eq!(index.stats().publishes, 0);
+    }
+
+    #[test]
+    fn failed_send_after_fd_handoff_retains_destination_until_join_proof() {
+        let (parent, child) = UnixStream::pair().unwrap();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = FixtureThread::spawn(move || {
+            recv(&child).unwrap();
+            send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
+            assert_eq!(recv(&child).unwrap().0[0], EXPORT);
+            send(&child, &Out::op(NEED_EXTENT).len(8192).0, &[]).unwrap();
+            let mut header = [0; HEADER];
+            let (received, fds) = recv_with_fds(&child, &mut header, None).unwrap();
+            (&child).read_exact(&mut header[received..]).unwrap();
+            assert_eq!(fds.len(), 1);
+            let mut writer = Mapping::new(fds[0].as_fd(), 0, 8192, true).unwrap();
+            ready_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            writer.bytes_mut().fill(0x5a);
+        });
+        let session = connected_to_script(parent, &server);
+        let index = LocalIndex::new(8192);
+        FAIL_AFTER_FD_HEADER.with(|fail| fail.set(true));
+        let error = session
+            .publish_snapshot(&index, namespace(), b"partial", None, SnapId(1), 1)
+            .unwrap_err();
+        assert!(error.to_string().contains("after descriptor transfer"));
+        ready_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert_eq!(session.retained_export_bytes(), 8192);
+        assert_eq!(index.stats().charged, 8192);
+        assert!(index.extent(1).is_err());
+        assert_eq!(index.stats().publishes, 0);
+        release_tx.send(()).unwrap();
+        server.join().unwrap();
+        drop(session);
+        assert_eq!(index.stats().charged, 0);
+    }
+
     #[test]
     fn lost_final_ack_never_publishes_or_reuses_a_still_mapped_destination() {
         use std::os::unix::fs::MetadataExt;
         let (parent, child) = UnixStream::pair().unwrap();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        let server = std::thread::spawn(move || {
+        let server = FixtureThread::spawn(move || {
             recv(&child).unwrap();
             send(&child, &Out::op(OK).u64(1).u64(10).0, &[]).unwrap();
             assert_eq!(recv(&child).unwrap().0[0], EXPORT);
@@ -4021,7 +4324,7 @@ mod tests {
             release_rx.recv().unwrap();
             writer.bytes_mut().fill(0xab);
         });
-        let session = connected_to_script(parent);
+        let session = connected_to_script(parent, &server);
         let index = LocalIndex::new(1 << 20);
         assert!(
             session
@@ -4330,7 +4633,7 @@ mod tests {
     #[test]
     fn a_worker_that_dies_before_acknowledging_a_write_publishes_nothing() {
         let (parent, child) = UnixStream::pair().unwrap();
-        let server = std::thread::spawn(move || {
+        let server = FixtureThread::spawn(move || {
             let mut served = Served::default();
             loop {
                 let (body, fds) = recv(&child).unwrap();
@@ -4354,6 +4657,7 @@ mod tests {
             WorkerConnection {
                 stream: parent,
                 process: None,
+                owner: Some(Box::new(server.clone())),
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             },
             &[3],

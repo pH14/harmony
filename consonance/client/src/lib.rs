@@ -26,6 +26,9 @@ pub mod watchdog;
 #[cfg(all(feature = "in-process", not(miri)))]
 pub mod session;
 
+#[cfg(any(feature = "in-process", test))]
+mod writer_lifetime;
+
 use control_proto::{Caps, ControlError, Reply, Request};
 
 pub trait Transport {
