@@ -416,6 +416,32 @@ The live `guest_pauth_keys_refuse_capture_and_clean_restore_resets_them` test
 covers all ten keys, capture refusal, and clean reused, fresh, and policy
 restores.
 
+ARM KVM handles `OSLAR_EL1` writes and `OSLSR_EL1` reads internally, bypassing
+userspace's unlock-only dispatcher rule. The portable debug record admits only
+an unlocked OS lock: capture reads `OSLSR_EL1` and refuses `OSLK` (bit 1), while
+policy installation and restore clear OSLK through KVM's writable `OSLSR_EL1`
+register API, preserving its required read-only feature bits. Failed reads or writes propagate as backend errors. Read-only
+OSLSR feature bits are excluded from the lock check. ARM GIC state version 9
+rejects older KVM snapshots that lacked this admission proof. The live
+`guest_os_lock_refuses_capture_and_clean_restore_unlocks` fixture sets the lock
+from guest EL1, checks readback at a completed MMIO boundary, verifies that
+capture refusal preserves the locked continuation, and checks unlocked
+capture-and-continue, fresh restore, reused restore after a locked detour, and
+policy reset. Removing the capture check or restore reset must fail this test.
+This synthetic guest qualifies the boundary; it does not establish a failure in
+an ordinary shipped application.
+
+The debug-register inventory for this boundary is:
+
+| Register or field | Disposition | ARM KVM enforcement |
+| --- | --- | --- |
+| `DBGBVRn_EL1`, `DBGBCRn_EL1`, `DBGWVRn_EL1`, `DBGWCRn_EL1` | Captured | All 16 slots read and restored through one-register ioctls |
+| `MDCCINT_EL1.RX/TX`, `MDSCR_EL1` | Captured | Read and restored; reserved MDCCINT bits rejected |
+| `OSLSR_EL1.OSLK` | Fixed unlocked | Capture refuses a lock; restore and policy clear it |
+| `OSLAR_EL1` | Emulated write alias | KVM changes OSLSR; checked at capture rather than relying on an exit |
+| Other `OSLSR_EL1` fields | Excluded feature description | Read-only KVM feature bits do not represent the OS lock |
+| Debug exception/register-access trap requests | Unsupported | Restore preflight rejects either enabled request |
+
 Both ARM KVM and HVF capture and restore guest-writable `MDCCINT_EL1.RX` and
 `MDCCINT_EL1.TX` as part of the debug state. A guest write to RX survives normal
 execution on HVF but was lost after a cold snapshot restore, so Arm portable

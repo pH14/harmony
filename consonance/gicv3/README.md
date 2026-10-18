@@ -18,7 +18,9 @@ input stays pending while asserted. Redistributor SGI/PPI trigger configuration
 is read-only. SGIs start edge-triggered; PPIs and SPIs start level-triggered.
 The initial SPI level behavior remains until the guest programs an edge trigger.
 
-`GicState` is the complete fixed-size snapshot record. Restore validates the
+`GicState` is the complete fixed-size snapshot record. Shared record version 9
+also rejects older ARM KVM snapshots that lacked debug OS-lock admission proof;
+the lock itself remains fixed unlocked by the backend. Restore validates the
 configuration and clears state beyond the configured SPI limit. It retains the
 trigger configuration for every implemented INTID. The firing
 deadline is derived from the current V-time and timer registers rather than

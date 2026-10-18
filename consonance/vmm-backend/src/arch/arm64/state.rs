@@ -102,7 +102,7 @@ impl Arm64GicIdleState {
 impl Default for Arm64GicState {
     fn default() -> Self {
         Self {
-            version: 8,
+            version: 9,
             impl_spis: 0,
             timer_hz: 0,
             timer_intid: 0,

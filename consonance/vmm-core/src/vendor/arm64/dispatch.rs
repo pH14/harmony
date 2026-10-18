@@ -2058,7 +2058,7 @@ mod tests {
     }
 
     #[test]
-    fn public_kvm_restore_rejects_unproven_physical_timer_records_before_mutation() {
+    fn public_kvm_restore_rejects_unproven_timer_and_os_lock_records_before_mutation() {
         use vmm_backend::{Arm64Kvm, Arm64KvmBackend, FakeKvm};
 
         let machine = || {
@@ -2073,7 +2073,7 @@ mod tests {
         let valid = source.save_vm_state().unwrap();
         let mut target = machine();
         let before = target.save_vm_state().unwrap();
-        for version in [5, 6] {
+        for version in [5, 6, 7, 8] {
             let mut legacy = valid.clone();
             let mut dev = records::decode_device_blob(&legacy.devices.0).unwrap();
             dev.gic.as_mut().unwrap().version = version;
