@@ -77,9 +77,11 @@ The list includes shared-launcher telemetry-owner isolation, exact executable
 read/hash/comparison bytes and their partial-failure accounting, and mapping
 refusal with publication revocation.
 `Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
-export regression explicitly with all client features on its macOS Arm64 test job.
-It requires exactly one test to run and pass, covering real Session extent-copy
-telemetry with the mock backend without requiring a guest hardware run.
+export regression in its existing macOS Arm64 workspace nextest suite, whose
+unified features enable the client mock backend. An exact-name PASS assertion
+in `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
+without a second build. This covers real Session extent-copy telemetry without
+requiring a guest hardware run.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
 that builds the frontend and Consonance host, signs the host with the release
 entitlement and operating-system-only library constraint, then checks signed

@@ -749,11 +749,13 @@ class HostCompatibilityTests(unittest.TestCase):
                     if step.get("name") == "Verify direct extent export copy accounting on Arm64")
         command = step["run"]
         self.assertIn('test "$(uname -m)" = arm64', command)
-        self.assertIn("cargo test --locked -p consonance-client --all-features --lib "
-                      "session::live::tests::served_export_writes_once_into_the_allocated_destination "
-                      "-- --exact", command)
-        self.assertIn("grep -Fxq 'running 1 test'", command)
-        self.assertIn("grep -Eq 'test result: ok\\. 1 passed;'", command)
+        self.assertIn("cargo nextest run --workspace --no-fail-fast 2>&1 | tee host-tests.log",
+                      "\n".join(step.get("run", "") for step in host["steps"]))
+        self.assertIn("grep -Eq '^[[:space:]]*PASS[[:space:]]+\\[[^]]+\\][[:space:]]+"
+                      "(\\([[:space:]]*[0-9]+/[0-9]+\\)[[:space:]]+)?consonance-client[[:space:]]+session::live::tests::"
+                      "served_export_writes_once_into_the_allocated_destination$' host-tests.log",
+                      command)
+        self.assertNotIn("cargo test", command)
 
     def test_each_job_names_an_explicit_runner(self):
         runners = {job["name"]: job["runs-on"] for job in self.hosts.values()}
