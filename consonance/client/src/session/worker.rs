@@ -35,6 +35,8 @@ use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 pub const WORKER_FD_ENV: &str = "HARMONY_SESSION_WORKER_FD";
 const HEADER: usize = 16;
 const MAX_FDS: usize = 2 * ANCHOR_DEPTH as usize;
+#[cfg(target_os = "macos")]
+const DARWIN_CONTROL_CAPACITY: usize = 2048;
 const EXIT_POLL: Duration = Duration::from_millis(5);
 const EXIT_POLLS: u32 = 400;
 const IMAGE_HELLO: &[u8] = b"harmony-session-worker-image-v2";
@@ -543,7 +545,20 @@ fn recv_with_fds(
     buffer: &mut [u8],
     deadline: Option<Instant>,
 ) -> io::Result<(usize, Vec<OwnedFd>)> {
+    #[cfg(target_os = "macos")]
+    let space = DARWIN_CONTROL_CAPACITY;
+    #[cfg(not(target_os = "macos"))]
     let space = control_space(MAX_FDS);
+    recv_with_fds_control_space(stream, buffer, deadline, space)
+}
+
+#[allow(clippy::disallowed_methods)]
+fn recv_with_fds_control_space(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+    space: usize,
+) -> io::Result<(usize, Vec<OwnedFd>)> {
     let mut control = vec![0_u64; space.div_ceil(size_of::<u64>())];
     let mut iov = libc::iovec {
         iov_base: buffer.as_mut_ptr().cast(),
@@ -587,6 +602,9 @@ fn recv_with_fds(
         return Err(malformed("descriptors were truncated"));
     }
     parsed?;
+    if fds.len() > MAX_FDS {
+        return Err(malformed("too many descriptors"));
+    }
     #[cfg(not(target_os = "linux"))]
     for fd in &fds {
         set_cloexec(fd.as_raw_fd(), true)?;
@@ -1854,6 +1872,224 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
+    fn live_task_descriptors() -> std::collections::BTreeSet<RawFd> {
+        let candidates: Vec<_> = std::fs::read_dir("/dev/fd")
+            .unwrap()
+            .map(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .parse::<RawFd>()
+                    .unwrap()
+            })
+            .collect();
+        candidates
+            .into_iter()
+            .filter(|fd| {
+                // SAFETY: F_GETFD queries a candidate number without taking ownership or modifying it.
+                unsafe { libc::fcntl(*fd, libc::F_GETFD) >= 0 }
+            })
+            .collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    fn send_two_rights_headers(
+        stream: &UnixStream,
+        descriptor: BorrowedFd<'_>,
+    ) -> io::Result<usize> {
+        let space = control_space(1);
+        let mut control = crate::ancillary::tests::two_rights_control(descriptor.as_raw_fd());
+        let mut byte = [1_u8];
+        let mut iov = libc::iovec {
+            iov_base: byte.as_mut_ptr().cast(),
+            iov_len: 1,
+        };
+        // SAFETY: the integer/pointer fields of msghdr have a valid empty zero representation.
+        let mut message: libc::msghdr = unsafe { std::mem::zeroed() };
+        message.msg_iov = &raw mut iov;
+        message.msg_iovlen = 1;
+        message.msg_control = control.as_mut_ptr().cast();
+        message.msg_controllen = (space * 2) as _;
+        // SAFETY: message describes only the live byte/iovec and initialized control allocation above.
+        let result = unsafe { libc::sendmsg(stream.as_raw_fd(), &raw const message, 0) };
+        usize::try_from(result).map_err(|_| io::Error::last_os_error())
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", not(miri)))]
+    #[allow(clippy::disallowed_methods)]
+    fn darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal() {
+        const CHILD: &str = "HARMONY_DARWIN_RIGHTS_BOUND_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            const TEST: &str = concat!(
+                "session::worker::tests::",
+                "darwin_control_bound_recovers_all_installed_rights_before_protocol_refusal"
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(TEST)
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            print!("{stdout}");
+            return;
+        }
+        // SAFETY: rlimit contains integer fields with a valid zero representation.
+        let mut limit: libc::rlimit = unsafe { std::mem::zeroed() };
+        // SAFETY: getrlimit writes one live correctly aligned rlimit without retaining its pointer.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut limit) },
+            0
+        );
+        assert!(
+            limit.rlim_max >= 1024,
+            "the isolated qualification needs room for one maximum-size rights message"
+        );
+        if limit.rlim_cur < 1024 {
+            limit.rlim_cur = 1024;
+            // SAFETY: the initialized rlimit raises only this sacrificial child's soft FD limit within its existing hard limit.
+            assert_eq!(
+                unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const limit) },
+                0
+            );
+        }
+        let baseline = live_task_descriptors();
+        {
+            let (sender, receiver) = UnixStream::pair().unwrap();
+            let descriptor = tempfile::tempfile().unwrap();
+            let active = live_task_descriptors();
+            for count in [64, 65, 72] {
+                let rights = vec![descriptor.as_fd(); count];
+                assert_eq!(send_with_fds(&sender, &[1], &rights).unwrap(), 1);
+                let received = recv_with_fds(
+                    &receiver,
+                    &mut [0; 1],
+                    Some(Instant::now() + Duration::from_secs(1)),
+                );
+                if count == MAX_FDS {
+                    assert_eq!(received.unwrap().1.len(), MAX_FDS);
+                } else {
+                    let error = received.unwrap_err();
+                    assert_eq!(
+                        live_task_descriptors(),
+                        active,
+                        "installed descriptor leak at {count}"
+                    );
+                    assert!(
+                        error.to_string().contains("too many descriptors"),
+                        "{error}"
+                    );
+                }
+                assert_eq!(
+                    live_task_descriptors(),
+                    active,
+                    "installed descriptor leak at {count}"
+                );
+            }
+            let mut maximum = 0;
+            for count in 73..=520 {
+                let rights = vec![descriptor.as_fd(); count];
+                match send_with_fds(&sender, &[1], &rights) {
+                    Ok(1) => {
+                        let error = recv_with_fds(
+                            &receiver,
+                            &mut [0; 1],
+                            Some(Instant::now() + Duration::from_secs(1)),
+                        )
+                        .unwrap_err();
+                        assert!(
+                            error.to_string().contains("too many descriptors"),
+                            "{count}: {error}"
+                        );
+                        maximum = count;
+                    }
+                    Err(error) => {
+                        assert_eq!(error.raw_os_error(), Some(libc::EINVAL));
+                        break;
+                    }
+                    other => panic!("unexpected send result {other:?}"),
+                }
+                assert_eq!(
+                    live_task_descriptors(),
+                    active,
+                    "installed descriptor leak at {count}"
+                );
+            }
+            assert!(
+                (73..520).contains(&maximum),
+                "a bounded maximum and oversized refusal must both execute"
+            );
+            println!("DARWIN_RIGHTS_MAXIMUM_ACCEPTED={maximum}");
+            assert_eq!(
+                send_two_rights_headers(&sender, descriptor.as_fd())
+                    .unwrap_err()
+                    .raw_os_error(),
+                Some(libc::EINVAL)
+            );
+            assert_eq!(live_task_descriptors(), active);
+            for value in [1, 2, 3] {
+                assert_eq!(
+                    send_with_fds(&sender, &[value], &[descriptor.as_fd()]).unwrap(),
+                    1
+                );
+            }
+            for value in [1, 2, 3] {
+                let mut bytes = [0; 16];
+                let (size, rights) = recv_with_fds(
+                    &receiver,
+                    &mut bytes,
+                    Some(Instant::now() + Duration::from_secs(1)),
+                )
+                .unwrap();
+                assert_eq!(&bytes[..size], &[value]);
+                assert_eq!(rights.len(), 1);
+                drop(rights);
+                assert_eq!(live_task_descriptors(), active);
+            }
+            assert_eq!(
+                send_with_fds(&sender, &[], &[descriptor.as_fd()]).unwrap(),
+                0
+            );
+            assert_eq!(
+                send_with_fds(&sender, &[9], &[descriptor.as_fd()]).unwrap(),
+                1
+            );
+            let (size, rights) = recv_with_fds(
+                &receiver,
+                &mut [0; 16],
+                Some(Instant::now() + Duration::from_secs(1)),
+            )
+            .unwrap();
+            assert_eq!(size, 0);
+            assert_eq!(rights.len(), 1);
+            drop(rights);
+            let mut bytes = [0; 16];
+            let (size, rights) = recv_with_fds(
+                &receiver,
+                &mut bytes,
+                Some(Instant::now() + Duration::from_secs(1)),
+            )
+            .unwrap();
+            assert_eq!(&bytes[..size], &[9]);
+            assert_eq!(rights.len(), 1);
+            drop(rights);
+            assert_eq!(live_task_descriptors(), active);
+        }
+        assert_eq!(live_task_descriptors(), baseline);
+    }
+
     #[test]
     #[cfg_attr(miri, ignore)]
     fn truncated_rights_preserve_unrelated_descriptors_and_close_received_handles() {
@@ -1896,7 +2132,8 @@ mod tests {
         let mut fds = vec![rights.as_fd(); capacity];
         fds.push(excess.as_fd());
         assert_eq!(send_with_fds(&left, &[1], &fds).unwrap(), 1);
-        let error = recv_with_fds(&right, &mut [0; 1], None).unwrap_err();
+        let error = recv_with_fds_control_space(&right, &mut [0; 1], None, control_space(MAX_FDS))
+            .unwrap_err();
         assert!(
             error.to_string().contains("descriptors were truncated"),
             "{error}"

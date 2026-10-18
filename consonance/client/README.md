@@ -310,6 +310,29 @@ recover kernel-installed handles that the OS did not return: observed Darwin
 truncation can leave unreported handles, tracked separately from bounded parsing.
 The accepted worker descriptor cap and protocol remain unchanged.
 
+On Darwin, worker receives allocate a separate 2048-byte control buffer before
+enforcing the protocol's 64-descriptor limit. All complete returned rights become
+owned before oversized messages are refused. Linux keeps its protocol-sized
+control buffer. This Darwin bound is a qualified XNU implementation assumption,
+not a universal ancillary-data API guarantee: audited XNU releases
+10002.1.13, 11417.140.69 and 12377.121.6 limit the complete send control buffer
+to one 2048-byte cluster (with a tighter LP64 expansion limit), accept one
+SCM_RIGHTS header covering that buffer, and preserve control record boundaries
+through receive. The per-mbuf 512-FD constant alone does not prove this bound.
+Socket send/receive high-water options are flow control and do not replace it.
+The bound follows XNU's [whole-control allocation limit](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_syscalls.c#L3274),
+[one-header AF_UNIX admission](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_usrreq.c#L2491)
+and [control record receive boundary](https://github.com/apple-oss-distributions/xnu/blob/f6217f891ac0bb64f3d375211650a4c1ff8ca1ea/bsd/kern/uipc_socket.c#L2958).
+
+Native Darwin subprocess tests cover protocol limits, maximum accepted and
+oversized kernel sends, multiple headers, queued sends and zero-data controls,
+and compare live task-FD sets after closing only known owned handles. These run
+in the normal macOS in-process client test lane. Unexpected MSG_CTRUNC still
+refuses the message; XNU can install descriptors omitted from truncated output,
+so this process cannot recover those handles safely. Such behavior falls outside
+the qualified receive bound and is not repaired by scanning and closing guessed
+FD numbers. New macOS/XNU behavior requires requalification of this assumption.
+
 `UmlSession`, behind the `uml` feature on Linux, runs a User-mode Linux guest
 through `uml::Session`. `UmlLaunch` names the profile, initramfs, memory, boot
 arguments, seed, setup budget and the progress limit after which a guest that
