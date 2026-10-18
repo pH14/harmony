@@ -1778,6 +1778,7 @@ mod tests {
 
     fn service_config(identity: &[u8]) -> ServiceConfig {
         ServiceConfig {
+            local_services: Vec::new(),
             identity: identity.to_vec(),
             configuration: b"configuration".to_vec(),
         }

@@ -18,7 +18,7 @@ use crate::Moment;
 pub const MAX_CHANNEL_BYTES: usize = 1 << 20;
 
 const SNAPSHOT_MAGIC: u32 = u32::from_le_bytes(*b"EVC1");
-const SNAPSHOT_VERSION: u16 = 3;
+const SNAPSHOT_VERSION: u16 = 4;
 const COVERAGE_SCHEDULE_VERSION: u16 = 1;
 pub const MAX_RECORDED_STATE_BYTES: usize = 8 * MAX_CHANNEL_BYTES;
 
@@ -27,6 +27,32 @@ pub const SERVICE_PAYLOAD: u16 = 2;
 pub const SERVICE_SCHEDULER: u16 = 3;
 pub const SERVICE_COVERAGE_QUANTUM: u16 = 4;
 pub const DEFAULT_COVERAGE_QUANTUM: u64 = 1024;
+
+pub const MAX_LOCAL_SERVICES: usize = 32;
+
+pub fn validate_local_services(services: &[u16]) -> Result<(), ChannelError> {
+    if services.len() > MAX_LOCAL_SERVICES {
+        return Err(ChannelError::TooLarge);
+    }
+    if services.iter().any(|id| *id <= SERVICE_COVERAGE_QUANTUM)
+        || services.windows(2).any(|pair| pair[0] >= pair[1])
+    {
+        return Err(ChannelError::Malformed);
+    }
+    Ok(())
+}
+
+pub fn decode_local_services(bytes: &[u8]) -> Result<Vec<u16>, ChannelError> {
+    if !bytes.len().is_multiple_of(2) || bytes.len() > MAX_LOCAL_SERVICES * 2 {
+        return Err(ChannelError::Malformed);
+    }
+    let services: Vec<_> = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+        .collect();
+    validate_local_services(&services)?;
+    Ok(services)
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CoverageSchedule {
@@ -286,6 +312,10 @@ pub trait ServiceHandler: Send + Any {
 
     fn configuration(&self) -> &[u8];
 
+    fn local_services(&self) -> &[u16] {
+        &[]
+    }
+
     fn respond(
         &mut self,
         moment: Moment,
@@ -302,6 +332,9 @@ pub trait ServiceHandler: Send + Any {
 }
 
 impl ServiceHandler for Box<dyn ServiceHandler> {
+    fn local_services(&self) -> &[u16] {
+        (**self).local_services()
+    }
     fn identity(&self) -> &[u8] {
         (**self).identity()
     }
@@ -349,6 +382,7 @@ pub trait ServiceHandlerFactory {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HandlerSnapshot {
+    local_services: Vec<u16>,
     identity: Vec<u8>,
     configuration: Vec<u8>,
     state: Vec<u8>,
@@ -361,7 +395,7 @@ fn capture_handler_fingerprint(
     handler: &dyn ServiceHandler,
 ) -> Result<HandlerFingerprint, ChannelError> {
     let mut hasher = Sha256::new();
-    hasher.update(b"consonance-handler-fingerprint-v1\0");
+    hasher.update(b"consonance-handler-fingerprint-v2\0");
     for bytes in [handler.identity(), handler.configuration()] {
         hasher.update(
             u64::try_from(bytes.len())
@@ -369,6 +403,12 @@ fn capture_handler_fingerprint(
                 .to_le_bytes(),
         );
         hasher.update(bytes);
+    }
+    let policy = handler.local_services();
+    validate_local_services(policy)?;
+    hasher.update((policy.len() as u64).to_le_bytes());
+    for id in policy {
+        hasher.update(id.to_le_bytes());
     }
     let state = handler.snapshot_state()?;
     hasher.update(
@@ -384,8 +424,13 @@ fn check_handler_contract(
     handler: &dyn ServiceHandler,
     identity: &[u8],
     configuration: &[u8],
+    local_services: &[u16],
 ) -> Result<(), ChannelError> {
-    if handler.identity() != identity || handler.configuration() != configuration {
+    validate_local_services(handler.local_services())?;
+    if handler.identity() != identity
+        || handler.configuration() != configuration
+        || handler.local_services() != local_services
+    {
         return Err(ChannelError::Handler(
             "handler identity or configuration differs from the snapshot".to_owned(),
         ));
@@ -404,6 +449,8 @@ fn check_handler_state(handler: &dyn ServiceHandler, state: &[u8]) -> Result<(),
 
 impl HandlerSnapshot {
     pub fn capture(handler: &dyn ServiceHandler) -> Result<Self, ChannelError> {
+        validate_local_services(handler.local_services())?;
+        let local_services = handler.local_services().to_vec();
         let identity = handler.identity().to_vec();
         let configuration = handler.configuration().to_vec();
         check_len(identity.len())?;
@@ -411,6 +458,7 @@ impl HandlerSnapshot {
         let state = handler.snapshot_state()?;
         check_len(state.len())?;
         Ok(Self {
+            local_services,
             identity,
             configuration,
             state,
@@ -422,9 +470,19 @@ impl HandlerSnapshot {
         factory: &F,
     ) -> Result<F::Handler, ChannelError> {
         let mut handler = factory.build(&self.identity, &self.configuration)?;
-        check_handler_contract(&handler, &self.identity, &self.configuration)?;
+        check_handler_contract(
+            &handler,
+            &self.identity,
+            &self.configuration,
+            &self.local_services,
+        )?;
         handler.restore_state(&self.state)?;
-        check_handler_contract(&handler, &self.identity, &self.configuration)?;
+        check_handler_contract(
+            &handler,
+            &self.identity,
+            &self.configuration,
+            &self.local_services,
+        )?;
         check_handler_state(&handler, &self.state)?;
         Ok(handler)
     }
@@ -440,6 +498,10 @@ impl HandlerSnapshot {
     }
 
     #[must_use]
+    pub fn local_services(&self) -> &[u16] {
+        &self.local_services
+    }
+
     pub fn state(&self) -> &[u8] {
         &self.state
     }
@@ -493,7 +555,7 @@ impl RecordedState {
     }
 
     fn encoded_len(&self) -> usize {
-        let mut size = 40usize;
+        let mut size = 44usize;
         for record in self.overrides.values() {
             size = size.saturating_add(19);
             if record.request_sha256.is_some() {
@@ -516,6 +578,7 @@ impl RecordedState {
         }
         size.saturating_add(self.handler.identity.len())
             .saturating_add(self.handler.configuration.len())
+            .saturating_add(self.handler.local_services.len() * 2)
             .saturating_add(self.handler.state.len())
     }
 
@@ -556,6 +619,13 @@ impl RecordedState {
         }
         put_bytes(out, &self.handler.identity);
         put_bytes(out, &self.handler.configuration);
+        let policy: Vec<_> = self
+            .handler
+            .local_services
+            .iter()
+            .flat_map(|id| id.to_le_bytes())
+            .collect();
+        put_bytes(out, &policy);
         put_bytes(out, &self.handler.state);
     }
 
@@ -614,6 +684,7 @@ impl RecordedState {
         let handler = HandlerSnapshot {
             identity: reader.bytes()?.to_vec(),
             configuration: reader.bytes()?.to_vec(),
+            local_services: decode_local_services(reader.bytes()?)?,
             state: reader.bytes()?.to_vec(),
         };
         reader.finish()?;
@@ -636,6 +707,7 @@ impl RecordedState {
             &environment.handler,
             &self.handler.identity,
             &self.handler.configuration,
+            &self.handler.local_services,
         )?;
         let before = HandlerSnapshot::capture(&environment.handler)?;
         let mut handler = environment.checked_handler_clone()?;
@@ -645,6 +717,7 @@ impl RecordedState {
                 &handler,
                 &self.handler.identity,
                 &self.handler.configuration,
+                &self.handler.local_services,
             )?;
             check_handler_state(&handler, &self.handler.state)
         })();
@@ -830,7 +903,9 @@ impl<H: ServiceHandler> RecordedEnv<H> {
         candidate.reseed(seed);
         self.verify_handler_unchanged(&before)?;
         let after = HandlerSnapshot::capture(&candidate)?;
-        if after.identity() != before.identity() || after.configuration() != before.configuration()
+        if after.identity() != before.identity()
+            || after.configuration() != before.configuration()
+            || after.local_services() != before.local_services()
         {
             return Err(ChannelError::Handler(
                 "handler identity or configuration changed while reseeding".to_owned(),
@@ -1001,6 +1076,7 @@ impl<H: ServiceHandler> RecordedEnv<H> {
             }
             if candidate.identity() != self.handler.identity()
                 || candidate.configuration() != self.handler.configuration()
+                || candidate.local_services() != self.handler.local_services()
             {
                 return Err(ChannelError::Handler(
                     "handler identity or configuration changed while answering".to_owned(),
@@ -1326,6 +1402,147 @@ impl<'a> Reader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone)]
+    struct PolicyHandler {
+        policy: Vec<u16>,
+        state: u8,
+        drift: bool,
+    }
+    impl ServiceHandler for PolicyHandler {
+        fn identity(&self) -> &[u8] {
+            b"policy-test"
+        }
+        fn configuration(&self) -> &[u8] {
+            &[]
+        }
+        fn local_services(&self) -> &[u16] {
+            &self.policy
+        }
+        fn respond(&mut self, _: Moment, _: &Question) -> Result<ServiceResponse, ChannelError> {
+            self.state += 1;
+            if self.drift {
+                self.policy = vec![20];
+            }
+            Ok(ServiceResponse::Answered(Answer::Nominal))
+        }
+        fn snapshot_state(&self) -> Result<Vec<u8>, ChannelError> {
+            Ok(vec![self.state])
+        }
+        fn restore_state(&mut self, state: &[u8]) -> Result<(), ChannelError> {
+            self.state = *state.first().ok_or(ChannelError::Malformed)?;
+            if self.drift && self.state == 9 {
+                self.policy = vec![20];
+            }
+            Ok(())
+        }
+        fn reseed(&mut self, seed: u64) {
+            if self.drift && seed == 9 {
+                self.policy = vec![20];
+            }
+        }
+        fn clone_box(&self) -> Box<dyn ServiceHandler> {
+            Box::new(self.clone())
+        }
+    }
+    struct PolicyFactory(Vec<u16>);
+    impl ServiceHandlerFactory for PolicyFactory {
+        type Handler = PolicyHandler;
+        fn build(&self, _: &[u8], _: &[u8]) -> Result<PolicyHandler, ChannelError> {
+            Ok(PolicyHandler {
+                policy: self.0.clone(),
+                state: 0,
+                drift: false,
+            })
+        }
+    }
+    #[test]
+    fn local_policy_is_bounded_canonical_and_part_of_snapshot_and_fingerprint() {
+        let maximum: Vec<_> = (5..5 + MAX_LOCAL_SERVICES as u16).collect();
+        validate_local_services(&maximum).unwrap();
+        let bytes: Vec<_> = maximum.iter().flat_map(|id| id.to_le_bytes()).collect();
+        assert_eq!(decode_local_services(&bytes).unwrap(), maximum);
+        for policy in [
+            vec![0],
+            vec![4],
+            vec![20, 19],
+            vec![19, 19],
+            vec![19; MAX_LOCAL_SERVICES + 1],
+        ] {
+            assert!(validate_local_services(&policy).is_err());
+        }
+        assert!(decode_local_services(&[19]).is_err());
+        let handler = PolicyHandler {
+            policy: vec![19, 25],
+            state: 7,
+            drift: false,
+        };
+        let snapshot = HandlerSnapshot::capture(&handler).unwrap();
+        assert!(snapshot.restore(&PolicyFactory(vec![19])).is_err());
+        assert_eq!(
+            snapshot
+                .restore(&PolicyFactory(vec![19, 25]))
+                .unwrap()
+                .state,
+            7
+        );
+        let original = capture_handler_fingerprint(&handler).unwrap();
+        let mut changed = handler.clone();
+        changed.policy = vec![19];
+        assert_ne!(original, capture_handler_fingerprint(&changed).unwrap());
+        let env = RecordedEnv::new(7, handler);
+        let state = env.snapshot_state().unwrap();
+        assert_eq!(state.encoded_len(), state.encode().len());
+        assert_eq!(RecordedState::decode(&state.encode()).unwrap(), state);
+        let mut old = state.encode();
+        old[4..6].copy_from_slice(&3_u16.to_le_bytes());
+        assert!(RecordedState::decode(&old).is_err());
+        let mut other = RecordedEnv::new(7, changed);
+        let before = other.snapshot_state().unwrap();
+        assert!(state.restore_into(&mut other).is_err());
+        assert_eq!(other.snapshot_state().unwrap(), before);
+    }
+    #[test]
+    fn local_policy_cannot_change_during_reseed_or_restore() {
+        let mut env = RecordedEnv::new(
+            7,
+            PolicyHandler {
+                policy: vec![19],
+                state: 0,
+                drift: true,
+            },
+        );
+        let before = env.snapshot_state().unwrap();
+        assert!(env.reseed(9).is_err());
+        assert_eq!(env.snapshot_state().unwrap(), before);
+        let source = RecordedEnv::new(
+            7,
+            PolicyHandler {
+                policy: vec![19],
+                state: 9,
+                drift: false,
+            },
+        )
+        .snapshot_state()
+        .unwrap();
+        assert!(source.restore_into(&mut env).is_err());
+        assert_eq!(env.snapshot_state().unwrap(), before);
+    }
+
+    #[test]
+    fn local_policy_cannot_change_during_handler_commit() {
+        let mut env = RecordedEnv::new(
+            7,
+            PolicyHandler {
+                policy: vec![19],
+                state: 0,
+                drift: true,
+            },
+        );
+        let before = env.snapshot_state().unwrap();
+        assert!(env.decide(&Question::new(19, Vec::new()).unwrap()).is_err());
+        assert_eq!(env.snapshot_state().unwrap(), before);
+    }
 
     #[test]
     fn channel_capacity_is_one_mebibyte() {

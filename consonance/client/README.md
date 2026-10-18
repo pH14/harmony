@@ -150,8 +150,8 @@ the captured history; diagnostic trace retirement does not reset it. A backend
 without normalized history returns an explicit unavailable error. UML does not
 supply this certificate.
 
-Embedded complete portable snapshots use format version 8; sparse sidecars use
-version 10. Older embedded versions are rejected. The outer sparse archive layout
+Embedded complete portable snapshots use format version 9; sparse sidecars use
+version 11. Older embedded versions are rejected. The outer sparse archive layout
 remains version 2.
 
 For matched profiles, logical identity excludes only validated init x87/SSE raw

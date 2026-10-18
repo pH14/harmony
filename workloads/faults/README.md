@@ -717,3 +717,18 @@ coordinator thread's session for the whole operation and finalizes it on every
 result. macOS target Drop defers to that active scope, preserving session reuse
 inside it. The faults CLI's own replay commands use FaultTarget directly and do
 not enter this generic replay scope.
+
+The standing service declares inactive debug questions local to the installed
+deterministic handler. The attached debug handler declares them external even
+when no message is supplied. The supervisor still makes each actual debug SDK
+request: attachment after a standing reply is delivered at the same next debug
+request, without a dormant flag or an extra tick. Local answering removes only
+an external Decision/resolution exchange; guest doorbells and mandatory guards
+remain. Both handlers decode debug Status before answering. Rejecting malformed
+inactive Status is an intentional tightening: the prior standing handler returned
+empty bytes without decoding it. Standing and debug identities are respectively
+faults-standing-coverage-v3 and faults-debug-terminal-v2.
+
+The generic local-answer capability requires unchanged captured handler state;
+the inactive standing debug response satisfies it. Stateful local responses are
+rejected before publication. Active debug remains on the external path.

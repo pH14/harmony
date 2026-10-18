@@ -11,6 +11,7 @@ use sha2::{Digest, Sha256};
 pub struct ServiceConfig {
     pub identity: Vec<u8>,
     pub configuration: Vec<u8>,
+    pub local_services: Vec<u16>,
 }
 impl Default for ServiceConfig {
     fn default() -> Self {
@@ -18,6 +19,7 @@ impl Default for ServiceConfig {
         Self {
             identity: handler.identity().to_vec(),
             configuration: handler.configuration().to_vec(),
+            local_services: handler.local_services().to_vec(),
         }
     }
 }
@@ -31,12 +33,19 @@ impl ServiceConfig {
     fn encode_into(&self, out: &mut Vec<u8>) {
         put(out, &self.identity);
         put(out, &self.configuration);
+        let policy: Vec<_> = self
+            .local_services
+            .iter()
+            .flat_map(|id| id.to_le_bytes())
+            .collect();
+        put(out, &policy);
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, ChannelError> {
         let mut r = Reader(bytes);
         let result = Self {
             identity: r.bytes()?.to_vec(),
             configuration: r.bytes()?.to_vec(),
+            local_services: crate::channel::decode_local_services(r.bytes()?)?,
         };
         r.finish()?;
         Ok(result)
@@ -66,7 +75,7 @@ pub struct InputSpec {
     request_bindings: BTreeMap<(u64, u16, u64), [u8; 32]>,
 }
 impl InputSpec {
-    pub const BLOB_VERSION: u16 = 7;
+    pub const BLOB_VERSION: u16 = 8;
     pub const MAX_REPRODUCER_BYTES: usize = MAX_RECORDED_STATE_BYTES - MAX_CHANNEL_BYTES;
     pub fn seeded(seed: u64) -> Self {
         Self {
@@ -154,9 +163,11 @@ impl InputSpec {
         &self,
         factory: &ServiceFactory,
     ) -> Result<RecordedEnv<Box<dyn ServiceHandler>>, ChannelError> {
+        crate::channel::validate_local_services(&self.config.local_services)?;
         let handler = factory(&self.config)?;
         if handler.identity() != self.config.identity
             || handler.configuration() != self.config.configuration
+            || handler.local_services() != self.config.local_services
         {
             return Err(ChannelError::Handler(
                 "factory returned a different service contract".into(),
@@ -165,6 +176,7 @@ impl InputSpec {
         let mut env = RecordedEnv::new(self.seed, handler);
         if env.handler().identity() != self.config.identity
             || env.handler().configuration() != self.config.configuration
+            || env.handler().local_services() != self.config.local_services
         {
             return Err(ChannelError::Handler(
                 "reseed changed the service contract".into(),
@@ -466,9 +478,28 @@ mod tests {
     }
 
     #[test]
+    fn local_policy_roundtrip_rejects_noncanonical_bytes_and_factory_mismatch() {
+        let mut spec = InputSpec::seeded(7);
+        spec.config.local_services = vec![19, 25];
+        assert_eq!(InputSpec::decode(&spec.encode()).unwrap(), spec);
+        assert!(spec.materialize(&nominal_factory()).is_err());
+        let wrong: ServiceFactory = Arc::new(|_| Ok(Box::new(NominalHandler)));
+        assert!(spec.materialize(&wrong).is_err());
+        for policy in [vec![19, 19], vec![25, 19], vec![4]] {
+            spec.config.local_services = policy;
+            assert!(InputSpec::decode(&spec.encode()).is_err());
+            assert!(spec.materialize(&wrong).is_err());
+        }
+        let mut old = InputSpec::seeded(7).encode();
+        old[4..6].copy_from_slice(&7_u16.to_le_bytes());
+        assert!(InputSpec::decode(&old).is_err());
+    }
+
+    #[test]
     fn materialize_rejects_service_contract_changed_by_initial_reseed() {
         let mut spec = InputSpec::seeded(7);
         spec.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"reseed-changes-contract".to_vec(),
             configuration: b"before".to_vec(),
         });
@@ -514,6 +545,7 @@ mod tests {
             for payloads in [None, Some(vec![]), Some(vec![vec![], vec![1, 2, 3]])] {
                 let mut spec = InputSpec::seeded(0x1234_5678);
                 spec.set_config(ServiceConfig {
+                    local_services: Vec::new(),
                     identity: vec![0x47; bytes],
                     configuration: vec![1, 2, 3],
                 });
@@ -580,6 +612,7 @@ mod tests {
         let mut spec = InputSpec::seeded(1);
         assert!(spec.materialize(&factory).is_ok());
         spec.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"unknown-extension".to_vec(),
             configuration: vec![],
         });
@@ -647,6 +680,7 @@ mod tests {
         assert!(spec.reseeds().is_empty());
         assert!(spec.answers().is_empty());
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"service".to_vec(),
             configuration: b"options".to_vec(),
         };
@@ -788,6 +822,7 @@ mod tests {
     #[test]
     fn service_config_is_strict_and_reader_checks_counts_before_consumption() {
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"identifier".to_vec(),
             configuration: vec![1, 2, 3],
         };

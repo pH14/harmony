@@ -370,6 +370,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             let handler = (self.service_factory)(policy)?;
             if handler.identity() != policy.identity
                 || handler.configuration() != policy.configuration
+                || handler.local_services() != policy.local_services
             {
                 return Err(PortableSnapshotError::Malformed(
                     "portable service implementation differs from policy",
@@ -1286,40 +1287,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         Ok(response) => response,
                         Err(_) => return Ok(Err(ControlError::MalformedEnvironment)),
                     };
-                    let mut recorded = self.recorded.clone();
-                    recorded.record_bound_answer(
-                        at,
-                        question.service(),
-                        question.request_id(),
-                        Sha256::digest(question.payload()).into(),
-                        response.clone(),
-                    )?;
-                    if self
-                        .project_pending_recorded(&recorded)
-                        .try_encode_reproducer_with_binding_reserve()
-                        .is_err()
-                    {
-                        return Ok(Err(ControlError::MalformedEnvironment));
+                    if let Err(error) = self.commit_service_answer(at, question, response, None)? {
+                        return Ok(Err(error));
                     }
-                    if self
-                        .vmm
-                        .as_ref()
-                        .ok_or(ServeError::Poisoned)?
-                        .sdk_snapshot_after_answer(at, &question, &response)
-                        .is_err()
-                    {
-                        return Ok(Err(ControlError::MalformedEnvironment));
-                    }
-                    if let Err(error) = self
-                        .vmm
-                        .as_mut()
-                        .ok_or(ServeError::Poisoned)?
-                        .resolve_service_answer(response)
-                    {
-                        self.retire_vmm();
-                        return Err(error.into());
-                    }
-                    self.recorded = recorded;
                 }
                 self.run(until)
             }
@@ -1819,7 +1789,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let prepared_handler = match (self.service_factory)(&restore_config) {
             Ok(handler)
                 if handler.identity() == restore_config.identity
-                    && handler.configuration() == restore_config.configuration =>
+                    && handler.configuration() == restore_config.configuration
+                    && handler.local_services() == restore_config.local_services =>
             {
                 handler
             }
@@ -1842,6 +1813,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             let decode_env = RecordedEnv::new(0, decode_handler);
             if decode_env.handler().identity() != restore_config.identity
                 || decode_env.handler().configuration() != restore_config.configuration
+                || decode_env.handler().local_services() != restore_config.local_services
             {
                 return Ok(Err(ControlError::Unsupported));
             }
@@ -1855,7 +1827,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut prepared_env = RecordedEnv::new(seed.unwrap_or(0), prepared_handler);
         if seed.is_some()
             && (prepared_env.handler().identity() != restore_config.identity
-                || prepared_env.handler().configuration() != restore_config.configuration)
+                || prepared_env.handler().configuration() != restore_config.configuration
+                || prepared_env.handler().local_services() != restore_config.local_services)
         {
             return Ok(Err(ControlError::Unsupported));
         }
@@ -1946,6 +1919,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             }
             if prepared_env.handler().identity() != restore_config.identity
                 || prepared_env.handler().configuration() != restore_config.configuration
+                || prepared_env.handler().local_services() != restore_config.local_services
             {
                 return Ok(Err(ControlError::Unsupported));
             }
@@ -2204,6 +2178,50 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.recorded = EnvSpec::seeded(seed);
     }
 
+    fn commit_service_answer(
+        &mut self,
+        at: u64,
+        question: environment::channel::Question,
+        response: environment::channel::Answer,
+        local: Option<crate::vmm::LocalServiceAnswer>,
+    ) -> Result<Result<(), ControlError>, ServeError> {
+        let mut recorded = self.recorded.clone();
+        recorded.record_bound_answer(
+            at,
+            question.service(),
+            question.request_id(),
+            Sha256::digest(question.payload()).into(),
+            response.clone(),
+        )?;
+        if self
+            .project_pending_recorded(&recorded)
+            .try_encode_reproducer_with_binding_reserve()
+            .is_err()
+        {
+            return Ok(Err(ControlError::MalformedEnvironment));
+        }
+        if self
+            .vmm
+            .as_ref()
+            .ok_or(ServeError::Poisoned)?
+            .sdk_snapshot_after_answer(at, &question, &response, local.as_ref())
+            .is_err()
+        {
+            return Ok(Err(ControlError::MalformedEnvironment));
+        }
+        if let Err(error) = self
+            .vmm
+            .as_mut()
+            .ok_or(ServeError::Poisoned)?
+            .resolve_service_answer(response, local)
+        {
+            self.retire_vmm();
+            return Err(error.into());
+        }
+        self.recorded = recorded;
+        Ok(Ok(()))
+    }
+
     fn run(
         &mut self,
         until: &control_proto::StopConditions,
@@ -2291,6 +2309,23 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                         vtime: Moment(moment),
                     })));
                 }
+                let at = moment;
+                let question = question.clone();
+                let local = self
+                    .vmm
+                    .as_ref()
+                    .ok_or(ServeError::Poisoned)?
+                    .prepare_local_service_answer()?;
+                if let Some(local) = local {
+                    let response = local.answer().clone();
+                    if let Err(error) =
+                        self.commit_service_answer(at, question, response, Some(local))?
+                    {
+                        return Ok(Err(error));
+                    }
+                    continue;
+                }
+                let moment = at;
                 let mut ctx = question.service().to_le_bytes().to_vec();
                 ctx.extend(question.payload());
                 return Ok(Ok(Reply::Stop(StopReason::Decision {
@@ -2386,10 +2421,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                                 vtime: Moment(vns),
                             })));
                         }
-                        return Ok(Ok(Reply::Stop(sdk_stop_to_reason(
-                            stop.expect("decision is present"),
-                            vns,
-                        ))));
+                        continue;
                     }
                     let staged = [
                         self.schedule.keys().next().copied(),
@@ -2631,6 +2663,7 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 #[cfg(test)]
 mod tests {
     use crate::host_telemetry::HashSite;
+    use crate::vmm::HostOperationSite;
     use sha2::Digest;
 
     use std::collections::BTreeMap;
@@ -2647,10 +2680,14 @@ mod tests {
 
     #[derive(Clone)]
     struct TestService {
+        local_services: Vec<u16>,
         response: Vec<u8>,
         calls: u64,
     }
     impl environment::channel::ServiceHandler for TestService {
+        fn local_services(&self) -> &[u16] {
+            &self.local_services
+        }
         fn identity(&self) -> &[u8] {
             b"test-service-v1"
         }
@@ -2660,10 +2697,20 @@ mod tests {
         fn respond(
             &mut self,
             _: environment::Moment,
-            _: &environment::channel::Question,
+            question: &environment::channel::Question,
         ) -> Result<environment::channel::ServiceResponse, environment::channel::ChannelError>
         {
-            self.calls += 1;
+            if self.local_services.is_empty() || question.payload() == b"stateful" {
+                self.calls += 1;
+            }
+            if question.payload() == b"external" {
+                return Ok(environment::channel::ServiceResponse::External);
+            }
+            if question.payload() == b"fail" {
+                return Err(ChannelError::Handler(
+                    "injected local handler failure".into(),
+                ));
+            }
             Ok(environment::channel::ServiceResponse::Answered(
                 environment::channel::Answer::Data(self.response.clone()),
             ))
@@ -2691,6 +2738,7 @@ mod tests {
         server.set_service_factory(std::sync::Arc::new(move |config| {
             if config.identity == b"test-service-v1" {
                 Ok(Box::new(TestService {
+                    local_services: config.local_services.clone(),
                     response: config.configuration.clone(),
                     calls: 0,
                 }))
@@ -3020,6 +3068,7 @@ mod tests {
     fn extension_capture_failure_cannot_create_a_snapshot_or_hash() {
         let mut s = server(vec![]);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-broken-capture".to_vec(),
             configuration: vec![],
         };
@@ -3346,6 +3395,7 @@ mod tests {
             armed: Arc::clone(&armed),
         };
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-armed-clone-v1".to_vec(),
             configuration: vec![],
         };
@@ -3429,6 +3479,7 @@ mod tests {
         let mut s = payload_server();
         hello(&mut s);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: vec![],
         };
@@ -3708,16 +3759,19 @@ mod tests {
         let before = s.vmm_mut().unwrap().state_hash().unwrap();
         for config in [
             ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"different-service".to_vec(),
                 configuration: vec![7],
             },
             ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"test-service-v1".to_vec(),
                 configuration: vec![8],
             },
         ] {
             s.set_service_factory(std::sync::Arc::new(|_| {
                 Ok(Box::new(TestService {
+                    local_services: Vec::new(),
                     response: vec![7],
                     calls: 0,
                 }))
@@ -3792,6 +3846,7 @@ mod tests {
         hello(&mut server);
         let origin = snap(&mut server);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"fixed-service-v1".to_vec(),
             configuration: Vec::new(),
         };
@@ -3916,6 +3971,7 @@ mod tests {
         hello(&mut server);
         let origin = snap(&mut server);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"fixed-service-v1".to_vec(),
             configuration: Vec::new(),
         };
@@ -3992,6 +4048,7 @@ mod tests {
         let mut server = payload_server();
         hello(&mut server);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"fixed-service-v1".to_vec(),
             configuration: Vec::new(),
         };
@@ -4095,6 +4152,7 @@ mod tests {
         let mut s = payload_server();
         hello(&mut s);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: vec![],
         };
@@ -4246,10 +4304,12 @@ mod tests {
         hello(&mut s);
         let origin = snap(&mut s);
         let config_a = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: b"configuration-a".to_vec(),
         };
         let config_b = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: b"configuration-b".to_vec(),
         };
@@ -4351,6 +4411,7 @@ mod tests {
             fail: fail.clone(),
         };
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: handler.identity().to_vec(),
             configuration: vec![],
         };
@@ -4466,6 +4527,7 @@ mod tests {
         let mut s = server(vec![]);
         hello(&mut s);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"counted-capture".to_vec(),
             configuration: vec![],
         };
@@ -5552,7 +5614,7 @@ mod tests {
         );
     }
 
-    fn hash(server: &mut ControlServer<MockBackend>) -> [u8; 32] {
+    fn hash<B: Backend<A: Vendor>>(server: &mut ControlServer<B>) -> [u8; 32] {
         let req = Request::Hash {
             scope: HashScope::Whole,
         };
@@ -6074,6 +6136,7 @@ mod tests {
         let origin = snap(&mut server);
         let mut spec = EnvSpec::seeded(7);
         spec.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: Vec::new(),
         });
@@ -6220,6 +6283,7 @@ mod tests {
         let mut server = payload_server();
         hello(&mut server);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: Vec::new(),
         };
@@ -6314,6 +6378,7 @@ mod tests {
         let mut server = payload_server();
         hello(&mut server);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-max-state-external-v1".to_vec(),
             configuration: Vec::new(),
         };
@@ -6889,6 +6954,7 @@ mod tests {
         }));
         let mut spec = EnvSpec::seeded(7);
         spec.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"one-shot-prepared-clone-v1".to_vec(),
             configuration: vec![],
         });
@@ -7022,6 +7088,7 @@ mod tests {
             }));
             let mut spec = EnvSpec::seeded(branch_seed);
             spec.set_config(ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"reseed-contract-v1".to_vec(),
                 configuration: b"before".to_vec(),
             });
@@ -7048,6 +7115,7 @@ mod tests {
         let mut s = server(vec![Exit::Common(CommonExit::Idle)]);
         hello(&mut s);
         let policy = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"reseed-contract-v1".to_vec(),
             configuration: b"before".to_vec(),
         };
@@ -7108,6 +7176,7 @@ mod tests {
         let before = hash(&mut s);
         let mut unknown = EnvSpec::seeded(7);
         unknown.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"uninstalled-service".to_vec(),
             configuration: vec![],
         });
@@ -7495,6 +7564,7 @@ mod tests {
         let mut source = payload_server();
         hello(&mut source);
         let policy = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: vec![7],
         };
@@ -7503,6 +7573,7 @@ mod tests {
             RecordedEnv::new(
                 0xBA5E,
                 Box::new(TestService {
+                    local_services: Vec::new(),
                     response: vec![7],
                     calls: 0,
                 }),
@@ -7530,6 +7601,7 @@ mod tests {
         assert_eq!(hash(&mut full_destination), full_hash);
         full_destination.set_service_factory(std::sync::Arc::new(|_| {
             Ok(Box::new(TestService {
+                local_services: Vec::new(),
                 response: vec![8],
                 calls: 0,
             }))
@@ -9199,6 +9271,7 @@ mod tests {
 
     fn seed_import_session_state(destination: &mut ControlServer<MockBackend>) {
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: b"preflight".to_vec(),
         };
@@ -9208,6 +9281,7 @@ mod tests {
             RecordedEnv::new(
                 seed,
                 Box::new(TestService {
+                    local_services: Vec::new(),
                     response: vec![0xA5],
                     calls: 7,
                 }),
@@ -10574,6 +10648,14 @@ mod tests {
     }
 
     fn deadline_chain_server(frame: &[u8], spec: EnvSpec) -> ControlServer<CompletionChainBackend> {
+        deadline_chain_server_ending(frame, spec, CommonExit::Idle)
+    }
+
+    fn deadline_chain_server_ending(
+        frame: &[u8],
+        spec: EnvSpec,
+        ending: CommonExit,
+    ) -> ControlServer<CompletionChainBackend> {
         let mut backend = MockBackend::with_exits(vec![
             Exit::Arch(X86Exit::Io {
                 port: 0x3f8,
@@ -10585,7 +10667,7 @@ mod tests {
                 size: 4,
                 write: Some(frame.len() as u32),
             }),
-            Exit::Common(CommonExit::Idle),
+            Exit::Common(ending),
         ]);
         backend
             .set_policy(&X86Policy {
@@ -10626,6 +10708,611 @@ mod tests {
         server.vmm.as_mut().unwrap().enable_sdk(env, spec.config());
         server.recorded = spec;
         server
+    }
+
+    fn local_service_spec(local: bool, response: u8) -> EnvSpec {
+        let mut spec = EnvSpec::seeded(9);
+        spec.set_config(ServiceConfig {
+            identity: b"test-service-v1".to_vec(),
+            configuration: vec![response],
+            local_services: if local { vec![19] } else { Vec::new() },
+        });
+        spec
+    }
+
+    fn local_service_frame() -> Vec<u8> {
+        local_service_frame_with_payload(b"choose")
+    }
+
+    fn local_service_frame_with_payload(bytes: &[u8]) -> Vec<u8> {
+        let mut payload = 19_u16.to_le_bytes().to_vec();
+        payload.extend(77_u64.to_le_bytes());
+        payload.extend(bytes);
+        let mut frame = [0; 4096];
+        let size = hypercall_proto::encode_request(
+            hypercall_proto::ServiceId::Sdk,
+            3,
+            12,
+            &payload,
+            &mut frame,
+        )
+        .unwrap();
+        frame[..size].to_vec()
+    }
+
+    #[test]
+    fn local_service_removes_only_external_decision_and_preserves_doorbell_guards() {
+        let frame = local_service_frame();
+        let mut actual = Vec::new();
+        for local in [false, true] {
+            let mut server = deadline_chain_server(&frame, local_service_spec(local, 0x22));
+            let sites = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let seen = Arc::clone(&sites);
+            server.set_host_operation_guard(Arc::new(move |site| {
+                seen.lock().unwrap().push(site);
+                Ok(())
+            }));
+            let until = StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            };
+            let first = server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let mut decisions = 0;
+            let last = if local {
+                assert!(!matches!(first, Reply::Stop(StopReason::Decision { .. })));
+                first
+            } else {
+                assert!(matches!(first, Reply::Stop(StopReason::Decision { .. })));
+                decisions += 1;
+                server
+                    .handle(&Request::Run {
+                        until,
+                        resolve: Some(Resolution {
+                            vtime: Moment(10_000),
+                            service: 19,
+                            id: control_proto::DecisionId(77),
+                            answer: Answer(environment::channel::Answer::Data(vec![0x22]).encode()),
+                        }),
+                    })
+                    .unwrap()
+                    .unwrap()
+            };
+            assert_eq!(decisions, usize::from(!local));
+            let vmm = server.vmm().unwrap();
+            assert!(vmm.pending_service_question().is_none());
+            let sdk = vmm.sdk_snapshot().unwrap().unwrap();
+            assert_eq!(sdk.recorded.handler().state(), &0_u64.to_le_bytes());
+            let sdk_sites: Vec<_> = sites
+                .lock()
+                .unwrap()
+                .iter()
+                .copied()
+                .filter(|site| {
+                    matches!(
+                        site,
+                        HostOperationSite::SdkRequest | HostOperationSite::SdkResponse
+                    )
+                })
+                .collect();
+            assert_eq!(
+                sdk_sites,
+                vec![
+                    HostOperationSite::SdkRequest,
+                    HostOperationSite::SdkResponse,
+                    HostOperationSite::SdkResponse
+                ]
+            );
+            actual.push((
+                last,
+                vmm.guest_memory()[0xf000..0xf020].to_vec(),
+                server.recorded.answers().clone(),
+                server.recorded.request_bindings().clone(),
+                vmm.sdk_events().to_vec(),
+                vmm.virtual_time_trace().unwrap().normalized_log().clone(),
+            ));
+        }
+        assert_eq!(actual[0], actual[1]);
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn local_service_branch_before_next_request_installs_new_policy_without_delaying_request() {
+        let frame = local_service_frame();
+        for next_local in [false, true] {
+            let mut server = deadline_chain_server(&frame, local_service_spec(!next_local, 0x11));
+            server.vmm_mut().unwrap().backend_mut().1 = false;
+            let until = StopConditions {
+                deadline: Some(Moment(10_000)),
+                on: StopMask::NONE,
+            };
+            assert_eq!(
+                server
+                    .handle(&Request::Run {
+                        until,
+                        resolve: None
+                    })
+                    .unwrap(),
+                Ok(Reply::Stop(StopReason::Deadline {
+                    vtime: Moment(10_000)
+                }))
+            );
+            assert!(server.vmm().unwrap().pending_service_question().is_none());
+            let before_request = snap(&mut server);
+            let frame_size = frame.len();
+            server.factory = Box::new(move || {
+                let mut backend = MockBackend::with_exits(vec![
+                    Exit::Arch(X86Exit::Io {
+                        port: 0x0ca1,
+                        size: 4,
+                        write: Some(frame_size as u32),
+                    }),
+                    Exit::Common(CommonExit::Idle),
+                ]);
+                backend.set_policy(&X86Policy {
+                    cpuid: vmm_backend::CpuidModel::default(),
+                    msr_filter: vmm_backend::MsrFilter::default(),
+                })?;
+                let mut vmm = Vmm::new(
+                    CompletionChainBackend(backend, false),
+                    GuestRam::new(BIG_RAM)?,
+                );
+                vmm.wire_vtime(VtimeWiring::new_virtual_time(contract_vclock_config(), 9)?);
+                vmm.wire_snapshot_hashing();
+                Ok(vmm)
+            });
+            let next = local_service_spec(next_local, 0x22);
+            server
+                .handle(&Request::Branch {
+                    snap: before_request,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap()
+                .unwrap();
+            let until = StopConditions {
+                deadline: Some(Moment(30_000)),
+                on: StopMask::NONE,
+            };
+            let reply = server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            if next_local {
+                assert!(!matches!(reply, Reply::Stop(StopReason::Decision { .. })));
+                assert_eq!(
+                    server.recorded.answers().get(&(10_000, 19, 77)),
+                    Some(&environment::channel::Answer::Data(vec![0x22]))
+                );
+            } else {
+                assert!(
+                    matches!(
+                        reply,
+                        Reply::Stop(StopReason::Decision {
+                            vtime: Moment(10_000),
+                            id: control_proto::DecisionId(77),
+                            ..
+                        })
+                    ),
+                    "{reply:?}"
+                );
+                assert!(server.recorded.answers().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn local_service_pending_deadline_uses_new_branch_policy_and_replay_restores_old_policy() {
+        let frame = local_service_frame();
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Deadline {
+                vtime: Moment(10_000)
+            }))
+        );
+        assert!(server.recorded.answers().is_empty());
+        let pending = snap(&mut server);
+        let mut next = local_service_spec(false, 0x22);
+        server
+            .handle(&Request::Branch {
+                snap: pending,
+                env: Reproducer {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: next.encode(),
+                },
+            })
+            .unwrap()
+            .unwrap();
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision { .. }))
+        ));
+        server.handle(&Request::Replay(pending)).unwrap().unwrap();
+        assert!(!matches!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision { .. }))
+        ));
+        assert_eq!(
+            server.recorded.answers().get(&(10_000, 19, 77)),
+            Some(&environment::channel::Answer::Data(vec![0x11]))
+        );
+        next.set_config(local_service_spec(true, 0x33).config().clone());
+        server
+            .handle(&Request::Branch {
+                snap: pending,
+                env: Reproducer {
+                    blob_version: EnvSpec::BLOB_VERSION,
+                    bytes: next.encode(),
+                },
+            })
+            .unwrap()
+            .unwrap();
+        assert!(!matches!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision { .. }))
+        ));
+        assert_eq!(
+            server.recorded.answers().get(&(10_000, 19, 77)),
+            Some(&environment::channel::Answer::Data(vec![0x33]))
+        );
+    }
+
+    #[test]
+    fn local_service_candidate_commits_only_after_guarded_response_and_capacity_preflight() {
+        let frame = local_service_frame();
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        server
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let vmm = server.vmm_mut().unwrap();
+        let before = vmm.sdk_snapshot().unwrap().unwrap().recorded;
+        let response_before = vmm.guest_memory()[0xf000..0xf020].to_vec();
+        let local = vmm.prepare_local_service_answer().unwrap().unwrap();
+        assert_eq!(vmm.sdk_snapshot().unwrap().unwrap().recorded, before);
+        let (at, question) = vmm.pending_service_question().unwrap();
+        vmm.sdk_snapshot_after_answer(at, question, local.answer(), Some(&local))
+            .unwrap();
+        vmm.set_host_operation_guard(Arc::new(|site| {
+            if site == HostOperationSite::SdkResponse {
+                Err("injected response refusal".into())
+            } else {
+                Ok(())
+            }
+        }));
+        assert!(
+            vmm.resolve_service_answer(local.answer().clone(), Some(local))
+                .is_err()
+        );
+        assert_eq!(vmm.sdk_snapshot().unwrap().unwrap().recorded, before);
+        assert_eq!(&vmm.guest_memory()[0xf000..0xf020], response_before);
+        assert!(vmm.pending_service_question().is_some());
+        vmm.set_host_operation_guard(Arc::new(|_| Ok(())));
+        let local = vmm.prepare_local_service_answer().unwrap().unwrap();
+        vmm.resolve_service_answer(local.answer().clone(), Some(local))
+            .unwrap();
+        assert!(vmm.pending_service_question().is_none());
+        assert_eq!(
+            vmm.sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .recorded
+                .handler()
+                .state(),
+            &0_u64.to_le_bytes()
+        );
+
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        server.recorded.set_payloads(Some(vec![
+            vec![0; environment::channel::MAX_CHANNEL_BYTES];
+            8
+        ]));
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        assert_eq!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Err(ControlError::MalformedEnvironment)
+        );
+        let vmm = server.vmm().unwrap();
+        assert!(vmm.pending_service_question().is_some());
+        assert_eq!(
+            vmm.sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .recorded
+                .handler()
+                .state(),
+            &0_u64.to_le_bytes()
+        );
+        assert_eq!(&vmm.guest_memory()[0xf000..0xf020], &[0; 32]);
+        assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    fn local_service_answer_precedes_terminal_without_hiding_the_terminal_stop() {
+        let mut server = deadline_chain_server_ending(
+            &local_service_frame(),
+            local_service_spec(true, 0x22),
+            CommonExit::Shutdown,
+        );
+        let reply = server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(20_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert!(matches!(reply, Reply::Stop(StopReason::Crash { .. })));
+        assert_eq!(
+            server.recorded.answers().get(&(10_000, 19, 77)),
+            Some(&environment::channel::Answer::Data(vec![0x22]))
+        );
+        assert!(server.vmm().unwrap().pending_service_question().is_none());
+    }
+
+    #[test]
+    fn local_service_fresh_reproducer_replay_matches_complete_sdk_trace_and_whole_state() {
+        for explicit_override in [false, true] {
+            let frame = local_service_frame();
+            let mut spec = local_service_spec(true, 0x22);
+            if explicit_override {
+                spec.record_bound_answer(
+                    10_000,
+                    19,
+                    77,
+                    sha2::Sha256::digest(b"choose").into(),
+                    environment::channel::Answer::Data(vec![0x44]),
+                )
+                .unwrap();
+            }
+            let mut original = deadline_chain_server(&frame, spec);
+            let until = StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            };
+            original
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let recorded = original.recorded.clone();
+            assert_eq!(recorded.answers().len(), 1);
+            let reproducer = EnvSpec::decode(&recorded.encode()).unwrap();
+            let mut replay = deadline_chain_server(&frame, reproducer);
+            replay
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let a = original.vmm().unwrap();
+            let b = replay.vmm().unwrap();
+            assert_eq!(
+                a.sdk_snapshot().unwrap().unwrap().recorded,
+                b.sdk_snapshot().unwrap().unwrap().recorded
+            );
+            assert_eq!(a.sdk_events(), b.sdk_events());
+            assert_eq!(
+                a.virtual_time_trace().unwrap().normalized_log(),
+                b.virtual_time_trace().unwrap().normalized_log()
+            );
+            assert_eq!(original.recorded, replay.recorded);
+            assert_eq!(hash(&mut original), hash(&mut replay));
+        }
+    }
+
+    #[test]
+    fn local_service_stateful_answer_is_rejected_before_authority_publication() {
+        let frame = local_service_frame_with_payload(b"stateful");
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x22));
+        let until = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        server
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let vmm = server.vmm().unwrap();
+        let before = vmm.sdk_snapshot().unwrap().unwrap().recorded;
+        let error = match vmm.prepare_local_service_answer() {
+            Err(error) => error,
+            _ => panic!("stateful candidate must be rejected"),
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("must not change captured handler state")
+        );
+        assert_eq!(vmm.sdk_snapshot().unwrap().unwrap().recorded, before);
+        assert!(vmm.pending_service_question().is_some());
+        assert_eq!(&vmm.guest_memory()[0xf000..0xf020], &[0; 32]);
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        assert!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .is_err()
+        );
+        assert!(server.vmm().is_none());
+        assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    fn local_service_external_fallback_and_handler_failure_do_not_commit_candidate() {
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        let frame = local_service_frame_with_payload(b"external");
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        assert!(matches!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .unwrap(),
+            Ok(Reply::Stop(StopReason::Decision { .. }))
+        ));
+        assert!(server.recorded.answers().is_empty());
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .recorded
+                .handler()
+                .state(),
+            &0_u64.to_le_bytes()
+        );
+        let frame = local_service_frame_with_payload(b"fail");
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        let error = server
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("injected local handler failure"));
+        assert!(server.vmm().is_none());
+        assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    fn local_service_override_precedes_handler_and_failed_guard_does_not_commit_tape() {
+        let frame = local_service_frame_with_payload(b"stateful");
+        let mut spec = local_service_spec(true, 0x11);
+        spec.record_bound_answer(
+            10_000,
+            19,
+            77,
+            sha2::Sha256::digest(b"stateful").into(),
+            environment::channel::Answer::Data(vec![0x44]),
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame, spec);
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        server
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            server
+                .vmm()
+                .unwrap()
+                .sdk_snapshot()
+                .unwrap()
+                .unwrap()
+                .recorded
+                .handler()
+                .state(),
+            &0_u64.to_le_bytes()
+        );
+        let (_, bytes) =
+            hypercall_proto::decode(&server.vmm().unwrap().guest_memory()[0xf000..0xf100]).unwrap();
+        assert_eq!(
+            environment::channel::Answer::decode(bytes).unwrap(),
+            environment::channel::Answer::Data(vec![0x44])
+        );
+
+        let frame = local_service_frame();
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        let responses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        server.set_host_operation_guard(Arc::new(move |site| {
+            if site == HostOperationSite::SdkResponse
+                && responses.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1
+            {
+                return Err("injected answer guard failure".into());
+            }
+            Ok(())
+        }));
+        assert!(
+            server
+                .handle(&Request::Run {
+                    until,
+                    resolve: None
+                })
+                .is_err()
+        );
+        assert!(server.vmm().is_none());
+        assert!(server.recorded.answers().is_empty());
     }
 
     #[test]
@@ -10721,6 +11408,7 @@ mod tests {
         .unwrap();
         let mut old = EnvSpec::seeded(9);
         old.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: vec![0x11],
         });
@@ -11142,6 +11830,7 @@ mod tests {
         .unwrap();
         let mut old = EnvSpec::seeded(9);
         old.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: vec![0x11],
         });
@@ -11178,6 +11867,7 @@ mod tests {
         let pending = snap(&mut server);
         let mut next = EnvSpec::seeded(9);
         next.set_config(ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-service-v1".to_vec(),
             configuration: vec![0x22],
         });
@@ -11298,6 +11988,7 @@ mod tests {
             .unwrap()
             .unwrap();
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: vec![],
         };
@@ -11441,6 +12132,7 @@ mod tests {
         let mut server = ControlServer::new(vm, Box::new(make_vm));
         hello(&mut server);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: vec![],
         };
@@ -12141,6 +12833,7 @@ mod tests {
                 env: {
                     let mut spec = EnvSpec::seeded(7);
                     spec.set_config(ServiceConfig {
+                        local_services: Vec::new(),
                         identity: b"unavailable".to_vec(),
                         configuration: vec![],
                     });
@@ -13060,6 +13753,7 @@ mod tests {
         assert_eq!(hash(&mut server), before);
 
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: vec![],
         };
@@ -14427,6 +15121,7 @@ mod tests {
         let mut s = payload_server();
         hello(&mut s);
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"test-external-v1".to_vec(),
             configuration: vec![],
         };
@@ -14866,6 +15561,7 @@ mod tests {
         seed: u64,
     ) -> ServiceConfig {
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"aliased-service-v1".to_vec(),
             configuration: Vec::new(),
         };

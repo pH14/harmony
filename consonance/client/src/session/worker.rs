@@ -2496,7 +2496,7 @@ mod tests {
             sidecar.extend_from_slice(b"HMSESS01");
             sidecar.extend_from_slice(&[0; 32]);
             sidecar.extend_from_slice(b"HMSSNAP1");
-            sidecar.extend_from_slice(&10u16.to_le_bytes());
+            sidecar.extend_from_slice(&11u16.to_le_bytes());
             sidecar.extend_from_slice(&4u16.to_le_bytes());
             for len in [vm_state.len() as u64, 0, policy.len() as u64, 1, 0] {
                 sidecar.extend_from_slice(&len.to_le_bytes());

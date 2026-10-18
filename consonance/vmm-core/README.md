@@ -275,7 +275,7 @@ as their base. Imports compare the local base digest before deriving pages or a
 delta from a nearer snapshot. This rejects an outer archive whose identity was
 rewritten to pair source pages with different setup RAM. Sparse validation does
 not materialize guest RAM for each import.
-The complete portable format is version 7, and the sparse sidecar is version 9;
+The complete portable format is version 9, and the sparse sidecar is version 11;
 older sparse sidecars are rejected. A full sparse snapshot also binds the ordered
 changed-page numbers and bytes to its sidecar; import verifies them before
 deriving pages or minting a handle. Cache-delta sidecars bind the ordered target
@@ -979,3 +979,29 @@ allows them to exempt XSAVE state or component layouts. CPUID identity, caches,
 topology, and frequency descriptions remain fixed guest values. Standard math
 libraries remain supported; admission is about execution capability, not a
 claim of identical arithmetic results across all admitted CPUs.
+
+The controller resolves declared local generic service namespaces from the
+actual pending SDK question after schedule and deadline checks. Coverage and
+deferred doorbells retain their existing resolution rules. Local and external
+answers share the controller transaction: prepare the request-bound input tape
+and projected SDK recording, check both bounded encodings, publish through the
+response guard, then install the candidate SDK handler/answer and controller
+tape. Local handler errors retire the failed VM; a capacity refusal leaves the
+pending question uncommitted. A handler returning External preserves that stop.
+The request, including the response guard on its initial pending boundary,
+remains present. No guest request suppression or unchecked reply path exists.
+
+Dispatch declarations survive branch, replay and portable import through
+ServiceConfig and the recorded handler snapshot. Control-state magic is
+HCSTATE3; channel and input records explicitly reject previous versions. Host
+RPC stop counts may change under this recorded policy; guest request order,
+virtual moments and mandatory doorbell guards do not disappear.
+
+Local-answer capability is deliberately stateless: an answered candidate must
+leave its complete captured handler fingerprint (identity, configuration,
+dispatch declaration and state) unchanged. A stateful answer is a typed host
+failure before response or tape publication, not an external fallback. This
+allows a fresh reproducer to use its recorded override without skipping a
+handler state transition. External handlers retain their existing stateful
+contract. Supporting stateful computed local answers would require separate
+computed-answer provenance and replay semantics and is outside this format.
