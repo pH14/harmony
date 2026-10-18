@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "input": "../stereo-escape.json.gz",
+  "input_sha256": "69999c62d0af95e8061110724a8a8310692e78919ca8409d19883568a849bc12",
+  "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+  "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+  "timer_addresses": [
+    1203,
+    1204,
+    1205
+  ],
+  "side": "main",
+  "level": 0,
+  "events": [
+    {
+      "coin": 2,
+      "frame": 3895,
+      "observation": {
+        "level": 0,
+        "state": 2,
+        "x": 10719,
+        "y": 786,
+        "camera": 686,
+        "vy": 395,
+        "mode": 0,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      }
+    },
+    {
+      "coin": 3,
+      "frame": 5088,
+      "observation": {
+        "level": 0,
+        "state": 2,
+        "x": 14018,
+        "y": 715,
+        "camera": 630,
+        "vy": 696,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      }
+    }
+  ],
+  "frames": 5124,
+  "endpoint": {
+    "level": 0,
+    "state": 3,
+    "x": 14118,
+    "y": 747,
+    "camera": 630,
+    "vy": 662,
+    "mode": 1,
+    "gravity": 0,
+    "mini": 0,
+    "dual": 0,
+    "dead": false,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "discovery_input_path": "demos/twin-dragons/tools/famidash-audit/findings/dissonance/stereo-escape.json.gz"
+}

@@ -52,5 +52,6 @@
   ],
   "evidence": [
     "Dissonance seed 6 unmodified 1.2.8 main ROM; independently replayed Stereo Madness ceiling escape. Current-upstream ROM still requires build and replay."
-  ]
+  ],
+  "status": "withdrawn: blocks intended hidden-coin routes; do not apply"
 }

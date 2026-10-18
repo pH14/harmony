@@ -2,196 +2,112 @@
 
 # Dissonance Famidash investigation
 
-Actual arcade Dissonance searches reproduced three additional openings in
-the early built-in levels. These are level-data defects in the official
-Famidash 1.2.8 ROM, independently reproduced in FCEUmm. This package also
-retains a Dissonance reproduction of the previously confirmed Fofii escape.
+## Correction: early boundary patches withdrawn
 
-| Level / opening | Recorded behavior | Tested repair |
-| --- | --- | --- |
-| Stereo Madness / final ship ceiling | Enters ceiling fill at frame 4,619, (12,721, 750); still alive at frame 5,100, (14,052, 721) | Closes the stepped ceiling; input dies at frame 4,614 in both cores |
-| Base After Base / hollow ground block | Enters `CHECKERBOARD_15` through the left side; recorded endpoint (3,108, 881) at frame 1,143 | Adds the missing wall tile; input dies at frame 1,103 in both cores |
-| Base After Base / ship ceiling | Enters ceiling fill near (9,018, 766); recorded endpoint (9,107, 769) at frame 3,312 | Adds two missing wall tiles; isolated ceiling repair kills the input at frame 3,278 in both cores |
-| B-Sides Fofii / pit control | The actual search recovers the known below-course endpoint (4,268, 897) at frame 1,463 | Existing pit repair kills the recovered input at frame 1,317 |
+**Do not apply `early-release.patch.gz`, `stereo-release.patch.gz`, or
+`withdrawn/early-current.patch`.** These experimental changes close intended
+hidden-coin routes in Stereo Madness and Base After Base. Independent replay
+proved that the behavior occurred, but did not prove that it was a defect.
+Blocking a route and finding another clearing path did not establish that
+the repair preserved the level's objectives.
 
-Frames count from the normal arcade level start. The Base After Base inputs
-were trimmed from the multi-level Dissonance campaign at a matching normal
-level-start state. Every subsequent mechanical frame still matches the full
-campaign trace in QuickNES. These are ordinary A/release histories; snapshots
-are not required for playback.
+Original-ROM replays now establish:
 
-Stereo Madness entering the ceiling fill, rendered by QuickNES:
+| Previously reported opening | Objective reached through that route |
+| --- | --- |
+| Stereo Madness final ship ceiling | Coin 3 at frame 5,088; the original `stereo-escape.json.gz` then completes the level at frame 5,124 |
+| Base After Base hollow ground | Coin 1 at frame 1,143, exactly the endpoint of `base-floor.json.gz` |
+| Base After Base ship ceiling | Coin 3 at frame 3,388 in a new Dissonance witness |
+| Back on Track ceiling fill | Coin 2 at frame 2,715 in a new Dissonance witness |
+| Cycles upper ball passage | Coin 1 at frame 2,030 in a new Dissonance witness |
 
-![Ship at the opening in the stepped ceiling](stereo-gap.png)
+`coin-routes/` retains collection inputs and RAM observations. The pinned
+release's coin timers are at `$04b3`–`$04b5`; its collected-bit mask is at
+`$0461`. Source sprite layers place these coins beyond the apparent openings.
+The original Stereo witness and the Base ground witness already contained
+the evidence that invalidated their classifications. The Base ceiling,
+Back on Track and Cycles collection inputs came from the subsequent actual
+single-level Dissonance round. The collector replays ordinary controller
+histories; it neither edits gameplay RAM nor generates search inputs.
 
-## Search provenance and limits
+Future review must inspect gameplay sprites, coin objectives, portals and
+alternate routes alongside collision tiles. Decorative fill is not a
+forbidden region. A particular component's coin route does not automatically
+prove that every possible entrance to that component is intentional.
 
-`searches.json` separates executions, observed points, inspected snapshots,
-unavailable snapshots and candidates. The two discovery campaigns used
-seed 6 from level 0 for 80,000 executions and seed 7 from level 6 for 50,000.
-Together they reached the first eight built-in levels, plus part of Cycles.
-Their 124 candidates are detector signals, not 124 confirmed bugs. Other
-candidates, including one in Cycles, still need review. This is not an
-exhaustive catalog or evidence that other levels are bug-free.
-Those discovery runs preceded the added reference-route screening. Their
-candidate counts reflect that earlier detector; the current runner can
-report different candidate counts with the same Dissonance search paths.
+The production ROM and route tables were never changed by these experiments.
+The rejected patches, their byte identities, replay results and alternate
+clearing controls remain as historical evidence. Their former defect and
+"clean control" classifications are withdrawn. The original narrative is
+preserved in Git commit `cc5dc3bec8dfc31388bda738f5c5e664d3936c44`.
 
-The Fofii positive control starts after 1,200 frames of the existing clearing
-route, then Dissonance generates the new continuation. It succeeds with seed
-1 in the retained 4,096-execution run. A start-of-level search did not recover
-the escape within its earlier 50,000-execution budget; checkpoint placement
-matters for a difficult level.
+## Fofii positive control
 
-The shipped arcade Rust/WASM search engine was used unchanged:
+The Fofii pit witness remains a separate finding. Its missing pit hazards
+are below the playable route and do not close one of these coin passages.
+`fofii-control.json.gz` records an actual Dissonance reproduction of the
+known below-course endpoint `(4268, 897)` at frame 1,463. The retained pit
+repair kills that input at frame 1,317 in both emulator cores. The original
+release regression package and patch are documented in
+`workloads/nes/src/famidash/repros/fofii/README.md` from the repository root.
 
-* Search WASM SHA-256: `25d8e3053fd568d617b128dcb4b8f25e195852e315a64b09238197175e597f1c`
-* QuickNES WASM SHA-256: `d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31`
-* Main release ROM SHA-256: `7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58`
+The discovery started after 1,200 ordinary frames of the existing clearing
+route, then used Dissonance to generate the continuation. Seed 1 recovered
+the escape within 4,096 executions. A start-of-level search had not recovered
+it in the earlier 50,000-execution budget; checkpoint placement matters.
 
-The harness calls `CampaignSearch.plan`, `CampaignWorker.run` and
-`CampaignSearch.admit`. Its scripts inspect retained states, test released
-continuations and replay controller histories. They do not replace
-Dissonance's archive, selection or input generation. Geometry overlap and
-distance from a reference path are triage signals, not exact NES collision
-oracles. The runner reads each retained snapshot's actual RAM coordinates;
-it does not infer coordinates from the visualizer's pixels.
+## Initial discovery provenance
 
-The original custom-mutation audit missed `CHECKERBOARD_15`, the fill used
-here, and used clearing routes as reference bounds. The original Base After
-Base clearing route itself enters the ground-block opening. Completion
-therefore cannot certify a legal route. The Dissonance runner disables
-reference bounds for controls with interior-fill signals and still runs
-direct geometry checks. Further tile styles, dual states and other collision
-classes need additional detectors and review.
+`searches.json` records two production arcade Dissonance campaigns: seed 6
+from level 0 for 80,000 executions and seed 7 from level 6 for 50,000. They
+reached the first eight built-in levels and part of Cycles. Their 124
+candidates were detector signals, not confirmed bugs or an exhaustive audit.
 
-## Repairs and controls
+The shipped search WASM was unchanged, SHA-256
+`25d8e3053fd568d617b128dcb4b8f25e195852e315a64b09238197175e597f1c`.
+QuickNES WASM SHA-256:
+`d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31`.
+Main release ROM SHA-256:
+`7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58`.
 
-All coordinates are zero-based source cells; these 27-row release levels
-start at world y 480. The release patch changes six cells:
-
-| Level | Column | Row | Old metatile | New metatile |
-| --- | --- | --- | --- | --- |
-| Stereo Madness | 795 | 16 | 39, lower-left corner | 34, left wall |
-| Stereo Madness | 795 | 17 | 47, non-colliding fill | 34, left wall |
-| Stereo Madness | 795 | 18 | 0, empty | 39, lower-left corner |
-| Base After Base | 188 | 24 | 47, non-colliding fill | 34, left wall |
-| Base After Base | 564 | 17 | 47, non-colliding fill | 34, left wall |
-| Base After Base | 564 | 18 | 47, non-colliding fill | 34, left wall |
-
-`early-release.patch.gz` contains source and generated data for release commit
-`0df680d0e02f0ccb438f1224d162a0ab073b7204`. Stereo Madness grows from 1,846 to
-1,847 compressed bytes; Base After Base grows from 2,017 to 2,019. Existing
-bank placement is preserved: bank 09 grows from 8,186 to 8,188 bytes, and bank
-20 from 7,407 to 7,408. Both fit the 8,192-byte limit. `stereo-release.patch.gz`
-retains the separately tested Stereo-only change. Decompress these generated
-release patches before `git apply`; the current-upstream source proposal is
-plain text.
-
-The tested combined release ROM SHA-256 is
-`c835ef71af6b5e282a0c2c2304636510f78712569973f0a201d7bfcea0396fe6`.
-To isolate the Base After Base ceiling repair, its ground-wall edit was
-omitted while keeping the Stereo repair. That ROM's SHA-256 is
-`f2922a5b2e27cf0f4eb534909ec77d618e43a81367abeaeaa5a26adec500dd95`.
-The ceiling witness also takes the earlier ground opening, so the combined
-repair correctly kills it there; the isolated test establishes that the
-ceiling repair independently works.
-
-The local compiler differs from the release compiler. Verification used the
-official ROM plus the data/pointer delta between original and repaired
-source builds with the same compiler. Every original byte at each changed
-offset matched the official release before application (zero conflicts).
-An arbitrary rebuild need not have these hashes or identical entry timing.
-
-The existing Stereo control remains mechanically identical for all 5,124
-frames. Dissonance found a replacement Base After Base control on the repaired
-ROM in 17,504 executions, seed 1. It completes in 4,973 frames, never enters
-the checked interior fill, and has identical gameplay on the original,
-combined-repair and ceiling-only ROMs. It is embedded in both Base witnesses.
-`early-controls.json` records unchanged controls for all first eight levels,
-using that replacement for Base After Base. The production route table and
-the arcade's official ROM are not changed by this investigation.
-
-FCEUmm matches every recorded gameplay frame after entry animation. The
-early main-level witnesses differ only in x on entry frames 1 and 8; the
-explicit `--intro-frames 40` checks frames 41 onward and reports those two
-differences. Fofii matches the complete trace. Both repaired approach traces
-and the included clearing controls are checked. `*-independent.json` files
-record hashes and results. FCEUmm revision:
-`ac0d00a7fc01166f84c7bac01d1084ebfd2b865e`.
-
-## Run and replay
-
-From the repository root, use the arcade's built WASM bindings and QuickNES
-runtime (see the demo README for `tools/build-runtime.sh` prerequisites):
-
-```sh
-node demos/twin-dragons/tools/famidash-audit/dissonance.mjs \
-  source.json famidash.nes RUNTIME_DIRECTORY \
-  demos/twin-dragons/rust/pkg/twin_dragons_browser.js \
-  demos/twin-dragons/rust/pkg/twin_dragons_browser_bg.wasm \
-  OUTPUT_DIRECTORY --seed 6 --executions 80000 --tail 32
-```
-
-The runner is specific to the pinned release RAM map. Its report hashes the
-ROM, source index, core, search WASM, bindings and runner. `--side`, `--level`
-and `--checkpoint` select a normal-play root. `--clear 1` saves a replayable
-clearing route and stops when the starting level is completed; it was used
-to obtain the repaired Base control. Natural spawn protection is allowed
-during replay; candidate endpoints exclude invincibility, debug and pause.
-
-The retained runs used the production assets fetched on 2026-10-18 at
-`https://ph14.github.io/harmony/arcade/assets/`:
-`campaign-BLO6QPAW.js` and `twin_dragons_browser_bg-Bb_brAX9.wasm`.
-The original JS SHA-256 is
-`bed6901a5145719e7b5f973a1ea77c4753753ae9d24415a1cfc4a7d20b2e7fd4`.
-For Node inspection only, a local `.mjs` copy appended this export line:
-`export { B as CampaignSearch, H as CampaignWorker, Y as default };`.
-The adapted JS SHA-256 is
+The minified production bindings were fetched from
+`https://ph14.github.io/harmony/arcade/assets/campaign-BLO6QPAW.js` and
+adapted only to export the existing search classes to Node. Original JS
+SHA-256: `bed6901a5145719e7b5f973a1ea77c4753753ae9d24415a1cfc4a7d20b2e7fd4`;
+adapted JS SHA-256:
 `253c6e8b114eebaf22d9c125cd9653a1ac89277415685fac372d9436ac293b4d`.
-Those aliases are specific to that checked bundle, not a general API for
-other minified builds. No generated binaries or ROMs are vendored here.
+
+The harness calls Dissonance's `plan`, `run` and `admit`. Its inspection and
+replay scripts do not replace archive selection or input generation.
+Reference-route distance and geometry overlap are triage signals. The
+earlier custom-mutation audit omitted `CHECKERBOARD_15` and mistakenly
+treated clearing routes as reference bounds; it cannot establish coverage
+or route legality. The later all-level audit is documented in the parent
+README and retains separate search, replay and review statuses.
+
+## Replay
+
+From the repository root, with the pinned release runtime and game assets:
 
 ```sh
 node demos/twin-dragons/tools/famidash-audit/dissonance-replay.mjs \
   CASE.json.gz ROM RUNTIME_DIRECTORY
 python3 demos/twin-dragons/tools/famidash-audit/fceumm.py \
   CASE.json.gz FCEUMM_CORE ROM --intro-frames 40
+node demos/twin-dragons/tools/famidash-audit/coin-paths.mjs \
+  CASE.json.gz ROM RUNTIME_DIRECTORY coins.json
 ```
 
-Append `--fixed` when checking a repaired ROM. Omit the intro exclusion for
-the Fofii witness. Campaign replay accepts menu transitions in multi-level
-histories; it validates the full mechanical trace. It does not require the
-search WASM or a stored emulator snapshot.
+The early main-level mechanical witnesses differ between QuickNES and
+FCEUmm only during entry animation; the explicit exclusion checks every
+recorded frame from 41 onward and lists earlier differences. Fofii needs
+no exclusion. FCEUmm revision:
+`ac0d00a7fc01166f84c7bac01d1084ebfd2b865e`.
 
-## Current-upstream proposal
-
-`../../examples/early-current.patch` and its guarded edit specification target
-upstream commit `541d68ffcae2096f116146ef21cbc4d62886eb6b`. The same openings
-remain in the shared `lvlset_HUGE` sources. Current Stereo uses GID 0 for its
-empty cell, whereas the release uses GID 1; the specifications check the
-actual old values and file hashes rather than blindly copying release edits.
-The proposal passes `git apply --check` but has not been built, replayed or
-submitted against the current upstream ROM.
-
-After application, regenerate A and HUGE, build both, verify bank capacity,
-check the current RAM symbols and replay the witnesses and controls:
-
-```sh
-python3 LEVELS/export_wrapper.py -l A
-python3 LEVELS/export_wrapper.py -l HUGE
-make -B main huge
-```
-
-These findings justify local boundary repairs, not globally making decorative
-tiles solid. The reusable upstream workflow is Dissonance discovery, ordinary
-input replay, independent-core confirmation, source/collision review, a
-guarded source patch, and a legal clearing control on the repaired build.
-The separate Select Payment Type finding still needs collision-engine work;
-this investigation does not establish a universal engine fix.
-
-`collision-tiles.json` also checks the three source interior tiles against
-the live collision maps in cartridge RAM. All three are metatile 47 with
-`COL_NONE`; the source attribution agrees with the game being replayed.
-Famidash-derived source and level data retain the MIT license in
-`../../LICENSE-FAMIDASH.txt`.
+The discarded early release ROMs were experimental official-ROM data
+transplants, never production assets. Combined SHA-256:
+`c835ef71af6b5e282a0c2c2304636510f78712569973f0a201d7bfcea0396fe6`;
+ceiling-isolation SHA-256:
+`f2922a5b2e27cf0f4eb534909ec77d618e43a81367abeaeaa5a26adec500dd95`.
+The archived current-upstream proposal targets
+`541d68ffcae2096f116146ef21cbc4d62886eb6b` and has not been submitted.

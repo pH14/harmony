@@ -1,0 +1,94 @@
+{
+  "schema": 1,
+  "input": "base-ceiling-coin-input.json.gz",
+  "input_sha256": "f6fba75ed7c3edd3680803d072eda67b9f1e6929ed5b4e62a565ecc5bae50c77",
+  "rom_sha256": "7acf068a406d551ff18afa3fc1ed228ff90f72651c4a90a3862b997240bb9b58",
+  "core_sha256": "d63a56ff06a9b08a01155fe04df37d4f6577c110712882c59d232f4cf2acbf31",
+  "timer_addresses": [
+    1203,
+    1204,
+    1205
+  ],
+  "side": "main",
+  "level": 4,
+  "events": [
+    {
+      "coin": 1,
+      "frame": 1143,
+      "observation": {
+        "level": 4,
+        "state": 2,
+        "x": 3108,
+        "y": 881,
+        "camera": 719,
+        "vy": 107,
+        "mode": 0,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      }
+    },
+    {
+      "coin": 2,
+      "frame": 2388,
+      "observation": {
+        "level": 4,
+        "state": 2,
+        "x": 6551,
+        "y": 868,
+        "camera": 708,
+        "vy": 749,
+        "mode": 0,
+        "gravity": 255,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      }
+    },
+    {
+      "coin": 3,
+      "frame": 3388,
+      "observation": {
+        "level": 4,
+        "state": 2,
+        "x": 9317,
+        "y": 750,
+        "camera": 710,
+        "vy": 0,
+        "mode": 1,
+        "gravity": 0,
+        "mini": 0,
+        "dual": 0,
+        "dead": false,
+        "debug": 0,
+        "invincible": 0,
+        "paused": 0
+      }
+    }
+  ],
+  "frames": 3426,
+  "endpoint": {
+    "level": 4,
+    "state": 2,
+    "x": 9422,
+    "y": 841,
+    "camera": 710,
+    "vy": 873,
+    "mode": 1,
+    "gravity": 0,
+    "mini": 0,
+    "dual": 0,
+    "dead": true,
+    "debug": 0,
+    "invincible": 0,
+    "paused": 0
+  },
+  "discovery_input_path": "/workspace/famidash-soak/round-1/main-4/candidate-81.json.gz"
+}

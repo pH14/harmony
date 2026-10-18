@@ -109,6 +109,13 @@ before using the same decoder.
 
 ## Reviewed patch generation
 
+The Stereo Madness and Base After Base tile proposals have been withdrawn:
+they blocked intended hidden-coin routes. Their historical inputs and
+experimental patches remain in `findings/dissonance/`, with the correction
+and collection evidence documented there. A successful replay or unchanged
+clearing control is insufficient to classify decorative fill as forbidden.
+Source review must include sprites, coin objectives, and alternate routes.
+
 `patch.py` takes a JSON specification with an exact target revision, a hash
 of each reviewed source file, and explicit old/new Tiled GIDs. It produces a
 source-only patch and manifest, checks that the patch applies, and leaves
