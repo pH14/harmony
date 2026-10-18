@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "scripts/qualification/native-math/corpus.c"
 SCRIPT = Path(__file__).resolve()
 FORMAT = 1
+EXECUTION_ENVIRONMENT = {}
 FIELDS = {"op", "round", "flush", "input", "result", "x87_status", "x87_control", "mxcsr", "errno"}
 OPS = {**dict.fromkeys(["libm.sin", "libm.cos", "libm.tan", "libm.exp", "libm.log", "libm.sqrt", "libm.log1p", "libm.expm1"], (16, 16)),
        **dict.fromkeys(["x87.fsin", "x87.fcos", "x87.f2xm1", "x87.fyl2xp1"], (16, 20)),
@@ -117,14 +118,15 @@ def bundle(output, cc, revision):
         tools[name] = {"path": str(tool), "sha256": digest(tool.read_bytes())}
     build_cpu = min(os.sched_getaffinity(0))
     probe = ["taskset", "-c", str(build_cpu), str(binary.resolve())]
-    baseline = execute(probe)
+    baseline = execute(probe, env=EXECUTION_ENVIRONMENT)
     rows = records(baseline)
-    if execute(probe) != baseline:
+    if execute(probe, env=EXECUTION_ENVIRONMENT) != baseline:
         raise ValueError("build-host corpus is not repeatable")
     (output / "build-observations.jsonl").write_bytes(baseline)
     shutil.copyfile(SOURCE, output / "corpus.c")
     manifest = {"format": FORMAT, "scope": "linux-x86_64-native-math-v1", "source_revision": revision,
                 "build_cpu": build_cpu,
+                "execution_environment": EXECUTION_ENVIRONMENT,
                 "qualifier_sha256": digest(SCRIPT.read_bytes()), "binary_sha256": digest(binary.read_bytes()),
                 "source_sha256": digest(SOURCE.read_bytes()), "compiler": {"path": str(compiler), "sha256": digest(compiler.read_bytes()),
                 "version": execute([str(compiler), "-v"], stderr=subprocess.STDOUT).decode()},
@@ -141,6 +143,8 @@ def verify_bundle(path):
         raise ValueError("unsupported corpus identity")
     if manifest["qualifier_sha256"] != digest(SCRIPT.read_bytes()):
         raise ValueError("qualifier differs from retained build")
+    if manifest["execution_environment"] != EXECUTION_ENVIRONMENT:
+        raise ValueError("corpus execution environment differs")
     for name, field in (("native-math", "binary_sha256"), ("corpus.c", "source_sha256"),
                         ("link.map", "link_map_sha256"), ("build-observations.jsonl", "build_observations_sha256")):
         if digest((path / name).read_bytes()) != manifest[field]:
@@ -190,7 +194,8 @@ def run(path, output, host_id):
     command = ["taskset", "-c", str(cpu), str(binary.resolve())]
     baseline = None
     for repeat in range(3):
-        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120,
+                                env=EXECUTION_ENVIRONMENT)
         (output / f"observations-{repeat}.jsonl").write_bytes(result.stdout)
         (output / f"stderr-{repeat}.txt").write_bytes(result.stderr)
         result.check_returncode()
@@ -203,6 +208,7 @@ def run(path, output, host_id):
     receipt = {"format": FORMAT, "manifest_sha256": digest((path / "manifest.json").read_bytes()),
                "binary_sha256": manifest["binary_sha256"], "host_id": instance, "cpu": cpu,
                "build": build_identity(manifest),
+               "execution_environment": EXECUTION_ENVIRONMENT,
                "cpu_identity": identity, "kernel": platform.release(), "repeats": 3,
                "observations_sha256": digest(baseline), "case_count": len(manifest["inventory"])}
     (output / "receipt.json").write_bytes(canonical(receipt))
@@ -216,6 +222,7 @@ def compare(path, receipts):
         if (receipt["format"] != FORMAT or receipt["manifest_sha256"] != digest((path / "manifest.json").read_bytes())
                 or receipt["binary_sha256"] != manifest["binary_sha256"] or receipt["repeats"] != 3
                 or receipt["build"] != build_identity(manifest)
+                or receipt["execution_environment"] != EXECUTION_ENVIRONMENT
                 or receipt["case_count"] != len(manifest["inventory"])):
             raise ValueError("receipt does not bind this retained executable and inventory")
         if not valid_host_id(receipt["host_id"]) or type(receipt["cpu"]) is not int or receipt["cpu"] < 0:

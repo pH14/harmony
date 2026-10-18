@@ -13,17 +13,19 @@
 static void reset(unsigned rounding, unsigned flush) {
     uint16_t cw = (uint16_t)(0x037f | (rounding << 10));
     uint32_t mxcsr = 0x1f80 | (rounding << 13) | (flush ? 0x8040 : 0);
-    __asm__ volatile("fninit; fldcw %0; ldmxcsr %1" : : "m"(cw), "m"(mxcsr));
+    __asm__ volatile("fninit; fldcw %0; ldmxcsr %1" : : "m"(cw), "m"(mxcsr) : "memory");
     errno = 0;
 }
 
 static void emit(const char *op, unsigned rounding, unsigned flush,
-                 const char *input, const void *result, size_t length) {
+                 const char *input, const void *result, size_t length,
+                 const uint16_t *operation_status) {
     uint16_t sw, cw;
     uint32_t mxcsr;
     int error = errno;
     __asm__ volatile("fnstsw %0; fnstcw %1; stmxcsr %2"
-                     : "=m"(sw), "=m"(cw), "=m"(mxcsr));
+                     : "=m"(sw), "=m"(cw), "=m"(mxcsr) : : "memory");
+    if (operation_status) sw = *operation_status;
     printf("{\"op\":\"%s\",\"round\":%u,\"flush\":%u,\"input\":\"%s\",\"result\":\"",
            op, rounding, flush, input);
     for (size_t i = 0; i < length; i++) printf("%02x", ((const unsigned char *)result)[i]);
@@ -72,22 +74,23 @@ static void doubles(unsigned rounding, unsigned flush) {
         for (size_t op = 0; op < sizeof(names) / sizeof(names[0]); op++) {
             reset(rounding, flush);
             double result = functions[op](x);
-            emit(names[op], rounding, flush, input, &result, sizeof(result));
+            emit(names[op], rounding, flush, input, &result, sizeof(result), NULL);
         }
         for (unsigned op = 0; op < 4; op++) {
             uint64_t magnitude = bits & UINT64_C(0x7fffffffffffffff);
             if (op == 2 && magnitude > UINT64_C(0x3ff0000000000000)) continue;
             if (op == 3 && magnitude > UINT64_C(0x3fd0000000000000)) continue;
             unsigned char result[10];
+            uint16_t status;
             reset(rounding, flush);
             switch (op) {
-            case 0: __asm__ volatile("fldl %1; fsin; fstpt %0" : "=m"(result) : "m"(x) : "st"); break;
-            case 1: __asm__ volatile("fldl %1; fcos; fstpt %0" : "=m"(result) : "m"(x) : "st"); break;
-            case 2: __asm__ volatile("fldl %1; f2xm1; fstpt %0" : "=m"(result) : "m"(x) : "st"); break;
-            default: __asm__ volatile("fld1; fldl %1; fyl2xp1; fstpt %0" : "=m"(result) : "m"(x) : "st"); break;
+            case 0: __asm__ volatile("fldl %2; fsin; fnstsw %1; fstpt %0" : "=m"(result), "=m"(status) : "m"(x) : "st", "memory"); break;
+            case 1: __asm__ volatile("fldl %2; fcos; fnstsw %1; fstpt %0" : "=m"(result), "=m"(status) : "m"(x) : "st", "memory"); break;
+            case 2: __asm__ volatile("fldl %2; f2xm1; fnstsw %1; fstpt %0" : "=m"(result), "=m"(status) : "m"(x) : "st", "memory"); break;
+            default: __asm__ volatile("fld1; fldl %2; fyl2xp1; fnstsw %1; fstpt %0" : "=m"(result), "=m"(status) : "m"(x) : "st", "memory"); break;
             }
             const char *ops[] = {"x87.fsin", "x87.fcos", "x87.f2xm1", "x87.fyl2xp1"};
-            emit(ops[op], rounding, flush, input, result, sizeof(result));
+            emit(ops[op], rounding, flush, input, result, sizeof(result), &status);
         }
     }
 }
@@ -113,7 +116,7 @@ static void singles(unsigned rounding, unsigned flush) {
             }
             }
             const char *ops[] = {"sse.rcpps", "sse.rsqrtps", "sse.sqrtps", "sse.divps"};
-            emit(ops[op], rounding, flush, input, result, sizeof(result));
+            emit(ops[op], rounding, flush, input, result, sizeof(result), NULL);
         }
     }
 }

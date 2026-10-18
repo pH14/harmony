@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 import copy
+import errno
 import importlib.util
 import itertools
 from pathlib import Path
@@ -34,6 +35,7 @@ class NativeMathTests(unittest.TestCase):
                            ("link.map", b"libm"), ("build-observations.jsonl", self.data)):
             (self.bundle / name).write_bytes(data)
         self.manifest = {"format": Q.FORMAT, "scope": "linux-x86_64-native-math-v1",
+                         "execution_environment": {},
                          "qualifier_sha256": Q.digest(Q.SCRIPT.read_bytes()), "source_revision": "a" * 40,
                          "binary_sha256": Q.digest(b"exact-executable"), "source_sha256": Q.digest(b"source"),
                          "link_map_sha256": Q.digest(b"libm"), "build_observations_sha256": Q.digest(self.data),
@@ -51,6 +53,7 @@ class NativeMathTests(unittest.TestCase):
         receipt = {"format": Q.FORMAT, "manifest_sha256": Q.digest((self.bundle / "manifest.json").read_bytes()),
                    "binary_sha256": self.manifest["binary_sha256"], "repeats": 3,
                    "build": Q.build_identity(self.manifest), "host_id": f"00000000-0000-0000-0000-{number:012d}",
+                   "execution_environment": {},
                    "cpu": 3, "cpu_identity": Q.selected_cpu(cpuinfo, 3), "kernel": "test",
                    "case_count": len(self.rows), "observations_sha256": Q.digest(self.data)}
         (directory / "receipt.json").write_bytes(Q.canonical(receipt))
@@ -105,6 +108,11 @@ class NativeMathTests(unittest.TestCase):
 
     def test_build_library_identity_cannot_be_rebound(self):
         self.mutate_receipt(1, lambda value: value["build"]["libraries"].update({"libm.a": "0" * 64}))
+        with self.assertRaisesRegex(ValueError, "retained executable"):
+            Q.compare(self.bundle, self.receipts)
+
+    def test_execution_environment_cannot_be_rebound(self):
+        self.mutate_receipt(1, lambda value: value.update(execution_environment={"GLIBC_TUNABLES": "glibc.cpu.hwcaps=-AVX2"}))
         with self.assertRaisesRegex(ValueError, "retained executable"):
             Q.compare(self.bundle, self.receipts)
 
@@ -177,13 +185,38 @@ class NativeCorpusTests(unittest.TestCase):
         exact = next(row for row in rows if Q.key(row) == ["libm.sqrt", 0, 0, "3ff0000000000000"])
         self.assertEqual(exact["result"], "000000000000f03f")
         self.assertEqual(receipt["repeats"], 3)
+        observations = {tuple(Q.key(row)): row for row in rows}
+
+        def row(op, bits, rounding=0, flush=0):
+            return observations[(op, rounding, flush, bits)]
+
+        for op in ("x87.fsin", "x87.fcos"):
+            for bits, extended in (("43e0000000000000", "00000000000000803e40"),
+                                   ("7fefffffffffffff", "00f8fffffffffffffe43")):
+                self.assertTrue(row(op, bits)["x87_status"] & 0x0400)
+                self.assertEqual(row(op, bits)["result"], extended)
+        self.assertTrue(row("x87.fsin", "7ff0000000000000")["x87_status"] & 1)
+        invalid = row("sse.sqrtps", "bf800000")
+        self.assertTrue(invalid["mxcsr"] & 1)
+        self.assertEqual(invalid["result"], "0000c0ff" * 4)
+        zero = row("sse.divps", "00000000")
+        self.assertTrue(zero["mxcsr"] & 4)
+        self.assertEqual(zero["result"], "0000807f" * 4)
+        self.assertEqual(row("sse.sqrtps", "00000001", flush=1)["result"], "00000000" * 4)
+        self.assertNotEqual(row("sse.sqrtps", "00000001")["result"], "00000000" * 4)
+        self.assertEqual(row("sse.divps", "3f7fffff", rounding=1)["result"], "0000803f" * 4)
+        self.assertEqual(row("sse.divps", "3f7fffff", rounding=2)["result"], "0100803f" * 4)
+        self.assertEqual(row("libm.log", "0000000000000000")["errno"], errno.ERANGE)
+        self.assertEqual(row("libm.log", "bff0000000000000")["errno"], errno.EDOM)
 
     def test_failed_process_retains_output_without_complete_receipt(self):
         output = self.root / "failed"
         failure = subprocess.CompletedProcess([], 1, b"partial witness\n", b"injected failure\n")
-        with mock.patch.object(Q.subprocess, "run", return_value=failure):
-            with self.assertRaises(subprocess.CalledProcessError):
-                Q.run(self.bundle, output, self.host)
+        with mock.patch.dict(Q.os.environ, {"GLIBC_TUNABLES": "glibc.cpu.hwcaps=-AVX2"}):
+            with mock.patch.object(Q.subprocess, "run", return_value=failure) as process:
+                with self.assertRaises(subprocess.CalledProcessError):
+                    Q.run(self.bundle, output, self.host)
+        self.assertEqual(process.call_args.kwargs["env"], {})
         self.assertEqual((output / "observations-0.jsonl").read_bytes(), b"partial witness\n")
         self.assertFalse((output / "receipt.json").exists())
 
