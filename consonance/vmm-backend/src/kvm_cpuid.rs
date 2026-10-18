@@ -261,30 +261,39 @@ mod tests {
             emulated_features: vec![bit],
         };
         assert!(validate(&model, &CpuidModel::default(), &CpuidModel::default()).is_ok());
-        for invalid in [
-            CpuidEntry {
-                leaf: 1,
-                eax: 1,
-                ..Default::default()
-            },
-            CpuidEntry {
-                leaf: 7,
-                edx: 1 << 28,
-                ..Default::default()
-            },
-            CpuidEntry {
-                leaf: 0xd,
-                eax: 7,
-                ..Default::default()
-            },
-            CpuidEntry {
-                leaf: 1,
-                ecx: 1 << 26,
-                ..Default::default()
-            },
+        let unknown_word = CpuidEntry {
+            leaf: 1,
+            eax: 1,
+            ..Default::default()
+        };
+        let xsave_state = CpuidEntry {
+            leaf: 0xd,
+            subleaf_significant: true,
+            eax: 7,
+            ..Default::default()
+        };
+        let xsave_feature = CpuidEntry {
+            leaf: 1,
+            ecx: 1 << 26,
+            ..Default::default()
+        };
+        for (advertised, declaration) in [
+            (unknown_word, unknown_word),
+            (
+                bit,
+                CpuidEntry {
+                    leaf: 7,
+                    edx: 1 << 28,
+                    ..Default::default()
+                },
+            ),
+            (xsave_state, xsave_state),
+            (xsave_feature, xsave_feature),
         ] {
-            model.entries.push(invalid);
-            model.emulated_features = vec![invalid];
+            let model = CpuidModel {
+                entries: vec![advertised],
+                emulated_features: vec![declaration],
+            };
             assert!(matches!(
                 validate(&model, &model, &model),
                 Err(BackendError::InvalidState)
