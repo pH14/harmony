@@ -125,6 +125,13 @@ int main(void) {
             entry = re.search(re.escape(binding) + r" = pkgs\.writeShellApplication \{.*?exec \$\{\./([^}]+)\}", flake, re.S)
             self.assertIsNotNone(entry)
             wrapper = repository / entry[1]
+            unconditional = entry[0].split("${nixpkgs.lib.optionalString", 1)[0]
+            source_exports = re.findall(r"export (HARMONY_NIX_(?:LINUX|BUSYBOX|MUSL)_SOURCE)=\$\{(\w+)\}", unconditional)
+            self.assertEqual(dict(source_exports), {
+                "HARMONY_NIX_LINUX_SOURCE": "linuxSource",
+                "HARMONY_NIX_BUSYBOX_SOURCE": "busyboxSource",
+                "HARMONY_NIX_MUSL_SOURCE": "muslSource",
+            })
             with self.subTest(builder=binding, explicit_compiler=explicit_compiler), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 source = root / "source"
@@ -147,6 +154,8 @@ X86_MUSL_PREFIX=$BUILD_ROOT/musl-x86-prefix
 require_tools() { for tool in "$@"; do command -v "$tool" >/dev/null; done; }
 extract_kernel() { mkdir -p "$KSRC/usr"; }
 build_x86_musl() {
+    test -f "$HARMONY_DOWNLOAD_DIR/musl-1.2.6.tar.gz"
+    cmp "$HARMONY_TEST_MUSL_TARBALL" "$HARMONY_DOWNLOAD_DIR/musl-1.2.6.tar.gz"
     mkdir -p "$X86_MUSL_PREFIX/bin"
     ln -s "$HARMONY_TEST_N6_CC" "$X86_MUSL_PREFIX/bin/musl-gcc"
     echo PINNED_X86_MUSL_SELECTED
@@ -171,6 +180,8 @@ case "$1" in
 esac
 ''')
                 (tools / "uname").chmod(0o755)
+                (tools / "nproc").write_text("#!/bin/sh\necho 4\n")
+                (tools / "nproc").chmod(0o755)
                 (tools / "cc").write_text("#!" + sys.executable + "\n" + '''import os
 from pathlib import Path
 import shutil
@@ -202,13 +213,14 @@ shutil.copyfile(Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / name, output)
                     "PATH": str(tools) + os.pathsep + environment.get("PATH", ""),
                     "TMPDIR": str(temporary_work),
                     "HARMONY_NIX_SOURCE": str(source),
-                    "HARMONY_NIX_LINUX_SOURCE": str(tarball),
-                    "HARMONY_NIX_BUSYBOX_SOURCE": str(tarball),
-                    "HARMONY_NIX_MUSL_SOURCE": str(tarball),
                     "HARMONY_NIX_KEEP_WORK": "0",
                     "HARMONY_TEST_N6_CC": str(tools / "cc"),
+                    "HARMONY_TEST_MUSL_TARBALL": str(tarball),
                     "HARMONY_TEST_CC_FIXTURES": str(fixtures),
                 })
+                for variable, source_binding in source_exports:
+                    self.assertIn(source_binding, ("linuxSource", "busyboxSource", "muslSource"))
+                    environment[variable] = str(tarball)
                 environment.pop("HARMONY_N6_CC", None)
                 if explicit_compiler:
                     environment["HARMONY_N6_CC"] = str(tools / "cc")
@@ -220,15 +232,29 @@ shutil.copyfile(Path(os.environ["HARMONY_TEST_CC_FIXTURES"]) / name, output)
                 self.assertIn("N6 failed-build diagnostics preserved:", result.stderr)
                 self.assertNotIn("UNEXPECTED_POST_N6_BUILD", result.stdout)
                 self.assertNotIn("PASS: Nix-locked", result.stdout)
-                self.assertEqual("PINNED_X86_MUSL_SELECTED" in result.stdout, not explicit_compiler)
-                compiler = "cc" if explicit_compiler else "musl-gcc"
-                self.assertEqual((fixtures / "compiler-log").read_text().splitlines(), [compiler] * 3)
+                self.assertIn("PINNED_X86_MUSL_SELECTED", result.stdout,
+                              f"compiler override={environment.get('HARMONY_N6_CC')!r}\n" + result.stdout + result.stderr)
+                self.assertEqual((fixtures / "compiler-log").read_text().splitlines(), ["musl-gcc"] * 3)
                 self.assertEqual(list(temporary_work.glob("harmony-nix-guest.*")), [])
                 diagnostics = output / "diagnostics/n6"
                 self.assertEqual((diagnostics / "n6-instruction-guest").read_bytes(), images["rejected"])
                 self.assertIn("decl %eax", (diagnostics / "n6-generated.S").read_text())
                 self.assertIn("N6_TABLE_ROW_COUNT", (diagnostics / "n6-generated.h").read_text())
                 self.assertIn("N6_ENTROPY_REJECT", (diagnostics / "n6-instruction-guest.entropy-audit.txt").read_text())
+                if explicit_compiler:
+                    with self.subTest(entrypoint="standalone"):
+                        (fixtures / "compiler-log").unlink()
+                        standalone = root / "standalone-build"
+                        environment["GUEST_BUILD_ROOT"] = str(standalone)
+                        environment["HARMONY_ARTIFACT_DIR"] = str(root / "standalone-artifacts")
+                        result = subprocess.run(["bash", str(linux / "build-n6-instruction-images.sh")],
+                                                cwd=linux, env=environment, capture_output=True, text=True)
+                        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                        self.assertIn("N6_ENTROPY_REJECT", result.stdout)
+                        self.assertNotIn("PINNED_X86_MUSL_SELECTED", result.stdout)
+                        self.assertEqual((fixtures / "compiler-log").read_text().splitlines(), ["cc"] * 3)
+                        self.assertEqual((standalone / "n6-instruction-sweep/n6-instruction-guest").read_bytes(),
+                                         images["rejected"])
 
     def test_both_syscall_flag_copies_are_pinned_before_the_first_tick(self):
         patch = PATCHES / "x86/0001-x86-harmony-pvclock-exit-count-clocksource.patch"
