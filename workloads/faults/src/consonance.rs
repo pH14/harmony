@@ -6695,6 +6695,9 @@ mod tests {
         let active = debug_configuration(&config.configuration, None).unwrap();
         let mut debug = factory(&active).unwrap();
         assert!(debug.local_services().is_empty());
+        let mut forged_active = active.clone();
+        forged_active.local_services = vec![process_proto::debug::NAMESPACE];
+        assert!(factory(&forged_active).is_err());
         let status = process_proto::debug::Status {
             acknowledged: 3,
             running: true,

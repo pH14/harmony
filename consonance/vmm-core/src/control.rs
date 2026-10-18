@@ -11131,6 +11131,41 @@ mod tests {
                 .is_err()
         );
         let before = spec.clone();
+        let mut exact = before.clone();
+        let mut payloads = exact.payloads().unwrap().to_vec();
+        payloads.last_mut().unwrap().pop().unwrap();
+        exact.set_payloads(Some(payloads));
+        let mut expected = exact.clone();
+        expected
+            .record_bound_answer(
+                10_000,
+                19,
+                77,
+                Sha256::digest(b"choose").into(),
+                environment::channel::Answer::Data(vec![0x11]),
+            )
+            .unwrap();
+        assert_eq!(expected.encode().len(), EnvSpec::MAX_REPRODUCER_BYTES);
+        let mut exact_server = deadline_chain_server(&frame, exact);
+        let reply = exact_server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(20_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert!(!matches!(reply, Reply::Stop(StopReason::Decision { .. })));
+        assert!(
+            exact_server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .is_none()
+        );
+        assert_eq!(exact_server.recorded, expected);
         let mut server = deadline_chain_server(&frame, spec);
         let until = StopConditions {
             deadline: Some(Moment(20_000)),
@@ -11212,6 +11247,75 @@ mod tests {
         );
         assert_eq!(original.recorded, replay.recorded);
         assert_eq!(hash(&mut original), hash(&mut replay));
+    }
+
+    #[test]
+    fn local_service_pending_override_fresh_reproducer_matches_complete_sdk_trace_and_whole_state()
+    {
+        let frame = local_service_frame_with_payload(b"stateful");
+        for bound in [false, true] {
+            let mut spec = local_service_spec(true, 0x11);
+            let answer = environment::channel::Answer::Data(vec![0x44]);
+            if bound {
+                spec.record_bound_answer(
+                    10_000,
+                    19,
+                    77,
+                    Sha256::digest(b"stateful").into(),
+                    answer,
+                )
+                .unwrap();
+            } else {
+                spec.record_answer(10_000, 19, 77, answer).unwrap();
+            }
+            let mut original = deadline_chain_server(&frame, spec);
+            original
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(10_000)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            assert!(original.vmm().unwrap().pending_service_question().is_some());
+            let until = StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            };
+            original
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let reproducer =
+                EnvSpec::decode_reproducer(&original.recorded.try_encode_reproducer().unwrap())
+                    .unwrap();
+            let mut fresh = deadline_chain_server(&frame, reproducer);
+            fresh
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let a = original.vmm().unwrap();
+            let b = fresh.vmm().unwrap();
+            assert_eq!(
+                a.sdk_snapshot().unwrap().unwrap().recorded,
+                b.sdk_snapshot().unwrap().unwrap().recorded
+            );
+            assert_eq!(a.sdk_events(), b.sdk_events());
+            assert_eq!(
+                a.virtual_time_trace().unwrap().normalized_log(),
+                b.virtual_time_trace().unwrap().normalized_log()
+            );
+            assert_eq!(original.recorded, fresh.recorded);
+            assert_eq!(hash(&mut original), hash(&mut fresh));
+        }
     }
 
     #[test]
