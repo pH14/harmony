@@ -1265,6 +1265,29 @@ impl WorkerSession {
     }
 }
 
+#[cfg(test)]
+type ExitPauseHook = Box<dyn FnMut(&crate::writer_lifetime::WorkerId)>;
+#[cfg(test)]
+thread_local! {
+    static EXIT_PAUSE_HOOK: RefCell<Option<ExitPauseHook>> = RefCell::new(None);
+}
+
+fn exit_pause(_id: &crate::writer_lifetime::WorkerId) {
+    #[cfg(test)]
+    if EXIT_PAUSE_HOOK.with(|hook| {
+        let mut hook = hook.borrow_mut();
+        if let Some(hook) = hook.as_mut() {
+            hook(_id);
+            true
+        } else {
+            false
+        }
+    }) {
+        return;
+    }
+    std::thread::sleep(EXIT_POLL);
+}
+
 impl Drop for WorkerSession {
     fn drop(&mut self) {
         use crate::writer_lifetime::{ExitPoll, poll_worker, retain_worker};
@@ -1283,7 +1306,7 @@ impl Drop for WorkerSession {
         for _ in 0..EXIT_POLLS {
             match poll_worker(&id, false) {
                 ExitPoll::Exited | ExitPoll::Ambiguous => return,
-                ExitPoll::Running => std::thread::sleep(EXIT_POLL),
+                ExitPoll::Running => exit_pause(&id),
             }
         }
         crate::writer_lifetime::allow_worker_signal(&id);
@@ -1293,7 +1316,7 @@ impl Drop for WorkerSession {
         for _ in 0..10 {
             match poll_worker(&id, false) {
                 ExitPoll::Exited | ExitPoll::Ambiguous => return,
-                ExitPoll::Running => std::thread::sleep(EXIT_POLL),
+                ExitPoll::Running => exit_pause(&id),
             }
         }
     }
@@ -2865,13 +2888,10 @@ mod tests {
         assert_eq!(second.loaded_image_guard.counters("test"), second_before);
     }
 
-    fn kill(session: &WorkerSession) {
-        let pid = libc::pid_t::try_from(session.process_id().unwrap()).unwrap();
-        // SAFETY: kill only signals the child process this test spawned.
-        assert_eq!(unsafe { libc::kill(pid, libc::SIGKILL) }, 0);
-        let mut status = 0;
-        // SAFETY: waitpid reaps only the child this test spawned and writes its status into a live local.
-        assert_eq!(unsafe { libc::waitpid(pid, &raw mut status, 0) }, pid);
+    fn kill(session: &mut WorkerSession) {
+        let child = session.process.as_mut().expect("test child owner");
+        child.kill().unwrap();
+        assert!(!child.wait().unwrap().success());
     }
 
     fn namespace() -> Namespace {
@@ -4245,6 +4265,116 @@ writer.close()
         assert_eq!(index.stats().publishes, 0);
     }
 
+    #[derive(Debug)]
+    struct DropOwner {
+        polls: Arc<std::sync::atomic::AtomicUsize>,
+        signals: Arc<std::sync::atomic::AtomicUsize>,
+        pauses: Arc<std::sync::atomic::AtomicUsize>,
+        signal_pause: Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl crate::writer_lifetime::ExitOwner for DropOwner {
+        fn try_exited(&mut self) -> io::Result<bool> {
+            use std::sync::atomic::Ordering;
+            self.polls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.signals.load(Ordering::SeqCst) != 0)
+        }
+        fn terminate(&mut self) -> io::Result<()> {
+            use std::sync::atomic::Ordering;
+            self.signal_pause
+                .store(self.pauses.load(Ordering::SeqCst), Ordering::SeqCst);
+            self.signals.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn actual_drop_preserves_grace_before_enabling_one_signal_and_confirming_exit() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (parent, child) = UnixStream::pair().unwrap();
+        drop(child);
+        let polls = Arc::new(AtomicUsize::new(0));
+        let signals = Arc::new(AtomicUsize::new(0));
+        let pauses = Arc::new(AtomicUsize::new(0));
+        let signal_pause = Arc::new(AtomicUsize::new(usize::MAX));
+        let index = LocalIndex::new(4096);
+        let session = WorkerSession {
+            stream: parent,
+            process: None,
+            owner: Some(Box::new(DropOwner {
+                polls: polls.clone(),
+                signals: signals.clone(),
+                pauses: pauses.clone(),
+                signal_pause: signal_pause.clone(),
+            })),
+            loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+            setup: (SnapId(0), 0),
+            seed: 0,
+            failed: Cell::new(false),
+            counters: RefCell::new(Vec::new()),
+            telemetry_queries: Cell::new(0),
+            telemetry_query_failures: Cell::new(0),
+            exchanging: Cell::new(false),
+            retained_export: RefCell::new(vec![index.extent(4096).unwrap()]),
+        };
+        let (notice_tx, notice_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let dropper = {
+            let pauses = pauses.clone();
+            std::thread::spawn(move || {
+                EXIT_PAUSE_HOOK.with(|hook| {
+                    *hook.borrow_mut() = Some(Box::new(move |id| {
+                        if pauses.fetch_add(1, Ordering::SeqCst) == 0 {
+                            let _ = notice_tx.send(id.clone());
+                            let _ = release_rx.recv_timeout(Duration::from_secs(10));
+                        }
+                    }))
+                });
+                drop(session);
+                EXIT_PAUSE_HOOK.with(|hook| hook.borrow_mut().take());
+            })
+        };
+        let notice = notice_rx.recv_timeout(Duration::from_secs(10));
+        let mut before = None;
+        let mut background_polled = false;
+        if let Ok(id) = &notice {
+            for _ in 0..4096 {
+                crate::writer_lifetime::reap_worker_quarantine(64);
+                if polls.load(Ordering::SeqCst) > 1 {
+                    break;
+                }
+            }
+            background_polled = polls.load(Ordering::SeqCst) > 1;
+            before = Some((
+                signals.load(Ordering::SeqCst),
+                crate::writer_lifetime::retained_worker(id),
+                index.stats().charged,
+            ));
+        }
+        let _ = release_tx.send(());
+        let joined = dropper.join();
+        let after = notice
+            .as_ref()
+            .ok()
+            .map(crate::writer_lifetime::retained_worker);
+        let final_pauses = pauses.load(Ordering::SeqCst);
+        let final_signals = signals.load(Ordering::SeqCst);
+        let at_signal = signal_pause.load(Ordering::SeqCst);
+        if let Ok(id) = &notice {
+            crate::writer_lifetime::allow_worker_signal(id);
+            let _ = crate::writer_lifetime::poll_worker(id, true);
+            let _ = crate::writer_lifetime::poll_worker(id, false);
+        }
+        assert!(joined.is_ok());
+        assert!(notice.is_ok());
+        assert!(background_polled);
+        assert_eq!(before, Some((0, Some((1, 4096, false)), 4096)));
+        assert_eq!(final_pauses, EXIT_POLLS as usize);
+        assert_eq!(final_signals, 1);
+        assert_eq!(at_signal, EXIT_POLLS as usize);
+        assert_eq!(after, Some(None));
+        assert_eq!(index.stats().charged, 0);
+    }
+
     #[test]
     fn failed_send_after_fd_handoff_retains_destination_until_join_proof() {
         let (parent, child) = UnixStream::pair().unwrap();
@@ -4702,7 +4832,7 @@ writer.close()
         reader
             .import_cached(index.as_ref(), &read, SnapId(1))
             .unwrap();
-        kill(&owner);
+        kill(&mut owner);
         assert!(owner.run_until(80).is_err());
         assert!(owner.abandoned());
         index.release(owned);
@@ -4719,7 +4849,7 @@ writer.close()
         let mut unpublished = spawned(9);
         unpublished.run_until(40).unwrap();
         let (snap, _) = unpublished.snapshot().unwrap();
-        kill(&unpublished);
+        kill(&mut unpublished);
         assert!(
             unpublished
                 .publish_snapshot(index.as_ref(), namespace(), b"other", None, snap, 1)
