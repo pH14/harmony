@@ -408,3 +408,8 @@ entries; equal duplicate publication returns the existing entry without changing
 its ancestry. A conflicting duplicate retains both witness chains and
 quarantines its namespace in either mode. Composition adapters using opaque path
 roots must search their own certified ancestor roots when an exact key is absent.
+
+UML imported roots also retain their source index commitment. After validating
+and importing the checkpoint, the session recomputes the root-domain machine
+commitment and compares it with the pinned index record before installing a
+handle. Final host-image and lease checks remove a temporary handle on failure.
