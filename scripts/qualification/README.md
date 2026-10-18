@@ -173,6 +173,33 @@ changed artifacts, substituted cuts and contradictory observations also
 fail. Bounds that expire mean incomplete qualification, not a guest failure
 classification. Logs already written survive failure and are uploaded.
 
+The registry describes required oracles rather than recording a passing result.
+At source `9673f33363395f0850cd2cb5e704432d33434180`,
+[run 39159236856](https://github.com/pH14/harmony/actions/runs/39159236856)
+passes the AMD export and five AMD imports; one hosted import matches READY and
+guest readback but fails the raw DONE whole-state comparison. Nested Intel KVM
+reproduces the same failure using the identical retained executable and AMD cut:
+`536a76dab595357cf7e9e8d217d14a5ba06b535150964b1d2d8a98ca16b1ae25`
+versus expected
+`44e55f8d96e950e7c063464974e03532032f32ebae03989de2337a2db47dd126`.
+Diagnostic source `e82aa7e03bb04fa0dbad1c84ce5c219e4ed8fd5e` retains
+the exact DONE state separately from that qualification binary. The difference
+is x87 FIP: Intel saves the post-cut `fstpl` address `0x4011ab` in CPU state,
+encoded VM state and the guest kernel's FPU image in RAM; the AMD expected
+state has zero. Changing only these three values in an offline diagnostic copy
+reproduces the expected AMD hash. This localizes the failure; it is not an
+allowed state normalization. KVM's
+[x87 errata](https://docs.kernel.org/virt/kvm/x86/errata.html)
+explain why CPUID absence flags do not force uniform native behavior.
+
+Same-vendor receipts establish only their named finite workload and host pairs.
+Cross-vendor whole-state identity is unqualified, and the unchanged strict
+comparison and aggregate reject it. Equal guest readbacks do not close this gap.
+CPU warnings remain advisory, standard libraries remain supported, and
+[#733](https://github.com/pH14/harmony/issues/733) retains the broader CPU
+portability limits. These dated results must not be relabeled as evidence for
+another source or executable.
+
 This cell qualifies only the named finite Linux workload and actual admitted
 host pairs. It does not qualify arbitrary applications, nested virtualization,
 other backends, reused AMD restore, Arm Linux continuation, or a complete
