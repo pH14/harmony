@@ -27,6 +27,13 @@ input/result bits. Controls must remain as established. No tolerance, NaN
 canonicalization, status masking, reference compiler build, or decimal
 conversion is used in comparisons.
 
+The x87 instruction's status word is sampled immediately before storing and
+popping its binary80 result, so the store cannot replace the operation's
+condition codes. This status includes TOP with the result still on the stack.
+Scalar libm status is sampled after the called routine returns. Native checks
+assert defined range/exception flags, stored binary80 values, SSE rounding and
+DAZ behavior, and libm domain/range errno, in addition to comparator controls.
+
 Build once on Linux x86_64 with GCC and glibc development files:
 
 ```sh
@@ -42,6 +49,17 @@ version. The link map, ELF inventory, and build observations are retained. A
 library archive's presence is provenance, not evidence that every routine in
 that archive executed; this corpus does not call libmvec entry points or AVX,
 AVX-512, or FP16 estimate instructions.
+
+Every execution, including the build-host probe, receives an empty environment;
+that environment is bound in the manifest and receipts. Ambient settings such
+as `GLIBC_TUNABLES` cannot silently change library selection. Static glibc libm
+may still select CPU-specific implementations at process startup (IFUNC).
+Thus a libm observation compares the implementations selected on the recorded
+CPUs, not a promise that both execute one instruction sequence. The baseline
+compiler target applies to this corpus's own code. CPU metadata describes this
+selection context, not numerical equivalence. The glibc
+[hardware-capability tunables](https://sourceware.org/glibc/manual/latest/html_node/Hardware-Capability-Tunables.html)
+describe environment overrides deliberately excluded from these runs.
 
 Distribute that entire bundle without rebuilding. On each host:
 

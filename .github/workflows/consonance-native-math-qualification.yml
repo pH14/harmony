@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - name: Install workflow test parser
+        run: python3 -m pip install PyYAML==6.0.3
       - name: Check native corpus and negative controls
         run: python3 -m unittest discover -s scripts -p test_ci_native_math.py
       - name: Build one retained static executable
