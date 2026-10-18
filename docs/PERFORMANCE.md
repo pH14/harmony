@@ -5,8 +5,8 @@ it falls short? We estimate that ceiling from the native CPU time of the
 workload, then account for the gap using measurements of host overhead,
 repeated work, and worker utilization.
 
-The worked examples below are historical measurements, not a baseline for every
-current executable. Integrity checks, snapshot handling and observation costs
+The worked examples below are historical measurements, not a baseline for
+current executables. Integrity checks, snapshot handling and observation costs
 have changed since those runs. The [October 18 measurements](#october-18-2026-measurements)
 identify their exact prepared builds and distinguish measured work from proposed
 optimizations.
@@ -21,8 +21,8 @@ new builds, and neither establishes a general campaign speedup.
 ### Retained parent depth
 
 Source `0be4f443003edabb4860d81945587204672e6dab` was measured on an Intel
-Core Ultra 9 285HX with Linux KVM, a 1 GiB guest and an 8 GiB cache budget.
-Each mode used the same executable, one sample at each depth and no warmup.
+Core Ultra 9 285HX with Linux KVM, the etcd workload, a 1 GiB guest and an
+8 GiB cache budget. Both modes used the same executable, one sample at each depth and no warmup.
 The IPC mode used actual worker processes and descriptor transfers. Boot and
 prefix construction were excluded from the phase timings.
 
@@ -47,12 +47,11 @@ does not make every operation constant-time: imported payload, metadata and
 validation work can grow. At depth 1,024, an import copied 40,124,416 bytes into
 the worker Store and mapped 32 serialized ranges totaling 148,578,304 bytes.
 Those mappings and copies are separate from the one whole-request hash.
-Split apply and capture timings must not be summed and presented as a measured
-fused campaign rate.
 
 Diagnostic ownership queries in this build added RPCs and guard checks outside
 the timed phases. Its raw guard and transport counter deltas therefore do not
-isolate intrinsic restore cost. The prepared follow-up tracked in #763 separates
+isolate intrinsic restore cost. The prepared follow-up tracked in
+[#763](https://github.com/pH14/harmony/issues/763) separates
 work-counter snapshots from those residency queries. No inferred subtraction
 was used to manufacture corrected timings.
 
@@ -60,10 +59,12 @@ was used to manufacture corrected timings.
 
 Source `431ba486bb000f51761785584536ae2422549acf` includes the observation
 separation and coordinator-session cleanup. One run with one worker and one run
-with two workers used the same binary, seed 7, eight jobs, a fixed admission
-window of 16, no warmup, 1 GiB per guest and an 8 GiB shared cache budget.
-Coordinator CPU 0 and worker CPUs 1 and 2 were distinct physical cores in the
-same P-core group and NUMA node; the external observer used CPU 3.
+with two workers used the same binary and etcd workload, seed 7, eight jobs, a
+fixed admission window of 16, no warmup, 1 GiB per guest and an 8 GiB shared
+cache budget.
+Both runs used coordinator CPU 0. The one-worker run used worker CPU 1; the
+two-worker run used worker CPUs 1 and 2. These were distinct physical cores in
+the same P-core group and NUMA node; the external observer used CPU 3.
 
 | Measurement | One worker | Two workers |
 |---|---:|---:|
@@ -81,14 +82,18 @@ leftovers; postflight checks found no remaining observed process identities or
 KVM users. An earlier calibration with leftover descendants was refused and
 was not used as the reference.
 
-All eight jobs started at the root and ran one new action. No parent import,
+All eight jobs started at the root and ran one new action lasting 4 to 1,024
+logical ticks. This fixed job is not the execution unit in the historical etcd
+worked example below; their rates are not comparable. No parent import,
 reconstruction or replay occurred, and no useful objective witness was found.
 The result tests fixed-work equivalence and provides one timing observation;
 it does not test adaptive descendant selection, parent locality, search
 effectiveness, NUMA routing or a larger job budget. Sequential run order,
-thermal state, caches and host load remain confounders. PSS is a sampled
-contemporaneous sum, not an allocation bound or guaranteed peak; one final
-two-worker memory sample was unavailable after process exit.
+thermal state, caches and host load remain confounders. CPU 2 has no separate
+one-worker reference. PSS is a sampled contemporaneous sum, not an allocation bound or guaranteed peak; one final
+two-worker memory sample was unavailable after process exit. Unmapped cache
+memfd pages are outside process PSS, so it does not measure total cache memory
+or total host memory. The shared index charged 181,239,808 bytes in each run.
 
 ### Remaining measured costs and accounting rules
 
@@ -101,15 +106,18 @@ SDK guards. Sealed executable files do not establish immutable private live
 code mappings, so they do not justify deleting live-byte checks.
 
 Shared cache lock hold time was approximately 0.13 milliseconds in each run;
-coordinator admission took milliseconds. These small root-only cases do not
-support cache-lock restructuring or background persistence as the next
+coordinator admission took 2.802 and 0.375 milliseconds respectively. These small
+root-only cases do not support cache-lock restructuring or background persistence as the next
 bottleneck fix. They also contain no imported-parent evidence.
 
-The retained-depth experiment does expose repeated backing descriptors: at
-depth 8, eight imported ranges belonged to an index with one live backing
-segment and no eviction. At depths 32 and 128, 32 imported ranges were bounded
-by two and eight total live segments respectively. This supports per-import
-descriptor deduplication. It does not establish persistent registration reuse,
+Per-range backing identity was not measured in the retained-depth experiment.
+Final index statistics and the allocator structure provide a structural upper
+bound: at depth 8, eight imported ranges remained owned by an index with one
+live backing segment and no eviction. At depths 32 and 128, 32 imported ranges
+were bounded by two and eight total live segments respectively. The allocator
+uses one backing owner per segment and retains it while extents remain live.
+These inferred bounds support per-import descriptor deduplication. They do not
+establish persistent registration reuse,
 fewer mappings, fewer Store copies or immutable shared page ownership. At depth
 1,024, the index had 73 segments, so these aggregate statistics do not determine
 the number of distinct backings in its 32-range import.
@@ -125,9 +133,10 @@ Counter interpretation must preserve ownership and scope:
   to obtain campaign wall time.
 - Logical ticks and normalized history are not physical backend entry counts
   or native guest instruction counts.
-- Arbitrary untracked changes to retained memory still require fresh integrity
-  verification. An incremental commitment needs an enforced immutable-object
-  and writer boundary, not merely a cached root.
+
+Arbitrary untracked changes to retained memory still require fresh integrity
+verification. An incremental commitment needs an enforced immutable-object and
+writer boundary, not merely a cached root.
 
 ### Provenance and qualification limits
 
@@ -140,9 +149,14 @@ The fixed-work stream SHA-256 is
 The accepted one-worker and two-worker evidence-bundle manifest hashes are
 `2dcaf0aaf81e20478ba053b3e8c754d5fedf3850b61ccb7d82420bdbd42c1710`
 and `d5affb593636102c2f3f447d112fbe39a9f0caf9d8574719b7f65d23ac4fa127`.
-Raw evidence and independent audits are retained with this task; #745 records
-the shipping and acceptance decisions. These hashes identify evidence, not a
-standalone reproduction recipe.
+Raw bundles and independent audits are not published with this document. They
+are retained locally under `/tmp/consonance-foundation-hardware` and
+`/tmp/consonance-fixed-work-scaling-lifecycle-v3`, with remote source, binaries
+and runtime inputs on ms02 under `/var/tmp/consonance-foundation-0be4f44` and
+`/var/tmp/consonance-fixed-work-scaling-lifecycle-v3-431ba486`. These are task
+retention locations, not durable public downloads. Issue #745 records shipping
+and acceptance decisions. The hashes identify evidence, not a standalone
+reproduction recipe.
 
 Normal sealed executable and workload admission remained active. Existing guest
 runtime artifacts passed the normal verifier with **host-only** qualification:
