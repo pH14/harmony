@@ -584,6 +584,7 @@ fn composed_linux_snapshot_continuation() {
     let before = Cut::capture(&mut reused);
     match reused.restore_snapshot(&cut.memory, &cut.state) {
         Ok(()) => {
+            assert_eq!(checkpoint(&mut reused).state, ready.state);
             observation(&mut reused, true).assert_raw_matches(&expected);
             println!("X3_REUSED=matched");
         }
