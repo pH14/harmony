@@ -388,6 +388,10 @@ fn x1_placement_checker_catches_consistently_late_twins() {
 }
 
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "writes diagnostic witness directories to a temporary directory"
+)]
 fn diagnostic_runs_cannot_replace_existing_witnesses() {
     let root = tempfile::tempdir().unwrap();
     let first = diagnostic_run_directory(root.path(), 0).unwrap();
