@@ -353,11 +353,35 @@ mod tests {
         registry.allow_signal(&id);
         assert_eq!(registry.poll(&id, true), ExitPoll::Running);
         assert_eq!(signals.load(Ordering::SeqCst), 1);
-        assert_eq!(registry.stats.retained_bytes, 8192);
+        assert_eq!(
+            registry.stats,
+            WorkerQuarantineStats {
+                retained_workers: 1,
+                retained_extents: 1,
+                retained_bytes: 8192,
+                ambiguous_workers: 0,
+                signals_sent: 1,
+                wait_errors: 0,
+                signal_errors: 0,
+                confirmed_exits: 0,
+            }
+        );
         assert_eq!(index.stats().charged, 8192);
         assert!(index.extent(1).is_err());
         assert_eq!(registry.poll(&id, true), ExitPoll::Exited);
-        assert_eq!(registry.stats.retained_bytes, 0);
+        assert_eq!(
+            registry.stats,
+            WorkerQuarantineStats {
+                retained_workers: 0,
+                retained_extents: 0,
+                retained_bytes: 0,
+                ambiguous_workers: 0,
+                signals_sent: 1,
+                wait_errors: 0,
+                signal_errors: 0,
+                confirmed_exits: 1,
+            }
+        );
         assert_eq!(index.stats().charged, 0);
         assert_eq!(registry.poll(&id, true), ExitPoll::Exited);
         assert_eq!(registry.stats.confirmed_exits, 1);

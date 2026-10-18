@@ -411,7 +411,8 @@ uncertain. `WorkerSession::retained_export_bytes` reports this session-held stor
 
 Dropping the session transfers its child and retained extents to a process-lifetime
 quarantine before polling exit. A successful `Child::try_wait` exit status is the
-release proof. Teardown polls for up to two seconds before signalling a child
+release proof. The `Child` owner is the sole waiter; other code must not reap its
+PID separately. Teardown polls for up to two seconds before signalling a child
 whose ownership remains unambiguous, then polls for up to fifty more milliseconds.
 Background reaping cannot signal an owner until the dropping session finishes
 that grace period and explicitly permits signalling. Each polling step uses the
