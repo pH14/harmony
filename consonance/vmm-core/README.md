@@ -987,7 +987,9 @@ answers share the controller transaction: prepare the request-bound input tape
 and projected SDK recording, check both bounded encodings, publish through the
 response guard, then install the candidate SDK handler/answer and controller
 tape. Local handler errors retire the failed VM; a capacity refusal leaves the
-pending question uncommitted. A handler returning External preserves that stop.
+pending question uncommitted. A response-guard failure in either a local answer
+or an explicit Run resolution retires the failed VM while retaining its console
+and SDK events for diagnostics, without committing the candidate answer or tape. A handler returning External preserves that stop.
 The request, including the response guard on its initial pending boundary,
 remains present. No guest request suppression or unchecked reply path exists.
 
