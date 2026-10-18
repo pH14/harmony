@@ -32,11 +32,20 @@ instructions are outside the cooperative surface.
 
 ## Changes and compatibility
 
-Policy version 6 removes the host identity and physical-absence assertions from
-the canonical form. It retains guest microcode/CR4 invariants and versions the
+Policy version 7 clears CPUID self-snoop (`1:EDX[27]`) for every host. Intel's
+SDM describes this as handling conflicting memory types by cache snooping;
+AMD does not enumerate that Intel flag, and this VM's stateful MTRR/PAT access
+rules do not prove equivalent alias behavior. The policy therefore stops
+promising it instead of treating it as emulated. This deliberate model revision
+changes the canonical fingerprint and rejects older ordinary and nested-host
+snapshots before restore. Native instruction features and standard math-library
+support are unchanged. The backend checks those features before mutation.
+
+Policy version 6 removed the host identity and physical-absence assertions from
+the canonical form. It retained guest microcode/CR4 invariants and versioned the
 cooperative instruction boundary. The contract hash changes, so snapshots from
 older policy versions are rejected before restore mutates the VM. Hardware RNG bits now live in the shared table instead of a runtime override.
-Production CPUID values, MSR dispositions, and virtual-time durations are unchanged.
+That revision left CPUID values, MSR dispositions, and virtual-time durations unchanged.
 
 Changes to guest semantics require a version bump. `contract_hash` is computed
 once per process from the canonical form of the embedded policy. Concurrent first

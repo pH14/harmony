@@ -295,6 +295,7 @@ mod tests {
             .iter()
             .find(|e| e.leaf == 1 && e.subleaf == 0)
             .expect("leaf 1");
+        assert_eq!(leaf1.edx & (1 << 27), 0, "self-snoop not promised");
         assert_eq!(leaf1.ecx & (1 << 21), 0, "X2APIC masked");
         assert_eq!(leaf1.ecx & (1 << 24), 0, "TSC-deadline masked");
         let leaf_a = m.entries.iter().find(|e| e.leaf == 0xA).expect("leaf 0xA");
@@ -418,10 +419,41 @@ mod tests {
     }
 
     #[test]
+    fn self_snoop_revision_changes_identity_without_changing_instruction_features() {
+        let previous = CONTRACT_TOML
+            .replacen("version = 7", "version = 6", 1)
+            .replacen("0x078bbb7f", "0x0f8bbb7f", 1);
+        let previous = Contract::load(&previous, VendorId::GenuineIntel).unwrap();
+        let old_form = canonical::serialize(&previous);
+        let new_form = canonical::serialize(contract());
+        assert_eq!(
+            new_form,
+            old_form
+                .replacen("contract-version=6\n", "contract-version=7\n", 1)
+                .replacen("0f8bbb7f", "078bbb7f", 1)
+        );
+        let old_hash: [u8; 32] = Sha256::digest(old_form.as_bytes()).into();
+        assert_ne!(old_hash, contract_hash());
+        assert_eq!(
+            format!("{:x}", Sha256::digest(old_form.as_bytes())),
+            "e2cf2a502d598e042684a3bd5807aec0095f4fc9f7ee3d4eb538d3372c4a141d"
+        );
+        assert_eq!(
+            format!("{:x}", Sha256::digest(new_form.as_bytes())),
+            "ff709857c440731ab2b30d16cf04434c4a8cf086834b74bf3a09d89f893d4311"
+        );
+        println!(
+            "X86_CONTRACT_REVISION old={:x} new={:x}",
+            Sha256::digest(old_form.as_bytes()),
+            Sha256::digest(new_form.as_bytes())
+        );
+    }
+
+    #[test]
     #[cfg_attr(miri, ignore = "pure serialization; no unsafe — skip under Miri")]
     fn canonical_form_well_formed() {
         let form = canonical::serialize(contract());
-        assert!(form.starts_with("contract-version=6\n"));
+        assert!(form.starts_with("contract-version=7\n"));
         assert!(form.contains("\nkernel-tag=v6.18.35\n"));
         assert!(form.contains("\ncpuid-baseline=harmony-x86-v1\n"));
         assert!(form.contains("\nmxcsr-mask=0x0000ffff\n"));
@@ -435,7 +467,7 @@ mod tests {
             "vtime-clockevent-period-vns=10000000\n",
         )));
         assert!(form.contains(
-            "\ncpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:36da3203 0f8bbb7f\n"
+            "\ncpuid 00000001.00000000 000906ec 00010800 dyn:osxsave:36da3203 078bbb7f\n"
         ));
         assert!(form.contains("\ncpuid-default zeroed\n"));
         assert!(
