@@ -22,6 +22,29 @@ ROOT = ci_contract.ROOT
 
 
 class StructureTests(unittest.TestCase):
+    def test_client_miri_filesystem_access_is_limited_to_one_exact_test(self):
+        import yaml
+
+        jobs = yaml.safe_load((ROOT / ".github/workflows/consonance-analysis.yml").read_text())["jobs"]
+        for name in ("miri", "miri-whole-crate"):
+            steps = jobs[name]["steps"]
+            scoped = [step for step in steps
+                      if "-Zmiri-disable-isolation" in step.get("env", {}).get("MIRIFLAGS", "")]
+            self.assertEqual(len(scoped), 1)
+            step = scoped[0]
+            self.assertIn("matrix.name == 'consonance-client'", step["if"])
+            self.assertIn("cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it -- --exact --ignored", step["run"])
+            self.assertIn("test result: ok. 1 passed;", step["run"])
+        target = next(row for row in miri_scope.selected_targets(["consonance/client/src/cache/segments.rs"])
+                      if row["name"] == "consonance-client")
+        self.assertNotIn("-Zmiri-disable-isolation", target["miriflags"])
+        whole = next(row for row in jobs["miri-whole-crate"]["strategy"]["matrix"]["include"]
+                     if row["name"] == "consonance-client")
+        self.assertNotIn("-Zmiri-disable-isolation", whole["miriflags"])
+        selected = next(step for step in jobs["miri-whole-crate"]["steps"]
+                        if step.get("name") == "Interpret borrowed descriptor metadata with filesystem access")
+        self.assertIn("env.SELECTED == 'true'", selected["if"])
+
     def test_uml_qualifier_artifact_is_static_musl_on_both_architectures(self):
         import yaml
 

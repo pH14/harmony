@@ -98,6 +98,14 @@ jobs:
           set -euo pipefail
           read -r -a command <<<"${MIRI_COMMAND}"
           cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+      - name: Interpret borrowed descriptor metadata with filesystem access
+        if: matrix.name == 'consonance-client'
+        env:
+          MIRIFLAGS: -Zmiri-permissive-provenance -Zmiri-disable-isolation
+        run: |
+          set -euo pipefail
+          cargo "+${PINNED_NIGHTLY}" miri test -p consonance-client --lib cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it -- --exact --ignored | tee borrowed-descriptor-miri.log
+          grep -F 'test result: ok. 1 passed;' borrowed-descriptor-miri.log
 
   miri-whole-crate:
     name: Miri — ${{ matrix.name }} (Whole Crate)
@@ -160,6 +168,14 @@ jobs:
           set -euo pipefail
           read -r -a command <<<"${MIRI_COMMAND}"
           cargo "+${PINNED_NIGHTLY}" miri test "${command[@]}"
+      - name: Interpret borrowed descriptor metadata with filesystem access
+        if: env.SELECTED == 'true' && matrix.name == 'consonance-client'
+        env:
+          MIRIFLAGS: -Zmiri-permissive-provenance -Zmiri-disable-isolation
+        run: |
+          set -euo pipefail
+          cargo "+${PINNED_NIGHTLY}" miri test -p consonance-client --lib cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it -- --exact --ignored | tee borrowed-descriptor-miri.log
+          grep -F 'test result: ok. 1 passed;' borrowed-descriptor-miri.log
 
   coverage:
     name: Coverage

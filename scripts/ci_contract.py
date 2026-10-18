@@ -410,9 +410,11 @@ CONSONANCE_ANALYSIS = Workflow(
     jobs=(
         Job("Change Selection", "pr", 5, selects=("miri_matrix", "kani")),
         Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
+            ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
             exception="The backend's interpreted snapshot and register inventory "
                       "checks exceed 15 minutes; other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
+            ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
             exception="Interpreting a whole unsafe crate under Miri takes hours, "
                       "so pull requests get the tests the change reaches."),
         Job("Coverage", "full", 30,

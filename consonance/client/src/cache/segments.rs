@@ -564,6 +564,7 @@ mod tests {
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
+    #[cfg_attr(miri, ignore = "requires host filesystem access; run separately in CI")]
     fn backing_length_borrows_the_descriptor_without_closing_it() {
         use std::os::fd::AsFd;
         let file = tempfile::NamedTempFile::new().unwrap();
