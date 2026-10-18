@@ -138,6 +138,13 @@ Arbitrary untracked changes to retained memory still require fresh integrity
 verification. An incremental commitment needs an enforced immutable-object and
 writer boundary, not merely a cached root.
 
+A proposed SHA-256 main-prefix reuse for the host executable guard was rejected.
+A synthetic counterexample using the exact comparison helper changed the current
+live and sealed read streams identically. Their equality did not establish that
+those bytes still matched admission: the cached prefix retained the old identity,
+while fresh main hashing changed it. Fresh main-code hashing therefore remains
+required. This was a synthetic proof, not physical fault injection or a benchmark.
+
 ### Provenance and qualification limits
 
 The retained-depth executable SHA-256 is
