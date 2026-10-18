@@ -2780,7 +2780,11 @@ mod tests {
         };
         let mut request = Out::op(SDK_EVENTS);
         request.u64(2);
-        let reply = served.handle(&request.0, &[], &mut Fake::open).unwrap();
+        let reply = served
+            .handle(&request.0, &[], &mut Fake::open, &mut |_| {
+                panic!("unexpected SDK allocation")
+            })
+            .unwrap();
         let mut input = In(&reply.0);
         assert_eq!(input.len().unwrap(), 1);
         assert_eq!(input.u64().unwrap(), 9);
@@ -2800,14 +2804,32 @@ mod tests {
         let mut trailing = Out::op(SDK_EVENTS);
         trailing.u64(0).u8(1);
         for body in [vec![SDK_EVENTS], too_large.0, trailing.0] {
-            assert!(served.handle(&body, &[], &mut Fake::open).is_err());
+            assert!(
+                served
+                    .handle(&body, &[], &mut Fake::open, &mut |_| panic!(
+                        "unexpected SDK allocation"
+                    ))
+                    .is_err()
+            );
         }
         let (left, _right) = UnixStream::pair().unwrap();
         let fd: OwnedFd = left.into();
         let mut request = Out::op(SDK_EVENTS);
         request.u64(0);
-        assert!(served.handle(&request.0, &[fd], &mut Fake::open).is_err());
-        assert!(served.handle(&request.0, &[], &mut Fake::open).is_ok());
+        assert!(
+            served
+                .handle(&request.0, &[fd], &mut Fake::open, &mut |_| panic!(
+                    "unexpected SDK allocation"
+                ))
+                .is_err()
+        );
+        assert!(
+            served
+                .handle(&request.0, &[], &mut Fake::open, &mut |_| panic!(
+                    "unexpected SDK allocation"
+                ))
+                .is_ok()
+        );
     }
 
     #[test]
@@ -2830,7 +2852,9 @@ mod tests {
                 let (body, fds) = recv(&child).unwrap();
                 send(
                     &child,
-                    &status(served.handle(&body, &fds, &mut Fake::open)),
+                    &status(served.handle(&body, &fds, &mut Fake::open, &mut |_| {
+                        panic!("unexpected SDK allocation")
+                    })),
                     &[],
                 )
                 .unwrap();
