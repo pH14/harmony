@@ -710,9 +710,10 @@ errors, successful logical `range_bytes` and actual requested `span_bytes` (whic
 includes alignment skip). Successful mappings preceding later failure remain
 counted. They describe repeated virtual mappings, not resident bytes or reads or
 copies; borrowing their slices records no copy. The parent currently creates no
-such mappings. `copy.session.extent.*` (renamed `copy.child.session.extent.*` through
-a worker) counts the completed logical `encoded_bytes` and actual output
-`metadata_copy_bytes` / `page_copy_bytes` at the final extent writer. Padding is
+such mappings. `Session` reports `copy.session.extent.*` (renamed
+`copy.child.session.extent.*` through a worker) for the completed logical
+`encoded_bytes` and actual output `metadata_copy_bytes` / `page_copy_bytes` at its
+final extent writer. UML exports do not emit these extent-copy counters. Padding is
 part of encoded length but not copied metadata. No E-byte temporary output buffer
 or temporary-to-extent copy exists in direct export, and no such charge is inferred.
 Sidecar/row allocations remain separate and are not estimated from output length.
@@ -728,6 +729,7 @@ transaction reads count zero. Generic Store totals include boot/capture/restore
 work and are not labelled import-only bytes; existing import page counts still
 mean merged rows, not physical copying. Store, worker and Session owners are
 runtime-only, do not rewind on snapshot restore, and have no global shared-index
-component. Child copies replace cached totals on query just like child transport;
-query response copies become visible at the next query. These counters do not
+component. Child copies replace cached totals on query just like child transport.
+Child query-response copies become visible at the next query; the parent's own
+response-decoding copy is visible in the current query. These counters do not
 enter StoreStats, identity, certificates, memory budgets or search policy.

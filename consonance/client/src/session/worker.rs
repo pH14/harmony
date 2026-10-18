@@ -1788,11 +1788,7 @@ impl SearchSession for WorkerSession {
             .map(|_| {
                 let moment = input.u64()?;
                 let id = u32::try_from(input.u64()?).map_err(|_| malformed("event id"))?;
-                {
-                    let bytes = input.bytes()?.to_vec();
-                    self.copies.copied(CopySite::Decode, bytes.len());
-                    Ok((moment, id, bytes))
-                }
+                Ok((moment, id, input.owned_bytes(&self.copies)?))
             })
             .collect::<io::Result<Vec<_>>>()?;
         input.finish()?;
