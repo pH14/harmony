@@ -3,8 +3,9 @@
 `benchmarks/search/README.md` describes the runner, manifests and assets. Each
 workload's README describes its milestones, tapes, film tool and probe. This
 file lists what the process uses and the details that cost time when missed.
-Rooted starts, milestone tapes, named milestones, `milestones.py` and the
-ladder exist for Metroid only today; another game adds them in step 1.
+Rooted starts, milestone tapes, named milestones and `milestones.py` exist for
+Metroid and Mega Man 2 today, and the ladder exists for Metroid only; another
+game adds them in step 1.
 
 ## Runner
 
