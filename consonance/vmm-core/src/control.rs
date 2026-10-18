@@ -1782,6 +1782,26 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 Some(spec.seed())
             }
         };
+        if branch_plan.is_some()
+            && let Some(
+                SdkStop::Decision {
+                    moment, question, ..
+                }
+                | SdkStop::CoverageDecision {
+                    moment, question, ..
+                },
+            ) = self
+                .sdk_snaps
+                .get(&snap.0)
+                .and_then(|snapshot| snapshot.channel.pending_stop.as_ref())
+            && answer_bindings
+                .get(&(*moment, question.service(), question.request_id()))
+                .is_some_and(|expected| {
+                    *expected != <[u8; 32]>::from(Sha256::digest(question.payload()))
+                })
+        {
+            return Ok(Err(ControlError::MalformedEnvironment));
+        }
         let restore_config = env_policy
             .clone()
             .or_else(|| self.sdk_snaps.get(&snap.0).map(|s| s.policy.clone()))
@@ -2185,6 +2205,9 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         response: environment::channel::Answer,
         local: Option<crate::vmm::LocalServiceAnswer>,
     ) -> Result<Result<(), ControlError>, ServeError> {
+        if response.encode().len() > hypercall_proto::MAX_PAYLOAD {
+            return Ok(Err(ControlError::MalformedEnvironment));
+        }
         let mut recorded = self.recorded.clone();
         recorded.record_bound_answer(
             at,
@@ -2311,11 +2334,22 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 }
                 let at = moment;
                 let question = question.clone();
-                let local = self
+                let local = match self
                     .vmm
                     .as_ref()
                     .ok_or(ServeError::Poisoned)?
-                    .prepare_local_service_answer()?;
+                    .prepare_local_service_answer()
+                {
+                    Ok(local) => local,
+                    Err(ChannelError::RequestIdentityMismatch) => {
+                        self.vmm
+                            .as_mut()
+                            .ok_or(ServeError::Poisoned)?
+                            .resolve_service_binding_mismatch()?;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
                 if let Some(local) = local {
                     let response = local.answer().clone();
                     if let Err(error) =
@@ -2664,7 +2698,7 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 mod tests {
     use crate::host_telemetry::HashSite;
     use crate::vmm::HostOperationSite;
-    use sha2::Digest;
+    use sha2::{Digest, Sha256};
 
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -2705,6 +2739,9 @@ mod tests {
             }
             if question.payload() == b"external" {
                 return Ok(environment::channel::ServiceResponse::External);
+            }
+            if question.payload() == b"handler-mismatch" {
+                return Err(ChannelError::RequestIdentityMismatch);
             }
             if question.payload() == b"fail" {
                 return Err(ChannelError::Handler(
@@ -10725,8 +10762,12 @@ mod tests {
     }
 
     fn local_service_frame_with_payload(bytes: &[u8]) -> Vec<u8> {
+        local_service_frame_with_request_id(77, bytes)
+    }
+
+    fn local_service_frame_with_request_id(id: u64, bytes: &[u8]) -> Vec<u8> {
         let mut payload = 19_u16.to_le_bytes().to_vec();
-        payload.extend(77_u64.to_le_bytes());
+        payload.extend(id.to_le_bytes());
         payload.extend(bytes);
         let mut frame = [0; 4096];
         let size = hypercall_proto::encode_request(
@@ -10955,7 +10996,11 @@ mod tests {
                     resolve: None
                 })
                 .unwrap(),
-            Ok(Reply::Stop(StopReason::Decision { .. }))
+            Ok(Reply::Stop(StopReason::Decision {
+                vtime: Moment(10_000),
+                id: control_proto::DecisionId(77),
+                ..
+            }))
         ));
         server.handle(&Request::Replay(pending)).unwrap().unwrap();
         assert!(!matches!(
@@ -11049,11 +11094,44 @@ mod tests {
             &0_u64.to_le_bytes()
         );
 
-        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
-        server.recorded.set_payloads(Some(vec![
-            vec![0; environment::channel::MAX_CHANNEL_BYTES];
-            8
-        ]));
+        let mut spec = local_service_spec(true, 0x11);
+        let answer = environment::channel::Answer::Data(vec![0x11]);
+        let mut with_answer = spec.clone();
+        with_answer
+            .record_bound_answer(
+                10_000,
+                19,
+                77,
+                Sha256::digest(b"choose").into(),
+                answer.clone(),
+            )
+            .unwrap();
+        let answer_bytes = with_answer.encode().len() - spec.encode().len();
+        let target = EnvSpec::MAX_REPRODUCER_BYTES - (answer_bytes - 1);
+        let mut payloads = vec![vec![0; environment::channel::MAX_CHANNEL_BYTES]; 6];
+        spec.set_payloads(Some(payloads.clone()));
+        let padding = target - spec.encode().len() - 4;
+        assert!(padding <= environment::channel::MAX_CHANNEL_BYTES);
+        payloads.push(vec![0; padding]);
+        spec.set_payloads(Some(payloads));
+        assert_eq!(
+            spec.try_encode_reproducer_with_binding_reserve()
+                .unwrap()
+                .len(),
+            target
+        );
+        let mut overflow = spec.clone();
+        overflow
+            .record_bound_answer(10_000, 19, 77, Sha256::digest(b"choose").into(), answer)
+            .unwrap();
+        assert_eq!(overflow.encode().len(), EnvSpec::MAX_REPRODUCER_BYTES + 1);
+        assert!(
+            overflow
+                .try_encode_reproducer_with_binding_reserve()
+                .is_err()
+        );
+        let before = spec.clone();
+        let mut server = deadline_chain_server(&frame, spec);
         let until = StopConditions {
             deadline: Some(Moment(20_000)),
             on: StopMask::NONE,
@@ -11080,6 +11158,539 @@ mod tests {
         );
         assert_eq!(&vmm.guest_memory()[0xf000..0xf020], &[0; 32]);
         assert!(server.recorded.answers().is_empty());
+        assert_eq!(server.recorded, before);
+    }
+
+    #[test]
+    fn local_service_deadline_pending_fresh_reproducer_matches_sdk_trace_and_whole_state() {
+        let frame = local_service_frame();
+        let mut original = deadline_chain_server(&frame, local_service_spec(true, 0x22));
+        let boundary = StopConditions {
+            deadline: Some(Moment(10_000)),
+            on: StopMask::NONE,
+        };
+        original
+            .handle(&Request::Run {
+                until: boundary,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        assert!(original.vmm().unwrap().pending_service_question().is_some());
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        original
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let reproducer =
+            EnvSpec::decode_reproducer(&original.recorded.try_encode_reproducer().unwrap())
+                .unwrap();
+        let mut replay = deadline_chain_server(&frame, reproducer);
+        replay
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let a = original.vmm().unwrap();
+        let b = replay.vmm().unwrap();
+        assert_eq!(
+            a.sdk_snapshot().unwrap().unwrap().recorded,
+            b.sdk_snapshot().unwrap().unwrap().recorded
+        );
+        assert_eq!(a.sdk_events(), b.sdk_events());
+        assert_eq!(
+            a.virtual_time_trace().unwrap().normalized_log(),
+            b.virtual_time_trace().unwrap().normalized_log()
+        );
+        assert_eq!(original.recorded, replay.recorded);
+        assert_eq!(hash(&mut original), hash(&mut replay));
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn local_service_deadline_pending_branch_override_precedes_stateful_handler() {
+        let frame = local_service_frame_with_payload(b"stateful");
+        for bound in [false, true] {
+            let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+            let boundary = StopConditions {
+                deadline: Some(Moment(10_000)),
+                on: StopMask::NONE,
+            };
+            server
+                .handle(&Request::Run {
+                    until: boundary,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let pending = snap(&mut server);
+            let mut next = local_service_spec(true, 0x22);
+            let answer = environment::channel::Answer::Data(vec![0x44]);
+            if bound {
+                next.record_bound_answer(
+                    10_000,
+                    19,
+                    77,
+                    Sha256::digest(b"stateful").into(),
+                    answer.clone(),
+                )
+                .unwrap();
+            } else {
+                next.record_answer(10_000, 19, 77, answer.clone()).unwrap();
+            }
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap()
+                .unwrap();
+            server
+                .handle(&Request::Run {
+                    until: boundary,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            assert!(server.vmm().unwrap().pending_service_question().is_some());
+            assert_eq!(
+                &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+                &[0; 32]
+            );
+            let until = StopConditions {
+                deadline: Some(Moment(20_000)),
+                on: StopMask::NONE,
+            };
+            assert!(!matches!(
+                server
+                    .handle(&Request::Run {
+                        until,
+                        resolve: None
+                    })
+                    .unwrap()
+                    .unwrap(),
+                Reply::Stop(StopReason::Decision { .. })
+            ));
+            let vmm = server.vmm().unwrap();
+            assert!(vmm.pending_service_question().is_none());
+            assert_eq!(
+                vmm.sdk_snapshot()
+                    .unwrap()
+                    .unwrap()
+                    .recorded
+                    .handler()
+                    .state(),
+                &0_u64.to_le_bytes()
+            );
+            let (_, bytes) = hypercall_proto::decode(&vmm.guest_memory()[0xf000..0xf100]).unwrap();
+            assert_eq!(environment::channel::Answer::decode(bytes).unwrap(), answer);
+            assert_eq!(
+                server.recorded.request_bindings().get(&(10_000, 19, 77)),
+                Some(&Sha256::digest(b"stateful").into())
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn local_service_selected_pending_binding_conflict_rejects_branch_before_factory_or_state_change()
+     {
+        let frame = local_service_frame();
+        for local in [false, true] {
+            let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(10_000)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let pending = snap(&mut server);
+            let (at, question) = server
+                .vmm()
+                .unwrap()
+                .pending_service_question()
+                .map(|(at, question)| (at, question.clone()))
+                .unwrap();
+            server
+                .commit_service_answer(at, question, environment::channel::Answer::Nominal, None)
+                .unwrap()
+                .unwrap();
+            let other_frame = local_service_frame_with_request_id(88, b"different question");
+            let vmm = server.vmm_mut().unwrap();
+            vmm.guest_slice_mut(0xe000, other_frame.len())
+                .unwrap()
+                .copy_from_slice(&other_frame);
+            assert_eq!(
+                vmm.service_doorbell(other_frame.len() as u32).unwrap(),
+                crate::vmm::Step::SdkStop
+            );
+            assert_eq!(
+                vmm.pending_service_question().unwrap().1.payload(),
+                b"different question"
+            );
+            let before = hash(&mut server);
+            let recorded = server.recorded.clone();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let seen = Arc::clone(&calls);
+            let old_factory = Arc::clone(&server.service_factory);
+            server.set_service_factory(Arc::new(move |config| {
+                seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                old_factory(config)
+            }));
+            let mut next = local_service_spec(local, 0x22);
+            next.record_bound_answer(
+                10_000,
+                19,
+                77,
+                Sha256::digest(b"different question").into(),
+                environment::channel::Answer::Data(vec![0x44]),
+            )
+            .unwrap();
+            assert_eq!(
+                server
+                    .handle(&Request::Branch {
+                        snap: pending,
+                        env: Reproducer {
+                            blob_version: EnvSpec::BLOB_VERSION,
+                            bytes: next.encode()
+                        }
+                    })
+                    .unwrap(),
+                Err(ControlError::MalformedEnvironment)
+            );
+            assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(hash(&mut server), before);
+            assert_eq!(server.recorded, recorded);
+            assert_eq!(
+                server
+                    .vmm()
+                    .unwrap()
+                    .pending_service_question()
+                    .map(|(at, q)| (at, q.service(), q.request_id())),
+                Some((10_000, 19, 88))
+            );
+            assert_eq!(
+                server
+                    .vmm()
+                    .unwrap()
+                    .pending_service_question()
+                    .unwrap()
+                    .1
+                    .payload(),
+                b"different question"
+            );
+            next.record_bound_answer(
+                10_000,
+                19,
+                77,
+                Sha256::digest(b"choose").into(),
+                environment::channel::Answer::Data(vec![0x44]),
+            )
+            .unwrap();
+            server
+                .handle(&Request::Branch {
+                    snap: pending,
+                    env: Reproducer {
+                        blob_version: EnvSpec::BLOB_VERSION,
+                        bytes: next.encode(),
+                    },
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                server
+                    .vmm()
+                    .unwrap()
+                    .pending_service_question()
+                    .unwrap()
+                    .1
+                    .payload(),
+                b"choose"
+            );
+        }
+    }
+
+    #[test]
+    #[cfg_attr(miri, ignore = "restores a complete VM through snapshot-store mmap")]
+    fn local_service_pending_binding_mismatch_matches_uninterrupted_and_replayed_state() {
+        let frame = local_service_frame();
+        let mut spec = local_service_spec(true, 0x11);
+        spec.record_bound_answer(
+            10_000,
+            19,
+            77,
+            Sha256::digest(b"wrong").into(),
+            environment::channel::Answer::Data(vec![0x44]),
+        )
+        .unwrap();
+        let until = StopConditions {
+            deadline: Some(Moment(20_000)),
+            on: StopMask::NONE,
+        };
+        let mut normal = deadline_chain_server(&frame, spec.clone());
+        normal
+            .handle(&Request::Run {
+                until,
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let mut interrupted = deadline_chain_server(&frame, spec.clone());
+        interrupted
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(10_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let pending = snap(&mut interrupted);
+        for replay in [false, true] {
+            if replay {
+                interrupted
+                    .handle(&Request::Replay(pending))
+                    .unwrap()
+                    .unwrap();
+            }
+            interrupted
+                .handle(&Request::Run {
+                    until,
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            let a = interrupted.vmm().unwrap();
+            let b = normal.vmm().unwrap();
+            assert!(a.pending_service_question().is_none());
+            let (header, payload) =
+                hypercall_proto::decode(&a.guest_memory()[0xf000..0xf100]).unwrap();
+            assert_eq!(header.service, hypercall_proto::ServiceId::Sdk as u16);
+            assert_eq!(header.opcode, 3);
+            assert_eq!(header.seq, 12);
+            assert_eq!(header.status, hypercall_proto::Status::BadRequest as u16);
+            assert!(payload.is_empty());
+            assert_eq!(
+                a.sdk_snapshot().unwrap().unwrap().recorded,
+                b.sdk_snapshot().unwrap().unwrap().recorded
+            );
+            assert_eq!(a.sdk_events(), b.sdk_events());
+            let actual_trace = a.virtual_time_trace().unwrap().normalized_log();
+            let mut expected_trace = b.virtual_time_trace().unwrap().normalized_log().clone();
+            if replay {
+                expected_trace.events = expected_trace.events.split_off(2);
+                for (index, event) in expected_trace.events.iter_mut().enumerate() {
+                    event.event_index = index as u64;
+                }
+            }
+            assert_eq!(actual_trace, &expected_trace);
+            assert_eq!(interrupted.recorded, spec);
+            assert_eq!(hash(&mut interrupted), hash(&mut normal));
+        }
+    }
+
+    #[test]
+    fn local_service_pending_bad_request_guard_failure_preserves_unpublished_state() {
+        let frame = local_service_frame();
+        let mut spec = local_service_spec(true, 0x11);
+        spec.record_bound_answer(
+            10_000,
+            19,
+            77,
+            Sha256::digest(b"wrong").into(),
+            environment::channel::Answer::Data(vec![0x44]),
+        )
+        .unwrap();
+        let mut server = deadline_chain_server(&frame, spec.clone());
+        server
+            .handle(&Request::Run {
+                until: StopConditions {
+                    deadline: Some(Moment(10_000)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+            })
+            .unwrap()
+            .unwrap();
+        let vmm = server.vmm_mut().unwrap();
+        let before = vmm.sdk_snapshot().unwrap().unwrap().recorded;
+        let response = vmm.guest_memory()[0xf000..0xf100].to_vec();
+        vmm.set_host_operation_guard(Arc::new(|site| {
+            if site == HostOperationSite::SdkResponse {
+                Err("refuse BadRequest".into())
+            } else {
+                Ok(())
+            }
+        }));
+        assert!(vmm.resolve_service_binding_mismatch().is_err());
+        assert!(vmm.pending_service_question().is_some());
+        assert_eq!(vmm.sdk_snapshot().unwrap().unwrap().recorded, before);
+        assert_eq!(&vmm.guest_memory()[0xf000..0xf100], response);
+        assert!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(20_000)),
+                        on: StopMask::NONE
+                    },
+                    resolve: None,
+                })
+                .is_err()
+        );
+        assert!(server.vmm().is_none());
+        assert_eq!(server.recorded, spec);
+    }
+
+    #[test]
+    fn local_service_handler_error_cannot_fabricate_binding_bad_request() {
+        let frame = local_service_frame_with_payload(b"handler-mismatch");
+        let mut server = deadline_chain_server(&frame, local_service_spec(true, 0x11));
+        assert!(
+            server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(20_000)),
+                        on: StopMask::NONE
+                    },
+                    resolve: None,
+                })
+                .is_err()
+        );
+        assert!(server.vmm().is_none());
+        assert!(server.recorded.answers().is_empty());
+    }
+
+    #[test]
+    fn local_service_nonpending_binding_mismatch_remains_guarded_guest_bad_request() {
+        for local in [false, true] {
+            let frame = local_service_frame();
+            let mut spec = local_service_spec(local, 0x11);
+            spec.record_bound_answer(
+                10_000,
+                19,
+                77,
+                Sha256::digest(b"different question").into(),
+                environment::channel::Answer::Data(vec![0x44]),
+            )
+            .unwrap();
+            let before = spec.clone();
+            let mut server = deadline_chain_server(&frame, spec);
+            let reply = server
+                .handle(&Request::Run {
+                    until: StopConditions {
+                        deadline: Some(Moment(20_000)),
+                        on: StopMask::NONE,
+                    },
+                    resolve: None,
+                })
+                .unwrap()
+                .unwrap();
+            assert!(!matches!(reply, Reply::Stop(StopReason::Decision { .. })));
+            let vmm = server.vmm().unwrap();
+            assert!(vmm.pending_service_question().is_none());
+            let (header, _) = hypercall_proto::decode(&vmm.guest_memory()[0xf000..0xf100]).unwrap();
+            assert_eq!(header.status, hypercall_proto::Status::BadRequest as u16);
+            assert_eq!(
+                vmm.sdk_snapshot()
+                    .unwrap()
+                    .unwrap()
+                    .recorded
+                    .handler()
+                    .state(),
+                &0_u64.to_le_bytes()
+            );
+            assert_eq!(server.recorded, before);
+        }
+    }
+
+    #[test]
+    fn local_service_and_explicit_resolution_share_canonical_answer_frame_limit() {
+        for length in [
+            hypercall_proto::MAX_PAYLOAD - 1,
+            hypercall_proto::MAX_PAYLOAD + 1,
+            hypercall_proto::MAX_PAYLOAD,
+        ] {
+            let encoded = environment::channel::Answer::Data(vec![0x22; length]).encode();
+            assert_eq!(encoded.len(), length + 1);
+            let accepted = encoded.len() <= hypercall_proto::MAX_PAYLOAD;
+            for local in [false, true] {
+                let frame = local_service_frame();
+                let mut spec = local_service_spec(local, 0x11);
+                let mut config = spec.config().clone();
+                config.configuration = vec![0x22; length];
+                spec.set_config(config);
+                let mut server = deadline_chain_server(&frame, spec);
+                let until = StopConditions {
+                    deadline: Some(Moment(20_000)),
+                    on: StopMask::NONE,
+                };
+                let mut result = server
+                    .handle(&Request::Run {
+                        until,
+                        resolve: None,
+                    })
+                    .unwrap();
+                if !local {
+                    assert!(matches!(
+                        result,
+                        Ok(Reply::Stop(StopReason::Decision {
+                            vtime: Moment(10_000),
+                            id: control_proto::DecisionId(77),
+                            ..
+                        }))
+                    ));
+                    result = server
+                        .handle(&Request::Run {
+                            until,
+                            resolve: Some(Resolution {
+                                vtime: Moment(10_000),
+                                service: 19,
+                                id: control_proto::DecisionId(77),
+                                answer: Answer(
+                                    environment::channel::Answer::Data(vec![0x22; length]).encode(),
+                                ),
+                            }),
+                        })
+                        .unwrap();
+                }
+                if accepted {
+                    assert!(matches!(result, Ok(Reply::Stop(_))));
+                    assert!(server.vmm().unwrap().pending_service_question().is_none());
+                    assert_eq!(server.recorded.answers().len(), 1);
+                } else {
+                    assert_eq!(result, Err(ControlError::MalformedEnvironment));
+                    assert_eq!(
+                        server
+                            .vmm()
+                            .unwrap()
+                            .pending_service_question()
+                            .map(|(at, q)| (at, q.service(), q.request_id())),
+                        Some((10_000, 19, 77))
+                    );
+                    assert!(server.recorded.answers().is_empty());
+                    assert_eq!(
+                        &server.vmm().unwrap().guest_memory()[0xf000..0xf020],
+                        &[0; 32]
+                    );
+                }
+            }
+        }
     }
 
     #[test]
