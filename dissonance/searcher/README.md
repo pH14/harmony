@@ -239,7 +239,7 @@ campaign and target contracts:
 | `Evaluation` | Classify outcomes, derive archive keys, and accumulate progress and evidence. |
 | `Reporting` | Identify and serialize recordings and assemble archive reports. |
 
-An `ArchiveKey` names three things about a state, and nothing else reads a
+An `ArchiveKey` names four things about a state, and nothing else reads a
 key as a magnitude:
 
 | Question | Answered by |

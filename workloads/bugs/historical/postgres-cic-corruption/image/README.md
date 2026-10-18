@@ -91,7 +91,7 @@ evidence about the index.
 ## Knobs
 
 Read from `/proc/cmdline` by the hooks, so a campaign varies them with
-`--knobs` without rebuilding.
+`workload.options.knobs` without rebuilding.
 
 | knob | default | what it shapes |
 |---|---|---|

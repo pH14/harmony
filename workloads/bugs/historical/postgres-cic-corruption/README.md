@@ -110,7 +110,7 @@ waiting, so overlapping hook 1 and hook 2 windows are what a campaign must
 produce. Knobs: `faultlab.churn_rows` (default 20, spread evenly over the
 table), `faultlab.churn_slices` (default 2 transactions per cycle) and
 `faultlab.churn_rounds` (default 1200 cycles) shape the churn. The hooks read
-them from `/proc/cmdline`, so `--knobs` varies them without a rebuild.
+them from `/proc/cmdline`, so `workload.options.knobs` varies them without a rebuild.
 
 The guest kernel is the task-park profile of `nix run .#guest-images`, which
 lands beside the default kernel as `x86_64/bzImage-task-park`. Both production

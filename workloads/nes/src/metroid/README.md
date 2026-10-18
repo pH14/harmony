@@ -18,7 +18,7 @@ the room scroll starts. The decoder applies this rule and the absent boss
 reading rule below to every frame, a rooted target's prefix included, so a root
 decodes the same as an action that ends at that frame. All
 source addresses and meanings are documented beside their constants in
-[`nes-games/src/metroid/target.rs`](../../../nes-games/src/metroid/target.rs). Zero health is death; the ending flag is victory. The terminal
+[`nes-games/src/metroid/target.rs`](../../../nes-games/src/metroid/target.rs). Zero health is death; the ending flag is victory. The legacy terminal
 identifier is `death_or_ending_v2`.
 
 The default terminal policy is `death_or_bcd_underflow_or_ending_v3`, which also

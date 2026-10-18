@@ -58,7 +58,7 @@ time per system call and clock read, carries `/dev/harmony` to the host over
 an inherited socket, seeds the random pool from the boot command line,
 emulates the x86 time-stamp counter, keeps host child-process signals out of
 the guest, fixes the guest's physical memory layout, and lets the host capture
-and restore the kernel while it waits for a bridge answer. Its final patch
+and restore the kernel while it waits for a bridge answer. Its pinned-auxv patch
 refuses a child whose initial auxiliary vector differs from the admitted host
 identity.
 

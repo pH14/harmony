@@ -199,6 +199,7 @@ Every job declares a trigger class.
   at 45 minutes for a cold build: `UML Artifacts — <Architecture>` builds the UML kernels,
   `Exact Runtime Artifacts` builds the exact guest runtime,
   `Language Guest Runtime` builds the guest for the language checks,
+  `Language UML Profile` builds the pinned UML profile for the language checks,
   `PostgreSQL CLI Package` and `Language CLI Tools` build the paired native
   frontend and static Consonance host once for their consumers, and
   `Language Image — <Language>` builds each language workload image. Their
