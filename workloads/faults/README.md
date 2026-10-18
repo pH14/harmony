@@ -379,6 +379,8 @@ UML restores. A campaign treats any such cutoff as infrastructure incompleteness
 the affected reservation returns an error before admission, result certification,
 selection accounting, mixture updates or duration feedback. If a suffix already
 completed some actions, none of that job's actions or candidates are admitted.
+Bootstrap, branch-prefix replay and shared-cache imports preserve the same
+infrastructure-failure classification.
 The campaign stops with an explicit incomplete error instead of writing a
 completed report. Previously admitted stream records are flushed and existing
 search checkpoints remain available; the incomplete stream has no successful
