@@ -387,6 +387,90 @@ int main(int argc, char **argv) {
                 self.assertNotIn("panic(", rebuild)
                 self.assertIn("os_host_failure();", rebuild)
 
+    def test_uml_checkpoint_rebuild_and_irq_restore_fail_closed(self):
+        for series, provenance in [("um", "0016-um-harmony-host-failure-provenance.patch"),
+                                   ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
+            with self.subTest(series=series):
+                patch = PATCHES / series / "0008-um-harmony-checkpoint.patch"
+                primitive = function(postimage(PATCHES / series / provenance,
+                                               "arch/um/os-Linux/util.c"), "os_host_failure")
+                rebuild = function(postimage(patch, "arch/um/kernel/skas/mmu.c"),
+                                   "um_checkpoint_rebuild_stubs")
+                failure = re.search(r"if \(ret < 0\) \{.*?\n\t\t\}", rebuild, re.S)[0]
+                source = r'''#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#define KERN_ERR ""
+#define printk printf
+#define HARMONY_UML_HOST_FAILURE_STATUS 87
+static void os_host_failure(void) HELPER
+int main(int argc, char **argv) {
+ if(argc!=2) return 99;
+ int ret=atoi(argv[1]); FAILURE_BLOCK return 0;
+}
+'''
+                source = source.replace("HELPER", primitive).replace("FAILURE_BLOCK", failure)
+                self.compile_run(source, ("0",))
+                self.compile_run(source, ("-12",), expected=87)
+
+                irq = postimage(patch, "arch/um/kernel/irq.c")
+                source = r'''#include <assert.h>
+#include <stdbool.h>
+#include <stdlib.h>
+#include <unistd.h>
+#define HARMONY_UML_HOST_FAILURE_STATUS 87
+#define NUM_IRQ_TYPES 3
+enum um_irq_type { READ, WRITE, OTHER };
+struct reg { int events; };
+struct irq_entry { struct irq_entry *next; int fd; struct reg reg[NUM_IRQ_TYPES]; };
+static struct irq_entry entries[] = {
+ { .next=&entries[1], .fd=10, .reg={{1},{4},{16}} },
+ { .next=&entries[2], .fd=20, .reg={{2},{8},{32}} },
+ { .next=NULL, .fd=30, .reg={{0},{0},{0}} },
+};
+static struct irq_entry *active_fds=entries;
+#define list_for_each_entry(entry, head, member) for(entry=*(head);entry;entry=entry->next)
+static int failure, async_calls, adds, deletes;
+static int os_set_fd_async(int fd) { async_calls++; return failure==1 && fd==20 ? -1 : 0; }
+static int os_add_epoll_fd(int events, int fd, void *data) {
+ struct irq_entry *entry=data;
+ assert(entry->fd==fd);
+ assert(events==(fd==10 ? 21 : 42)); adds++;
+ return failure==2 && fd==20 ? -1 : 0;
+}
+static int os_del_epoll_fd(int fd) { assert(fd==30); deletes++; return -1; }
+static void os_host_failure(void) HELPER
+static bool update_irq_entry_result(struct irq_entry *entry, int *result) RESULT
+static bool update_irq_entry(struct irq_entry *entry) WRAPPER
+void um_irq_checkpoint_attach(void) ATTACH
+int main(int argc, char **argv) {
+ assert(argc==2); failure=atoi(argv[1]);
+ um_irq_checkpoint_attach();
+ if(failure) return 0;
+ assert(async_calls==3 && adds==2 && deletes==1);
+ assert(update_irq_entry(&entries[0]));
+ assert(!update_irq_entry(&entries[2]));
+ return 0;
+}
+'''
+                for key, value in [("HELPER", primitive),
+                                   ("RESULT", function(irq, "update_irq_entry_result")),
+                                   ("WRAPPER", function(irq, "update_irq_entry")),
+                                   ("ATTACH", function(irq, "um_irq_checkpoint_attach"))]:
+                    source = source.replace(key, value)
+                self.compile_run(source, ("0",))
+                for failure in (1, 2):
+                    self.compile_run(source, (str(failure),), expected=87)
+                # Removing either checkpoint check must permit the bad restore
+                # and fail the reserved infrastructure-exit oracle.
+                for condition, failure in [("if (os_set_fd_async(entry->fd) < 0)", 1),
+                                           ("if (result < 0)", 2)]:
+                    old = source.replace(condition + "\n\t\t\tos_host_failure();",
+                                         condition + "\n\t\t\t(void)0;")
+                    self.assertNotEqual(old, source)
+                    with self.assertRaises(AssertionError):
+                        self.compile_run(old, (str(failure),), expected=87)
+
     def test_uml_substrate_failures_have_reserved_host_status_on_both_architectures(self):
         for series, filename in [("um", "0016-um-harmony-host-failure-provenance.patch"),
                                  ("um-arm64", "0021-um-harmony-host-failure-provenance.patch")]:
