@@ -48,10 +48,12 @@ esac
 if [ -n "${HARMONY_N6_CC:-}" ]; then
     n6_cc=$HARMONY_N6_CC
 elif [ "$arch" = x86_64 ]; then
+    require_tools make nproc
     echo "== N6: build pinned x86_64 musl runtime"
     build_x86_musl
     n6_cc=$X86_MUSL_PREFIX/bin/musl-gcc
 else
+    require_tools make nproc patch
     echo "== N6: build pinned arm64 musl runtime"
     build_arm64_musl
     n6_cc=$ARM64_MUSL_PREFIX/bin/musl-gcc
