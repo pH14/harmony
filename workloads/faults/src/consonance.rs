@@ -30,13 +30,14 @@ use environment::{
 };
 use fault_policy::{STANDING_NAMESPACE, StandingWindow, encode_standing, encode_windows};
 use searcher::target::ExitKind;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::chain::{Chain, Hit, Point, Shared};
 use crate::history::{FaultHistory, HistoryReceipt};
 use crate::target::{
     ActionWindows, FaultAction, FaultEndpointCertificate, FaultObservations, FaultSnapshot,
-    FaultStop, decode_sdk_events, standing_windows,
+    FaultStop, ObservationCheckpoint, SdkDecoder, standing_windows,
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
@@ -498,6 +499,17 @@ struct LiveTelemetry {
     branches: Spent,
     seals: Spent,
     observations: Spent,
+    observation_decode: Spent,
+    observation_projection: Spent,
+    observation_events: u64,
+    observation_payload_bytes: u64,
+    observation_decoded_events: u64,
+    observation_rebuilds: u64,
+    observation_checkpoint_hits: u64,
+    observation_checkpoint_evictions: u64,
+    observation_checkpoint_rebuild_events: u64,
+    observation_checkpoint_rebuild_payload_bytes: u64,
+    observation_checkpoint_rebuilds: Spent,
     drops: Spent,
     exact_hits: u64,
     ancestor_hits: u64,
@@ -506,6 +518,34 @@ struct LiveTelemetry {
     imports: Spent,
     publishes: Spent,
     refusals: u64,
+}
+
+const OBSERVATION_CHECKPOINT_LIMIT: usize = 8 * 1024 * 1024;
+const OBSERVATION_ATTACHMENT_DOMAIN: &[u8] = b"fault-observations-v1";
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct CapturedObservations {
+    receipt: HistoryReceipt,
+    observations: ObservationCheckpoint,
+}
+
+#[derive(Default)]
+struct ObservationCursor {
+    decoder: Option<SdkDecoder>,
+    after: Option<u64>,
+}
+
+impl ObservationCursor {
+    fn invalidate(&mut self) {
+        self.decoder = None;
+        self.after = None;
+    }
+    fn begin_action(&mut self, after: u64) {
+        self.after = Some(after);
+        if let Some(decoder) = &mut self.decoder {
+            decoder.begin_action(after);
+        }
+    }
 }
 
 struct Live {
@@ -520,6 +560,7 @@ struct Live {
     horizons_run: u64,
     abandoned: bool,
     telemetry: LiveTelemetry,
+    cursor: ObservationCursor,
 }
 
 static HOLDERS: AtomicU64 = AtomicU64::new(0);
@@ -786,6 +827,7 @@ impl FaultTarget {
                 debug_configuration(&standing.configuration, message).map_err(|e| e.to_string())?;
             let mut handler =
                 DebugHandler::decode(&service.configuration).map_err(|error| error.to_string())?;
+            live.cursor.invalidate();
             live.session
                 .branch_with_service(
                     snapshot,
@@ -1116,6 +1158,9 @@ fn with_live<T>(
         }
         let live = slot.as_mut().ok_or("the session was not initialized")?;
         let result = operation(live);
+        if result.is_err() {
+            live.cursor.invalidate();
+        }
         if live.abandoned || live.session.abandoned() {
             *slot = None;
         }
@@ -1264,7 +1309,12 @@ impl Live {
                     .map_err(|error| format!("setup cache identity: {error}"))?;
                 Some(Shared {
                     index: Arc::clone(index),
-                    namespace: Namespace::exact(&[&config.key, SERVICE_IDENTITY, &setup_hash]),
+                    namespace: Namespace::exact(&[
+                        &config.key,
+                        SERVICE_IDENTITY,
+                        &setup_hash,
+                        OBSERVATION_ATTACHMENT_DOMAIN,
+                    ]),
                 })
             }
             None => None,
@@ -1289,6 +1339,7 @@ impl Live {
             horizons_run: 0,
             abandoned: false,
             telemetry,
+            cursor: ObservationCursor::default(),
         };
         let observation = live.observe(FaultStop::Deadline)?;
         let endpoint = if config.uml.is_some() {
@@ -1301,10 +1352,11 @@ impl Live {
         } else {
             Some(live.ordered_history()?)
         };
-        live.chain.certify(
-            0,
-            HistoryReceipt::genesis(config.key, endpoint, event_history, &observation)?,
-        )?;
+        let receipt = HistoryReceipt::genesis(config.key, endpoint, event_history, &observation)?;
+        live.chain.certify(0, receipt.clone())?;
+        let checkpoint = live.capture_observation_checkpoint(&receipt)?;
+        live.chain.set_observation_checkpoint(0, checkpoint)?;
+        live.fit_store(1)?;
         Ok(live)
     }
 
@@ -1324,12 +1376,44 @@ impl Live {
             ("branch", t.branches),
             ("seal", t.seals),
             ("observe", t.observations),
+            ("observe_decode", t.observation_decode),
+            ("observe_projection", t.observation_projection),
+            (
+                "observe_checkpoint_rebuild",
+                t.observation_checkpoint_rebuilds,
+            ),
             ("drop", t.drops),
         ] {
             out.push((format!("session.{name}.count"), spent.count));
             out.push((format!("session.{name}.ns"), spent.nanos));
         }
         out.extend([
+            ("observe.events".to_owned(), t.observation_events),
+            (
+                "observe.payload_bytes".to_owned(),
+                t.observation_payload_bytes,
+            ),
+            (
+                "observe.decoded_events".to_owned(),
+                t.observation_decoded_events,
+            ),
+            ("observe.full_rebuilds".to_owned(), t.observation_rebuilds),
+            (
+                "observe.checkpoint_hits".to_owned(),
+                t.observation_checkpoint_hits,
+            ),
+            (
+                "observe.checkpoint_evictions".to_owned(),
+                t.observation_checkpoint_evictions,
+            ),
+            (
+                "observe.checkpoint_rebuild_events".to_owned(),
+                t.observation_checkpoint_rebuild_events,
+            ),
+            (
+                "observe.checkpoint_rebuild_payload_bytes".to_owned(),
+                t.observation_checkpoint_rebuild_payload_bytes,
+            ),
             ("cache.exact_hits".to_owned(), t.exact_hits),
             ("cache.ancestor_hits".to_owned(), t.ancestor_hits),
             ("cache.misses".to_owned(), t.misses),
@@ -1348,7 +1432,16 @@ impl Live {
                 .sum::<u64>()
                 .saturating_mul(4096);
             out.push(("cache.entries".to_owned(), self.chain.links() as u64));
+            let checkpoint_bytes = self.chain.observation_checkpoint_bytes() as u64;
+            out.push((
+                "cache.observation_checkpoint_bytes".to_owned(),
+                checkpoint_bytes,
+            ));
             out.push(("cache.resident_bytes".to_owned(), bytes));
+            out.push((
+                "cache.charged_bytes".to_owned(),
+                bytes.saturating_add(checkpoint_bytes),
+            ));
         }
         out.extend(
             self.session
@@ -1368,6 +1461,7 @@ impl Live {
 
     fn abandon(&mut self, what: &str, error: &(dyn Error + 'static)) -> String {
         self.abandoned = true;
+        self.cursor.invalidate();
         let tail = self.session.console_tail().unwrap_or_default();
         let start = tail.len().saturating_sub(CONSOLE_TAIL);
         eprintln!(
@@ -1377,11 +1471,80 @@ impl Live {
         session_failure(what, error)
     }
 
+    fn restore_observation_cursor(&mut self, snapshot: SnapId) -> Result<(), String> {
+        self.restore_observation_cursor_with_limit(snapshot, OBSERVATION_CHECKPOINT_LIMIT)
+    }
+
+    fn restore_observation_cursor_with_limit(
+        &mut self,
+        snapshot: SnapId,
+        limit: usize,
+    ) -> Result<(), String> {
+        let Some(at) = self.chain.at_snapshot(snapshot) else {
+            return Ok(());
+        };
+        let receipt = self.chain.provenance(at)?.clone();
+        self.cursor.after = (receipt.depth() != 0).then(|| receipt.previous_moment());
+        if let Some(checkpoint) = self.chain.observation_checkpoint(at) {
+            checkpoint.validate_binding(&receipt)?;
+            self.cursor.decoder = Some(checkpoint.decoder().clone());
+            self.telemetry.observation_checkpoint_hits += 1;
+            return Ok(());
+        }
+        let pending = self.chain.pending_observation_checkpoint(at).cloned();
+        let rebuilt = (|| {
+            let verify_started = started();
+            let events = self
+                .session
+                .sdk_events_since(0)
+                .map_err(|error| format!("restored SDK events: {error}"))?;
+            self.telemetry.observation_checkpoint_rebuild_events += events.len() as u64;
+            self.telemetry.observation_checkpoint_rebuild_payload_bytes +=
+                events.iter().map(|event| event.2.len() as u64).sum::<u64>();
+            let mut decoder = SdkDecoder::default();
+            if let Some(after) = self.cursor.after {
+                decoder.begin_action(after);
+            }
+            decoder.append(&events)?;
+            decoder.capture().check_infrastructure_status()?;
+            self.telemetry
+                .observation_checkpoint_rebuilds
+                .since(verify_started);
+            if let Some(expected) = pending.as_ref()
+                && &decoder != expected.decoder()
+            {
+                return Err(
+                    "imported observation checkpoint differs from actual SDK history".to_owned(),
+                );
+            }
+            ObservationCheckpoint::capture(&receipt, decoder)
+        })();
+        match rebuilt {
+            Ok(checkpoint) => {
+                self.cursor.decoder = Some(checkpoint.decoder().clone());
+                self.chain.set_observation_checkpoint(at, checkpoint)?;
+                self.fit_observation_store(limit);
+                Ok(())
+            }
+            Err(error) => {
+                self.cursor.invalidate();
+                if pending.is_some()
+                    && let Some(snapshot) = self.chain.remove_snapshot(snapshot)
+                {
+                    let _ = self.session.drop_snapshot(snapshot);
+                }
+                Err(error)
+            }
+        }
+    }
+
     fn replay(&mut self, snapshot: SnapId) -> Result<(), String> {
+        self.cursor.invalidate();
         let restore_started = started();
         let result = self.session.replay_snapshot(snapshot);
         self.telemetry.restores.since(restore_started);
-        result.map_err(|error| self.abandon("replay", error.as_ref()))
+        result.map_err(|error| self.abandon("replay", error.as_ref()))?;
+        self.restore_observation_cursor(snapshot)
     }
 
     fn drop_snapshots(&mut self, snapshots: Vec<SnapId>) -> Result<(), String> {
@@ -1396,23 +1559,53 @@ impl Live {
         Ok(())
     }
 
-    fn fit_store(&mut self, keep: usize) -> Result<(), String> {
+    fn fit_observation_store(&mut self, limit: usize) -> bool {
+        self.telemetry.observation_checkpoint_evictions +=
+            self.chain.discard_observation_checkpoints(limit) as u64;
         let Some(index) = self.chain.shared().map(|shared| Arc::clone(&shared.index)) else {
-            return Ok(());
+            return false;
         };
-        loop {
-            let Some(bytes) = self.session.store_bytes() else {
-                return Ok(());
-            };
-            if !index.report_store(self.holder, bytes) {
-                return Ok(());
-            }
+        let report = |live: &Self| {
+            index.report_store(
+                live.holder,
+                live.session
+                    .store_bytes()
+                    .unwrap_or(0)
+                    .saturating_add(live.chain.observation_checkpoint_bytes() as u64),
+            )
+        };
+        if !report(self) {
+            return false;
+        }
+        let discarded = self.chain.discard_observation_checkpoints(0);
+        self.telemetry.observation_checkpoint_evictions += discarded as u64;
+        if discarded != 0 {
+            return report(self);
+        }
+        true
+    }
+
+    fn fit_store(&mut self, keep: usize) -> Result<(), String> {
+        while self.fit_observation_store(OBSERVATION_CHECKPOINT_LIMIT) {
             let dropped = self.chain.shed(keep);
             if dropped.is_empty() {
                 return Ok(());
             }
             self.drop_snapshots(dropped)?;
         }
+        Ok(())
+    }
+
+    fn capture_observation_checkpoint(
+        &self,
+        receipt: &HistoryReceipt,
+    ) -> Result<ObservationCheckpoint, String> {
+        let decoder = self
+            .cursor
+            .decoder
+            .as_ref()
+            .ok_or("captured endpoint lacks actual observation decoder")?;
+        ObservationCheckpoint::capture(receipt, decoder.clone())
     }
 
     fn publish(
@@ -1421,14 +1614,19 @@ impl Live {
         snap: SnapId,
         cost: u64,
         receipt: &HistoryReceipt,
+        checkpoint: &ObservationCheckpoint,
     ) -> Result<Option<Lease>, String> {
         let Some(shared) = self.chain.shared() else {
             return Ok(None);
         };
         let publish_started = started();
         let attachment = consonance_client::session::SnapshotAttachment {
-            domain: b"fault-history-v1".to_vec(),
-            bytes: postcard::to_allocvec(receipt).map_err(|error| error.to_string())?,
+            domain: OBSERVATION_ATTACHMENT_DOMAIN.to_vec(),
+            bytes: postcard::to_allocvec(&CapturedObservations {
+                receipt: receipt.clone(),
+                observations: checkpoint.clone(),
+            })
+            .map_err(|error| error.to_string())?,
         };
         let published = self.session.publish_snapshot_attached(
             shared.index.as_ref(),
@@ -1462,16 +1660,33 @@ impl Live {
         moment: u64,
         receipt: HistoryReceipt,
     ) -> Result<Point, String> {
-        let lease = match self.publish(parent, snap, moment.saturating_sub(parent.moment), &receipt)
-        {
-            Ok(lease) => lease,
+        let captured = self
+            .capture_observation_checkpoint(&receipt)
+            .and_then(|checkpoint| {
+                self.publish(
+                    parent,
+                    snap,
+                    moment.saturating_sub(parent.moment),
+                    &receipt,
+                    &checkpoint,
+                )
+                .map(|lease| (lease, checkpoint))
+            });
+        let (lease, checkpoint) = match captured {
+            Ok(captured) => captured,
             Err(error) => {
+                self.cursor.invalidate();
                 let _ = self.session.drop_snapshot(snap);
                 return Err(error);
             }
         };
         let point = Point { snap, moment };
         let dropped = self.chain.push_history(point, lease, receipt)?;
+        let at = self
+            .chain
+            .at_snapshot(snap)
+            .ok_or("captured observation link missing")?;
+        self.chain.set_observation_checkpoint(at, checkpoint)?;
         self.drop_snapshots(dropped)?;
         self.fit_store(2)?;
         Ok(point)
@@ -1508,20 +1723,25 @@ impl Live {
             }
         };
         let validated = (|| {
-            if imported.attachment.domain != b"fault-history-v1" {
-                return Err("imported snapshot lacks captured fault history".to_owned());
+            if imported.attachment.domain != OBSERVATION_ATTACHMENT_DOMAIN {
+                return Err("imported snapshot lacks captured fault observations".to_owned());
             }
-            let receipt: HistoryReceipt = postcard::from_bytes(&imported.attachment.bytes)
-                .map_err(|error| format!("imported fault history: {error}"))?;
+            let captured: CapturedObservations =
+                postcard::from_bytes(&imported.attachment.bytes)
+                    .map_err(|error| format!("imported fault observations: {error}"))?;
+            let receipt = captured.receipt;
             receipt.validate()?;
             if receipt.domain() != self.key || receipt.depth() != depth || receipt.path() != path {
                 return Err("imported fault history domain, path or depth differs".to_owned());
             }
-            Ok(receipt)
+            captured.observations.validate_binding(&receipt)?;
+            let checkpoint = captured.observations;
+            Ok((receipt, checkpoint))
         })();
-        let receipt = match validated {
-            Ok(receipt) => receipt,
+        let (receipt, checkpoint) = match validated {
+            Ok(captured) => captured,
             Err(error) => {
+                self.cursor.invalidate();
                 self.chain.release(lease);
                 let _ = self.session.drop_snapshot(imported.snapshot);
                 return Err(error);
@@ -1532,8 +1752,15 @@ impl Live {
             moment: imported.moment,
         };
         let dropped = self.chain.push_history(point, Some(lease), receipt)?;
+        let at = self
+            .chain
+            .at_snapshot(point.snap)
+            .ok_or("imported observation link missing")?;
+        self.chain
+            .set_pending_observation_checkpoint(at, checkpoint)?;
         self.drop_snapshots(dropped)?;
-        Ok(Some(self.chain.links() - 1))
+        self.fit_store(2)?;
+        Ok(self.chain.at_snapshot(point.snap))
     }
 
     fn find_history(&mut self, history: &FaultHistory) -> Result<usize, String> {
@@ -1554,6 +1781,7 @@ impl Live {
         action: FaultAction,
         observation: &mut FaultObservations,
     ) -> Result<HistoryReceipt, String> {
+        self.cursor.begin_action(parent.moment());
         observation
             .parks
             .retain(|park| park.moment > parent.moment());
@@ -1589,6 +1817,7 @@ impl Live {
         match self.capture_receipt(parent, action, observation) {
             Ok(receipt) => Ok(receipt),
             Err(error) => {
+                self.cursor.invalidate();
                 let _ = self.session.drop_snapshot(snap);
                 Err(error)
             }
@@ -1697,6 +1926,7 @@ impl Live {
         let coverage_schedule = branch_coverage_schedule(self.windows, actions)
             .map_err(|error| format!("branch coverage schedule: {error}"))?;
         let branch_started = started();
+        self.cursor.invalidate();
         let result = self.session.branch_with_service(
             parent.snap,
             config,
@@ -1705,7 +1935,15 @@ impl Live {
             Some(coverage_schedule),
         );
         self.telemetry.branches.since(branch_started);
-        result.map_err(|error| self.abandon("branch", error.as_ref()))
+        result.map_err(|error| self.abandon("branch", error.as_ref()))?;
+        self.restore_observation_cursor(parent.snap)?;
+        let at = self
+            .chain
+            .at_snapshot(parent.snap)
+            .ok_or("branch observation parent missing")?;
+        self.cursor
+            .begin_action(self.chain.provenance(at)?.moment());
+        Ok(())
     }
 
     fn run_action(
@@ -1768,17 +2006,40 @@ impl Live {
     }
 
     fn observe(&mut self, stop: FaultStop) -> Result<FaultObservations, String> {
-        let observe_started = started();
-        let events = self
-            .session
-            .sdk_events()
-            .map_err(|error| format!("SDK events: {error}"));
-        self.telemetry.observations.since(observe_started);
-        let events = events?;
-        let moment = events.last().map_or(0, |(moment, _, _)| *moment);
-        let capture = decode_sdk_events(&events)?;
-        capture.check_infrastructure_status()?;
-        Ok(FaultObservations::new(moment, &capture, stop))
+        let result = (|| {
+            let mut decoder = self.cursor.decoder.clone().unwrap_or_default();
+            if self.cursor.decoder.is_none() {
+                self.telemetry.observation_rebuilds += 1;
+                if let Some(after) = self.cursor.after {
+                    decoder.begin_action(after);
+                }
+            }
+            let fetch_started = started();
+            let events = self
+                .session
+                .sdk_events_since(decoder.offset())
+                .map_err(|error| format!("SDK events: {error}"));
+            self.telemetry.observations.since(fetch_started);
+            let events = events?;
+            self.telemetry.observation_events += events.len() as u64;
+            self.telemetry.observation_payload_bytes +=
+                events.iter().map(|event| event.2.len() as u64).sum::<u64>();
+            let decode_started = started();
+            self.telemetry.observation_decoded_events += decoder.append(&events)? as u64;
+            decoder.capture().check_infrastructure_status()?;
+            self.telemetry.observation_decode.since(decode_started);
+            let projection_started = started();
+            let observation = FaultObservations::new(decoder.moment(), decoder.capture(), stop);
+            self.telemetry
+                .observation_projection
+                .since(projection_started);
+            self.cursor.decoder = Some(decoder);
+            Ok(observation)
+        })();
+        if result.is_err() {
+            self.cursor.invalidate();
+        }
+        result
     }
 }
 
@@ -1879,7 +2140,7 @@ pub fn from_paths(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::FaultOperation;
+    use crate::target::{FaultOperation, decode_sdk_events};
     use consonance_client::cache::{
         LocalIndex,
         extent::{extent_len, read_extent, write_extent},
@@ -2134,6 +2395,11 @@ mod tests {
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
         hash_calls: u64,
+        replay_calls: u64,
+        branch_calls: u64,
+        sdk_offsets: Vec<u32>,
+        sdk_event_count: u64,
+        run_events: Option<Vec<consonance_client::session::SdkEvent>>,
         abandon_on_hash: bool,
         hash_failure: bool,
         history: control_proto::EventHistory,
@@ -2175,6 +2441,14 @@ mod tests {
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
             vec![
                 ("test.hash_calls".to_owned(), self.hash_calls),
+                ("test.replay_calls".to_owned(), self.replay_calls),
+                ("test.branch_calls".to_owned(), self.branch_calls),
+                ("test.sdk_calls".to_owned(), self.sdk_offsets.len() as u64),
+                (
+                    "test.sdk_last_offset".to_owned(),
+                    self.sdk_offsets.last().copied().unwrap_or(0) as u64,
+                ),
+                ("test.sdk_events".to_owned(), self.sdk_event_count),
                 ("test.snapshots".to_owned(), self.snapshots.len() as u64),
             ]
         }
@@ -2336,6 +2610,7 @@ mod tests {
         }
 
         fn replay_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+            self.replay_calls += 1;
             if self.hash.is_some() {
                 if self.run_hashes.is_some() {
                     self.hash = self.snapshots.get(&snapshot.0).copied();
@@ -2358,13 +2633,18 @@ mod tests {
 
         fn branch_with_service(
             &mut self,
-            _: SnapId,
+            snapshot: SnapId,
             _: ServiceConfig,
             _: Vec<Vec<u8>>,
             _: Vec<(u64, environment::channel::Effect)>,
             _: Option<CoverageSchedule>,
         ) -> Result<(), Box<dyn Error>> {
+            self.branch_calls += 1;
             if self.hash.is_some() {
+                self.current = snapshot.0;
+                if let Some(history) = self.histories.get(&snapshot.0) {
+                    self.history = *history;
+                }
                 Ok(())
             } else {
                 Err(SessionError::Hung(WALL_LIMIT).into())
@@ -2372,6 +2652,9 @@ mod tests {
         }
 
         fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+            if let Some(events) = self.run_events.take() {
+                self.events.insert(self.current, events);
+            }
             if self.run_hung && self.run_hashes.as_ref().is_none_or(Vec::is_empty) {
                 return Err(SessionError::Hung(WALL_LIMIT).into());
             }
@@ -2400,7 +2683,24 @@ mod tests {
         fn sdk_events(
             &mut self,
         ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
-            Ok(self.events.get(&self.current).cloned().unwrap_or_default())
+            self.sdk_events_since(0)
+        }
+
+        fn sdk_events_since(
+            &mut self,
+            offset: u32,
+        ) -> Result<Vec<consonance_client::session::SdkEvent>, Box<dyn Error>> {
+            self.sdk_offsets.push(offset);
+            let events: Vec<_> = self
+                .events
+                .get(&self.current)
+                .into_iter()
+                .flatten()
+                .skip(offset as usize)
+                .cloned()
+                .collect();
+            self.sdk_event_count += events.len() as u64;
+            Ok(events)
         }
 
         fn abandoned(&self) -> bool {
@@ -2419,6 +2719,11 @@ mod tests {
                 history: control_proto::EventHistory::default(),
                 hash: None,
                 hash_calls: 0,
+                replay_calls: 0,
+                branch_calls: 0,
+                sdk_offsets: Vec::new(),
+                sdk_event_count: 0,
+                run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
                 events: BTreeMap::new(),
@@ -2443,6 +2748,7 @@ mod tests {
             horizons_run: 0,
             abandoned: false,
             telemetry: LiveTelemetry::default(),
+            cursor: ObservationCursor::default(),
         };
         live.chain.certify(0, fixture_genesis()).unwrap();
         live
@@ -2462,6 +2768,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some(commitment),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -2817,6 +3128,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some(hash),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -2845,6 +3161,11 @@ mod tests {
             history_hung: false,
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -2870,6 +3191,11 @@ mod tests {
             history_hung: false,
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -3209,6 +3535,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
@@ -3242,6 +3573,11 @@ mod tests {
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 hash_calls: 0,
+                replay_calls: 0,
+                branch_calls: 0,
+                sdk_offsets: Vec::new(),
+                sdk_event_count: 0,
+                run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
                 events: BTreeMap::new(),
@@ -3324,6 +3660,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -3356,6 +3697,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -3449,6 +3795,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -3504,6 +3855,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -3543,6 +3899,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -3639,6 +4000,8 @@ mod tests {
             }),
         );
         publisher.chain.certify(0, root.receipt().clone()).unwrap();
+        publisher.observe(FaultStop::Deadline).unwrap();
+        publisher.cursor.begin_action(0);
         publisher
             .seal_captured_link(
                 Point {
@@ -3727,7 +4090,7 @@ mod tests {
     #[test]
     fn terminal_and_rebuild_stop_observations_exclude_previous_park_evidence() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
-        let events = vec![
+        let events = [
             (5, 0, br#"{"harmony_park":{"site":1,"edges":2}}"#.to_vec()),
             (
                 5,
@@ -3743,10 +4106,11 @@ mod tests {
         ];
         for rebuilding in [false, true] {
             let mut target = unbooted_target();
-            let observation = FaultObservations {
-                moment: 10,
-                ..FaultObservations::default()
-            };
+            let mut prefix = events[..2].to_vec();
+            prefix.push((10, u32::MAX, Vec::new()));
+            let mut decoder = SdkDecoder::default();
+            decoder.append(&prefix).unwrap();
+            let observation = FaultObservations::new(10, decoder.capture(), FaultStop::Deadline);
             let genesis = HistoryReceipt::genesis(
                 [0; 32],
                 FaultEndpointCertificate::KvmWholeState([17; 32]),
@@ -3778,7 +4142,13 @@ mod tests {
                 target.history = target.history.push(receipt).unwrap();
             }
             live.session = Box::new(TimedOutRestore {
-                events: BTreeMap::from([(1, events.clone())]),
+                events: BTreeMap::from([(1, prefix.clone())]),
+                run_events: Some(
+                    prefix
+                        .into_iter()
+                        .chain(events[2..].iter().cloned())
+                        .collect(),
+                ),
                 ..fixture_session()
             });
             LIVE.with(|slot| *slot.borrow_mut() = Some(live));
@@ -3872,6 +4242,11 @@ mod tests {
 
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: true,
             events: BTreeMap::new(),
@@ -3905,6 +4280,7 @@ mod tests {
             let slot = slot.borrow();
             let live = slot.as_ref().unwrap();
             assert_eq!(live.chain.links(), 1);
+            assert!(live.cursor.decoder.is_none());
             assert!(!live.session.abandoned());
             assert_eq!(
                 live.session
@@ -4062,6 +4438,276 @@ mod tests {
     }
 
     #[test]
+    fn malformed_observation_discards_working_cursor_without_mutating_retained_checkpoint() {
+        let mut live = hashed_live([17; 32]);
+        live.observe(FaultStop::Deadline).unwrap();
+        let checkpoint = live
+            .capture_observation_checkpoint(&fixture_genesis())
+            .unwrap();
+        live.chain
+            .set_observation_checkpoint(0, checkpoint.clone())
+            .unwrap();
+        let mut valid = vec![0];
+        valid.extend_from_slice(&77_u64.to_le_bytes());
+        live.session = Box::new(TimedOutRestore {
+            events: BTreeMap::from([(
+                1,
+                vec![(1, (2 << 24) | 1, valid), (2, (1 << 24) | 1, vec![9, 0, 0])],
+            )]),
+            ..fixture_session()
+        });
+        assert!(
+            live.observe(FaultStop::Deadline)
+                .unwrap_err()
+                .contains("unknown disposition")
+        );
+        assert!(live.cursor.decoder.is_none());
+        assert_eq!(live.chain.observation_checkpoint(0), Some(&checkpoint));
+    }
+
+    #[test]
+    fn branch_restores_actual_checkpoint_even_for_equal_length_divergent_siblings() {
+        let prefix = vec![(9, u32::MAX, vec![1]), (7, u32::MAX, vec![2])];
+        let sibling = vec![(99, u32::MAX, vec![3]), (77, u32::MAX, vec![4])];
+        let suffix = (8, 0, br#"{"harmony_park":{"site":3,"edges":4}}"#.to_vec());
+        let mut live = hashed_live([17; 32]);
+        live.session = Box::new(TimedOutRestore {
+            events: BTreeMap::from([(1, prefix.clone()), (2, sibling)]),
+            run_events: Some(prefix.iter().cloned().chain([suffix]).collect()),
+            ..fixture_session()
+        });
+        let actual = live.observe(FaultStop::Deadline).unwrap();
+        assert_eq!(actual.moment, 7);
+        let genesis = HistoryReceipt::genesis(
+            [0; 32],
+            FaultEndpointCertificate::KvmWholeState([17; 32]),
+            Some((0, [0; 32])),
+            &actual,
+        )
+        .unwrap();
+        live.chain = Chain::new(
+            Point {
+                snap: SnapId(1),
+                moment: 7,
+            },
+            None,
+        );
+        live.chain.certify(0, genesis.clone()).unwrap();
+        let checkpoint = live.capture_observation_checkpoint(&genesis).unwrap();
+        live.chain
+            .set_observation_checkpoint(0, checkpoint)
+            .unwrap();
+        live.replay(SnapId(2)).unwrap();
+        assert_eq!(live.observe(FaultStop::Deadline).unwrap().moment, 77);
+        let before = live
+            .session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        live.branch(
+            Point {
+                snap: SnapId(1),
+                moment: 7,
+            },
+            &[action],
+        )
+        .unwrap();
+        assert_eq!(live.cursor.decoder.as_ref().unwrap().offset(), 2);
+        assert_eq!(live.cursor.decoder.as_ref().unwrap().moment(), 7);
+        live.session.run_until(10).unwrap();
+        let actual = live.observe(FaultStop::Deadline).unwrap();
+        assert_eq!(actual.moment, 8);
+        assert_eq!(actual.parks.len(), 1);
+        assert_eq!(actual.parks[0].moment, 8);
+        assert_eq!(actual, live.observe(FaultStop::Deadline).unwrap());
+        let after = live
+            .session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(after["test.replay_calls"], before["test.replay_calls"]);
+        assert_eq!(after["test.branch_calls"] - before["test.branch_calls"], 1);
+        assert_eq!(after["test.sdk_events"] - before["test.sdk_events"], 1);
+        assert_eq!(after["test.sdk_last_offset"], 3);
+    }
+
+    #[test]
+    fn pending_import_is_verified_by_branch_without_an_extra_replay() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let receipt = fixture_genesis()
+            .extend(
+                action,
+                FaultEndpointCertificate::KvmWholeState([17; 32]),
+                Some((0, [0; 32])),
+                &FaultObservations::default(),
+            )
+            .unwrap();
+        let mut decoder = SdkDecoder::default();
+        decoder.begin_action(0);
+        decoder.append(&[(0, u32::MAX, Vec::new())]).unwrap();
+        let checkpoint = ObservationCheckpoint::capture(&receipt, decoder).unwrap();
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::exact(&[b"pending-branch-decoder"]);
+        let mut publisher = publishing_live(&index, namespace, SnapId(3), [17; 32]);
+        publisher.session = Box::new(TimedOutRestore {
+            current: 3,
+            events: BTreeMap::from([(3, vec![(0, u32::MAX, Vec::new())])]),
+            snapshots: BTreeMap::from([(3, [17; 32])]),
+            ..fixture_session()
+        });
+        let lease = publisher
+            .publish(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                SnapId(3),
+                0,
+                &receipt,
+                &checkpoint,
+            )
+            .unwrap()
+            .unwrap();
+        index.release(lease);
+        let mut importer = publishing_live(&index, namespace, SnapId(1), [17; 32]);
+        let at = importer.find_path(receipt.path(), 1).unwrap().unwrap();
+        let parent = importer.chain.point(at);
+        importer.branch(parent, &[action, action]).unwrap();
+        assert!(importer.chain.pending_observation_checkpoint(at).is_none());
+        assert!(importer.chain.observation_checkpoint(at).is_some());
+        assert_eq!(importer.cursor.decoder.as_ref().unwrap().offset(), 1);
+        assert_eq!(
+            importer.observe(FaultStop::Deadline).unwrap(),
+            FaultObservations::default()
+        );
+        let raw = importer
+            .session
+            .telemetry_counters()
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(raw["test.replay_calls"], 0);
+        assert_eq!(raw["test.branch_calls"], 1);
+        assert_eq!(raw["test.sdk_events"], 1);
+        assert_eq!(raw["test.sdk_last_offset"], 1);
+    }
+
+    #[test]
+    fn imported_hidden_decoder_state_requires_one_actual_restore_before_trust() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let receipt = fixture_genesis()
+            .extend(
+                action,
+                FaultEndpointCertificate::KvmWholeState([17; 32]),
+                Some((0, [0; 32])),
+                &FaultObservations::default(),
+            )
+            .unwrap();
+        let mut decoder = SdkDecoder::default();
+        decoder.begin_action(0);
+        let mut serialized = serde_json::to_value(&decoder).unwrap();
+        serialized["check_passes"] = serde_json::json!({"40": ["forged-hidden-pass"]});
+        let forged: SdkDecoder = serde_json::from_value(serialized).unwrap();
+        assert_ne!(decoder, forged);
+        assert_eq!(decoder.capture(), forged.capture());
+        let checkpoint = ObservationCheckpoint::capture(&receipt, forged).unwrap();
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::exact(&[b"untrusted-hidden-decoder"]);
+        let mut publisher = publishing_live(&index, namespace, SnapId(3), [17; 32]);
+        let lease = publisher
+            .publish(
+                Point {
+                    snap: SnapId(1),
+                    moment: 0,
+                },
+                SnapId(3),
+                0,
+                &receipt,
+                &checkpoint,
+            )
+            .unwrap()
+            .unwrap();
+        index.release(lease);
+        let mut importer = publishing_live(&index, namespace, SnapId(1), [17; 32]);
+        let at = importer.find_path(receipt.path(), 1).unwrap().unwrap();
+        let snapshot = importer.chain.point(at).snap;
+        assert!(importer.chain.observation_checkpoint(at).is_none());
+        assert!(importer.chain.pending_observation_checkpoint(at).is_some());
+        assert!(importer.cursor.decoder.is_none());
+        assert_eq!(
+            importer
+                .session
+                .telemetry_counters()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()["test.replay_calls"],
+            0
+        );
+        let error = importer.replay(snapshot).unwrap_err();
+        assert!(error.contains("differs from actual SDK history"), "{error}");
+        assert_eq!(
+            importer
+                .session
+                .telemetry_counters()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>()["test.replay_calls"],
+            1
+        );
+        assert!(importer.cursor.decoder.is_none());
+        assert_eq!(importer.chain.links(), 1);
+    }
+
+    #[test]
+    fn reconstructed_checkpoint_pool_is_bounded_without_shifting_selected_link() {
+        let index = Arc::new(LocalIndex::new(1));
+        let namespace = Namespace::exact(&[b"optional-decoder-pool"]);
+        let mut live = publishing_live(&index, namespace, SnapId(1), [17; 32]);
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let mut receipt = fixture_genesis();
+        for snap in [2, 3] {
+            receipt = receipt
+                .extend(
+                    action,
+                    receipt.endpoint(),
+                    Some((0, [0; 32])),
+                    &FaultObservations::default(),
+                )
+                .unwrap();
+            live.chain
+                .push_history(
+                    Point {
+                        snap: SnapId(snap),
+                        moment: 0,
+                    },
+                    None,
+                    receipt.clone(),
+                )
+                .unwrap();
+        }
+        let selected = SnapId(2);
+        let at = live.chain.at_snapshot(selected).unwrap();
+        assert_eq!(at, 1);
+        let floor = live.chain.observation_checkpoint_bytes();
+        for _ in 0..3 {
+            live.cursor.invalidate();
+            live.session.replay_snapshot(selected).unwrap();
+            live.restore_observation_cursor_with_limit(selected, 0)
+                .unwrap();
+            assert_eq!(live.chain.at_snapshot(selected), Some(at));
+            assert_eq!(live.chain.links(), 3);
+            assert_eq!(live.chain.observation_checkpoint_bytes(), floor);
+            assert_eq!(index.stats().stored, floor);
+            assert!(live.chain.observation_checkpoint(at).is_none());
+            assert_eq!(
+                live.observe(FaultStop::Deadline).unwrap(),
+                FaultObservations::default()
+            );
+        }
+        assert_eq!(live.telemetry.observation_checkpoint_rebuilds.count, 3);
+        assert_eq!(live.telemetry.observation_checkpoint_evictions, 3);
+        assert!(index.stats().shrinks >= 3);
+    }
+
+    #[test]
     fn certified_local_and_imported_restores_do_constant_endpoint_work() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         for depth in [1, 8, 32, 128, 1024] {
@@ -4120,6 +4766,7 @@ mod tests {
                     "session.restore.count",
                     "session.observe.count",
                     "vmm.test.hash_calls",
+                    "vmm.test.replay_calls",
                 ] {
                     assert_eq!(
                         after[key] - before[key],
@@ -4158,6 +4805,11 @@ mod tests {
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             hash_calls: 0,
+            replay_calls: 0,
+            branch_calls: 0,
+            sdk_offsets: Vec::new(),
+            sdk_event_count: 0,
+            run_events: None,
             abandon_on_hash: false,
             hash_failure: false,
             events: BTreeMap::new(),
@@ -4189,6 +4841,11 @@ mod tests {
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 hash_calls: 0,
+                replay_calls: 0,
+                branch_calls: 0,
+                sdk_offsets: Vec::new(),
+                sdk_event_count: 0,
+                run_events: None,
                 abandon_on_hash: false,
                 hash_failure: false,
                 events: BTreeMap::new(),
@@ -4614,6 +5271,11 @@ mod tests {
                 hash_failure: false,
 
                 hash_calls: 0,
+                replay_calls: 0,
+                branch_calls: 0,
+                sdk_offsets: Vec::new(),
+                sdk_event_count: 0,
+                run_events: None,
                 abandon_on_hash: false,
                 history_hung: false,
                 hash: Some(endpoint),
@@ -4717,6 +5379,11 @@ mod tests {
                     hash_failure: false,
 
                     hash_calls: 0,
+                    replay_calls: 0,
+                    branch_calls: 0,
+                    sdk_offsets: Vec::new(),
+                    sdk_event_count: 0,
+                    run_events: None,
                     abandon_on_hash: false,
                     history_hung,
                     history: control_proto::EventHistory { count: 2, digest },

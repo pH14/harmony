@@ -6,6 +6,7 @@ use consonance_client::cache::{CacheIndex, Lease, Namespace};
 use control_proto::SnapId;
 
 use crate::history::HistoryReceipt;
+use crate::target::ObservationCheckpoint;
 
 pub const CHAIN_LIMIT: usize = 32;
 
@@ -42,11 +43,19 @@ pub struct Shared {
 }
 
 #[derive(Debug)]
+struct RetainedObservationCheckpoint {
+    checkpoint: ObservationCheckpoint,
+    allocation: (usize, usize),
+    verified: bool,
+}
+
+#[derive(Debug)]
 struct Link {
     len: usize,
     point: Point,
     lease: Option<Lease>,
     provenance: Option<HistoryReceipt>,
+    observations: Option<Box<RetainedObservationCheckpoint>>,
 }
 
 #[derive(Debug)]
@@ -64,6 +73,7 @@ impl Chain {
                 point: setup,
                 lease: None,
                 provenance: None,
+                observations: None,
             }],
             shared,
         }
@@ -89,6 +99,7 @@ impl Chain {
             point,
             lease,
             provenance: Some(receipt),
+            observations: None,
         });
         let mut dropped = Vec::new();
         if self.links.len() > CHAIN_LIMIT + 1 {
@@ -129,6 +140,84 @@ impl Chain {
         }
         self.links[at].provenance = Some(provenance);
         Ok(())
+    }
+
+    pub(crate) fn observation_checkpoint(&self, at: usize) -> Option<&ObservationCheckpoint> {
+        self.links[at]
+            .observations
+            .as_deref()
+            .filter(|retained| retained.verified)
+            .map(|retained| &retained.checkpoint)
+    }
+
+    pub(crate) fn pending_observation_checkpoint(
+        &self,
+        at: usize,
+    ) -> Option<&ObservationCheckpoint> {
+        self.links[at]
+            .observations
+            .as_deref()
+            .filter(|retained| !retained.verified)
+            .map(|retained| &retained.checkpoint)
+    }
+
+    pub(crate) fn set_pending_observation_checkpoint(
+        &mut self,
+        at: usize,
+        checkpoint: ObservationCheckpoint,
+    ) -> Result<(), String> {
+        self.store_observation_checkpoint(at, checkpoint, false)
+    }
+
+    pub(crate) fn set_observation_checkpoint(
+        &mut self,
+        at: usize,
+        checkpoint: ObservationCheckpoint,
+    ) -> Result<(), String> {
+        self.store_observation_checkpoint(at, checkpoint, true)
+    }
+
+    fn store_observation_checkpoint(
+        &mut self,
+        at: usize,
+        checkpoint: ObservationCheckpoint,
+        verified: bool,
+    ) -> Result<(), String> {
+        checkpoint.validate_binding(self.provenance(at)?)?;
+        let allocation = checkpoint.decoder().retained_allocation();
+        self.links[at].observations = Some(Box::new(RetainedObservationCheckpoint {
+            checkpoint,
+            allocation,
+            verified,
+        }));
+        Ok(())
+    }
+
+    pub(crate) fn observation_checkpoint_bytes(&self) -> usize {
+        let mut seen = std::collections::BTreeSet::new();
+        self.links
+            .iter()
+            .filter_map(|link| link.observations.as_deref())
+            .map(|checkpoint| {
+                let (identity, bytes) = checkpoint.allocation;
+                std::mem::size_of::<RetainedObservationCheckpoint>()
+                    + if seen.insert(identity) { bytes } else { 0 }
+            })
+            .sum::<usize>()
+            + self.links.capacity() * std::mem::size_of::<Option<Box<ObservationCheckpoint>>>()
+    }
+
+    pub(crate) fn discard_observation_checkpoints(&mut self, limit: usize) -> usize {
+        let mut discarded = 0;
+        for at in 0..self.links.len() {
+            if self.observation_checkpoint_bytes() <= limit {
+                break;
+            }
+            if self.links[at].observations.take().is_some() {
+                discarded += 1;
+            }
+        }
+        discarded
     }
 
     #[must_use]
@@ -178,6 +267,15 @@ impl Chain {
             }
         }
         dropped
+    }
+
+    pub(crate) fn remove_snapshot(&mut self, snapshot: SnapId) -> Option<SnapId> {
+        let at = self.at_snapshot(snapshot)?;
+        if at == 0 {
+            return None;
+        }
+        let link = self.links.remove(at);
+        self.retire(link)
     }
 
     pub fn evict_oldest(&mut self) -> Option<SnapId> {

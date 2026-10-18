@@ -436,6 +436,52 @@ materializes the actions required by branch configuration and window scheduling;
 that work scales with prefix length. Missing-prefix checks traverse the expected
 suffix once and compare borrowed receipts rather than repeatedly walking ancestors.
 
+SDK observation decoding keeps an actual-session cursor separate from the normalized
+ordered-event commitment: its offset counts every transported SDK tuple, including
+ignored events. Successful suffix batches update cumulative registers, assertion
+generations and hidden check passes atomically. Each action retains only parks
+and reads strictly after its actual parent's observation moment. Empty suffixes
+preserve the last tuple moment and repeated observations preserve action evidence.
+Branch and replay install a checkpoint from the selected actual captured Link;
+rollback, new sessions and failures cannot reuse another lineage's cursor.
+
+Captured observation attachments use `fault-observations-v1`, included in the exact
+cache namespace. Imported attachments remain untrusted until the normal required
+machine replay or branch reconstructs the full actual SDK history and compares
+all decoder state, including hidden maps and offset. This adds full-history fetch
+and decode work on first import, but no additional machine restore. Evicted or
+missing checkpoints reconstruct actual history and validate its captured receipt.
+Expected campaign snapshots and root payloads provide no decoder authority; fresh
+root imports start from offset zero. Whole-state and ordered-event certificates
+retain their existing formats and fresh integrity checks.
+
+Optional Link checkpoints have an internal 8 MiB retention cap, including for
+sessions without a shared index. This is a performance policy, not a logical
+retention setting. Under shared-cache pressure they are discarded before certified
+VM links. Restoring an evicted checkpoint enforces the cap and reports its charge
+without moving the selected VM Link. `report_store` includes session storage plus
+unique retained decoder allocations and checkpoint metadata. Shared Arc state is
+charged once by physical identity; map storage uses a conservative per-entry bound,
+with owned string/vector capacities and Arc headers counted. Cached charges are
+computed at installation, not by rescanning maps on budget queries. Current working
+decoder and temporary decoding/accounting scratch remain target-private, as the
+previous full-history decoder scratch did; retained checkpoints sharing that state
+are still charged. Dropping optional checkpoints never changes serialized attachment
+bytes, actual receipts or leases.
+
+`observe.events` and `observe.payload_bytes` count successful suffix fetches;
+`observe.decoded_events` counts successful append transitions, including ignored
+records. Payload bytes exclude transport framing. `session.observe_decode` and
+`session.observe_projection` separate successful decode/infrastructure checks from
+capture projection. Full actual reconstruction at restore is reported separately
+as `session.observe_checkpoint_rebuild` and `observe.checkpoint_rebuild_*`, for both
+imports and local eviction fallback. Fetch counts can include batches subsequently
+rejected; failed decode/infrastructure attempts do not contribute completed timing
+samples. `observe.checkpoint_hits`, `observe.checkpoint_evictions` and
+`observe.full_rebuilds` distinguish reuse and fallback. `cache.resident_bytes`
+retains its VM-page meaning; `cache.observation_checkpoint_bytes` is the optional
+pool charge and `cache.charged_bytes` combines both reported gauges.
+
 Fault caches use exact fixed-width action-path roots. The cache object commitment
 binds both the admitted machine target and opaque captured-history attachment;
 different histories for one action path quarantine the namespace even if final

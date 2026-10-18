@@ -507,10 +507,51 @@ impl SdkDecoder {
         self.state.action_after
     }
     pub fn begin_action(&mut self, after: u64) {
+        if self.state.action_after == Some(after) {
+            return;
+        }
         let state = std::sync::Arc::make_mut(&mut self.state);
         state.action_after = Some(after);
         state.capture.parks.retain(|park| park.moment > after);
         state.capture.park_reads.retain(|read| read.moment > after);
+    }
+    pub fn retained_allocation(&self) -> (usize, usize) {
+        fn tree_entry<K, V>() -> usize {
+            16 * std::mem::size_of::<(K, V)>() + 16 * std::mem::size_of::<usize>() + 64
+        }
+        let capture = self.capture();
+        let mut bytes = std::mem::size_of::<SdkDecoderState>() + 2 * std::mem::size_of::<usize>();
+        bytes += capture.registers.len() * tree_entry::<u32, u64>();
+        bytes += capture
+            .assertions
+            .0
+            .iter()
+            .map(|(id, outcome)| {
+                tree_entry::<String, AssertionOutcome>()
+                    + id.capacity()
+                    + outcome.message.capacity()
+                    + outcome.location.capacity()
+            })
+            .sum::<usize>();
+        bytes += self
+            .state
+            .check_passes
+            .values()
+            .map(|points| {
+                tree_entry::<u64, BTreeSet<String>>()
+                    + points
+                        .iter()
+                        .map(|point| tree_entry::<String, ()>() + point.capacity())
+                        .sum::<usize>()
+            })
+            .sum::<usize>();
+        bytes += capture.parks.capacity() * std::mem::size_of::<ParkLanding>();
+        bytes += capture.park_reads.capacity() * std::mem::size_of::<ParkRead>();
+        if let Some(check) = &capture.completed_check {
+            bytes += check.points.capacity() * std::mem::size_of::<String>();
+            bytes += check.points.iter().map(String::capacity).sum::<usize>();
+        }
+        (std::sync::Arc::as_ptr(&self.state) as usize, bytes)
     }
     pub fn append(&mut self, events: &[(u64, u32, Vec<u8>)]) -> Result<usize, String> {
         if events.is_empty() {
@@ -616,6 +657,53 @@ impl SdkDecoder {
         state.offset = offset;
         *self = staged;
         Ok(processed)
+    }
+}
+
+#[cfg(feature = "consonance")]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ObservationCheckpoint {
+    version: u16,
+    receipt: [u8; 32],
+    decoder: SdkDecoder,
+}
+
+#[cfg(feature = "consonance")]
+impl ObservationCheckpoint {
+    pub(crate) fn capture(
+        receipt: &crate::history::HistoryReceipt,
+        decoder: SdkDecoder,
+    ) -> Result<Self, String> {
+        let checkpoint = Self {
+            version: 1,
+            receipt: receipt.root(),
+            decoder,
+        };
+        checkpoint.validate_binding(receipt)?;
+        Ok(checkpoint)
+    }
+    pub(crate) fn decoder(&self) -> &SdkDecoder {
+        &self.decoder
+    }
+    pub(crate) fn validate_binding(
+        &self,
+        receipt: &crate::history::HistoryReceipt,
+    ) -> Result<(), String> {
+        let after = (receipt.depth() != 0).then(|| receipt.previous_moment());
+        let observation = FaultObservations::new(
+            self.decoder.moment(),
+            self.decoder.capture(),
+            FaultStop::Deadline,
+        );
+        if self.version != 1
+            || self.receipt != receipt.root()
+            || self.decoder.action_after() != after
+            || self.decoder.moment() != receipt.moment()
+            || !receipt.matches_observation(&observation)?
+        {
+            return Err("observation checkpoint differs from captured history".to_owned());
+        }
+        self.decoder.capture().check_infrastructure_status()
     }
 }
 
