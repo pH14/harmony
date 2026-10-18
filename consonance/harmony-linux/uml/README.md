@@ -336,7 +336,9 @@ adding guest events; the final status must be infrastructure failure, with no
 guest panic and no remaining process group or work directory. The ordinary
 diamonds and launch-suite guest panic remain successful controls. Compiled
 patch probes independently inject allocation, whole-map unprotection,
-protection-reset, and destructive-restore failures for both architectures.
+protection-reset, destructive-restore, stub-rebuild, and async/epoll
+registration failures for both architectures. The IRQ probes preserve unioned
+event masks and the successful empty-mask removal path.
 
 The event hash is SHA-256 over each event's virtual time, ID, length and
 data.

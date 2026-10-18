@@ -106,7 +106,50 @@ exception.
  #include <kern_util.h>
  #include <os.h>
  #include <irq_user.h>
-@@ -438,6 +439,24 @@ void deactivate_fd(int fd, int irqnum)
+@@ -263,32 +264,40 @@
+ 	if (!to_free)
+ 		return;
+ 
+ 	if (remove)
+ 		os_del_epoll_fd(to_free->fd);
+ 	list_del(&to_free->list);
+ }
+ 
+-static bool update_irq_entry(struct irq_entry *entry)
++static bool update_irq_entry_result(struct irq_entry *entry, int *result)
+ {
+ 	enum um_irq_type i;
+ 	int events = 0;
+ 
+ 	for (i = 0; i < NUM_IRQ_TYPES; i++)
+ 		events |= entry->reg[i].events;
+ 
+ 	if (events) {
+ 		/* will modify (instead of add) if needed */
+-		os_add_epoll_fd(events, entry->fd, entry);
++		*result = os_add_epoll_fd(events, entry->fd, entry);
+ 		return true;
+ 	}
+ 
+ 	os_del_epoll_fd(entry->fd);
++	*result = 0;
+ 	return false;
++}
++
++static bool update_irq_entry(struct irq_entry *entry)
++{
++	int result;
++
++	return update_irq_entry_result(entry, &result);
+ }
+ 
+ static struct irq_entry *update_or_remove_irq_entry(struct irq_entry *entry)
+ {
+ 	if (update_irq_entry(entry))
+ 		return NULL;
+ 	remove_irq_entry(entry, false);
+ 	return entry;
+@@ -438,6 +447,29 @@ void deactivate_fd(int fd, int irqnum)
  }
  EXPORT_SYMBOL(deactivate_fd);
  
@@ -123,8 +166,13 @@ exception.
 +	struct irq_entry *entry;
 +
 +	list_for_each_entry(entry, &active_fds, list) {
-+		os_set_fd_async(entry->fd);
-+		update_irq_entry(entry);
++		int result;
++
++		if (os_set_fd_async(entry->fd) < 0)
++			os_host_failure();
++		update_irq_entry_result(entry, &result);
++		if (result < 0)
++			os_host_failure();
 +	}
 +}
 +
@@ -514,7 +562,7 @@ exception.
 +		id->syscall_fd_num = 0;
 +		ret = start_userspace(id);
 +		if (ret < 0) {
-+			printk(UM_KERN_ERR "Restoring an address space failed: %d\n", ret);
++			printk(KERN_ERR "Restoring an address space failed: %d\n", ret);
 +			os_host_failure();
 +		}
 +		unmap(id, 0, STUB_START);
