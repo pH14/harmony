@@ -169,6 +169,7 @@ pub trait CacheIndex: Send + Sync + std::fmt::Debug {
         target_commitment: [u8; 32],
         cost: u64,
     ) -> Result<Lease, CacheError>;
+    fn target_commitment(&self, lease: &Lease) -> Result<[u8; 32], CacheError>;
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError>;
     fn release(&self, lease: Lease);
     fn revoke(&self, lease: Lease);
@@ -583,6 +584,19 @@ impl CacheIndex for LocalIndex {
             key_len: key.len(),
             depth,
         })
+    }
+
+    fn target_commitment(&self, lease: &Lease) -> Result<[u8; 32], CacheError> {
+        let state = self.state();
+        if !Arc::ptr_eq(&lease.owner, &state.owner) {
+            return Err(CacheError::ForeignLease);
+        }
+        let entry = state
+            .entries
+            .get(&lease.entry)
+            .ok_or(CacheError::UnknownLease(lease.entry))?;
+        state.verify_namespace(entry.namespace)?;
+        Ok(entry.target_commitment)
     }
 
     fn chain(&self, lease: &Lease) -> Result<Vec<CommittedExtent>, CacheError> {

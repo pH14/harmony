@@ -37,7 +37,15 @@ pub(super) fn vmm_target_commitment(
     extent: &mut WritableExtent,
 ) -> Result<[u8; 32], Box<dyn Error>> {
     let delta = read_extent(extent.bytes_mut())?;
-    let sidecar = delta.sidecar;
+    let envelope = super::attachment::decode(delta.sidecar)?;
+    let actual = raw_target_commitment(envelope.raw)?;
+    if actual != envelope.machine_commitment {
+        return Err("cached machine commitment differs".into());
+    }
+    Ok(super::attachment::commitment(actual, &envelope.attachment))
+}
+
+pub(super) fn raw_target_commitment(sidecar: &[u8]) -> Result<[u8; 32], Box<dyn Error>> {
     let prefix_len = CACHE_SIDECAR_MAGIC.len() + 32;
     if sidecar.len() < prefix_len || sidecar[..CACHE_SIDECAR_MAGIC.len()] != CACHE_SIDECAR_MAGIC {
         return Err(SessionError::Portable("cached snapshot sidecar differs".into()).into());
@@ -48,6 +56,25 @@ pub(super) fn vmm_target_commitment(
     digest.update(&sidecar[..prefix_len]);
     digest.update(raw_commitment);
     Ok(digest.finalize().into())
+}
+
+type CheckedAttachment = ([u8; 32], SnapshotAttachment, [u8; 32]);
+
+pub(super) fn checked_cached_attachment(
+    extents: &[&[u8]],
+    expected: [u8; 32],
+) -> Result<CheckedAttachment, Box<dyn Error>> {
+    let target = read_extent(extents.last().ok_or("empty snapshot chain")?)?;
+    let envelope = super::attachment::decode(target.sidecar)?;
+    let machine = raw_target_commitment(envelope.raw)?;
+    if machine != envelope.machine_commitment {
+        return Err("cached machine commitment differs".into());
+    }
+    let actual = super::attachment::commitment(machine, &envelope.attachment);
+    if actual != expected {
+        return Err("cached object commitment differs".into());
+    }
+    Ok((machine, envelope.attachment, actual))
 }
 
 pub struct Session {
@@ -315,10 +342,33 @@ impl Session {
         target: SnapId,
         cost: u64,
     ) -> Result<Lease, Box<dyn Error>> {
+        self.publish_snapshot_attached(
+            index,
+            namespace,
+            key,
+            parent,
+            target,
+            &SnapshotAttachment::default(),
+            cost,
+        )
+    }
+
+    #[expect(clippy::too_many_arguments)]
+    pub fn publish_snapshot_attached(
+        &self,
+        index: &dyn CacheIndex,
+        namespace: Namespace,
+        key: &[u8],
+        parent: Option<(SnapId, &Lease)>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        cost: u64,
+    ) -> Result<Lease, Box<dyn Error>> {
         let parent = parent.filter(|(_, lease)| lease.depth() + 1 < ANCHOR_DEPTH);
-        let mut extent = self.write_delta(
+        let mut extent = self.write_delta_attached(
             parent.map(|(snap, _)| snap),
             target,
+            attachment,
             |len| Ok(index.extent(len)?),
             WritableExtent::bytes_mut,
         )?;
@@ -347,6 +397,23 @@ impl Session {
         allocate: impl FnOnce(usize) -> Result<T, Box<dyn Error>>,
         bytes: impl FnOnce(&mut T) -> &mut [u8],
     ) -> Result<T, Box<dyn Error>> {
+        self.write_delta_attached(
+            parent,
+            target,
+            &SnapshotAttachment::default(),
+            allocate,
+            bytes,
+        )
+    }
+
+    pub(super) fn write_delta_attached<T>(
+        &self,
+        parent: Option<SnapId>,
+        target: SnapId,
+        attachment: &SnapshotAttachment,
+        allocate: impl FnOnce(usize) -> Result<T, Box<dyn Error>>,
+        bytes: impl FnOnce(&mut T) -> &mut [u8],
+    ) -> Result<T, Box<dyn Error>> {
         self.loaded_image_guard.check()?;
         let delta = self
             .client
@@ -362,6 +429,8 @@ impl Session {
         sidecar.extend_from_slice(&CACHE_SIDECAR_MAGIC);
         sidecar.extend_from_slice(&self.image_identity);
         sidecar.extend_from_slice(&delta.sidecar);
+        let machine = raw_target_commitment(&sidecar)?;
+        let sidecar = super::attachment::encode(&sidecar, machine, attachment)?;
         let len = extent_len(delta.pages.len(), delta.reverted.len(), sidecar.len())
             .ok_or_else(|| SessionError::Portable("snapshot delta size overflows".into()))?;
         let mut out = allocate(len)?;
@@ -390,14 +459,32 @@ impl Session {
         lease: &Lease,
         near: SnapId,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        let receipt = self.import_cached_receipt(index, lease, near)?;
+        Ok((receipt.snapshot, receipt.moment))
+    }
+
+    pub fn import_cached_receipt(
+        &mut self,
+        index: &dyn CacheIndex,
+        lease: &Lease,
+        near: SnapId,
+    ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
         let chain = index.chain(lease)?;
         let extents: Vec<&[u8]> = chain.iter().map(CommittedExtent::bytes).collect();
+        let (machine_commitment, attachment, object_commitment) =
+            checked_cached_attachment(&extents, index.target_commitment(lease)?)?;
         let imported = self.import_extents(&extents, near)?;
         if let Err(error) = index.verify_lease(lease) {
             let _ = self.drop_snapshot(imported.0);
             return Err(error.into());
         }
-        Ok(imported)
+        Ok(CachedSnapshotReceipt {
+            snapshot: imported.0,
+            moment: imported.1,
+            machine_commitment,
+            attachment,
+            object_commitment,
+        })
     }
 
     pub(super) fn import_extents(
@@ -411,7 +498,11 @@ impl Session {
             .map(|extent| read_extent(extent))
             .collect::<Result<Vec<_>, _>>()?;
         for delta in &mut deltas {
-            delta.sidecar = self.checked_cache_sidecar(delta.sidecar)?;
+            let envelope = super::attachment::decode(delta.sidecar)?;
+            if raw_target_commitment(envelope.raw)? != envelope.machine_commitment {
+                return Err("cached machine commitment differs".into());
+            }
+            delta.sidecar = self.checked_cache_sidecar(envelope.raw)?;
         }
         let resolved = resolve(&deltas)?;
         let receipt = self
@@ -419,8 +510,11 @@ impl Session {
             .transport_mut()
             .import_sparse_delta(self.setup, near, &resolved.pages, resolved.sidecar)
             .map_err(|error| SessionError::Portable(error.to_string()))?;
+        if let Err(error) = self.loaded_image_guard.check() {
+            let _ = self.drop_handle(receipt.id);
+            return Err(error.into());
+        }
         self.snapshot_times.insert(receipt.id, receipt.at.0);
-        self.loaded_image_guard.check()?;
         Ok((receipt.id, receipt.at.0))
     }
 
@@ -1215,8 +1309,12 @@ mod tests {
         let (target, _) = source.snapshot().unwrap();
         let index = LocalIndex::new(1 << 20);
         let namespace = Namespace::new(&[b"source"]);
+        let attachment = SnapshotAttachment {
+            domain: b"test-v1".to_vec(),
+            bytes: b"actual captured evidence".to_vec(),
+        };
         let lease = source
-            .publish_snapshot(&index, namespace, b"key", None, target, 1)
+            .publish_snapshot_attached(&index, namespace, b"key", None, target, &attachment, 1)
             .unwrap();
         let before_store = destination.store_bytes();
         let before_handles = destination.snapshot_times.len();
@@ -1262,9 +1360,15 @@ mod tests {
         index.release(child_lease);
 
         let mut matched = mock_arm_session(source.config.clone(), &image);
-        let (imported, _) = matched
-            .import_cached(&index, &lease, matched.setup)
+        let receipt = matched
+            .import_cached_receipt(&index, &lease, matched.setup)
             .unwrap();
+        assert_eq!(receipt.attachment, attachment);
+        assert_eq!(
+            receipt.object_commitment,
+            index.target_commitment(&lease).unwrap()
+        );
+        let imported = receipt.snapshot;
         matched.replay_snapshot(imported).unwrap();
         assert_eq!(matched.state_hash().unwrap(), source_hash);
         assert_eq!(matched.client.transport().recorded_env().seed(), 7);
