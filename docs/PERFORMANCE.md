@@ -5,6 +5,154 @@ it falls short? We estimate that ceiling from the native CPU time of the
 workload, then account for the gap using measurements of host overhead,
 repeated work, and worker utilization.
 
+The worked examples below are historical measurements, not a baseline for every
+current executable. Integrity checks, snapshot handling and observation costs
+have changed since those runs. The [October 18 measurements](#october-18-2026-measurements)
+identify their exact prepared builds and distinguish measured work from proposed
+optimizations.
+
+## October 18, 2026 measurements
+
+These experiments address the findings tracked in [#745](https://github.com/pH14/harmony/issues/745).
+The combined source builds were prepared branches when measured; individual
+changes ship through separate reviewed PRs. Neither experiment compares old and
+new builds, and neither establishes a general campaign speedup.
+
+### Retained parent depth
+
+Source `0be4f443003edabb4860d81945587204672e6dab` was measured on an Intel
+Core Ultra 9 285HX with Linux KVM, a 1 GiB guest and an 8 GiB cache budget.
+Each mode used the same executable, one sample at each depth and no warmup.
+The IPC mode used actual worker processes and descriptor transfers. Boot and
+prefix construction were excluded from the phase timings.
+
+| Parent depth | Local restore ms | Worker restore ms | Local fresh import ms | Worker fresh import ms |
+|---:|---:|---:|---:|---:|
+| 1 | 240.279 | 266.193 | 697.479 | 731.707 |
+| 8 | 241.341 | 267.566 | 707.251 | 748.849 |
+| 32 | 242.591 | 266.733 | 719.560 | 761.850 |
+| 128 | 241.098 | 268.808 | 732.870 | 779.255 |
+| 1,024 | 245.129 | 271.708 | 779.723 | 825.282 |
+
+Every restore and imported restore performed one endpoint restore, one
+observation and one whole-request hash of 1,073,741,824 RAM bytes. None replayed
+historical actions or fetched or decoded old SDK events. Imported restores also
+performed a separate portable-import target hash and full page validation.
+Complete snapshot, certificate, observation and normalized-history comparisons
+passed across the equivalent paths. There were no watchdogs, cache refusals or
+evictions in the ten samples.
+
+This confirms bounded historical restore work for these retained parents. It
+does not make every operation constant-time: imported payload, metadata and
+validation work can grow. At depth 1,024, an import copied 40,124,416 bytes into
+the worker Store and mapped 32 serialized ranges totaling 148,578,304 bytes.
+Those mappings and copies are separate from the one whole-request hash.
+Split apply and capture timings must not be summed and presented as a measured
+fused campaign rate.
+
+Diagnostic ownership queries in this build added RPCs and guard checks outside
+the timed phases. Its raw guard and transport counter deltas therefore do not
+isolate intrinsic restore cost. The prepared follow-up tracked in #763 separates
+work-counter snapshots from those residency queries. No inferred subtraction
+was used to manufacture corrected timings.
+
+### Fixed logical work with one and two workers
+
+Source `431ba486bb000f51761785584536ae2422549acf` includes the observation
+separation and coordinator-session cleanup. One run with one worker and one run
+with two workers used the same binary, seed 7, eight jobs, a fixed admission
+window of 16, no warmup, 1 GiB per guest and an 8 GiB shared cache budget.
+Coordinator CPU 0 and worker CPUs 1 and 2 were distinct physical cores in the
+same P-core group and NUMA node; the external observer used CPU 3.
+
+| Measurement | One worker | Two workers |
+|---|---:|---:|
+| Search wall time | 181.530 s | 105.205 s |
+| Campaign wall time | 209.273 s | 133.045 s |
+| Jobs | 8 | 8 (4 per worker) |
+| New logical guest ticks | 2,960 | 2,960 |
+| Completed-result buffer peak | 1 | 2 |
+| Observed owned-session PSS peak | 1,649,364 KiB | 2,743,499 KiB |
+
+The complete output stream was byte-identical, and the entire logical report
+was equal. Normal correctness oracles remained enabled. Both external process
+supervisors reported exit zero, no timeout, no cleanup error and no owned
+leftovers; postflight checks found no remaining observed process identities or
+KVM users. An earlier calibration with leftover descendants was refused and
+was not used as the reference.
+
+All eight jobs started at the root and ran one new action. No parent import,
+reconstruction or replay occurred, and no useful objective witness was found.
+The result tests fixed-work equivalence and provides one timing observation;
+it does not test adaptive descendant selection, parent locality, search
+effectiveness, NUMA routing or a larger job budget. Sequential run order,
+thermal state, caches and host load remain confounders. PSS is a sampled
+contemporaneous sum, not an allocation bound or guaranteed peak; one final
+two-worker memory sample was unavailable after process exit.
+
+### Remaining measured costs and accounting rules
+
+Worker-lifetime SDK request and response guard timers totaled 164.007 seconds
+with one worker and 173.807 seconds across two workers. These include worker
+startup, overlap VM execution scopes, and run concurrently across workers.
+They identify substantial guard work, but are not additive wall-time fractions.
+Local service answering can remove an outer Decision RPC while retaining these
+SDK guards. Sealed executable files do not establish immutable private live
+code mappings, so they do not justify deleting live-byte checks.
+
+Shared cache lock hold time was approximately 0.13 milliseconds in each run;
+coordinator admission took milliseconds. These small root-only cases do not
+support cache-lock restructuring or background persistence as the next
+bottleneck fix. They also contain no imported-parent evidence.
+
+The retained-depth experiment does expose repeated backing descriptors: at
+depth 8, eight imported ranges belonged to an index with one live backing
+segment and no eviction. At depths 32 and 128, 32 imported ranges were bounded
+by two and eight total live segments respectively. This supports per-import
+descriptor deduplication. It does not establish persistent registration reuse,
+fewer mappings, fewer Store copies or immutable shared page ownership. At depth
+1,024, the index had 73 segments, so these aggregate statistics do not determine
+the number of distinct backings in its 32-range import.
+
+Counter interpretation must preserve ownership and scope:
+
+- Campaign target totals already sum worker profiles. Shared index and launcher
+  counters are separate owners, not additional worker copies.
+- Sending and receiving the same descriptor are two observations of one
+  transfer. Serialized bytes, copied bytes, mapped span and resident memory
+  measure different things.
+- Guard, VM run and exit timers nest. Concurrent worker timers cannot be added
+  to obtain campaign wall time.
+- Logical ticks and normalized history are not physical backend entry counts
+  or native guest instruction counts.
+- Arbitrary untracked changes to retained memory still require fresh integrity
+  verification. An incremental commitment needs an enforced immutable-object
+  and writer boundary, not merely a cached root.
+
+### Provenance and qualification limits
+
+The retained-depth executable SHA-256 is
+`75b9a15e366ff06b2da701077dc1b70c5f5a45c251a764167b418d4e62cb77a7`.
+The fixed-work executable SHA-256 is
+`7cb48f4554fc7ee5083dec314ef07fe880083c6ba4fa61bf402197147e9d6589`.
+The fixed-work stream SHA-256 is
+`a6a1a7d58816d88b84f59f89b54997fb3274caca88f56cf76758115c00e2ac8d`.
+The accepted one-worker and two-worker evidence-bundle manifest hashes are
+`2dcaf0aaf81e20478ba053b3e8c754d5fedf3850b61ccb7d82420bdbd42c1710`
+and `d5affb593636102c2f3f447d112fbe39a9f0caf9d8574719b7f65d23ac4fa127`.
+Raw evidence and independent audits are retained with this task; #745 records
+the shipping and acceptance decisions. These hashes identify evidence, not a
+standalone reproduction recipe.
+
+Normal sealed executable and workload admission remained active. Existing guest
+runtime artifacts passed the normal verifier with **host-only** qualification:
+the current source key differs from the artifact key by a host SHA-2 dependency
+lock change. No new guest runtime was built, relabeled or exempted from admission.
+These results do not claim exact runtime-input qualification or cross-build
+replay equivalence. Warm and constrained caches, RAM-size variation, repeated
+seed panels, retained-parent scaling and useful-outcome measurements remain
+necessary before broader performance conclusions.
+
 ## The model
 
 An execution is one rollout: the worker restores a state, applies a sequence
