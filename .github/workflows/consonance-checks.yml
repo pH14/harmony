@@ -162,12 +162,24 @@ jobs:
           cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
           for test in \
             rejected_msr_filter_retires_partly_reconfigured_vcpu \
+            missing_cpuid_features_reject_before_policy_mutation \
+            missing_nested_cpuid_feature_rejects_before_mutation \
             rejected_vmx_capability_read_retires_partly_initialized_vcpu; do
             timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release --all-features \
               -p vmm-backend --lib "kvm_sys::policy_diagnostic::$test" \
               -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee "cpu-state-evidence/$test.txt"
             grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "cpu-state-evidence/$test.txt"
           done
+      - name: Frozen guest CPUID survives capability admission
+        if: steps.scope.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          cpu=$(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')
+          timeout -k 10 120 taskset -c "$cpu" cargo test --locked --release --all-features \
+            -p vmm-core --test x86_cpu_snapshots \
+            live_kvm::production_cpuid_is_preserved_by_native_capability_admission \
+            -- --ignored --exact --test-threads=1 --nocapture 2>&1 | tee cpu-state-evidence/frozen-cpuid.txt
+          grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' cpu-state-evidence/frozen-cpuid.txt
       - uses: actions/upload-artifact@v4
         if: always() && steps.scope.outputs.enabled == 'true'
         with:
