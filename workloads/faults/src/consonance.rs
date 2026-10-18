@@ -41,7 +41,7 @@ use crate::target::{
 };
 
 pub const DEFAULT_RAM_MIB: u32 = 1024;
-pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v2";
+pub const SERVICE_IDENTITY: &[u8] = b"faults-standing-coverage-v3";
 pub const SESSION_SERVICE: &str = "faults";
 const SEED: u64 = 0x4661_756c_744c_6162;
 const SETUP_BUDGET: u64 = 120_000_000_000;
@@ -280,6 +280,9 @@ impl StandingHandler {
 }
 
 impl ServiceHandler for StandingHandler {
+    fn local_services(&self) -> &[u16] {
+        &[process_proto::debug::NAMESPACE]
+    }
     fn identity(&self) -> &[u8] {
         SERVICE_IDENTITY
     }
@@ -311,6 +314,7 @@ impl ServiceHandler for StandingHandler {
             )?));
         }
         if question.service() == process_proto::debug::NAMESPACE {
+            validate_debug_status(question)?;
             return Ok(ServiceResponse::Answered(ChannelAnswer::data(Vec::new())?));
         }
         if question.service() != STANDING_NAMESPACE {
@@ -353,12 +357,18 @@ pub fn service_factory() -> ServiceFactory {
     let nominal = nominal_factory();
     Arc::new(move |config: &ServiceConfig| {
         if config.identity == DEBUG_IDENTITY {
+            if !config.local_services.is_empty() {
+                return Err(ChannelError::Malformed);
+            }
             return Ok(
                 Box::new(DebugHandler::decode(&config.configuration)?) as Box<dyn ServiceHandler>
             );
         }
         if config.identity != SERVICE_IDENTITY {
             return nominal(config);
+        }
+        if config.local_services != [process_proto::debug::NAMESPACE] {
+            return Err(ChannelError::Malformed);
         }
         Ok(
             Box::new(StandingHandler::from_configuration(&config.configuration)?)
@@ -375,6 +385,7 @@ fn branch_config(
     let mut standing = inherited.to_vec();
     standing.extend(standing_windows(windows, actions)?);
     Ok(ServiceConfig {
+        local_services: vec![process_proto::debug::NAMESPACE],
         identity: SERVICE_IDENTITY.to_vec(),
         configuration: encode_configuration(
             &encode_windows(&standing)?,
@@ -6672,11 +6683,59 @@ mod tests {
     }
 
     #[test]
+    fn inactive_debug_declares_local_but_active_empty_debug_remains_external_and_validates_status()
+    {
+        let config = branch_config(ActionWindows { root_seal: 0 }, &[], &[]).unwrap();
+        let factory = service_factory();
+        let mut standing = factory(&config).unwrap();
+        assert_eq!(
+            standing.local_services(),
+            &[process_proto::debug::NAMESPACE]
+        );
+        let active = debug_configuration(&config.configuration, None).unwrap();
+        let mut debug = factory(&active).unwrap();
+        assert!(debug.local_services().is_empty());
+        let status = process_proto::debug::Status {
+            acknowledged: 3,
+            running: true,
+            exit_code: None,
+        }
+        .encode();
+        let question =
+            Question::with_request_id(7, process_proto::debug::NAMESPACE, status).unwrap();
+        for handler in [&mut standing, &mut debug] {
+            assert_eq!(
+                handler.respond(17, &question).unwrap(),
+                ServiceResponse::Answered(ChannelAnswer::Data(Vec::new()))
+            );
+            let malformed =
+                Question::with_request_id(8, process_proto::debug::NAMESPACE, Vec::new()).unwrap();
+            assert!(handler.respond(17, &malformed).is_err());
+        }
+        let message = process_proto::debug::Message {
+            id: 4,
+            operation: process_proto::debug::Operation::Execute,
+            data: b"echo same-request".to_vec(),
+        };
+        let attached = debug_configuration(&config.configuration, Some(&message)).unwrap();
+        let mut debug = factory(&attached).unwrap();
+        assert!(debug.local_services().is_empty());
+        assert_eq!(
+            debug.respond(17, &question).unwrap(),
+            ServiceResponse::Answered(ChannelAnswer::Data(message.encode().unwrap()))
+        );
+        let mut forged = config;
+        forged.local_services.clear();
+        assert!(factory(&forged).is_err());
+    }
+
+    #[test]
     fn the_factory_serves_the_nominal_service_the_setup_point_was_sealed_under() {
         let factory = service_factory();
         let handler = factory(&ServiceConfig::default()).expect("nominal service");
         assert_eq!(handler.identity(), ServiceConfig::default().identity);
         let own = factory(&ServiceConfig {
+            local_services: vec![process_proto::debug::NAMESPACE],
             identity: SERVICE_IDENTITY.to_vec(),
             configuration: encode_configuration(
                 &encode_windows(&[]).expect("an empty standing list encodes"),
@@ -6688,6 +6747,7 @@ mod tests {
         assert_eq!(own.identity(), SERVICE_IDENTITY);
         assert!(
             factory(&ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"another-package".to_vec(),
                 configuration: Vec::new(),
             })
@@ -6994,7 +7054,12 @@ pub struct DebugProgress {
     pub status: Option<process_proto::debug::Status>,
     pub output: Vec<u8>,
 }
-const DEBUG_IDENTITY: &[u8] = b"faults-debug-terminal-v1";
+fn validate_debug_status(question: &Question) -> Result<(), ChannelError> {
+    process_proto::debug::Status::decode(question.payload())
+        .map(|_| ())
+        .map_err(|_| ChannelError::Malformed)
+}
+const DEBUG_IDENTITY: &[u8] = b"faults-debug-terminal-v2";
 #[derive(Clone, Debug)]
 struct DebugHandler {
     configuration: Vec<u8>,
@@ -7031,8 +7096,7 @@ impl ServiceHandler for DebugHandler {
         question: &Question,
     ) -> Result<ServiceResponse, ChannelError> {
         if question.service() == process_proto::debug::NAMESPACE {
-            process_proto::debug::Status::decode(question.payload())
-                .map_err(|_| ChannelError::Malformed)?;
+            validate_debug_status(question)?;
             return Ok(ServiceResponse::Answered(ChannelAnswer::data(
                 self.message.clone(),
             )?));
@@ -7063,6 +7127,7 @@ fn debug_configuration(
         configuration.extend(message.encode()?);
     }
     Ok(ServiceConfig {
+        local_services: Vec::new(),
         identity: DEBUG_IDENTITY.to_vec(),
         configuration,
     })

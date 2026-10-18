@@ -301,6 +301,19 @@ pub(crate) struct SdkChannel {
     pending_snapshot: bool,
 }
 
+pub(crate) struct LocalServiceAnswer {
+    answer: channel::Answer,
+    moment: u64,
+    question: channel::Question,
+    environment: channel::RecordedEnv<Box<dyn channel::ServiceHandler>>,
+}
+
+impl LocalServiceAnswer {
+    pub(crate) fn answer(&self) -> &channel::Answer {
+        &self.answer
+    }
+}
+
 pub(crate) struct PvclockChannel {
     gpa: Option<u64>,
     armed: bool,
@@ -2027,14 +2040,68 @@ where
             .verify_handler_fingerprint_unchanged(before)
     }
 
-    pub fn sdk_snapshot_after_answer(
+    pub(crate) fn prepare_local_service_answer(
+        &self,
+    ) -> Result<Option<LocalServiceAnswer>, channel::ChannelError> {
+        let Some(sdk) = &self.sdk else {
+            return Ok(None);
+        };
+        let Some(SdkStop::Decision {
+            moment, question, ..
+        }) = &sdk.pending_stop
+        else {
+            return Ok(None);
+        };
+        channel::validate_local_services(sdk.env.handler().local_services())?;
+        if sdk
+            .env
+            .handler()
+            .local_services()
+            .binary_search(&question.service())
+            .is_err()
+        {
+            return Ok(None);
+        }
+        let before = sdk.env.handler_fingerprint()?;
+        let mut environment = sdk.env.checked_clone()?;
+        environment.set_moment(*moment);
+        let response = environment.decide(question);
+        let after = environment.handler_fingerprint();
+        sdk.env.verify_handler_fingerprint_unchanged(&before)?;
+        let response = response?;
+        let channel::ServiceResponse::Answered(answer) = response else {
+            return Ok(None);
+        };
+        if after? != before {
+            return Err(channel::ChannelError::Handler(
+                "local service answers must not change captured handler state".into(),
+            ));
+        }
+        Ok(Some(LocalServiceAnswer {
+            answer,
+            moment: *moment,
+            question: question.clone(),
+            environment,
+        }))
+    }
+
+    pub(crate) fn sdk_snapshot_after_answer(
         &self,
         moment: u64,
         question: &channel::Question,
         answer: &channel::Answer,
+        local: Option<&LocalServiceAnswer>,
     ) -> Result<(), channel::ChannelError> {
         if let Some(sdk) = &self.sdk {
-            let mut projected = sdk.env.checked_clone()?;
+            let mut projected = if let Some(local) = local {
+                if local.moment != moment || local.question != *question || local.answer != *answer
+                {
+                    return Err(channel::ChannelError::Malformed);
+                }
+                local.environment.checked_clone()?
+            } else {
+                sdk.env.checked_clone()?
+            };
             projected.record_question(moment, question, answer.clone());
             projected.snapshot_state_with_binding_reserve()?;
             if let Some(SdkStop::CoverageDecision { ready, .. }) = &sdk.pending_stop {
@@ -2145,9 +2212,10 @@ where
             .unwrap_or_default()
     }
 
-    pub fn resolve_service_answer(
+    pub(crate) fn resolve_service_answer(
         &mut self,
         answer: channel::Answer,
+        local: Option<LocalServiceAnswer>,
     ) -> Result<(u64, channel::Question), VmmError> {
         let stop = self
             .sdk
@@ -2214,6 +2282,16 @@ where
                 ));
             }
         };
+        if let Some(local) = &local
+            && (local.moment != moment
+                || local.question != question
+                || local.answer != answer
+                || opcode != 3)
+        {
+            return Err(VmmError::ContractViolation(
+                "prepared service question differs".into(),
+            ));
+        }
         let mut response = [0; HC_PAGE];
         let len = encode_response(
             ServiceId::Sdk,
@@ -2240,6 +2318,9 @@ where
                 coverage.selected,
             ));
         } else {
+            if let Some(local) = local {
+                sdk.env = local.environment;
+            }
             sdk.env.record_question(moment, &question, answer);
         }
         sdk.pending_stop = None;
@@ -3388,6 +3469,7 @@ mod tests {
     impl SeededService {
         fn config() -> ServiceConfig {
             ServiceConfig {
+                local_services: Vec::new(),
                 identity: b"vmm-seeded-service.v1".to_vec(),
                 configuration: b"seeded".to_vec(),
             }
@@ -3525,6 +3607,7 @@ mod tests {
         let mut vmm = Vmm::new(configured_mock(vec![]), GuestRam::new(TEST_RAM).unwrap());
         let state = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: b"vmm-mutating-clone-service".to_vec(),
             configuration: Vec::new(),
         };
@@ -3543,7 +3626,7 @@ mod tests {
         let (vmm, state) = mutating_clone_vmm();
         let question = channel::Question::with_request_id(77, 19, b"choose".to_vec()).unwrap();
         assert_eq!(
-            vmm.sdk_snapshot_after_answer(4, &question, &channel::Answer::Nominal),
+            vmm.sdk_snapshot_after_answer(4, &question, &channel::Answer::Nominal, None),
             Err(channel::ChannelError::Poisoned)
         );
         assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -3566,7 +3649,7 @@ mod tests {
             ready: 2,
         });
         assert!(
-            vmm.resolve_service_answer(channel::Answer::Data(7_u64.to_le_bytes().to_vec()))
+            vmm.resolve_service_answer(channel::Answer::Data(7_u64.to_le_bytes().to_vec()), None)
                 .is_err()
         );
         assert_eq!(state.load(std::sync::atomic::Ordering::SeqCst), 1);
@@ -3588,6 +3671,7 @@ mod tests {
 
     fn enable_oversized(vmm: &mut Vmm<MockBackend>, seed: u64) {
         let config = ServiceConfig {
+            local_services: Vec::new(),
             identity: TEST_SERVICE_IDENTITY.to_vec(),
             configuration: b"oversized".to_vec(),
         };
@@ -4350,14 +4434,14 @@ mod tests {
         let stopped = vmm.state_hash().unwrap();
         let invalid = channel::Answer::Data(0_u64.to_le_bytes().to_vec());
         assert!(
-            vmm.sdk_snapshot_after_answer(0, &question, &invalid)
+            vmm.sdk_snapshot_after_answer(0, &question, &invalid, None)
                 .is_err()
         );
         assert_eq!(vmm.state_hash().unwrap(), stopped);
         let answer = channel::Answer::Data(64_u64.to_le_bytes().to_vec());
-        vmm.sdk_snapshot_after_answer(0, &question, &answer)
+        vmm.sdk_snapshot_after_answer(0, &question, &answer, None)
             .unwrap();
-        vmm.resolve_service_answer(answer.clone()).unwrap();
+        vmm.resolve_service_answer(answer.clone(), None).unwrap();
         let (header, payload) = decode(&vmm.guest_memory()[RESP_GPA..RESP_GPA + HC_PAGE]).unwrap();
         assert_eq!(
             (header.opcode, header.seq, header.status),
@@ -4938,7 +5022,7 @@ mod tests {
             .unwrap()
             .encode();
         assert!(
-            vmm.resolve_service_answer(channel::Answer::Data(vec![0; MAX_PAYLOAD]))
+            vmm.resolve_service_answer(channel::Answer::Data(vec![0; MAX_PAYLOAD]), None)
                 .is_err()
         );
         assert_eq!(vmm.take_sdk_stop(), Some(stop));
@@ -5008,13 +5092,15 @@ mod tests {
         branched.sdk_restore_events(&snapshot);
         assert_eq!(branched.take_sdk_stop(), Some(stop));
         let answer = channel::Answer::Data(vec![4, 5, 6]);
-        branched.resolve_service_answer(answer.clone()).unwrap();
+        branched
+            .resolve_service_answer(answer.clone(), None)
+            .unwrap();
         assert_eq!(
-            source.resolve_service_answer(answer.clone()).unwrap(),
+            source.resolve_service_answer(answer.clone(), None).unwrap(),
             (31, question.clone())
         );
         assert_eq!(
-            restored.resolve_service_answer(answer).unwrap(),
+            restored.resolve_service_answer(answer, None).unwrap(),
             (31, question)
         );
         let source_response = source.guest_slice(RESP_GPA as u64, HC_PAGE).unwrap();
@@ -5028,7 +5114,7 @@ mod tests {
         assert_eq!(restored.sdk_events(), source.sdk_events());
         assert!(
             restored
-                .resolve_service_answer(channel::Answer::Nominal)
+                .resolve_service_answer(channel::Answer::Nominal, None)
                 .is_err()
         );
         let completed = source.sdk_snapshot().unwrap().unwrap();

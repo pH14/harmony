@@ -33,7 +33,7 @@ impl<R: Borrow<InputSpec>> ControlState<R> {
     pub fn encode(&self) -> Vec<u8> {
         let recorded = self.recorded.borrow().encode();
         let pending = self.pending.encode();
-        let mut out = b"HCSTATE2".to_vec();
+        let mut out = b"HCSTATE3".to_vec();
         out.extend_from_slice(&(recorded.len() as u64).to_le_bytes());
         out.extend_from_slice(&(pending.len() as u64).to_le_bytes());
         out.extend_from_slice(&self.exec_nonce.to_le_bytes());
@@ -60,7 +60,7 @@ impl<R: Borrow<InputSpec>> ControlState<R> {
 impl ControlState {
     pub fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         let mut input = bytes;
-        if take(&mut input, 8)? != b"HCSTATE2" {
+        if take(&mut input, 8)? != b"HCSTATE3" {
             return Err("control state magic");
         }
         let recorded_len = usize::try_from(number(&mut input)?).map_err(|_| "control length")?;
@@ -199,6 +199,9 @@ mod tests {
             state.clone()
         );
         assert_eq!(ControlState::decode(&[]), Err("truncated control state"));
+        let mut old = state.encode();
+        old[..8].copy_from_slice(b"HCSTATE2");
+        assert_eq!(ControlState::decode(&old), Err("control state magic"));
         let mut runnable = state;
         runnable.poisoned = None;
         assert_eq!(ControlState::decode(&runnable.encode()).unwrap(), runnable);

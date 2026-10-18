@@ -327,3 +327,13 @@ the numeric process-group identity limitation after leader reaping.
 The client refuses shutdown confirmation after an abandoned UML session, even
 when abandonment has already removed the live Guest. Normal confirmed shutdown
 remains idempotent.
+
+The HUMLSVC2 service checkpoint embeds the canonical local-service declaration
+from its recorded handler and rejects the previous service format. Branch,
+factory reconstruction and reseed validate this declaration along with identity
+and configuration. The declaration permits stateless local auto-answering; a
+backend may still surface an external Decision. UML deliberately retains that
+external route: it never invokes the installed custom handler for an unrecorded
+question. Explicit resolution records the supplied answer without changing SDK
+handler state, and recorded replay uses that answer. No UML auto-answer or RPC
+savings are claimed.

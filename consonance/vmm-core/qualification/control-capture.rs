@@ -58,7 +58,11 @@ macro_rules! define_arm {
             assert!(matches!(server.handle(&Request::Hello($core::control::server_caps())).unwrap().unwrap(), Reply::Hello(_)));
             if pattern != "nominal" {
                 let Reply::Snapshot { id: initial, .. } = server.handle(&Request::Snapshot).unwrap().unwrap() else { panic!("initial") };
-                let config = ServiceConfig { identity: BlobHandler::default().identity().to_vec(), configuration: vec![] };
+                let config = ServiceConfig {
+                    local_services: Vec::new(),
+                    identity: BlobHandler::default().identity().to_vec(),
+                    configuration: vec![],
+                };
                 let factory_config = config.clone();
                 server.set_service_factory(Arc::new(move |requested| {
                     assert_eq!(requested, &factory_config);

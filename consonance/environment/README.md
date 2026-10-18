@@ -8,13 +8,15 @@ supply service handlers and interpret their request and response bytes.
 `channel::RecordedEnv` records overrides by virtual moment, service namespace,
 and request identity. Guest-facing SDK requests use recorded, payload-bound
 answers, deterministic core supplies, or the built-in nominal handler. A custom
-handler's unrecorded answer is `External`: the VMM stops before delivering guest
-bytes, and `Run { resolve }` records the host's answer before resuming. A custom
+handler's unrecorded answer is `External` unless its installed canonical service
+policy declares that generic namespace local. An external question stops before
+delivering guest bytes, and `Run { resolve }` records the host's answer before
+resuming. A custom
 handler cannot claim the nominal fast path by declaring the nominal identity.
-The standalone `RecordedEnv::decide` API can still consult a handler; its
-answer does not certify a guest-facing continuation. The channel commits a
+The controller may use `RecordedEnv::decide` on a staged environment for a
+local question; this alone does not certify a guest-facing continuation. The channel commits a
 candidate handler only after a valid answer. Before and after each handler response, it
-captures the live handler's identity, configuration, and state. If a shallow
+captures the live handler's identity, configuration, dispatch policy and state. If a shallow
 clone changes that live state during an answer, external request, or error,
 the channel and its transaction clones become poisoned. They reject later
 requests and cannot produce a snapshot or state hash. Public environment clones
@@ -23,9 +25,9 @@ guest-facing SDK and VMM transactions reject a poisoned clone before accepting
 a decision or answer. Handler implementations
 must expose all mutable replay state through `snapshot_state` and keep it from
 changing outside the channel. Capturing and restoring handler state is fallible, so failed
-capture cannot produce a usable snapshot or state hash. A handler's identity
-and configuration are immutable contract selectors. An answered request that
-changes either selector only in the candidate is rejected before that
+capture cannot produce a usable snapshot or state hash. A handler's identity,
+configuration and dispatch policy are immutable contract selectors. An answered request that
+changes a selector only in the candidate is rejected before that
 candidate commits, leaving the live handler usable.
 Reseeding follows the same candidate-commit rule: a shallow clone that changes
 the original handler poisons every channel clone. Rejecting a separate candidate
@@ -37,7 +39,7 @@ if that probe changed its live handler.
 check against the handler alone without the recorded environment's snapshot
 size limits. This lets a caller retire or replay an oversized live
 recording while still detecting a shared handler changed during preparation.
-Restoring a captured handler checks both selectors on the factory result and
+Restoring a captured handler checks all selectors on the factory result and
 again after loading its state. It also checks that a new capture exactly
 reproduces the recorded state bytes. Restoring a recorded environment makes the
 same checks on a cloned handler before replacing the live one. If that clone
@@ -117,3 +119,30 @@ so repeated callbacks do not grow the answer tape. A custom contract without
 either answer stops as an explicit decision before the scheduler selection,
 threshold, or guest response commits. Generic opcode-3 service questions with
 numeric service ID 4 do not consult the coverage schedule.
+
+`ServiceHandler::local_services` declares at most 32 strictly increasing, unique
+namespace IDs above the core and coverage supplies (IDs 1–4). Empty means
+external-only. The declaration is permission: a backend may still surface an
+external decision instead of invoking local handling. `ServiceConfig` carries the same declaration; materialization,
+reseed, checked clone and snapshot restore require exact equality. The policy is
+part of recorded channel format 4, input reproducer format 8 and handler
+fingerprint domain 2. Older records are refused. Factory and handler state
+cannot silently change dispatch policy.
+
+Local answering retains the actual guest request and all doorbell guards.
+Recorded overrides win before handler execution. A handler returning `External`
+leaves the actual question pending and discards its candidate state. An answered
+candidate passes the same request binding, reproducer and SDK capacity checks
+as explicit resolution. Guarded response publication precedes installation of
+handler state, answer and cleared pending stop. Handler failures remain host
+errors; they are not empty or nominal guest replies. The policy removes an
+exported decision/resolution exchange, not a physical doorbell or guard check.
+
+Local-answer capability is deliberately stateless: an answered candidate must
+leave its complete captured handler fingerprint (identity, configuration,
+dispatch declaration and state) unchanged. A stateful answer is a typed host
+failure before response or tape publication, not an external fallback. This
+allows a fresh reproducer to use its recorded override without skipping a
+handler state transition. External handlers retain their existing stateful
+contract. Supporting stateful computed local answers would require separate
+computed-answer provenance and replay semantics and is outside this format.

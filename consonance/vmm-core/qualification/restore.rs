@@ -67,7 +67,11 @@ macro_rules! define_arm {
                 server.set_restore_mode(if in_place { RestoreMode::InPlace } else { RestoreMode::Memcpy });
                 assert!(matches!(server.handle(&Request::Hello(server_caps())).unwrap().unwrap(), Reply::Hello(_)));
                 let Reply::Snapshot { id: initial, .. } = server.handle(&Request::Snapshot).unwrap().unwrap() else { panic!("snapshot") };
-                let config = ServiceConfig { identity: BlobHandler::default().identity().to_vec(), configuration: vec![] };
+                let config = ServiceConfig {
+                    local_services: Vec::new(),
+                    identity: BlobHandler::default().identity().to_vec(),
+                    configuration: vec![],
+                };
                 let factory_config = config.clone();
                 server.set_service_factory(Arc::new(move |requested| {
                     assert_eq!(requested, &factory_config);

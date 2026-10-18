@@ -509,8 +509,12 @@ fn handler(
     factory: &ServiceFactory,
     config: &ServiceConfig,
 ) -> Result<Box<dyn environment::channel::ServiceHandler>, Box<dyn Error>> {
+    environment::channel::validate_local_services(&config.local_services)?;
     let handler = factory(config)?;
-    if handler.identity() != config.identity || handler.configuration() != config.configuration {
+    if handler.identity() != config.identity
+        || handler.configuration() != config.configuration
+        || handler.local_services() != config.local_services
+    {
         return Err(SessionError::Control(
             "the service factory built a handler for another configuration".into(),
         )
@@ -1585,6 +1589,7 @@ mod tests {
                 session.branch_with_service(
                     SnapId(1),
                     ServiceConfig {
+                        local_services: Vec::new(),
                         identity: b"aliased-uml-handler".to_vec(),
                         configuration: Vec::new(),
                     },
