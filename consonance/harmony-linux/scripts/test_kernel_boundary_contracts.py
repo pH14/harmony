@@ -321,7 +321,7 @@ int main(void) {
                     "set_page": "static void set_page(unsigned long pfn)",
                     "os_track_mark": "void os_track_mark(unsigned long long phys, unsigned long length)",
                     "open_all": "static void open_all(void)",
-                    "open_range": "static void open_range(unsigned long start, unsigned long end)",
+                    "open_range": "static void open_range(unsigned long start, unsigned long end, const char *operation)",
                     "os_track_fault": "int os_track_fault(unsigned long address)",
                     "protect_all": "static void protect_all(void)",
                     "fatal": "static void fatal(const char *what, int error)",
