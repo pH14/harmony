@@ -96,6 +96,12 @@ binaries, generated assembly/header and entropy-audit logs under
 not turn a failed build into a qualified guest bundle; its exit status remains
 nonzero and the strict executable-byte entropy audit still applies.
 
+The standalone N6 producer builds the pinned musl runtime for its native
+architecture by default, matching the other platform fixtures. This avoids
+host-libc changes importing unused stdio machinery or opcode-shaped call
+operands into the audited executable. `HARMONY_N6_CC` selects an explicit
+compiler; every resulting executable still passes the same full-byte audit.
+
 ## x86 XSAVE behavior
 
 The guest kernel canonicalizes complete XSAVE buffers while keeping AVX. The

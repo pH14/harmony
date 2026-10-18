@@ -9,8 +9,7 @@ cd "$(dirname "$0")"
 # shellcheck source=lib-build.sh disable=SC1091
 . ./lib-build.sh
 
-n6_cc=${HARMONY_N6_CC:-cc}
-require_tools "$n6_cc" cc gzip python3
+require_tools cc gzip python3
 extract_kernel # usr/gen_init_cpio.c is the deterministic packer.
 
 repo_root=$(cd ../../.. && pwd)
@@ -45,6 +44,19 @@ case "$(uname -m)" in
         exit 1
         ;;
 esac
+
+if [ -n "${HARMONY_N6_CC:-}" ]; then
+    n6_cc=$HARMONY_N6_CC
+elif [ "$arch" = x86_64 ]; then
+    echo "== N6: build pinned x86_64 musl runtime"
+    build_x86_musl
+    n6_cc=$X86_MUSL_PREFIX/bin/musl-gcc
+else
+    echo "== N6: build pinned arm64 musl runtime"
+    build_arm64_musl
+    n6_cc=$ARM64_MUSL_PREFIX/bin/musl-gcc
+fi
+require_tools "$n6_cc"
 
 echo "== N6: generator/verifier negative controls"
 python3 "$generator" --table "$table" self-test
