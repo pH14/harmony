@@ -48,6 +48,7 @@ const SETUP_BUDGET: u64 = 120_000_000_000;
 const WALL_LIMIT: Duration = Duration::from_secs(60);
 const CONSOLE_TAIL: usize = 1_500;
 const WATCHDOG_CUTOFF: &str = "fault-guest-watchdog-cutoff: ";
+const INFRASTRUCTURE_FAILURE: &str = "fault-host-infrastructure: ";
 
 pub fn replay_endpoint_certificate(
     hash: [u8; 32],
@@ -612,6 +613,7 @@ pub struct FaultTarget {
     action_observations: Vec<FaultObservations>,
     failed: bool,
     watchdog_cutoffs: u64,
+    infrastructure_failure: bool,
     execution_ticks: u64,
     guest_horizons_run: u64,
     root_seal: u64,
@@ -658,6 +660,7 @@ impl FaultTarget {
             observation,
             failed: false,
             watchdog_cutoffs: 0,
+            infrastructure_failure: false,
             execution_ticks: 0,
             guest_horizons_run: 0,
             root_seal,
@@ -700,6 +703,11 @@ impl FaultTarget {
     }
 
     #[must_use]
+    pub fn infrastructure_failure(&self) -> bool {
+        self.infrastructure_failure
+    }
+
+    #[must_use]
     pub fn execution_ticks(&self) -> u64 {
         self.execution_ticks
     }
@@ -713,7 +721,7 @@ impl FaultTarget {
         with_live(&self.config, |live| {
             live.session
                 .state_hash()
-                .map_err(|error| format!("state hash: {error}"))
+                .map_err(|error| session_failure("state hash", error.as_ref()))
         })
     }
 
@@ -906,12 +914,14 @@ impl FaultTarget {
                 self.action_observations = vec![observation];
                 self.failed = false;
                 self.watchdog_cutoffs = 0;
+                self.infrastructure_failure = false;
             }
             Err(error) => {
                 eprintln!("fault target reset failed: {error}");
                 self.history = FaultHistory::default();
                 self.failed = true;
                 self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
+                self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
             }
         }
     }
@@ -987,16 +997,22 @@ impl FaultTarget {
     ) -> Result<(), Box<dyn Error>> {
         self.action_observations.clear();
         self.watchdog_cutoffs = 0;
+        self.infrastructure_failure = false;
         match rebuilt {
             Ok(()) => {}
-            Err(error) if error.starts_with(WATCHDOG_CUTOFF) => {
+            Err(error)
+                if error.starts_with(WATCHDOG_CUTOFF)
+                    || error.starts_with(INFRASTRUCTURE_FAILURE) =>
+            {
                 self.actions.take();
                 self.history = FaultHistory::default();
                 self.observation = FaultObservations::default();
                 self.failed = true;
-                self.watchdog_cutoffs = 1;
+                self.watchdog_cutoffs = u64::from(error.starts_with(WATCHDOG_CUTOFF));
+                self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
                 self.action_observations.push(FaultObservations {
-                    watchdog_cutoff: true,
+                    watchdog_cutoff: self.watchdog_cutoffs != 0,
+                    infrastructure_failure: self.infrastructure_failure,
                     ..FaultObservations::default()
                 });
                 return Ok(());
@@ -1009,6 +1025,7 @@ impl FaultTarget {
         self.action_observations = vec![self.observation.clone()];
         self.failed = snapshot.failed;
         self.watchdog_cutoffs = 0;
+        self.infrastructure_failure = false;
         Ok(())
     }
 
@@ -1118,12 +1135,16 @@ impl FaultTarget {
             }
             Err(error) => {
                 eprintln!("fault action {action:?} failed: {error}");
-                if error.starts_with(WATCHDOG_CUTOFF) {
-                    self.watchdog_cutoffs = self.watchdog_cutoffs.saturating_add(1);
+                if error.starts_with(WATCHDOG_CUTOFF) || error.starts_with(INFRASTRUCTURE_FAILURE) {
+                    self.watchdog_cutoffs = self
+                        .watchdog_cutoffs
+                        .saturating_add(u64::from(error.starts_with(WATCHDOG_CUTOFF)));
+                    self.infrastructure_failure = error.starts_with(INFRASTRUCTURE_FAILURE);
                     let mut observation = self.observation.clone();
                     observation.parks.clear();
                     observation.park_reads.clear();
-                    observation.watchdog_cutoff = true;
+                    observation.watchdog_cutoff = error.starts_with(WATCHDOG_CUTOFF);
+                    observation.infrastructure_failure = self.infrastructure_failure;
                     self.action_observations.push(observation);
                 }
                 self.failed = true;
@@ -1231,27 +1252,26 @@ fn run_with_service_decisions(
 
 fn session_failure(what: &str, error: &(dyn Error + 'static)) -> String {
     let message = format!("{what}: {error}");
-    if matches!(
-        error.downcast_ref::<SessionError>(),
-        Some(SessionError::Hung(_) | SessionError::Abandoned)
-    ) {
-        format!("{WATCHDOG_CUTOFF}{message}")
-    } else {
-        message
+    match error.downcast_ref::<SessionError>() {
+        Some(SessionError::Hung(_)) => format!("{WATCHDOG_CUTOFF}{message}"),
+        Some(SessionError::Infrastructure(_) | SessionError::Abandoned) => {
+            format!("{INFRASTRUCTURE_FAILURE}{message}")
+        }
+        _ => message,
     }
 }
 
 impl Live {
     fn state_hash_current(&mut self) -> Result<[u8; 32], String> {
         if self.abandoned || self.session.abandoned() {
-            return Err("the current job session was abandoned".to_owned());
+            return Err(format!("{INFRASTRUCTURE_FAILURE}the current job session was abandoned"));
         }
         let result = self
             .session
             .state_hash()
-            .map_err(|error| format!("current job state hash: {error}"));
+            .map_err(|error| session_failure("current job state hash", error.as_ref()));
         if self.abandoned || self.session.abandoned() {
-            return Err("the current job session was abandoned while hashing".to_owned());
+            return Err(format!("{INFRASTRUCTURE_FAILURE}the current job session was abandoned while hashing"));
         }
         result
     }
@@ -1292,21 +1312,25 @@ impl Live {
 
     fn boot(config: &Config) -> Result<Self, String> {
         let boot_started = started();
-        let mut session =
-            Self::open(config).map_err(|error| format!("fault guest boot failed: {error}"))?;
-        let base_identity = session.root_identity().map_err(|e| e.to_string())?;
+        let mut session = Self::open(config)
+            .map_err(|error| session_failure("fault guest boot", error.as_ref()))?;
+        let base_identity = session
+            .root_identity()
+            .map_err(|error| session_failure("root identity", error.as_ref()))?;
         let (mut setup, mut root_seal) = session.setup_handle();
         let mut inherited = Vec::new();
         if let Some(root) = &config.root {
-            (setup, root_seal, inherited) =
-                import_root(session.as_mut(), root).map_err(|e| e.to_string())?;
-            session.replay_snapshot(setup).map_err(|e| e.to_string())?;
+            (setup, root_seal, inherited) = import_root(session.as_mut(), root)
+                .map_err(|error| session_failure("import root", error.as_ref()))?;
+            session
+                .replay_snapshot(setup)
+                .map_err(|error| session_failure("replay imported root", error.as_ref()))?;
         }
         let shared = match &config.cache {
             Some(index) => {
                 let setup_hash = session
                     .cache_identity()
-                    .map_err(|error| format!("setup cache identity: {error}"))?;
+                    .map_err(|error| session_failure("setup cache identity", error.as_ref()))?;
                 Some(Shared {
                     index: Arc::clone(index),
                     namespace: Namespace::exact(&[
@@ -1552,7 +1576,7 @@ impl Live {
             let drop_started = started();
             self.session
                 .drop_snapshot(snapshot)
-                .map_err(|error| format!("drop snapshot: {error}"))?;
+                .map_err(|error| session_failure("drop snapshot", error.as_ref()))?;
             self.telemetry.drops.since(drop_started);
             self.telemetry.evictions = self.telemetry.evictions.saturating_add(1);
         }
@@ -1649,7 +1673,7 @@ impl Live {
                 self.telemetry.refusals = self.telemetry.refusals.saturating_add(1);
                 Ok(None)
             }
-            Err(error) => Err(format!("publish snapshot: {error}")),
+            Err(error) => Err(session_failure("publish snapshot", error.as_ref())),
         }
     }
 
@@ -1998,8 +2022,8 @@ impl Live {
         let observation = match self.observe(stop) {
             Ok(observation) => observation,
             Err(error) => {
-                let error: Box<dyn Error> = error.into();
-                return Err(self.abandon("observe", error.as_ref()));
+                self.abandoned = true;
+                return Err(error);
             }
         };
         Ok((observation, snap))
@@ -2018,7 +2042,7 @@ impl Live {
             let events = self
                 .session
                 .sdk_events_since(decoder.offset())
-                .map_err(|error| format!("SDK events: {error}"));
+                .map_err(|error| session_failure("SDK events", error.as_ref()));
             self.telemetry.observations.since(fetch_started);
             let events = events?;
             self.telemetry.observation_events += events.len() as u64;
@@ -2318,6 +2342,7 @@ mod tests {
             action_observations: Vec::new(),
             failed: false,
             watchdog_cutoffs: 0,
+            infrastructure_failure: false,
             execution_ticks: 17,
             guest_horizons_run: 0,
             root_seal: 0,
@@ -5052,7 +5077,7 @@ mod tests {
     }
 
     #[test]
-    fn run_and_snapshot_watchdogs_share_the_recoverable_classification() {
+    fn typed_run_and_snapshot_host_failures_remain_distinct_and_incomplete() {
         let snapshot = FaultSnapshot {
             history: crate::history::FaultHistory::fixture(
                 &[],
@@ -5066,15 +5091,31 @@ mod tests {
             event_history: None,
         };
         for phase in ["run", "snapshot"] {
-            for error in [SessionError::Hung(WALL_LIMIT), SessionError::Abandoned] {
+            for error in [
+                SessionError::Hung(WALL_LIMIT),
+                SessionError::Abandoned,
+                SessionError::Infrastructure("owned UML host failure".into()),
+            ] {
                 let error: Box<dyn Error> = Box::new(error);
                 let mut target = unbooted_target();
                 target
                     .finish_restore(&snapshot, Err(session_failure(phase, error.as_ref())))
                     .unwrap();
                 assert!(target.failed());
-                assert_eq!(target.watchdog_cutoffs(), 1);
-                assert!(target.last_action_observations()[0].watchdog_cutoff);
+                let watchdog = matches!(
+                    error.downcast_ref::<SessionError>(),
+                    Some(SessionError::Hung(_))
+                );
+                assert_eq!(target.watchdog_cutoffs(), u64::from(watchdog));
+                assert_eq!(target.infrastructure_failure(), !watchdog);
+                assert_eq!(
+                    target.last_action_observations()[0].watchdog_cutoff,
+                    watchdog
+                );
+                assert_eq!(
+                    target.last_action_observations()[0].infrastructure_failure,
+                    !watchdog
+                );
             }
             assert!(
                 !session_failure(phase, &SessionError::Unboundable).starts_with(WATCHDOG_CUTOFF)
@@ -5084,8 +5125,21 @@ mod tests {
 
     #[test]
     fn observation_strings_do_not_become_typed_watchdog_errors() {
-        let error: Box<dyn Error> = SessionError::Hung(WALL_LIMIT).to_string().into();
-        assert!(!session_failure("observe", error.as_ref()).starts_with(WATCHDOG_CUTOFF));
+        for error in [
+            SessionError::Hung(WALL_LIMIT).to_string(),
+            SessionError::Infrastructure("owned host failure".into()).to_string(),
+            format!("{WATCHDOG_CUTOFF}spoof"),
+            format!("{INFRASTRUCTURE_FAILURE}spoof"),
+        ] {
+            for error in [
+                Box::<dyn Error>::from(error.clone()),
+                Box::new(SessionError::Control(error)),
+            ] {
+                let classified = session_failure("observe", error.as_ref());
+                assert!(!classified.starts_with(WATCHDOG_CUTOFF));
+                assert!(!classified.starts_with(INFRASTRUCTURE_FAILURE));
+            }
+        }
     }
 
     #[test]
@@ -5616,3 +5670,6 @@ fn debug_configuration(
         configuration,
     })
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod infrastructure_tests;

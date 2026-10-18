@@ -66,7 +66,7 @@ const DURATION_POLICY_FIELD: &str = "duration_policy";
 const REPLACEMENT_POLICY_FIELD: &str = "replacement_policy";
 const TERMINAL_POLICY_FIELD: &str = "terminal_policy";
 const HOST_FAILURE_POLICY_FIELD: &str = "host_failure_policy";
-const HOST_FAILURE_POLICY: &str = "watchdog_incomplete_v1";
+const HOST_FAILURE_POLICY: &str = "host_incomplete_v2";
 const IMAGE_FIELD: &str = "image";
 const ACTION_FORMAT_FIELD: &str = "action_format";
 const ACTION_FORMAT: &str = "fault-action-duration-coverage-v5-event-history";
@@ -333,28 +333,36 @@ fn outcome(target: &FaultTarget) -> Outcome {
 }
 
 #[derive(Debug)]
-struct WatchdogIncomplete {
+struct AttemptIncomplete {
     phase: &'static str,
+    cause: &'static str,
 }
 
-impl std::fmt::Display for WatchdogIncomplete {
+impl std::fmt::Display for AttemptIncomplete {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             formatter,
-            "fault campaign incomplete: host watchdog cutoff during {}; reservation not admitted",
-            self.phase
+            "fault campaign incomplete: {} during {}; reservation not admitted",
+            self.cause, self.phase
         )
     }
 }
 
-impl Error for WatchdogIncomplete {}
+impl Error for AttemptIncomplete {}
 
 pub(crate) fn require_completed_attempt(
     target: &FaultTarget,
     phase: &'static str,
 ) -> Result<(), Box<dyn Error>> {
-    if target.watchdog_cutoffs() != 0 {
-        return Err(Box::new(WatchdogIncomplete { phase }));
+    if target.watchdog_cutoffs() != 0 || target.infrastructure_failure() {
+        return Err(Box::new(AttemptIncomplete {
+            phase,
+            cause: if target.infrastructure_failure() {
+                "host infrastructure failure"
+            } else {
+                "guest progress watchdog cutoff"
+            },
+        }));
     }
     Ok(())
 }
@@ -1009,10 +1017,19 @@ impl Evaluation for FaultWorkload {
         if action
             .observations
             .iter()
-            .any(|observation| observation.watchdog_cutoff)
+            .any(|observation| observation.watchdog_cutoff || observation.infrastructure_failure)
         {
-            return Err(Box::new(WatchdogIncomplete {
+            return Err(Box::new(AttemptIncomplete {
                 phase: "action evidence",
+                cause: if action
+                    .observations
+                    .iter()
+                    .any(|observation| observation.infrastructure_failure)
+                {
+                    "host infrastructure failure"
+                } else {
+                    "guest progress watchdog cutoff"
+                },
             }));
         }
         merge_progress_watermark(&mut evidence.watermark, &action.observations);
@@ -1581,13 +1598,21 @@ mod tests {
             .unwrap();
         }
         let before = serde_json::to_vec(&evidence).unwrap();
-        let error = game
-            .merge_action_evidence(&mut evidence, &result(vec![cutoff]), 0, || {
-                Err("no input".into())
-            })
-            .unwrap_err();
-        assert!(error.to_string().contains("campaign incomplete"), "{error}");
-        assert_eq!(serde_json::to_vec(&evidence).unwrap(), before);
+        for incomplete in [
+            cutoff,
+            FaultObservations {
+                infrastructure_failure: true,
+                ..FaultObservations::default()
+            },
+        ] {
+            let error = game
+                .merge_action_evidence(&mut evidence, &result(vec![incomplete]), 0, || {
+                    panic!("incomplete evidence requested a certified input")
+                })
+                .unwrap_err();
+            assert!(error.to_string().contains("campaign incomplete"), "{error}");
+            assert_eq!(serde_json::to_vec(&evidence).unwrap(), before);
+        }
         assert_eq!(
             evidence.park_thresholds.get(&2),
             Some(&ParkThresholds { armed: 1, fired: 1 })
@@ -1733,7 +1758,7 @@ mod tests {
     }
 
     #[test]
-    fn recorded_policies_require_watchdog_incompleteness() {
+    fn recorded_policies_require_typed_host_incompleteness() {
         let game = game();
         let mut policies = game.policies(&run(1, vec![1, 2]));
         assert_eq!(
@@ -1744,7 +1769,7 @@ mod tests {
         assert!(game.resolve_recorded(&policies).is_err());
         policies.insert(
             HOST_FAILURE_POLICY_FIELD.to_owned(),
-            "recoverable_cutoff".into(),
+            "watchdog_incomplete_v1".into(),
         );
         assert!(game.resolve_recorded(&policies).is_err());
     }

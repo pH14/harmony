@@ -183,6 +183,19 @@ jobs:
           printf '%s\n' "$output"
           grep -Fxq 'running 1 test' <<<"$output"
           grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
+      - name: Refuse a post-checkpoint host failure before fault campaign admission
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_RUNNER: ${{ github.workspace }}/scripts/linux-sealed-test-runner.py
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: |
+          set -euo pipefail
+          output=$(cargo test --manifest-path workloads/faults/Cargo.toml -p faults-workload --locked --target ${{ matrix.architecture }}-unknown-linux-musl --features consonance --lib consonance::infrastructure_tests::published_uml_host_failure_cannot_enter_a_campaign -- --ignored --exact --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Fxq 'running 1 test' <<<"$output"
+          grep -Eq 'test result: ok\. 1 passed;' <<<"$output"
       - name: Check native FS and GS bases across reused and fresh restores
         if: matrix.architecture == 'x86_64'
         env:

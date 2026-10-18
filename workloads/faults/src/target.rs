@@ -860,6 +860,8 @@ pub struct FaultObservations {
     #[serde(default)]
     pub watchdog_cutoff: bool,
     #[serde(default)]
+    pub infrastructure_failure: bool,
+    #[serde(default)]
     pub parks: Vec<ParkLanding>,
     #[serde(default)]
     pub park_reads: Vec<ParkRead>,
@@ -903,6 +905,7 @@ impl FaultObservations {
             assertions: capture.assertions.clone(),
             stop,
             watchdog_cutoff: false,
+            infrastructure_failure: false,
             parks: capture.parks.clone(),
             park_reads: capture.park_reads.clone(),
         }
@@ -924,7 +927,9 @@ impl FaultObservations {
 
     #[must_use]
     pub fn is_bug(&self) -> bool {
-        self.stop.is_bug() || !self.violations().is_empty()
+        !self.watchdog_cutoff
+            && !self.infrastructure_failure
+            && (self.stop.is_bug() || !self.violations().is_empty())
     }
 
     #[must_use]
