@@ -466,7 +466,9 @@ ranges, kernel copies, network traffic and peer application acceptance are not
 measured by these fields. Framing completion does not imply protocol, operation
 or post-I/O guard success. Pre-I/O guard refusal records no transport attempt.
 Inactive groups are omitted and counters saturate; concurrent field snapshots
-are approximate. Existing interruption, EOF and deadline behavior is preserved.
+are approximate. Linux interruption, EOF and deadline behavior is unchanged.
+Darwin frame-continuation receives retry interrupted syscalls and reject
+unexpected descriptors before classifying an empty receive as EOF.
 
 Parent and child totals describe opposite endpoints and must not be added as
 unique traffic. Child snapshots replace cached totals on successful telemetry
