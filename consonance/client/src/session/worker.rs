@@ -4,7 +4,7 @@ use std::{
     cell::{Cell, RefCell},
     error::Error,
     ffi::OsString,
-    io::{self, Read, Write},
+    io::{self, Write},
     net::Shutdown,
     os::{
         fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd},
@@ -15,6 +15,9 @@ use std::{
     ptr::NonNull,
     time::{Duration, Instant},
 };
+
+#[cfg(any(not(target_os = "macos"), test))]
+use std::io::Read;
 
 use control_proto::{
     Answer, DecisionId, Moment, Reply, Resolution, SnapId, StopConditions, StopMask, StopReason,
@@ -634,6 +637,7 @@ fn send(stream: &UnixStream, body: &[u8], fds: &[BorrowedFd<'_>]) -> io::Result<
     writer.write_all(body)
 }
 
+#[cfg(not(target_os = "macos"))]
 #[allow(clippy::disallowed_methods)]
 fn read_exact_until(
     stream: &UnixStream,
@@ -655,6 +659,38 @@ fn read_exact_until(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn read_frame_exact(
+    stream: &UnixStream,
+    mut buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    while !buffer.is_empty() {
+        let (size, rights) = recv_with_fds(stream, buffer, deadline)?;
+        if !rights.is_empty() {
+            return Err(malformed("unexpected descriptors after frame header"));
+        }
+        if size == 0 {
+            return Err(io::ErrorKind::UnexpectedEof.into());
+        }
+        buffer = &mut buffer[size..];
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn read_frame_exact(
+    stream: &UnixStream,
+    buffer: &mut [u8],
+    deadline: Option<Instant>,
+) -> io::Result<()> {
+    if let Some(deadline) = deadline {
+        read_exact_until(stream, buffer, deadline)
+    } else {
+        (&*stream).read_exact(buffer)
+    }
+}
+
 fn recv_with_limit(
     stream: &UnixStream,
     limit: usize,
@@ -665,12 +701,7 @@ fn recv_with_limit(
     if received == 0 {
         return Err(io::ErrorKind::UnexpectedEof.into());
     }
-    let mut reader = stream;
-    if let Some(deadline) = deadline {
-        read_exact_until(stream, &mut header[received..], deadline)?;
-    } else {
-        reader.read_exact(&mut header[received..])?;
-    }
+    read_frame_exact(stream, &mut header[received..], deadline)?;
     let len = usize::try_from(u64::from_le_bytes(
         header[..8].try_into().expect("eight bytes"),
     ))
@@ -682,11 +713,7 @@ fn recv_with_limit(
         return Err(malformed("descriptor count"));
     }
     let mut body = vec![0; len];
-    if let Some(deadline) = deadline {
-        read_exact_until(stream, &mut body, deadline)?;
-    } else {
-        reader.read_exact(&mut body)?;
-    }
+    read_frame_exact(stream, &mut body, deadline)?;
     Ok((body, fds))
 }
 
@@ -2086,6 +2113,126 @@ mod tests {
             assert_eq!(rights.len(), 1);
             drop(rights);
             assert_eq!(live_task_descriptors(), active);
+        }
+        assert_eq!(live_task_descriptors(), baseline);
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", not(miri)))]
+    #[allow(clippy::disallowed_methods)]
+    fn darwin_frame_remainders_own_and_refuse_unexpected_rights() {
+        const CHILD: &str = "HARMONY_DARWIN_FRAME_RIGHTS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            const TEST: &str = concat!(
+                "session::worker::tests::",
+                "darwin_frame_remainders_own_and_refuse_unexpected_rights"
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(TEST)
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success()
+                    && stdout.lines().any(|line| line.trim() == "running 1 test"),
+                "{}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            print!("{stdout}");
+            return;
+        }
+        let baseline = live_task_descriptors();
+        for header_remainder in [true, false] {
+            for timed in [true, false] {
+                for count in [1, MAX_FDS + 8] {
+                    {
+                        let (mut sender, receiver) = UnixStream::pair().unwrap();
+                        let descriptor = tempfile::tempfile().unwrap();
+                        let active = live_task_descriptors();
+                        let mut header = [0_u8; HEADER];
+                        header[..8].copy_from_slice(&2_u64.to_le_bytes());
+                        if header_remainder {
+                            sender.write_all(&header[..1]).unwrap();
+                            assert_eq!(
+                                send_with_fds(
+                                    &sender,
+                                    &header[1..],
+                                    &vec![descriptor.as_fd(); count]
+                                )
+                                .unwrap(),
+                                HEADER - 1
+                            );
+                        } else {
+                            sender.write_all(&header).unwrap();
+                            sender.write_all(&[1]).unwrap();
+                            assert_eq!(
+                                send_with_fds(&sender, &[2], &vec![descriptor.as_fd(); count])
+                                    .unwrap(),
+                                1
+                            );
+                        }
+                        sender.shutdown(std::net::Shutdown::Write).unwrap();
+                        let deadline = timed.then(|| Instant::now() + Duration::from_secs(1));
+                        let result = recv_with_limit(&receiver, 2, deadline);
+                        assert_eq!(
+                            live_task_descriptors(),
+                            active,
+                            "unreported rights: header={header_remainder} timed={timed} count={count}"
+                        );
+                        let error = result.unwrap_err();
+                        assert!(
+                            error.to_string().contains(if count == 1 {
+                                "unexpected descriptors"
+                            } else {
+                                "too many descriptors"
+                            }),
+                            "{error}"
+                        );
+                    }
+                    assert_eq!(live_task_descriptors(), baseline);
+                }
+            }
+        }
+        {
+            let (mut sender, receiver) = UnixStream::pair().unwrap();
+            let mut header = [0_u8; HEADER];
+            header[..8].copy_from_slice(&2_u64.to_le_bytes());
+            sender.write_all(&header[..1]).unwrap();
+            sender.write_all(&header[1..]).unwrap();
+            sender.write_all(&[1, 2]).unwrap();
+            assert_eq!(recv_with_limit(&receiver, 2, None).unwrap().0, [1, 2]);
+            drop(sender);
+            assert_eq!(
+                recv_with_limit(&receiver, 2, None).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+        }
+        {
+            let (mut sender, receiver) = UnixStream::pair().unwrap();
+            assert_eq!(
+                read_frame_exact(&receiver, &mut [0; 1], Some(Instant::now()))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::TimedOut
+            );
+            sender.write_all(&[7]).unwrap();
+            sender.shutdown(Shutdown::Write).unwrap();
+            let mut body = [0; 2];
+            assert_eq!(
+                read_frame_exact(
+                    &receiver,
+                    &mut body,
+                    Some(Instant::now() + Duration::from_secs(1))
+                )
+                .unwrap_err()
+                .kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            assert_eq!(body[0], 7);
         }
         assert_eq!(live_task_descriptors(), baseline);
     }
