@@ -553,6 +553,7 @@ struct Live {
     key: [u8; 32],
     holder: u64,
     session: Box<dyn SearchSession>,
+    final_counters: Option<Vec<(String, u64)>>,
     base_identity: [u8; 32],
     setup: SnapId,
     windows: ActionWindows,
@@ -567,6 +568,7 @@ struct Live {
 static HOLDERS: AtomicU64 = AtomicU64::new(0);
 
 thread_local! {
+    static BOOTSTRAP_SESSION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static LIVE: RefCell<Option<Live>> = const { RefCell::new(None) };
     static RETIRED: RefCell<BTreeMap<String, u64>> = const { RefCell::new(BTreeMap::new()) };
 }
@@ -588,7 +590,10 @@ impl Drop for Live {
         if let Some(shared) = self.chain.shared() {
             shared.index.forget_store(self.holder);
         }
-        let counters = self.work_counters();
+        let counters = self
+            .final_counters
+            .take()
+            .unwrap_or_else(|| self.work_counters());
         let _ = RETIRED.try_with(|retired| add_counters(&mut retired.borrow_mut(), counters));
     }
 }
@@ -602,6 +607,45 @@ pub fn thread_work_telemetry() -> BTreeMap<String, u64> {
         }
     });
     counters
+}
+
+pub fn begin_bootstrap_session() -> Result<(), Box<dyn Error>> {
+    BOOTSTRAP_SESSION.with(|active| {
+        if active.replace(true) {
+            Err("a bootstrap session scope is already active".into())
+        } else {
+            Ok(())
+        }
+    })
+}
+#[cfg(any(target_os = "macos", test))]
+fn drop_target_session() {
+    if !BOOTSTRAP_SESSION.with(|active| active.get()) {
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+}
+pub fn finish_bootstrap_session() -> Result<(), Box<dyn Error>> {
+    BOOTSTRAP_SESSION.with(|active| active.set(false));
+    let live = LIVE.with(|slot| slot.borrow_mut().take());
+    if let Some(mut live) = live {
+        live.final_counters = Some(Vec::new());
+        let counters =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| live.work_counters()));
+        let telemetry_failed = match counters {
+            Ok(counters) => {
+                live.final_counters = Some(counters);
+                false
+            }
+            Err(_) => true,
+        };
+        live.session.shutdown()?;
+        if telemetry_failed {
+            return Err(
+                "bootstrap retirement telemetry panicked after cleanup was attempted".into(),
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -635,7 +679,7 @@ pub struct FaultTarget {
 #[cfg(target_os = "macos")]
 impl Drop for FaultTarget {
     fn drop(&mut self) {
-        LIVE.with(|slot| slot.borrow_mut().take());
+        drop_target_session();
     }
 }
 
@@ -1389,6 +1433,7 @@ impl Live {
         let mut telemetry = LiveTelemetry::default();
         telemetry.boot.since(boot_started);
         let mut live = Self {
+            final_counters: None,
             key: config.key,
             holder: HOLDERS.fetch_add(1, Ordering::Relaxed),
             base_identity,
@@ -2511,6 +2556,17 @@ mod tests {
     }
 
     impl SearchSession for TimedOutRestore {
+        fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+            if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
+                SHUTDOWN_CLOSED.with(|closed| closed.set(true));
+            }
+            BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(calls.get() + 1));
+            if BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.get()) {
+                Err("fixture shutdown unconfirmed".into())
+            } else {
+                Ok(())
+            }
+        }
         fn setup_handle(&self) -> (SnapId, u64) {
             (SnapId(1), 0)
         }
@@ -2545,7 +2601,17 @@ mod tests {
         }
 
         fn telemetry_counters(&self) -> Vec<(String, u64)> {
-            vec![
+            if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
+                if SHUTDOWN_TELEMETRY_PANIC.with(|value| value.get()) {
+                    panic!("injected retirement telemetry failure");
+                }
+                assert!(
+                    !SHUTDOWN_CLOSED.with(|closed| closed.get()),
+                    "telemetry queried after shutdown"
+                );
+                SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(calls.get() + 1));
+            }
+            let mut counters = vec![
                 ("test.hash_calls".to_owned(), self.hash_calls),
                 ("test.replay_calls".to_owned(), self.replay_calls),
                 ("test.branch_calls".to_owned(), self.branch_calls),
@@ -2556,7 +2622,11 @@ mod tests {
                 ),
                 ("test.sdk_events".to_owned(), self.sdk_event_count),
                 ("test.snapshots".to_owned(), self.snapshots.len() as u64),
-            ]
+            ];
+            if TRACK_SHUTDOWN_TELEMETRY.with(|track| track.get()) {
+                counters.push(("test.retirement_units".into(), 1));
+            }
+            counters
         }
 
         fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
@@ -2836,8 +2906,81 @@ mod tests {
         }
     }
 
+    thread_local! {
+        static SHUTDOWN_TELEMETRY_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static TRACK_SHUTDOWN_TELEMETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static SHUTDOWN_CLOSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static SHUTDOWN_TELEMETRY_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static BOOTSTRAP_SHUTDOWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+        static BOOTSTRAP_SHUTDOWN_FAIL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+    #[test]
+    fn bootstrap_finalization_takes_tls_once_and_reports_shutdown_failure() {
+        for fail in [false, true] {
+            BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(0));
+            BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(fail));
+            let live = timed_out_live();
+            LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+            let result = finish_bootstrap_session();
+            assert_eq!(result.is_err(), fail);
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            finish_bootstrap_session().unwrap();
+            assert_eq!(BOOTSTRAP_SHUTDOWNS.with(|calls| calls.get()), 1);
+        }
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(false));
+    }
+
+    #[test]
+    fn scoped_target_drop_defers_owned_shutdown_and_retires_telemetry_once() {
+        let previous = RETIRED.with(|retired| std::mem::take(&mut *retired.borrow_mut()));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(true));
+        SHUTDOWN_CLOSED.with(|closed| closed.set(false));
+        SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.set(0));
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.set(true));
+        begin_bootstrap_session().unwrap();
+        assert!(begin_bootstrap_session().is_err());
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        drop_target_session();
+        LIVE.with(|slot| assert!(slot.borrow().is_some()));
+        assert!(finish_bootstrap_session().is_err());
+        assert!(!BOOTSTRAP_SESSION.with(|active| active.get()));
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        finish_bootstrap_session().unwrap();
+        assert_eq!(SHUTDOWN_TELEMETRY_CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(
+            RETIRED.with(|retired| retired.borrow()["vmm.test.retirement_units"]),
+            1
+        );
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|fail| fail.set(false));
+        RETIRED.with(|retired| *retired.borrow_mut() = previous);
+    }
+
+    #[test]
+    fn retirement_telemetry_failure_does_not_prevent_owned_shutdown() {
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(true));
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(true));
+        BOOTSTRAP_SHUTDOWNS.with(|calls| calls.set(0));
+        BOOTSTRAP_SHUTDOWN_FAIL.with(|value| value.set(false));
+        begin_bootstrap_session().unwrap();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(timed_out_live()));
+        let result = finish_bootstrap_session();
+        SHUTDOWN_TELEMETRY_PANIC.with(|value| value.set(false));
+        TRACK_SHUTDOWN_TELEMETRY.with(|track| track.set(false));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("retirement telemetry panicked")
+        );
+        assert_eq!(BOOTSTRAP_SHUTDOWNS.with(|calls| calls.get()), 1);
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        assert!(!BOOTSTRAP_SESSION.with(|active| active.get()));
+    }
+
     fn timed_out_live() -> Live {
         let mut live = Live {
+            final_counters: None,
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {

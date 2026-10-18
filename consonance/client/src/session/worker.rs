@@ -79,6 +79,9 @@ const ABANDONED: u8 = 2;
 const INFRASTRUCTURE: u8 = 3;
 
 pub trait SearchSession: std::fmt::Debug {
+    fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        Err("owned session shutdown is unavailable".into())
+    }
     fn setup_handle(&self) -> (SnapId, u64);
     fn state_hash(&mut self) -> Result<[u8; 32], Box<dyn Error>>;
     fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
@@ -197,6 +200,9 @@ trait ServedSession: SearchSession {
 }
 
 impl SearchSession for Session {
+    fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        Ok(())
+    }
     fn setup_handle(&self) -> (SnapId, u64) {
         Session::setup_handle(self)
     }
@@ -1091,6 +1097,7 @@ pub struct WorkerSession {
     copies: Arc<CopyWork>,
     transport: Arc<work::Work>,
     import_reuse: crate::import_reuse::ImportReuse,
+    shutdown: Option<Result<(), String>>,
 }
 
 struct Exchange<'a>(&'a Cell<bool>);
@@ -1167,6 +1174,7 @@ impl WorkerSession {
             exchanging: Cell::new(false),
             copies: Arc::default(),
             import_reuse: Default::default(),
+            shutdown: None,
             transport,
             telemetry_queries: Cell::new(0),
             telemetry_query_failures: Cell::new(0),
@@ -1469,8 +1477,20 @@ fn exit_pause(_id: &crate::writer_lifetime::WorkerId) {
     std::thread::sleep(EXIT_POLL);
 }
 
-impl Drop for WorkerSession {
-    fn drop(&mut self) {
+impl WorkerSession {
+    fn shutdown_owned(&mut self) -> Result<(), String> {
+        if let Some(result) = &self.shutdown {
+            return result.clone();
+        }
+        self.failed.set(true);
+        self.shutdown = Some(Err(
+            "owned worker shutdown was interrupted; exit unconfirmed".into(),
+        ));
+        let result = self.shutdown_once();
+        self.shutdown = Some(result.clone());
+        result
+    }
+    fn shutdown_once(&mut self) -> Result<(), String> {
         use crate::writer_lifetime::{ExitPoll, poll_worker, retain_worker};
         let _ = self.stream.shutdown(Shutdown::Both);
         let owner = self
@@ -1481,29 +1501,48 @@ impl Drop for WorkerSession {
         let owner = owner.or_else(|| self.owner.take());
         let extents = std::mem::take(self.retained_export.get_mut());
         if owner.is_none() && extents.is_empty() {
-            return;
+            return Ok(());
         }
         let id = retain_worker(owner, extents);
         for _ in 0..EXIT_POLLS {
             match poll_worker(&id, false) {
-                ExitPoll::Exited | ExitPoll::Ambiguous => return,
+                ExitPoll::Exited => return Ok(()),
+                ExitPoll::Ambiguous => {
+                    return Err("owned worker exit is ambiguous; resources retained".into());
+                }
                 ExitPoll::Running => exit_pause(&id),
             }
         }
         crate::writer_lifetime::allow_worker_signal(&id);
-        if poll_worker(&id, true) != ExitPoll::Running {
-            return;
+        match poll_worker(&id, true) {
+            ExitPoll::Exited => return Ok(()),
+            ExitPoll::Ambiguous => {
+                return Err("owned worker exit is ambiguous; resources retained".into());
+            }
+            ExitPoll::Running => {}
         }
         for _ in 0..10 {
             match poll_worker(&id, false) {
-                ExitPoll::Exited | ExitPoll::Ambiguous => return,
+                ExitPoll::Exited => return Ok(()),
+                ExitPoll::Ambiguous => {
+                    return Err("owned worker exit is ambiguous; resources retained".into());
+                }
                 ExitPoll::Running => exit_pause(&id),
             }
         }
+        Err("owned worker exit remains unconfirmed after shutdown; resources retained".into())
+    }
+}
+impl Drop for WorkerSession {
+    fn drop(&mut self) {
+        let _ = self.shutdown_owned();
     }
 }
 
 impl SearchSession for WorkerSession {
+    fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        self.shutdown_owned().map_err(Into::into)
+    }
     fn setup_handle(&self) -> (SnapId, u64) {
         self.setup
     }
@@ -4323,6 +4362,7 @@ mod tests {
                 exchanging: Cell::new(false),
                 copies: Arc::default(),
                 import_reuse: Default::default(),
+                shutdown: None,
                 transport: Arc::default(),
                 telemetry_queries: Cell::new(0),
                 telemetry_query_failures: Cell::new(0),
@@ -5277,6 +5317,96 @@ writer.close()
     }
 
     #[test]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_confirms_an_owned_protocol_child_and_is_idempotent() {
+        use std::os::unix::process::CommandExt;
+        let (parent, child) = UnixStream::pair().unwrap();
+        let raw = child.as_raw_fd();
+        let mut command = std::process::Command::new("python3");
+        command
+            .arg("-c")
+            .arg(
+                r#"
+import os,socket,struct,sys
+s=socket.socket(fileno=int(sys.argv[1]))
+def exact(n):
+    result=b''
+    while len(result)<n:
+        part=s.recv(n-len(result))
+        if not part: raise RuntimeError('early EOF')
+        result+=part
+    return result
+length,count=struct.unpack('<QQ',exact(16))
+assert count==0 and exact(length)[0]==1
+body=struct.pack('<BQQ',0,1,10)
+s.sendall(struct.pack('<QQ',len(body),0)+body)
+while s.recv(4096): pass
+"#,
+            )
+            .arg(raw.to_string());
+        // SAFETY: the child endpoint remains owned through spawn; this post-fork closure only changes its inherited descriptor's CLOEXEC flag with fcntl.
+        unsafe {
+            command.pre_exec(move || set_cloexec(raw, false));
+        }
+        let process = command.spawn().unwrap();
+        drop(child);
+        let mut session = WorkerSession::connect(
+            WorkerConnection {
+                stream: parent,
+                process: Some(process),
+                owner: None,
+                loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
+                transport: Arc::default(),
+            },
+            &[3],
+            b"i",
+            &config(),
+            &[],
+            "fake",
+        )
+        .unwrap();
+        session.shutdown().unwrap();
+        assert!(session.process.is_none());
+        assert_eq!(session.shutdown, Some(Ok(())));
+        session.shutdown().unwrap();
+        assert!(session.call(&Out::op(STORE_BYTES), &[]).is_err());
+    }
+
+    #[test]
+    fn explicit_shutdown_retains_ambiguous_owner_and_never_repolls_on_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        #[derive(Debug)]
+        struct Ambiguous(Arc<AtomicUsize>);
+        impl crate::writer_lifetime::ExitOwner for Ambiguous {
+            fn try_exited(&mut self) -> io::Result<bool> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Err(io::Error::other("injected ambiguous wait"))
+            }
+            fn terminate(&mut self) -> io::Result<()> {
+                panic!("ambiguous owner signalled")
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (mut session, server) = threaded(3);
+        session.owner = Some(Box::new(Ambiguous(calls.clone())));
+        let index = LocalIndex::new(4096);
+        session
+            .retained_export
+            .get_mut()
+            .push(index.extent(4096).unwrap());
+        let first = session.shutdown().unwrap_err().to_string();
+        assert!(first.contains("ambiguous"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(index.stats().charged, 4096);
+        assert_eq!(session.shutdown().unwrap_err().to_string(), first);
+        drop(session);
+        crate::writer_lifetime::reap_worker_quarantine(64);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(index.stats().charged, 4096);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn actual_drop_preserves_grace_before_enabling_one_signal_and_confirming_exit() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let (parent, child) = UnixStream::pair().unwrap();
@@ -5306,6 +5436,7 @@ writer.close()
             retained_export: RefCell::new(vec![index.extent(4096).unwrap()]),
             copies: Arc::default(),
             import_reuse: Default::default(),
+            shutdown: None,
             transport: Arc::default(),
         };
         let (notice_tx, notice_rx) = std::sync::mpsc::channel();

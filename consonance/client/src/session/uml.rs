@@ -520,6 +520,13 @@ fn handler(
 }
 
 impl SearchSession for UmlSession {
+    fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        if let Some(session) = self.session.as_mut() {
+            session.shutdown()?;
+        }
+        self.session.take();
+        Ok(())
+    }
     fn setup_handle(&self) -> (SnapId, u64) {
         self.setup
     }

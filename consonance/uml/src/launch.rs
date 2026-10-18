@@ -193,6 +193,7 @@ pub struct Guest {
     started: Instant,
     wall_limit: Duration,
     finished: bool,
+    shutdown: Option<Result<(), String>>,
 }
 
 enum ConsoleRead {
@@ -650,6 +651,7 @@ impl Guest {
             started: now(),
             wall_limit: launch.wall_limit,
             finished: false,
+            shutdown: None,
         };
         Ok((guest, held))
     }
@@ -685,6 +687,9 @@ impl Guest {
     }
 
     pub fn wait_for(&mut self, needle: &str, timeout: Duration) -> io::Result<bool> {
+        if self.finished {
+            return Err(io::Error::other("guest teardown was already attempted"));
+        }
         let deadline = now() + timeout;
         loop {
             if self.console_contains(needle) {
@@ -692,7 +697,7 @@ impl Guest {
             }
             if now() >= deadline
                 || self.over_limit.load(Ordering::Acquire)
-                || self.child.try_wait()?.is_some()
+                || self.poll_owned_child()?.is_some()
             {
                 return Ok(self.console_contains(needle));
             }
@@ -722,8 +727,29 @@ impl Guest {
         self.finish(reason)
     }
 
+    fn poll_owned_child(&mut self) -> io::Result<Option<ExitStatus>> {
+        if self.finished {
+            return Err(io::Error::other("guest teardown was already attempted"));
+        }
+        #[cfg(test)]
+        OWNED_POLLS.with(|calls| calls.set(calls.get() + 1));
+        #[cfg(test)]
+        let result = if FAIL_OWNED_POLL.with(|fail| fail.get()) {
+            Err(io::Error::other("injected owned poll failure"))
+        } else {
+            self.child.try_wait()
+        };
+        #[cfg(not(test))]
+        let result = self.child.try_wait();
+        if let Err(error) = &result {
+            self.finished = true;
+            self.shutdown = Some(Err(format!("owned child wait failed: {error}")));
+        }
+        result
+    }
+
     pub(crate) fn stopped(&mut self) -> io::Result<Option<ExitReason>> {
-        let status = self.child.try_wait()?;
+        let status = self.poll_owned_child()?;
         if status.is_some_and(|status| exit_reason(status) == ExitReason::HostFailure) {
             return Ok(Some(ExitReason::HostFailure));
         }
@@ -743,10 +769,34 @@ impl Guest {
         self.finish(ExitReason::Killed)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn shutdown(&mut self) -> io::Result<()> {
+        if let Some(result) = &self.shutdown {
+            return result.clone().map_err(io::Error::other);
+        }
+        self.finish(ExitReason::Killed)?;
+        self.shutdown
+            .as_ref()
+            .expect("finish records shutdown")
+            .clone()
+            .map_err(io::Error::other)
+    }
+
     pub(crate) fn finish(&mut self, reason: ExitReason) -> io::Result<Exit> {
+        if self.finished {
+            return Err(io::Error::other("guest teardown was already attempted"));
+        }
         self.finished = true;
+        self.shutdown = Some(Err("guest teardown did not confirm exit".into()));
         let wall = self.started.elapsed();
         kill_group(self.pid);
+        #[cfg(test)]
+        {
+            OWNED_WAITS.with(|calls| calls.set(calls.get() + 1));
+            if FAIL_OWNED_WAIT.with(|fail| fail.get()) {
+                return Err(io::Error::other("injected owned wait failure"));
+            }
+        }
         let status = self.child.wait()?;
         let reason = if exit_reason(status) == ExitReason::HostFailure {
             ExitReason::HostFailure
@@ -754,6 +804,14 @@ impl Guest {
             reason
         };
         let leftovers = sweep(self.pid);
+        self.shutdown = Some(if leftovers.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "guest teardown left {} group processes",
+                leftovers.len()
+            ))
+        });
         #[cfg(test)]
         if reason == ExitReason::EventCut
             && TEST_EVENT_CUT_FINISH_PID.load(Ordering::Acquire) == self.pid
@@ -869,7 +927,17 @@ fn sweep(group: i32) -> Vec<i32> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    static GROUP_SIGNALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static OWNED_WAITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static OWNED_POLLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FAIL_OWNED_WAIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static FAIL_OWNED_POLL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
 fn kill_group(group: i32) {
+    #[cfg(test)]
+    GROUP_SIGNALS.with(|calls| calls.set(calls.get() + 1));
     // SAFETY: killpg(2) takes plain integers and has no memory effects. The
     // group id is the launched child's pid, which leads its own process group.
     unsafe {
@@ -1646,6 +1714,130 @@ mod tests {
         let mut command = Command::new("/bin/sh");
         command.args(["-c", script]).process_group(0);
         Guest::start(command, work, launch).unwrap()
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_confirms_owned_child_and_never_resignals_finished_group() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let before = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        guest.shutdown().unwrap();
+        assert_eq!(GROUP_SIGNALS.with(|calls| calls.get()), before + 1);
+        assert!(guest.child.try_wait().unwrap().is_some());
+        guest.shutdown().unwrap();
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        assert!(guest.stopped().is_err());
+        assert!(guest.wait_for("", Duration::ZERO).is_err());
+        assert_eq!(OWNED_POLLS.with(|calls| calls.get()), polls);
+        assert!(guest.finish(ExitReason::Killed).is_err());
+        drop(guest);
+        assert_eq!(GROUP_SIGNALS.with(|calls| calls.get()), before + 1);
+        assert_eq!(OWNED_WAITS.with(|calls| calls.get()), waits + 1);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_preserves_ambiguous_receipt_without_signal_or_wait_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        guest.finished = true;
+        guest.shutdown = Some(Err("injected ambiguous teardown".into()));
+        let before = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        let results: Vec<_> = (0..2)
+            .map(|_| guest.shutdown().err().map(|error| error.to_string()))
+            .collect();
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        let stopped = guest.stopped().is_err();
+        let wait_for = guest.wait_for("", Duration::ZERO).is_err();
+        let polls_after = OWNED_POLLS.with(|calls| calls.get());
+        let signals_after = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits_after = OWNED_WAITS.with(|calls| calls.get());
+        let running = guest.child.try_wait().unwrap().is_none();
+        if running {
+            guest.child.kill().unwrap();
+            guest.child.wait().unwrap();
+        }
+        assert!(results.iter().all(|result| {
+            result
+                .as_ref()
+                .is_some_and(|error| error.contains("ambiguous"))
+        }));
+        assert!(stopped && wait_for);
+        assert_eq!(polls_after, polls);
+        assert_eq!(signals_after, before);
+        assert_eq!(waits_after, waits);
+        assert!(running);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_latches_an_injected_owned_wait_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let before = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        FAIL_OWNED_WAIT.with(|fail| fail.set(true));
+        let first = guest.shutdown().err().map(|error| error.to_string());
+        FAIL_OWNED_WAIT.with(|fail| fail.set(false));
+        let second = guest.shutdown().err().map(|error| error.to_string());
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        let stopped = guest.stopped().is_err();
+        let wait_for = guest.wait_for("", Duration::ZERO).is_err();
+        let polls_after = OWNED_POLLS.with(|calls| calls.get());
+        let signals_after = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits_after = OWNED_WAITS.with(|calls| calls.get());
+        let status = guest.child.wait().unwrap();
+        if let Some(reader) = guest.reader.take() {
+            reader.join().unwrap();
+        }
+        assert!(first.is_some_and(|error| error.contains("injected owned wait failure")));
+        assert!(second.is_some_and(|error| error.contains("did not confirm exit")));
+        assert!(stopped && wait_for);
+        assert_eq!(polls_after, polls);
+        assert!(!status.success());
+        assert_eq!(signals_after, before + 1);
+        assert_eq!(waits_after, waits + 1);
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn explicit_shutdown_refuses_after_an_injected_owned_poll_failure() {
+        let directory = tempfile::tempdir().unwrap();
+        let launch = launch(directory.path());
+        let mut guest = shell(&launch, "exec sleep 60");
+        let signals = GROUP_SIGNALS.with(|calls| calls.get());
+        let waits = OWNED_WAITS.with(|calls| calls.get());
+        FAIL_OWNED_POLL.with(|fail| fail.set(true));
+        let first = guest.stopped().err().map(|error| error.to_string());
+        FAIL_OWNED_POLL.with(|fail| fail.set(false));
+        let polls = OWNED_POLLS.with(|calls| calls.get());
+        let closed = guest.shutdown().err().map(|error| error.to_string());
+        let stopped = guest.stopped().is_err();
+        let wait_for = guest.wait_for("", Duration::ZERO).is_err();
+        let after = (
+            GROUP_SIGNALS.with(|calls| calls.get()),
+            OWNED_WAITS.with(|calls| calls.get()),
+            OWNED_POLLS.with(|calls| calls.get()),
+        );
+        guest.child.kill().unwrap();
+        guest.child.wait().unwrap();
+        if let Some(reader) = guest.reader.take() {
+            reader.join().unwrap();
+        }
+        assert!(first.is_some_and(|error| error.contains("injected owned poll failure")));
+        assert!(closed.is_some_and(|error| error.contains("owned child wait failed")));
+        assert!(stopped && wait_for);
+        assert_eq!(after, (signals, waits, polls));
     }
 
     #[test]

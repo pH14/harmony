@@ -697,3 +697,17 @@ an instruction to execute those commands again during restoration.
 
 The CLI exposes this through `branch --exec`, `branch --exec-file` and
 `branch --shell`. `search --from BRANCH` restores the saved guest state.
+
+Campaign coordinator bootstrap and checkpoint resume explicitly finish their
+thread-local session before releasing execution-worker readiness. This boundary
+also runs after bootstrap construction or replay errors and on unwinding. It
+removes LIVE before teardown, so a process exit need not run main-thread TLS
+cleanup. Unconfirmed owned-session exit fails an otherwise successful bootstrap;
+a prior typed execution error remains primary, with a secondary cleanup diagnostic.
+Linux targets continue reusing their thread-local session between worker jobs.
+Target Drop is not a universal session-finalization boundary.
+
+Final cumulative telemetry is captured once before explicit session shutdown and
+merged into retired counters without a post-close RPC. It excludes teardown work;
+telemetry failure does not prevent the owned shutdown attempt. Bootstrap scope
+acquisition refuses nesting atomically, preserving the outer scope's ownership.
