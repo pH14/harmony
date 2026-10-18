@@ -449,7 +449,7 @@ fresh live evidence; no whole-state digest is cached across operations.
 Parent replay compares every archived prefix certificate with the actual receipt
 captured by that same replayed action, without hashing the endpoint a second time.
 The campaign still checks integrity and the typed watchdog-cutoff check before
-accepting the comparison. Standalone snapshots capture fresh live evidence.
+accepting the comparison.
 Cached-child hits do not materialize the action prefix. New execution still
 materializes the actions required by branch configuration and window scheduling;
 that work scales with prefix length. Missing-prefix checks traverse the expected
