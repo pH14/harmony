@@ -79,7 +79,7 @@ refusal with publication revocation.
 `Checks / Harmony Host Compatibility` also runs the Arm64-only direct leased-extent
 export regression in its existing macOS Arm64 workspace nextest suite, whose
 unified features enable the client mock backend. An exact-name PASS assertion
-in `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
+in the ANSI-stripped `host-tests.log` prevents a skipped or omitted case from satisfying coverage,
 without a second build. This covers real Session extent-copy telemetry without
 requiring a guest hardware run.
 `Checks / Harmony Host Compatibility` has a separate macOS-14 package job
