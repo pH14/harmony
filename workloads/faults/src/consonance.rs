@@ -761,31 +761,6 @@ impl FaultTarget {
         })
     }
 
-    pub fn verify_replayed_endpoint(&self, certificate: Option<[u8; 32]>) -> Result<(), String> {
-        if self.failed || !self.observation.stop.is_continuable() {
-            return Err("replayed fault prefix stopped before its archived endpoint".to_owned());
-        }
-        if self.config.uml.is_some() {
-            if certificate.is_some() {
-                return Err("UML replay unexpectedly carries a KVM endpoint certificate".to_owned());
-            }
-            return Ok(());
-        }
-        let expected = certificate.ok_or("KVM replay prefix lacks an endpoint certificate")?;
-        let actual = replay_endpoint_certificate(
-            self.state_hash_current()?,
-            self.event_history_current()?,
-            &self.observation,
-            self.failed,
-        )?;
-        if actual != expected {
-            return Err(
-                "replayed KVM prefix differs from its archived endpoint certificate".to_owned(),
-            );
-        }
-        Ok(())
-    }
-
     #[must_use]
     pub fn console_tail(&self) -> String {
         LIVE.with(|cell| {
@@ -2471,6 +2446,10 @@ mod tests {
         }
     }
 
+    thread_local! {
+        static AFTER_RUN_HASH: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = std::cell::RefCell::new(None);
+    }
+
     #[derive(Debug, Default)]
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
@@ -2506,6 +2485,13 @@ mod tests {
             self.hash_calls += 1;
             if let Some(error) = self.hash_error {
                 return Err(error().into());
+            }
+            if self.moment > 0 {
+                AFTER_RUN_HASH.with(|hook| {
+                    if let Some(hook) = hook.borrow_mut().take() {
+                        hook();
+                    }
+                });
             }
             if self.hash_failure {
                 return Err("ordinary hash failure".into());
@@ -3622,6 +3608,48 @@ mod tests {
     }
 
     #[test]
+    fn campaign_parent_replay_reports_integrity_failure_before_generic_replay_error() {
+        let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
+        let index = Arc::new(LocalIndex::new(1 << 20));
+        let namespace = Namespace::exact(&[b"replay-integrity-priority"]);
+        let mut first = publishing_live(&index, namespace, SnapId(2), [0x11; 32]);
+        first.seal_link(&[action], SnapId(2), 10, 0).unwrap();
+        let mut second = publishing_live(&index, namespace, SnapId(3), [0x22; 32]);
+        let mut target = unbooted_target();
+        Arc::get_mut(&mut target.config).unwrap().cache = Some(index.clone());
+        LIVE.with(|slot| *slot.borrow_mut() = Some(scripted_capture_live(vec![[17; 32]], false)));
+        let origin = target.snapshot().unwrap().unwrap();
+        AFTER_RUN_HASH.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                assert!(second.seal_link(&[action], SnapId(3), 10, 0).is_err());
+            }));
+        });
+        let error = crate::campaign::execute_job(
+            &mut target,
+            &origin,
+            &[action],
+            &[Some([99; 32])],
+            crate::archive::FaultMilestones::default(),
+            &[],
+            false,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<CacheError>(),
+                Some(CacheError::Quarantined { .. })
+            ),
+            "{error}"
+        );
+        assert_eq!(target.history.len(), 0);
+        assert!(target.failed());
+        LIVE.with(|slot| assert_eq!(slot.borrow().as_ref().unwrap().horizons_run, 1));
+        AFTER_RUN_HASH.with(|hook| assert!(hook.borrow().is_none()));
+        assert!(index.verify_integrity().is_err());
+        LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
     fn campaign_parent_replay_verifies_each_capture_without_rehashing_it() {
         let action = FaultOperation::Wait(std::num::NonZeroU16::MIN).into();
         for hashes in [vec![[17; 32]], vec![[17; 32], [23; 32]]] {
@@ -4156,10 +4184,17 @@ mod tests {
             }
             let replayed_observation = target.observation().clone();
             if let Some(expected) = expected {
-                let checked = target.verify_replayed_endpoint(Some(expected));
-                if let Err(error) = checked {
+                let actual = replay_endpoint_certificate(
+                    target.state_hash_current()?,
+                    target.event_history_current()?,
+                    target.observation(),
+                    target.failed(),
+                )?;
+                if actual != expected {
                     LIVE.with(|slot| slot.borrow_mut().take());
-                    return Err(error);
+                    return Err(
+                        "replayed KVM prefix differs from its archived endpoint certificate".into(),
+                    );
                 }
             }
             target.apply(second_action);
@@ -6362,7 +6397,16 @@ mod tests {
         );
         assert_eq!(snapshot.history.len(), 1);
         let certificate = snapshot.history.certificates()[0].unwrap();
-        target.verify_replayed_endpoint(Some(certificate)).unwrap();
+        assert_eq!(
+            target
+                .snapshot()
+                .unwrap()
+                .unwrap()
+                .history
+                .receipt()
+                .certificate(),
+            Some(certificate)
+        );
         let observation = target.observation().clone();
         install([12; 32]);
         assert_eq!(target.state_hash_current().unwrap(), endpoint);
@@ -6371,12 +6415,7 @@ mod tests {
             target.event_history_current().unwrap().0,
             snapshot.event_history.unwrap().0
         );
-        assert!(
-            target
-                .verify_replayed_endpoint(Some(certificate))
-                .unwrap_err()
-                .contains("differs from its archived endpoint certificate")
-        );
+        assert!(target.snapshot().unwrap_err().contains("final prefix"));
         let mut restored = unbooted_target();
         let error = restored.restore(&snapshot).unwrap_err().to_string();
         assert!(
@@ -6385,9 +6424,16 @@ mod tests {
         );
         install([11; 32]);
         restored.restore(&snapshot).unwrap();
-        restored
-            .verify_replayed_endpoint(Some(certificate))
-            .unwrap();
+        assert_eq!(
+            restored
+                .snapshot()
+                .unwrap()
+                .unwrap()
+                .history
+                .receipt()
+                .certificate(),
+            Some(certificate)
+        );
         LIVE.with(|slot| slot.borrow_mut().take());
     }
 
