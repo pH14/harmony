@@ -312,6 +312,29 @@ advancing virtual time. Supported ports keep the same assigned durations once
 their ownership and any explicit width constraint have been validated.
 The modeled 8259 master and slave command and interrupt-mask ports accept only
 byte reads and writes; other widths fail before changing masks or virtual time.
+Every V-time-wired VMM maintains a v1 ordered normalized-event commitment:
+`count` starts at zero with a zero digest; each completed normalized event
+advances a SHA-256 chain under `consonance.ordered-event-history.v1`, committing
+the preceding digest, checked cumulative count, event class, payload digest,
+virtual time after completion, and ordered interrupt deadline/vector pairs.
+The association of an interrupt with its completing event is semantic; local
+trace event indexes, schedule indexes, backend debug strings, diagnostic
+checkpoint hashes, and session segment labels are excluded. Raw-only backend
+exits do not consume a normalized ordinal. Count overflow fails the event.
+This is a constant-size history commitment, separate from logical VM state;
+the existing diagnostic log remains available independently.
+
+Fresh V-time wiring resets history. Capturing/hashing a snapshot and retiring
+its diagnostic trace do not advance or reset it. Replay and branch restore the
+captured commitment before continuation, regardless of local snapshot IDs or
+restore mode. Full portable snapshots (v8) and sparse sidecars (v10) retain its
+presence, count and digest independently of the logical state hash. Imports
+check availability against the live V-time model before creating a handle;
+unwired VMMs explicitly carry no history. These formats reject older versions.
+The control `EventHistory` request reports history only for a wired VMM.
+Checksum validation authenticates artifact bytes against corruption; comparing
+a replay requires the archived source certificate, not a newly invented history.
+
 The virtual-time LAPIC trace records both the timer deadline and interrupt
 vector. Reprogramming either value replaces the active schedule, so a vector
 rewrite cannot leave the trace naming an interrupt that the LAPIC will not raise.
