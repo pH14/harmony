@@ -3129,6 +3129,7 @@ mod tests {
             WorkerConnection {
                 stream: parent,
                 process: None,
+                owner: None,
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             },
             &[3],
@@ -4719,6 +4720,7 @@ writer.close()
             WorkerConnection {
                 stream: parent,
                 process: None,
+                owner: None,
                 loaded_image_guard: crate::image_identity::LoadedImageGuard::fixture(),
             },
             &[3],
