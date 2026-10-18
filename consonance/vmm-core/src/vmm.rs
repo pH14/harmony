@@ -340,6 +340,7 @@ where
     pub(crate) virtual_time_trace: Option<LiveVirtualTimeTrace>,
     pub(crate) doorbell_exits: u64,
     exit_telemetry: crate::host_telemetry::ExitTelemetry,
+    hash_telemetry: std::cell::Cell<crate::host_telemetry::HashTelemetry>,
     pub(crate) deferred_virtual_time_checkpoints: bool,
     virtual_time_checkpoint_events: BTreeSet<u64>,
     pub(crate) completion_staged: bool,
@@ -416,6 +417,7 @@ where
             virtual_time_trace: None,
             doorbell_exits: 0,
             exit_telemetry: crate::host_telemetry::ExitTelemetry::default(),
+            hash_telemetry: std::cell::Cell::default(),
             deferred_virtual_time_checkpoints: false,
             virtual_time_checkpoint_events: BTreeSet::new(),
             completion_staged: false,
@@ -533,7 +535,9 @@ where
     }
 
     pub fn checkpoint_virtual_time_trace(&mut self) -> Result<(), VmmError> {
-        let hash = self.state_hash()?;
+        let hash = self
+            .state_hash_preimage(crate::host_telemetry::HashSite::Checkpoint)?
+            .0;
         self.virtual_time_trace
             .as_mut()
             .ok_or_else(|| {
@@ -1286,7 +1290,8 @@ where
                 *checkpoint_due && next.is_none(),
                 self.deferred_virtual_time_checkpoints,
             ) {
-                let (hash, suffix, memory_prefix_hash) = self.state_hash_preimage()?;
+                let (hash, suffix, memory_prefix_hash) =
+                    self.state_hash_preimage(crate::host_telemetry::HashSite::Checkpoint)?;
                 if self.checkpoint_hash_preimage_armed {
                     self.checkpoint_hash_preimage = Some(CheckpointHashPreimage {
                         event_index,
@@ -1504,18 +1509,34 @@ where
     }
 
     pub fn state_hash(&mut self) -> Result<[u8; 32], VmmError> {
-        self.state_hash_preimage().map(|(hash, _, _)| hash)
+        self.state_hash_preimage(crate::host_telemetry::HashSite::WholeRequest)
+            .map(|(hash, _, _)| hash)
     }
 
-    fn state_hash_preimage(&mut self) -> Result<StateHashPreimage, VmmError> {
-        let mut hasher = Sha256::new();
-        hasher.update(b"MEM\0");
-        hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
-        hasher.update(self.ram.as_bytes());
-        let memory_prefix_hash = hasher.clone().finalize().into();
-        let suffix = self.state_blob_suffix()?;
-        hasher.update(&suffix);
-        Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
+    pub(crate) fn hash_telemetry(&self) -> crate::host_telemetry::HashTelemetry {
+        self.hash_telemetry.get()
+    }
+
+    fn state_hash_preimage(
+        &mut self,
+        site: crate::host_telemetry::HashSite,
+    ) -> Result<StateHashPreimage, VmmError> {
+        let mut work = crate::host_telemetry::HashWork::new();
+        let result = (|| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"MEM\0");
+            hasher.update((self.ram.as_bytes().len() as u64).to_le_bytes());
+            work.metadata(12);
+            hasher.update(self.ram.as_bytes());
+            work.ram(self.ram.as_bytes().len());
+            let memory_prefix_hash = hasher.clone().finalize().into();
+            let suffix = self.state_blob_suffix()?;
+            hasher.update(&suffix);
+            work.suffix(suffix.len());
+            Ok((hasher.finalize().into(), suffix, memory_prefix_hash))
+        })();
+        work.finish(&self.hash_telemetry, site, result.is_err());
+        result
     }
 
     pub fn state_components(&mut self) -> Result<Vec<(&'static str, [u8; 32])>, VmmError> {
@@ -3655,6 +3676,24 @@ mod tests {
         expected.update(vmm.state_blob().unwrap());
         let expected: [u8; 32] = expected.finalize().into();
         assert_eq!(vmm.state_hash().unwrap(), expected);
+        let cost = vmm
+            .hash_telemetry()
+            .cost(crate::host_telemetry::HashSite::WholeRequest);
+        assert_eq!(cost.calls, 1);
+        assert_eq!(cost.ram_bytes, 0x1000);
+        assert_eq!(
+            cost.suffix_bytes,
+            vmm.state_blob_suffix().unwrap().len() as u64
+        );
+        assert_eq!(cost.metadata_bytes, 12);
+        assert_eq!(cost.errors, 0);
+        assert_eq!(vmm.state_hash().unwrap(), expected);
+        assert_eq!(
+            vmm.hash_telemetry()
+                .cost(crate::host_telemetry::HashSite::WholeRequest)
+                .calls,
+            2
+        );
     }
 
     fn identity_vmm(state: VcpuState, hashing: bool) -> Vmm<MockBackend> {
@@ -7706,6 +7745,13 @@ mod tests {
                 vmm_backend::BackendError::PendingCompletion
             ))
         ));
+        let failed = vmm
+            .hash_telemetry()
+            .cost(crate::host_telemetry::HashSite::WholeRequest);
+        assert_eq!(failed.calls, 1);
+        assert_eq!(failed.errors, 1);
+        assert_eq!(failed.ram_bytes, vmm.guest_memory().len() as u64);
+        assert_eq!(failed.suffix_bytes, 0);
         vmm.backend.complete_hypercall(0).unwrap();
         vmm.backend.retire_pending_completion().unwrap();
         assert!(vmm.restore_vm_state(&before).is_err());
@@ -7856,6 +7902,19 @@ mod tests {
         for _ in 0..256 {
             assert_eq!(armed.step().unwrap(), Step::Continued);
         }
+        let cost = armed
+            .hash_telemetry()
+            .cost(crate::host_telemetry::HashSite::Checkpoint);
+        assert_eq!(cost.calls, 1);
+        assert_eq!(cost.ram_bytes, 0x2000);
+        assert_eq!(cost.errors, 0);
+        assert_eq!(
+            armed
+                .hash_telemetry()
+                .cost(crate::host_telemetry::HashSite::WholeRequest)
+                .calls,
+            0
+        );
         let retained = armed
             .take_checkpoint_hash_preimage()
             .expect("the completed 256th event retains its synchronous hash input");

@@ -195,7 +195,16 @@ fn read_event_history<R: Read>(
 }
 
 impl PortableSnapshotRef<'_> {
-    pub(crate) fn write_to<W: Write>(&self, mut writer: W) -> Result<(), PortableSnapshotError> {
+    #[cfg(test)]
+    pub(crate) fn write_to<W: Write>(&self, writer: W) -> Result<(), PortableSnapshotError> {
+        self.write_to_counted(writer, &mut crate::host_telemetry::HashWork::new())
+    }
+
+    pub(crate) fn write_to_counted<W: Write>(
+        &self,
+        mut writer: W,
+        work: &mut crate::host_telemetry::HashWork,
+    ) -> Result<(), PortableSnapshotError> {
         let sdk = self.sdk.map(encode_sdk).transpose()?;
         let policy = self.policy.encode();
         if self.vm_state.is_empty() {
@@ -210,7 +219,7 @@ impl PortableSnapshotRef<'_> {
             flags |= FLAG_TAINTED;
         }
 
-        let mut out = HashWriter::new(&mut writer);
+        let mut out = HashWriter::new(&mut writer, work);
         out.write_all(&MAGIC)?;
         put_u16(&mut out, VERSION)?;
         put_u16(&mut out, flags)?;
@@ -224,7 +233,9 @@ impl PortableSnapshotRef<'_> {
         put_u64(&mut out, self.trace_events)?;
         put_u64(&mut out, self.trace_schedules)?;
         out.write_all(&self.state_hash)?;
+        out.ram = true;
         out.write_all(self.memory)?;
+        out.ram = false;
         out.write_all(self.vm_state)?;
         if let Some(bytes) = &sdk {
             out.write_all(bytes)?;
@@ -242,10 +253,22 @@ impl PortableSnapshotRef<'_> {
 
 impl PortableSnapshot {
     pub(crate) fn read_from<R: Read>(
-        mut reader: R,
+        reader: R,
         expected_memory_len: usize,
     ) -> Result<Self, PortableSnapshotError> {
-        let mut input = HashReader::new(&mut reader);
+        Self::read_from_counted(
+            reader,
+            expected_memory_len,
+            &mut crate::host_telemetry::HashWork::new(),
+        )
+    }
+
+    pub(crate) fn read_from_counted<R: Read>(
+        mut reader: R,
+        expected_memory_len: usize,
+        work: &mut crate::host_telemetry::HashWork,
+    ) -> Result<Self, PortableSnapshotError> {
+        let mut input = HashReader::new(&mut reader, work);
         let mut magic = [0; 8];
         input.read_exact(&mut magic)?;
         if magic != MAGIC {
@@ -281,7 +304,9 @@ impl PortableSnapshot {
         let trace_schedules = get_u64(&mut input)?;
         let mut state_hash = [0; 32];
         input.read_exact(&mut state_hash)?;
+        input.ram = true;
         let memory = read_vec(&mut input, expected_memory_len)?;
+        input.ram = false;
         let vm_state = read_vec(&mut input, vm_state_len)?;
         let sdk_bytes = read_vec(&mut input, sdk_len)?;
         let policy_bytes = read_vec(&mut input, policy_len)?;
@@ -816,15 +841,19 @@ fn get_u64<R: Read>(input: &mut R) -> Result<u64, std::io::Error> {
     Ok(u64::from_le_bytes(bytes))
 }
 
-struct HashWriter<W> {
+struct HashWriter<'a, W> {
+    work: &'a mut crate::host_telemetry::HashWork,
+    ram: bool,
     inner: W,
     digest: Sha256,
 }
 
-impl<W> HashWriter<W> {
-    fn new(inner: W) -> Self {
+impl<'a, W> HashWriter<'a, W> {
+    fn new(inner: W, work: &'a mut crate::host_telemetry::HashWork) -> Self {
         Self {
             inner,
+            work,
+            ram: false,
             digest: Sha256::new(),
         }
     }
@@ -834,10 +863,15 @@ impl<W> HashWriter<W> {
     }
 }
 
-impl<W: Write> Write for HashWriter<W> {
+impl<W: Write> Write for HashWriter<'_, W> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let written = self.inner.write(bytes)?;
         self.digest.update(&bytes[..written]);
+        if self.ram {
+            self.work.ram(written);
+        } else {
+            self.work.metadata(written);
+        }
         Ok(written)
     }
 
@@ -846,15 +880,19 @@ impl<W: Write> Write for HashWriter<W> {
     }
 }
 
-struct HashReader<R> {
+struct HashReader<'a, R> {
+    work: &'a mut crate::host_telemetry::HashWork,
+    ram: bool,
     inner: R,
     digest: Sha256,
 }
 
-impl<R> HashReader<R> {
-    fn new(inner: R) -> Self {
+impl<'a, R> HashReader<'a, R> {
+    fn new(inner: R, work: &'a mut crate::host_telemetry::HashWork) -> Self {
         Self {
             inner,
+            work,
+            ram: false,
             digest: Sha256::new(),
         }
     }
@@ -864,10 +902,15 @@ impl<R> HashReader<R> {
     }
 }
 
-impl<R: Read> Read for HashReader<R> {
+impl<R: Read> Read for HashReader<'_, R> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         let read = self.inner.read(bytes)?;
         self.digest.update(&bytes[..read]);
+        if self.ram {
+            self.work.ram(read);
+        } else {
+            self.work.metadata(read);
+        }
         Ok(read)
     }
 }

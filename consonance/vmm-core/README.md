@@ -142,6 +142,29 @@ those of VMs the server has already replaced. These are host wall-clock
 measurements for performance accounting; they never enter virtual time, state
 hashes, or snapshots.
 
+`hash.<site>.calls`, `ram_bytes`, `suffix_bytes`, `metadata_bytes`, `ns` and
+`errors` describe physical SHA-256 stages. Sites are `whole_request`,
+`checkpoint`, `portable_export`, `portable_import`, `sparse_base`,
+`portable_export_envelope` and `portable_import_envelope`. Whole requests and
+checkpoints count actual memory-preimage feeds; the portable export/import
+sites also include sparse target-page commitments. Sparse-base cache hits do
+not start another hash stage. A call starts when its stage is entered, and a
+failure retains any bytes already fed. RAM bytes count actual memory slices;
+suffix bytes count the whole-state suffix; metadata bytes count domain/length
+framing, page indexes and non-RAM portable-envelope sections. Portable envelope
+counters include only bytes actually hashed after successful reads/writes,
+excluding the trailing recorded digest. Their time includes codec and I/O waits.
+
+The leaves attribute each feed once; wrapper requests do not add another
+charge. Retiring or replaying a VMM never rewinds these host totals. Snapshot
+store verification appears under `snapshot.verify.*`, with distinct BLAKE3
+resident-page and VM-state work. Timings are nested diagnostic envelopes across
+hashing and storage, not additive elapsed time. Standalone codec/comparison
+helpers outside a ControlServer do not report into a server's telemetry. These
+fields do not enter event history, portable records, cache identities, hashes,
+retention charges or search policy. Existing snapshot page metrics keep their
+original meanings.
+
 Sparse delta export holds one snapshot-store read transaction across full
 setup/parent/target integrity verification, delta planning, target comparison,
 and the first base-RAM commitment calculation. Each distinct resident page is

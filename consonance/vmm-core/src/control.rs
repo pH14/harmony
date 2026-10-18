@@ -27,7 +27,7 @@ use crate::vendor::Vendor;
 
 use crate::control_state::{ControlState, ScheduleFailure};
 use crate::exec::ExecSession;
-use crate::host_telemetry::{Cost, HostTelemetry};
+use crate::host_telemetry::{Cost, HashSite, HashTelemetry, HashWork, HostTelemetry};
 use crate::portable_snapshot::{
     PortableSnapshot, PortableSnapshotError, PortableSnapshotRef, SparseDelta,
     SparsePortableSidecarRef, SparsePortableSnapshot, SparsePortableSnapshotReceipt,
@@ -109,21 +109,33 @@ fn sparse_page_order_error(previous: Option<u64>, current: u64) -> Option<Snapsh
     None
 }
 
-fn sparse_target_pages_digest(pages: &[(u64, Arc<[u8; 4096]>)]) -> [u8; 32] {
+fn sparse_target_pages_digest(
+    pages: &[(u64, Arc<[u8; 4096]>)],
+    telemetry: &std::cell::Cell<HashTelemetry>,
+    site: HashSite,
+) -> [u8; 32] {
+    let mut work = HashWork::new();
     let mut hasher = Sha256::new();
     hasher.update(b"consonance-sparse-target-pages-v1\0");
     hasher.update((pages.len() as u64).to_le_bytes());
+    work.metadata(b"consonance-sparse-target-pages-v1\0".len() + 8);
     for (gfn, page) in pages {
         hasher.update(gfn.to_le_bytes());
         hasher.update(&page[..]);
+        work.ram(page.len());
+        work.metadata(8);
     }
-    hasher.finalize().into()
+    let digest = hasher.finalize().into();
+    work.finish(telemetry, site, false);
+    digest
 }
 
 fn sparse_delta_target_pages_digest<'a>(
     transaction: &mut SnapshotReadTransaction<'_>,
     setup: snapshot_store::SnapshotId,
     pages: impl IntoIterator<Item = (u64, &'a [u8; 4096])>,
+    telemetry: &std::cell::Cell<HashTelemetry>,
+    site: HashSite,
 ) -> Result<[u8; 32], PortableSnapshotError> {
     let mut changed = Vec::new();
     for (gfn, page) in pages {
@@ -131,14 +143,20 @@ fn sparse_delta_target_pages_digest<'a>(
             changed.push((gfn, page));
         }
     }
+    let mut work = HashWork::new();
     let mut hasher = Sha256::new();
     hasher.update(b"consonance-sparse-delta-target-pages-v1\0");
+    work.metadata(b"consonance-sparse-delta-target-pages-v1\0".len() + 8);
     hasher.update((changed.len() as u64).to_le_bytes());
     for (gfn, page) in changed {
         hasher.update(gfn.to_le_bytes());
         hasher.update(page);
+        work.ram(page.len());
+        work.metadata(8);
     }
-    Ok(hasher.finalize().into())
+    let digest = hasher.finalize().into();
+    work.finish(telemetry, site, false);
+    Ok(digest)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -232,6 +250,7 @@ pub struct ControlServer<B: Backend<A: Vendor>> {
     last_seal_dirty_gfns: Option<Vec<u64>>,
     telemetry: HostTelemetry,
     export_telemetry: std::cell::Cell<(Cost, u64)>,
+    hash_telemetry: std::cell::Cell<HashTelemetry>,
     retired_observations: Option<RetiredObservations>,
 }
 
@@ -260,12 +279,15 @@ struct SnapshotMeta {
     control_state: Vec<u8>,
 }
 
-fn hash_state_blob_parts(memory: &[u8], suffix: &[u8]) -> [u8; 32] {
+fn hash_state_blob_parts(memory: &[u8], suffix: &[u8], work: &mut HashWork) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"MEM\0");
     hasher.update((memory.len() as u64).to_le_bytes());
     hasher.update(memory);
+    work.ram(memory.len());
     hasher.update(suffix);
+    work.suffix(suffix.len());
+    work.metadata(12);
     hasher.finalize().into()
 }
 
@@ -402,6 +424,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             last_seal_dirty_gfns: None,
             telemetry: HostTelemetry::default(),
             export_telemetry: std::cell::Cell::new((Cost::default(), 0)),
+            hash_telemetry: std::cell::Cell::default(),
             retired_observations: None,
         }
     }
@@ -498,8 +521,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut telemetry = self.telemetry.clone();
         if let Some(vmm) = &self.vmm {
             telemetry.exits.merge(&vmm.exit_telemetry());
+            telemetry.hashes.merge(&vmm.hash_telemetry());
         }
         (telemetry.exports, telemetry.export_pages) = self.export_telemetry.get();
+        telemetry.hashes.merge(&self.hash_telemetry.get());
+        telemetry.verification = self.engine.store().verification_telemetry();
         telemetry.restore_fallbacks = self.in_place_fallbacks;
         telemetry
     }
@@ -508,6 +534,7 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         self.retired_observations = None;
         if let Some(vmm) = self.vmm.take() {
             self.telemetry.exits.merge(&vmm.exit_telemetry());
+            self.telemetry.hashes.merge(&vmm.hash_telemetry());
         }
     }
 
@@ -581,7 +608,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             target,
             target_id,
             SparsePageVerification::BaseAndTarget(target_id),
-            Some(sparse_target_pages_digest(&pages)),
+            Some(sparse_target_pages_digest(
+                &pages,
+                &self.hash_telemetry,
+                HashSite::PortableExport,
+            )),
         )?;
         Ok(SparsePortableSnapshot { pages, sidecar })
     }
@@ -600,8 +631,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
         let mut transaction = self.engine.read_transaction();
         let delta = transaction.page_delta(setup_id, parent_id, target_id)?;
         let target_pages = transaction.diff_pages(Some(setup_id), target_id)?;
-        let target_pages_digest =
-            sparse_delta_target_pages_digest(&mut transaction, setup_id, target_pages)?;
+        let target_pages_digest = sparse_delta_target_pages_digest(
+            &mut transaction,
+            setup_id,
+            target_pages,
+            &self.hash_telemetry,
+            HashSite::PortableExport,
+        )?;
         let base_ram_digest = self.sparse_base_ram_digest_in(setup, &mut transaction)?;
         let sidecar = self.sparse_sidecar_with_base_digest(
             target,
@@ -664,13 +700,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::Malformed(
                 "sparse base RAM length overflow",
             ))?;
-        let mut hasher = Sha256::new();
-        hasher.update(b"consonance-sparse-base-ram-v1\0");
-        hasher.update(memory_len.to_le_bytes());
-        for gfn in 0..self.engine.mem_pages() {
-            hasher.update(transaction.read_page(base_id, gfn)?);
-        }
-        let digest = hasher.finalize().into();
+        let mut work = HashWork::new();
+        let result = (|| {
+            let mut hasher = Sha256::new();
+            hasher.update(b"consonance-sparse-base-ram-v1\0");
+            hasher.update(memory_len.to_le_bytes());
+            work.metadata(b"consonance-sparse-base-ram-v1\0".len() + 8);
+            for gfn in 0..self.engine.mem_pages() {
+                let page = transaction.read_page(base_id, gfn)?;
+                hasher.update(page);
+                work.ram(page.len());
+            }
+            Ok::<[u8; 32], PortableSnapshotError>(hasher.finalize().into())
+        })();
+        work.finish(&self.hash_telemetry, HashSite::SparseBase, result.is_err());
+        let digest = result?;
         meta.base_ram_digest.set(Some(digest));
         Ok(digest)
     }
@@ -749,7 +793,11 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             base,
             pages.iter().map(|(gfn, _)| *gfn),
             sidecar,
-            Some(sparse_target_pages_digest(pages)),
+            Some(sparse_target_pages_digest(
+                pages,
+                &self.hash_telemetry,
+                HashSite::PortableImport,
+            )),
             |engine, base_id, vm_state| {
                 let mut owned_pages = Vec::new();
                 owned_pages
@@ -783,6 +831,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             &mut self.engine.read_transaction(),
             setup_id,
             pages.iter().map(|(gfn, _, page)| (*gfn, *page)),
+            &self.hash_telemetry,
+            HashSite::PortableImport,
         )?;
         let mut written = 0usize;
         let receipt = self.import_sparse_untimed(
@@ -991,10 +1041,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             .ok_or(PortableSnapshotError::UnknownSnapshot(snap.0))?;
         let memory = self.engine.materialize(store_id)?;
         let vm_state = self.engine.vm_state_bytes(store_id)?;
-        let state_hash = meta
-            .state_hash
-            .unwrap_or_else(|| hash_state_blob_parts(memory.as_slice(), &meta.state_blob_suffix));
-        PortableSnapshotRef {
+        let state_hash = meta.state_hash.unwrap_or_else(|| {
+            let mut work = HashWork::new();
+            let hash = hash_state_blob_parts(memory.as_slice(), &meta.state_blob_suffix, &mut work);
+            work.finish(&self.hash_telemetry, HashSite::PortableExport, false);
+            hash
+        });
+        let mut work = HashWork::new();
+        let exported = PortableSnapshotRef {
             memory: memory.as_slice(),
             vm_state,
             sdk: self.sdk_snaps.get(&snap.0).map(|s| &s.channel),
@@ -1008,7 +1062,13 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             tainted: meta.tainted,
             state_hash,
         }
-        .write_to(writer)?;
+        .write_to_counted(writer, &mut work);
+        work.finish(
+            &self.hash_telemetry,
+            HashSite::PortableExportEnvelope,
+            exported.is_err(),
+        );
+        exported?;
         Ok(PortableSnapshotReceipt {
             id: snap,
             at: Moment(meta.at),
@@ -1034,7 +1094,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 ))?,
         )
         .map_err(|_| PortableSnapshotError::Malformed("configured memory length"))?;
-        let portable = PortableSnapshot::read_from(reader, expected_memory_len)?;
+        let mut work = HashWork::new();
+        let portable = PortableSnapshot::read_from_counted(reader, expected_memory_len, &mut work);
+        work.finish(
+            &self.hash_telemetry,
+            HashSite::PortableImportEnvelope,
+            portable.is_err(),
+        );
+        let portable = portable?;
         let live = self.vmm.as_ref().ok_or(PortableSnapshotError::Malformed(
             "portable VM state restore validation unavailable",
         ))?;
@@ -1062,7 +1129,14 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             &portable.control_state,
             portable.tainted,
         )?;
-        if hash_state_blob_parts(&portable.memory, &suffix) != portable.state_hash {
+        let mut work = HashWork::new();
+        let hash = hash_state_blob_parts(&portable.memory, &suffix, &mut work);
+        work.finish(
+            &self.hash_telemetry,
+            HashSite::PortableImport,
+            hash != portable.state_hash,
+        );
+        if hash != portable.state_hash {
             return Err(PortableSnapshotError::Malformed(
                 "portable state hash preimage",
             ));
@@ -1259,18 +1333,21 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Request::Hash { scope } => match scope {
                 HashScope::Whole => {
                     let vmm = self.vmm.as_mut().ok_or(ServeError::Poisoned)?;
+                    let mut work = HashWork::new();
                     let mut suffix = match vmm.state_blob_suffix() {
                         Ok(suffix) => suffix,
-                        Err(error) => return capture_refusal(error),
+                        Err(error) => {
+                            work.finish(&self.hash_telemetry, HashSite::WholeRequest, true);
+                            return capture_refusal(error);
+                        }
                     };
                     self.capture_control_state()
                         .encode_and_append_hash(&mut suffix);
                     append_taint_hash(&mut suffix, self.timeline_tainted);
                     let vmm = self.vmm.as_ref().ok_or(ServeError::Poisoned)?;
-                    Ok(Ok(Reply::Hash(hash_state_blob_parts(
-                        vmm.guest_memory(),
-                        &suffix,
-                    ))))
+                    let hash = hash_state_blob_parts(vmm.guest_memory(), &suffix, &mut work);
+                    work.finish(&self.hash_telemetry, HashSite::WholeRequest, false);
+                    Ok(Ok(Reply::Hash(hash)))
                 }
                 HashScope::Disk | HashScope::Region { .. } => Ok(Err(ControlError::Unsupported)),
             },
@@ -2537,6 +2614,8 @@ fn map_terminal(reason: TerminalReason, vns: u64) -> StopReason {
 
 #[cfg(test)]
 mod tests {
+    use crate::host_telemetry::HashSite;
+    use sha2::Digest;
 
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -5136,6 +5215,164 @@ mod tests {
                 resolve: None,
             })
             .unwrap()
+    }
+
+    #[test]
+    fn hash_costs_survive_replay_retirement_without_entering_logical_state() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let expected = hash(&mut server);
+        let before = server.host_telemetry().hashes.cost(HashSite::WholeRequest);
+        let history = server.vmm().unwrap().event_history();
+        server.vmm_mut().unwrap().state_hash().unwrap();
+        let with_live = server.host_telemetry().hashes.cost(HashSite::WholeRequest);
+        assert_eq!(with_live.calls - before.calls, 1);
+        for attempt in 1..=2 {
+            assert_eq!(
+                server.handle(&Request::Replay(origin)).unwrap(),
+                Ok(Reply::Unit)
+            );
+            assert_eq!(hash(&mut server), expected);
+            assert_eq!(server.vmm().unwrap().event_history(), history);
+            let cost = server.host_telemetry().hashes.cost(HashSite::WholeRequest);
+            assert_eq!(cost.calls, with_live.calls + attempt);
+            assert_eq!(cost.ram_bytes, with_live.ram_bytes + attempt * RAM as u64);
+            assert_eq!(cost.errors, 0);
+            assert_eq!(server.host_telemetry(), server.host_telemetry());
+        }
+    }
+
+    #[test]
+    fn portable_hashes_charge_partial_memory_before_io_failure() {
+        struct LimitedWriter(usize);
+        impl std::io::Write for LimitedWriter {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                if self.0 == 0 {
+                    return Err(std::io::Error::other("planned short write"));
+                }
+                let written = self.0.min(bytes.len());
+                self.0 -= written;
+                Ok(written)
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let header_bytes = 8 + 2 + 2 + 5 * 8 + 4 * 8 + 32;
+        assert!(
+            server
+                .export_portable_snapshot(origin, LimitedWriter(header_bytes + 3))
+                .is_err()
+        );
+        let export = server
+            .host_telemetry()
+            .hashes
+            .cost(HashSite::PortableExportEnvelope);
+        assert_eq!(export.calls, 1);
+        assert_eq!(export.errors, 1);
+        assert_eq!(export.ram_bytes, 3);
+        assert_eq!(export.metadata_bytes, header_bytes as u64);
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(origin, &mut artifact)
+            .unwrap();
+        assert!(
+            server
+                .import_portable_snapshot(&artifact[..header_bytes + 3])
+                .is_err()
+        );
+        let import = server
+            .host_telemetry()
+            .hashes
+            .cost(HashSite::PortableImportEnvelope);
+        assert_eq!(import.calls, 1);
+        assert_eq!(import.errors, 1);
+        assert_eq!(import.ram_bytes, 3);
+        assert_eq!(import.metadata_bytes, header_bytes as u64);
+    }
+
+    #[test]
+    fn portable_and_sparse_hashes_count_actual_digest_feeds() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        let mut artifact = Vec::new();
+        server
+            .export_portable_snapshot(origin, &mut artifact)
+            .unwrap();
+        let export = server
+            .host_telemetry()
+            .hashes
+            .cost(HashSite::PortableExportEnvelope);
+        assert_eq!(export.calls, 1);
+        assert_eq!(export.ram_bytes, RAM as u64);
+        assert_eq!(
+            export.metadata_bytes,
+            artifact.len() as u64 - RAM as u64 - 32
+        );
+        server
+            .import_portable_snapshot(artifact.as_slice())
+            .unwrap();
+        let import = server
+            .host_telemetry()
+            .hashes
+            .cost(HashSite::PortableImportEnvelope);
+        assert_eq!(import.calls, 1);
+        assert_eq!(import.ram_bytes, RAM as u64);
+        assert_eq!(import.metadata_bytes, export.metadata_bytes);
+        assert_eq!(
+            server
+                .host_telemetry()
+                .hashes
+                .cost(HashSite::PortableImport)
+                .ram_bytes,
+            RAM as u64
+        );
+        let mut wrong_preimage = artifact.clone();
+        wrong_preimage[8 + 2 + 2 + 5 * 8 + 4 * 8] ^= 1;
+        let digest_at = wrong_preimage.len() - 32;
+        let digest = sha2::Sha256::digest(&wrong_preimage[..digest_at]);
+        wrong_preimage[digest_at..].copy_from_slice(&digest);
+        assert!(
+            server
+                .import_portable_snapshot(wrong_preimage.as_slice())
+                .is_err()
+        );
+        let preimage = server
+            .host_telemetry()
+            .hashes
+            .cost(HashSite::PortableImport);
+        assert_eq!(preimage.calls, 2);
+        assert_eq!(preimage.errors, 1);
+        assert_eq!(preimage.ram_bytes, 2 * RAM as u64);
+        artifact[0] ^= 1;
+        assert!(
+            server
+                .import_portable_snapshot(artifact.as_slice())
+                .is_err()
+        );
+        let failed = server
+            .host_telemetry()
+            .hashes
+            .cost(HashSite::PortableImportEnvelope);
+        assert_eq!(failed.calls, 3);
+        assert_eq!(failed.errors, 1);
+        assert_eq!(failed.ram_bytes, 2 * import.ram_bytes);
+        assert_eq!(failed.metadata_bytes - 2 * import.metadata_bytes, 8);
+        let before = server.host_telemetry().hashes.cost(HashSite::SparseBase);
+        server.export_sparse_delta(origin, None, origin).unwrap();
+        let first = server.host_telemetry().hashes.cost(HashSite::SparseBase);
+        assert_eq!(first.calls - before.calls, 1);
+        assert_eq!(first.ram_bytes - before.ram_bytes, RAM as u64);
+        server.export_sparse_delta(origin, None, origin).unwrap();
+        assert_eq!(
+            server.host_telemetry().hashes.cost(HashSite::SparseBase),
+            first
+        );
     }
 
     fn hash(server: &mut ControlServer<MockBackend>) -> [u8; 32] {
