@@ -15,8 +15,8 @@ optimizations.
 
 These experiments address the findings tracked in [#745](https://github.com/pH14/harmony/issues/745).
 The combined source builds were prepared branches when measured; individual
-changes ship through separate reviewed PRs. Neither experiment compares old and
-new builds, and neither establishes a general campaign speedup.
+changes ship through separate reviewed PRs. The three evidence groups below
+identify distinct builds and scopes. None compares old and new builds or establishes a general campaign speedup.
 
 ### Retained parent depth
 
@@ -95,9 +95,68 @@ two-worker memory sample was unavailable after process exit. Unmapped cache
 memfd pages are outside process PSS, so it does not measure total cache memory
 or total host memory. The shared index charged 181,239,808 bytes in each run.
 
+### SDK callback attribution: a separate reference build
+
+Source `5978c157c91bc09d65a8d2cb4f868998d29be941` combines SDK dispatch
+attribution, local service answering and coordinator-session cleanup. Its one
+etcd run used one worker, seed 7, eight root jobs, a window of 16, no warmup,
+a 1 GiB guest and an 8 GiB cache. The jobs completed 2,960 logical ticks, with
+zero reported execution failures, guard errors or cache refusals. The strict
+external supervisor accepted exit zero, no timeout and no owned leftovers;
+postflight found no KVM users or remaining sampled process identities.
+
+This is a first reference for that new build: `oracle_compared=false`. Its full
+typed stream and logical report were retained, but there was no second arm and
+no equality comparison against the `431ba486` pair. Local service answering
+changes execution boundaries, so the timings must not be used as a cross-build
+speedup comparison. All jobs selected the root; no parent import, descendant
+locality or NUMA routing was measured.
+
+Worker 0 recorded 33,912 request callbacks and 35,190 response callbacks. The
+fixed opcode bins partitioned 165.147338 seconds of outer SDK guard callback
+time:
+
+| Callback class | Callback seconds | Share of worker callback time |
+|---|---:|---:|
+| Coverage | 136.186522 | 82.464% |
+| Event | 19.762110 | 11.966% |
+| Service | 9.193030 | 5.567% |
+| Pvclock | 0.005676 | 0.003% |
+| Event subset: state-shaped payload | 18.521066 | 11.215% |
+
+The last row is part of Event, not an additional bin. It comprises 3,861 requests
+with namespace 2, payload length 9 and first payload byte 0, matching the
+workload's state-publication encoding. It accounts for 93.720% of Event callback
+time. This shape does not identify individual registers or establish semantic
+completion. Twelve exact shape witnesses and zero overflow accounted for the
+complete Event partition. All fixed-bin deferred counts were zero. Service had
+1,278 requests and 2,556 response callbacks; counts describe actual callback
+sites, not an assumed one-response-per-request contract.
+
+The separately captured retired coordinator had an empty before profile and
+11.005412 seconds of SDK callbacks afterward: 99.675% Coverage and no state-shaped
+Events. Its five shape witnesses also had zero overflow. Worker target totals
+already include child telemetry. Do not add the coordinator, Event subsets,
+inner guard timers, VM run timers or target aggregates to manufacture a
+critical-path total. Callback elapsed time is neither successful response-write
+count nor semantic-outcome count; its share is not a wall-time speedup bound.
+
+Coverage exchanges arbitrate scheduling and the next coverage threshold; they
+are not logical kernel ticks or mere edge reports. No ready-count histogram was
+recorded, so the result does not identify how often only one runnable choice was
+reported. Coverage deserves investigation before assuming that register
+publication is the dominant cost, but no guard removal, larger quantum or
+batching benefit follows from these measurements.
+
+The frozen build has a known response-guard failure path that can lose prior
+Console and SDK observations. This successful arm reported zero guard errors;
+it does not qualify failure-path observation preservation. Later repairs and
+any performance comparison require their own source-bound evidence.
+
 ### Remaining measured costs and accounting rules
 
-Worker-lifetime SDK request and response guard timers totaled 164.007 seconds
+For the `431ba486` pair, worker-lifetime SDK request and response guard timers
+totaled 164.007 seconds
 with one worker and 173.807 seconds across two workers. These include worker
 startup, overlap VM execution scopes, and run concurrently across workers.
 They identify substantial guard work, but are not additive wall-time fractions.
@@ -105,7 +164,8 @@ Local service answering can remove an outer Decision RPC while retaining these
 SDK guards. Sealed executable files do not establish immutable private live
 code mappings, so they do not justify deleting live-byte checks.
 
-Shared cache lock hold time was approximately 0.13 milliseconds in each run;
+In that pair, shared cache lock hold time was approximately 0.13 milliseconds
+in each run;
 coordinator admission took 2.802 and 0.375 milliseconds respectively. These small
 root-only cases do not support cache-lock restructuring or background persistence as the next
 bottleneck fix. They also contain no imported-parent evidence.
@@ -138,12 +198,12 @@ Arbitrary untracked changes to retained memory still require fresh integrity
 verification. An incremental commitment needs an enforced immutable-object and
 writer boundary, not merely a cached root.
 
-A proposed SHA-256 main-prefix reuse for the host executable guard was rejected.
-A synthetic counterexample using the exact comparison helper changed the current
-live and sealed read streams identically. Their equality did not establish that
-those bytes still matched admission: the cached prefix retained the old identity,
-while fresh main hashing changed it. Fresh main-code hashing therefore remains
-required. This was a synthetic proof, not physical fault injection or a benchmark.
+The Linux sealed-executable guard must freshly hash main code at each check.
+Equality of the current live and sealed read streams does not prove they still
+match admission. A native macOS synthetic counterexample using the exact helper
+changed both streams identically: fresh main hashing changed the identity while
+an admission prefix did not. This covers synthetic readers, not Linux physical
+fault injection or a benchmark.
 
 ### Provenance and qualification limits
 
@@ -153,22 +213,38 @@ The fixed-work executable SHA-256 is
 `7cb48f4554fc7ee5083dec314ef07fe880083c6ba4fa61bf402197147e9d6589`.
 The fixed-work stream SHA-256 is
 `a6a1a7d58816d88b84f59f89b54997fb3274caca88f56cf76758115c00e2ac8d`.
+The SDK-attribution reference executable SHA-256 is
+`77042b48abe2dbc0cea06f324fbaad7ef4b4bcb08d4caaed578db2a83338322e`.
+Its raw evidence manifest is
+`fed31654fa37f92b6cd1abbb8814af1a0b05842c6b840a86153a9dd62bd171ce`,
+and its preceding no-VM qualification manifest is
+`ec7d44ff9d212bb9e2dc5d40942f53bd16897682f874a441b0cb148dd6a0e74d`.
 The accepted one-worker and two-worker evidence-bundle manifest hashes are
 `2dcaf0aaf81e20478ba053b3e8c754d5fedf3850b61ccb7d82420bdbd42c1710`
 and `d5affb593636102c2f3f447d112fbe39a9f0caf9d8574719b7f65d23ac4fa127`.
 Raw bundles and independent audits are not published with this document. They
-are retained locally under `/tmp/consonance-foundation-hardware` and
-`/tmp/consonance-fixed-work-scaling-lifecycle-v3`, with remote source, binaries
-and runtime inputs on ms02 under `/var/tmp/consonance-foundation-0be4f44` and
-`/var/tmp/consonance-fixed-work-scaling-lifecycle-v3-431ba486`. These are task
-retention locations, not durable public downloads. Issue #745 records shipping
+are retained locally under `/tmp/consonance-foundation-hardware`,
+`/tmp/consonance-fixed-work-scaling-lifecycle-v3` and
+`/tmp/consonance-fixed-work-sdk-attribution-v1`, with remote source, binaries
+and runtime inputs on ms02 under `/var/tmp/consonance-foundation-0be4f44`,
+`/var/tmp/consonance-fixed-work-scaling-lifecycle-v3-431ba486` and
+`/var/tmp/consonance-sdk-attribution-v1-5978c157`. The synthetic integrity proof is
+retained under `/tmp/sealed-prefix-correlated-read-proof`, manifest
+`e09c48136ca5ad72e22e6ef0e9f49e82264a20395bba8c2017ec245bd8f9b1e2`.
+These are temporary retention locations, not durable public downloads. Issue #745 records shipping
 and acceptance decisions. The hashes identify evidence, not a standalone
 reproduction recipe.
 
-Normal sealed executable and workload admission remained active. Existing guest
-runtime artifacts passed the normal verifier with **host-only** qualification:
+Normal sealed executable and workload admission remained active. For the
+retained-depth and `431ba486` experiments, existing guest runtime artifacts passed
+the normal verifier with **host-only** qualification:
 the current source key differs from the artifact key by a host SHA-2 dependency
 lock change. No new guest runtime was built, relabeled or exempted from admission.
+The `5978c157` reference also passed normal verification with **host-only**
+qualification, source key
+`bff06830863466a2aded99aaedb95f34087fe03af65d9785eed31a8c509943b4`
+and artifact key
+`bb596fc540540984b7682208cef544ccd9664237fe1d380ae32da3febacf179f`.
 These results do not claim exact runtime-input qualification or cross-build
 replay equivalence. Warm and constrained caches, RAM-size variation, repeated
 seed panels, retained-parent scaling and useful-outcome measurements remain
