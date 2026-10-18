@@ -81,16 +81,16 @@ impl ObservationDiagnostics {
     pub fn snapshot(&self) -> ObservationCounts {
         let v = self.0.values.each_ref().map(|n| n.load(Ordering::Relaxed));
         ObservationCounts {
-            eligible: v[0],
-            collected: v[1],
-            unavailable: v[2],
-            begin_panics: v[3],
-            drain_panics: v[4],
-            delivered: v[5],
-            sink_errors: v[6],
-            sink_panics: v[7],
-            discarded: v[8],
-            sink_attempts: v[9],
+            eligible: v[Counter::Eligible as usize],
+            collected: v[Counter::Collected as usize],
+            unavailable: v[Counter::Unavailable as usize],
+            begin_panics: v[Counter::BeginPanics as usize],
+            drain_panics: v[Counter::DrainPanics as usize],
+            delivered: v[Counter::Delivered as usize],
+            sink_errors: v[Counter::SinkErrors as usize],
+            sink_panics: v[Counter::SinkPanics as usize],
+            discarded: v[Counter::Discarded as usize],
+            sink_attempts: v[Counter::SinkAttempts as usize],
             overflow: self.0.overflow.load(Ordering::Relaxed),
         }
     }
@@ -185,9 +185,28 @@ mod tests {
     #[test]
     fn counter_overflow_is_visible_without_wrapping_or_panicking() {
         let counts = ObservationDiagnostics::default();
-        counts.0.values[8].store(u64::MAX, Ordering::Relaxed);
+        counts.0.values[Counter::Discarded as usize].store(u64::MAX, Ordering::Relaxed);
         counts.add(crate::search::job_observation::Counter::Discarded);
         assert_eq!(counts.snapshot().discarded, u64::MAX);
         assert!(counts.snapshot().overflow);
+    }
+    #[test]
+    fn snapshot_fields_follow_counter_variants_not_their_ordinal_position() {
+        let counts = ObservationDiagnostics::default();
+        for _ in 0..2 {
+            counts.add(Counter::Delivered);
+        }
+        for _ in 0..3 {
+            counts.add(Counter::Discarded);
+        }
+        counts.add(Counter::BeginPanics);
+        counts.add(Counter::SinkErrors);
+        let snapshot = counts.snapshot();
+        assert_eq!(snapshot.delivered, 2);
+        assert_eq!(snapshot.discarded, 3);
+        assert_eq!(snapshot.begin_panics, 1);
+        assert_eq!(snapshot.sink_errors, 1);
+        assert_eq!(snapshot.eligible, 0);
+        assert_eq!(snapshot.collected, 0);
     }
 }

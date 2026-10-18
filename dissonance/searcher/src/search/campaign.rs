@@ -10934,11 +10934,30 @@ mod tests {
             None,
         )
         .unwrap();
+        let records = job_lines(&baseline);
+        let by_reservation = records
+            .iter()
+            .map(|(_, job)| (job.reservation as usize, job))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        assert_eq!(expected.0.telemetry.coordinator["replay_actions"], 0);
+        assert!(by_reservation.values().any(|job| job.parent_id != 0));
+        let mut expected_finish = std::collections::BTreeMap::new();
+        for reservation in 0..config.window {
+            expected_finish.insert(reservation, by_reservation[&reservation].execution_work * 2);
+        }
+        let mut next = config.window;
+        for (_, job) in &records {
+            let finish = expected_finish[&(job.reservation as usize)];
+            if next < config.execution_budget as usize {
+                expected_finish.insert(next, finish + by_reservation[&next].execution_work * 2);
+                next += 1;
+            }
+        }
         for fail in [0, 1, 2] {
             let diagnostics = ObservationDiagnostics::default();
             let mut seen = Vec::new();
             let mut sink = |row: crate::search::job_observation::CompletionObservation<()>| {
-                seen.push((row.reservation, row.worker, row.receipt.payload));
+                seen.push(row);
                 if fail == 1 {
                     return Err(ObservationSinkError);
                 }
@@ -10977,10 +10996,37 @@ mod tests {
                 assert_eq!(counts.sink_errors, u64::from(fail == 1));
                 assert_eq!(counts.sink_panics, u64::from(fail == 2));
             }
-            assert!(
-                seen.iter()
-                    .all(|(_, worker, payload)| *worker < 3 && payload.is_some())
-            );
+            for row in &seen {
+                let job = by_reservation[&row.reservation];
+                assert!(row.worker < config.workers);
+                assert_eq!(row.parent_id, job.parent_id);
+                assert_eq!(row.snapshot_id, job.parent_id);
+                assert_eq!(row.planned_finish, expected_finish[&row.reservation]);
+                assert!(!row.job_failed);
+                assert!(row.receipt.payload.is_some());
+            }
+            if fail == 0 {
+                let mut per_worker = vec![0u64; config.workers as usize];
+                for row in &seen {
+                    per_worker[row.worker as usize] += 1;
+                }
+                assert_eq!(
+                    per_worker,
+                    actual
+                        .0
+                        .telemetry
+                        .workers
+                        .iter()
+                        .map(|worker| worker.jobs)
+                        .collect::<Vec<_>>()
+                );
+                assert_eq!(
+                    seen.iter()
+                        .map(|row| row.reservation)
+                        .collect::<BTreeSet<_>>(),
+                    (0..config.execution_budget as usize).collect()
+                );
+            }
         }
     }
     #[test]

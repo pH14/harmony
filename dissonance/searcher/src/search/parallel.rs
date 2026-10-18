@@ -1066,7 +1066,7 @@ mod tests {
     }
     #[test]
     fn observation_hook_panics_are_visible_and_do_not_replace_primary_errors() {
-        for begin_panics in [true, false] {
+        for (begin_panics, drain_panics) in [(true, false), (false, true), (true, true)] {
             let diagnostics = crate::search::job_observation::ObservationDiagnostics::default();
             let result = super::with_worker_pool_observed(
                 1,
@@ -1080,7 +1080,7 @@ mod tests {
                     }
                 },
                 || -> Option<u64> {
-                    if !begin_panics {
+                    if drain_panics {
                         panic!("drain");
                     }
                     Some(9)
@@ -1094,10 +1094,10 @@ mod tests {
                     assert!(reply.observation.receipt.payload.is_none());
                     assert_eq!(
                         reply.observation.receipt.status,
-                        if begin_panics {
-                            crate::search::job_observation::CollectionStatus::BeginPanicked
-                        } else {
+                        if drain_panics {
                             crate::search::job_observation::CollectionStatus::DrainPanicked
+                        } else {
+                            crate::search::job_observation::CollectionStatus::BeginPanicked
                         }
                     );
                     Err("primary coordinator error".into())
@@ -1107,7 +1107,7 @@ mod tests {
             let counts = diagnostics.snapshot();
             assert_eq!(counts.eligible, 1);
             assert_eq!(counts.begin_panics, u64::from(begin_panics));
-            assert_eq!(counts.drain_panics, u64::from(!begin_panics));
+            assert_eq!(counts.drain_panics, u64::from(drain_panics));
             assert_eq!(counts.collected, 0);
         }
     }

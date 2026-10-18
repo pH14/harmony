@@ -256,8 +256,9 @@ steps and archived parent-tail replay are separate counts. Lookup/import counter
 separate origin, action-parent and cached-child work. Source selection preserves
 the existing depth-first search: a shared exact match can precede a local ancestor.
 
-A successful source is accepted only after the real endpoint, event history and
-observation checks complete. Failed/cutoff restores retain their failure stage
+An origin restore succeeds only after the existing backend-specific endpoint,
+event-history and observation checks complete. UML retains its explicit
+whole-state-unavailable contract. Failed/cutoff restores retain their failure stage
 and attempted source when known, without treating a watchdog-converted Ok as
 success. Session generations are checked, per-thread runtime identities paired
 with the actual worker; they are unavailable after exhaustion and are not
@@ -265,6 +266,7 @@ persistent cache identities. Bookkeeping survives Live retirement in a job-local
 TLS value and drains before panic recovery. It retains no snapshot or lease,
 issues no telemetry or ownership RPC, and supplies no restore authority. These
 measurements do not describe host NUMA page placement or change dispatch policy.
+
 `origin.generation` identifies the selected starting session. `end_generation`
 comes from an in-memory TLS-presence census at drain, so retirement through
 current-state or event-history accessors is visible even when it bypasses the
@@ -274,13 +276,16 @@ worker, and grant no handle or restore authority.
 
 Candidate-path lookup counts exclude the certified-local fast path. Parent and
 cached-child source counts describe validated selections independently of the
-origin summary; cached-child searches are exact. Import completion means the
-existing import/binding/install path succeeded; a later restore failure is still
+origin summary; cached-child searches are exact. Parent sources count
+action-parent selections for newly executed prefixes, not reserved archive
+parents or parent-tail replay
+actions. They are selection diagnostics, not separate whole-state certificates.
+Import completion means the existing import/binding/install path succeeded; a later restore failure is still
 reported separately. `NotAttempted` on a failed job means execution rejected the
-job before origin restore; it is not a zero-cost restore measurement. The current
-payload occupies 232 bytes, with the generic 256-byte bound checked on campaign
-entry. Consumers must retain unavailable/overflow and sink-discard coverage when
-aggregating results.
+job before origin restore; it is not a zero-cost restore measurement. The generic
+256-byte bound is checked on campaign entry. Consumers must retain unavailable/
+overflow and sink-discard coverage when aggregating results.
+
 Consumers namespace worker/generation pairs by the observed invocation; thread
 pools, resumed invocations and processes can restart those values. The sink's
 caller-owned run identity supplies that namespace, outside logical campaign data.
