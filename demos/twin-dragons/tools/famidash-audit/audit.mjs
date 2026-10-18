@@ -135,6 +135,9 @@ async function check(casePath, rom, runtime, fixed) {
   } else {
     assert(trace.at(-1).dead, "a level-data patch must reject this input with a death");
     assert(trace.length > witness.first_suspect_frame - 64, "patch must not kill the input far before the reported region");
+    assert(trace.length <= witness.first_suspect_frame + 16, "patch must kill the input at the reported region");
+    const originalDeath = witness.trace.findIndex(point => point.dead);
+    assert(originalDeath < 0 || trace.length < originalDeath + 1, "the original later death is not a repair");
     assert.deepEqual(trace.slice(0, -1), witness.trace.slice(0, trace.length - 1), "level-data patch must preserve the approach to the pit");
     console.log(`Patched witness dies at frame ${trace.length}, (${trace.at(-1).x}, ${trace.at(-1).y}).`);
   }

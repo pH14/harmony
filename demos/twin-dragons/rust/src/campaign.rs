@@ -29,6 +29,7 @@ use nes_games::{
             CampaignOrigin, JobOutcome, JobSpec, SnapshotCheckpoint, SnapshotCheckpointEntry,
             run_job,
         },
+        draw::{DrawMixture, draw_mixture_from_identifier},
     },
 };
 use serde::Deserialize;
@@ -398,6 +399,7 @@ trait SearchApi {
     fn state(&self, id: u32) -> Result<String, JsValue>;
     fn digest(&self, id: u32) -> Result<String, JsValue>;
     fn snapshot(&self, id: u32) -> Result<Vec<u8>, JsValue>;
+    fn victory(&self) -> Result<Option<String>, JsValue>;
 }
 
 struct Search<G: BrowserGame> {
@@ -409,6 +411,7 @@ struct Search<G: BrowserGame> {
     recorded: Option<String>,
     prefix: Vec<ButtonChord>,
     feed: Feed<G::View>,
+    continue_after_objective: bool,
 }
 
 pub struct SearchOptions<'a> {
@@ -426,21 +429,35 @@ pub struct SearchOptions<'a> {
 
 impl<G: BrowserGame> Search<G> {
     fn new(options: SearchOptions<'_>) -> Result<Self, Box<dyn Error>> {
-        let prefix: Vec<ButtonChord> = serde_json::from_str::<Vec<PrefixAction>>(options.prefix)?
-            .into_iter()
-            .map(|action| ButtonChord::new(action.buttons, action.frames))
-            .collect();
         let game = game::<G>(
             options.core,
             options.rom,
             options.identity,
             options.identity_sha256,
         );
-        let config: &'static CampaignConfig<G> = Box::leak(Box::new(config(
+        Self::with_game(options, game, false, None)
+    }
+
+    fn with_game(
+        options: SearchOptions<'_>,
+        game: &'static G,
+        continue_after_objective: bool,
+        mixture: Option<DrawMixture>,
+    ) -> Result<Self, Box<dyn Error>> {
+        let prefix: Vec<ButtonChord> = serde_json::from_str::<Vec<PrefixAction>>(options.prefix)?
+            .into_iter()
+            .map(|action| ButtonChord::new(action.buttons, action.frames))
+            .collect();
+        let mut campaign_config = config(
             u64::from(options.seed),
             u64::from(options.executions),
             options.memory_mib as usize,
-        )));
+        );
+        campaign_config.stop_campaign_on_objective = !continue_after_objective;
+        if let Some(mixture) = mixture {
+            campaign_config.mixture = mixture;
+        }
+        let config: &'static CampaignConfig<G> = Box::leak(Box::new(campaign_config));
         let frames = chord_frames(&prefix);
         let (origin, raw, root, genesis_actions) = match options.root {
             None => {
@@ -489,6 +506,7 @@ impl<G: BrowserGame> Search<G> {
             recorded: options.record.then(String::new),
             prefix,
             feed,
+            continue_after_objective,
         };
         search.record_stream()?;
         Ok(search)
@@ -527,7 +545,7 @@ impl<G: BrowserGame> SearchApi for Search<G> {
     }
 
     fn stopped(&self) -> bool {
-        self.won() || self.coordinator.finished()
+        (!self.continue_after_objective && self.won()) || self.coordinator.finished()
     }
 
     fn snapshot_bytes(&self) -> usize {
@@ -584,6 +602,24 @@ impl<G: BrowserGame> SearchApi for Search<G> {
             .ok_or_else(|| js_error("snapshot unavailable"))?;
         raw_state(G::emulator_state(snapshot)).map_err(js_error)
     }
+
+    fn victory(&self) -> Result<Option<String>, JsValue> {
+        let Some(input) = self.coordinator.objective_witness() else {
+            return Ok(None);
+        };
+        let played = feed::played(
+            self.game,
+            self.root.as_ref(),
+            self.genesis_actions,
+            &input.actions,
+        )
+        .map_err(js_error)?;
+        let mut chords = self.prefix.clone();
+        chords.extend(played);
+        serde_json::to_string(&actions(&chords))
+            .map(Some)
+            .map_err(js_error)
+    }
 }
 
 trait WorkerApi {
@@ -601,6 +637,10 @@ struct Worker<G: BrowserGame> {
 impl<G: BrowserGame> Worker<G> {
     fn new(core: u32, rom: &[u8], identity: &str, identity_sha256: &str) -> Result<Self, String> {
         let game = game::<G>(core, rom, identity, identity_sha256);
+        Self::with_game(game)
+    }
+
+    fn with_game(game: &'static G) -> Result<Self, String> {
         Ok(Self {
             game,
             config: config(0, 0, 0),
@@ -628,6 +668,121 @@ impl<G: BrowserGame> WorkerApi for Worker<G> {
 
 fn unknown(game: &str) -> JsValue {
     js_error(format!("{game} has no campaign search"))
+}
+
+fn level_game<const GROUP: usize>(
+    core: u32,
+    rom: &[u8],
+    identity: &str,
+    identity_sha256: &str,
+    level: u8,
+) -> Result<&'static Famidash<GROUP>, JsValue> {
+    use nes_games::famidash::{levels::Stage, target::FamidashTarget};
+    let group = nes_games::arcade::famidash::group_stage(GROUP);
+    if level < group.level || level > group.goal {
+        return Err(js_error("level is outside the selected group"));
+    }
+    let stage = Stage::single(group.side, level).map_err(js_error)?;
+    Ok(Box::leak(Box::new(Famidash::<GROUP>::with_targets(
+        rom,
+        identity,
+        identity_sha256,
+        stage,
+        Box::new(move || {
+            let machine = Traced::new(
+                JsMachine::new(core, Famidash::<GROUP>::MEMORY_BYTES).map_err(|e| e.to_string())?,
+                Famidash::<GROUP>::probe(),
+            );
+            FamidashTarget::from_power_on(machine, stage).map_err(|e| e.to_string())
+        }),
+    ))))
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn famidash_level_search(
+    game: &str,
+    core: u32,
+    rom: &[u8],
+    identity: &str,
+    identity_sha256: &str,
+    level: u8,
+    seed: u32,
+    root: Option<Vec<u8>>,
+    prefix: &str,
+    memory_mib: u32,
+    executions: u32,
+    mixture: &str,
+) -> Result<CampaignSearch, JsValue> {
+    let mixture = draw_mixture_from_identifier(mixture).map_err(js_error)?;
+    let options = SearchOptions {
+        core,
+        rom,
+        identity,
+        identity_sha256,
+        seed,
+        root,
+        prefix,
+        memory_mib,
+        executions,
+        record: false,
+    };
+    macro_rules! search {
+        ($group:literal) => {
+            Box::new(
+                Search::<Famidash<$group>>::with_game(
+                    options,
+                    level_game::<$group>(core, rom, identity, identity_sha256, level)?,
+                    true,
+                    Some(mixture),
+                )
+                .map_err(js_error)?,
+            ) as Box<dyn SearchApi>
+        };
+    }
+    let search = match game {
+        "famidash" => search!(0),
+        "famidash-community" => search!(1),
+        "famidash-b" => search!(2),
+        "famidash-c" => search!(3),
+        "famidash-d" => search!(4),
+        _ => return Err(unknown(game)),
+    };
+    Ok(CampaignSearch(search))
+}
+
+#[wasm_bindgen]
+pub fn famidash_level_worker(
+    game: &str,
+    core: u32,
+    rom: &[u8],
+    identity: &str,
+    identity_sha256: &str,
+    level: u8,
+) -> Result<CampaignWorker, JsValue> {
+    macro_rules! worker {
+        ($group:literal) => {
+            Box::new(
+                Worker::<Famidash<$group>>::with_game(level_game::<$group>(
+                    core,
+                    rom,
+                    identity,
+                    identity_sha256,
+                    level,
+                )?)
+                .map_err(js_error)?,
+            ) as Box<dyn WorkerApi>
+        };
+    }
+    let worker = match game {
+        "famidash" => worker!(0),
+        "famidash-community" => worker!(1),
+        "famidash-b" => worker!(2),
+        "famidash-c" => worker!(3),
+        "famidash-d" => worker!(4),
+        _ => return Err(unknown(game)),
+    };
+    Ok(CampaignWorker(worker))
 }
 
 #[wasm_bindgen]
@@ -717,6 +872,10 @@ impl CampaignSearch {
 
     pub fn snapshot(&self, id: u32) -> Result<Vec<u8>, JsValue> {
         self.0.snapshot(id)
+    }
+
+    pub fn victory(&self) -> Result<Option<String>, JsValue> {
+        self.0.victory()
     }
 }
 

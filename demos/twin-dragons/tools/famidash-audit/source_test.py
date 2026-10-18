@@ -32,6 +32,18 @@ class GeometryTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             edit_tmx(self.text, [{**edit, "column": 3}])
 
+    def test_sprite_layer_is_retained_for_hidden_coin_and_portal_review(self):
+        text = self.text.replace("</map>", '''<layer id="2" name="SP" width="3" height="1">
+<data encoding="csv">0,27,2</data></layer></map>''')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "level.tmx"
+            path.write_text(text)
+            layout = read_level(path)
+        self.assertEqual(layout["sprites"], [
+            {"column": 1, "row": 0, "id": 26},
+            {"column": 2, "row": 0, "id": 1},
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

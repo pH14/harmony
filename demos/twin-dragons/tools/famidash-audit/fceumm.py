@@ -108,6 +108,47 @@ class Fceumm:
         return trace
 
 
+class SymbolFceumm(Fceumm):
+    def __init__(self, core_path, rom_path, layout):
+        assert layout["kind"] == "symbol-based linear coordinates"
+        self.symbols = layout["symbols"]
+        for name in ["gameState", "level", "player_relx", "player_rely", "scroll_x", "scroll_y",
+                     "player_vel_y", "player_gravity", "player_mini", "gamemode", "dual", "cube_data",
+                     "DEBUG_MODE", "invincible_counter", "pauseStatus", "wrap_mode", "coins"]:
+            assert isinstance(self.symbols[name], int) and 0 <= self.symbols[name] < 2045
+        super().__init__(core_path, rom_path)
+
+    def boot(self, side, level):
+        self.lib.retro_reset()
+        menu = [(0, 180), (1, 1), (0, 936)]
+        if side != "main" or level >= 22:
+            menu += [(128, 1), (0, 20)]
+        menu += [(1, 1), (0, 90)]
+        for buttons, frames in menu:
+            self.step(buttons, frames)
+        assert self.ram[self.symbols["gameState"]] == 6
+        self.ram[self.symbols["level"]] = level
+        self.step(1)
+        self.step(0, 40)
+        assert self.observe()["state"] == 2 and self.observe()["level"] == level
+
+    def observe(self):
+        r, a = self.ram, self.symbols
+
+        def word(name, count=2, signed=False):
+            return int.from_bytes(bytes(r[a[name]:a[name] + count]), "little", signed=signed)
+
+        camera = word("scroll_y")
+        return {"level": r[a["level"]], "state": r[a["gameState"]],
+                "x": word("scroll_x", 4, True) + r[a["player_relx"] + 1],
+                "y": camera + r[a["player_rely"] + 1], "camera": camera,
+                "vy": word("player_vel_y", signed=True), "mode": r[a["gamemode"]],
+                "gravity": r[a["player_gravity"]], "mini": r[a["player_mini"]], "dual": r[a["dual"]],
+                "dead": r[a["player_relx"] + 1] > 0x20 and bool((r[a["cube_data"]] | r[a["cube_data"] + 1]) & 1),
+                "debug": r[a["DEBUG_MODE"]], "invincible": r[a["invincible_counter"]],
+                "paused": r[a["pauseStatus"]], "wrap": r[a["wrap_mode"]], "coins": r[a["coins"]]}
+
+
 def verify(core, witness, fixed, intro_frames=0):
     if witness.get("engine") == "dissonance-campaign":
         return verify_campaign(core, witness, fixed, intro_frames)
@@ -116,6 +157,9 @@ def verify(core, witness, fixed, intro_frames=0):
     if fixed:
         assert trace[-1]["dead"], "patched input must die"
         assert len(trace) > witness["first_suspect_frame"] - 64
+        assert len(trace) <= witness["first_suspect_frame"] + 16
+        original_death = next((i + 1 for i, state in enumerate(witness["trace"]) if state["dead"]), None)
+        assert original_death is None or len(trace) < original_death, "the original later death is not a repair"
         assert trace[intro_frames:-1] == witness["trace"][intro_frames:len(trace) - 1], "approach changed"
     else:
         assert hashlib.sha256(core.rom).hexdigest() == witness["rom_sha256"]
@@ -163,6 +207,9 @@ def verify_campaign(core, witness, fixed, intro_frames):
     if fixed:
         assert trace[-1]["dead"], "patched input must die"
         assert len(trace) > witness["first_suspect_frame"] - 64, "patched input died before the reported region"
+        assert len(trace) <= witness["first_suspect_frame"] + 16, "patched input did not die at the reported region"
+        original_death = next((i + 1 for i, state in enumerate(witness["trace"]) if state["dead"]), None)
+        assert original_death is None or len(trace) < original_death, "the original later death is not a repair"
     else:
         assert len(trace) == len(witness["trace"])
     control_status = "not-included-in-campaign-witness"
@@ -191,7 +238,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     case_bytes = args.case.read_bytes()
     witness = json.loads(gzip.decompress(case_bytes) if args.case.suffix == ".gz" else case_bytes)
-    result = verify(Fceumm(args.core, args.rom), witness, args.fixed, args.intro_frames)
+    core = SymbolFceumm(args.core, args.rom, witness["target_layout"]) if "target_layout" in witness else Fceumm(args.core, args.rom)
+    result = verify(core, witness, args.fixed, args.intro_frames)
     result["core_sha256"] = hashlib.sha256(args.core.read_bytes()).hexdigest()
     result["case_sha256"] = hashlib.sha256(args.case.read_bytes()).hexdigest()
     if args.output:

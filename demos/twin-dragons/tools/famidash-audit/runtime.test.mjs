@@ -2,6 +2,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { compress, expand, routeTape, suspect, tileAt } from "./runtime.mjs";
+import { collisionPoint } from "./signals.mjs";
+
+test("centre estimates match independently traced Theory of Everything collision reads", () => {
+  const previous = { x: 3891, y: 883, mode: 3, mini: 0 };
+  const current = { x: 3894, y: 886, mode: 3, mini: 0 };
+  assert.deepEqual(collisionPoint(previous, current), { x: 3897, y: 893 });
+  assert.equal(collisionPoint(previous, { ...current, mode: 6 }), null);
+  assert.equal(collisionPoint(previous, { ...current, mini: 1 }), null);
+});
 
 test("map-builder assistance cannot become an upstream gameplay witness", () => {
   assert.throws(() => routeTape("000a000"), /assisted/);

@@ -10,17 +10,76 @@ bug from a map pixel. Geometry comes from the actual level source and its
 metatile collision definitions.
 
 The original `audit.mjs scan` uses custom input mutations, **not Dissonance**.
-For actual arcade-engine searches, use `dissonance.mjs` and the
-[Dissonance investigation package](findings/dissonance/README.md). It includes
-independently reproduced openings in Stereo Madness and Base After Base,
-tested release repairs, and a Dissonance reproduction of the known Fofii bug.
+For actual arcade-engine searches, use `soak-level.mjs` through `full-round.py`.
+These call the Rust Dissonance planner and worker; they do not substitute a
+custom input mutator. The older `dissonance.mjs` drives campaign searches.
+The [investigation package](findings/dissonance/README.md) retains reviewed
+reproductions and the withdrawal of the early-level tile proposals.
 
-A completing route can itself exploit a bug: the existing Base After Base
-route enters a hollow block through a missing wall. It is not a trustworthy
-definition of the intended corridor. The Dissonance runner now reports
-reference-route interior signals and disables their reference bounds;
-geometry signals remain independent of those bounds. A new clearing route
-found on the repaired ROM is retained with the Base After Base witnesses.
+The initial Stereo Madness, Base After Base, Back on Track and Cycles
+interior paths include intended hidden coins. Background fill alone cannot
+establish forbidden terrain. Always review sprites and alternate objectives.
+
+## Complete-level Dissonance searches
+
+The focused WASM API exports `famidash_level_search` and
+`famidash_level_worker`. It selects one level, accepts an ordinary-input
+checkpoint, and continues searching after finding a victory. The production
+campaign API keeps its existing objective and stopping behavior.
+`check-search.mjs` compares the default stream with an unmodified branch
+build and checks selected-level retention, budget exhaustion and replay of
+exported victory inputs.
+
+```sh
+python3 demos/twin-dragons/tools/famidash-audit/full-round.py \
+  source.json ROM_DIRECTORY RUNTIME_DIRECTORY BINDINGS_JS SEARCH_WASM OUTPUT \
+  --round 1 --workers 4
+```
+
+Each level starts with 50,000 genesis executions and 5,000 per 1,024-frame
+checkpoint. `FAMIDASH_MIXTURE=energy_splice:6` selects another Dissonance draw
+mixture; `FAMIDASH_PREVIOUS_ROUND` adds earlier frontier and clearing inputs.
+Reference routes are freshly replayed. Only their ordinary prefix before
+assistance, death or completion can seed a search. New victory inputs add
+checkpoints even when the reference route is unusable. `FAMIDASH_ROOT_PLAN`
+can supply a nonempty JSON array of `{input, trim, budget}` for focused gap
+closure. Input prefixes are replayed before they become search roots.
+
+The ledger records executions, frontiers, clears and candidates separately.
+A searched level is not a reviewed level. `review-round.mjs` verifies saved
+endpoints and inventories entry signals, including both players in dual
+mode, partial hazards, persistent solid overlap and horizontal escapes.
+`components.py` groups decorative-fill components for source review. Detector
+signals never automatically become bug reports or tile edits.
+
+The current investigation's stopping goal is all 109 installed levels
+assessed, every candidate disposition recorded, and three consecutive full
+rounds on a stable repaired build without a new confirmed bug. A new bug
+resets that counter. Bounded searches cannot prove absence of every bug.
+
+`export-witness.mjs` retains ordinary input and a full fresh trace;
+`dissonance-replay.mjs` and `fceumm.py` verify it in separate emulators. A
+repair must kill at the reviewed escape, preserve the approach, and precede
+any later original death. `compare-controls.mjs` records completion and coin
+collection for paired reference, discovered clearing and retained coin paths.
+A timing divergence needs investigation; an old route can itself exploit a
+bug and is not automatically an intended-playability requirement.
+
+For newer upstream builds, `symbol-runtime.mjs` reads the build's DBG symbols
+instead of assuming the release RAM map. Set `FAMIDASH_SYMBOLS` when searching
+or replaying that build. Its Dissonance adapter translates read-only target
+observations; gameplay snapshots and controller execution remain native to
+the ROM. The only RAM write is the normal level-select setup. Witnesses
+record their symbol layout and are independently replayed with FCEUmm's
+symbol-based decoder. This adapter has been exercised on the shared Time
+Machine and Theory of Everything levels, not every current-upstream mode.
+`trace-collision.py` uses export-only FCEUmm CPU hooks to observe the original
+ROM's collision samples without modifying the game.
+
+`check-pit-plane.py` compiles the proposed C pit-crossing helper and compares
+its geometry against an independent exact rational oracle, including upward
+and downward crossings, diagonal tile edges and 240-pixel room boundaries.
+This does not replace NES replay, bank-size or frame-budget validation.
 
 ## What is generic
 
@@ -65,8 +124,8 @@ The source geometry is a triage aid, not an executable collision oracle:
 partial blocks, slopes, dynamic objects, small gaps and deliberate secret
 routes need review. The pinned D-Sides source differs from its release ROM
 in 28 level-data bytes, as documented by the workload; source-level D-Sides
-attribution needs an additional ROM-data check. This first detector cannot
-find every kind of glitch and does not search dual states.
+attribution needs an additional ROM-data check. The older custom detector cannot find every kind of glitch and excludes
+dual states; the focused Dissonance inventory inspects both players.
 
 ## Commands
 
@@ -103,9 +162,8 @@ must match. The retained Select Payment Type witness differs at entry frames
 Neither failure is silently accepted as an exact whole-trace match.
 
 For patched ROMs, append `--fixed` to either replay command. QuickNES still
-requires the recorded emulator binary. These verification commands target
-the pinned release's RAM map; a newer upstream ROM needs its symbols checked
-before using the same decoder.
+requires the recorded emulator binary. The release decoder uses its pinned RAM map; newer upstream campaign
+witnesses require their recorded symbol layout and matching DBG file.
 
 ## Reviewed patch generation
 

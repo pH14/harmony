@@ -31,7 +31,21 @@ def read_level(path):
     firsts = sorted(int(tileset.get("firstgid")) for tileset in root.findall("tileset"))
     tiles = [gid - firsts[bisect.bisect_right(firsts, gid) - 1] if gid else 0 for gid in gids]
     assert len(tiles) == width * height and all(0 <= tile < 256 for tile in tiles)
-    return {"width": width, "height": height, "top": (57 - height) * 16, "tiles": tiles}
+    sprites = []
+    for objects in root.findall("layer"):
+        if objects.get("name") != "SP":
+            continue
+        assert int(objects.get("width")) == width and int(objects.get("height")) == height
+        data = objects.find("data")
+        assert data.get("encoding") == "csv" and data.get("compression") is None
+        gids = [int(value) for value in data.text.replace("\n", "").split(",") if value.strip()]
+        assert len(gids) == width * height
+        for cell, gid in enumerate(gids):
+            if gid:
+                sprite = gid - firsts[bisect.bisect_right(firsts, gid) - 1]
+                assert 0 <= sprite < 256
+                sprites.append({"column": cell % width, "row": cell // width, "id": sprite})
+    return {"width": width, "height": height, "top": (57 - height) * 16, "tiles": tiles, "sprites": sprites}
 
 
 def export(source):
@@ -54,6 +68,9 @@ def export(source):
         ("d", "D", "famidash-d-sides.nes", "FAMIDASH_D_SIDES_ROM_SHA256"),
     ):
         table = source / f"LEVELS/include/lvlset_{letter}/all_level_table.s"
+        object_names = {int(value, 16): name for name, value in re.findall(
+            r"^#define\s+(\w+)\s+(0x[0-9a-fA-F]+)\s*$",
+            (table.parent / "objdefines.h").read_text(), re.M)}
         section = table.read_text().split("_level_list_lo:", 1)[1].split("_level_list_hi:", 1)[0]
         names = re.findall(r"\.lobyte\(level_data_(\w+)\)", section)
         paths = {path.stem.lower(): path for path in (source / f"LEVELS/LEVEL DATA/lvlset_{letter}").glob("*.tmx")}
@@ -61,11 +78,14 @@ def export(source):
             if name.lower() not in paths:
                 name = re.sub(r"_\d+$", "", name)
             path = paths[name.lower()]
+            geometry = read_level(path)
+            for sprite in geometry["sprites"]:
+                sprite["name"] = object_names.get(sprite["id"], "UNKNOWN")
             levels.append({
                 "side": side, "level": level, "name": name,
                 "source": path.relative_to(source).as_posix(),
                 "source_sha256": digest(path.read_bytes()),
-                "rom": rom, "rom_sha256": versions[sha_key], **read_level(path),
+                "rom": rom, "rom_sha256": versions[sha_key], **geometry,
             })
     assert len(levels) == 109
     return {"schema": 1, "source_revision": revision,
