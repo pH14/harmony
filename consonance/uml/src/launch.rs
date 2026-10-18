@@ -397,7 +397,7 @@ impl Launch {
         }
     }
 
-    pub fn command(&self, profile: &VerifiedProfile, work: &Path) -> Result<Command, LaunchError> {
+    pub fn command(&self, profile: &VerifiedProfile, _work: &Path) -> Result<Command, LaunchError> {
         if let Some(argument) = self
             .kernel_arguments
             .iter()
@@ -412,6 +412,10 @@ impl Launch {
             .map_or_else(|| profile.rootfs(), |image| image.path());
         #[cfg(not(target_os = "linux"))]
         let initramfs = self.initramfs.clone().unwrap_or_else(|| profile.rootfs());
+        #[cfg(target_os = "linux")]
+        let work = Path::new("/proc/self/fd/243");
+        #[cfg(not(target_os = "linux"))]
+        let work = _work;
         let mut command = Command::new(profile.executable());
         command
             .arg(format!("mem={}M", self.memory_mib))
@@ -537,6 +541,7 @@ impl Guest {
             command.env("HARMONY_UML_MINSIGSTKSZ", host.auxv.minsigstksz.to_string());
             command.env("HARMONY_UML_PLATFORM", &host.auxv.platform);
             enforce_host_cpu(&mut command, host.processor, launch.shared_host)?;
+            pass_work_directory(&mut command, work.path())?;
         }
         let child = command.spawn()?;
         drop(command);
@@ -900,6 +905,35 @@ fn set_parent_death_signal(command: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn set_parent_death_signal(_command: &mut Command) {}
 
+#[cfg(target_os = "linux")]
+fn pass_work_directory(command: &mut Command, path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    crate::profile::reserved_child_fds()?;
+    let directory = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(path)?;
+    command.env("TMPDIR", "/proc/self/fd/243");
+    // SAFETY: the closure owns the open directory through spawn and calls only
+    // dup2(2) and fcntl(2) on the child descriptor table before exec. The target
+    // is reserved in the parent, so it cannot alias the owned source.
+    unsafe {
+        command.pre_exec(move || {
+            let target = crate::profile::WORK_DIRECTORY_FD;
+            if libc::dup2(directory.as_raw_fd(), target) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let flags = libc::fcntl(target, libc::F_GETFD);
+            if flags < 0 || libc::fcntl(target, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
 fn pass_bridge(command: &mut Command, guest: OwnedFd, physmem: Option<OwnedFd>) {
     // SAFETY: the closure runs in the forked child before exec and calls only
     // fcntl(2), dup2(2) and close(2), which are async-signal-safe. Both
@@ -952,6 +986,45 @@ mod tests {
             exit_reason(ExitStatus::from_raw(7 << 8)),
             ExitReason::Exited(7)
         );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[cfg_attr(miri, ignore)]
+    fn owned_work_directory_overrides_an_earlier_fd_and_isolates_guests() {
+        let root = tempfile::tempdir().unwrap();
+        let foreign = tempfile::tempdir().unwrap();
+        let launch = Launch::new(root.path().to_path_buf());
+        let mut guests = Vec::new();
+        for marker in ["first", "second"] {
+            let work = launch.work_directory().unwrap();
+            let path = work.path().to_path_buf();
+            let mut command = Command::new("sh");
+            command.arg("-c").arg(format!(
+                "test \"$TMPDIR\" = /proc/self/fd/243 && printf '%s' {marker} > \"$TMPDIR/marker\" && cat \"$TMPDIR/marker\""
+            ));
+            let wrong = std::fs::File::open(foreign.path()).unwrap();
+            // SAFETY: the callback owns its directory and duplicates it only
+            // into the child's reserved work-directory slot before exec.
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::dup2(wrong.as_raw_fd(), crate::profile::WORK_DIRECTORY_FD) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+            let guest = Guest::start(command, work, &launch).unwrap();
+            guests.push((guest, path, marker));
+        }
+        for (guest, path, marker) in guests {
+            let exit = guest.wait().unwrap();
+            assert_eq!(exit.reason, ExitReason::Exited(0));
+            assert_eq!(exit.console, marker.as_bytes());
+            assert!(exit.work_removed);
+            assert!(!path.exists());
+        }
+        assert!(!foreign.path().join("marker").exists());
     }
 
     #[cfg(target_os = "linux")]
