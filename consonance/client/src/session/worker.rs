@@ -1107,7 +1107,7 @@ impl WorkerSession {
         attachment: &SnapshotAttachment,
     ) -> Result<crate::cache::WritableExtent, Box<dyn Error>> {
         let _exchange = self.begin_exchange()?;
-        self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
+        self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExportBefore)?;
         let mut denied = None;
         let mut rejected = None;
         let result: Result<Option<crate::cache::WritableExtent>, Box<dyn Error>> = (|| {
@@ -1119,7 +1119,7 @@ impl WorkerSession {
                 .bytes(&attachment.bytes);
             send(&self.stream, &request.0, &[])?;
             let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
-            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
+            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExtentRequested)?;
             if !fds.is_empty() {
                 return Err(malformed("allocation request descriptors").into());
             }
@@ -1155,7 +1155,7 @@ impl WorkerSession {
                     None
                 }
             };
-            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
+            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExtentAllocated)?;
             if let Some(extent) = extent.as_ref() {
                 let SharedRange {
                     fd,
@@ -1174,7 +1174,7 @@ impl WorkerSession {
                 send(&self.stream, &Out::op(EXTENT_DENIED).0, &[])?;
             }
             let (body, fds) = recv_with_limit(&self.stream, EXPORT_FRAME_LIMIT, None)?;
-            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentRpcBefore)?;
+            self.check_loaded_image_at(crate::image_identity::GuardSite::ParentExportCompleted)?;
             if !fds.is_empty() {
                 return Err(malformed("completion descriptors").into());
             }
@@ -1770,11 +1770,12 @@ fn serve(
                 if std::mem::replace(&mut requested, true) {
                     return Err(malformed("repeated allocation").into());
                 }
-                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
+                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildExtentBefore)?;
                 send(stream, &Out::op(NEED_EXTENT).len(len).0, &[])?;
-                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
+                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildExtentSent)?;
                 let (body, fds) = recv_with_limit(stream, EXPORT_FRAME_LIMIT, None)?;
-                loaded_image_guard.check_at(crate::image_identity::GuardSite::ChildHandled)?;
+                loaded_image_guard
+                    .check_at(crate::image_identity::GuardSite::ChildExtentReceived)?;
                 let mut input = In(&body);
                 match input.u8()? {
                     EXTENT_READY => {
@@ -3302,6 +3303,52 @@ mod tests {
                 });
                 assert_eq!(strict, 0);
                 assert_eq!(entries, refusal.unwrap_or(6));
+                let counters = session
+                    .loaded_image_guard
+                    .counters("guard.parent")
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                for (step, site) in [
+                    "export_before",
+                    "extent_requested",
+                    "extent_allocated",
+                    "export_completed",
+                    "publication_before",
+                    "publication_after",
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    let reached = u64::from(step < refusal.unwrap_or(6));
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.parent.{site}.dispatches"))
+                            .copied()
+                            .unwrap_or(0),
+                        reached
+                    );
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.parent.{site}.fixture_dispatches"))
+                            .copied()
+                            .unwrap_or(0),
+                        reached
+                    );
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.parent.{site}.strict_attempts"))
+                            .copied()
+                            .unwrap_or(0),
+                        0
+                    );
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.parent.{site}.errors"))
+                            .copied()
+                            .unwrap_or(0),
+                        u64::from(refusal == Some(step + 1))
+                    );
+                }
                 if refusal.is_some() {
                     assert!(result.is_err());
                     assert!(index.lookup(namespace(), b"guard").is_none());
@@ -3549,20 +3596,55 @@ mod tests {
                 .set_read_timeout(Some(Duration::from_secs(1)))
                 .unwrap();
             let server = std::thread::spawn(move || {
+                let guard = crate::image_identity::LoadedImageGuard::fixture();
                 let ((result, writes), _, _) =
                     crate::image_identity::trace_checks(Some(refusal), || {
                         crate::cache::extent::trace_writes(|| {
-                            serve(
-                                &child,
-                                &mut Fake::open,
-                                crate::image_identity::LoadedImageGuard::fixture(),
-                            )
+                            serve(&child, &mut Fake::open, guard.clone())
                         })
                     });
                 let error = result.unwrap_err().to_string();
                 assert!(error.contains("injected loaded-image refusal"), "{error}");
                 assert_eq!(MAPPING_ATTEMPTS.with(Cell::get), 0);
                 assert!(writes.is_empty());
+                let counters = guard
+                    .counters("guard.child.loop")
+                    .into_iter()
+                    .collect::<std::collections::BTreeMap<_, _>>();
+                for (step, site) in ["extent_before", "extent_sent", "extent_received"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    let reached = u64::from(step + 4 <= refusal);
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.child.loop.{site}.dispatches"))
+                            .copied()
+                            .unwrap_or(0),
+                        reached
+                    );
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.child.loop.{site}.fixture_dispatches"))
+                            .copied()
+                            .unwrap_or(0),
+                        reached
+                    );
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.child.loop.{site}.strict_attempts"))
+                            .copied()
+                            .unwrap_or(0),
+                        0
+                    );
+                    assert_eq!(
+                        counters
+                            .get(&format!("guard.child.loop.{site}.errors"))
+                            .copied()
+                            .unwrap_or(0),
+                        u64::from(step + 4 == refusal)
+                    );
+                }
             });
             send(&parent, &init_frame().0, &[]).unwrap();
             assert_eq!(recv(&parent).unwrap().0[0], OK);
@@ -3675,15 +3757,36 @@ mod tests {
     fn export_guard_counts_include_the_reverse_allocation_boundaries() {
         let (parent, child) = UnixStream::pair().unwrap();
         let server = std::thread::spawn(move || {
+            let guard = crate::image_identity::LoadedImageGuard::fixture();
             let (result, entries, strict) = crate::image_identity::trace_checks(None, || {
-                serve(
-                    &child,
-                    &mut Fake::open,
-                    crate::image_identity::LoadedImageGuard::fixture(),
-                )
+                serve(&child, &mut Fake::open, guard.clone())
             });
             result.unwrap();
             assert_eq!((entries, strict), (8, 0));
+            let counters = guard
+                .counters("child")
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            for (site, count) in [
+                ("receive", 1),
+                ("handled", 2),
+                ("sent", 2),
+                ("extent_before", 1),
+                ("extent_sent", 1),
+                ("extent_received", 1),
+            ] {
+                assert_eq!(counters[&format!("child.{site}.dispatches")], count);
+                assert_eq!(counters[&format!("child.{site}.fixture_dispatches")], count);
+                assert_eq!(counters[&format!("child.{site}.strict_attempts")], 0);
+            }
+            assert_eq!(
+                counters
+                    .iter()
+                    .filter(|(key, _)| key.ends_with(".dispatches"))
+                    .map(|(_, value)| *value)
+                    .sum::<u64>(),
+                8
+            );
         });
         let session = connected_to_script(parent);
         let index = LocalIndex::new(1 << 20);

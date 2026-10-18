@@ -413,7 +413,13 @@ retains refused admission work when that boundary needs observation.
 
 Sites are `admission`, `session_boundary`, `launcher_before/after`,
 `rpc_before/after`, `receive`, `handled`, `sent`, `publication_before/after`,
-`control_before/after`, and `sdk_request/response`. The serving loop's `receive`
+`control_before/after`, and `sdk_request/response`. Direct export uses four
+parent sites: `export_before` before EXPORT, `extent_requested` after NEED_EXTENT,
+`extent_allocated` after the allocator callback before FD handoff, and
+`export_completed` after completion reception. The child reverse exchange uses
+`extent_before` before NEED_EXTENT, `extent_sent` after that send before waiting,
+and `extent_received` after the allocation response before mapping. These sites
+count the existing checks; they add no guard calls or new protocol transitions. The serving loop's `receive`
 check is its one initial check; each `sent` check also covers the next receive.
 Unclassified public session boundaries remain explicit `session_boundary` entries.
 Core hook tags describe generic control/SDK boundaries; executable policy remains
@@ -421,7 +427,8 @@ in the client. Each site exports dispatch attempts, errors and host `ns`, fixtur
 dispatches, actual `strict_attempts`, `strict_errors`, and `strict_ns`. These strict
 totals include fresh capture and recheck work. `strict_check_attempts/errors/ns`
 and `strict_capture_attempts/errors/ns` expose those disjoint stages, including
-checks during admission. Fixture placement counts are not real executable measurements. Timing envelopes overlap:
+checks during admission. Fixture placement counts are not real executable
+measurements. Timing envelopes overlap:
 strict time is inside dispatch time, so the two must not be added. Dispatch timing
 stops before counter accumulation/export. A local delta
 is merged after each check, never while holding an accounting lock across policy
@@ -431,14 +438,15 @@ Linux byte fields report actual live-code/vDSO reads, sealed executable code rea
 SHA-256 input and comparison input, with admission-only full-file reads/hashes
 separate. Successful partial reads remain counted on refusal. ELF/proc metadata,
 digest framing and cross-process child identity work are excluded. macOS exports
-no Linux byte leaves, while reporting its kernel signing state, static-signing and image-census stage attempts. A telemetry query replaces
+no Linux byte leaves, while reporting its kernel signing state, static-signing
+and image-census stage attempts. A telemetry query replaces
 cached child totals rather than adding them. Cumulative
 `guard.child.telemetry_queries` and `guard.child.telemetry_query_failures` remain
 meaningful when added across sessions; failures remain visible after later queries.
 Child values are the last successfully queried totals, not a final account
 of work in a dead or refusing child. Parent checks for the query are immediately
 visible; child checks after its telemetry snapshot appear only on a later query.
-Inactive sites are omitted. Per-site `byte_measured_attempts` and
+Inactive sites, with zero dispatches, are omitted. Per-site `byte_measured_attempts` and
 `byte_unavailable_attempts` count strict attempts with and without byte accounting,
 respectively, so addition preserves availability coverage; fixture dispatches count
 neither. These counters do not enter identities, snapshots, EventHistory,
