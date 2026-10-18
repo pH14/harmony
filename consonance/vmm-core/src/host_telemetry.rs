@@ -90,7 +90,7 @@ impl HashSite {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct HashCost {
+pub(crate) struct HashCost {
     pub calls: u64,
     pub ram_bytes: u64,
     pub suffix_bytes: u64,

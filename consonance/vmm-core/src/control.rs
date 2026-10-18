@@ -2037,6 +2037,8 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
             Ok(()) => {}
             Err(error) if restore_error_is_precommit(&error) => {
                 if use_remap {
+                    self.telemetry.exits.merge(&fresh.exit_telemetry());
+                    self.telemetry.hashes.merge(&fresh.hash_telemetry());
                     drop(fresh);
                     fresh = (self.factory)()?;
                     self.attach_host_operation_guard(&mut fresh);
@@ -2044,27 +2046,38 @@ impl<B: Backend<A: Vendor>> ControlServer<B> {
                 self.install_recovery_boot(fresh);
                 return Ok(Err(ControlError::RestoreFailed));
             }
-            Err(error) => return Err(error.into()),
-        }
-        if let Some(seed) = seed {
-            if reseeds.is_empty() {
-                fresh.reseed_entropy(seed)?;
-            } else if let Some(&s0) = reseeds.get(&restored_floor) {
-                fresh.reseed_entropy(s0)?;
+            Err(error) => {
+                self.telemetry.exits.merge(&fresh.exit_telemetry());
+                self.telemetry.hashes.merge(&fresh.hash_telemetry());
+                return Err(error.into());
             }
         }
-        let history = self
-            .snapshot_meta
-            .get(&snap.0)
-            .and_then(|meta| meta.event_history);
-        if history.is_some() != fresh.event_history().is_some() {
-            return Err(VmmError::ContractViolation(
-                "restored event history availability differs".into(),
-            )
-            .into());
-        }
-        if let Some(history) = history {
-            fresh.restore_event_history(history)?;
+        let prepared = (|| -> Result<(), VmmError> {
+            if let Some(seed) = seed {
+                if reseeds.is_empty() {
+                    fresh.reseed_entropy(seed)?;
+                } else if let Some(&s0) = reseeds.get(&restored_floor) {
+                    fresh.reseed_entropy(s0)?;
+                }
+            }
+            let history = self
+                .snapshot_meta
+                .get(&snap.0)
+                .and_then(|meta| meta.event_history);
+            if history.is_some() != fresh.event_history().is_some() {
+                return Err(VmmError::ContractViolation(
+                    "restored event history availability differs".into(),
+                ));
+            }
+            if let Some(history) = history {
+                fresh.restore_event_history(history)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = prepared {
+            self.telemetry.exits.merge(&fresh.exit_telemetry());
+            self.telemetry.hashes.merge(&fresh.hash_telemetry());
+            return Err(error.into());
         }
         self.vmm = Some(fresh);
         self.session_trace_start = if seed.is_some() {
@@ -5241,6 +5254,31 @@ mod tests {
             assert_eq!(cost.errors, 0);
             assert_eq!(server.host_telemetry(), server.host_telemetry());
         }
+    }
+
+    #[test]
+    fn in_place_restore_failure_preserves_retired_hash_and_exit_totals() {
+        let mut server = server(vec![Exit::Common(CommonExit::Idle)]);
+        hello(&mut server);
+        let origin = snap(&mut server);
+        server.set_restore_mode(super::RestoreMode::InPlace);
+        server.vmm_mut().unwrap().run().unwrap();
+        server.vmm_mut().unwrap().state_hash().unwrap();
+        let before = server.host_telemetry();
+        assert!(before.exits.guest_runs.count > 0);
+        server
+            .snapshot_meta
+            .get_mut(&origin.0)
+            .unwrap()
+            .event_history = None;
+        assert!(server.handle(&Request::Replay(origin)).is_err());
+        assert!(server.vmm().is_none());
+        let after = server.host_telemetry();
+        assert_eq!(after.hashes, before.hashes);
+        assert_eq!(after.exits, before.exits);
+        assert_eq!(server.in_place_fallbacks(), 0);
+        server.retire_vmm();
+        assert_eq!(server.host_telemetry().hashes, before.hashes);
     }
 
     #[test]

@@ -154,6 +154,8 @@ suffix bytes count the whole-state suffix; metadata bytes count domain/length
 framing, page indexes and non-RAM portable-envelope sections. Portable envelope
 counters include only bytes actually hashed after successful reads/writes,
 excluding the trailing recorded digest. Their time includes codec and I/O waits.
+Whole-request and checkpoint time also includes vCPU state capture, readiness
+checks and suffix encoding; it is not pure digest CPU time.
 
 The leaves attribute each feed once; wrapper requests do not add another
 charge. Retiring or replaying a VMM never rewinds these host totals. Snapshot

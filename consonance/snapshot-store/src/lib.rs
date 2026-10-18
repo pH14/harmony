@@ -153,6 +153,7 @@ impl VerificationTelemetry {
 pub struct Store {
     cfg: StoreConfig,
     verification: std::cell::Cell<VerificationTelemetry>,
+    verification_batch_depth: std::cell::Cell<usize>,
     store_id: u64,
     next_id: u64,
     layers: BTreeMap<u64, Layer>,
@@ -173,7 +174,38 @@ pub struct ReadTransaction<'store> {
     verified_pages: BTreeSet<NonZeroUsize>,
 }
 
+struct VerificationBatch<'a> {
+    store: &'a Store,
+    started: Option<std::time::Instant>,
+}
+
+impl Drop for VerificationBatch<'_> {
+    fn drop(&mut self) {
+        self.store
+            .verification_batch_depth
+            .set(self.store.verification_batch_depth.get() - 1);
+        if let Some(started) = self.started {
+            self.store.note_verification(|t| {
+                t.nanos = t.nanos.saturating_add(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+            });
+        }
+    }
+}
+
 impl Store {
+    #[allow(clippy::disallowed_methods)]
+    fn verification_batch(&self) -> VerificationBatch<'_> {
+        let depth = self.verification_batch_depth.get();
+        self.verification_batch_depth
+            .set(depth.checked_add(1).expect("verification nesting overflow"));
+        VerificationBatch {
+            store: self,
+            started: (depth == 0).then(std::time::Instant::now),
+        }
+    }
+
     #[cfg(feature = "test-utils")]
     pub fn page_verifications_for_test(&self) -> usize {
         self.page_verifications.get()
@@ -191,14 +223,16 @@ impl Store {
 
     #[allow(clippy::disallowed_methods)]
     fn resident_page_matches(&self, data: &[u8], hash: &PageHash) -> bool {
-        let started = std::time::Instant::now();
+        let started = (self.verification_batch_depth.get() == 0).then(std::time::Instant::now);
         let matches = blake3::hash(data).as_bytes() == hash;
         self.note_verification(|t| {
             t.resident_hashes = t.resident_hashes.saturating_add(1);
             t.resident_bytes = t.resident_bytes.saturating_add(data.len() as u64);
-            t.nanos = t
-                .nanos
-                .saturating_add(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            if let Some(started) = started {
+                t.nanos = t.nanos.saturating_add(
+                    u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX),
+                );
+            }
         });
         matches
     }
@@ -214,6 +248,7 @@ impl Store {
         Store {
             cfg,
             verification: std::cell::Cell::default(),
+            verification_batch_depth: std::cell::Cell::new(0),
             store_id: NEXT_STORE_ID
                 .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
                 .expect("snapshot store identifiers exhausted"),
@@ -552,6 +587,7 @@ impl Store {
         snap: SnapshotId,
         verified_pages: &mut BTreeSet<NonZeroUsize>,
     ) -> Result<(), StoreError> {
+        let _timing = self.verification_batch();
         let mut seen_gfns = BTreeSet::new();
         let mut current = Some(snap.0);
         while let Some(id) = current {
@@ -642,6 +678,7 @@ impl Store {
             cur = layer.parent;
         }
 
+        let timing = self.verification_batch();
         let mut verified_pages = Vec::with_capacity(resolved.len());
         for (&gfn, &pref) in &resolved {
             let data = self.checked_page_ref(pref, gfn)?;
@@ -650,6 +687,7 @@ impl Store {
             }
         }
 
+        drop(timing);
         let file = tempfile::tempfile()?;
         file.set_len(len)?;
         Mapping::populate(&file, len, verified_pages.into_iter())?;
@@ -1363,6 +1401,36 @@ mod tests {
         let parent = snap_with(&mut store, setup, &[(0, 3), (2, 0), (3, 5)]);
         let target = snap_with(&mut store, parent, &[(0, 1), (1, 6)]);
         (store, setup, parent, target)
+    }
+
+    #[test]
+    fn verification_batch_errors_restore_standalone_timing_and_exact_counts() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[7; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(Vec::new());
+        let slot = store.pages.iter().position(Option::is_some).unwrap();
+        store.pages[slot].as_mut().unwrap().data[0] ^= 1;
+        assert!(store.verify_snapshot_pages(snap).is_err());
+        assert_eq!(store.verification_batch_depth.get(), 0);
+        let after_batch = store.verification_telemetry();
+        assert_eq!(after_batch.resident_hashes, 1);
+        assert_eq!(after_batch.resident_bytes, PAGE_SIZE as u64);
+        assert_eq!(after_batch.errors, 1);
+        assert!(store.materialize(snap).is_err());
+        assert_eq!(store.verification_batch_depth.get(), 0);
+        let after_materialize = store.verification_telemetry();
+        assert_eq!(after_materialize.resident_hashes, 2);
+        assert_eq!(after_materialize.resident_bytes, 2 * PAGE_SIZE as u64);
+        assert_eq!(after_materialize.errors, 2);
+        assert!(after_materialize.nanos >= after_batch.nanos);
+        let outer = store.verification_batch();
+        let inner = store.verification_batch();
+        assert!(outer.started.is_some());
+        assert!(inner.started.is_none());
+        drop(inner);
+        drop(outer);
+        assert_eq!(store.verification_batch_depth.get(), 0);
     }
 
     #[test]
