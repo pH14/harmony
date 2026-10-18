@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+mod guard_work;
+pub use guard_work::{GuardBytes, GuardMeasurement};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LoaderEpoch([u64; 2]);
 
@@ -1324,6 +1327,16 @@ pub struct StrictExecutableGuard;
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 impl StrictExecutableGuard {
+    pub fn capture_measured(work: &mut GuardMeasurement) -> std::io::Result<(String, Self)> {
+        work.bytes = None;
+        guard_work::measured(work, |_| Self::capture())
+    }
+
+    pub fn check_measured(self, work: &mut GuardMeasurement) -> std::io::Result<()> {
+        work.bytes = None;
+        guard_work::measured(work, |_| self.check())
+    }
+
     pub fn capture() -> std::io::Result<(String, Self)> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Unsupported,
