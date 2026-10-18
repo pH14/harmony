@@ -146,6 +146,8 @@ class NativeMathTests(unittest.TestCase):
         import yaml
 
         jobs = yaml.safe_load((Q.ROOT / ".github/workflows/consonance-native-math-qualification.yml").read_text())["jobs"]
+        setup = next(step for step in jobs["artifact"]["steps"] if step.get("uses") == "actions/setup-python@v5")
+        self.assertEqual(setup["with"]["python-version"], "3.12")
         self.assertEqual(jobs["observe"]["needs"], "artifact")
         self.assertEqual(jobs["observe"]["strategy"]["matrix"]["replica"], [1, 2, 3, 4, 5, 6])
         self.assertEqual(jobs["results"]["needs"], ["artifact", "observe"])
@@ -186,6 +188,9 @@ class NativeCorpusTests(unittest.TestCase):
         self.assertEqual(exact["result"], "000000000000f03f")
         self.assertEqual(receipt["repeats"], 3)
         observations = {tuple(Q.key(row)): row for row in rows}
+        for observation in rows:
+            if observation["op"].startswith("x87."):
+                self.assertEqual((observation["x87_status"] >> 11) & 7, 7)
 
         def row(op, bits, rounding=0, flush=0):
             return observations[(op, rounding, flush, bits)]
