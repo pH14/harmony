@@ -1926,6 +1926,7 @@ mod tests {
     struct TimedOutRestore {
         hash: Option<[u8; 32]>,
         history: control_proto::EventHistory,
+        history_hung: bool,
         events: BTreeMap<u64, Vec<consonance_client::session::SdkEvent>>,
         current: u64,
         run_hashes: Option<Vec<[u8; 32]>>,
@@ -1945,6 +1946,9 @@ mod tests {
         }
 
         fn event_history(&mut self) -> Result<control_proto::EventHistory, Box<dyn Error>> {
+            if self.history_hung {
+                return Err(SessionError::Hung(WALL_LIMIT).into());
+            }
             Ok(self.history)
         }
 
@@ -2069,6 +2073,7 @@ mod tests {
             key: [0; 32],
             holder: 0,
             session: Box::new(TimedOutRestore {
+                history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: None,
                 events: BTreeMap::new(),
@@ -2104,6 +2109,7 @@ mod tests {
     ) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some(commitment),
             events: BTreeMap::new(),
@@ -2449,6 +2455,7 @@ mod tests {
     fn hashed_live(hash: [u8; 32]) -> Live {
         let mut live = timed_out_live();
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some(hash),
             events: BTreeMap::new(),
@@ -2570,6 +2577,7 @@ mod tests {
             None,
         );
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::from([(1, vec![first]), (2, events)]),
@@ -2597,6 +2605,7 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 events: BTreeMap::new(),
@@ -2673,6 +2682,7 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2699,6 +2709,7 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2778,6 +2789,7 @@ mod tests {
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2823,6 +2835,7 @@ mod tests {
         };
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2856,6 +2869,7 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2894,6 +2908,7 @@ mod tests {
         let mut target = unbooted_target();
         let mut live = hashed_live([17; 32]);
         live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2927,6 +2942,7 @@ mod tests {
         let mut baseline = unbooted_target();
         let mut baseline_live = hashed_live([17; 32]);
         baseline_live.session = Box::new(TimedOutRestore {
+            history_hung: false,
             history: control_proto::EventHistory::default(),
             hash: Some([17; 32]),
             events: BTreeMap::new(),
@@ -2949,6 +2965,7 @@ mod tests {
             let mut target = unbooted_target();
             let mut live = hashed_live([17; 32]);
             live.session = Box::new(TimedOutRestore {
+                history_hung: false,
                 history: control_proto::EventHistory::default(),
                 hash: Some([17; 32]),
                 events: BTreeMap::new(),
@@ -3341,16 +3358,17 @@ mod tests {
     }
     #[test]
     fn replay_and_resident_keyframes_reject_equal_endpoints_with_different_event_history() {
-        let target = unbooted_target();
+        let mut target = unbooted_target();
         let endpoint = [17; 32];
         let install = |digest| {
             let mut live = hashed_live(endpoint);
             live.session = Box::new(TimedOutRestore {
+                history_hung: false,
                 hash: Some(endpoint),
                 history: control_proto::EventHistory { count: 2, digest },
                 events: BTreeMap::new(),
                 current: 1,
-                run_hashes: None,
+                run_hashes: Some(vec![endpoint]),
                 run_hung: false,
                 snapshots: BTreeMap::from([(1, endpoint)]),
                 moment: 0,
@@ -3359,6 +3377,11 @@ mod tests {
             LIVE.with(|slot| *slot.borrow_mut() = Some(live));
         };
         install([11; 32]);
+        target.apply_replayed(FaultAction::new(
+            crate::target::FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+            std::num::NonZeroU16::new(1).unwrap(),
+        ));
+        assert!(!target.failed());
         let snapshot = target.snapshot().unwrap().unwrap();
         let mut missing = snapshot.clone();
         missing.event_history = None;
@@ -3367,13 +3390,8 @@ mod tests {
                 .unwrap_err()
                 .contains("lacks ordered event history")
         );
-        let certificate = replay_endpoint_certificate(
-            target.state_hash_current().unwrap(),
-            target.event_history_current().unwrap(),
-            target.observation(),
-            false,
-        )
-        .unwrap();
+        assert_eq!(snapshot.actions.len(), 1);
+        let certificate = snapshot.prefix_certificates[0].unwrap();
         target.verify_replayed_endpoint(Some(certificate)).unwrap();
         let observation = target.observation().clone();
         install([12; 32]);
@@ -3401,6 +3419,74 @@ mod tests {
             .verify_replayed_endpoint(Some(certificate))
             .unwrap();
         LIVE.with(|slot| slot.borrow_mut().take());
+    }
+
+    #[test]
+    fn terminal_and_zero_action_job_certification_binds_history() {
+        use searcher::search::{
+            campaign::{CampaignActionResult, CampaignJobResult, Reporting},
+            rollout::{ExecutionDisposition, Outcome},
+        };
+        let config = FaultConfig {
+            knobs: Vec::new(),
+            ram_mib: DEFAULT_RAM_MIB,
+            backend: GuestBackend::Vm,
+            root: None,
+        };
+        let game = crate::campaign::fixture_workload(b"kernel", b"initramfs", &config);
+        for terminal in [false, true] {
+            let mut target = unbooted_target();
+            let mut result = CampaignJobResult::<crate::campaign::FaultWorkload> {
+                preparation_failure: None,
+                actions: Vec::new(),
+            };
+            if terminal {
+                let action = FaultAction::new(
+                    crate::target::FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+                    std::num::NonZeroU16::new(1).unwrap(),
+                );
+                target.actions.push(action);
+                target.observation.stop = FaultStop::Crash;
+                result.actions.push(CampaignActionResult {
+                    action,
+                    observations: vec![target.observation.clone()],
+                    milestones: Default::default(),
+                    outcome: Outcome {
+                        objective_reached: true,
+                        disposition: ExecutionDisposition::Terminal,
+                    },
+                    candidate: None,
+                });
+            }
+            let certify = |digest, history_hung| {
+                let mut live = hashed_live([17; 32]);
+                live.session = Box::new(TimedOutRestore {
+                    history_hung,
+                    history: control_proto::EventHistory { count: 2, digest },
+                    hash: Some([17; 32]),
+                    events: BTreeMap::new(),
+                    current: 1,
+                    run_hashes: None,
+                    run_hung: false,
+                    snapshots: BTreeMap::new(),
+                    moment: 0,
+                    next_snap: 1,
+                });
+                LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+                assert_eq!(target.state_hash_current().unwrap(), [17; 32]);
+                if !history_hung {
+                    assert_eq!(target.event_history_current().unwrap().0, 2);
+                }
+                game.certified_result_sha256(&result, &target)
+            };
+            let first = certify([11; 32], false).unwrap();
+            assert_ne!(first, certify([12; 32], false).unwrap());
+            assert_eq!(first, certify([11; 32], false).unwrap());
+            let error = certify([11; 32], true).unwrap_err().to_string();
+            assert!(error.starts_with(WATCHDOG_CUTOFF), "{error}");
+            LIVE.with(|slot| assert!(slot.borrow().is_none()));
+            LIVE.with(|slot| slot.borrow_mut().take());
+        }
     }
 }
 

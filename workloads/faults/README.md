@@ -408,7 +408,10 @@ job and skip records decode. The binary campaign result hash and checkpoints
 retain the native 128-bit encoding.
 
 Each campaign job's recorded result digest binds its logical result to a tagged
-final endpoint certificate. Every runnable KVM snapshot carries an action-aligned
+final endpoint certificate. The v2 result domain also binds v1 normalized-event
+history whenever a KVM whole-state endpoint is available, including terminal
+and zero-action jobs. Failed or unavailable endpoints retain an explicit absent
+history, and cannot substitute that absence for a whole-state endpoint. Every runnable KVM snapshot carries an action-aligned
 certificate for each prefix in its portable history. Each runnable KVM action
 captures its whole-state hash, cumulative ordered normalized-event commitment
 and count, and action-local observation before the next action. The v2 replay

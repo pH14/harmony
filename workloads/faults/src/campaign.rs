@@ -153,11 +153,16 @@ type FaultCampaignJobResult = CampaignJobResult<FaultWorkload>;
 fn endpoint_result_sha256(
     result: &FaultCampaignJobResult,
     endpoint: FaultEndpointCertificate,
+    history: Option<(u64, [u8; 32])>,
 ) -> Result<String, Box<dyn Error>> {
+    if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) != history.is_some() {
+        return Err("fault result event history does not match its endpoint availability".into());
+    }
     postcard_value_sha256(&(
-        "fault-campaign-result-endpoint-v1",
+        "fault-campaign-result-endpoint-v2",
         postcard_result_sha256(result)?,
         endpoint,
+        history.map(|history| (control_proto::EventHistory::VERSION, history)),
     ))
 }
 
@@ -456,7 +461,12 @@ impl Reporting for FaultWorkload {
                 target.state_hash_current()
             })?
         };
-        endpoint_result_sha256(result, endpoint)
+        let history = if matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_)) {
+            Some(target.event_history_current()?)
+        } else {
+            None
+        };
+        endpoint_result_sha256(result, endpoint, history)
     }
 
     fn snapshot_identity_sha256(
@@ -1119,25 +1129,51 @@ mod tests {
             preparation_failure: None,
             actions: Vec::new(),
         };
-        let first =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([1; 32]))
-                .unwrap();
-        let second =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::KvmWholeState([2; 32]))
-                .unwrap();
+        let first = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([1; 32]),
+            Some((0, [0; 32])),
+        )
+        .unwrap();
+        let second = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::KvmWholeState([2; 32]),
+            Some((0, [0; 32])),
+        )
+        .unwrap();
         let failed = endpoint_result_sha256(
             &result,
             FaultEndpointCertificate::KvmUnavailableAfterFailure,
+            None,
         )
         .unwrap();
-        let uml =
-            endpoint_result_sha256(&result, FaultEndpointCertificate::UmlWholeStateUnavailable)
-                .unwrap();
+        let uml = endpoint_result_sha256(
+            &result,
+            FaultEndpointCertificate::UmlWholeStateUnavailable,
+            None,
+        )
+        .unwrap();
         assert_ne!(first, second);
         assert_ne!(first, failed);
         assert_ne!(first, uml);
         assert_ne!(failed, uml);
         assert_ne!(first, postcard_result_sha256(&result).unwrap());
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::KvmWholeState([1; 32]),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            endpoint_result_sha256(
+                &result,
+                FaultEndpointCertificate::UmlWholeStateUnavailable,
+                Some((0, [0; 32]))
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1201,8 +1237,8 @@ mod tests {
         assert_eq!(fresh_calls, 1);
         assert_eq!(reused, fresh);
         assert_eq!(
-            endpoint_result_sha256(&result, reused).unwrap(),
-            endpoint_result_sha256(&result, fresh).unwrap()
+            endpoint_result_sha256(&result, reused, Some((0, [0; 32]))).unwrap(),
+            endpoint_result_sha256(&result, fresh, Some((0, [0; 32]))).unwrap()
         );
         let mut malformed = result.clone();
         malformed.actions[0]

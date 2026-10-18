@@ -502,6 +502,9 @@ impl LiveVirtualTimeTrace {
     }
 
     pub(crate) fn deliver_clockevent(&mut self) -> Result<(), &'static str> {
+        if self.pending.is_none() {
+            return Err("clockevent delivery has no active normalized event");
+        }
         let schedule_index = self
             .active_clockevent_schedule
             .take()
@@ -1394,5 +1397,33 @@ mod live_trace_tests {
             )
             .unwrap();
         assert_eq!(trace.finish(1, None), Err("event history count overflow"));
+    }
+
+    #[test]
+    fn delivery_outside_a_normalized_event_cannot_disappear_from_history() {
+        let mut trace = LiveVirtualTimeTrace::default();
+        trace.restore_clockevent_schedule(Some((10, 32))).unwrap();
+        let before = trace.clone();
+        assert_eq!(
+            trace.deliver_clockevent(),
+            Err("clockevent delivery has no active normalized event")
+        );
+        assert_eq!(trace.event_history(), before.event_history());
+        assert_eq!(trace.schedule, before.schedule);
+        assert_eq!(
+            trace.active_clockevent_schedule,
+            before.active_clockevent_schedule
+        );
+        trace
+            .begin(
+                ExitReason::Idle,
+                "idle".into(),
+                NormalizedEventClass::Idle,
+                vec![],
+            )
+            .unwrap();
+        trace.deliver_clockevent().unwrap();
+        trace.finish(10, None).unwrap();
+        assert_eq!(trace.normalized_log().events[0].interrupts.len(), 1);
     }
 }
