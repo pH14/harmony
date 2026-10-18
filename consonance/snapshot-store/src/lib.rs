@@ -1451,6 +1451,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "Miri does not support file-backed memory mappings")]
     fn materialization_counts_actual_alias_hashes_without_changing_store_stats() {
         let mut store = Store::new(cfg(3));
         let mut builder = store.begin_base();
