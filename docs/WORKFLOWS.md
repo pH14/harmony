@@ -703,6 +703,10 @@ is separate from repository lint.
 The Guest Memory job includes the nested driver’s portable arithmetic and
 mapping checks. Its mapping composition runs in the bounded Consonance Miri
 matrix; the full matrix interprets the driver library.
+The consonance-client Miri suite retains default filesystem isolation. A separate
+exact-test invocation permits filesystem access only for the borrowed descriptor
+metadata test, which creates and resizes a temporary file and checks that the
+descriptor remains open. Both pull-request and whole-crate jobs run that test.
 The host-code-identity Miri target exercises the loader callback's unsafe
 program-header copy with a synthetic record on pull requests that change that
 crate. Its whole library runs in scheduled Consonance analysis.
