@@ -521,6 +521,9 @@ fn handler(
 
 impl SearchSession for UmlSession {
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
+        if self.abandoned {
+            return Err(SessionError::Abandoned.into());
+        }
         if let Some(session) = self.session.as_mut() {
             session.shutdown()?;
         }
@@ -986,6 +989,30 @@ mod tests {
             abandoned: false,
             counters: Counters::default(),
         }
+    }
+
+    #[test]
+    fn abandoned_shutdown_never_claims_confirmed_exit_and_normal_shutdown_is_idempotent() {
+        let mut session = unbooted_session();
+        let _ = session.abandon(uml::SessionError::Stopped(uml::ExitReason::HostFailure));
+        for _ in 0..2 {
+            let result = session.shutdown();
+            assert!(
+                result.is_err(),
+                "abandoned shutdown cannot confirm owned exit"
+            );
+            let error = result.unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<SessionError>(),
+                Some(SessionError::Abandoned)
+            ));
+            assert!(session.session.is_none());
+        }
+        let mut session = unbooted_session();
+        session.shutdown().unwrap();
+        session.shutdown().unwrap();
+        assert!(!session.abandoned());
+        assert!(session.session.is_none());
     }
 
     #[cfg(target_os = "linux")]

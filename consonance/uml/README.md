@@ -318,10 +318,12 @@ Closed or ambiguously terminated Guest instances reject later polling entrypoint
 A real child-poll error latches the same unconfirmed state, preventing subsequent
 PID waits and signals. The related numeric process-group identity limitation is
 tracked in [#766](https://github.com/pH14/harmony/issues/766); ambiguity remains
-an error rather than permission to signal a possibly reused number. Native failure tests inject before the OS wait, so their
-private fixture cleanup still owns the unreaped Child; that cleanup does not
-license retry after a real ambiguous wait in production.
+an error rather than permission to signal a possibly reused number. Native
+failure tests inject before the OS wait, so their private fixture cleanup still
+owns the unreaped Child; that cleanup does not license retry after a real
+ambiguous wait in production. A successful owned-child receipt does not resolve
+the numeric process-group identity limitation after leader reaping.
 
-Numeric process-group identity after leader reaping remains a separate limitation,
-tracked in [issue766](https://github.com/pH14/harmony/issues/766). A successful
-owned-child receipt does not resolve that group-identity problem.
+The client refuses shutdown confirmation after an abandoned UML session, even
+when abandonment has already removed the live Guest. Normal confirmed shutdown
+remains idempotent.
