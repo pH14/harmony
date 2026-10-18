@@ -19,7 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 804402c0c5fc827dd9cd60d72c383d12bd84315a
+          ref: 9673f33363395f0850cd2cb5e704432d33434180
       - uses: actions/download-artifact@v4
         with:
           name: x86-guest-image
@@ -33,7 +33,7 @@ jobs:
           echo 'b13eb72fd5c0d438fe5e454da93f64e6171a7754b544e201ee6a6cc63c94d91e  nix-guest-output/x86_64/bzImage' | sha256sum -c
           mkdir provenance
           cp nix-guest-output/guest-image-report.txt provenance/
-          printf '%s\n' 'retained image run: 39109973065' 'image source: 953fa4bf49f2e997e90886367f674f2bc313dec6' 'qualification source: 804402c0c5fc827dd9cd60d72c383d12bd84315a' > provenance/source.txt
+          printf '%s\n' 'retained image run: 39109973065' 'image source: 953fa4bf49f2e997e90886367f674f2bc313dec6' 'qualification source: 9673f33363395f0850cd2cb5e704432d33434180' > provenance/source.txt
       - uses: actions/upload-artifact@v4
         with:
           name: x3-kernel-provenance
@@ -71,7 +71,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 804402c0c5fc827dd9cd60d72c383d12bd84315a
+          ref: 9673f33363395f0850cd2cb5e704432d33434180
       - uses: actions/download-artifact@v4
         with:
           name: x3-executable
@@ -103,7 +103,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 804402c0c5fc827dd9cd60d72c383d12bd84315a
+          ref: 9673f33363395f0850cd2cb5e704432d33434180
       - uses: actions/download-artifact@v4
         with:
           name: x3-executable
@@ -135,7 +135,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: 804402c0c5fc827dd9cd60d72c383d12bd84315a
+          ref: 9673f33363395f0850cd2cb5e704432d33434180
       - name: Require complete export and import jobs
         env:
           JOB_RESULTS: ${{ toJSON(needs) }}
