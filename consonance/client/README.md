@@ -186,7 +186,7 @@ the same local number. `CacheIndex` is the interface workers use:
 | `forget_store(holder)` | removes a finished worker's store from the budget |
 
 `LocalIndex` is a mutex over the table, held by the process that runs the
-search. Its diagnostic-only `lock_counters()` shares one fixed atomic owner across
+search. Its diagnostic-only `lock_counters()` shares atomic counters across
 clones; other `CacheIndex` implementations default to no counters. Active sites
 report acquisition `attempts`, `acquired`, release `completed`, `wait_ns` and
 `hold_ns`. Sites cover every index operation, including `stats` and abandoned
@@ -196,10 +196,10 @@ mutex acquisition. Hold starts at that acquisition timestamp and ends immediatel
 before unlocking, including bookkeeping at acquisition, allocation, eviction and
 reclamation performed under the existing mutex. Completion counters update after
 unlocking, including early return and unwind. Unlock and final atomic updates are
-excluded. These sampled envelopes have timer/atomic overhead and overlap nested
+excluded. These durations include timer/atomic overhead and overlap nested
 allocation/I/O work; they must not be added to those durations. Concurrent reads
 are approximate field snapshots, not a synchronized event record. Abandon callbacks
-hold only weak table ownership plus the instrumentation owner. Host time never
+hold only weak table ownership plus the shared counters. Host time never
 enters `CacheStats` equality, budgeting, leases, quarantine or search policy.
 The campaign reports the shared owner once, rather than once per worker/session.
 

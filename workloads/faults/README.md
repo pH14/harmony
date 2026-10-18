@@ -216,7 +216,7 @@ oldest prefix snapshots one at a time until the total fits, keeping setup and
 its newest prefix, and then drops back to the setup snapshot. The run prints the worker count and budget, and
 `campaign-summary.json` records the cache's counters, including `store_bytes`
 and `shrinks`, under `snapshot_cache`. It samples the shared index once under
-`snapshot_cache_locks` for bounded-site acquisition attempts, acquired/completed
+`snapshot_cache_locks` for per-operation acquisition attempts, acquired/completed
 counts and wait/hold nanoseconds; worker/session totals never sum this shared
 owner. `stats` reads have their own site. These host-time diagnostics do not affect
 budget policy or certificates.
