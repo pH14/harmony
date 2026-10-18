@@ -57,7 +57,8 @@ assessed, every candidate disposition recorded, and three consecutive full
 rounds on a stable repaired build without a new confirmed bug. A new bug
 resets that counter. Bounded searches cannot prove absence of every bug.
 
-`export-witness.mjs` retains ordinary input and a full fresh trace;
+`export-control.mjs` exports fresh Dissonance clearing controls with their full
+traces. `export-witness.mjs` retains ordinary failing input and a full fresh trace;
 `dissonance-replay.mjs` and `fceumm.py` verify it in separate emulators. A
 repair must kill at the reviewed escape, preserve the approach, and precede
 any later original death. `compare-controls.mjs` records completion and coin
@@ -75,6 +76,16 @@ symbol-based decoder. This adapter has been exercised on the shared Time
 Machine and Theory of Everything levels, not every current-upstream mode.
 `trace-collision.py` uses export-only FCEUmm CPU hooks to observe the original
 ROM's collision samples without modifying the game.
+
+`verify-geometry.py INDEX ROM_DIRECTORY BUILD_DIRECTORY OUTPUT` decodes the
+ROM's actual level-pointer tables, LZ streams, RLE runs and continuation IDs
+using matching DBG file offsets. It compares every decoded tile with the
+source index instead of assuming that a source checkout describes a ROM.
+The official release's 3,726,087 tiles across all 109 levels match the index.
+The D-Sides source/ROM byte discrepancy is stale continuation metadata, not
+a geometry difference; the retained [shared findings](findings/shared-engine/README.md)
+explain its reproduction and cache-key repair.
+
 
 `check-pit-plane.py` compiles the proposed C pit-crossing helper and compares
 its geometry against an independent exact rational oracle, including upward

@@ -1,0 +1,100 @@
+diff --git a/LEVELS/export_levels.py b/LEVELS/export_levels.py
+index 901d11c..fa9d684 100644
+--- a/LEVELS/export_levels.py
++++ b/LEVELS/export_levels.py
+@@ -260,10 +260,12 @@ def export_bg(folder: pathlib.PurePath, levels: Iterable[dict], include_path : p
+         ]
+ 		header = [f"{i} ;{'_'*(maxHeaderStrLen-len(i)+3)} {headerDataDesc[idx]}" for idx, i in enumerate(header)]
+ 		total_rle_size += len(header) + len(rle_data)
++		first_meta_ptr = len(level_chunk_data)
+ 		if (len(lz_data) >= 8192 - len(header)):
+ 			if (
+ 				# Check existence of split cache
+ 				level in size_cache and
++				level_cache.get("split_first_meta_ptr") == first_meta_ptr and
+ 				"split_count" in level_cache and
+ 				"split_huff_hashes" in level_cache and
+ 				"split_huff_sizes" in level_cache and
+@@ -286,7 +288,7 @@ def export_bg(folder: pathlib.PurePath, levels: Iterable[dict], include_path : p
+ 			else:
+ 				print("compressing in parts:")
+ 
+-				split_data = split_rle_data_into_compressed_banks(rle_data, len(level_chunk_data), [8192-len(header), 8192])
++				split_data = split_rle_data_into_compressed_banks(rle_data, first_meta_ptr, [8192-len(header), 8192])
+ 				split_files = [cached_data_path.with_suffix(f".{i}.bin") for i in range(len(split_data))]
+ 
+ 				[path.write_bytes(data) for path, data in zip(split_files, split_data)]
+@@ -309,6 +311,7 @@ def export_bg(folder: pathlib.PurePath, levels: Iterable[dict], include_path : p
+ 				"rle_hash": hashlib.sha256(bytes(rle_data)).hexdigest(),
+ 				"lz_hash" : hashlib.sha256(bytes(lz_data)).hexdigest(),
+ 				"split_count": len(split_data),
++				"split_first_meta_ptr": first_meta_ptr,
+ 				"split_huff_hashes": 
+ 					[hashlib.sha256(bytes(i)).hexdigest() for i in split_data],
+ 				"split_huff_sizes":
+diff --git a/LEVELS/test_split_cache.py b/LEVELS/test_split_cache.py
+new file mode 100644
+index 0000000..b965c7d
+--- /dev/null
++++ b/LEVELS/test_split_cache.py
+@@ -0,0 +1,60 @@
++"""Split cache entries must retain the continuation table context."""
++
++import contextlib
++import io
++import json
++from pathlib import Path
++import tempfile
++import unittest
++from unittest.mock import patch
++
++import export_levels
++
++
++class SplitCacheTests(unittest.TestCase):
++    def test_reordering_levels_rebuilds_embedded_continuation_ids(self):
++        with tempfile.TemporaryDirectory() as directory:
++            root = Path(directory)
++            source, output = root / "source", root / "output"
++            source.mkdir()
++            (output / "EXPORTS" / "level").mkdir(parents=True)
++            for name in ("alpha", "beta"):
++                (source / f"{name}_.csv").write_text("0,1\n")
++            levels = {name: {"level": name, "spikeSet": "A", "blockSet": "A", "songID": "song_test"}
++                      for name in ("alpha", "beta")}
++            calls = []
++
++            def split(data, first_meta_ptr, sizes):
++                calls.append(first_meta_ptr)
++                return [bytes([0x7f, 0x7f, first_meta_ptr]), bytes([0xff])]
++
++            def run(names):
++                with contextlib.redirect_stdout(io.StringIO()):
++                    export_levels.export_bg(source, [levels[name] for name in names], output)
++
++            def marker(name):
++                return (output / "EXPORTS" / "level" / f"{name}.lz.0.bin").read_bytes()[-1]
++
++            with patch.object(export_levels.aart_lz, "compress", return_value=bytes(8192)), \
++                    patch.object(export_levels, "split_rle_data_into_compressed_banks", side_effect=split):
++                run(["alpha"])
++                self.assertEqual(marker("alpha"), 0)
++                run(["beta", "alpha"])
++                self.assertEqual(marker("alpha"), 1)
++                self.assertEqual(calls, [0, 0, 1])
++                run(["beta", "alpha"])
++                self.assertEqual(calls, [0, 0, 1], "unchanged order should reuse both chunks")
++                run(["alpha", "beta"])
++                self.assertEqual(marker("alpha"), 0)
++                self.assertEqual(marker("beta"), 1)
++                cache_path = output / "level_data_cache.json"
++                cache = json.loads(cache_path.read_text())
++                cache["alpha"].pop("split_first_meta_ptr", None)
++                cache_path.write_text(json.dumps(cache))
++                before = len(calls)
++                run(["alpha", "beta"])
++                self.assertEqual(len(calls), before + 1, "legacy caches need a fresh context")
++
++
++if __name__ == "__main__":
++    unittest.main()

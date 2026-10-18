@@ -1,0 +1,61 @@
+diff --git a/SAUCE/functions/collision.h b/SAUCE/functions/collision.h
+index 024f5a4..bc07546 100644
+--- a/SAUCE/functions/collision.h
++++ b/SAUCE/functions/collision.h
+@@ -41,6 +41,8 @@ char bg_collision_sub();
+ 	Out:
+ 	A
+ */
++#include "ejection.h"
++
+ char bg_coll_sides() {
+ 	switch (collision) {
+ 		case COL_ALL: 
+diff --git a/SAUCE/functions/ejection.h b/SAUCE/functions/ejection.h
+new file mode 100644
+index 0000000..f74abc3
+--- /dev/null
++++ b/SAUCE/functions/ejection.h
+@@ -0,0 +1,16 @@
++CODE_BANK_PUSH("XCD_BANK_05")
++
++void eject_down_underflow(void) {
++    if (!wrap_mode) {
++        high_byte(currplayer_rely) = 6;
++        cube_data[currplayer] |= 1;
++    }
++}
++
++CODE_BANK_POP()
++
++#define EJECT_DOWN_CHECKED(done) do { \
++    __asm__("lda %v+1\n sec\n sbc %v\n sta %v+1\n bcs %g", currplayer_rely, eject_D, currplayer_rely, done); \
++    crossPRGBankJump0(eject_down_underflow); \
++    done:; \
++} while (0)
+diff --git a/SAUCE/gamemodes/gamemode_ship.h b/SAUCE/gamemodes/gamemode_ship.h
+index 782139b..ad75ed2 100644
+--- a/SAUCE/gamemodes/gamemode_ship.h
++++ b/SAUCE/gamemodes/gamemode_ship.h
+@@ -64,7 +64,7 @@ void ufo_ship_eject() {
+ 	//}
+ 	//if (!currplayer_was_on_slope_counter || !(currplayer_slope_type & SLOPE_UPSIDEDOWN)) {
+ 		if(bg_coll_D()){ // check collision below
+-			high_byte(currplayer_rely) = high_byte(currplayer_rely) - eject_D;
++			EJECT_DOWN_CHECKED(ship_eject_down_valid);
+ 			currplayer_vel_y = 0;
+ 		}
+ 	//}
+diff --git a/SAUCE/gamemodes/gamemode_wave.h b/SAUCE/gamemodes/gamemode_wave.h
+index 571ebdc..2b0ff1d 100644
+--- a/SAUCE/gamemodes/gamemode_wave.h
++++ b/SAUCE/gamemodes/gamemode_wave.h
+@@ -74,7 +74,7 @@ void wave_eject() {
+ 	else{
+ 		if(bg_coll_D()){ // check collision below
+ 			if (dblocked[currplayer]) {
+-				high_byte(currplayer_rely) = high_byte(currplayer_rely) - eject_D;
++				EJECT_DOWN_CHECKED(wave_eject_down_valid);
+ 				currplayer_vel_y = 0;
+ 				idx8_store(cube_data, currplayer, cube_data[currplayer] & 1);		    
+ 			} else {
