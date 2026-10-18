@@ -196,25 +196,22 @@ resolver; every image boots with `LD_BIND_NOW=1`, so it never runs.
 TLSdesc relocations anywhere in the closure, so it never runs either. A save
 instruction anywhere else rejects the image.
 
-The controlled native x86 subset also excludes implementation-dependent
-reciprocal and reciprocal-square-root estimates (RCP/RSQRT and their VEX/EVEX
-forms, including the FP16 VRCPPH/VRCPSH/VRSQRTPH/VRSQRTSH instructions), and x87
-transcendental approximations (F2XM1, FSIN, FCOS, FSINCOS,
-FPTAN, FPATAN, FYL2X, FYL2XP1). Both this checker and the production Faults image
-admission enforce that refusal; an instruction allowlist cannot override it.
-This can reject images containing unused libm routines. Removing those routines
-or establishing an executable reachability proof is required before admission;
-a review annotation alone is insufficient. Exact SQRT arithmetic remains
-admitted. This restriction applies to controlled images, not arbitrary VMM
-guests, and does not establish a complete common arithmetic implementation
-across CPUs. Wider native-instruction semantics still require an explicit
-portability domain and retained cross-implementation execution evidence.
+Native arithmetic and standard math libraries are admitted. Reciprocal and
+reciprocal-square-root estimates (RCP/RSQRT and their VEX/EVEX forms, including
+FP16), and x87 transcendental operations can produce different result bits on
+different CPU implementations. The rootfs checker inventories those operations
+without refusing them; the production Faults scan does not require instruction
+reviews for native arithmetic. Admission therefore does not establish universal
+cross-CPU numerical reproducibility. Saved CLI replay warns about changed or
+unknown CPU implementations through [CPU provenance](../../cli/README.md);
+retained cross-implementation execution evidence is needed
+to establish agreement for a particular composition and input.
 
 | Native variation | Disposition | Boundary |
 | --- | --- | --- |
 | SYSCALL-saved AF | Clear both flags and R11 before the first tick | Owned x86 syscall ingress; arbitrary interrupted R11 is preserved |
 | Native FXSAVE/XSAVE image bytes | Refuse workload saves; canonicalize owned kernel saves | Controlled rootfs and patched guest kernel |
-| Reciprocal and x87 transcendental approximations | Refuse opcode families | Controlled executable mapping scans |
+| Reciprocal and x87 transcendental approximations | Admit native semantics; warn on CPU changes | CPU replay diagnostics; no universal result-bit equivalence |
 | UML initial extended registers and PKRU | Clear XSAVE header and extended bytes; restore architectural init state | Owned x86 UML startup patch |
 | Other permitted native arithmetic | Restricted qualification claim | Exact artifact, contract and implementation classes tested; no universal cross-vendor claim |
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 mod adapters;
 mod config;
+mod cpu_replay;
 mod host;
 mod host_boundary;
 mod oci;

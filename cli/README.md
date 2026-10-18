@@ -366,6 +366,16 @@ fault actions or controller inputs. Package adapters own payload schemas and
 operation capabilities. Runtime identity checks belong to runners. Saved replay
 never repeats automatic runner selection or resolves a mutable image tag.
 
+Saved runs also retain `cpu_provenance`, an advisory history of observed CPU
+implementation metadata. Replay, branching, and continued search print a warning
+to stderr if the recording and current CPU differ or either identity is unknown,
+incomplete, or heterogeneous. Older manifests without this field warn as unknown;
+derived runs retain that uncertainty. Standard math libraries remain supported,
+and the warning does not block execution. Matching metadata is not proof of
+numerical equivalence. These warnings belong to CLI dispatch; lower-level APIs
+do not automatically emit them. Snapshot, cache, and runner identities are
+unchanged, and existing incompatibility errors still apply.
+
 Replay verifies the recorded host executable identity, architecture and saved artifact hashes.
 Consonance recording and replay require the strict host at the manifest boundary,
 including when package code is called without the frontend. Linux worker reexec

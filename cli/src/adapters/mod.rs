@@ -110,6 +110,20 @@ pub fn dispatch(request: Request) -> Result<u8> {
         )
         .into());
     }
+    if matches!(
+        request.operation,
+        Operation::Replay | Operation::Branch | Operation::Resume | Operation::Search
+    ) && let Some(selection) = &request.selection
+    {
+        let source = crate::runs::locate(&selection.run)?;
+        let manifest = crate::runs::Manifest::read(&source)?;
+        if let Some(warning) = crate::cpu_replay::warning(
+            &manifest.cpu_provenance,
+            &crate::cpu_replay::CpuIdentity::current(),
+        ) {
+            eprintln!("warning: {warning}");
+        }
+    }
     package.execute(request)
 }
 
@@ -216,6 +230,17 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+        let mut recorded = Manifest::read(&original).unwrap();
+        let unknown = crate::cpu_replay::CpuIdentity::unknown(std::env::consts::ARCH);
+        recorded.cpu_provenance = vec![unknown.clone()];
+        recorded.save(&original).unwrap();
+        assert!(
+            crate::cpu_replay::warning(
+                &recorded.cpu_provenance,
+                &crate::cpu_replay::CpuIdentity::current(),
+            )
+            .is_some()
+        );
         for (operation, out, point) in [
             (Operation::Replay, copy.clone(), Point::default()),
             (
@@ -244,6 +269,17 @@ mod tests {
         }
         assert_eq!(Manifest::read(&copy).unwrap().payload["sum"], 6);
         assert_eq!(Manifest::read(&branch).unwrap().payload["sum"], 3);
+        for path in [&copy, &branch] {
+            let inherited = Manifest::read(path).unwrap();
+            assert!(inherited.cpu_provenance.contains(&unknown));
+            assert!(
+                crate::cpu_replay::warning(
+                    &inherited.cpu_provenance,
+                    &crate::cpu_replay::CpuIdentity::current(),
+                )
+                .is_some()
+            );
+        }
         let refused = root.path().join("refused");
         assert!(
             crate::workflow::saved(Request {
