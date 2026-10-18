@@ -146,6 +146,7 @@ pub(super) fn write_all_counted(
     }
     Ok(())
 }
+#[cfg(any(not(target_os = "macos"), test))]
 pub(super) fn read_exact_counted(
     mut bytes: &mut [u8],
     counter: &mut u64,
