@@ -32,6 +32,23 @@ def fixture(code=b"\xc3", flags=5, needed=None, soname=None):
     return header + bytes(0x1000 - len(header)) + payload
 
 
+def many_symbol_fixture(count):
+    code = bytes.fromhex("0f1f4000c3909090") * count
+    data = bytearray(fixture(code))
+    data.extend(bytes((-len(data)) % 4096))
+    shoff = len(data)
+    symbol_offset = shoff + 4 * 64
+    symbols = b"".join(struct.pack("<IBBHQQ", 0, 2, 0, 1, 0x400000 + 8 * i, 8) for i in range(count))
+    sections = [bytes(64),
+                struct.pack("<IIQQQQIIQQ", 0, 1, 6, 0x400000, 0x1000, len(code), 0, 0, 1, 0),
+                struct.pack("<IIQQQQIIQQ", 0, 2, 0, 0, symbol_offset, len(symbols), 3, 0, 8, 24),
+                struct.pack("<IIQQQQIIQQ", 0, 3, 0, 0, symbol_offset + len(symbols), 1, 0, 0, 1, 0)]
+    data.extend(b"".join(sections) + symbols + b"\0")
+    struct.pack_into("<Q", data, 40, shoff)
+    struct.pack_into("<HHH", data, 58, 64, 4, 0)
+    return bytes(data)
+
+
 def resolver_trampoline(save=b"\x0f\xae\x64\x24\x40", entry_jump=b""):
     spills = "48890424 48894c2408 4889542410 4889742418 48897c2420 4c89442428 4c894c2430"
     reloads = "4c8b4c2430 4c8b442428 488b7c2420 488b742418 488b542410 488b4c2408 488b0424"
@@ -58,6 +75,129 @@ def newc(entries):
         output.extend(content)
         output.extend(bytes((-len(output)) % 4))
     return bytes(output)
+
+
+class ExecutableCoverageTests(unittest.TestCase):
+    def inspect(self, data):
+        record = a.elf(bytes(data))
+        record.update(sites=a.disassemble(bytes(data), record["segments"], os.environ.get("OBJDUMP", "objdump")),
+                      writable_executable_segments=[])
+        report = {"artifacts": {"/fixture": record}}
+        return report, a.verify(report)
+
+    def assert_rejected(self, data, mnemonic):
+        report, accepted = self.inspect(data)
+        self.assertFalse(accepted, report)
+        self.assertIn(mnemonic, [site["mnemonic"] for site in report["artifacts"]["/fixture"]["sites"]])
+
+    def test_direct_transfer_into_an_immediate_restarts_decoding(self):
+        self.assert_rejected(fixture(bytes.fromhex("eb01 b8 0fae27 c3 c3")), "xsave")
+
+    def test_elf_entry_into_an_immediate_restarts_decoding(self):
+        data = bytearray(fixture(bytes.fromhex("b8 0fae27 c3 c3")))
+        struct.pack_into("<Q", data, 24, 0x400001)
+        self.assert_rejected(data, "xsave")
+
+    def test_executable_page_tail_and_head_are_scanned(self):
+        self.assert_rejected(fixture() + bytes.fromhex("0fae27 c3"), "xsave")
+        data = bytearray(fixture(bytes.fromhex("0fae27 c3")))
+        struct.pack_into("<QQ", data, 72, 0x1003, 0x400003)
+        struct.pack_into("<QQ", data, 96, 1, 1)
+        self.assert_rejected(data, "xsave")
+
+    def test_instruction_split_across_adjacent_executable_mappings(self):
+        data = bytearray(fixture(bytes(4095) + b"\x0f"))
+        data.extend(bytes.fromhex("ae27 c3"))
+        struct.pack_into("<H", data, 56, 2)
+        struct.pack_into("<IIQQQQQQ", data, 120, 1, 5, 0x2000, 0x401000, 0, 3, 3, 0x1000)
+        self.assert_rejected(data, "xsave")
+
+    def test_legacy_save_is_not_a_restore_or_loader_exemption(self):
+        for opcode in (bytes.fromhex("0fae07"), bytes.fromhex("480fae07")):
+            report, accepted = self.inspect(fixture(opcode + b"\xc3"))
+            self.assertFalse(accepted, report)
+            self.assertTrue(report["artifacts"]["/fixture"]["sites"][0]["mnemonic"] in a.SAVE)
+        self.assert_rejected(fixture(resolver_trampoline(bytes.fromhex("0fae442440"))), "fxsave")
+
+    def test_native_math_is_admitted_and_inventoried_with_exact_arithmetic_control(self):
+        for raw, name in [("0f53c0", "rcpps"), ("0f52c0", "rsqrtps"),
+                          ("f30f53c0", "rcpss"), ("f30f52c0", "rsqrtss"),
+                          ("d9fe", "fsin"), ("d9ff", "fcos"), ("d9f9", "fyl2xp1"), ("c5f853c0", "vrcpps"),
+                          ("62f27d484cc0", "vrcp14ps"),
+                          ("62f67d484cc0", "vrcpph"), ("62f67d084dc0", "vrcpsh"),
+                          ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh")]:
+            report, accepted = self.inspect(fixture(bytes.fromhex(raw) + b"\xc3"))
+            self.assertTrue(accepted, report)
+            self.assertIn(name, [site["mnemonic"] for site in report["artifacts"]["/fixture"]["sites"]])
+            if name in {"vrcpph", "vrcpsh", "vrsqrtph", "vrsqrtsh"}:
+                report, accepted = self.inspect(fixture(bytes.fromhex("eb01b8" + raw) + b"\xc3"))
+                self.assertTrue(accepted, report)
+        report, accepted = self.inspect(fixture(bytes.fromhex("eb01 b8 0f53c0 c3 c3")))
+        self.assertTrue(accepted, report)
+        report, accepted = self.inspect(fixture(bytes.fromhex("0f51c0 c3")))
+        self.assertTrue(accepted, report)
+
+    def test_native_math_does_not_exempt_state_save_or_selector_checks(self):
+        self.assert_rejected(fixture(bytes.fromhex("d9f9 0f52c0 0fae27 c3")), "xsave")
+        self.assert_rejected(fixture(bytes.fromhex("d9f9 0f52c0 0f01d0 c3")), "xgetbv")
+
+    def test_overlapping_predecessors_cannot_fake_selector_dominance(self):
+        code = bytes.fromhex("7401 8031c9 0f01d0 c3")
+        report, accepted = self.inspect(fixture(code))
+        sites = report["artifacts"]["/fixture"]["sites"]
+        self.assertFalse(accepted, report)
+        selector = next(site for site in sites if site["mnemonic"] == "xgetbv")
+        self.assertFalse(selector["straightline_ecx_zero"])
+        self.assertEqual(selector["selector_proof_instructions"], [])
+        control, accepted = self.inspect(fixture(bytes.fromhex("31c9 0f01d0 c3")))
+        self.assertTrue(accepted, control)
+
+    def test_elf_entry_cannot_bypass_selector_initialization(self):
+        data = bytearray(fixture(bytes.fromhex("31c9 0f01d0 c3")))
+        struct.pack_into("<Q", data, 24, 0x400002)
+        self.assert_rejected(data, "xgetbv")
+
+    def test_overlapping_entry_cannot_receive_a_loader_trampoline_exemption(self):
+        code = bytes.fromhex("7401 b8") + resolver_trampoline()
+        self.assert_rejected(fixture(code), "xsave")
+
+    def test_unambiguous_loader_trampoline_keeps_its_exemption(self):
+        report, accepted = self.inspect(fixture(resolver_trampoline()))
+        self.assertTrue(accepted, report)
+        save = next(site for site in report["artifacts"]["/fixture"]["sites"] if site["mnemonic"] == "xsave")
+        self.assertEqual(save["loader_trampoline"], "eager-resolver")
+
+    def test_boundary_filter_preserves_special_instructions_hidden_inside_an_immediate(self):
+        for raw, name in [("0fae27", "xsave"), ("0fc727", "xsavec"),
+                          ("480fae07", "fxsave64"), ("0fae2f", "xrstor"),
+                          ("0f01d0", "xgetbv"), ("d9fe", "fsin"),
+                          ("0f53c0", "rcpps"), ("c5f853c0", "vrcpps"),
+                          ("62f67d484cc0", "vrcpph"), ("62f67d084dc0", "vrcpsh"),
+                          ("62f67d484ec0", "vrsqrtph"), ("62f67d084fc0", "vrsqrtsh")]:
+            with self.subTest(mnemonic=name):
+                data = bytearray(many_symbol_fixture(1))
+                code = b"\xb8" + bytes.fromhex(raw) + b"\xc3"
+                data[0x1000:0x1008] = code.ljust(8, b"\x90")
+                symbol = struct.unpack_from("<Q", data, 40)[0] + 4 * 64
+                struct.pack_into("<Q", data, symbol + 8, 0x400002)
+                record = a.elf(data)
+                sites = a.disassemble(data, record["segments"], os.environ.get("OBJDUMP", "objdump"))
+                self.assertTrue(any(site["address"] == 0x400001 and site["mnemonic"] == name for site in sites), sites)
+
+    def test_many_function_symbols_reuse_decodes_instead_of_spawning_per_boundary(self):
+        data = many_symbol_fixture(2048)
+        with patch.object(a.subprocess, "run", wraps=a.subprocess.run) as run:
+            report, accepted = self.inspect(data)
+        self.assertTrue(accepted, report)
+        self.assertLessEqual(run.call_count, 3)
+        self.assertEqual(report["artifacts"]["/fixture"]["sites"], [])
+
+    def test_executable_page_alias_is_refused(self):
+        data = bytearray(fixture())
+        struct.pack_into("<H", data, 56, 2)
+        struct.pack_into("<IIQQQQQQ", data, 120, 1, 4, 0x1000, 0x400100, 0, 1, 1, 0x1000)
+        with self.assertRaisesRegex(a.Rejected, "memory-page alias"):
+            self.inspect(data)
 
 
 class AdmissionTests(unittest.TestCase):

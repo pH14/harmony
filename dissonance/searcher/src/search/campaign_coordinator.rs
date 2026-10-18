@@ -84,6 +84,7 @@ pub fn run_job<G: Workload>(
         config.retention,
         config.stop_rollout_on_objective,
     )?;
+    workload.verify_integrity()?;
     let result_sha256 = workload.certified_result_sha256(&result, target)?;
     let execution_work =
         execution_work_delta(work_before, workload.execution_work(target), "worker")?;
@@ -142,6 +143,7 @@ where
         progress: Option<&'a mut dyn Write>,
         options: CampaignExecutionOptions,
     ) -> Result<Self, Box<dyn Error>> {
+        workload.verify_integrity()?;
         let executable_identity = workload.executable_identity()?;
         let work_budget = options.work_budget;
         let duration_memory_reserve = DurationPolicies::<G::Key>::memory_reserve_bytes();
@@ -418,6 +420,7 @@ where
         reservation: usize,
         outcome: Result<(CampaignJobResult<G>, u64, String), String>,
     ) -> Result<(), Box<dyn Error>> {
+        self.workload.verify_integrity()?;
         self.profile.receives = self.profile.receives.saturating_add(1);
         self.running = self
             .running
@@ -457,6 +460,7 @@ where
             return Err("campaign worker completed one reservation twice".into());
         }
         while let Some(&(finish, reservation)) = self.schedule.first() {
+            self.workload.verify_integrity()?;
             let Some(completed) = self.completed.remove(&reservation) else {
                 break;
             };
@@ -619,6 +623,7 @@ where
                 sink,
             )?;
         }
+        workload.verify_integrity()?;
         writer.write_line(
             &CampaignStreamRecord::<EmpiricalStepCheckpoint, G::Key>::End(CampaignEndRecord {
                 jobs: reserved,
@@ -988,6 +993,7 @@ where
             reserved,
             ..
         } = self;
+        workload.verify_integrity()?;
         if *reserved >= config.execution_budget
             || stop_reservations_after_work_budget(
                 work_budget,

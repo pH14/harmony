@@ -22,7 +22,7 @@ are not a measurement of whole-campaign throughput.
 The compiler checks cover all independent dependency owners. Native NES and
 other compositions inherit acceleration through these libraries, while VMM
 compositions retain their existing explicit selection. The client's image hashes
-are gated by its in-process feature, which already brings in the VMM, so the
+are checked by its in-process feature, which already brings in the VMM, so the
 client needs no additional acceleration declaration. Root and standalone
 workspace lockfiles keep the same SHA version. No CPU policy exposed to a guest
 changes.
@@ -32,3 +32,41 @@ Run `cargo fetch --locked` and
 offline qualifier. Both ARM host compatibility jobs and the x86 Snapshot and
 Restore job run the bounded check. The VMM's separate SHA qualifier retains its
 streaming, alignment, and full-state checks.
+
+## Consonance execution cells
+
+`consonance.json` declares the required production execution cells consumed by
+`../qualify-consonance.py`. The hardware workflow builds one static X1 executable,
+runs that retained artifact on two hosts, then requires every oracle log and
+compares the execution digests. The binary embeds the guest bytes; identity
+records bind it to source, instruction contract and registry. Receipts retain
+host CPU/kernel identity, the DMI product UUID, and exact test logs. The runner
+reads the firmware UUID into the required `--host-id-file`; duplicate instance
+UUIDs are refused even if hostnames differ. Cloned runner images may reuse a
+hostname. Distinct VM UUIDs establish separate virtual host instances, not
+physical CPU diversity. Unknown fields, duplicate JSON
+keys, missing oracles, repeated hosts, mismatched artifacts and contradictory
+digests fail the check. A failed comparison records an inconclusive or divergent
+verdict rather than a passing cell.
+
+The X1 fixture explicitly initializes its code, stack and task-register segment
+types before guest entry. KVM reset defaults differ between AMD and Intel;
+retaining those defaults would compare different initial states. Checkpoint
+hashes retain the segment fields without masking them.
+
+Each oracle receives its own `X1_DIAGNOSTICS_DIR` below the report's
+`diagnostics` directory. Numbered run directories retain the initial and setup
+CPU states, each checkpoint's saved and logically canonical CPU states, exact
+hashed state text, RAM bytes, virtual-time fields and hashes, followed by the
+normalized log and interrupt schedule. Direct invocations must select one oracle
+with `--exact` and set this variable to a distinct existing empty directory for
+that oracle. Sharing one directory across tests is refused, as are existing run
+directories, to preserve earlier witnesses. Files already emitted survive a
+failed oracle process, and the hardware workflow uploads the report tree even
+when execution fails. These files diagnose contradictions; they do not change
+the compared digest or qualify a failed cell.
+
+The registered cell names its finite instruction surface and checkpoint state.
+It does not grant qualification to arbitrary instructions, other backends or
+snapshot migration. Adding a relation requires a production adapter and evidence
+for that relation; local repetitions alone cannot satisfy a cross-host cell.

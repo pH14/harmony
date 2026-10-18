@@ -34,6 +34,7 @@ impl Options {
             "stream.jsonl",
             "progress.jsonl",
             "campaign-summary.json",
+            "campaign-invalidation.json",
         ]
         .iter()
         .any(|name| self.output.join(name).exists())
@@ -330,7 +331,12 @@ fn state_digest_hex(digest: &[u8; 32]) -> String {
     not(miri)
 ))]
 mod live {
-    use std::{error::Error, io::BufWriter, sync::Arc, time::Instant};
+    use std::{
+        error::Error,
+        io::{BufWriter, Write},
+        sync::Arc,
+        time::Instant,
+    };
 
     use consonance_client::{
         cache::{CacheIndex, LocalIndex, plan_memory, segments},
@@ -521,7 +527,7 @@ mod live {
                 }
             }
         };
-        let (campaign_report, _checkpoint) = run_fault_campaign_with_plan(
+        let campaign_result = run_fault_campaign_with_plan(
             &game,
             &campaign,
             &origin,
@@ -534,6 +540,19 @@ mod live {
                 on_top_progress: false,
                 checkpoint_owner: options.checkpoint_owner.clone(),
             }),
+        );
+        if let Err(error) = stream.flush() {
+            if cache.verify_integrity().is_ok() {
+                return Err(error.into());
+            }
+            eprintln!("flushing the invalidated campaign stream failed: {error}");
+        }
+        let (campaign_report, _checkpoint) = finish_campaign_result(
+            campaign_result,
+            cache.as_ref(),
+            artifacts,
+            options,
+            game.image_identity(),
         )?;
         let archive = &campaign_report.campaign.archive;
         let windows = ActionWindows {
@@ -772,8 +791,264 @@ mod live {
         Ok(summary)
     }
 
+    fn copy_evidence_file(
+        source: &std::path::Path,
+        destination: &std::path::Path,
+        relative: &str,
+    ) -> Result<serde_json::Value, Box<dyn Error>> {
+        use sha2::{Digest, Sha256};
+        use std::io::Read;
+
+        std::fs::copy(source, destination)?;
+        let mut file = std::fs::File::open(destination)?;
+        let mut digest = Sha256::new();
+        let mut bytes = 0u64;
+        let mut buffer = [0; 65536];
+        loop {
+            let count = file.read(&mut buffer)?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+            bytes += count as u64;
+        }
+        Ok(json!({"path": relative, "sha256": format!("{:x}", digest.finalize()), "bytes": bytes}))
+    }
+
+    fn persist_host_executable(
+        directory: &std::path::Path,
+        reported_path: &std::path::Path,
+    ) -> Result<serde_json::Value, Box<dyn Error>> {
+        #[cfg(target_os = "linux")]
+        let source = std::path::Path::new("/proc/self/exe");
+        #[cfg(not(target_os = "linux"))]
+        let source = reported_path;
+        let mut record = copy_evidence_file(
+            source,
+            &directory.join("host-executable"),
+            "determinism-witnesses/host-executable",
+        )?;
+        record["original_path"] = json!(reported_path);
+        Ok(record)
+    }
+
+    #[derive(Debug)]
+    struct EvidencePersistenceError {
+        campaign: Box<dyn Error>,
+        persistence: Box<dyn Error>,
+    }
+
+    impl std::fmt::Display for EvidencePersistenceError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(
+                f,
+                "{}; saving determinism witnesses failed: {}",
+                self.campaign, self.persistence
+            )
+        }
+    }
+
+    impl Error for EvidencePersistenceError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(self.campaign.as_ref())
+        }
+    }
+
+    fn finish_campaign_result<T>(
+        result: Result<T, Box<dyn Error>>,
+        cache: &dyn CacheIndex,
+        artifacts: &Artifacts,
+        options: &Options,
+        image_identity: &str,
+    ) -> Result<T, Box<dyn Error>> {
+        let divergences = cache.divergences();
+        if divergences.is_empty() {
+            return result;
+        }
+        let campaign = match result {
+            Err(error) => error,
+            Ok(_) => cache.verify_integrity().unwrap_err().into(),
+        };
+        let persist = || -> Result<(), Box<dyn Error>> {
+            let marker = options.output.join("campaign-invalidation.json");
+            let mut manifest = json!({
+                "format": "faultlab-determinism-violation-v1",
+                "verdict": "invalidated",
+                "evidence_complete": false,
+                "error": campaign.to_string(),
+                "image_identity": image_identity,
+                "campaign_stream": "stream.jsonl",
+                "campaign_seed": options.seed,
+                "ram_mib": options.ram_mib,
+                "knobs": options.knobs,
+                "uml_profile": options.uml_profile,
+                "restore_basis": "sparse extents relative to setup; rebuild setup from retained artifacts and require its recorded identity",
+                "divergences": [],
+            });
+            std::fs::write(&marker, serde_json::to_vec_pretty(&manifest)?)?;
+            let directory = options.output.join("determinism-witnesses");
+            std::fs::create_dir(&directory)?;
+            let mut records = Vec::new();
+            for (number, divergence) in divergences.iter().enumerate() {
+                let mut witnesses = serde_json::Map::new();
+                for (name, witness) in [
+                    ("existing", &divergence.existing),
+                    ("published", &divergence.published),
+                ] {
+                    let mut chain = Vec::new();
+                    for (depth, extent) in witness.chain.iter().enumerate() {
+                        let name = format!("{number}-{name}-{depth}.extent");
+                        std::fs::write(directory.join(&name), extent.bytes())?;
+                        chain.push(json!({"path": format!("determinism-witnesses/{name}"), "sha256": super::sha256_hex(extent.bytes()), "bytes": extent.bytes().len()}));
+                    }
+                    witnesses.insert(
+                        name.to_owned(),
+                        json!({"target_commitment": witness.target_commitment, "chain": chain}),
+                    );
+                }
+                records.push(json!({"namespace": divergence.namespace.as_bytes(), "action_prefix": divergence.key, "witnesses": witnesses}));
+            }
+            manifest["divergences"] = json!(records);
+            std::fs::write(&marker, serde_json::to_vec_pretty(&manifest)?)?;
+            let mut artifact_manifest = Vec::new();
+            for (name, bytes) in [
+                ("kernel", artifacts.kernel.as_slice()),
+                ("initramfs", artifacts.initramfs.as_slice()),
+            ] {
+                std::fs::write(directory.join(name), bytes)?;
+                artifact_manifest.push(json!({"path": format!("determinism-witnesses/{name}"), "sha256": super::sha256_hex(bytes), "bytes": bytes.len()}));
+            }
+            if let Some(root) = &options.root {
+                std::fs::write(directory.join("root"), root.as_slice())?;
+                artifact_manifest.push(json!({"path": "determinism-witnesses/root", "sha256": super::sha256_hex(root), "bytes": root.len()}));
+            }
+            if let Some((profile_directory, expected)) = &options.uml_profile {
+                let bytes = std::fs::read(profile_directory.join("profile.json"))?;
+                let profile: uml::Profile = serde_json::from_slice(&bytes)?;
+                if super::sha256_hex(&serde_json::to_vec(&profile)?) != *expected {
+                    return Err("the UML profile changed before witness export".into());
+                }
+                std::fs::create_dir(directory.join("uml-profile"))?;
+                std::fs::write(directory.join("uml-profile/profile.json"), &bytes)?;
+                artifact_manifest.push(json!({"path": "determinism-witnesses/uml-profile/profile.json", "sha256": super::sha256_hex(&bytes), "profile_identity_sha256": expected, "bytes": bytes.len()}));
+                for artifact in [&profile.executable, &profile.config, &profile.rootfs] {
+                    if !matches!(
+                        std::path::Path::new(&artifact.name)
+                            .components()
+                            .collect::<Vec<_>>()
+                            .as_slice(),
+                        [std::path::Component::Normal(_)]
+                    ) {
+                        return Err("invalid UML witness artifact name".into());
+                    }
+                    let relative = format!("determinism-witnesses/uml-profile/{}", artifact.name);
+                    let record = copy_evidence_file(
+                        &profile_directory.join(&artifact.name),
+                        &options.output.join(&relative),
+                        &relative,
+                    )?;
+                    if record["sha256"].as_str() != Some(artifact.sha256.as_str()) {
+                        return Err(format!(
+                            "UML witness artifact {} changed before export",
+                            artifact.name
+                        )
+                        .into());
+                    }
+                    artifact_manifest.push(record);
+                }
+            }
+            let executable = std::env::current_exe()?;
+            manifest["artifacts"] = json!(artifact_manifest);
+            manifest["host_executable"] = persist_host_executable(&directory, &executable)?;
+            manifest["evidence_complete"] = json!(true);
+            std::fs::write(&marker, serde_json::to_vec_pretty(&manifest)?)?;
+            Ok(())
+        };
+        if let Err(persistence) = persist() {
+            return Err(Box::new(EvidencePersistenceError {
+                campaign,
+                persistence,
+            }));
+        }
+        Err(campaign)
+    }
+
     fn hostname() -> String {
         std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_owned())
+    }
+
+    #[cfg(test)]
+    mod integrity_tests {
+        use super::*;
+        use consonance_client::cache::{CacheError, Namespace};
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn executable_evidence_uses_the_live_proc_handle_for_deleted_memfd_paths() {
+            let output = tempfile::tempdir().unwrap();
+            let reported = std::path::Path::new("/memfd:harmony-sealed-host (deleted)");
+            let record = persist_host_executable(output.path(), reported).unwrap();
+            let bytes = std::fs::read(output.path().join("host-executable")).unwrap();
+            assert_eq!(bytes, std::fs::read("/proc/self/exe").unwrap());
+            assert_eq!(record["sha256"], super::super::sha256_hex(&bytes));
+            assert_eq!(record["original_path"], json!(reported));
+        }
+
+        #[test]
+        fn disputed_result_is_invalidated_and_both_exact_witnesses_are_saved() {
+            let output = tempfile::tempdir().unwrap();
+            let options = Options {
+                output: output.path().to_owned(),
+                ..super::super::tests::options()
+            };
+            let cache = LocalIndex::new(1 << 20);
+            let namespace = Namespace::new(&[b"persistence"]);
+            let mut first = cache.extent(1).unwrap();
+            first.bytes_mut()[0] = 11;
+            let lease = cache
+                .publish(namespace, b"prefix", None, first, [1; 32], 0)
+                .unwrap();
+            let mut second = cache.extent(1).unwrap();
+            second.bytes_mut()[0] = 22;
+            let error = cache
+                .publish(namespace, b"prefix", None, second, [2; 32], 0)
+                .unwrap_err();
+            cache.release(lease);
+            let artifacts = Artifacts {
+                kernel: b"kernel".to_vec(),
+                initramfs: b"initramfs".to_vec(),
+            };
+            let result = finish_campaign_result::<()>(
+                Err(Box::new(error)),
+                &cache,
+                &artifacts,
+                &options,
+                "identity",
+            );
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<CacheError>(),
+                Some(CacheError::DivergentDuplicate { .. })
+            ));
+            drop(cache);
+            let manifest: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(output.path().join("campaign-invalidation.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(manifest["verdict"], "invalidated");
+            assert_eq!(manifest["evidence_complete"], true);
+            assert_eq!(
+                manifest["divergences"][0]["action_prefix"],
+                json!(b"prefix")
+            );
+            for (name, expected) in [("existing", 11), ("published", 22)] {
+                let record = &manifest["divergences"][0]["witnesses"][name]["chain"][0];
+                let bytes =
+                    std::fs::read(output.path().join(record["path"].as_str().unwrap())).unwrap();
+                assert_eq!(bytes[0], expected);
+                assert_eq!(record["sha256"], super::super::sha256_hex(&bytes));
+            }
+            assert!(!output.path().join("campaign-summary.json").exists());
+        }
     }
 }
 
@@ -794,7 +1069,7 @@ pub use live::{Resources, execute_actions, prepare_debug, replay, resources, sea
 mod tests {
     use super::*;
 
-    fn options() -> Options {
+    pub(super) fn options() -> Options {
         Options {
             seed: 7,
             executions: 10,

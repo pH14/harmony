@@ -18,6 +18,15 @@ Cargo dependency graph.
 
 ## Run loop
 
+The live X1 real-mode fixture initializes CS, SS and TR segment types explicitly
+before execution, rather than inheriting vendor-dependent KVM reset values.
+Its checkpoints still hash the complete saved CPU state. The hardware
+qualification retains setup and checkpoint witnesses, RAM and normalized logs
+as described in [the qualification registry](../../scripts/qualification/README.md).
+Production Linux composition also copies the entry state's complete task
+register descriptor, including its defined busy 32-bit TSS type, instead of
+inheriting the host's KVM reset descriptor.
+
 `Vmm::run` repeatedly obtains one backend exit, classifies it through the
 architecture vendor, advances virtual time by the assigned integer duration,
 dispatches devices and protocol services, and completes any pending backend

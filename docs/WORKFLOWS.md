@@ -417,6 +417,19 @@ x86-64 Linux, arm64 Linux and arm64 macOS. It lists every ignored test that
 builds on that host and fails on one with no runner. A test that no job or
 machine runs is deleted.
 
+## Cross-host execution qualification
+
+The hardware workflow builds `x86_kvm_virtual_time` once as a static musl test
+executable and distributes the exact retained bytes to both X1 replicas. Each
+replica runs the registered repeatability, placement and negative-control tests
+and retains their logs, executable identity, source/contract digests and host
+identity. Results requires every hardware job to succeed, checks every required
+receipt against its retained logs, and compares X1 state/event digests across
+the two hosts. A missing replica or a contradiction fails the result.
+`scripts/qualification/consonance.json` defines the bounded claim; it excludes
+whole-VMM identity and cross-host snapshot migration. Independently rebuilt
+Linux and snapshot suites retain their narrower existing scopes.
+
 ## Audiovisual evidence
 
 The NES composition publishes video with game audio: a bounded capture in the

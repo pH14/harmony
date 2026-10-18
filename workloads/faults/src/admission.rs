@@ -960,6 +960,54 @@ mod tests {
         bytes
     }
 
+    #[test]
+    fn native_math_is_admitted_in_vm_and_uml_without_instruction_reviews() {
+        for code in [
+            vec![0x0f, 0x53, 0xc0, 0xc3],
+            vec![0x0f, 0x52, 0xc0, 0xc3],
+            vec![0xf3, 0x0f, 0x53, 0xc0, 0xc3],
+            vec![0xf3, 0x0f, 0x52, 0xc0, 0xc3],
+            vec![0xd9, 0xfe, 0xc3],
+            vec![0xd9, 0xf9, 0xc3],
+            vec![0xc5, 0xf8, 0x53, 0xc0, 0xc3],
+            vec![0x62, 0xf2, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x08, 0x4d, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x48, 0x4e, 0xc0, 0xc3],
+            vec![0x62, 0xf6, 0x7d, 0x08, 0x4f, 0xc0, 0xc3],
+            vec![0xeb, 1, 0xb8, 0x62, 0xf6, 0x7d, 0x48, 0x4c, 0xc0, 0xc3],
+            vec![0xeb, 1, 0xb8, 0x0f, 0x53, 0xc0, 0xc3, 0xc3],
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            fs::write(root.path().join("node"), elf(&code, 5, 6)).unwrap();
+            let report = inspect_root(root.path()).unwrap();
+            assert!(report.scan_passed(), "{report:?}");
+            assert!(report.require_for(ExecutionMode::Vm).is_ok(), "{report:?}");
+            assert!(report.require_for(ExecutionMode::Uml).is_ok(), "{report:?}");
+            assert!(report.executables[0].sites.is_empty(), "{report:?}");
+        }
+        assert!(scan_elf(&elf(&[0x0f, 0x51, 0xc0, 0xc3], 5, 6), "control").is_ok());
+    }
+
+    #[test]
+    fn native_math_does_not_exempt_hardware_entropy_from_admission() {
+        let root = tempfile::tempdir().unwrap();
+        let code = [0xd9, 0xf9, 0x0f, 0x52, 0xc0, 0x48, 0x0f, 0xc7, 0xf0, 0xc3];
+        fs::write(root.path().join("node"), elf(&code, 5, 6)).unwrap();
+        let report = inspect_root(root.path()).unwrap();
+        assert!(
+            report
+                .scan_errors
+                .iter()
+                .any(|error| error.contains("RDRAND")),
+            "{report:?}"
+        );
+        assert!(report.require_for(ExecutionMode::Vm).is_err());
+        assert!(report.require_for(ExecutionMode::Uml).is_err());
+        assert_eq!(report.executables[0].sites.len(), 1);
+        assert_eq!(report.executables[0].sites[0].instruction, "RDRAND");
+    }
+
     fn adjacent_x86_elf(left_tail: &[u8], right: &[u8]) -> Vec<u8> {
         let mut bytes = elf(&vec![0x90; 4096], 5, 6);
         bytes.resize(8193 + right.len(), 0);

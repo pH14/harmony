@@ -30,6 +30,12 @@ The recipes write these layouts below the standard build artifact directory:
 | `k3s-image` | `build/oci-images/k3s.oci` |
 | `arm64-postgres-image` | `build/aarch64/oci-images/postgres.oci` |
 
+When the locked Nix guest-image builder runs with `--n6`, a failed build
+preserves the N6 guest binaries, generated assembly/header, and entropy-audit
+logs under `OUTPUT/diagnostics/n6` before deleting its temporary workspace.
+The failed build retains its nonzero status; these files are diagnostic
+witnesses and do not constitute a completed or qualified guest bundle.
+
 Each layout contains a single deterministic layer and an OCI config whose
 entrypoint is the application workload. The outer platform runtime supplies
 `/proc`, `/dev`, `/sys`, `/run`, and `/tmp`, runs the entrypoint as the OCI
@@ -52,7 +58,9 @@ its default directories. Adding an extension or provider requires rebuilding
 and reviewing the complete ELF dependency inventory before qualification.
 
 The Docker and K3s recipes retain nested container software and their
-application setup. K3s also builds pinned iptables 1.8.11 from source with a
+application setup. Docker drops the official postgres image's lowercase perl
+`sys` header and `pod` documentation directories, which alias `Sys` and `Pod`
+under image admission's case rule; the workload never loads perl. K3s also builds pinned iptables 1.8.11 from source with a
 musl static compiler and packages the `iptables`, `iptables-restore`, and
 related legacy aliases from one self-contained executable; the nftables backend
 and dynamic extension closure are disabled. Set

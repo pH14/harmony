@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "cells": [{
+    "id": "x1-kvm-cross-host",
+    "host_class": "linux-x86_64-kvm",
+    "backend": "KvmBackend",
+    "relation": "same-retained-static-executable-cross-host-checkpoints",
+    "state_scope": "X1 guest RAM, backend CPU save state, normalized events and virtual-time checkpoints; not whole-VMM identity",
+    "restore_mode": "fresh-backend; no snapshot migration",
+    "instruction_surface": "embedded real-mode interrupt and port-I/O microprogram",
+    "oracles": ["ten-local-repetitions", "interrupt-placement", "comparator-negative-control", "placement-negative-control", "cross-host-digest"],
+    "replicas": 2,
+    "tests": [
+      "x1_ten_same_seed_runs_produce_one_normalized_log",
+      "x1_comparator_catches_one_exit_late_delivery_on_this_workload",
+      "x1_placement_checker_catches_consistently_late_twins"
+    ]
+  }]
+}

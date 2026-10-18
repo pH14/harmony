@@ -156,6 +156,17 @@ jobs:
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
         run: cargo test --locked -p uml --test guest_exitcode guest_cannot_choose_host_reserved_exit_statuses -- --ignored --nocapture
+      - name: Abandon host signals and lost address-space stubs
+        env:
+          HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER: ${{ github.workspace }}/scripts/linux-clean-loader-test.sh
+        run: |
+          set -euo pipefail
+          cargo test --locked -p uml --test host_failure_provenance stub_selection_binds_executable_identity_and_ownership_without_argv -- --exact --nocapture
+          output=$(cargo test --locked -p uml --test host_failure_provenance -- --ignored --nocapture 2>&1) || { printf '%s\n' "$output"; exit 1; }
+          printf '%s\n' "$output"
+          grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' <<<"$output"
       - name: Fail closed on exhausted host clone quota
         env:
           HARMONY_UML_REVIEWED_PROFILE: ${{ runner.temp }}/uml-first

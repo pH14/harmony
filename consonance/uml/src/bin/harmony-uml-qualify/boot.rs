@@ -71,7 +71,8 @@ fn pinned_auxv(
     let exit = Guest::start(command, work, &launch)
         .map_err(io::Error::other)?
         .wait()?;
-    let passed = matches!(exit.reason, ExitReason::Exited(code) if code != 0)
+    let passed = exit.reason == ExitReason::HostFailure
+        && exit.events.is_empty()
         && contains(
             &exit,
             &format!("Harmony host auxiliary vector mismatch: {diagnostic}"),

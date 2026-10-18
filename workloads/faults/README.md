@@ -60,6 +60,15 @@ The scan rejects:
 - an arm64 executable load that contains an allocated non-executable section;
 - a review entry that matches no instruction in the image.
 
+Native arithmetic and standard math libraries are admitted for both VM and UML
+images without instruction reviews. Reciprocal/reciprocal-square-root estimates
+and x87 transcendental operations may produce different result bits on different
+CPU implementations. Image admission does not prove a common numerical
+transition rule across CPUs. Saved CLI replay warns about changed or unknown CPU
+implementations through [CPU provenance](../../cli/README.md); exact agreement
+still needs evidence for the particular implementation
+pair, artifacts and inputs.
+
 For User-mode Linux, preparation rejects the scanned hardware entropy and
 CPU-identity instructions even when reviewed. UML runs guest user instructions
 natively, so the VM's hidden feature bits do not protect a guarded call site.
@@ -176,8 +185,22 @@ be snapshotted, the session is abandoned and the control diagnostic is
 reported. Each session keeps only its current chain of prefix snapshots, at
 most 32 past the setup snapshot. Every sealed prefix is published to the
 search's shared snapshot cache (see [consonance-client](../../consonance/client/README.md)).
-Publishing an action prefix already cached with a different target state fails
-before the fault controller seals a link to the cached lease.
+Publishing an action prefix already cached with a different target state
+quarantines its namespace before the fault controller seals a link. A shared
+integrity check invalidates the campaign, including work already running from
+local cache links; it cannot count the contradiction as an ordinary execution
+failure or return a completed campaign report. Existing leases, subsequent
+lookups and publications, and dependent descendants cannot reuse that domain.
+The error path writes `campaign-invalidation.json` with an invalidated verdict
+and `determinism-witnesses/` with both exact anchor-first extent chains, their
+checksums, namespace, action-prefix bytes and commitments. It also retains the
+kernel, initramfs, optional root and UML profile, running host executable, and
+setup configuration. Extents remain sparse relative to setup: reconstruction
+must rebuild setup from those artifacts and verify the setup identity recorded
+in their sidecars. These files preserve disputed cache evidence; UML whole-state
+identity remains unavailable. An incomplete evidence write keeps an invalidated
+marker and reports the persistence failure while retaining the typed original
+error and its witnesses.
 A prefix that the chain does not hold is imported from the longest cached
 prefix in the shared cache, and only the remaining actions run again. Chain
 bookkeeping lives in [`chain`](src/chain.rs). Without the shared cache a

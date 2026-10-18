@@ -90,6 +90,19 @@ else
     work=$(mktemp -d "${TMPDIR:-/tmp}/harmony-nix-guest.XXXXXXXX")
 fi
 cleanup() {
+    n6_cleanup_status=$?
+    if [ "$n6_cleanup_status" -ne 0 ] && [ "$n6" -eq 1 ] && [ -d "$work/build/n6-instruction-sweep" ]; then
+        n6_diagnostics=$output/diagnostics/n6
+        mkdir -p "$n6_diagnostics"
+        for n6_name in n6-generated.S n6-generated.h \
+            n6-instruction-guest n6-instruction-guest.entropy-audit.txt \
+            n6-instruction-guest-traps-off n6-instruction-guest-traps-off.entropy-audit.txt; do
+            if [ -f "$work/build/n6-instruction-sweep/$n6_name" ]; then
+                cp -p "$work/build/n6-instruction-sweep/$n6_name" "$n6_diagnostics/$n6_name"
+            fi
+        done
+        echo "N6 failed-build diagnostics preserved: $n6_diagnostics" >&2
+    fi
     if [ "${HARMONY_NIX_KEEP_WORK:-0}" -eq 1 ]; then
         echo "platform diagnostic workspace preserved: $work" >&2
     else
@@ -229,7 +242,14 @@ else
     fi
     if [ "$n6" -eq 1 ]; then
         echo "== platform: build generated sweep and traps-off x86 kernel"
-        (cd "$linux_dir" && ./build-n6-instruction-images.sh && N6_TRAPS_OFF=1 ./build-kernel.sh)
+        (
+            cd "$linux_dir"
+            . ./lib-build.sh
+            build_x86_musl
+            HARMONY_N6_CC="$X86_MUSL_PREFIX/bin/musl-gcc" \
+                ./build-n6-instruction-images.sh
+            N6_TRAPS_OFF=1 ./build-kernel.sh
+        )
     fi
     if [ "$serialization_check" -eq 1 ]; then
         echo "== platform: run /dev/harmony serialization checks"

@@ -5,7 +5,12 @@
 `searcher` implements deterministic search independently of a workload. The
 `search::` modules own archive retention, parent selection, input mutation,
 campaign coordination, worker execution, seeded draws, checkpoints, stream
-recording, and replay. Workloads supply associated types through `CampaignTypes`
+recording, and replay. Workloads may implement `TargetExecution::verify_integrity`
+to withdraw the entire execution domain after a determinism contradiction.
+Execution, reservation, admission and final report boundaries check this shared
+status. Its error aborts the campaign without an End record or completed report;
+it is not an ordinary failed target, and coordinator checks preserve the typed
+error independently of worker diagnostic strings. Workloads supply associated types through `CampaignTypes`
 and implement four contracts. `Workload` composes those contracts for a full campaign.
 
 The archive keeps entries in cells, a cell being one place at one progress
