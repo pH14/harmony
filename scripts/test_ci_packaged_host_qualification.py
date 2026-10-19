@@ -273,6 +273,7 @@ class PackagedHostTests(unittest.TestCase):
         steps = str(check['steps'])
         self.assertIn('cli-${{ matrix.triple }}', steps)
         self.assertIn('guest-${{ matrix.isa }}', steps)
+        self.assertIn('-Wl,-z,separate-code', steps)
         self.assertNotIn('cargo ', steps)
         self.assertIn('--cli-archive "packages/harmony-${{ github.ref_name }}-${{ matrix.triple }}.tar.gz"', steps)
         self.assertIn('packaged-composition', release['publish']['needs'])
@@ -280,6 +281,7 @@ class PackagedHostTests(unittest.TestCase):
         checks = yaml.safe_load((P.ROOT / '.github/workflows/harmony-workloads-languages-checks.yml').read_text())['jobs']
         self.assertEqual(checks['packaged-composition']['needs'], ['scope', 'guest', 'tools'])
         self.assertIn('scripts/qualify-packaged-host.py', str(checks['packaged-composition']['steps']))
+        self.assertIn('-Wl,-z,separate-code', str(checks['packaged-composition']['steps']))
 
 
 if __name__ == '__main__':

@@ -241,7 +241,8 @@ extracts only the expected regular files, checks the runtime manifest against
 this source and its kernel/initramfs bytes, then uses the packaged frontend for
 command execution, same-host replay and one completed search. The owned C
 fixture emits a reviewed computed checksum readback before returning or waiting as
-the supervised search node. Direct/replay must retain that nonempty readback,
+the supervised search node. Its static ELF uses separate code pages required
+by AArch64 executable admission. Direct/replay must retain that nonempty readback,
 positive work, successful application completion and the exact serial record.
 Each public manifest must identify the admitted sealed host and commit the
 actual kernel and composed initramfs with the supplied base prefix.
