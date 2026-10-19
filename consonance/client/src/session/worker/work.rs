@@ -14,10 +14,11 @@ pub(super) enum Group {
     Export,
     Import,
     Telemetry,
+    Endpoint,
     Unknown,
 }
 impl Group {
-    const ALL: [Self; 11] = [
+    const ALL: [Self; 12] = [
         Self::Hello,
         Self::Setup,
         Self::Run,
@@ -28,6 +29,7 @@ impl Group {
         Self::Export,
         Self::Import,
         Self::Telemetry,
+        Self::Endpoint,
         Self::Unknown,
     ];
     fn name(self) -> &'static str {
@@ -42,12 +44,14 @@ impl Group {
             Self::Export => "export",
             Self::Import => "import",
             Self::Telemetry => "telemetry",
+            Self::Endpoint => "endpoint",
             Self::Unknown => "unknown",
         }
     }
     pub(super) fn request(body: &[u8]) -> Self {
         use super::*;
         match body.first().copied() {
+            Some(ENDPOINT) => Self::Endpoint,
             Some(INIT) => Self::Setup,
             Some(RUN_UNTIL | RUN_RESOLVING) => Self::Run,
             Some(SDK_EVENTS | CONSOLE_TAIL) => Self::Observe,
@@ -69,7 +73,7 @@ pub(super) struct Delta {
 }
 #[derive(Debug)]
 pub(super) struct Work {
-    values: [[[AtomicU64; 6]; 2]; 11],
+    values: [[[AtomicU64; 6]; 2]; 12],
 }
 impl Default for Work {
     fn default() -> Self {

@@ -28,6 +28,8 @@ mod cgroup;
 ))]
 mod copy_work;
 #[cfg(feature = "in-process")]
+pub mod endpoint;
+#[cfg(feature = "in-process")]
 mod guard_telemetry;
 pub mod image_identity;
 #[cfg(any(all(feature = "in-process", not(miri)), test))]

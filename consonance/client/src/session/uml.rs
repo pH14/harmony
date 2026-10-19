@@ -22,6 +22,8 @@ use super::{
 use crate::cache::extent::{extent_len, read_extent, resolve, write_extent};
 use crate::cache::{ANCHOR_DEPTH, CacheIndex, CommittedExtent, Lease, Namespace};
 
+mod endpoint;
+
 const CONSOLE_TAIL: usize = 64 << 10;
 const CACHE_SIDECAR_MAGIC: [u8; 8] = *b"HUMLCA01";
 
@@ -154,6 +156,7 @@ pub struct UmlSession {
     next: u64,
     setup: (SnapId, u64),
     abandoned: bool,
+    endpoint_state: crate::endpoint::EndpointState,
     counters: Counters,
 }
 
@@ -292,6 +295,7 @@ impl UmlSession {
             next: 1,
             setup: (SnapId(0), moment),
             abandoned: false,
+            endpoint_state: crate::endpoint::EndpointState::default(),
             counters: Counters::default(),
         };
         let (setup, at) = this.capture()?;
@@ -348,6 +352,7 @@ impl UmlSession {
     }
 
     fn capture(&mut self) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         let begun = started();
         let checkpoint = self
@@ -364,6 +369,7 @@ impl UmlSession {
     }
 
     fn restore(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         if self.abandoned {
             return Err(SessionError::Abandoned.into());
@@ -528,10 +534,18 @@ fn handler(
 }
 
 impl SearchSession for UmlSession {
+    fn execution_endpoint(
+        &mut self,
+        request: crate::endpoint::EndpointRequest,
+    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
+        self.exchange_endpoint(request)
+    }
+    fn abandon_execution_endpoint(&mut self) {
+        self.retire_endpoint();
+    }
+
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.abandoned {
-            return Err(SessionError::Abandoned.into());
-        }
+        self.ensure_endpoint_mutation()?;
         if let Some(session) = self.session.as_mut() {
             session.shutdown()?;
         }
@@ -606,6 +620,7 @@ impl SearchSession for UmlSession {
         index: &dyn CacheIndex,
         lease: &Lease,
     ) -> Result<(SnapId, u64), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         let chain = index.chain(lease)?;
         if chain.len() != 1 {
@@ -767,6 +782,7 @@ impl SearchSession for UmlSession {
         lease: &Lease,
         near: SnapId,
     ) -> Result<CachedSnapshotReceipt, Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         let begun = started();
         let chain = index.chain(lease)?;
@@ -832,6 +848,7 @@ impl SearchSession for UmlSession {
     }
 
     fn drop_snapshot(&mut self, snapshot: SnapId) -> Result<(), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         self.snapshots.remove(&snapshot);
         Ok(())
@@ -845,6 +862,7 @@ impl SearchSession for UmlSession {
         effects: Vec<(u64, Effect)>,
         coverage_schedule: Option<CoverageSchedule>,
     ) -> Result<(), Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         self.loaded_image_guard.check()?;
         if !effects.is_empty() {
             return Err(SessionError::Control(
@@ -866,6 +884,7 @@ impl SearchSession for UmlSession {
     }
 
     fn run_until(&mut self, deadline: u64) -> Result<StopReason, Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         let result = self.live()?.run_until(deadline);
         self.finish_run(result)
     }
@@ -875,6 +894,7 @@ impl SearchSession for UmlSession {
         deadline: u64,
         resolution: Resolution,
     ) -> Result<StopReason, Box<dyn Error>> {
+        self.ensure_endpoint_mutation()?;
         let result = self.live()?.resolve_and_run(
             deadline,
             resolution.vtime.0,
@@ -995,7 +1015,87 @@ mod tests {
             next: 1,
             setup: (SnapId(1), 0),
             abandoned: false,
+            endpoint_state: crate::endpoint::EndpointState::default(),
             counters: Counters::default(),
+        }
+    }
+
+    #[test]
+    fn pending_endpoint_refuses_shutdown_and_root_import_before_any_mutation() {
+        use crate::endpoint::*;
+        let mut session = unbooted_session();
+        let (pending, token) = crate::endpoint::tests::pending_state();
+        session.endpoint_state = pending;
+        let index = LocalIndex::new(1 << 20);
+        let mut extent = index.extent(extent_len(0, 0, 0).unwrap()).unwrap();
+        write_extent(extent.bytes_mut(), &[], &[], &[]).unwrap();
+        let lease = index
+            .publish(
+                Namespace::new(&[b"pending-root"]),
+                b"root",
+                None,
+                extent,
+                [7; 32],
+                1,
+            )
+            .unwrap();
+        let locks = index.lock_counters();
+        let next = session.next;
+        for result in [
+            session.shutdown(),
+            session.import_root(&index, &lease).map(|_| ()),
+        ] {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<EndpointProtocolError>(),
+                Some(EndpointProtocolError::Pending)
+            ));
+        }
+        assert_eq!(index.lock_counters(), locks);
+        assert_eq!(session.next, next);
+        assert!(session.snapshots.is_empty());
+        assert!(session.endpoint_state.pending());
+        assert!(!session.abandoned);
+        assert_eq!(
+            session
+                .execution_endpoint(EndpointRequest::Abort { token })
+                .unwrap(),
+            EndpointReply::Aborted
+        );
+        session.shutdown().unwrap();
+        index.release(lease);
+    }
+
+    #[test]
+    fn unsupported_endpoint_stop_masks_refuse_before_guest_or_handle_access() {
+        use crate::endpoint::*;
+        for on in [
+            control_proto::StopMask::NONE,
+            control_proto::StopMask::NONE.arm(control_proto::class_bit::ENTROPY),
+            control_proto::StopMask(u32::MAX),
+        ] {
+            let mut session = unbooted_session();
+            let request = ExecutionRequest {
+                branch: None,
+                until: control_proto::StopConditions {
+                    deadline: Some(Moment(100)),
+                    on,
+                },
+                resolve: None,
+                sdk_cursor: 0,
+                snapshot_on: EndpointStops::DEADLINE,
+                proof: EndpointProofRequest::Omit,
+            };
+            assert!(matches!(
+                session
+                    .execution_endpoint(EndpointRequest::Execute(request))
+                    .unwrap_err()
+                    .downcast_ref::<EndpointProtocolError>(),
+                Some(EndpointProtocolError::Invalid(_))
+            ));
+            assert!(!session.abandoned);
+            assert!(!session.endpoint_state.pending());
+            assert!(session.snapshots.is_empty());
+            assert_eq!(session.next, 1);
         }
     }
 
