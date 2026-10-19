@@ -337,6 +337,23 @@ fn update_field(digest: &mut Sha256, bytes: &[u8]) {
     digest.update(bytes);
 }
 
+fn same_bytes(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    let left_words = left.chunks_exact(8);
+    let right_words = right.chunks_exact(8);
+    let tails_match = left_words.remainder() == right_words.remainder();
+    let difference = left_words
+        .zip(right_words)
+        .fold(0u64, |difference, (left, right)| {
+            difference
+                | (u64::from_ne_bytes(left.try_into().unwrap())
+                    ^ u64::from_ne_bytes(right.try_into().unwrap()))
+        });
+    tails_match && difference == 0
+}
+
 fn hash_file(file: &File, file_len: u64, work: &mut GuardBytes) -> io::Result<[u8; 32]> {
     let mut digest = Sha256::new();
     let mut bytes = [0u8; 65536];
@@ -383,7 +400,7 @@ fn hash_main_mapping(
             &mut work.sealed_exec_read_bytes,
         )?;
         work.comparison_input_bytes = work.comparison_input_bytes.saturating_add(count as u64);
-        if live[..count] != sealed[..count] {
+        if !same_bytes(&live[..count], &sealed[..count]) {
             return Err(denied("live code differs from sealed executable"));
         }
         digest.update(&live[..count]);
@@ -615,6 +632,20 @@ mod tests {
         let mut file = tempfile::tempfile()?;
         file.write_all(bytes)?;
         executable_segment(&file, bytes.len() as u64, 4096)
+    }
+
+    #[test]
+    fn same_bytes_finds_every_differing_byte() {
+        let original = (0..=u8::MAX).cycle().take(8 * 5 + 3).collect::<Vec<_>>();
+        assert!(same_bytes(&original, &original.clone()));
+        assert!(same_bytes(&[], &[]));
+        assert!(!same_bytes(&original, &original[..original.len() - 1]));
+        for index in 0..original.len() {
+            let mut changed = original.clone();
+            changed[index] ^= 0x80;
+            assert!(!same_bytes(&original, &changed));
+            assert!(!same_bytes(&changed, &original));
+        }
     }
 
     #[test]
