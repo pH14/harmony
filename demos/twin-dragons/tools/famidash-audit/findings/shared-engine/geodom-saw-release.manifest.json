@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "changes": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_A/GeometricalDominator.tmx",
+      "before_sha256": "6867b1410789ab0b8ddc03b3f714e6385954284b43d60a780a8fc1a70073bc1a",
+      "after_sha256": "f6565c1cb41486bfa76523bcc120ce96b33ca999df0b6560abd79508f55f5566",
+      "edits": [
+        {
+          "column": 916,
+          "row": 24,
+          "from_gid": 112,
+          "to_gid": 18
+        }
+      ]
+    }
+  ],
+  "status": "paired-data-repair-verified; wider coin-route coverage pending",
+  "evidence": [
+    "Official release Dissonance input passes below SMALL_SAW at column916,row23 and survives in closed fill916..922,row24..26. Both cores match4942frames; CPU centres avoid the saw kernel.",
+    "Component has no objective or teleport exit. Proposed local hazard needs paired failing, clearing and coin controls.",
+    "Data repair kills at frame4901 with unchanged approach in QuickNES and FCEUmm; current upstream proof uses a clean source build containing only this tile edit. Release clearing control remains mechanically identical."
+  ]
+}

@@ -379,3 +379,26 @@ The inventory is a way to select ordinary-input reproductions and explicitly
 review intent. It is not an instruction to turn decorative fill solid.
 The all-level history build sweep continues as an exploratory inventory and
 is disqualified from the clean-round count by the confirmed stair escape.
+
+Stereo Madness also has a confirmed original-ROM collision bug. The retained
+late-spike input crosses the corner of a spike's existing narrow kernel between
+frames 4,018 and 4,019, well after the hidden-coin routes. FCEUmm matches the
+original 4,661-frame trace. The continuous collision repair kills at frame 4,019
+with the approach unchanged in both cores and confirms a normal reset.
+This finding does not reinstate the withdrawn early-level tile patches.
+
+Geometrical Dominator has a separate local boundary gap below the small saw at
+column 916, row 23. A mini UFO avoids the saw's narrow kernel and enters a closed
+fill component at columns 916–922, rows 24–26, containing no objective or teleport
+exit. `geodom-saw-release.patch` and `geodom-saw-current.patch` place one upward
+spike at column 916, row 24. The release input survives 4,942 frames; both cores
+agree. The repaired release kills at frame 4,901 with its approach unchanged,
+and a 5,788-frame clearing control remains mechanically identical.
+
+The current-upstream undersaw witness independently reproduces that same gap.
+A clean upstream build with only this tile edit kills at frame 4,901, with the
+approach unchanged in both cores and a confirmed reset. The original current
+trace survives 4,914 frames. This data-only proof is distinct from the older
+current `geodom-saw` input, which actually entered through a neighboring pit
+base and could be repaired by the generic base guard. General coin-route
+coverage remains pending before upstream submission.
