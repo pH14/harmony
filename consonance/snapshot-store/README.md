@@ -118,6 +118,14 @@ released, collected, or reused while that transaction or its returned page
 references remain live. Verified slot identities stay private to that store and
 transaction. A new transaction verifies the resident bytes again, including
 unchanged, inherited, and omitted pages reached by complete-image verification.
+A transaction also records exactly which requested snapshot IDs completed a
+successful resolved-image verification. Repeated complete checks of that same
+snapshot skip ancestry and row traversal after validating its store domain and
+live handle. Traversed ancestors are not certified: a child can override an
+ancestor's corrupt page. Selected reads and differences certify only the
+resident slots they check, and a failed full scan remains incomplete even when
+some resident slots passed. The completed-image set is private to the immutable
+transaction and is discarded with it.
 Standalone read, delta, difference, and verification operations begin fresh
 transactions. This boundary removes duplicate integrity hashing within one
 operation without carrying trust across operations or changing commitment bytes.
