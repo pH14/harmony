@@ -7,8 +7,8 @@ const browser = await chromium.launch({ headless: true,
   ...(process.env.CHROME_CHANNEL ? { channel: process.env.CHROME_CHANNEL } : {}) });
 const errors = [];
 try {
-  for (const phone of [false, true]) {
-    const page = await browser.newPage({ viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 1000 }, hasTouch: phone, isMobile: phone });
+  for (const [phone, reducedMotion] of [[false, 'no-preference'], [true, 'no-preference'], [false, 'reduce']]) {
+    const page = await browser.newPage({ viewport: phone ? { width: 390, height: 844 } : { width: 1440, height: 1000 }, hasTouch: phone, isMobile: phone, reducedMotion });
     page.on('pageerror', (e) => errors.push(e.message));
     await page.addInitScript((key) => {
       localStorage.setItem(key, 'seen');
@@ -20,7 +20,12 @@ try {
           window.testWorker = this;
           this.addEventListener('message', (event) => {
             if (window.freezeResults) { event.stopImmediatePropagation(); return; }
-            if (event.data.type === 'batch') window.lastBatch = event.data;
+            if (event.data.type === 'batch') {
+              window.lastBatch = event.data;
+              window.freezeResults = true;
+              this.postMessage({ type: 'pause' });
+              event.stopImmediatePropagation();
+            }
             if (event.data.type === 'ready') window.root = event.data.state;
           });
         }
@@ -42,12 +47,20 @@ try {
     await page.mouse.move(0, 0);
     await page.evaluate(() => window.sendTrail(1600));
     await page.waitForFunction(() => +document.querySelector('#map').dataset.centerX > 1400);
-    await page.waitForTimeout(2300);
+    await page.waitForTimeout(4000);
     const before = +await page.locator('#map').getAttribute('data-center-x');
     assert.ok(+await page.locator('#map').getAttribute('data-swarm-count') >= 4, 'A results gap holds visible positions');
     await page.evaluate(() => window.sendTrail(200, 12));
     await page.waitForTimeout(400);
     assert.ok(+await page.locator('#map').getAttribute('data-center-x') > before - 100, 'A short burst after a gap cannot pull the camera backward');
+
+    await page.evaluate(() => window.sendTrail(200));
+    await page.waitForTimeout(200);
+    await page.locator('#map').dispatchEvent('pointermove', { pointerType: 'mouse', movementX: 1, movementY: 0 });
+    await page.waitForTimeout(2400);
+    await page.evaluate(() => window.sendTrail(200));
+    await page.waitForTimeout(900);
+    assert.ok(+await page.locator('#map').getAttribute('data-center-x') > before - 100, 'A gap during a pointer hold cannot preserve an old retreat timer');
 
     // A user pan immediately followed by a fresh level must clear the ten-second hold.
     await page.locator('#map').dispatchEvent('wheel', { deltaX: 120, deltaY: 0, deltaMode: 0 });
@@ -62,5 +75,5 @@ try {
     await page.close();
   }
   assert.deepEqual(errors, []);
-  console.log('Famidash camera: gaps hold visible positions, sparse bursts do not cause retreats, and selecting a new level clears manual holds on desktop and phone.');
+  console.log('Famidash camera: gaps hold visible positions, sparse bursts and pointer holds do not cause retreats, and selecting a new level clears manual holds on desktop, phone and reduced motion.');
 } finally { await browser.close(); }

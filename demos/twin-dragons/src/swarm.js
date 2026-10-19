@@ -59,6 +59,7 @@ export class Swarm {
       const duration = samples.at(-MOTION_STRIDE);
       if (!duration) continue;
       const id = this.serial++;
+      if (this.lastFrame?.branch === branch) this.lastFrame.pending = true;
       this.trails.set(id, { branch, samples, duration, started: milliseconds, finish: marked.has(index) });
       this.bytes += samples.byteLength;
       while (this.bytes > this.maxBytes || this.trails.size > this.maxTrails) {
@@ -71,6 +72,9 @@ export class Swarm {
   frame(branch, milliseconds, still = false, maxPoints = this.maxTrails, detail = false) {
     this.prune(branch, milliseconds);
     const rooms = new Map(), step = Math.max(1, Math.ceil(this.trails.size / maxPoints));
+    const holding = this.holdIdle && detail;
+    if (holding && this.lastFrame?.branch !== branch) this.lastFrame = { branch, points: new Map(), pending: false };
+    const shown = new Set();
     let count = 0;
     for (const [id, trail] of this.trails) {
       if (trail.branch !== branch || (!trail.finish && (count >= maxPoints || id % step))) continue;
@@ -87,23 +91,24 @@ export class Swarm {
       }
       if (!rooms.has(point.level)) rooms.set(point.level, []);
       rooms.get(point.level).push(point);
+      if (holding) {
+        if (this.lastFrame.pending) {
+          this.lastFrame.points.clear();
+          this.lastFrame.pending = false;
+        }
+        const { level, x, y, pose } = point;
+        this.lastFrame.points.set(id, { level, x, y, pose, life: 1, stale: true });
+        while (this.lastFrame.points.size > this.maxTrails) this.lastFrame.points.delete(this.lastFrame.points.keys().next().value);
+        shown.add(id);
+      }
       count++;
     }
-    if (this.holdIdle && detail) {
-      if (rooms.size) {
-        this.lastFrame = { branch, rooms, stale: false };
-      } else if (this.lastFrame?.branch === branch) {
-        if (!this.lastFrame.stale) {
-          this.lastFrame.rooms = new Map([...this.lastFrame.rooms].map(([room, points]) => [room,
-            points.map(({ level, x, y, pose }) => ({ level, x, y, pose, life: 1, stale: true }))]));
-          this.lastFrame.stale = true;
-        }
-        let remaining = maxPoints;
-        for (const [room, points] of this.lastFrame.rooms) {
-          const shown = points.slice(0, Math.max(0, remaining));
-          if (shown.length) rooms.set(room, shown);
-          remaining -= shown.length;
-        }
+    if (holding) {
+      for (const [id, point] of this.lastFrame.points) {
+        if (shown.has(id) || count >= maxPoints) continue;
+        if (!rooms.has(point.level)) rooms.set(point.level, []);
+        rooms.get(point.level).push(point);
+        count++;
       }
     }
     return rooms;

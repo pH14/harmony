@@ -158,3 +158,23 @@ test("idle presentation holds dim real positions without replaying expired attem
   swarm.clear();
   assert.equal(swarm.frame(0, 30000, false, 20, true).size, 0);
 });
+
+test("attempts of different lengths each leave a bounded held position until fresh results arrive", () => {
+  const swarm = new Swarm(1 << 20, 100, 0, true);
+  const trails = Array.from({ length: 50 }, (_, i) => new Uint16Array([0, 0, i, 20, 0, i + 1, 0, i + 10, 20, 0]));
+  swarm.add(0, trails, 0);
+  swarm.frame(0, 0, false, 100, true);
+  for (let time = 10; time <= 1000; time += 10) {
+    const points = swarm.frame(0, time, false, 100, true).get(0);
+    assert.equal(points.length, 50, 'Shorter attempts remain visible as longer attempts finish');
+  }
+  assert.ok(swarm.frame(0, 2000, false, 100, true).get(0).every((p) => p.stale));
+  assert.equal(swarm.bytes, 0);
+  assert.equal(swarm.lastFrame.points.size, 50);
+  swarm.add(0, [trails[0]], 2000);
+  const fresh = swarm.frame(0, 2000, false, 100, true).get(0);
+  assert.equal(fresh.length, 1, 'Fresh results replace the held generation');
+  assert.equal(fresh[0].stale, undefined);
+  swarm.frame(1, 3000, false, 100, true);
+  assert.equal(swarm.lastFrame.points.size, 0, 'Switching branches releases cached positions');
+});
