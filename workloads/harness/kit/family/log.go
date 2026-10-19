@@ -1,0 +1,549 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package family
+
+import (
+	"encoding/json"
+	"fmt"
+	"math"
+	"sort"
+	"sync"
+
+	"harmony.local/harness/kit/history"
+)
+
+const (
+	LogLost        = "log: every acknowledged append is in every later read"
+	LogOrder       = "log: reads agree on one order of values"
+	LogDuplicate   = "log: no read contains a value twice"
+	LogPhantom     = "log: every value read was appended"
+	LogFailedRead  = "log: no append that failed is in a read"
+	LogPosition    = "log: acknowledged appends have distinct positions"
+	LogAppendAcked = "log: an append was acknowledged"
+)
+
+const (
+	LogAppend = "append"
+	LogRead   = "read"
+)
+
+const maxArenas = 64
+
+type Log struct{}
+
+func (Log) Name() string { return "log" }
+
+func (Log) Kinds() []string {
+	return []string{LogLost, LogOrder, LogDuplicate, LogPhantom, LogFailedRead, LogPosition}
+}
+
+func (Log) Observations() []string { return []string{LogAppendAcked} }
+
+func (Log) Read() Op { return Op{F: LogRead} }
+
+func (Log) Generator(int) Generator { return logGenerator{} }
+
+type logGenerator struct{}
+
+func (logGenerator) Next(draw Draw, value func() string) Op {
+	if draw(8) == 0 {
+		return Op{F: LogRead}
+	}
+	return Op{F: LogAppend, V: value()}
+}
+
+func (logGenerator) Observe(Op, history.Type, any) {}
+
+type ReadOutput struct {
+	Base *history.Ref `json:"b,omitempty"`
+	Keep int          `json:"keep"`
+	Add  []string     `json:"add"`
+	N    int          `json:"n"`
+}
+
+type logRecorder struct {
+	mu     sync.Mutex
+	base   *history.Ref
+	values []string
+}
+
+func (Log) Recorder(prior *history.History) Recorder {
+	recorder := &logRecorder{}
+	if prior == nil {
+		return recorder
+	}
+	state := resolveLog(prior)
+	var latest *logRead
+	for index := range state.reads {
+		read := &state.reads[index]
+		if latest == nil || read.op.Complete > latest.op.Complete {
+			latest = read
+		}
+	}
+	if latest != nil {
+		recorder.base = &history.Ref{Journal: latest.op.Journal, Index: latest.op.Index}
+		recorder.values = append([]string(nil), latest.values()...)
+	}
+	return recorder
+}
+
+func (r *logRecorder) Record(journal *history.Journal, p int, op Op, index int64, result any) error {
+	if op.F != LogRead {
+		return journal.Complete(p, history.OK, op.F, op.K, index, result)
+	}
+	values, ok := result.([]string)
+	if !ok && result != nil {
+		return fmt.Errorf("log read returned %T, want []string", result)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	output := ReadOutput{Base: r.base, N: len(values)}
+	if r.base != nil {
+		for output.Keep < len(values) && output.Keep < len(r.values) && values[output.Keep] == r.values[output.Keep] {
+			output.Keep++
+		}
+	}
+	output.Add = values[output.Keep:]
+	if err := journal.Complete(p, history.OK, op.F, op.K, index, output); err != nil {
+		return err
+	}
+	r.base = &history.Ref{Journal: journal.Name(), Index: index}
+	r.values = append(r.values[:0:0], values...)
+	return nil
+}
+
+type arena struct {
+	values  []string
+	first   map[string]int
+	repeats map[string]bool
+	dup     int
+	phantom int
+	failed  int
+	longest *logRead
+}
+
+func (a *arena) index(value string) (int, bool) {
+	at, ok := a.first[value]
+	return at, ok
+}
+
+type logRead struct {
+	op    *history.Op
+	arena *arena
+	n     int
+}
+
+func (r *logRead) values() []string {
+	if r.arena == nil {
+		return nil
+	}
+	return r.arena.values[:r.n]
+}
+
+type logState struct {
+	reads      []logRead
+	arenas     []*arena
+	unresolved int
+}
+
+type sequence struct {
+	arena *arena
+	n     int
+}
+
+func resolveLog(h *history.History) *logState {
+	state := &logState{}
+	memo := map[*history.Op]*sequence{}
+	visiting := map[*history.Op]bool{}
+	var resolve func(op *history.Op) *sequence
+	resolve = func(op *history.Op) *sequence {
+		if seq, ok := memo[op]; ok {
+			return seq
+		}
+		if visiting[op] {
+			return nil
+		}
+		visiting[op] = true
+		seq := state.resolveOne(h, op, resolve)
+		memo[op] = seq
+		return seq
+	}
+	for index := range h.Ops {
+		op := &h.Ops[index]
+		if op.F != LogRead || op.Type != history.OK {
+			continue
+		}
+		seq := resolve(op)
+		if seq == nil {
+			state.unresolved++
+			continue
+		}
+		state.reads = append(state.reads, logRead{op: op, arena: seq.arena, n: seq.n})
+	}
+	for index := range state.reads {
+		read := &state.reads[index]
+		if read.arena != nil && (read.arena.longest == nil || read.n > read.arena.longest.n) {
+			read.arena.longest = read
+		}
+	}
+	return state
+}
+
+func (s *logState) resolveOne(h *history.History, op *history.Op, resolve func(*history.Op) *sequence) *sequence {
+	var output ReadOutput
+	if err := json.Unmarshal(op.Output, &output); err != nil {
+		return nil
+	}
+	base := &sequence{}
+	if output.Base != nil {
+		parent, ok := h.Lookup(*output.Base)
+		if !ok || parent.F != LogRead || parent.Type != history.OK {
+			return nil
+		}
+		base = resolve(parent)
+		if base == nil {
+			return nil
+		}
+	} else if output.Keep != 0 {
+		return nil
+	}
+	if output.Keep < 0 || output.Keep > base.n || output.Keep+len(output.Add) != output.N {
+		return nil
+	}
+	candidate := base.arena
+	if candidate == nil {
+		for _, a := range s.arenas {
+			if candidate == nil || len(a.values) > len(candidate.values) {
+				candidate = a
+			}
+		}
+	}
+	return s.extend(candidate, output.Keep, output.Add)
+}
+
+func (s *logState) extend(a *arena, keep int, add []string) *sequence {
+	if a != nil {
+		matched := true
+		for offset, value := range add {
+			at := keep + offset
+			if at == len(a.values) {
+				a.values = append(a.values, add[offset:]...)
+				break
+			}
+			if a.values[at] != value {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return &sequence{arena: a, n: keep + len(add)}
+		}
+	}
+	if len(s.arenas) >= maxArenas {
+		return nil
+	}
+	fresh := &arena{}
+	if a != nil {
+		fresh.values = append(fresh.values, a.values[:keep]...)
+	}
+	fresh.values = append(fresh.values, add...)
+	s.arenas = append(s.arenas, fresh)
+	return &sequence{arena: fresh, n: len(fresh.values)}
+}
+
+func (a *arena) prepare(appended map[string]*history.Op) {
+	a.first = make(map[string]int, len(a.values))
+	a.repeats = map[string]bool{}
+	a.dup = len(a.values)
+	a.phantom = len(a.values)
+	a.failed = len(a.values)
+	for at, value := range a.values {
+		if _, seen := a.first[value]; seen {
+			a.repeats[value] = true
+			if at < a.dup {
+				a.dup = at
+			}
+		} else {
+			a.first[value] = at
+		}
+		op, ok := appended[value]
+		if !ok && at < a.phantom {
+			a.phantom = at
+		}
+		if ok && op.Type == history.Fail && at < a.failed {
+			a.failed = at
+		}
+	}
+}
+
+type ack struct {
+	op       *history.Op
+	value    string
+	position *uint64
+}
+
+func (Log) Check(h *history.History) Report {
+	state := resolveLog(h)
+	appended := map[string]*history.Op{}
+	var acks []ack
+	report := Report{Facts: map[string]bool{}}
+	for index := range h.Ops {
+		op := &h.Ops[index]
+		if op.F != LogAppend {
+			continue
+		}
+		var value string
+		if json.Unmarshal(op.Input, &value) != nil {
+			continue
+		}
+		if _, seen := appended[value]; !seen {
+			appended[value] = op
+		}
+		if op.Type != history.OK {
+			continue
+		}
+		report.Facts[LogAppendAcked] = true
+		entry := ack{op: op, value: value}
+		var position uint64
+		if len(op.Output) > 0 && string(op.Output) != "null" && json.Unmarshal(op.Output, &position) == nil {
+			entry.position = &position
+		}
+		acks = append(acks, entry)
+	}
+	sort.SliceStable(acks, func(i, j int) bool { return acks[i].op.Complete < acks[j].op.Complete })
+	for _, a := range state.arenas {
+		a.prepare(appended)
+	}
+	report.Decided = len(state.reads) > 0
+	var found collector
+	checkPositions(acks, &found)
+	checkReadContents(state, appended, &found)
+	checkLost(state, acks, &found)
+	checkOrder(state, &found)
+	report.Violations = found.result()
+	return report
+}
+
+func checkPositions(acks []ack, found *collector) {
+	byPosition := map[uint64]*ack{}
+	for index := range acks {
+		entry := &acks[index]
+		if entry.position == nil {
+			continue
+		}
+		earlier, seen := byPosition[*entry.position]
+		if !seen {
+			byPosition[*entry.position] = entry
+			continue
+		}
+		found.add(LogPosition, func() map[string]any {
+			return map[string]any{
+				"position": *entry.position,
+				"first":    map[string]any{"value": earlier.value, "append": describe(earlier.op)},
+				"second":   map[string]any{"value": entry.value, "append": describe(entry.op)},
+			}
+		})
+	}
+}
+
+func checkReadContents(state *logState, appended map[string]*history.Op, found *collector) {
+	for index := range state.reads {
+		read := &state.reads[index]
+		a := read.arena
+		if a.dup < read.n {
+			found.add(LogDuplicate, func() map[string]any {
+				value := a.values[a.dup]
+				return map[string]any{
+					"value":     value,
+					"positions": []int{a.first[value], a.dup},
+					"read":      describeRead(read),
+				}
+			})
+		}
+		if a.phantom < read.n {
+			found.add(LogPhantom, func() map[string]any {
+				return map[string]any{
+					"value":    a.values[a.phantom],
+					"position": a.phantom,
+					"read":     describeRead(read),
+				}
+			})
+		}
+		if a.failed < read.n {
+			found.add(LogFailedRead, func() map[string]any {
+				value := a.values[a.failed]
+				return map[string]any{
+					"value":    value,
+					"position": a.failed,
+					"append":   describe(appended[value]),
+					"read":     describeRead(read),
+				}
+			})
+		}
+	}
+}
+
+func checkLost(state *logState, acks []ack, found *collector) {
+	reach := map[*arena][]int{}
+	for _, a := range state.arenas {
+		prefix := make([]int, len(acks))
+		highest := -1
+		for index, entry := range acks {
+			at, ok := a.index(entry.value)
+			if !ok {
+				at = math.MaxInt
+			}
+			if at > highest {
+				highest = at
+			}
+			prefix[index] = highest
+		}
+		reach[a] = prefix
+	}
+	for index := range state.reads {
+		read := &state.reads[index]
+		before := sort.Search(len(acks), func(i int) bool { return acks[i].op.Complete >= read.op.Invoke })
+		if before == 0 || reach[read.arena][before-1] < read.n {
+			continue
+		}
+		found.add(LogLost, func() map[string]any {
+			missing := 0
+			var first *ack
+			for at := 0; at < before; at++ {
+				position, ok := read.arena.index(acks[at].value)
+				if !ok || position >= read.n {
+					missing++
+					if first == nil {
+						first = &acks[at]
+					}
+				}
+			}
+			details := map[string]any{
+				"value":   first.value,
+				"ack":     describe(first.op),
+				"read":    describeRead(read),
+				"missing": missing,
+			}
+			if first.position != nil {
+				details["position"] = *first.position
+			}
+			return details
+		})
+	}
+}
+
+func checkOrder(state *logState, found *collector) {
+	byArena := map[*arena][]*logRead{}
+	for index := range state.reads {
+		read := &state.reads[index]
+		byArena[read.arena] = append(byArena[read.arena], read)
+	}
+	for x, left := range state.arenas {
+		for y, right := range state.arenas {
+			if x < y {
+				checkCommonOrder(left, right, found)
+			}
+			if x != y {
+				checkInsertion(left, byArena[left], right, byArena[right], found)
+			}
+		}
+	}
+}
+
+func checkCommonOrder(left, right *arena, found *collector) {
+	highest, highestAt := -1, -1
+	for at, value := range right.values {
+		if right.repeats[value] || left.repeats[value] {
+			continue
+		}
+		position, ok := left.index(value)
+		if !ok {
+			continue
+		}
+		if position < highest {
+			before := left.values[highest]
+			beforeAt := highestAt
+			found.add(LogOrder, func() map[string]any {
+				return map[string]any{
+					"first_read":            describeRead(left.longest),
+					"second_read":           describeRead(right.longest),
+					"values":                []string{before, value},
+					"first_read_positions":  []int{highest, position},
+					"second_read_positions": []int{beforeAt, at},
+				}
+			})
+			return
+		}
+		highest, highestAt = position, at
+	}
+}
+
+type insertion struct{ inserted, observed int }
+
+func checkInsertion(earlier *arena, earlierReads []*logRead, later *arena, laterReads []*logRead, found *collector) {
+	if len(earlierReads) == 0 || len(laterReads) == 0 {
+		return
+	}
+	earlierReads = append([]*logRead(nil), earlierReads...)
+	sort.Slice(earlierReads, func(i, j int) bool { return earlierReads[i].op.Complete < earlierReads[j].op.Complete })
+	longest := make([]*logRead, len(earlierReads))
+	for index, read := range earlierReads {
+		longest[index] = read
+		if index > 0 && longest[index-1].n >= read.n {
+			longest[index] = longest[index-1]
+		}
+	}
+	thresholds := map[int]insertion{}
+	for _, read := range laterReads {
+		before := sort.Search(len(earlierReads), func(i int) bool { return earlierReads[i].op.Complete >= read.op.Invoke })
+		if before == 0 {
+			continue
+		}
+		witness := longest[before-1]
+		limit, ok := thresholds[witness.n]
+		if !ok {
+			limit = insertionThreshold(earlier, witness.n, later)
+			thresholds[witness.n] = limit
+		}
+		if limit.observed >= read.n {
+			continue
+		}
+		found.add(LogOrder, func() map[string]any {
+			return map[string]any{
+				"first_read":            describeRead(witness),
+				"second_read":           describeRead(read),
+				"inserted_value":        later.values[limit.inserted],
+				"observed_value":        later.values[limit.observed],
+				"second_read_positions": []int{limit.inserted, limit.observed},
+			}
+		})
+		return
+	}
+}
+
+func insertionThreshold(earlier *arena, n int, later *arena) insertion {
+	result := insertion{math.MaxInt, math.MaxInt}
+	for at, value := range later.values {
+		position, ok := earlier.index(value)
+		if !ok || position >= n {
+			if result.inserted == math.MaxInt {
+				result.inserted = at
+			}
+			continue
+		}
+		if result.inserted != math.MaxInt {
+			result.observed = at
+			return result
+		}
+	}
+	return result
+}
+
+func describeRead(read *logRead) map[string]any {
+	if read == nil {
+		return nil
+	}
+	description := describe(read.op)
+	description["length"] = read.n
+	return description
+}
