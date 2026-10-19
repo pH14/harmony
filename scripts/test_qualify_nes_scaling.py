@@ -22,7 +22,8 @@ class ScalingTests(unittest.TestCase):
         data = {
             "result": {"status": "complete", "campaign_replay": True, "witness_replays": 2,
                        "executions": 10, "frames_emulated": 20, "search_seconds": 1,
-                       "executions_per_second": 10, "stop_reason": "execution_limit", "stream_sha256": stream_hash},
+                       "executions_per_second": 10, "stop_reason": "execution_limit", "stream_sha256": stream_hash,
+                       "stream_bytes_generated": (directory / "stream.jsonl").stat().st_size},
             "campaign": {"stream_sha256": stream_hash, "executions_completed": 10},
             "telemetry": {"search_ns": 100, "workers": [{"jobs": 10, "busy_ns": 50}] + [{"jobs": 0, "busy_ns": 0}] * (workers - 1)},
             "checkpoint": {"endpoint": "fixed"}, "identity": {"source": "fixed"},
@@ -38,7 +39,8 @@ class ScalingTests(unittest.TestCase):
             path = directory / "result.json"
             original = json.loads(path.read_text())
             for field, value in (("campaign_replay", False), ("stop_reason", "wall_limit"),
-                                 ("witness_replays", 0), ("executions", 9), ("stream_sha256", "corrupt")):
+                                 ("witness_replays", 0), ("executions", 9), ("stream_sha256", "corrupt"),
+                                 ("stream_bytes_generated", 0)):
                 with self.subTest(field=field):
                     path.write_text(json.dumps(dict(original, **{field: value})))
                     with self.assertRaises(ValueError):

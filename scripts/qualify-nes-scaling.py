@@ -41,6 +41,8 @@ def validate_result(directory):
     if result.get("witness_replays") != 2 or result.get("executions", 0) <= 0:
         raise ValueError("missing witness replays or executed work")
     stream = directory / "stream.jsonl"
+    if stream.stat().st_size != result["stream_bytes_generated"]:
+        raise ValueError("retained stream length mismatch")
     if digest(stream) != result["stream_sha256"] or result["stream_sha256"] != report["stream_sha256"]:
         raise ValueError("retained stream digest mismatch")
     telemetry = read_json(directory / "telemetry.json")
