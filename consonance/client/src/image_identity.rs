@@ -762,8 +762,8 @@ mod sealed_guard_tests {
             file_len
         );
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-        let mut expected_live = 0;
-        let mut expected_sealed = 0;
+        let mut vdso = 0;
+        let mut code = 0;
         for line in maps.lines() {
             let fields = line.split_whitespace().collect::<Vec<_>>();
             if !fields[1].contains('x') || fields.last() == Some(&"[vsyscall]") {
@@ -772,11 +772,14 @@ mod sealed_guard_tests {
             let (start, end) = fields[0].split_once('-').unwrap();
             let len =
                 u64::from_str_radix(end, 16).unwrap() - u64::from_str_radix(start, 16).unwrap();
-            expected_live += len;
-            if fields.last() != Some(&"[vdso]") {
-                expected_sealed += len;
+            if fields.last() == Some(&"[vdso]") {
+                vdso += len;
+            } else {
+                code += len;
             }
         }
+        // SAFETY: sysconf reads the process page-size setting and accesses no user pointer.
+        let page = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).unwrap();
         assert_eq!(metrics["guard.session.session_boundary.strict_attempts"], 1);
         assert_eq!(
             metrics["guard.session.session_boundary.strict_check_attempts"],
@@ -784,19 +787,23 @@ mod sealed_guard_tests {
         );
         assert_eq!(
             metrics["guard.session.session_boundary.live_exec_read_bytes"],
-            expected_live
+            vdso
         );
         assert_eq!(
             metrics["guard.session.session_boundary.live_exec_hashed_bytes"],
-            expected_live
+            vdso
+        );
+        assert_eq!(
+            metrics["guard.session.session_boundary.code_page_entries"],
+            code / page
         );
         assert_eq!(
             metrics["guard.session.session_boundary.sealed_exec_read_bytes"],
-            expected_sealed
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.comparison_input_bytes"],
-            expected_sealed
+            0
         );
         assert_eq!(
             metrics["guard.session.session_boundary.sealed_file_hashed_bytes"],
