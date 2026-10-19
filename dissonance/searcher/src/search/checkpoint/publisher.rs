@@ -206,24 +206,30 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
             budget.reserve(bytes.capacity())?;
             Ok(bytes)
         })();
+        let bytes = match capture {
+            Ok(bytes) => bytes,
+            Err(error) if is_image_limit(error.as_ref()) => {
+                drop(budget);
+                self.template.reason.clear();
+                self.template.reason.push_str(reason);
+                self.template.executions = version.executions;
+                self.template.reserved = version.reserved;
+                self.template.admitted = version.admitted;
+                self.template.planned_clock = version.planned_clock;
+                return self
+                    .writer
+                    .as_mut()
+                    .ok_or("checkpoint writer is unavailable")?
+                    .write(&self.template, snapshots, body);
+            }
+            Err(error) => return Err(error),
+        };
         let mut header = self.template.clone();
         header.reason = reason.to_owned();
         header.executions = version.executions;
         header.reserved = version.reserved;
         header.admitted = version.admitted;
         header.planned_clock = version.planned_clock;
-        let bytes = match capture {
-            Ok(bytes) => bytes,
-            Err(error) if is_image_limit(error.as_ref()) => {
-                drop(budget);
-                return self
-                    .writer
-                    .as_mut()
-                    .ok_or("checkpoint writer is unavailable")?
-                    .write(&header, snapshots, body);
-            }
-            Err(error) => return Err(error),
-        };
         let mut frozen = Vec::new();
         frozen.try_reserve_exact(snapshot_count)?;
         budget.array::<(u64, S)>(frozen.capacity() - snapshot_count)?;
@@ -508,6 +514,79 @@ mod tests {
             drop(publisher);
             fs::remove_dir_all(path).unwrap();
         }
+    }
+
+    #[test]
+    fn oversized_header_pressure_borrows_policy_buffers_and_preserves_owner_bytes() {
+        let path = directory("large-header-pressure");
+        let mut plan = plan(path.clone(), 1024);
+        plan.checkpoint_owner = Some("actual publication owner".into());
+        let mut template = header();
+        template.checkpoint_owner = Some("untrusted template owner".into());
+        template
+            .policies
+            .insert("large policy λ".into(), "policy value λ".repeat(65536));
+        let mut expected = template.clone();
+        expected.checkpoint_owner = plan.checkpoint_owner.clone();
+        let buffers = template
+            .policies
+            .iter()
+            .flat_map(|(key, value)| {
+                [
+                    (key.as_ptr() as usize, key.len()),
+                    (value.as_ptr() as usize, value.len()),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let mut publisher =
+            CheckpointPublisher::<Vec<u8>, u8>::create(plan, template, 0, None).unwrap();
+        publisher
+            .publish(
+                version(7),
+                "final",
+                std::iter::once((9, &vec![1_u8])),
+                |out| {
+                    postcard::to_io(&17_u8, out)?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(publisher.worker.is_none());
+        assert!(publisher.keeper.is_none());
+        assert_eq!(
+            publisher.writer.as_ref().unwrap().io.header_policy_buffers,
+            buffers
+        );
+        assert_eq!(
+            publisher
+                .template
+                .policies
+                .iter()
+                .flat_map(|(key, value)| {
+                    [
+                        (key.as_ptr() as usize, key.len()),
+                        (value.as_ptr() as usize, value.len()),
+                    ]
+                })
+                .collect::<Vec<_>>(),
+            buffers
+        );
+        expected.reason = "final".into();
+        let version = version(7);
+        expected.executions = version.executions;
+        expected.reserved = version.reserved;
+        expected.admitted = version.admitted;
+        expected.planned_clock = version.planned_clock;
+        let bytes = fs::read(path.join("000000000007-final.ckpt")).unwrap();
+        assert!(bytes.starts_with(&postcard::to_allocvec(&expected).unwrap()));
+        let mut reader = CheckpointReader::open(&path.join("000000000007-final.ckpt")).unwrap();
+        assert_eq!(reader.header, expected);
+        assert_eq!(reader.next::<u8>().unwrap(), 17);
+        assert_eq!(reader.snapshots::<Vec<u8>>().unwrap(), [(9, vec![1])]);
+        reader.finish().unwrap();
+        publisher.finish(Ok(())).unwrap();
+        drop(publisher);
+        fs::remove_dir_all(path).unwrap();
     }
 
     #[test]
