@@ -1277,6 +1277,10 @@ pub mod scripted {
     }
 }
 
+impl searcher::search::snapshot_codec::CheckpointSnapshot for StbSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::scripted::{FakeState, ScriptedMachine};
@@ -1483,8 +1487,4 @@ mod tests {
         let state = decode_state(&wram).expect("complete transition RAM");
         assert_eq!(state.gameplay, None);
     }
-}
-
-impl searcher::search::snapshot_codec::CheckpointSnapshot for StbSnapshot {
-    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }

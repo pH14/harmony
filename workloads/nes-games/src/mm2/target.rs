@@ -1566,6 +1566,10 @@ impl<M: NesBackend<Vec<u8>> + NesMemory> Target for Mm2Target<M> {
     }
 }
 
+impl searcher::search::snapshot_codec::CheckpointSnapshot for Mm2Snapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1770,8 +1774,4 @@ mod tests {
         let dead = decode_state(&wram).expect("decode");
         assert_eq!(dead.boss_damage(), FULL_BOSS_HEALTH);
     }
-}
-
-impl searcher::search::snapshot_codec::CheckpointSnapshot for Mm2Snapshot {
-    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }
