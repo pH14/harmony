@@ -470,6 +470,14 @@ It includes a fresh original-release normal-wave reproducer, unchanged-approach
 independent death checks and explicit rejected-route evidence. Current native
 normal-wave reproduction and broader integration remain open.
 
+`check-wave66-dispatch.py SOURCE ROM DBG OUTPUT` executes the assembled
+collision-history query gate against 131,072 combinations of old/current
+classes, mode, crossed axes, player and size. Its independent decision rule
+preserves generic spike queries, known steep-slope boundary crossings and
+diagonal crossings with empty endpoints. It checks the actual ROM table and
+rejects unsupported opcodes or unexpected callees. This checks dispatch
+coverage; the motion kernel, mapper and frame budget require separate checks.
+
 Source-component schema 4 lists coins within eight tiles of each bounding box
 as `nearby_objectives`. This is proximity, not a reachability or intent verdict.
 An empty `sprites` list only describes membership: a closed component can form
