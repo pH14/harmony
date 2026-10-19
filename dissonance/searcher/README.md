@@ -883,6 +883,6 @@ reported separately. Worker targets and their in-campaign reuse are unaffected.
 The same coordinator-session scope surrounds the entire standalone full or prefix
 campaign replay, including validation, target construction, replay errors and
 unwinding. A replay reuses its session within that operation and finalizes it
-before returning. During a live campaign the coordinator releases its bootstrap
-gate only after finalization; other execution workers may initialize concurrently,
-and accepting whole-pool readiness still waits for the gated worker.
+before returning. During a live campaign the coordinator signals bootstrap
+readiness only after finalization; other execution workers may initialize
+concurrently, and accepting whole-pool readiness still waits for that worker.
