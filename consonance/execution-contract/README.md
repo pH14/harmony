@@ -28,7 +28,8 @@ input scope. Successful finite experiments do not establish universal future
 equivalence for arbitrary programs or host implementations.
 
 Candidate scope identities bind their declared engine, normalization, instruction
-surface, substrate and restore limits. The retained Linux candidate additionally
+surface, substrate, restore limits and required transformation matrix. The
+retained Linux candidate additionally
 hashes the exact copied bundle manifest and direct AMD/Intel comparison bytes
 checked into `evidence`; changing retained provenance changes its identity.
 These records are negative evidence, not a runtime artifact allowlist.
@@ -44,7 +45,7 @@ The current candidate assessments preserve two concrete limits:
   [issue #733](https://github.com/pH14/harmony/issues/733)). It is not normalized
   away. The other cells are missing **complete matrix evidence**; this does not
   relabel the separately documented bounded local passes as failures.
-- `UmlFaultsWholeState` is unavailable because UML does not supply whole-state
+- `UmlWholeState` is unavailable because UML does not supply whole-state
   hashing ([issue #554](https://github.com/pH14/harmony/issues/554)). Observation
   histories do not substitute for that missing state capability.
 

@@ -6531,6 +6531,15 @@ mod tests {
                 false,
             ))
             .unwrap(),
+            postcard::to_allocvec(&(
+                "fault-replay-endpoint-v3",
+                control_proto::EventHistory::VERSION,
+                hash,
+                history,
+                &observation,
+                false,
+            ))
+            .unwrap(),
         ] {
             snapshot.history = FaultHistory::fixture(
                 &snapshot.history.actions(),

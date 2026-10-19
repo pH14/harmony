@@ -1050,7 +1050,7 @@ fn put_config(out: &mut Out, config: &SessionConfig) {
             execution_contract::Composition::RetainedLinuxContinuation9673,
         ) => 1,
         execution_contract::Requirement::Qualified(
-            execution_contract::Composition::UmlFaultsWholeState,
+            execution_contract::Composition::UmlWholeState,
         ) => 2,
     })
     .len(config.ram_bytes)
@@ -1079,7 +1079,7 @@ fn take_config(input: &mut In<'_>) -> io::Result<SessionConfig> {
                 execution_contract::Composition::RetainedLinuxContinuation9673,
             ),
             2 => execution_contract::Requirement::Qualified(
-                execution_contract::Composition::UmlFaultsWholeState,
+                execution_contract::Composition::UmlWholeState,
             ),
             _ => return Err(malformed("unknown execution qualification requirement")),
         },
@@ -3728,7 +3728,7 @@ mod tests {
     fn qualified_worker_launch_and_received_init_refuse_before_starting_execution() {
         for composition in [
             execution_contract::Composition::RetainedLinuxContinuation9673,
-            execution_contract::Composition::UmlFaultsWholeState,
+            execution_contract::Composition::UmlWholeState,
         ] {
             let config = config()
                 .with_qualification(execution_contract::Requirement::Qualified(composition));

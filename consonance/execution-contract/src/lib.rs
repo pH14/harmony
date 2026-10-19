@@ -12,7 +12,7 @@ pub enum Engine {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Composition {
     RetainedLinuxContinuation9673,
-    UmlFaultsWholeState,
+    UmlWholeState,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,8 +41,8 @@ impl Composition {
                 restore_modes: "fresh cross-host; reused Intel or explicit AMD refusal; complete matrix not established",
                 evidence: "runs 39159236856, 39160291556; diagnostic source e82aa7e03bb04fa0dbad1c84ce5c219e4ed8fd5e; issue #733",
             },
-            Self::UmlFaultsWholeState => Scope {
-                workload: "cooperative UML fault workload; no whole-state qualification",
+            Self::UmlWholeState => Scope {
+                workload: "cooperative UML guest; no whole-state qualification",
                 artifacts: "exact host executable/reviewed UML profile/initramfs required; no whole-state artifact allowlist registered",
                 engine: "Linux User-mode Linux",
                 normalization: "whole-state unavailable; observation history is not a replacement",
@@ -56,32 +56,16 @@ impl Composition {
 
     #[must_use]
     pub fn identity(self) -> [u8; 32] {
-        let scope = self.scope();
-        let mut digest = Sha256::new();
-        digest.update(b"consonance-finite-qualification-candidate-v1\0");
-        for field in [
-            scope.workload,
-            scope.artifacts,
-            scope.engine,
-            scope.normalization,
-            scope.admitted_surface,
-            scope.substrate,
-            scope.restore_modes,
-            scope.evidence,
-        ] {
-            digest.update((field.len() as u64).to_le_bytes());
-            digest.update(field.as_bytes());
-        }
-        if self == Self::RetainedLinuxContinuation9673 {
-            for retained in [
+        let retained = match self {
+            Self::RetainedLinuxContinuation9673 => [
                 include_bytes!("../evidence/linux-9673-identity.json").as_slice(),
                 include_bytes!("../evidence/linux-e82-comparison.json").as_slice(),
-            ] {
-                digest.update((retained.len() as u64).to_le_bytes());
-                digest.update(retained);
-            }
-        }
-        digest.finalize().into()
+            ]
+            .as_slice()
+            .to_vec(),
+            Self::UmlWholeState => Vec::new(),
+        };
+        candidate_identity(self.scope(), &REQUIRED_TRANSFORMATIONS, &retained)
     }
 }
 
@@ -115,6 +99,49 @@ pub const REQUIRED_TRANSFORMATIONS: [Transformation; 8] = [
     Transformation::CrossHostBothDirections,
 ];
 
+fn candidate_identity(
+    scope: Scope,
+    transformations: &[Transformation],
+    retained: &[&[u8]],
+) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"consonance-finite-qualification-candidate-v1\0");
+    for field in [
+        scope.workload,
+        scope.artifacts,
+        scope.engine,
+        scope.normalization,
+        scope.admitted_surface,
+        scope.substrate,
+        scope.restore_modes,
+        scope.evidence,
+    ] {
+        digest.update((field.len() as u64).to_le_bytes());
+        digest.update(field.as_bytes());
+    }
+    digest.update((transformations.len() as u64).to_le_bytes());
+    for transformation in transformations {
+        let label = match transformation {
+            Transformation::CaptureContinue => "capture-continue",
+            Transformation::FreshRestore => "fresh-restore",
+            Transformation::ReusedRestoreAfterDetour => "reused-restore-after-detour",
+            Transformation::RepeatedRestore => "repeated-restore",
+            Transformation::CommandSegmentation => "command-segmentation",
+            Transformation::DeferredCompletion => "deferred-completion",
+            Transformation::ColdWarmCache => "cold-warm-cache",
+            Transformation::CrossHostBothDirections => "cross-host-both-directions",
+        };
+        digest.update((label.len() as u64).to_le_bytes());
+        digest.update(label.as_bytes());
+    }
+    digest.update((retained.len() as u64).to_le_bytes());
+    for bytes in retained {
+        digest.update((bytes.len() as u64).to_le_bytes());
+        digest.update(bytes);
+    }
+    digest.finalize().into()
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Outcome {
     Missing,
@@ -133,6 +160,7 @@ pub struct Gap {
 pub struct Refusal {
     pub composition: Composition,
     pub scope_identity: [u8; 32],
+    pub engine_mismatch: Option<(Engine, Engine)>,
     pub gaps: Vec<Gap>,
 }
 
@@ -143,6 +171,12 @@ impl std::fmt::Display for Refusal {
             "finite execution qualification refused for {:?}",
             self.composition
         )?;
+        if let Some((expected, actual)) = self.engine_mismatch {
+            write!(
+                out,
+                "; execution engine mismatch: expected {expected:?}, actual {actual:?}"
+            )?;
+        }
         for gap in &self.gaps {
             write!(
                 out,
@@ -191,18 +225,12 @@ impl Requirement {
             Self::Qualified(composition) => {
                 let expected = match composition {
                     Composition::RetainedLinuxContinuation9673 => Engine::VirtualMachine,
-                    Composition::UmlFaultsWholeState => Engine::UserModeLinux,
+                    Composition::UmlWholeState => Engine::UserModeLinux,
                 };
                 if engine != expected {
-                    return Err(Refusal {
-                        composition,
-                        scope_identity: composition.identity(),
-                        gaps: REQUIRED_TRANSFORMATIONS.map(|transformation| Gap {
-                            transformation,
-                            outcome: Outcome::Missing,
-                            evidence: "requested composition does not match this execution engine",
-                        }).to_vec(),
-                    });
+                    let mut refusal = assessment(composition);
+                    refusal.engine_mismatch = Some((expected, engine));
+                    return Err(refusal);
                 }
                 qualify(composition).map(|qualified| qualified.assurance)
             }
@@ -214,6 +242,7 @@ pub fn assessment(composition: Composition) -> Refusal {
     Refusal {
         composition,
         scope_identity: composition.identity(),
+        engine_mismatch: None,
         gaps: REQUIRED_TRANSFORMATIONS.map(|transformation| {
             match composition {
                 Composition::RetainedLinuxContinuation9673
@@ -227,7 +256,7 @@ pub fn assessment(composition: Composition) -> Refusal {
                     outcome: Outcome::Missing,
                     evidence: "bounded local receipts do not establish this complete transformation matrix or admit other artifacts, hosts, instruction surfaces or normalization rules",
                 },
-                Composition::UmlFaultsWholeState => Gap {
+                Composition::UmlWholeState => Gap {
                     transformation,
                     outcome: Outcome::Unavailable,
                     evidence: "UML StateHashUnavailable / UmlWholeStateUnavailable; issue #554",
@@ -246,13 +275,82 @@ mod tests {
     use super::*;
 
     #[test]
+    fn candidate_identity_binds_evidence_bytes_scope_and_required_matrix() {
+        let composition = Composition::RetainedLinuxContinuation9673;
+        let scope = composition.scope();
+        let artifact = include_bytes!("../evidence/linux-9673-identity.json").as_slice();
+        let comparison = include_bytes!("../evidence/linux-e82-comparison.json").as_slice();
+        let expected =
+            candidate_identity(scope, &REQUIRED_TRANSFORMATIONS, &[artifact, comparison]);
+        assert_eq!(composition.identity(), expected);
+        for index in [0, 1] {
+            let mut evidence = [artifact.to_vec(), comparison.to_vec()];
+            evidence[index][0] ^= 1;
+            assert_ne!(
+                candidate_identity(
+                    scope,
+                    &REQUIRED_TRANSFORMATIONS,
+                    &[&evidence[0], &evidence[1]]
+                ),
+                expected
+            );
+        }
+        assert_ne!(
+            candidate_identity(
+                scope,
+                &REQUIRED_TRANSFORMATIONS[..7],
+                &[artifact, comparison]
+            ),
+            expected
+        );
+        assert_ne!(
+            candidate_identity(
+                Scope {
+                    normalization: "different normalization",
+                    ..scope
+                },
+                &REQUIRED_TRANSFORMATIONS,
+                &[artifact, comparison]
+            ),
+            expected
+        );
+        for (index, transformation) in REQUIRED_TRANSFORMATIONS.iter().enumerate() {
+            assert!(!REQUIRED_TRANSFORMATIONS[index + 1..].contains(transformation));
+        }
+    }
+
+    #[test]
+    fn engine_mismatch_does_not_erase_failed_or_unavailable_cells() {
+        for (composition, expected, actual) in [
+            (
+                Composition::RetainedLinuxContinuation9673,
+                Engine::VirtualMachine,
+                Engine::UserModeLinux,
+            ),
+            (
+                Composition::UmlWholeState,
+                Engine::UserModeLinux,
+                Engine::VirtualMachine,
+            ),
+        ] {
+            let refused = Requirement::Qualified(composition)
+                .admit(actual)
+                .unwrap_err();
+            let catalog = assessment(composition);
+            assert_eq!(refused.engine_mismatch, Some((expected, actual)));
+            assert_eq!(refused.gaps, catalog.gaps);
+            assert_eq!(refused.scope_identity, catalog.scope_identity);
+        }
+    }
+
+    #[test]
     fn ordinary_execution_is_not_a_qualification_claim() {
         for engine in [Engine::VirtualMachine, Engine::UserModeLinux] {
             let assurance = Requirement::Ordinary.admit(engine).unwrap();
             assert_eq!(assurance, Assurance::ordinary());
             for composition in [
                 Composition::RetainedLinuxContinuation9673,
-                Composition::UmlFaultsWholeState,
+                Composition::UmlWholeState,
             ] {
                 assert!(assurance.require_qualified(composition).is_err());
             }
@@ -266,10 +364,7 @@ mod tests {
             linux.scope_identity,
             Composition::RetainedLinuxContinuation9673.identity()
         );
-        assert_ne!(
-            linux.scope_identity,
-            Composition::UmlFaultsWholeState.identity()
-        );
+        assert_ne!(linux.scope_identity, Composition::UmlWholeState.identity());
         assert_eq!(linux.gaps.len(), REQUIRED_TRANSFORMATIONS.len());
         for (gap, transformation) in linux.gaps.iter().zip(REQUIRED_TRANSFORMATIONS) {
             assert_eq!(gap.transformation, transformation);
@@ -282,7 +377,7 @@ mod tests {
                 }
             );
         }
-        let uml = assessment(Composition::UmlFaultsWholeState);
+        let uml = assessment(Composition::UmlWholeState);
         assert!(
             uml.gaps
                 .iter()
@@ -362,7 +457,7 @@ mod tests {
         assert!(serde_json::from_str::<Requirement>(r#"{"Qualified":"universal"}"#).is_err());
         for composition in [
             Composition::RetainedLinuxContinuation9673,
-            Composition::UmlFaultsWholeState,
+            Composition::UmlWholeState,
         ] {
             let requirement = Requirement::Qualified(composition);
             let decoded: Requirement =
