@@ -171,8 +171,18 @@ impl CopyTelemetry {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct VerificationWork {
+    scans: usize,
+    layers: usize,
+    rows: usize,
+}
+
 pub struct Store {
     cfg: StoreConfig,
+    #[cfg(test)]
+    verification_work: std::cell::Cell<VerificationWork>,
     verification: std::cell::Cell<VerificationTelemetry>,
     copies: std::cell::Cell<CopyTelemetry>,
     verification_batch_depth: std::cell::Cell<usize>,
@@ -238,6 +248,7 @@ impl VerifiedPages {
 pub struct ReadTransaction<'store> {
     store: &'store Store,
     verified_pages: VerifiedPages,
+    verified_snapshots: BTreeSet<(u64, u64)>,
 }
 
 struct VerificationBatch<'a> {
@@ -297,6 +308,13 @@ impl Store {
         self.verification.set(telemetry);
     }
 
+    #[cfg(test)]
+    fn note_verification_work(&self, update: impl FnOnce(&mut VerificationWork)) {
+        let mut work = self.verification_work.get();
+        update(&mut work);
+        self.verification_work.set(work);
+    }
+
     #[allow(clippy::disallowed_methods)]
     fn resident_page_matches(&self, data: &[u8], hash: &PageHash) -> bool {
         let started = (self.verification_batch_depth.get() == 0).then(std::time::Instant::now);
@@ -317,12 +335,15 @@ impl Store {
         ReadTransaction {
             store: self,
             verified_pages: VerifiedPages::new(self.pages.len(), self.page_index.len()),
+            verified_snapshots: BTreeSet::new(),
         }
     }
 
     pub fn new(cfg: StoreConfig) -> Store {
         Store {
             cfg,
+            #[cfg(test)]
+            verification_work: std::cell::Cell::default(),
             verification: std::cell::Cell::default(),
             copies: std::cell::Cell::default(),
             verification_batch_depth: std::cell::Cell::new(0),
@@ -665,6 +686,8 @@ impl Store {
         verified_pages: &mut VerifiedPages,
     ) -> Result<(), StoreError> {
         let _timing = self.verification_batch();
+        #[cfg(test)]
+        self.note_verification_work(|work| work.scans += 1);
         let mut seen_gfns = BTreeSet::new();
         let mut current = Some(snap.0);
         while let Some(id) = current {
@@ -672,7 +695,11 @@ impl Store {
                 .layers
                 .get(&id)
                 .ok_or(StoreError::UnknownSnapshot(SnapshotId(id, self.store_id)))?;
+            #[cfg(test)]
+            self.note_verification_work(|work| work.layers += 1);
             for &(gfn, page) in &layer.pages {
+                #[cfg(test)]
+                self.note_verification_work(|work| work.rows += 1);
                 if !seen_gfns.insert(gfn) {
                     continue;
                 }
@@ -1240,11 +1267,20 @@ impl<'store> ReadTransaction<'store> {
         Ok(data)
     }
 
-    pub fn verify_snapshots(&mut self, snaps: &[SnapshotId]) -> Result<(), StoreError> {
-        for &snap in snaps {
-            self.store.live_layer(snap)?;
+    fn verify_snapshot(&mut self, snap: SnapshotId) -> Result<(), StoreError> {
+        self.store.live_layer(snap)?;
+        let key = (snap.0, snap.1);
+        if !self.verified_snapshots.contains(&key) {
             self.store
                 .verify_snapshot_pages_into(snap, &mut self.verified_pages)?;
+            self.verified_snapshots.insert(key);
+        }
+        Ok(())
+    }
+
+    pub fn verify_snapshots(&mut self, snaps: &[SnapshotId]) -> Result<(), StoreError> {
+        for &snap in snaps {
+            self.verify_snapshot(snap)?;
         }
         Ok(())
     }
@@ -1313,12 +1349,12 @@ impl<'store> ReadTransaction<'store> {
         let from = parent.unwrap_or(base);
         store.live_layer(from)?;
         let mut delta = PageDelta::default();
-        store.verify_snapshot_pages_into(target, &mut self.verified_pages)?;
+        self.verify_snapshot(target)?;
         if from != target {
-            store.verify_snapshot_pages_into(from, &mut self.verified_pages)?;
+            self.verify_snapshot(from)?;
         }
         if base != from && base != target {
-            store.verify_snapshot_pages_into(base, &mut self.verified_pages)?;
+            self.verify_snapshot(base)?;
         }
         for gfn in store.changed_gfns(from, target, &[])? {
             let page = store.resolve(target.0, gfn);
@@ -1380,6 +1416,193 @@ impl DeltaBuilder<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_snapshot_verification_skips_only_successful_exact_images_in_one_transaction() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let parent = snap_with(&mut store, base, &[(1, 2)]);
+        let target = snap_with(&mut store, parent, &[(0, 3)]);
+        let before = store.verification_telemetry();
+        {
+            let mut read = store.read_transaction();
+            read.verify_snapshots(&[target, target]).unwrap();
+            assert_eq!(
+                store.verification_work.get(),
+                VerificationWork {
+                    scans: 1,
+                    layers: 3,
+                    rows: 3
+                }
+            );
+            assert_eq!(read.verified_snapshots.len(), 1);
+            let delta = read.page_delta(base, Some(parent), target).unwrap();
+            assert_eq!(delta_summary(&delta), (vec![(0, 3)], vec![]));
+            let work = VerificationWork {
+                scans: 3,
+                layers: 6,
+                rows: 6,
+            };
+            assert_eq!(store.verification_work.get(), work);
+            read.verify_snapshots(&[base, parent, target, base])
+                .unwrap();
+            read.page_delta(base, Some(parent), target).unwrap();
+            assert_eq!(store.verification_work.get(), work);
+            assert_eq!(read.verified_snapshots.len(), 3);
+        }
+        let checked = store.verification_telemetry();
+        assert_eq!(checked.resident_hashes - before.resident_hashes, 3);
+        assert_eq!(
+            checked.resident_bytes - before.resident_bytes,
+            3 * PAGE_SIZE as u64
+        );
+        store
+            .read_transaction()
+            .verify_snapshots(&[target, target])
+            .unwrap();
+        assert_eq!(
+            store.verification_work.get(),
+            VerificationWork {
+                scans: 4,
+                layers: 9,
+                rows: 9
+            }
+        );
+        assert_eq!(
+            store.verification_telemetry().resident_hashes - checked.resident_hashes,
+            2
+        );
+    }
+
+    #[test]
+    fn empty_snapshot_completion_still_checks_store_domain_and_live_handles() {
+        let mut store = Store::new(cfg(0));
+        let base = store.begin_base().seal(vec![]);
+        let child = store.derive(base).unwrap().seal(vec![]);
+        store.release(base).unwrap();
+        let mut foreign_store = Store::new(cfg(0));
+        let foreign = foreign_store.begin_base().seal(vec![]);
+        let mut read = store.read_transaction();
+        read.verify_snapshots(&[child, child]).unwrap();
+        assert_eq!(
+            store.verification_work.get(),
+            VerificationWork {
+                scans: 1,
+                layers: 2,
+                rows: 0
+            }
+        );
+        assert_eq!(read.verified_snapshots.len(), 1);
+        assert!(
+            matches!(read.verify_snapshots(&[foreign]), Err(StoreError::UnknownSnapshot(id)) if id == foreign)
+        );
+        assert!(
+            matches!(read.verify_snapshots(&[base]), Err(StoreError::UnknownSnapshot(id)) if id == base)
+        );
+        assert_eq!(store.verification_work.get().scans, 1);
+        assert_eq!(store.verification_telemetry().resident_hashes, 0);
+    }
+
+    #[test]
+    fn an_overridden_corrupt_ancestor_is_not_certified_by_its_child() {
+        let mut store = Store::new(cfg(1));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        let base = builder.seal(vec![]);
+        let child = snap_with(&mut store, base, &[(0, 2)]);
+        let PageRef::Data(id) = store.resolve(base.0, 0) else {
+            panic!("resident ancestor")
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before = store.verification_telemetry();
+        let mut read = store.read_transaction();
+        read.verify_snapshots(&[child, child]).unwrap();
+        assert!(read.verified_snapshots.contains(&(child.0, child.1)));
+        assert!(!read.verified_snapshots.contains(&(base.0, base.1)));
+        for _ in 0..2 {
+            assert!(matches!(
+                read.verify_snapshots(&[base]),
+                Err(StoreError::PageIntegrity { gfn: 0 })
+            ));
+            assert!(!read.verified_snapshots.contains(&(base.0, base.1)));
+        }
+        assert_eq!(
+            store.verification_work.get(),
+            VerificationWork {
+                scans: 3,
+                layers: 4,
+                rows: 4
+            }
+        );
+        let after = store.verification_telemetry();
+        assert_eq!(after.resident_hashes - before.resident_hashes, 3);
+        assert_eq!(after.errors - before.errors, 2);
+    }
+
+    #[test]
+    fn failed_complete_verification_retries_rows_and_retains_only_checked_resident_slots() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[2; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(snap.0, 1) else {
+            panic!("resident failing page")
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let before = store.verification_telemetry();
+        let mut read = store.read_transaction();
+        for _ in 0..2 {
+            assert!(matches!(
+                read.verify_snapshots(&[snap]),
+                Err(StoreError::PageIntegrity { gfn: 1 })
+            ));
+            assert!(read.verified_snapshots.is_empty());
+        }
+        assert_eq!(
+            store.verification_work.get(),
+            VerificationWork {
+                scans: 2,
+                layers: 2,
+                rows: 4
+            }
+        );
+        let after = store.verification_telemetry();
+        assert_eq!(after.resident_hashes - before.resident_hashes, 3);
+        assert_eq!(after.memo_hits - before.memo_hits, 1);
+        assert_eq!(after.errors - before.errors, 2);
+    }
+
+    #[test]
+    fn selected_reads_and_empty_differences_do_not_certify_a_complete_image() {
+        let mut store = Store::new(cfg(2));
+        let mut builder = store.begin_base();
+        builder.write_page(0, &[1; PAGE_SIZE]).unwrap();
+        builder.write_page(1, &[2; PAGE_SIZE]).unwrap();
+        let snap = builder.seal(vec![]);
+        let PageRef::Data(id) = store.resolve(snap.0, 1) else {
+            panic!("unread resident page")
+        };
+        store.pages[id.get() - 1].as_mut().unwrap().data[7] ^= 1;
+        let mut read = store.read_transaction();
+        assert_eq!(read.read_page(snap, 0).unwrap(), &[1; PAGE_SIZE]);
+        assert!(read.diff_pages(Some(snap), snap).unwrap().is_empty());
+        assert!(read.verified_snapshots.is_empty());
+        assert!(matches!(
+            read.verify_snapshots(&[snap]),
+            Err(StoreError::PageIntegrity { gfn: 1 })
+        ));
+        assert_eq!(
+            store.verification_work.get(),
+            VerificationWork {
+                scans: 1,
+                layers: 1,
+                rows: 2
+            }
+        );
+    }
 
     #[test]
     fn verification_membership_promotes_at_threshold_without_losing_word_boundaries() {
