@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "status": "avoids-regions",
+  "verified_frames": 4975,
+  "sampled_points": 5371,
+  "linear_y": false,
+  "aligned_wave": true,
+  "components": {
+    "42": {
+      "bbox": [
+        284,
+        21,
+        335,
+        26
+      ],
+      "area": 180,
+      "sprites": []
+    },
+    "54": {
+      "bbox": [
+        450,
+        23,
+        630,
+        26
+      ],
+      "area": 217,
+      "sprites": []
+    }
+  },
+  "source_history_mismatches": [],
+  "hits": [],
+  "limitation": "Engine probe history and selected source regions; this neither classifies region intent nor proves every course boundary correct.",
+  "index_sha256": "459339d990174329786133af40ddfe1dad39da44d175e1e4016c7dad2904938a",
+  "history_sha256": "1249e1f3857c9f5cd2edbea808cc30b0952ba655930fdea556e24078676317d8",
+  "regions_index_sha256": "11fbf3269bd97bab905dac4cf6220ab7233ff1d695bf925d3936c2e0928a363f"
+}

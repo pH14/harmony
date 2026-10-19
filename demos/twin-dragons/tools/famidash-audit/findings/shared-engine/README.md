@@ -628,3 +628,49 @@ under validation, including a new release clearing search; rounded saw
 adjacencies elsewhere along the same boundary still require input review.
 The 109-level round 43 continues on the older LU45 prototype to finish
 coverage, but known Forest Temple bugs disqualify it. Clean rounds remain 0.
+
+The six Forest Temple caps now have isolated data-only proofs. Release
+contact responds at 2,604 and kills at 2,605; current responds at 3,052 and
+kills at 3,058. Actual repaired traces and resets match FCEUmm. The original
+release 5,399-frame and current 5,811-frame clearing traces remain exact,
+including current coin mask 2. `forest-quarter-cap-v2` contains all six
+reviewed cells and supersedes the diagnostic single-cell proposal.
+
+With four-orientation wave checking plus these caps, a fresh release
+Dissonance input clears in 4,975 frames and matches FCEUmm throughout. Its
+complete probe history avoids both original forbidden region footprints
+with zero source/metatile mismatches. Region review now supports a separate
+reference index so boundary repairs cannot hide visits by splitting regions.
+Current preserves its 5,234-frame clearing input with coin mask 3 exactly,
+and FCEUmm matches after entry. Mesen clears HUGE Forest Temple (145) in
+5,234 frames with the same coin mask and only one entry-frame difference.
+Compiled geometry matches 109 release, 170 current standard and 173 HUGE
+levels. This remains an experimental combined prototype pending the audit.
+
+XX has a further missing floor cap (release C1, current D0). A mini wave
+passes through the empty left side of an RD66_TOP slope at (844,47) and
+enters closed fill component 85 at (844,48). The component spans columns
+841–856, rows 46–56, has 149 cells and no sprites or empty-cell open faces.
+Original release trace matches all 3,937 frames after entry frame 5. A fresh
+current Dissonance witness reproduces the same entry; its independently
+matched trace later dies, so it is not evidence of indefinite survival.
+
+`xx-slope-cap` changes only (844,48) from BLACK_NONE to BLACK_TOP. The
+release and current source-data repairs both kill at 3,876 with their
+approaches unchanged in both cores, followed by normal reset. Current's
+first centre entry without repair is 3,877; its body contacts the cap one
+frame earlier. The 4,079-frame release and 4,066-frame current clearing
+inputs remain exactly unchanged, including current coin mask 6, and match
+FCEUmm after entry. The release CPU window covering the only close approach
+to the expanded forbidden-region box contains zero region visits and zero
+source/metatile mismatches. Further combined-prototype validation is pending.
+
+The schema-5 inventory adds 14,198 slope/fill adjacencies on this pre-XX-cap
+prototype. Host compilation of the original collision C measures all 5,120
+pixels across 20 slope classes; release and current physical grids agree.
+Of those adjacencies, 5,740 have an edge with fewer than 16 solid pixels.
+For XX component 85, four slope faces cover 16/16 pixels and the missing
+cap's RD66_TOP bottom edge covers 8/16. This measures normal-cube point
+coverage; it does not override wave exemptions, model swept motion, or
+prove that every partial edge is a bug. Source intent and ordinary-input
+reproduction remain required. Clean validation rounds remain 0.

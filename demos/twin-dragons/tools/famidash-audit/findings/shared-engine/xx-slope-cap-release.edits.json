@@ -1,0 +1,22 @@
+{
+  "target_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "evidence": [
+    "Original release and fresh current-upstream Dissonance inputs enter closed fill component85 through missing bottom cap84448 under the RD66_TOP half slope84447. No sprites/objectives or empty-cell open faces belong to component85.",
+    "Host-compiled source slope models measure only8/16 solid bottom-edge pixels for RD66_TOP. All four other slope/fill faces of this component cover16/16 pixels. No blanket mini-wave exemption change is proposed.",
+    "Release and current data-only repairs kill at3876 with approaches unchanged and normal reset in both cores; release4079/current4066 clearing inputs remain exactly unchanged and independently match, including current coin mask6."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_C/xx.tmx",
+      "source_sha256": "6f804212be3fce8585a925ae1914f01188d8bf4c98958e3df4f7861a5e51add7",
+      "edits": [
+        {
+          "column": 844,
+          "row": 48,
+          "from_gid": 112,
+          "to_gid": 98
+        }
+      ]
+    }
+  ]
+}

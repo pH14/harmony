@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Inventory spike stairs, rounded hazards and quarter blocks beside fill."""
+"""Inventory spike stairs and partial collision shapes beside fill."""
 
 import argparse
 import hashlib
@@ -9,7 +9,9 @@ from pathlib import Path
 from components import components
 
 
-def inventory(index):
+def inventory(index, slope_masks=None):
+    if slope_masks is not None:
+        assert slope_masks["source_revision"] == index["source_revision"], "slope source revision differs"
     metatiles = index["metatiles"]
     interiors = {i for i, tile in enumerate(metatiles)
                  if tile["name"] in {"BLACK_NONE", "X_NO_OUTLINE", "CHECKERBOARD_15"}}
@@ -17,7 +19,7 @@ def inventory(index):
     for layout in index["levels"]:
         width, height, tiles = layout["width"], layout["height"], layout["tiles"]
         labels, groups = components(layout, metatiles)
-        corners, rounded_caps, quarter_caps, cap_components = [], [], [], {}
+        corners, rounded_caps, quarter_caps, slope_caps, cap_components = [], [], [], [], {}
         for y in range(height):
             for x in range(width):
                 offset = y * width + x
@@ -30,6 +32,18 @@ def inventory(index):
                     if not (0 <= nx < width and 0 <= ny < height):
                         continue
                     hazard = metatiles[tiles[ny * width + nx]]
+                    if hazard["collision"].startswith("COL_SLOPE_"):
+                        coverage = {"status": "not-assessed"}
+                        if slope_masks is not None:
+                            coverage = {"status": "measured-point-coverage",
+                                        **slope_masks["slopes"][hazard["collision"]]["edges"][edge]}
+                        cap_components[group["number"]] = {key: group[key] for key in
+                            ("bbox", "area", "boundary", "non_none_boundary_fraction", "sprites")}
+                        slope_caps.append({"column": x, "row": y, "slope_column": nx, "slope_row": ny,
+                                           "slope": hazard["name"], "slope_collision": hazard["collision"],
+                                           "adjacent_edge": edge, "edge_coverage": coverage,
+                                           "component": group["number"],
+                                           "disposition": "needs-input-and-intent-review"})
                     if hazard["collision"] in {"COL_UP_LEFT", "COL_UP_RIGHT", "COL_DOWN_LEFT", "COL_DOWN_RIGHT"}:
                         cap_components[group["number"]] = {key: group[key] for key in
                             ("bbox", "area", "boundary", "non_none_boundary_fraction", "sprites")}
@@ -71,10 +85,11 @@ def inventory(index):
                                         "component_area": group["area"],
                                         "component_sprites": group["sprites"],
                                         "disposition": "needs-input-and-intent-review"})
-        if corners or rounded_caps or quarter_caps:
+        if corners or rounded_caps or quarter_caps or slope_caps:
             result.append({"side": layout["side"], "level": layout["level"], "name": layout["name"],
                            "source": layout["source"], "source_sha256": layout["source_sha256"],
                            "corners": corners, "rounded_caps": rounded_caps, "quarter_caps": quarter_caps,
+                           "slope_caps": slope_caps,
                            "cap_components": cap_components})
     return result
 
@@ -83,14 +98,22 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("index", type=Path)
     parser.add_argument("output", type=Path)
+    parser.add_argument("--slope-masks", type=Path)
     args = parser.parse_args()
     raw = args.index.read_bytes()
-    levels = inventory(json.loads(raw))
-    result = {"schema": 4, "index_sha256": hashlib.sha256(raw).hexdigest(),
+    mask_bytes = args.slope_masks.read_bytes() if args.slope_masks else None
+    levels = inventory(json.loads(raw), json.loads(mask_bytes) if mask_bytes else None)
+    result = {"schema": 5, "index_sha256": hashlib.sha256(raw).hexdigest(),
               "purpose": "triage only; topology is not proof of a bug or permission to block a route",
               "levels": levels, "corner_count": sum(len(level["corners"]) for level in levels),
               "rounded_cap_count": sum(len(level["rounded_caps"]) for level in levels),
-              "quarter_cap_count": sum(len(level["quarter_caps"]) for level in levels)}
+              "quarter_cap_count": sum(len(level["quarter_caps"]) for level in levels),
+              "slope_cap_count": sum(len(level["slope_caps"]) for level in levels)}
+    if mask_bytes is not None:
+        result["slope_masks_sha256"] = hashlib.sha256(mask_bytes).hexdigest()
+        result["partial_slope_cap_count"] = sum(
+            entry["edge_coverage"]["solid_pixels"] < 16 for level in levels for entry in level["slope_caps"])
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"levels": len(levels), "corners": result["corner_count"],
-                      "rounded_caps": result["rounded_cap_count"], "quarter_caps": result["quarter_cap_count"]}))
+                      "rounded_caps": result["rounded_cap_count"], "quarter_caps": result["quarter_cap_count"],
+                      "slope_caps": result["slope_cap_count"]}))

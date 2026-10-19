@@ -1,0 +1,791 @@
+{
+  "schema": 1,
+  "source_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "slope_function_sha256": "b624eb04948892d7eb284246b5e4ff288fbc3e395c8c0d8d452fab1739c4d7fc",
+  "metatiles_header_sha256": "593caa4d16ffbfd963e1e03c9e2947bb8398c14629b5952a66924d345b8266ca",
+  "pixel_cases": 5120,
+  "model": "host-compiled bg_coll_slope return in normal cube mode, before wave exemptions",
+  "limitation": "Point coverage only; no body ejection, swept segments, renderer or NES compiler verification.",
+  "slopes": {
+    "COL_SLOPE_LU66_BOT": {
+      "collision_value": 30,
+      "rows": [
+        65535,
+        65535,
+        32767,
+        32767,
+        16383,
+        16383,
+        8191,
+        8191,
+        4095,
+        4095,
+        2047,
+        2047,
+        1023,
+        1023,
+        511,
+        511
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 511,
+          "solid_pixels": 9
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 3,
+          "solid_pixels": 2
+        }
+      }
+    },
+    "COL_SLOPE_RU66_BOT": {
+      "collision_value": 29,
+      "rows": [
+        65535,
+        65534,
+        65534,
+        65532,
+        65532,
+        65528,
+        65528,
+        65520,
+        65520,
+        65504,
+        65504,
+        65472,
+        65472,
+        65408,
+        65408,
+        65280
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 65280,
+          "solid_pixels": 8
+        },
+        "left": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "right": {
+          "mask": 65535,
+          "solid_pixels": 16
+        }
+      }
+    },
+    "COL_SLOPE_LU66_TOP": {
+      "collision_value": 28,
+      "rows": [
+        255,
+        255,
+        127,
+        127,
+        63,
+        63,
+        31,
+        31,
+        15,
+        15,
+        7,
+        7,
+        3,
+        3,
+        1,
+        1
+      ],
+      "edges": {
+        "top": {
+          "mask": 255,
+          "solid_pixels": 8
+        },
+        "bottom": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 0,
+          "solid_pixels": 0
+        }
+      }
+    },
+    "COL_SLOPE_RU66_TOP": {
+      "collision_value": 27,
+      "rows": [
+        65280,
+        65024,
+        65024,
+        64512,
+        64512,
+        63488,
+        63488,
+        61440,
+        61440,
+        57344,
+        57344,
+        49152,
+        49152,
+        32768,
+        32768,
+        0
+      ],
+      "edges": {
+        "top": {
+          "mask": 65280,
+          "solid_pixels": 8
+        },
+        "bottom": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "left": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "right": {
+          "mask": 32767,
+          "solid_pixels": 15
+        }
+      }
+    },
+    "COL_SLOPE_LU22_RIGHT": {
+      "collision_value": 26,
+      "rows": [
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        16383,
+        4095,
+        1023,
+        255,
+        63,
+        15,
+        3
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 3,
+          "solid_pixels": 2
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 511,
+          "solid_pixels": 9
+        }
+      }
+    },
+    "COL_SLOPE_LU22_LEFT": {
+      "collision_value": 25,
+      "rows": [
+        65535,
+        16383,
+        4095,
+        1023,
+        255,
+        63,
+        15,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "left": {
+          "mask": 255,
+          "solid_pixels": 8
+        },
+        "right": {
+          "mask": 1,
+          "solid_pixels": 1
+        }
+      }
+    },
+    "COL_SLOPE_RU22_RIGHT": {
+      "collision_value": 24,
+      "rows": [
+        65535,
+        65532,
+        65520,
+        65472,
+        65280,
+        64512,
+        61440,
+        49152,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "left": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "right": {
+          "mask": 255,
+          "solid_pixels": 8
+        }
+      }
+    },
+    "COL_SLOPE_RU22_LEFT": {
+      "collision_value": 23,
+      "rows": [
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65532,
+        65520,
+        65472,
+        65280,
+        64512,
+        61440,
+        49152
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 49152,
+          "solid_pixels": 2
+        },
+        "left": {
+          "mask": 511,
+          "solid_pixels": 9
+        },
+        "right": {
+          "mask": 65535,
+          "solid_pixels": 16
+        }
+      }
+    },
+    "COL_SLOPE_LU45": {
+      "collision_value": 22,
+      "rows": [
+        65535,
+        32767,
+        16383,
+        8191,
+        4095,
+        2047,
+        1023,
+        511,
+        255,
+        127,
+        63,
+        31,
+        15,
+        7,
+        3,
+        1
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 1,
+          "solid_pixels": 1
+        }
+      }
+    },
+    "COL_SLOPE_RU45": {
+      "collision_value": 21,
+      "rows": [
+        65535,
+        65534,
+        65532,
+        65528,
+        65520,
+        65504,
+        65472,
+        65408,
+        65280,
+        65024,
+        64512,
+        63488,
+        61440,
+        57344,
+        49152,
+        32768
+      ],
+      "edges": {
+        "top": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "bottom": {
+          "mask": 32768,
+          "solid_pixels": 1
+        },
+        "left": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "right": {
+          "mask": 65535,
+          "solid_pixels": 16
+        }
+      }
+    },
+    "COL_SLOPE_LD66_BOT": {
+      "collision_value": 20,
+      "rows": [
+        511,
+        511,
+        1023,
+        1023,
+        2047,
+        2047,
+        4095,
+        4095,
+        8191,
+        8191,
+        16383,
+        16383,
+        32767,
+        32767,
+        65535,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 511,
+          "solid_pixels": 9
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 49152,
+          "solid_pixels": 2
+        }
+      }
+    },
+    "COL_SLOPE_RD66_BOT": {
+      "collision_value": 19,
+      "rows": [
+        65280,
+        65408,
+        65408,
+        65472,
+        65472,
+        65504,
+        65504,
+        65520,
+        65520,
+        65528,
+        65528,
+        65532,
+        65532,
+        65534,
+        65534,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 65280,
+          "solid_pixels": 8
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 32768,
+          "solid_pixels": 1
+        },
+        "right": {
+          "mask": 65535,
+          "solid_pixels": 16
+        }
+      }
+    },
+    "COL_SLOPE_LD66_TOP": {
+      "collision_value": 18,
+      "rows": [
+        1,
+        1,
+        3,
+        3,
+        7,
+        7,
+        15,
+        15,
+        31,
+        31,
+        63,
+        63,
+        127,
+        127,
+        255,
+        255
+      ],
+      "edges": {
+        "top": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "bottom": {
+          "mask": 255,
+          "solid_pixels": 8
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 0,
+          "solid_pixels": 0
+        }
+      }
+    },
+    "COL_SLOPE_RD66_TOP": {
+      "collision_value": 17,
+      "rows": [
+        0,
+        32768,
+        32768,
+        49152,
+        49152,
+        57344,
+        57344,
+        61440,
+        61440,
+        63488,
+        63488,
+        64512,
+        64512,
+        65024,
+        65024,
+        65280
+      ],
+      "edges": {
+        "top": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "bottom": {
+          "mask": 65280,
+          "solid_pixels": 8
+        },
+        "left": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "right": {
+          "mask": 65534,
+          "solid_pixels": 15
+        }
+      }
+    },
+    "COL_SLOPE_LD22_LEFT": {
+      "collision_value": 16,
+      "rows": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        3,
+        15,
+        63,
+        255,
+        1023,
+        4095,
+        16383,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 65280,
+          "solid_pixels": 8
+        },
+        "right": {
+          "mask": 32768,
+          "solid_pixels": 1
+        }
+      }
+    },
+    "COL_SLOPE_RD22_LEFT": {
+      "collision_value": 15,
+      "rows": [
+        49152,
+        61440,
+        64512,
+        65280,
+        65472,
+        65520,
+        65532,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 49152,
+          "solid_pixels": 2
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 65408,
+          "solid_pixels": 9
+        },
+        "right": {
+          "mask": 65535,
+          "solid_pixels": 16
+        }
+      }
+    },
+    "COL_SLOPE_LD22_RIGHT": {
+      "collision_value": 14,
+      "rows": [
+        3,
+        15,
+        63,
+        255,
+        1023,
+        4095,
+        16383,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 3,
+          "solid_pixels": 2
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 65408,
+          "solid_pixels": 9
+        }
+      }
+    },
+    "COL_SLOPE_RD22_RIGHT": {
+      "collision_value": 13,
+      "rows": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        49152,
+        61440,
+        64512,
+        65280,
+        65472,
+        65520,
+        65532,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 0,
+          "solid_pixels": 0
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 32768,
+          "solid_pixels": 1
+        },
+        "right": {
+          "mask": 65280,
+          "solid_pixels": 8
+        }
+      }
+    },
+    "COL_SLOPE_LD45": {
+      "collision_value": 12,
+      "rows": [
+        1,
+        3,
+        7,
+        15,
+        31,
+        63,
+        127,
+        255,
+        511,
+        1023,
+        2047,
+        4095,
+        8191,
+        16383,
+        32767,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 1,
+          "solid_pixels": 1
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "right": {
+          "mask": 32768,
+          "solid_pixels": 1
+        }
+      }
+    },
+    "COL_SLOPE_RD45": {
+      "collision_value": 11,
+      "rows": [
+        32768,
+        49152,
+        57344,
+        61440,
+        63488,
+        64512,
+        65024,
+        65280,
+        65408,
+        65472,
+        65504,
+        65520,
+        65528,
+        65532,
+        65534,
+        65535
+      ],
+      "edges": {
+        "top": {
+          "mask": 32768,
+          "solid_pixels": 1
+        },
+        "bottom": {
+          "mask": 65535,
+          "solid_pixels": 16
+        },
+        "left": {
+          "mask": 32768,
+          "solid_pixels": 1
+        },
+        "right": {
+          "mask": 65535,
+          "solid_pixels": 16
+        }
+      }
+    }
+  }
+}

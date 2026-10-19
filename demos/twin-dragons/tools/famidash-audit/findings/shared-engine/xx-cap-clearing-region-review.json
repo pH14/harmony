@@ -1,0 +1,23 @@
+{
+  "status": "avoids-reviewed-region",
+  "source_region": {
+    "number": 85,
+    "bbox": [
+      841,
+      46,
+      856,
+      56
+    ],
+    "area": 149,
+    "sprites": []
+  },
+  "trace_sha256": "2a46fde30bfcb3607e66c0545544ee64f55c6abe420926b34f27736410a038bb",
+  "frame_window": [
+    3935,
+    3979
+  ],
+  "centre_samples": 45,
+  "source_history_mismatches": [],
+  "region_hits": [],
+  "scope": "Actual independently matched CPU centre samples in the only interval where the clearing route approaches the region expanded by16pixels; entire clearing trace independently verified separately."
+}

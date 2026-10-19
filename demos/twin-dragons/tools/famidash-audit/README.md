@@ -370,3 +370,14 @@ Normal wave/Snake controls can include both biased and aligned centres.
 Secondary-player controls are rejected because this history format does not
 record their world X coordinates. A clearing input that visits a reviewed
 forbidden region is unsuitable as a playability control even if it wins.
+
+Use `review-control-regions.py --regions-index REFERENCE` to preserve reviewed
+component footprints when caps split a region. The actual index still
+validates recorded metatiles; both index hashes are retained.
+
+`slope-edge-masks.py SOURCE OUTPUT` host-compiles the original slope function
+and measures normal-cube point coverage for all 20 slope classes. Pass its
+output to `boundary-corners.py --slope-masks MASKS` to annotate schema-5
+slope/fill leads with actual edge masks and solid-pixel counts. The source
+revision must match the index. Full edges can still be crossed between
+samples; partial edges may be intentional. Neither result authorizes edits.

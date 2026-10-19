@@ -1,0 +1,52 @@
+{
+  "target_revision": "541d68ffcae2096f116146ef21cbc4d62886eb6b",
+  "evidence": [
+    "Six explicitly reviewed quarter-block/fill adjacencies of enclosed Forest Temple component54. No objectives or empty-cell open faces belong to this component.",
+    "Data-only original-release and current controls preserve5399/5811frame clears exactly; ordinary escapes respond before death2604\u21922605 and3052\u21923058. All repaired and clearing traces independently match.",
+    "Combined four-slope+six-cap release clear4975 avoids both original forbidden region footprints by complete verified history, current clear5234 exact and HUGE Mesen5234. This is reviewed boundary repair, not permission to fill arbitrary decoration."
+  ],
+  "levels": [
+    {
+      "path": "LEVELS/LEVEL DATA/lvlset_HUGE/foresttemple.tmx",
+      "source_sha256": "db097126a289bde3744a3fe6fd49903d0a2e705fd37df929d9806e23ccd8aa35",
+      "edits": [
+        {
+          "column": 468,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 470,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 475,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 480,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 502,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        },
+        {
+          "column": 504,
+          "row": 26,
+          "from_gid": 112,
+          "to_gid": 98
+        }
+      ]
+    }
+  ]
+}

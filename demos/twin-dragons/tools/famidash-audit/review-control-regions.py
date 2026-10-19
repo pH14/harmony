@@ -9,10 +9,13 @@ from pathlib import Path
 from components import components
 
 
-def review(index, history, side, level, seeds, linear_y, aligned_wave):
+def review(index, history, side, level, seeds, linear_y, aligned_wave, regions_index=None):
     layout = next(item for item in index["levels"] if item["side"] == side and item["level"] == level)
     width, height = layout["width"], layout["height"]
-    labels, groups = components(layout, index["metatiles"])
+    regions_index = index if regions_index is None else regions_index
+    region_layout = next(item for item in regions_index["levels"] if item["side"] == side and item["level"] == level)
+    assert all(layout[key] == region_layout[key] for key in ("width", "height", "top", "name")), "region coordinate layout differs"
+    labels, groups = components(region_layout, regions_index["metatiles"])
     targets = set()
     for x, y in seeds:
         assert 0 <= x < width and 0 <= y < height
@@ -68,11 +71,14 @@ if __name__ == "__main__":
     parser.add_argument("--seed", required=True, action="append", nargs=2, type=int, metavar=("COLUMN", "ROW"))
     parser.add_argument("--linear-y", action="store_true")
     parser.add_argument("--aligned-wave", action="store_true")
+    parser.add_argument("--regions-index", type=Path, help="preserve reviewed region footprints across boundary edits")
     args = parser.parse_args()
     index_bytes, history_bytes = args.index.read_bytes(), args.history.read_bytes()
+    regions_bytes = args.regions_index.read_bytes() if args.regions_index else index_bytes
     result = review(json.loads(index_bytes), json.loads(history_bytes), args.side, args.level,
-                    args.seed, args.linear_y, args.aligned_wave)
+                    args.seed, args.linear_y, args.aligned_wave, json.loads(regions_bytes))
     result.update(index_sha256=hashlib.sha256(index_bytes).hexdigest(), history_sha256=hashlib.sha256(history_bytes).hexdigest())
+    result["regions_index_sha256"] = hashlib.sha256(regions_bytes).hexdigest()
     args.output.write_text(json.dumps(result, indent=2) + "\n")
     print(json.dumps({"status": result["status"], "hits": len(result["hits"]),
                       "source_history_mismatches": len(result["source_history_mismatches"])}))

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "status": "verified",
+  "levels": [
+    {
+      "side": "d",
+      "level": 0,
+      "name": "xx",
+      "tile_count": 51072,
+      "continuations": [],
+      "differences": 0,
+      "examples": []
+    }
+  ],
+  "collision_tables": {
+    "d": {
+      "entries": 256,
+      "sha256": "5f4b9b72ac731c4f4ae7ceb3ba9d78f6f443221f2cdb61a7dabe061fd9033580"
+    }
+  },
+  "index_sha256": "9bf40833d35d565cd01632ffd22329c1dd7e65910f78cf52de750b0d2cdcb892"
+}
