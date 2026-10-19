@@ -1771,3 +1771,7 @@ mod tests {
         assert_eq!(dead.boss_damage(), FULL_BOSS_HEALTH);
     }
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for Mm2Snapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}

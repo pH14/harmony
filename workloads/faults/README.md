@@ -685,8 +685,13 @@ Child publication selects the lease of the actual restored parent point, includi
 when another sibling remains resident. Runnable, terminal and interrupted-rebuild
 observations all exclude park and read evidence at or before the previous endpoint.
 
-Checkpoint histories use a validated flat encoding with explicit versions and
-iterative destruction. Restore canonicalizes validated expected histories into
+Standalone checkpoint histories use a parent-indexed DAG with one receipt per
+semantic history root. Encoding follows missing tails iteratively and deduplicates
+independently allocated equivalent prefixes. Decode validates receipt roots, paths,
+depth, domain, moments and backend continuity before constructing shared Arc nodes;
+endpoint records reference those nodes. The generic searcher frames opaque records
+and never interprets fault history. Old flat snapshot envelopes are refused.
+History destruction remains iterative. Restore canonicalizes validated expected histories into
 actual shared node allocations before rebuilding the memory ledger. Bootstrap
 imports use the admitted live genesis allocation. Before archive installation, a
 typed retention index normalizes a candidate's new tail against currently
@@ -710,7 +715,7 @@ semantic events. Snapshot and schedule IDs never enter that commitment. Missing
 KVM history cannot be replaced by an empty commitment. UML carries no ordered
 normalized-event commitment and remains uncertified for whole state.
 
-The VM stream/snapshot formats are v11/v9 and UML formats v8/v5. The action policy
+The VM stream/snapshot formats are v11/v10 and UML formats v8/v6. The action policy
 is `fault-action-duration-coverage-v5-event-history`; older contracts are refused.
 
 Restoring a source snapshot compares its independently captured receipt and

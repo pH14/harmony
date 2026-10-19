@@ -1167,3 +1167,7 @@ mod tests {
         assert_eq!(ended.snapshot(), Some(stopped));
     }
 }
+
+impl<P: SnapshotState> searcher::search::snapshot_codec::CheckpointSnapshot for SmbSnapshot<P> {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}

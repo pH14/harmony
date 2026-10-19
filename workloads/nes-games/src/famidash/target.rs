@@ -1098,3 +1098,7 @@ mod tests {
         assert_eq!(frames(&community), frames(&main) + 1 + MENU_SETTLE_FRAMES);
     }
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for FamidashSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}

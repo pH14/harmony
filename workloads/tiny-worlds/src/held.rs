@@ -314,7 +314,7 @@ impl Reporting for HeldWorkload {
         "tiny-held-world-v1"
     }
     fn checkpoint_format(&self) -> &'static str {
-        "tiny-held-world-checkpoint-v1"
+        "tiny-held-world-checkpoint-v2"
     }
     fn workload_identity_sha256(&self) -> String {
         postcard_value_sha256(&self.course).expect("serializable course")
@@ -825,4 +825,8 @@ mod tests {
             assert!(report["jobs"].as_u64().is_some_and(|jobs| jobs > 0));
         }
     }
+}
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for State {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
 }

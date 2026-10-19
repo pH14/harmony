@@ -415,6 +415,110 @@ impl<'de> Deserialize<'de> for FaultHistory {
     }
 }
 
+pub struct FaultSnapshotCodec;
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for crate::target::FaultSnapshot {
+    type Codec = FaultSnapshotCodec;
+}
+
+#[derive(Serialize, Deserialize)]
+struct SnapshotEndpoint {
+    observation: FaultObservations,
+    failed: bool,
+    endpoint: Option<FaultEndpointCertificate>,
+    event_history: Option<(u64, [u8; 32])>,
+}
+
+impl searcher::search::snapshot_codec::SnapshotCodec<crate::target::FaultSnapshot>
+    for FaultSnapshotCodec
+{
+    const FORMAT: &'static str = "fault-history-dag-v2";
+    type DecodeState = std::collections::BTreeMap<[u8; 32], FaultHistory>;
+    fn encode(
+        snapshot: &crate::target::FaultSnapshot,
+        sink: &mut dyn searcher::search::snapshot_codec::SharedRecordSink,
+    ) -> searcher::search::snapshot_codec::CodecResult<
+        searcher::search::snapshot_codec::EncodedSnapshot,
+    > {
+        use searcher::search::snapshot_codec::{EncodedSnapshot, SharedRecord};
+        let mut tail = Vec::new();
+        for node in snapshot.history.nodes() {
+            node.receipt.validate()?;
+            match &node.parent {
+                Some(parent) if node.receipt.follows(&parent.receipt) => {}
+                None if node.receipt.depth == 0 => {}
+                _ => return Err("fault history node differs from its parent".into()),
+            }
+            let record = SharedRecord {
+                key: node.receipt.root,
+                dependencies: node.receipt.parent.into_iter().collect(),
+                payload: postcard::to_allocvec(&node.receipt)?,
+            };
+            if sink.contains(&record)? {
+                break;
+            }
+            tail.push(record);
+        }
+        for record in tail.into_iter().rev() {
+            sink.insert(record)?;
+        }
+        Ok(EncodedSnapshot {
+            roots: vec![snapshot.history.receipt().root()],
+            payload: postcard::to_allocvec(&SnapshotEndpoint {
+                observation: snapshot.observation.clone(),
+                failed: snapshot.failed,
+                endpoint: snapshot.endpoint,
+                event_history: snapshot.event_history,
+            })?,
+        })
+    }
+    fn decode_record(
+        state: &mut Self::DecodeState,
+        record: searcher::search::snapshot_codec::SharedRecord,
+    ) -> searcher::search::snapshot_codec::CodecResult<()> {
+        let (receipt, tail): (HistoryReceipt, _) = postcard::take_from_bytes(&record.payload)?;
+        if !tail.is_empty()
+            || receipt.root != record.key
+            || record.dependencies != receipt.parent.into_iter().collect::<Vec<_>>()
+            || state.contains_key(&record.key)
+        {
+            return Err("fault history record key, parent or payload differs".into());
+        }
+        let history = match receipt.parent {
+            Some(parent) => state
+                .get(&parent)
+                .ok_or("fault history parent is missing")?
+                .push(receipt)?,
+            None => FaultHistory::genesis(receipt)?,
+        };
+        state.insert(record.key, history);
+        Ok(())
+    }
+    fn decode_snapshot(
+        state: &Self::DecodeState,
+        snapshot: searcher::search::snapshot_codec::EncodedSnapshot,
+    ) -> searcher::search::snapshot_codec::CodecResult<crate::target::FaultSnapshot> {
+        let [root] = snapshot.roots.as_slice() else {
+            return Err("fault snapshot requires one history root".into());
+        };
+        let history = state
+            .get(root)
+            .ok_or("fault snapshot history root is missing")?
+            .clone();
+        let (endpoint, tail): (SnapshotEndpoint, _) = postcard::take_from_bytes(&snapshot.payload)?;
+        if !tail.is_empty() {
+            return Err("fault snapshot endpoint has trailing bytes".into());
+        }
+        Ok(crate::target::FaultSnapshot {
+            history,
+            observation: endpoint.observation,
+            failed: endpoint.failed,
+            endpoint: endpoint.endpoint,
+            event_history: endpoint.event_history,
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct FaultHistoryRetention {
     nodes: std::collections::BTreeMap<[u8; 32], FaultHistory>,
@@ -620,6 +724,198 @@ impl FaultHistory {
 mod tests {
     use super::*;
     use crate::target::FaultOperation;
+    use searcher::search::campaign::{SnapshotCheckpoint, SnapshotCheckpointEntry};
+    use searcher::search::snapshot_codec::{
+        CodecResult, EncodedSnapshot, SharedRecord, SharedRecordSink, SnapshotCodec,
+    };
+    use std::collections::BTreeMap;
+    #[derive(Default)]
+    struct Records {
+        rows: BTreeMap<[u8; 32], SharedRecord>,
+        order: Vec<SharedRecord>,
+    }
+    impl SharedRecordSink for Records {
+        fn contains(&self, row: &SharedRecord) -> CodecResult<bool> {
+            match self.rows.get(&row.key) {
+                Some(old) if old != row => Err("conflict".into()),
+                Some(_) => Ok(true),
+                None => Ok(false),
+            }
+        }
+        fn insert(&mut self, row: SharedRecord) -> CodecResult<()> {
+            if !self.contains(&row)? {
+                self.order.push(row.clone());
+                self.rows.insert(row.key, row);
+            }
+            Ok(())
+        }
+    }
+    fn dag_ladder(depth: usize, domain: u8) -> Vec<crate::target::FaultSnapshot> {
+        let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);
+        let mut observation = FaultObservations::default();
+        let mut history = FaultHistory::genesis(
+            HistoryReceipt::genesis(
+                [domain; 32],
+                endpoint,
+                fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut out = vec![];
+        for step in 0..=depth {
+            out.push(crate::target::FaultSnapshot {
+                history: history.clone(),
+                observation: observation.clone(),
+                endpoint: Some(endpoint),
+                event_history: fixture_event_history(endpoint),
+                failed: false,
+            });
+            if step < depth {
+                observation.moment += 1;
+                let action = FaultAction::new(
+                    FaultOperation::Wait(std::num::NonZeroU16::new(1).unwrap()),
+                    std::num::NonZeroU16::new(1).unwrap(),
+                );
+                history = history
+                    .push(
+                        history
+                            .receipt()
+                            .extend(
+                                action,
+                                endpoint,
+                                fixture_event_history(endpoint),
+                                &observation,
+                            )
+                            .unwrap(),
+                    )
+                    .unwrap();
+            }
+        }
+        out
+    }
+    #[test]
+    fn dag_checkpoint_writes_each_semantic_receipt_once_and_restores_shared_allocations() {
+        let snapshots = dag_ladder(128, 3);
+        let equivalent = dag_ladder(128, 3);
+        let other = dag_ladder(2, 4);
+        let mut records = Records::default();
+        for snapshot in snapshots.iter().chain(&equivalent).chain(&other) {
+            FaultSnapshotCodec::encode(snapshot, &mut records).unwrap();
+        }
+        assert_eq!(records.order.len(), 129 + 3);
+        let mut state = BTreeMap::new();
+        for row in records.order {
+            FaultSnapshotCodec::decode_record(&mut state, row).unwrap();
+        }
+        let checkpoint = SnapshotCheckpoint {
+            format: "dag-test".into(),
+            entries: snapshots
+                .iter()
+                .chain(&other)
+                .enumerate()
+                .map(|(id, snapshot)| SnapshotCheckpointEntry {
+                    id: id as u64,
+                    snapshot: snapshot.clone(),
+                })
+                .collect(),
+        };
+        let bytes = checkpoint.to_bytes().unwrap();
+        let independently_allocated = SnapshotCheckpoint {
+            format: "dag-test".into(),
+            entries: equivalent
+                .iter()
+                .chain(&other)
+                .enumerate()
+                .map(|(id, snapshot)| SnapshotCheckpointEntry {
+                    id: id as u64,
+                    snapshot: snapshot.clone(),
+                })
+                .collect(),
+        };
+        assert_eq!(bytes, independently_allocated.to_bytes().unwrap());
+        let decoded =
+            SnapshotCheckpoint::<crate::target::FaultSnapshot>::from_bytes(&bytes, "dag-test")
+                .unwrap();
+        assert_eq!(decoded, checkpoint);
+        for pair in decoded.entries[..129].windows(2) {
+            assert!(Arc::ptr_eq(
+                &pair[0].snapshot.history.0,
+                pair[1].snapshot.history.0.parent.as_ref().unwrap()
+            ));
+        }
+        assert!(!Arc::ptr_eq(
+            &decoded.entries[0].snapshot.history.0,
+            &decoded.entries[129].snapshot.history.0
+        ));
+        assert_eq!(
+            decoded.entries[128].snapshot.history.allocations().len(),
+            129
+        );
+        use searcher::search::archive::{SharedSnapshotMemory, SnapshotRetention};
+        let mut retention = FaultHistoryRetention::default();
+        let mut memory = SharedSnapshotMemory::default();
+        for entry in &decoded.entries {
+            retention.retain(&entry.snapshot, &mut memory);
+        }
+        assert_eq!(retention.nodes.len(), 132);
+        assert_eq!(
+            memory.bytes(),
+            132 * SharedSnapshotMemory::entry_charge(Node::allocation_bytes())
+        );
+        for entry in &decoded.entries {
+            retention.release(&entry.snapshot, &mut memory);
+        }
+        assert_eq!(memory.bytes(), 0);
+        assert!(retention.nodes.is_empty());
+    }
+    #[test]
+    fn dag_codec_rejects_intermediate_key_parent_domain_and_backend_corruption() {
+        let snapshots = dag_ladder(3, 5);
+        let mut records = Records::default();
+        let encoded = FaultSnapshotCodec::encode(&snapshots[3], &mut records).unwrap();
+        assert_eq!(records.order.len(), 4);
+        for mutate in 0..7 {
+            let mut rows = records.order.clone();
+            let mut receipt: HistoryReceipt = postcard::from_bytes(&rows[1].payload).unwrap();
+            match mutate {
+                0 => receipt.certificate = Some([8; 32]),
+                1 => receipt.domain = [8; 32],
+                2 => receipt.previous_moment += 1,
+                3 => receipt.depth += 1,
+                4 => receipt.endpoint = FaultEndpointCertificate::UmlWholeStateUnavailable,
+                5 => rows[1].key = [8; 32],
+                _ => rows[1].dependencies = vec![[8; 32]],
+            }
+            rows[1].payload = postcard::to_allocvec(&receipt).unwrap();
+            let mut state = BTreeMap::new();
+            assert!(
+                rows.into_iter()
+                    .try_for_each(|row| FaultSnapshotCodec::decode_record(&mut state, row))
+                    .is_err()
+            );
+            assert_eq!(
+                snapshots[3].observation,
+                snapshots.last().unwrap().observation
+            );
+        }
+        let mut state = BTreeMap::new();
+        for row in records.order {
+            FaultSnapshotCodec::decode_record(&mut state, row).unwrap();
+        }
+        assert!(
+            FaultSnapshotCodec::decode_snapshot(
+                &state,
+                EncodedSnapshot {
+                    roots: vec![[0; 32]],
+                    ..encoded
+                }
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn endpoint_certificates_bind_unqualified_assurance_and_cannot_claim_portability() {
         for endpoint in [

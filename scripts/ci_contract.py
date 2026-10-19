@@ -244,6 +244,7 @@ LIB_PARTITIONS = {
         ),
         "Campaign Recording and Replay": (
             "search::campaign", "search::checkpoint", "search::telemetry",
+            "search::snapshot_codec",
             "search::executable_identity",
         ),
     },

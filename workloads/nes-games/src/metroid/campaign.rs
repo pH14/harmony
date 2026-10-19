@@ -46,7 +46,7 @@ use crate::{
 };
 
 pub const CAMPAIGN_STREAM_FORMAT: &str = "metroid-quicknes-campaign-stream-v4";
-pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v12";
+pub const SNAPSHOT_CHECKPOINT_FORMAT: &str = "metroid-quicknes-snapshot-checkpoint-v13";
 
 const CONTROLLER_VOCABULARY_FIELD: &str = "controller_vocabulary";
 const KEY_POLICY_FIELD: &str = "key_policy";

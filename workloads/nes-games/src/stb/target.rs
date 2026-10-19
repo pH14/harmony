@@ -1484,3 +1484,7 @@ mod tests {
         assert_eq!(state.gameplay, None);
     }
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for StbSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}

@@ -824,3 +824,7 @@ mod tests {
         assert!(tape.iter().all(|chord| chord.buttons & !0x08 == 0));
     }
 }
+
+impl searcher::search::snapshot_codec::CheckpointSnapshot for TwinDragonsSnapshot {
+    type Codec = searcher::search::snapshot_codec::PostcardSnapshotCodec<Self>;
+}
