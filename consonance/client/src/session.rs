@@ -45,6 +45,8 @@ pub enum GuestContract {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct SessionConfig {
     pub guest_contract: GuestContract,
+    #[serde(default)]
+    pub qualification: execution_contract::Requirement,
     pub ram_bytes: usize,
     pub seed: u64,
     pub run_budget: u64,
@@ -60,6 +62,7 @@ impl Default for SessionConfig {
     fn default() -> Self {
         Self {
             guest_contract: GuestContract::Ordinary,
+            qualification: execution_contract::Requirement::Ordinary,
             ram_bytes: DEFAULT_RAM,
             seed: DEFAULT_SEED,
             run_budget: DEFAULT_RUN_BUDGET,
@@ -76,6 +79,7 @@ impl SessionConfig {
     pub fn new(ram_bytes: usize, seed: u64, run_budget: u64, cmdline: impl Into<String>) -> Self {
         Self {
             guest_contract: GuestContract::Ordinary,
+            qualification: execution_contract::Requirement::Ordinary,
             ram_bytes,
             seed,
             run_budget,
@@ -84,6 +88,12 @@ impl SessionConfig {
             wall_limit: None,
             defer_virtual_time_checkpoint_hashes: false,
         }
+    }
+
+    #[must_use]
+    pub fn with_qualification(mut self, qualification: execution_contract::Requirement) -> Self {
+        self.qualification = qualification;
+        self
     }
 
     #[must_use]
@@ -119,6 +129,8 @@ impl SessionConfig {
         allow(dead_code)
     )]
     fn validate(&self) -> Result<(), Box<dyn Error>> {
+        self.qualification
+            .admit(execution_contract::Engine::VirtualMachine)?;
         if self.ram_bytes == 0 || !self.ram_bytes.is_multiple_of(PAGE_SIZE) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -148,6 +160,7 @@ impl SessionConfig {
 pub struct PortableSnapshot {
     pub setup: u64,
     pub image_identity: [u8; 32],
+    pub assurance_identity: [u8; 32],
     pub at: u64,
     pub pages: Vec<(u64, Vec<u8>)>,
     pub sidecar: Vec<u8>,
@@ -240,6 +253,7 @@ impl<'de> Deserialize<'de> for SharedState {
 }
 
 pub struct SparseSnapshot {
+    assurance_identity: [u8; 32],
     base: u64,
     image_identity: [u8; 32],
     pages: Vec<(u64, Arc<[u8; 4096]>)>,
@@ -249,6 +263,7 @@ pub struct SparseSnapshot {
 impl Clone for SparseSnapshot {
     fn clone(&self) -> Self {
         Self {
+            assurance_identity: self.assurance_identity,
             base: self.base,
             image_identity: self.image_identity,
             pages: self.pages.clone(),
@@ -271,7 +286,8 @@ impl fmt::Debug for SparseSnapshot {
 
 impl PartialEq for SparseSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        self.base == other.base
+        self.assurance_identity == other.assurance_identity
+            && self.base == other.base
             && self.image_identity == other.image_identity
             && self.pages == other.pages
             && self.sidecar == other.sidecar
@@ -311,6 +327,7 @@ impl SparseSnapshot {
             })
             .collect();
         Ok(Self {
+            assurance_identity: execution_contract::Assurance::ordinary().identity(),
             base,
             image_identity,
             pages,
@@ -319,6 +336,11 @@ impl SparseSnapshot {
                 export_base.map(|portable| &portable.sidecar),
             ),
         })
+    }
+
+    #[must_use]
+    pub fn assurance_identity(&self) -> [u8; 32] {
+        self.assurance_identity
     }
 
     #[must_use]
@@ -361,6 +383,7 @@ impl SparseSnapshot {
         #[cfg(not(target_arch = "x86_64"))]
         let sidecar = self.sidecar();
         Ok(Self {
+            assurance_identity: self.assurance_identity,
             base: self.base,
             image_identity: self.image_identity,
             pages: self.pages.clone(),
@@ -371,6 +394,7 @@ impl SparseSnapshot {
 
 #[derive(Deserialize, Serialize)]
 struct SparseSnapshotWire {
+    assurance_identity: [u8; 32],
     base: u64,
     image_identity: [u8; 32],
     pages: Vec<SparsePageWire>,
@@ -389,6 +413,7 @@ impl Serialize for SparseSnapshot {
         S: serde::Serializer,
     {
         SparseSnapshotWire {
+            assurance_identity: self.assurance_identity,
             base: self.base,
             image_identity: self.image_identity,
             pages: self
@@ -411,6 +436,11 @@ impl<'de> Deserialize<'de> for SparseSnapshot {
         D: serde::Deserializer<'de>,
     {
         let wire = SparseSnapshotWire::deserialize(deserializer)?;
+        if wire.assurance_identity != execution_contract::Assurance::ordinary().identity() {
+            return Err(serde::de::Error::custom(
+                "execution assurance identity differs",
+            ));
+        }
         let mut pages = Vec::new();
         pages.try_reserve(wire.pages.len()).map_err(|error| {
             serde::de::Error::custom(format!("portable pages allocation failed: {error}"))
@@ -432,6 +462,7 @@ impl<'de> Deserialize<'de> for SparseSnapshot {
         }
         validate_sparse_pages(&pages).map_err(serde::de::Error::custom)?;
         Ok(Self {
+            assurance_identity: wire.assurance_identity,
             base: wire.base,
             image_identity: wire.image_identity,
             pages,
@@ -472,6 +503,9 @@ impl PortableSnapshot {
         image_identity: [u8; 32],
         setup_at: u64,
     ) -> Result<SparsePages, String> {
+        if self.assurance_identity != execution_contract::Assurance::ordinary().identity() {
+            return Err("execution assurance identity differs".into());
+        }
         if self.setup != setup {
             return Err("setup snapshot identity differs".into());
         }
@@ -771,6 +805,7 @@ pub use uml::UmlSession;
 #[derive(Clone, Debug)]
 pub struct UmlLaunch {
     pub profile: std::path::PathBuf,
+    pub qualification: execution_contract::Requirement,
     pub expected_profile_identity_sha256: String,
     pub expected_host: ::uml::HostIdentity,
     pub initramfs: std::path::PathBuf,
@@ -850,7 +885,7 @@ pub fn identity_with_config_and_payloads(
 
 fn format_session_identity(image_identity: [u8; 32], config: &SessionConfig) -> String {
     format!(
-        "consonance-session-v4;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v3",
+        "consonance-session-v5;assurance=ordinary-unqualified-v1;image-sha256={};ram-bytes={};seed={};run-budget={};cmdline-sha256={:x};identity-tag={};sdk-input=payload-v1;snapshot=sparse-pages-plus-sidecar-v4",
         bytes_hex(&image_identity),
         config.ram_bytes,
         config.seed,
@@ -888,6 +923,10 @@ fn image_identity_with_guard(
     setup_payloads: &[Vec<u8>],
     owner: Option<&crate::image_identity::LoadedImageGuard>,
 ) -> Result<[u8; 32], String> {
+    config
+        .qualification
+        .admit(execution_contract::Engine::VirtualMachine)
+        .map_err(|error| error.to_string())?;
     let (loaded_identity, loaded_image_guard) = match owner {
         Some(owner) => owner.identity_shared(),
         None => crate::image_identity::LoadedImageGuard::identity(),
@@ -914,7 +953,8 @@ fn image_identity_with_loaded_executable(
     loaded_identity: &str,
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"consonance-session-image-v4\0");
+    digest.update(b"consonance-session-image-v5\0");
+    digest.update(execution_contract::Assurance::ordinary().identity());
     update_digest_field(&mut digest, loaded_identity.as_bytes());
     update_digest_field(&mut digest, kernel);
     update_digest_field(&mut digest, initramfs);
@@ -1021,7 +1061,7 @@ mod tests {
             return;
         }
         let identity = super::identity(b"kernel", b"initramfs").unwrap();
-        assert!(identity.contains("consonance-session-v4"));
+        assert!(identity.contains("consonance-session-v5"));
     }
 
     #[cfg(target_os = "macos")]
@@ -1411,7 +1451,7 @@ mod tests {
         assert!(
             identity(b"a", b"b")
                 .unwrap()
-                .contains("consonance-session-v4")
+                .contains("consonance-session-v5")
         );
     }
 
@@ -1627,11 +1667,34 @@ mod tests {
     }
 
     #[test]
+    fn sparse_snapshot_wire_requires_unqualified_assurance_identity() {
+        let snapshot =
+            SparseSnapshot::from_parts(1, [3; 32], Vec::new(), b"sidecar", None).unwrap();
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            serde_json::from_value::<SparseSnapshot>(value.clone()).unwrap(),
+            snapshot
+        );
+        let mut forged = value.clone();
+        forged["assurance_identity"] = serde_json::json!(vec![17; 32]);
+        assert!(
+            serde_json::from_value::<SparseSnapshot>(forged)
+                .unwrap_err()
+                .to_string()
+                .contains("assurance identity differs")
+        );
+        let mut old = value;
+        old.as_object_mut().unwrap().remove("assurance_identity");
+        assert!(serde_json::from_value::<SparseSnapshot>(old).is_err());
+    }
+
+    #[test]
     fn portable_snapshot_validates_pages_and_identity_without_vm_access() {
         let identity = [7; 32];
         let valid = PortableSnapshot {
             setup: 1,
             image_identity: identity,
+            assurance_identity: execution_contract::Assurance::ordinary().identity(),
             at: 4,
             pages: vec![(0, vec![0; PAGE_SIZE])],
             sidecar: Vec::new(),

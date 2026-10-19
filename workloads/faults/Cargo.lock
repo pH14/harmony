@@ -79,6 +79,7 @@ version = "0.1.0"
 dependencies = [
  "control-proto",
  "environment",
+ "execution-contract",
  "host-code-identity",
  "hypercall-proto",
  "libc",
@@ -182,6 +183,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "sha2",
+]
+
+[[package]]
 name = "execution-proto"
 version = "0.1.0"
 dependencies = [
@@ -212,6 +221,7 @@ dependencies = [
  "consonance-client",
  "control-proto",
  "environment",
+ "execution-contract",
  "fault-policy",
  "iced-x86",
  "object",

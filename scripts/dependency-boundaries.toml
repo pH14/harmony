@@ -31,6 +31,7 @@ platform_contracts = [
 ]
 consonance_client = [
     "consonance/client",
+    "consonance/execution-contract",
     "consonance/host-code-identity",
     "consonance/hypercall-doorbell",
     "consonance/uml",

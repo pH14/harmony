@@ -215,7 +215,7 @@ impl FaultConfig {
     }
 }
 
-const IDENTITY_TAG: &str = "faults-consonance-execution-v10";
+const IDENTITY_TAG: &str = "faults-consonance-execution-v11";
 
 type CoverageWindow = (u64, u64, std::num::NonZeroU16);
 const COVERAGE_WINDOW_BYTES: usize = 18;
@@ -459,6 +459,7 @@ fn uml_launch(
             .map_err(|error| format!("stage initramfs: {error}"))?;
     }
     Ok(UmlLaunch {
+        qualification: execution_contract::Requirement::Ordinary,
         profile: guest.profile.clone(),
         expected_profile_identity_sha256: guest.profile_identity_sha256.clone(),
         expected_host: guest.host.clone(),
@@ -4387,6 +4388,7 @@ mod tests {
     fn unbooted_uml_target() -> FaultTarget {
         let mut target = unbooted_target();
         Arc::get_mut(&mut target.config).unwrap().uml = Some(UmlLaunch {
+            qualification: execution_contract::Requirement::Ordinary,
             profile: PathBuf::new(),
             expected_profile_identity_sha256: "fixture".into(),
             expected_host: uml::HostIdentity {
@@ -6469,7 +6471,7 @@ mod tests {
     }
 
     #[test]
-    fn replay_certificate_v3_refuses_reused_v2_domains() {
+    fn replay_certificate_v4_refuses_reused_unqualified_domains() {
         let hash = [17; 32];
         let history = (0, [0; 32]);
         let observation = FaultObservations::default();
