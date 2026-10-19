@@ -48,7 +48,9 @@ Required whole-state plus ordered-history evidence is either available or refuse
 before mutation. `CapturedWholeStateAndHistory` requests those facts only when a
 snapshot is captured, leaving terminal uncaptured cuts explicitly `Unavailable`.
 Explicitly omitted evidence is also `Unavailable`, including UML; an operational
-hash failure never becomes an absent or fabricated commitment.
+hash failure never becomes an absent or fabricated commitment. UML accepts only
+a finite deadline with the assertion stop bit armed, matching its existing run
+semantics; unsupported masks are refused before mutation.
 
 Successful execution performs the existing branch, run and optional snapshot
 operations, then yields bounded SDK pages under a nonreused token. Every page
@@ -64,7 +66,9 @@ implementation does not fuse CPU captures or remove a SHA pass.
 `ExecutionEndpoint` safely borrows its transport until commit or abort. Drop
 aborts an uncommitted provisional snapshot; no self-reference or unsafe borrow
 is involved. Low-level mutation methods also reject a pending endpoint, including
-the now-fallible `set_service_factory` and `set_max_chain_len` policy setters. Tokens
+the now-fallible `set_service_factory` and `set_max_chain_len` policy setters, and
+UML shutdown/root import. An initial Page cannot replace Decision handoff; only
+explicit Decision finalization can produce a Page for that actual stop. Tokens
 are session-scoped and never reset by replay, branch, import or abort. SDK cursors
 remain transport offsets: a workload must still validate its decoder's lineage
 and checkpoint binding. Normal abort releases the provisional snapshot and leaves
