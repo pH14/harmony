@@ -30,9 +30,11 @@ equivalence for arbitrary programs or host implementations.
 Candidate scope identities bind their declared engine, normalization, instruction
 surface, substrate, restore limits and required transformation matrix. The
 retained Linux candidate additionally
-hashes the exact copied bundle manifest and direct AMD/Intel comparison bytes
-checked into `evidence`; changing retained provenance changes its identity.
-These records are negative evidence, not a runtime artifact allowlist.
+hashes typed executable, kernel, initramfs, instruction-contract, registry and
+external evidence SHA-256 identities, plus the relevant contradictory state
+digests. Raw manifests and diagnostic output stay outside the repository.
+Changing any bound digest changes the candidate identity. These contract
+constants are negative admission data, not a runtime artifact allowlist.
 
 The current candidate assessments preserve two concrete limits:
 

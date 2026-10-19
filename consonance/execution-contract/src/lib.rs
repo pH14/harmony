@@ -27,6 +27,78 @@ pub struct Scope {
     pub evidence: &'static str,
 }
 
+#[derive(Clone, Copy)]
+struct RetainedDigests {
+    executable: [u8; 32],
+    kernel: [u8; 32],
+    initramfs: [u8; 32],
+    instruction_contract: [u8; 32],
+    registry: [u8; 32],
+    artifact_evidence: [u8; 32],
+    comparison_evidence: [u8; 32],
+    amd_done: [u8; 32],
+    intel_done: [u8; 32],
+    amd_terminal: [u8; 32],
+    intel_terminal: [u8; 32],
+}
+
+impl RetainedDigests {
+    fn fields(self) -> [[u8; 32]; 11] {
+        [
+            self.executable,
+            self.kernel,
+            self.initramfs,
+            self.instruction_contract,
+            self.registry,
+            self.artifact_evidence,
+            self.comparison_evidence,
+            self.amd_done,
+            self.intel_done,
+            self.amd_terminal,
+            self.intel_terminal,
+        ]
+    }
+}
+
+const fn digest_bytes(hex: &[u8; 64]) -> [u8; 32] {
+    const fn nibble(value: u8) -> u8 {
+        match value {
+            b'0'..=b'9' => value - b'0',
+            b'a'..=b'f' => value - b'a' + 10,
+            _ => panic!("invalid SHA-256 contract digest"),
+        }
+    }
+    let mut bytes = [0; 32];
+    let mut index = 0;
+    while index < bytes.len() {
+        bytes[index] = nibble(hex[index * 2]) * 16 + nibble(hex[index * 2 + 1]);
+        index += 1;
+    }
+    bytes
+}
+
+const RETAINED_LINUX: RetainedDigests = RetainedDigests {
+    executable: digest_bytes(b"13cf48c22875248ce6184c5b58cbc442369ca735d4cd34764125e6a355b00243"),
+    kernel: digest_bytes(b"b13eb72fd5c0d438fe5e454da93f64e6171a7754b544e201ee6a6cc63c94d91e"),
+    initramfs: digest_bytes(b"5c4ec56403c45266e087854479c2289d52a61befc0a2599a354e709ae21e478b"),
+    instruction_contract: digest_bytes(
+        b"bb6ec2d8af345a8a295e2cd8bf7bfee213a945be727e722d83e164e32d9ea80c",
+    ),
+    registry: digest_bytes(b"df7af8cbd476abe49136830e71b3e66440cc49982c117f39fb534f6ec15fdac9"),
+    artifact_evidence: digest_bytes(
+        b"9821ede54ce79921ef8080d10bc618c4e11548b85e4bd3ef190e00691cc0389f",
+    ),
+    comparison_evidence: digest_bytes(
+        b"f67160d079158b7f7daa4044e25e1b8cef47c11756f2b5fc132f4bd0040169dc",
+    ),
+    amd_done: digest_bytes(b"44e55f8d96e950e7c063464974e03532032f32ebae03989de2337a2db47dd126"),
+    intel_done: digest_bytes(b"536a76dab595357cf7e9e8d217d14a5ba06b535150964b1d2d8a98ca16b1ae25"),
+    amd_terminal: digest_bytes(b"4e3764df90044297dfc5a98a2baac90a8aeedaa7f4cf978f73f0e2dfb41c226e"),
+    intel_terminal: digest_bytes(
+        b"ec184612ea617b4d09b0103d6148bfe17314db8c2be995f2a0470aeb8d150bb5",
+    ),
+};
+
 impl Composition {
     #[must_use]
     pub fn scope(self) -> Scope {
@@ -56,16 +128,14 @@ impl Composition {
 
     #[must_use]
     pub fn identity(self) -> [u8; 32] {
-        let retained = match self {
-            Self::RetainedLinuxContinuation9673 => [
-                include_bytes!("../evidence/linux-9673-identity.json").as_slice(),
-                include_bytes!("../evidence/linux-e82-comparison.json").as_slice(),
-            ]
-            .as_slice()
-            .to_vec(),
-            Self::UmlWholeState => Vec::new(),
-        };
-        candidate_identity(self.scope(), &REQUIRED_TRANSFORMATIONS, &retained)
+        match self {
+            Self::RetainedLinuxContinuation9673 => candidate_identity(
+                self.scope(),
+                &REQUIRED_TRANSFORMATIONS,
+                &RETAINED_LINUX.fields(),
+            ),
+            Self::UmlWholeState => candidate_identity(self.scope(), &REQUIRED_TRANSFORMATIONS, &[]),
+        }
     }
 }
 
@@ -102,10 +172,10 @@ pub const REQUIRED_TRANSFORMATIONS: [Transformation; 8] = [
 fn candidate_identity(
     scope: Scope,
     transformations: &[Transformation],
-    retained: &[&[u8]],
+    retained: &[[u8; 32]],
 ) -> [u8; 32] {
     let mut digest = Sha256::new();
-    digest.update(b"consonance-finite-qualification-candidate-v1\0");
+    digest.update(b"consonance-finite-qualification-candidate-v2\0");
     for field in [
         scope.workload,
         scope.artifacts,
@@ -275,32 +345,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn candidate_identity_binds_evidence_bytes_scope_and_required_matrix() {
+    fn candidate_identity_binds_artifact_and_evidence_digests_scope_and_required_matrix() {
         let composition = Composition::RetainedLinuxContinuation9673;
         let scope = composition.scope();
-        let artifact = include_bytes!("../evidence/linux-9673-identity.json").as_slice();
-        let comparison = include_bytes!("../evidence/linux-e82-comparison.json").as_slice();
-        let expected =
-            candidate_identity(scope, &REQUIRED_TRANSFORMATIONS, &[artifact, comparison]);
+        let retained = RETAINED_LINUX.fields();
+        let expected = candidate_identity(scope, &REQUIRED_TRANSFORMATIONS, &retained);
         assert_eq!(composition.identity(), expected);
-        for index in [0, 1] {
-            let mut evidence = [artifact.to_vec(), comparison.to_vec()];
-            evidence[index][0] ^= 1;
+        for index in 0..retained.len() {
+            let mut altered = retained;
+            altered[index][0] ^= 1;
             assert_ne!(
-                candidate_identity(
-                    scope,
-                    &REQUIRED_TRANSFORMATIONS,
-                    &[&evidence[0], &evidence[1]]
-                ),
+                candidate_identity(scope, &REQUIRED_TRANSFORMATIONS, &altered),
                 expected
             );
         }
         assert_ne!(
-            candidate_identity(
-                scope,
-                &REQUIRED_TRANSFORMATIONS[..7],
-                &[artifact, comparison]
-            ),
+            candidate_identity(scope, &REQUIRED_TRANSFORMATIONS[..7], &retained),
             expected
         );
         assert_ne!(
@@ -310,7 +370,7 @@ mod tests {
                     ..scope
                 },
                 &REQUIRED_TRANSFORMATIONS,
-                &[artifact, comparison]
+                &retained
             ),
             expected
         );
@@ -387,63 +447,26 @@ mod tests {
 
     #[test]
     fn retained_amd_intel_state_contradiction_cannot_be_qualified() {
-        let identity: serde_json::Value =
-            serde_json::from_str(include_str!("../evidence/linux-9673-identity.json")).unwrap();
-        let comparison: serde_json::Value =
-            serde_json::from_str(include_str!("../evidence/linux-e82-comparison.json")).unwrap();
-        assert_eq!(
-            identity["source"],
-            "9673f33363395f0850cd2cb5e704432d33434180"
-        );
-        assert_eq!(
-            identity["files"]["linux_snapshot_continuation"],
-            "13cf48c22875248ce6184c5b58cbc442369ca735d4cd34764125e6a355b00243"
-        );
-        assert_eq!(
-            identity["files"]["bzImage"],
-            "b13eb72fd5c0d438fe5e454da93f64e6171a7754b544e201ee6a6cc63c94d91e"
-        );
-        assert_eq!(
-            identity["files"]["initramfs-continuation.cpio.gz"],
-            "5c4ec56403c45266e087854479c2289d52a61befc0a2599a354e709ae21e478b"
-        );
+        assert_ne!(RETAINED_LINUX.amd_done, RETAINED_LINUX.intel_done);
+        assert_ne!(RETAINED_LINUX.amd_terminal, RETAINED_LINUX.intel_terminal);
         let refusal = Requirement::Qualified(Composition::RetainedLinuxContinuation9673)
             .admit(Engine::VirtualMachine)
             .unwrap_err();
         assert!(refusal.gaps.iter().any(|gap| gap.transformation
             == Transformation::CrossHostBothDirections
             && gap.outcome == Outcome::Failed));
-        for checkpoint in ["done", "terminal"] {
-            let record = &comparison[checkpoint];
-            assert_ne!(record["amd_sha256"], record["intel_sha256"]);
-            let differences = record["differences"].as_array().unwrap();
-            assert_eq!(differences.len(), 9);
-            for group in differences.chunks_exact(3) {
-                assert!(group.iter().all(|byte| byte["amd"] == 0));
-                assert_eq!(
-                    group
-                        .iter()
-                        .map(|byte| byte["intel"].as_u64().unwrap())
-                        .collect::<Vec<_>>(),
-                    [0xab, 0x11, 0x40]
-                );
-            }
-        }
         let failed = refusal
             .gaps
             .iter()
             .find(|gap| gap.outcome == Outcome::Failed)
             .unwrap();
-        assert!(
-            failed
-                .evidence
-                .contains(comparison["done"]["amd_sha256"].as_str().unwrap())
-        );
-        assert!(
-            failed
-                .evidence
-                .contains(comparison["done"]["intel_sha256"].as_str().unwrap())
-        );
+        for value in [RETAINED_LINUX.amd_done, RETAINED_LINUX.intel_done] {
+            let hex = value
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            assert!(failed.evidence.contains(&hex));
+        }
     }
 
     #[test]
