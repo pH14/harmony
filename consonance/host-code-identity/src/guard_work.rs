@@ -11,6 +11,7 @@ pub struct GuardBytes {
     pub comparison_input_bytes: u64,
     pub sealed_file_read_bytes: u64,
     pub sealed_file_hashed_bytes: u64,
+    pub code_page_entries: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,6 +71,9 @@ impl GuardMeasurement {
                 total.sealed_file_hashed_bytes = total
                     .sealed_file_hashed_bytes
                     .saturating_add(delta.sealed_file_hashed_bytes);
+                total.code_page_entries = total
+                    .code_page_entries
+                    .saturating_add(delta.code_page_entries);
             }
             _ => self.bytes = None,
         }
