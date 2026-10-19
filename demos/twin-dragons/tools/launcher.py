@@ -31,6 +31,7 @@ import http.client
 import json
 import mimetypes
 import re
+import secrets
 import shlex
 import socket
 import subprocess
@@ -113,6 +114,7 @@ class Run:
     started: float = field(default_factory=time.time)
     local_port: int | None = None
     tunnel: subprocess.Popen[bytes] | None = None
+    cancelled: bool = False
 
     @classmethod
     def launched(cls, run_id: str, settings: Settings, **fields: Any) -> Run:
@@ -353,6 +355,10 @@ def free_port() -> int:
         return int(probe.getsockname()[1])
 
 
+class Cancelled(Exception):
+    pass
+
+
 class Launcher:
     def __init__(self, config: Config, site: Path) -> None:
         self.config = config
@@ -369,8 +375,12 @@ class Launcher:
         ).stdout.strip()
 
     def start(self, settings: Settings) -> Run:
-        run = Run.launched(f"{time.strftime('%Y%m%d-%H%M%S')}-{settings.game}", settings)
         with self.lock:
+            while True:
+                run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{settings.game}-{secrets.token_hex(4)}"
+                if run_id not in self.runs:
+                    break
+            run = Run.launched(run_id, settings)
             self.runs[run.id] = run
         threading.Thread(target=self.deploy, args=(run,), daemon=True).start()
         return run
@@ -380,6 +390,7 @@ class Launcher:
         assert settings is not None
         machine = self.config.machines[settings.machine]
         try:
+            self.check_cancelled(run)
             commit = self.commit()
             run.message = f"Copying {commit[:9]} to {machine.name}"
             archive = subprocess.run(
@@ -388,8 +399,10 @@ class Launcher:
                 check=True,
             ).stdout
             ssh(machine, UNPACK, machine.dir, commit, stdin=archive)
+            self.check_cancelled(run)
             run.message = f"Building {commit[:9]} on {machine.name}"
             core_sha256 = ssh(machine, BUILD, machine.dir, commit).strip()
+            self.check_cancelled(run)
             rom = rom_path(GAMES[settings.game], self.site, self.config)
             if rom is None:
                 raise RuntimeError(f"no ROM for {settings.game}")
@@ -405,6 +418,7 @@ class Launcher:
                 core_sha256,
             )
             launch = json.dumps(settings.__dict__)
+            self.check_cancelled(run)
             run.message = f"Starting on {machine.name}"
             line = ssh(
                 machine,
@@ -417,9 +431,24 @@ class Launcher:
                 commit,
                 stdin=json.dumps(request).encode(),
             )
+            if self.cancelled(run):
+                ssh(machine, STOP, UNIT_PREFIX + run.id)
+                return
             self.attach(run, machine, line)
+        except Cancelled:
+            return
         except (RuntimeError, OSError, subprocess.CalledProcessError, ValueError) as error:
-            run.state, run.message = "failed", str(error)
+            with self.lock:
+                if not run.cancelled:
+                    run.state, run.message = "failed", str(error)
+
+    def cancelled(self, run: Run) -> bool:
+        with self.lock:
+            return run.cancelled
+
+    def check_cancelled(self, run: Run) -> None:
+        if self.cancelled(run):
+            raise Cancelled
 
     def attach(self, run: Run, machine: Machine, line: str) -> None:
         match = LISTEN_PATTERN.search(line)
@@ -446,14 +475,21 @@ class Launcher:
                 break
             except OSError:
                 time.sleep(0.1)
-        run.local_port, run.state, run.message = port, "running", ""
+        with self.lock:
+            if not run.cancelled:
+                run.local_port, run.state, run.message = port, "running", ""
+                return
+        self.close_tunnel(run)
+        ssh(machine, STOP, UNIT_PREFIX + run.id)
 
     def stop(self, run: Run) -> None:
         if run.settings is None:
             raise ValueError("the launcher stops only the runs it started")
         machine = self.config.machines[run.machine]
+        with self.lock:
+            run.cancelled = True
+            run.state, run.message = "stopped", ""
         ssh(machine, STOP, UNIT_PREFIX + run.id)
-        run.state = "stopped"
         self.close_tunnel(run)
 
     def close_tunnel(self, run: Run) -> None:

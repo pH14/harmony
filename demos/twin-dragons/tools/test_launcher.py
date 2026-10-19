@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+from unittest import mock
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -89,6 +90,64 @@ class LauncherTest(unittest.TestCase):
         self.assertNotIn("workers", described)
         with self.assertRaises(ValueError):
             launcher.Launcher(self.config(), Path(".")).stop(run)
+
+    def test_runs_started_in_the_same_second_get_their_own_ids(self) -> None:
+        launch = launcher.Launcher(self.config(), Path("."))
+        settings = launcher.Settings("metroid", "example", 4, 2048, 1, 1.0)
+        with mock.patch.object(launcher.Launcher, "deploy"):
+            first, second = launch.start(settings), launch.start(settings)
+        self.assertNotEqual(first.id, second.id)
+        self.assertEqual(set(launch.runs), {first.id, second.id})
+        for run in (first, second):
+            self.assertRegex(run.id, launcher.RUN_ID)
+
+    def test_a_run_stopped_while_copying_never_starts(self) -> None:
+        launch = launcher.Launcher(self.config(), Path("."))
+        run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+            "metroid", "example", 4, 2048, 1, 1.0))
+        scripts = []
+
+        def remote(machine, script, *args, stdin=None):
+            scripts.append(script)
+            if script == launcher.UNPACK:
+                launch.stop(run)
+            return ""
+
+        archive = subprocess.CompletedProcess([], 0, stdout=b"")
+        with (
+            mock.patch.object(launcher, "ssh", side_effect=remote),
+            mock.patch.object(launcher.Launcher, "commit", return_value="0" * 40),
+            mock.patch.object(launcher.subprocess, "run", return_value=archive),
+        ):
+            launch.deploy(run)
+        self.assertNotIn(launcher.START, scripts)
+        self.assertEqual(run.state, "stopped")
+
+    def test_a_run_stopped_during_its_start_is_stopped_again(self) -> None:
+        launch = launcher.Launcher(self.config(), Path("."))
+        run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+            "metroid", "example", 4, 2048, 1, 1.0))
+        scripts = []
+
+        def remote(machine, script, *args, stdin=None):
+            scripts.append(script)
+            if script == launcher.START:
+                launch.stop(run)
+                return "live view listening on 127.0.0.1:4100"
+            return ""
+
+        archive = subprocess.CompletedProcess([], 0, stdout=b"")
+        with (
+            mock.patch.object(launcher, "ssh", side_effect=remote),
+            mock.patch.object(launcher.Launcher, "commit", return_value="0" * 40),
+            mock.patch.object(launcher.subprocess, "run", return_value=archive),
+            mock.patch.object(launcher, "rom_path", return_value=EXAMPLE),
+            mock.patch.object(launcher.Launcher, "attach") as attach,
+        ):
+            launch.deploy(run)
+        attach.assert_not_called()
+        self.assertEqual(scripts[-2:], [launcher.STOP, launcher.STOP])
+        self.assertEqual(run.state, "stopped")
 
     def test_site_files_stay_inside_the_site(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

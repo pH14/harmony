@@ -164,7 +164,10 @@ campaigns. Every 30 seconds the launcher finds the `live.json` files under them
 whose `nes-eval` process is alive with the recorded start time, lists those
 campaigns in the dialog with their directory, and forwards and proxies them the
 same way. It does not stop them. The launcher answers only requests whose `Host` and `Origin` are its own
-loopback address, and starting or stopping a run takes a JSON POST.
+loopback address, and starting or stopping a run takes a JSON POST. A run id is
+the start time, the game and a random suffix. Stopping a run that is still
+copying or building cancels its start, and a unit that starts during the stop is
+stopped once it reports its port.
 
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside
