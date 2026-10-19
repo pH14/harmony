@@ -232,6 +232,17 @@ impl Record {
             return Err("the guarded runtime accepts only prepared Consonance execution".into());
         }
         validate_request_inputs(&request)?;
+        if self.rom.is_some() && request.config.workload.package != "nes" {
+            return Err("unexpected prepared ROM for a non-NES workload".into());
+        }
+        for (name, field) in [
+            ("actions", &request.actions),
+            ("exec-file", &request.exec_file),
+        ] {
+            if self.inputs.contains_key(name) != field.is_some() {
+                return Err("prepared captured input presence differs from its request".into());
+            }
+        }
         let runtime = crate::runners::consonance(&request.config.runner)?;
         if runtime.backend == Backend::Auto {
             return Err("prepared execution must pin its backend".into());
@@ -606,6 +617,77 @@ mod tests {
             let error = Record::read(file.path()).err().unwrap().to_string();
             assert!(error.contains("prepared operation"), "case {case}: {error}");
         }
+    }
+
+    #[test]
+    fn handoff_rejects_rechecksummed_unused_roms_and_mismatched_capture_presence() {
+        for package in ["faults", "nested"] {
+            let mut record = if package == "faults" {
+                fault_record(Operation::Search, false, false, true)
+            } else {
+                record()
+            };
+            record.rom = Some(b"unused ROM".to_vec());
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            assert!(
+                Record::read(file.path())
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("unexpected prepared ROM")
+            );
+        }
+        for extra in [false, true] {
+            let mut record = fault_record(Operation::Run, !extra, false, !extra);
+            if extra {
+                record.inputs.insert("exec-file".into(), b"true".to_vec());
+            } else {
+                record.inputs.clear();
+            }
+            let file = tempfile::NamedTempFile::new().unwrap();
+            record.write(file.path()).unwrap();
+            assert!(
+                Record::read(file.path())
+                    .err()
+                    .unwrap()
+                    .to_string()
+                    .contains("captured input presence differs")
+            );
+        }
+    }
+
+    #[test]
+    fn handoff_keeps_fresh_nes_rom_identification_after_payload_role_checks() {
+        let root = tempfile::tempdir().unwrap();
+        let image = oci_support::image::StagedImage {
+            rootfs: root.path().to_owned(),
+            owners: Default::default(),
+            config: Default::default(),
+        };
+        let rom = b"unsupported ROM";
+        let execution = nes_workload::prepare::prepare_oci(&image, rom).unwrap();
+        let mut request = Request {
+            operation: Operation::Search,
+            ..Default::default()
+        };
+        request.config.workload.package = "nes".into();
+        request.config.runner.kind = "consonance".into();
+        request.config.runner.backend = Some("kvm".into());
+        let mut record = Record::new(&request).unwrap();
+        record.kernel = b"captured kernel".to_vec();
+        record.base = b"captured base".to_vec();
+        record.execution = Some(execution.record());
+        record.rom = Some(rom.to_vec());
+        let file = tempfile::NamedTempFile::new().unwrap();
+        record.write(file.path()).unwrap();
+        assert!(
+            Record::read(file.path())
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("unsupported NES ROM SHA-256")
+        );
     }
 
     #[test]

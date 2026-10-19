@@ -473,6 +473,8 @@ console output by plain Faults runs, and additional budgets by saved searches.
 Raw command overrides must agree with the effective Faults run configuration.
 Saved replay, branch and resume require a selection; incompatible point selectors,
 commands, captures and repeat counts are refused before execution.
+Captured action/script presence must match the request exactly, and ROM payloads
+belong only to fresh NES execution.
 Prepared rootfs inflation is bounded to 1 GiB. Source recipe/image changes after capture
 cannot replace those bytes. Captured UML files are independently loaded through
 the reviewed-profile validator. The temporary profile and captured inputs remain
