@@ -420,17 +420,21 @@ class Launcher:
             launch = json.dumps(settings.__dict__)
             self.check_cancelled(run)
             run.message = f"Starting on {machine.name}"
-            line = ssh(
-                machine,
-                START,
-                machine.dir,
-                run.id,
-                launch,
-                UNIT_PREFIX + run.id,
-                str(settings.memory_mib + MEMORY_HEADROOM_MIB),
-                commit,
-                stdin=json.dumps(request).encode(),
-            )
+            try:
+                line = ssh(
+                    machine,
+                    START,
+                    machine.dir,
+                    run.id,
+                    launch,
+                    UNIT_PREFIX + run.id,
+                    str(settings.memory_mib + MEMORY_HEADROOM_MIB),
+                    commit,
+                    stdin=json.dumps(request).encode(),
+                )
+            except (RuntimeError, OSError, subprocess.CalledProcessError, ValueError):
+                ssh(machine, STOP, UNIT_PREFIX + run.id)
+                raise
             if self.cancelled(run):
                 ssh(machine, STOP, UNIT_PREFIX + run.id)
                 return

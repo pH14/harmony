@@ -149,6 +149,30 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(scripts[-2:], [launcher.STOP, launcher.STOP])
         self.assertEqual(run.state, "stopped")
 
+    def test_a_failed_start_stops_its_unit(self) -> None:
+        launch = launcher.Launcher(self.config(), Path("."))
+        run = launcher.Run.launched("20260101-000000-metroid-00000000", launcher.Settings(
+            "metroid", "example", 4, 2048, 1, 1.0))
+        scripts = []
+
+        def remote(machine, script, *args, stdin=None):
+            scripts.append(script)
+            if script == launcher.START:
+                launch.stop(run)
+                raise RuntimeError("no live port")
+            return ""
+
+        archive = subprocess.CompletedProcess([], 0, stdout=b"")
+        with (
+            mock.patch.object(launcher, "ssh", side_effect=remote),
+            mock.patch.object(launcher.Launcher, "commit", return_value="0" * 40),
+            mock.patch.object(launcher.subprocess, "run", return_value=archive),
+            mock.patch.object(launcher, "rom_path", return_value=EXAMPLE),
+        ):
+            launch.deploy(run)
+        self.assertEqual(scripts[-3:], [launcher.START, launcher.STOP, launcher.STOP])
+        self.assertEqual(run.state, "stopped")
+
     def test_site_files_stay_inside_the_site(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

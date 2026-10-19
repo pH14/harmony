@@ -167,7 +167,7 @@ same way. It does not stop them. The launcher answers only requests whose `Host`
 loopback address, and starting or stopping a run takes a JSON POST. A run id is
 the start time, the game and a random suffix. Stopping a run that is still
 copying or building cancels its start, and a unit that starts during the stop is
-stopped once it reports its port.
+stopped once its start returns. A start that fails also stops its unit.
 
 Tobu Tobu Girl runs on SameBoy and has no `nes-games` workload, so it uses the
 older `Explorer` in `rust/src/lib.rs`, with its decoder and archive key beside
