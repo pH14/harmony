@@ -102,6 +102,16 @@ Control `Run` and `Exec` set their own idle wake from the active deadline before
 each guest step, so a preceding request cannot alter a replayed command's idle
 continuation.
 
+`ControlServer::abandon_owned_session` is destructive owner cleanup for a
+composition that has already abandoned its session after a partial transaction.
+It retires the VM, preserves failed-VM observations, and releases every handle,
+current-image reference and SDK sidecar owned by that server, including a handle
+minted before its final control guard failed. The snapshot engine/store is owned
+by the server and is not shared with a cache index or another session; published
+extents have independent ownership. Cleanup issues no control request or guest
+operation and preserves the store's cumulative host counters. It does not bypass
+admission or integrity checks to create, restore, publish or execute state.
+
 The composition layer can inject a host-operation guard into `ControlServer`.
 The server checks it before and after each control request, including before
 the request's reply is encoded, and attaches it to every fresh or recovery VM.
