@@ -33,6 +33,11 @@ struct CheckpointImage<S> {
     ordinal: u64,
 }
 
+enum BodyCapture {
+    Complete(Vec<u8>),
+    Failed(Box<dyn Error>),
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PersistenceFailure {
     message: String,
@@ -76,6 +81,8 @@ pub(crate) struct CheckpointPublisher<S, P> {
     failure: Option<PersistenceFailure>,
     #[cfg(test)]
     before_write: Option<Arc<dyn Fn(u64) + Send + Sync>>,
+    #[cfg(test)]
+    capture_overflows: usize,
 }
 
 fn failure(error: impl fmt::Display) -> PersistenceFailure {
@@ -130,6 +137,8 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
             failure: None,
             #[cfg(test)]
             before_write,
+            #[cfg(test)]
+            capture_overflows: 0,
         })
     }
     pub(crate) fn due(
@@ -149,6 +158,10 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
     #[cfg(test)]
     pub(crate) fn worker_finished(&self) -> bool {
         self.worker.as_ref().is_some_and(JoinHandle::is_finished)
+    }
+    #[cfg(test)]
+    pub(crate) fn capture_overflows(&self) -> usize {
+        self.capture_overflows
     }
     fn retire(&mut self, error: PersistenceFailure) -> PersistenceFailure {
         self.writer.take();
@@ -235,17 +248,24 @@ impl<S: CheckpointSnapshot + Send + Sync + 'static, P: Copy + Ord> CheckpointPub
                 snapshot.checkpoint_image_charge(&mut budget)?;
             }
             let mut bytes = LimitedBytes::new(budget.remaining());
-            let result = body(&mut bytes);
+            let result = body(&mut bytes.capture());
+            #[cfg(test)]
+            if bytes.exceeded() {
+                self.capture_overflows += 1;
+            }
+            if let Err(error) = result {
+                return Ok(BodyCapture::Failed(error));
+            }
             if bytes.exceeded() {
                 return Err(ImageLimit.into());
             }
-            result?;
             let bytes = bytes.finish();
             budget.reserve(bytes.capacity())?;
-            Ok(bytes)
+            Ok(BodyCapture::Complete(bytes))
         })();
         let bytes = match capture {
-            Ok(bytes) => bytes,
+            Ok(BodyCapture::Complete(bytes)) => bytes,
+            Ok(BodyCapture::Failed(error)) => return Err(error),
             Err(error) if is_image_limit(error.as_ref()) => {
                 drop(budget);
                 self.template.reason.clear();
@@ -778,26 +798,84 @@ mod tests {
     }
     #[test]
     fn oversized_body_pressure_precedes_an_oversized_copy_and_preserves_body_bytes() {
-        let path = directory("body-pressure");
-        let mut publisher =
-            CheckpointPublisher::<u8, u8>::create(plan(path.clone(), 4096), header(), 0, None)
-                .unwrap();
-        publisher.before_write = Some(Arc::new(|_| panic!("oversized body reached the worker")));
         let body = vec![8_u8; 32768];
-        publisher
-            .publish(version(1), "final", std::iter::once((3, &7)), |out| {
-                postcard::to_io(&body, out)?;
-                Ok(())
-            })
-            .unwrap();
-        assert!(publisher.worker.is_none());
-        assert!(publisher.keeper.is_none());
-        let mut reader = CheckpointReader::open(&path.join("000000000001-final.ckpt")).unwrap();
-        assert_eq!(reader.next::<Vec<u8>>().unwrap(), body);
-        reader.finish().unwrap();
-        publisher.finish(Ok(())).unwrap();
-        drop(publisher);
-        fs::remove_dir_all(path).unwrap();
+        let mut reference = None;
+        for limit in [4096, 64 << 10] {
+            let path = directory(&format!("body-pressure-{limit}"));
+            let mut publisher =
+                CheckpointPublisher::<u8, u8>::create(plan(path.clone(), limit), header(), 0, None)
+                    .unwrap();
+            if limit == 4096 {
+                publisher.before_write =
+                    Some(Arc::new(|_| panic!("oversized body reached the worker")));
+            }
+            let calls = std::cell::Cell::new(0);
+            publisher
+                .publish(version(1), "final", std::iter::once((3, &7)), |out| {
+                    calls.set(calls.get() + 1);
+                    postcard::to_io(&body, out)?;
+                    Ok(())
+                })
+                .unwrap();
+            let pressure = limit == 4096;
+            assert_eq!(publisher.worker.is_none(), pressure);
+            assert_eq!(publisher.keeper.is_none(), pressure);
+            assert_eq!(publisher.capture_overflows(), usize::from(pressure));
+            assert_eq!(calls.get(), if pressure { 2 } else { 1 });
+            publisher.finish(Ok(())).unwrap();
+            let file = path.join("000000000001-final.ckpt");
+            let bytes = (
+                fs::read(&file).unwrap(),
+                fs::read(path.join("snapshots.store")).unwrap(),
+            );
+            if let Some(reference) = &reference {
+                assert_eq!(&bytes, reference);
+            } else {
+                reference = Some(bytes);
+            }
+            let mut reader = CheckpointReader::open(&file).unwrap();
+            assert_eq!(reader.next::<Vec<u8>>().unwrap(), body);
+            reader.finish().unwrap();
+            drop(publisher);
+            fs::remove_dir_all(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn capture_overflow_keeps_independent_errors_out_of_the_budget_channel() {
+        for image_limit in [false, true] {
+            let path = directory(&format!("body-pressure-primary-{image_limit}"));
+            let mut publisher =
+                CheckpointPublisher::<u8, u8>::create(plan(path.clone(), 4096), header(), 0, None)
+                    .unwrap();
+            let calls = std::cell::Cell::new(0);
+            let error = publisher
+                .publish(version(1), "final", std::iter::once((3, &7)), |out| {
+                    calls.set(calls.get() + 1);
+                    out.write_all(&[0; 8192])?;
+                    if image_limit {
+                        Err(Box::new(ImageLimit))
+                    } else {
+                        Err(postcard::to_slice(&1_u8, &mut []).err().unwrap().into())
+                    }
+                })
+                .unwrap_err();
+            if image_limit {
+                assert!(error.is::<ImageLimit>());
+            } else {
+                let expected = postcard::to_slice(&1_u8, &mut []).err().unwrap();
+                assert_eq!(error.downcast_ref::<postcard::Error>(), Some(&expected));
+            }
+            assert_eq!(publisher.capture_overflows(), 1);
+            assert_eq!(calls.get(), 1);
+            assert!(publisher.worker.is_none());
+            assert!(publisher.keeper.is_none());
+            assert!(publisher.finish(Ok(())).is_err());
+            assert!(!path.join("000000000001-final.ckpt").exists());
+            assert!(!path.join("checkpoints.jsonl").exists());
+            drop(publisher);
+            fs::remove_dir_all(path).unwrap();
+        }
     }
     #[test]
     fn typed_charge_freeze_and_body_errors_survive_first_handback_and_finalization() {

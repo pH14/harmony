@@ -957,6 +957,14 @@ Rejected header and policy buffers are also borrowed on the pressure path. The
 synchronous writer serializes a private borrowed view with the publication owner
 override, preserving the owned header's field order and bytes. An owned image
 header is cloned only after its complete allocation charge has been accepted.
+The capture sink retains at most its accepted capacity; after confirmed image
+overflow it discards further bytes while reporting successful writes. Capture
+still completes synchronously, so an independent body or workload writer error
+remains primary and retires publication without retrying the callback. Only a
+successful overflowing capture falls back to synchronous publication. This can
+add a complete synchronous body traversal before that fallback, rather than
+stopping at the first over-limit write. It adds no oversized body allocation or
+snapshot freeze, and does not change successful codec bytes or checkpoint cadence.
 
 Snapshots go into one append-only `snapshots.store` per directory. An archive
 entry's snapshot never changes, so each is written once and later checkpoints
