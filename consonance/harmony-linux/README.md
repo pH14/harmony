@@ -127,7 +127,7 @@ contract; the generic backend can represent them.
 Outside the patched kernel, workloads must not execute FXSAVE/XSAVE-family saves or
 XGETBV with ECX=1. XGETBV with a proven zero selector remains allowed. Static
 linking alone does not exclude libc save routines; glibc's resolver trampolines
-hold XSAVE instructions but never run, because every image boots with
+hold FXSAVE/XSAVE instructions but never run, because every image boots with
 `LD_BIND_NOW=1` and the scanner rejects TLSdesc relocations. Generated code,
 JITs, code mutation and writable executable memory are excluded by policy. These
 restrictions do not qualify arbitrary images, SQL, ROMs or imported machine
@@ -210,9 +210,11 @@ Executable mappings are scanned for FXSAVE/XSAVE-family instructions and XGETBV;
 restore instructions are inventoried separately. Verification rejects W+X
 PT_LOAD segments, executable PT_GNU_STACK, DT_TEXTREL/DF_TEXTREL images and
 TLSdesc relocations anywhere in the closure. Every XGETBV site must have a
-recognized straight-line ECX-zero sequence. The bounded recognizer rejects
-intervening ECX writes, branches, calls, unknown instructions and observed
-alternate entries. Selector and loader-trampoline proofs require unique decoded
+recognized ECX-zero sequence within 32 unique fallthrough predecessors. The
+recognizer follows full-width GPR copies and respects partial-register aliases
+and CPUID clobbers. Ordinary conditional branches may leave the proved path;
+no observed branch may enter it. LOOP-family instructions, calls and unknown
+operations stop the proof. Selector and loader-trampoline proofs require unique decoded
 predecessors and refuse any instruction overlapping another decode stream.
 Address sorting alone cannot establish that a zeroing instruction dominates a
 selector read. Boundary scanning reuses known instruction starts and deduplicates
@@ -221,12 +223,14 @@ family before invoking the disassembler. Trusted control flow must also exclude
 indirect entry that bypasses initialization; linear disassembly cannot enforce
 that condition for arbitrary code.
 
-Every XSAVE/XSAVEC site must sit inside one of glibc's two loader trampolines;
-FXSAVE and the other save variants are refused without an exemption.
+Every FXSAVE/XSAVE/XSAVEC site must sit inside one of glibc's two loader
+trampolines; other save variants are refused without an exemption.
 The scanner recognizes each trampoline by its complete straight-line shape: the
-stack alignment prologue, the register spills, the XSAVE mask setup, a save to
-`0x40(%rsp)`, one direct call, the matching `xrstor`, the register reloads and
-the exit. No branch may enter the trampoline after its first instruction. No
+stack alignment prologue, the register spills, a save to `0x40(%rsp)`, one
+direct call, a matching restore, the register reloads and the exit. XSAVE
+shapes require 64-byte alignment and equal save/restore masks. Legacy FXSAVE
+shapes require 16-byte alignment, a 0x240-byte stack frame and paired FXRSTOR
+with the same operand and encoding. No branch may enter the trampoline after its first instruction. No
 address or file digest is pinned, so a rebuilt glibc or a static binary passes
 when its trampolines keep this shape. `eager-resolver` is the lazy-binding
 resolver; every image boots with `LD_BIND_NOW=1`, so it never runs.

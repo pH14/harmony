@@ -553,7 +553,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
         .chain(
             elf.symbols()
                 .chain(elf.dynamic_symbols())
-                .filter(|s| s.is_definition() && s.kind() == object::SymbolKind::Text)
+                .filter(|s| !s.is_undefined() && s.kind() == object::SymbolKind::Text)
                 .map(|s| s.address()),
         )
         .collect();
@@ -608,6 +608,7 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 code.resize(mapped_len, 0);
                 let mut mapped_sections = 0;
                 let mut mapped_ranges = Vec::new();
+                let mut page_edges = BTreeSet::from([page_head + usize::try_from(file_size)?]);
                 for section in elf.sections() {
                     let object::SectionFlags::Elf { sh_flags } = section.flags() else {
                         continue;
@@ -619,6 +620,17 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                         .address()
                         .checked_add(section.size())
                         .ok_or("mapped ELF section address overflow")?;
+                    if elf.architecture() == object::Architecture::X86_64 {
+                        for edge in [section.address(), section_end] {
+                            if let Some(offset) = edge
+                                .checked_sub(mapped_start)
+                                .and_then(|n| usize::try_from(n).ok())
+                                .filter(|offset| *offset <= code.len())
+                            {
+                                page_edges.insert(offset);
+                            }
+                        }
+                    }
                     if section.address() >= end || section_end <= start {
                         continue;
                     }
@@ -715,7 +727,8 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                             .and_then(|offset| usize::try_from(offset).ok())
                             .filter(|offset| *offset < code.len())
                     }));
-                    let mut boundaries = BTreeSet::new();
+                    anchors.extend(page_edges.iter().copied());
+                    let mut boundaries = page_edges;
                     for (range_start, range_end) in mapped_ranges {
                         anchors.insert(range_start);
                         boundaries.insert(range_start);

@@ -144,6 +144,79 @@ fn exact_loader_resolver_shape_is_allowed_but_entry_or_mask_changes_are_not() {
     assert!(!accepted(&overlap));
 }
 
+fn legacy_resolver(save: &str, restore: &str) -> Vec<u8> {
+    let mut code = hex(&format!(
+        "f30f1efa 53 4889e3 4883e4f0 4881ec40020000 48890424 48894c2408 4889542410 4889742418 48897c2420 4c89442428 4c894c2430 {save} 488b7310 488b7b08"
+    ));
+    let tail = hex(&format!(
+        "4989c3 {restore} 4c8b4c2430 4c8b442428 488b7c2420 488b742418 488b542410 488b4c2408 488b0424 4889dc 488b1c24 4883c418 41ffe3"
+    ));
+    code.push(0xe8);
+    code.extend((tail.len() as i32).to_le_bytes());
+    code.extend(tail);
+    code.push(0xc3);
+    code
+}
+
+#[test]
+fn legacy_resolver_requires_complete_paired_restore_and_aligned_frame() {
+    for (save, restore) in [
+        ("0fae442440", "0fae4c2440"),
+        ("480fae442440", "480fae4c2440"),
+    ] {
+        let code = legacy_resolver(save, restore);
+        assert!(accepted(&code));
+        for (needle, offset) in [("4883e4f0", 3), ("4881ec40020000", 3), (restore, 2)] {
+            let needle = hex(needle);
+            let mut changed = code.clone();
+            let at = changed
+                .windows(needle.len())
+                .position(|v| v == needle)
+                .unwrap();
+            changed[at + offset] ^= 8;
+            assert!(!accepted(&changed));
+        }
+        let mut branch = hex("e900000000");
+        let save = hex(save);
+        let at = code.windows(save.len()).position(|v| v == save).unwrap();
+        branch[1..5].copy_from_slice(&(at as i32).to_le_bytes());
+        branch.extend(code);
+        assert!(!accepted(&branch));
+    }
+    assert!(!accepted(&legacy_resolver("0fae442440", "0fae6c2440")));
+}
+
+#[test]
+fn selector_copy_proof_tracks_aliases_cpuid_and_branch_clobbers() {
+    for (code, expected) in [
+        (
+            "31ff 53 89f8 89f9 0fa2 85c0 7470 89c6 89f9 b801000000 0fa2 81e200000004 7460 83fe06 765b 81e10000000c be01000000 81f90000000c 7550 b807000000 89f9 0fa2 89f9 0f01d0 c3",
+            true,
+        ),
+        ("31ff 0fa2 89f9 0f01d0 c3", true),
+        ("31c9 0fa2 0f01d0 c3", false),
+        ("31ff 40b701 89f9 0f01d0 c3", false),
+        ("31ff 66bf0100 89f9 0f01d0 c3", false),
+        ("31ff 48c7c701000000 89f9 0f01d0 c3", false),
+        ("bf01000000 89f9 0f01d0 c3", false),
+        ("31c9 e270 0f01d0 c3", false),
+        ("31c9 e170 0f01d0 c3", false),
+        ("31c9 e070 0f01d0 c3", false),
+        ("31c9 e370 0f01d0 c3", false),
+        ("31ff 7500 89f9 0f01d0 c3", false),
+    ] {
+        assert_eq!(accepted(&hex(code)), expected, "{code}");
+    }
+    for (count, expected) in [(31, true), (32, false)] {
+        let mut code = hex("31c9");
+        for _ in 0..count {
+            code.extend(hex("85c0"));
+        }
+        code.extend(hex("0f01d0 c3"));
+        assert_eq!(accepted(&code), expected);
+    }
+}
+
 #[test]
 fn restore_operations_remain_admitted_without_a_save_exemption() {
     for code in [
@@ -230,4 +303,90 @@ fn tlsdesc_and_text_relocations_cannot_invalidate_loader_exemptions() {
             "{tags:?} {relocation}"
         );
     }
+}
+
+#[test]
+fn loader_exemption_does_not_accept_negative_spill_or_reload_offsets() {
+    let save = hex("0fae642440");
+    let mut code = resolver(&save);
+    let spill = hex("48890424");
+    let at = code.windows(spill.len()).position(|w| w == spill).unwrap();
+    code.splice(at..at + spill.len(), hex("48894424f8"));
+    assert!(!accepted(&code));
+    let mut code = resolver(&save);
+    let reload = hex("488b0424");
+    let at = code
+        .windows(reload.len())
+        .position(|w| w == reload)
+        .unwrap();
+    code.splice(at..at + reload.len(), hex("488b4424f8"));
+    assert!(!accepted(&code));
+    let mut code = resolver(&save);
+    let padding = hex("4889942440020000");
+    let at = code
+        .windows(padding.len())
+        .position(|w| w == padding)
+        .unwrap();
+    code.splice(at..at + padding.len(), hex("48891424"));
+    assert!(!accepted(&code));
+}
+
+fn with_function_symbol(mut bytes: Vec<u8>, kind: u8, section: u16, address: u64) -> Vec<u8> {
+    bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+    bytes[388..392].copy_from_slice(&object::elf::SHT_DYNSYM.to_le_bytes());
+    bytes[408..416].copy_from_slice(&896_u64.to_le_bytes());
+    bytes[416..424].copy_from_slice(&48_u64.to_le_bytes());
+    bytes[424..428].copy_from_slice(&2_u32.to_le_bytes());
+    bytes[432..440].copy_from_slice(&8_u64.to_le_bytes());
+    bytes[440..448].copy_from_slice(&24_u64.to_le_bytes());
+    bytes[924] = 0x10 | kind;
+    bytes[926..928].copy_from_slice(&section.to_le_bytes());
+    bytes[928..936].copy_from_slice(&address.to_le_bytes());
+    bytes[936..944].copy_from_slice(&1_u64.to_le_bytes());
+    bytes
+}
+
+#[test]
+fn ifunc_and_absolute_function_symbols_are_decode_entries_and_proof_barriers() {
+    for (kind, section) in [(10, 1), (2, object::elf::SHN_ABS)] {
+        let bytes = with_function_symbol(elf(&hex("b8 0fae27 c3 c3"), 5, 6), kind, section, 0x1001);
+        let error = scan_elf(&bytes, "fixture").unwrap_err().to_string();
+        assert!(
+            error.contains("save instruction outside a loader trampoline"),
+            "{error}"
+        );
+        let bytes = with_function_symbol(elf(&hex("31c9 0f01d0 c3"), 5, 6), kind, section, 0x1002);
+        let error = scan_elf(&bytes, "fixture").unwrap_err().to_string();
+        assert!(error.contains("unproved XGETBV selector"), "{error}");
+    }
+    let bytes = with_function_symbol(elf(&hex("b8 0fae27 c3 c3"), 5, 6), 10, 0, 0x1001);
+    assert!(scan_elf(&bytes, "fixture").is_ok());
+}
+
+#[test]
+fn executable_page_tail_section_edges_and_segment_end_are_decode_entries() {
+    let mut bytes = elf(&hex("b8 0fae27 c3 c3"), 5, 6);
+    bytes[96..104].copy_from_slice(&1_u64.to_le_bytes());
+    bytes[104..112].copy_from_slice(&1_u64.to_le_bytes());
+    bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+    let error = scan_elf(&bytes, "fixture").unwrap_err().to_string();
+    assert!(
+        error.contains("save instruction outside a loader trampoline"),
+        "{error}"
+    );
+    let mut bytes = elf(&hex("90 b8 0fae27 c3 c3"), 5, 6);
+    bytes[96..104].copy_from_slice(&1_u64.to_le_bytes());
+    bytes[104..112].copy_from_slice(&1_u64.to_le_bytes());
+    bytes[288..296].copy_from_slice(&1_u64.to_le_bytes());
+    bytes[60..62].copy_from_slice(&4_u16.to_le_bytes());
+    bytes[388..392].copy_from_slice(&object::elf::SHT_PROGBITS.to_le_bytes());
+    bytes[392..400].copy_from_slice(&u64::from(object::elf::SHF_ALLOC).to_le_bytes());
+    bytes[400..408].copy_from_slice(&0x1002_u64.to_le_bytes());
+    bytes[408..416].copy_from_slice(&4098_u64.to_le_bytes());
+    bytes[416..424].copy_from_slice(&4_u64.to_le_bytes());
+    let error = scan_elf(&bytes, "fixture").unwrap_err().to_string();
+    assert!(
+        error.contains("save instruction outside a loader trampoline"),
+        "{error}"
+    );
 }
