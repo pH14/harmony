@@ -22,7 +22,7 @@ if [ -n "$rejected_image" ]; then
     status=0
     "$binary" prepare "$rejected_image" --config-toml "$runtime" >"$evidence/rejected-prepare.txt" 2>&1 || status=$?
     test "$status" -eq 2
-    grep -q 'User-mode Linux executes hardware entropy and CPU-identity instructions natively' "$evidence/rejected-prepare.txt"
+    grep -q 'User-mode Linux executes host-input instructions and transaction entry natively' "$evidence/rejected-prepare.txt"
     status=0
     "$binary" check "$rejected_image" --config-toml "$runtime" --offline --json >"$evidence/rejected-check.json" 2>"$evidence/rejected-check.err" || status=$?
     test "$status" -eq 2
@@ -31,13 +31,13 @@ import json, sys
 report = json.load(open(sys.argv[1]))
 assert report['backend'] == 'uml'
 assert report['ready'] is False
-assert any('User-mode Linux executes hardware entropy and CPU-identity instructions natively' in reason for reason in report['blockers'])
+assert any('User-mode Linux executes host-input instructions and transaction entry natively' in reason for reason in report['blockers'])
 PYTHON
     status=0
     "$binary" debug run "$rejected_image" --config-toml "$runtime" --for 60s \
         --out "$evidence/rejected" -- /bin/true >"$evidence/rejected.txt" 2>&1 || status=$?
     test "$status" -eq 2
-    grep -q 'User-mode Linux executes hardware entropy and CPU-identity instructions natively' "$evidence/rejected.txt"
+    grep -q 'User-mode Linux executes host-input instructions and transaction entry natively' "$evidence/rejected.txt"
     test ! -e "$evidence/rejected/manifest.json"
 fi
 "$binary" debug run "$image" --config-toml "$runtime" --for 60s --out "$evidence/original" -- /bin/true
