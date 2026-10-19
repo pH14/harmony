@@ -721,7 +721,8 @@ An offset at or beyond the available event count returns an empty suffix.
 Advancing a cursor beyond `u32::MAX` fails; a failed multi-page read returns no
 partial suffix. A cursor is scoped to its actual snapshot and branch lineage;
 this API does not authenticate a previously consumed prefix or detect rollback.
-`EventHistory.count` counts normalized execution events and is not an SDK offset.
+`EventHistory.count` counts ordered history commitment records and is not an SDK
+offset.
 Workload adapters own decoder checkpoints and lineage validation.
 
 Explicit worker copies use `copy.parent.*` and `copy.child.loop.*` with independent
