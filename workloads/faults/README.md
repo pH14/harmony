@@ -551,6 +551,13 @@ records (v2 includes completed semantic service exchanges) whenever a KVM whole-
 zero-action jobs. Failed or unavailable endpoints explicitly carry no history;
 that absence cannot stand in for a whole-state endpoint.
 
+Prepared execution can be admitted independently of image staging through
+`prepare::admit_prepared`. It verifies the actual packed rootfs, the mode's image
+admission and the selected supervisor bundle, then derives the instrumented-event
+vocabulary from that admitted archive. A caller-supplied vocabulary or frontend
+readiness result cannot replace those checks. Generic prepared execution records
+and canonical OCI control validation remain owned by `oci-support`.
+
 Every runnable snapshot carries a persistent, shared action history. Each node
 binds its parent history, action, actual endpoint evidence, action-local
 observation commitment, and observation boundary moments. KVM endpoint evidence

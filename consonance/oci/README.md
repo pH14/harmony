@@ -63,6 +63,16 @@ segment already chosen for the guest image. Consumers that admit executable
 bytes or read supervisor metadata use that archived view after packing, so a
 later mutation of the staging tree cannot change what they admit.
 
+`PreparedExecution::record` exports a version-one data record with the packed
+rootfs, resolved execution specification, external inputs, explicit KVM choice
+and existing prepared identity. `from_record` validates the specification and
+input bounds, reconstructs canonical control bytes, checks the resulting
+identity, validates the exact archived rootfs and rejects symlinks along mount
+paths. It does not stage an image or accept arbitrary supplied control archives.
+Rootfs inflation has a 1 GiB output limit. Product handoffs must additionally
+bound their input file and metadata and apply their workload's admission rules;
+this generic record does not certify workload-specific instructions or policy.
+
 External destinations are absolute normalized paths with bounded count and
 payload size. Platform-owned paths, duplicate destinations, and file/parent
 conflicts are rejected. Platform and external mount destinations must have
