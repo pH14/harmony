@@ -15,7 +15,7 @@ optimizations.
 
 These experiments address the findings tracked in [#745](https://github.com/pH14/harmony/issues/745).
 The combined source builds were prepared branches when measured; individual
-changes ship through separate reviewed PRs. The three evidence groups below
+changes ship through separate reviewed PRs. The four evidence groups below
 identify distinct builds and scopes. None compares old and new builds or establishes a general campaign speedup.
 
 ### Retained parent depth
@@ -153,6 +153,68 @@ Console and SDK observations. This successful arm reported zero guard errors;
 it does not qualify failure-path observation preservation. Later repairs and
 any performance comparison require their own source-bound evidence.
 
+### Genuine deep imports: backing reuse and remaining validation
+
+Source `0f15b7d130f85c2dae8d7f041ba4505d5f59ead9` includes descriptor
+deduplication and report-only locality observations in the prepared foundation.
+One etcd pilot on Linux KVM used a 1 GiB
+guest, an 8 GiB cache and no warmup. It constructed 32 genuine actions and
+captured parents at depths 1, 8, 31 and 32. Four sessions booted; the allowed
+CPU set was 0 and 1, without a per-role pinning claim. This was a direct-target
+import experiment, not a search campaign.
+
+| Raw import | Extent references N | Backing owners U | Recent hits/misses | Mapping attempts | Store bytes copied | Resident bytes hashed |
+|---|---:|---:|---:|---:|---:|---:|
+| Cold depth 31 | 31 | 2 | 0/2 | 31 | 13,774,848 | 600,629,248 |
+| Same worker, setup to 31 | 31 | 2 | 2/0 | 31 | 0 | 600,629,248 |
+| Same worker, near 31 to 32 | 32 | 2 | 2/0 | 32 | 2,891,776 | 600,387,584 |
+| Same worker, near 32 to 31 | 31 | 2 | 2/0 | 31 | 0 | 600,535,040 |
+| Fresh worker, depth 31 | 31 | 2 | 0/2 | 31 | 13,774,848 | 600,629,248 |
+
+Each import sent two FD handles and recorded one accepted and measured import,
+with no imports excluded by the measurement limit. U identifies admitted backing allocations, not
+unique physical RAM. The observed transfer used fewer
+handles than extent references; it still created 31 or 32 mapped range views. The warm setup
+import made 3,628 Store intern calls, all hits, with zero copied bytes, while
+resident verification still performed 146,638 page hashes. Those repeated hash bytes are
+work counts, not unique memory or evidence of amplification with chain depth:
+all extents resolve before one sparse import. The source uses one fresh
+verification set before the service-factory callback and another afterward.
+With near set to setup, the source code implies two traversals
+of the same 73,319 resident slots; the pilot has no per-stage counter split.
+The alias fixture and Store rebase corruption tests protect both fresh phases.
+Sharing verified IDs across
+the callback would weaken the corruption check.
+
+Cold and fresh imports each additionally hashed 1,073,741,824 bytes for the
+sparse-base digest; repeated imports in the same worker made no sparse-base
+hash call. All five raw import windows had zero whole-request hashes and zero
+guest backend entries. The warm setup import recorded 170.352 milliseconds of
+resident verification within 188.378 milliseconds of sparse import; those
+nested timers must not be added. Raw import wall timing excludes telemetry
+queries and the separate replay/hash/SDK oracles. Guard and transport counter
+windows still contain fixed telemetry observer effects and child status lag.
+
+The 117 phase records passed the pinned harness's full typed snapshot checks
+for normal retained and imported restores. Those checks use production restore
+validation, not a second independent decoder. Raw imports separately replayed
+actual handles and compared endpoint whole-state hashes, ordered EventHistory,
+seal times and complete SDK arrays against the captured parents; repeated
+SDK arrays matched across the same and fresh workers. All reported error,
+refusal, watchdog, abandonment and quarantine counters were zero. Source
+`0f15b7d1` includes the response-guard observation-retention repair; this
+successful run does not itself qualify failure paths.
+
+The strict supervisor recorded exit zero, no timeout or owned leftovers, and
+325 complete samples. Postflight found all eight named or sampled PID/start
+identities, including the detached waiter, absent and no KVM users. That is the
+reviewed session and sampled-identity scope, not containment of arbitrary
+session-escaping descendants. Sampled aggregate PSS peaked at 2,642,428 KiB;
+it is not total cache ownership or a guaranteed memory peak. The final index
+charged 75,026,432 bytes across two segments with no refusal or eviction.
+This single sample establishes backing recurrence and remaining work, not a
+registration benefit, warm-versus-cold speedup, routing result or scaling claim.
+
 ### Remaining measured costs and accounting rules
 
 For the `431ba486` pair, worker-lifetime SDK request and response guard timers
@@ -222,13 +284,26 @@ and its preceding no-VM qualification manifest is
 The accepted one-worker and two-worker evidence-bundle manifest hashes are
 `2dcaf0aaf81e20478ba053b3e8c754d5fedf3850b61ccb7d82420bdbd42c1710`
 and `d5affb593636102c2f3f447d112fbe39a9f0caf9d8574719b7f65d23ac4fa127`.
+The deep-import pilot executable SHA-256 is
+`334f6dc246ef1eff51c1e667ee99e09299a36496ceed944bcc233960e800cdb9`;
+its harness source SHA-256 is
+`b5a964b53383b6d5a92a51cd7589ffa754579acdfac567246f90581f5254af8e`,
+and its 93-file evidence manifest is
+`e703bb6b1a23363ef6d281808f4081309ad117ce9b50055d982c7dafe4748f7c`.
+Its phase records hash to
+`130381b15379a70c8882b2a429baf343ae56c85f26ae1e486f95bc817d94d9e6`.
 Raw bundles and independent audits are not published with this document. They
 are retained locally under `/tmp/consonance-foundation-hardware`,
-`/tmp/consonance-fixed-work-scaling-lifecycle-v3` and
-`/tmp/consonance-fixed-work-sdk-attribution-v1`, with remote source, binaries
+`/tmp/consonance-fixed-work-scaling-lifecycle-v3`,
+`/tmp/consonance-fixed-work-sdk-attribution-v1` and
+`/tmp/consonance-deep-import-pilot-execution-v1`, with remote source, binaries
 and runtime inputs on ms02 under `/var/tmp/consonance-foundation-0be4f44`,
 `/var/tmp/consonance-fixed-work-scaling-lifecycle-v3-431ba486` and
-`/var/tmp/consonance-sdk-attribution-v1-5978c157`. The synthetic integrity proof is
+`/var/tmp/consonance-sdk-attribution-v1-5978c157`. The pilot records remain at
+`/var/tmp/consonance-deep-import-pilot-v1-334f6dc-20261018`, with its qualified
+source, executable and inputs at
+`/var/tmp/consonance-deep-import-0f15-staging-v2-20261018`.
+The synthetic integrity proof is
 retained under `/tmp/sealed-prefix-correlated-read-proof`, manifest
 `e09c48136ca5ad72e22e6ef0e9f49e82264a20395bba8c2017ec245bd8f9b1e2`.
 These are temporary retention locations, not durable public downloads. Issue #745 records shipping
@@ -245,6 +320,10 @@ qualification, source key
 `bff06830863466a2aded99aaedb95f34087fe03af65d9785eed31a8c509943b4`
 and artifact key
 `bb596fc540540984b7682208cef544ccd9664237fe1d380ae32da3febacf179f`.
+The deep-import pilot also retained host-only qualification, source key
+`b3be9e6a3cf4f43f0e7b895ce6075ae328c3adfe07c45eea3da0749da5b538ba`
+and the same `bb596fc5` artifact key. Normal OCI preparation used the qualified
+inputs; no guest runtime was rebuilt.
 These results do not claim exact runtime-input qualification or cross-build
 replay equivalence. Warm and constrained caches, RAM-size variation, repeated
 seed panels, retained-parent scaling and useful-outcome measurements remain
