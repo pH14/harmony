@@ -91,6 +91,32 @@ requires a valid memory operation, including implicit-lock `XCHG` or a supported
 explicit `LOCK` form; ordinary REP, PAUSE, SSE and `XRELEASE` prefixes remain
 admitted. The scan still requires cooperative control flow and no generated code.
 
+Production preparation applies the x86 xstate policy to the exact packed ELF
+bytes for both VM and UML execution, including ordinary uninstrumented runs.
+FXSAVE/XSAVE-family saves are refused independently of digest/address review.
+Only the complete straight-line glibc eager-resolver and unused-TLSdesc shapes
+receive the existing loader exception; the save operand, mask/reload sequence,
+predecessors, alternate entries and overlapping decodes all participate in the
+check. TLSdesc and text relocations anywhere in the scanned x86 ELF closure are
+refused. XGETBV requires a unique nonoverlapping straight-line proof that ECX
+is zero, bounded to 16 predecessor instructions. Restore operations remain
+admitted, and native standard math is unchanged. The Linux fixture compares
+compiled FXSAVE, XSAVE, selector-1, proven selector-0, restore and math programs
+through both production preparation modes and the Python checker, retaining
+exact ELF bytes and both decisions.
+
+This is a static cooperative-code boundary. It does not enforce future
+executable mappings, mutable files, generated code or instruction preservation
+under engine WriteMemory/XorMemory effects. Those effects can change code even
+when the original image was admitted. Ordinary logical XSAVE/cache identity
+continues to require the documented instruction-domain assumptions; the scan
+is not a runtime domain-preservation or exact-replay qualification certificate.
+A retained development-host KVM probe passed static admission, decoded FXSAVE
+into an RW mapping, changed the mapping to RX and executed it successfully.
+That is a confirmed instruction-domain escape, not a replay-divergence witness.
+Arbitrary RAM effects and dynamic execution remain outside the maintained
+static contract even after the production/checker alignment.
+
 The stub's TSC trap does not trap RDPID or LSL. RDPID returns the host CPU's
 identity, and LSL can read the CPU number from the host GDT segment limit.
 This admission check walks executable loads in the packed image, including

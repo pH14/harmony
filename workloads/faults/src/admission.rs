@@ -10,7 +10,13 @@ use std::{
 
 use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, OpKind};
 use object::read::elf::ProgramHeader;
-use object::{Object, ObjectSection};
+use object::{Object, ObjectSection, ObjectSymbol};
+
+mod xstate;
+
+#[cfg(test)]
+#[path = "admission/xstate_tests.rs"]
+mod xstate_tests;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -517,7 +523,7 @@ fn x86_host_input_name(instruction: &Instruction) -> Option<&'static str> {
         Mnemonic::Rdseed => Some("RDSEED"),
         Mnemonic::Rdpid => Some("RDPID"),
         Mnemonic::Lsl => Some("LSL"),
-        _ => None,
+        _ => xstate::name(instruction),
     }
 }
 
@@ -540,6 +546,17 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
     ) {
         return Err("unsupported ELF architecture".into());
     }
+    if elf.architecture() == object::Architecture::X86_64 {
+        x86_dynamic_policy(bytes, &elf)?;
+    }
+    let entries: BTreeSet<_> = std::iter::once(elf.entry())
+        .chain(
+            elf.symbols()
+                .chain(elf.dynamic_symbols())
+                .filter(|s| s.is_definition() && s.kind() == object::SymbolKind::Text)
+                .map(|s| s.address()),
+        )
+        .collect();
     let writable_executable = object::elf::PF_W | object::elf::PF_X;
     let mut sites = Vec::new();
     let mut executable_segments = 0;
@@ -692,6 +709,12 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
                 } else {
                     mapped_ranges.sort_unstable();
                     let mut anchors = BTreeSet::from([0, page_head]);
+                    anchors.extend(entries.iter().filter_map(|entry| {
+                        entry
+                            .checked_sub(mapped_start)
+                            .and_then(|offset| usize::try_from(offset).ok())
+                            .filter(|offset| *offset < code.len())
+                    }));
                     let mut boundaries = BTreeSet::new();
                     for (range_start, range_end) in mapped_ranges {
                         anchors.insert(range_start);
@@ -794,9 +817,142 @@ fn scan_elf(bytes: &[u8], digest: &str) -> Result<Option<Vec<InstructionSite>>, 
             &mut sites,
         )?);
     }
+    if elf.architecture() == object::Architecture::X86_64
+        && sites.iter().any(|site| xstate::is_site(&site.instruction))
+    {
+        let mut decoded = BTreeMap::new();
+        for (start, visited, code, _, _) in &groups {
+            for (offset, &seen) in visited.iter().enumerate() {
+                if seen {
+                    let instruction = Decoder::with_ip(
+                        64,
+                        &code[offset..],
+                        start + offset as u64,
+                        DecoderOptions::NONE,
+                    )
+                    .decode();
+                    decoded.insert(instruction.ip(), instruction);
+                }
+            }
+            for site in &sites {
+                if let Some(offset) = site
+                    .address
+                    .checked_sub(*start)
+                    .and_then(|n| usize::try_from(n).ok())
+                    .filter(|offset| *offset < code.len())
+                {
+                    decoded.entry(site.address).or_insert_with(|| {
+                        Decoder::with_ip(64, &code[offset..], site.address, DecoderOptions::NONE)
+                            .decode()
+                    });
+                }
+            }
+        }
+        let mut targets: BTreeSet<_> = decoded
+            .values()
+            .filter(|i| {
+                matches!(
+                    i.op0_kind(),
+                    OpKind::NearBranch16 | OpKind::NearBranch32 | OpKind::NearBranch64
+                )
+            })
+            .map(|i| i.near_branch_target())
+            .collect();
+        for (start, _, _, anchors, _) in &groups {
+            targets.extend(anchors.iter().map(|offset| start + *offset as u64));
+        }
+        xstate::validate(decoded, &targets)?;
+        sites.retain(|site| !xstate::is_site(&site.instruction));
+    }
     sites.sort();
     sites.dedup();
     Ok(Some(sites))
+}
+
+fn x86_dynamic_policy(
+    bytes: &[u8],
+    elf: &object::read::elf::ElfFile64<'_>,
+) -> Result<(), Box<dyn Error>> {
+    use object::read::elf::Dyn;
+    let mut tags: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    let mut dynamic = false;
+    for header in elf.elf_program_headers() {
+        if let Some(table) = header.dynamic(elf.endian(), bytes)? {
+            if dynamic {
+                return Err("duplicate ELF dynamic segment".into());
+            }
+            dynamic = true;
+            let mut terminated = false;
+            for item in table {
+                let tag = item.d_tag(elf.endian());
+                if tag == 0 {
+                    terminated = true;
+                    break;
+                }
+                tags.entry(tag).or_default().push(item.d_val(elf.endian()));
+            }
+            if !terminated {
+                return Err("unterminated ELF dynamic table".into());
+            }
+        }
+    }
+    if [0x6fff_fef6, 0x6fff_fef7]
+        .iter()
+        .any(|tag| tags.contains_key(tag))
+    {
+        return Err("TLSdesc relocation in executable closure".into());
+    }
+    if tags.contains_key(&22) || tags.get(&30).is_some_and(|v| v.iter().any(|v| v & 4 != 0)) {
+        return Err("ELF text relocations".into());
+    }
+    let mut tables = vec![(7, 8, 24), (17, 18, 16)];
+    if tags.contains_key(&23) {
+        let stride = match tags.get(&20).map(Vec::as_slice) {
+            Some([7]) => 24,
+            Some([17]) => 16,
+            _ => return Err("unsupported PLT relocation format".into()),
+        };
+        tables.push((23, 2, stride));
+    }
+    for (address_tag, size_tag, stride) in tables {
+        let address = tags.get(&address_tag);
+        let size = tags.get(&size_tag);
+        if address.is_none() && size.is_none() {
+            continue;
+        }
+        let (Some([address]), Some([size])) = (address.map(Vec::as_slice), size.map(Vec::as_slice))
+        else {
+            return Err("missing or duplicate ELF relocation table".into());
+        };
+        if size % stride != 0 {
+            return Err("invalid ELF relocation table size".into());
+        }
+        if *size == 0 {
+            continue;
+        }
+        let mut mapped = None;
+        for header in elf
+            .elf_program_headers()
+            .iter()
+            .filter(|h| h.p_type(elf.endian()) == object::elf::PT_LOAD)
+        {
+            if let Some(data) = header
+                .data_range(elf.endian(), bytes, *address, *size)
+                .map_err(|()| "ELF relocation table outside file")?
+                && mapped.replace(data).is_some()
+            {
+                return Err("ambiguous ELF relocation table mapping".into());
+            }
+        }
+        let data = mapped.ok_or("ELF relocation table is not file-backed")?;
+        for entry in data.chunks_exact(stride as usize) {
+            let info = u64::from_le_bytes(entry[8..16].try_into()?);
+            if matches!(info as u32, 34..=36) {
+                return Err("TLSdesc relocation in executable closure".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn push_x86_sites(
@@ -921,7 +1077,7 @@ mod tests {
     use super::*;
     use oci_support::image::{Ownership, RuntimeConfig, StagedImage};
 
-    fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
+    pub(super) fn elf(code: &[u8], load_flags: u32, stack_flags: u32) -> Vec<u8> {
         let mut bytes = vec![0; 4097 + code.len()];
         bytes[..16].copy_from_slice(b"\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00");
         for (offset, value) in [
