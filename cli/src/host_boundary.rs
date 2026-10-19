@@ -59,7 +59,9 @@ pub fn route(command: &Command) -> Result<Route> {
             }
         }
         Command::Prepare { source, .. } => Ok(runner_route(&source.load()?.runner.kind)),
-        Command::Branch { selection, .. } => saved_route(&selection.run),
+        Command::Branch { selection, .. } | Command::Shrink { selection, .. } => {
+            saved_route(&selection.run)
+        }
         Command::Debug { command } => match command {
             DebugCommand::Run {
                 source,

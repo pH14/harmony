@@ -54,7 +54,7 @@ fn report_witness(report: &Report, bug: Option<usize>) -> Result<ReplaySummary> 
     }
 }
 
-fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
+pub(super) fn recorded_witness(manifest: &Manifest, bug: Option<usize>) -> Result<ReplaySummary> {
     report_witness(&recorded_report(manifest)?, bug)
 }
 

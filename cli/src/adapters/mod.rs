@@ -20,6 +20,7 @@ pub enum Operation {
     Inspect,
     Timeline,
     Logs,
+    Shrink,
 }
 pub struct Request {
     pub operation: Operation,
@@ -32,6 +33,7 @@ pub struct Request {
     pub json: bool,
     pub actions: Option<PathBuf>,
     pub repeat: u32,
+    pub jobs: usize,
     pub console: bool,
     pub command: Vec<String>,
     pub exec: Option<String>,
@@ -53,6 +55,7 @@ impl Default for Request {
             json: false,
             actions: None,
             repeat: 1,
+            jobs: 1,
             console: false,
             command: Vec::new(),
             exec: None,
@@ -119,7 +122,11 @@ fn dispatch_with_diagnostics(
     }
     if matches!(
         request.operation,
-        Operation::Replay | Operation::Branch | Operation::Resume | Operation::Search
+        Operation::Replay
+            | Operation::Branch
+            | Operation::Resume
+            | Operation::Search
+            | Operation::Shrink
     ) && let Some(selection) = &request.selection
     {
         let source = crate::runs::locate(&selection.run)?;

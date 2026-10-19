@@ -3,6 +3,7 @@ pub mod config;
 mod investigate;
 mod prepare;
 mod runs;
+mod shrink;
 mod terminal;
 mod workflow;
 use super::{Operation, Package, Request};
@@ -97,6 +98,7 @@ impl Package for Faults {
                 request.repeat,
             ),
             Operation::Branch => investigate::branch(request),
+            Operation::Shrink => shrink::shrink(request),
             Operation::Inspect => investigate::inspect(
                 request.selection.ok_or("select a search or branch")?,
                 request.json,

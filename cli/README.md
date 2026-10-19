@@ -16,6 +16,7 @@ harmony list
 harmony show baseline
 harmony show baseline --finding 1 --timeline
 harmony show baseline --finding 1 --logs --contains ERROR
+harmony shrink baseline --finding 1 --jobs 4 --name minimal
 harmony branch baseline --finding 1 --rewind 10 --shell --name debugging
 harmony search --from debugging --name neighborhood
 ```
@@ -187,6 +188,9 @@ harmony
 │   ├── --exec-file LOCAL.sh              copy and execute a local script
 │   ├── --shell                           interactive guest terminal
 │   └── --stop                            save without the original suffix
+├── shrink NAME                          keep only the faults a finding needs
+│   ├── --finding N                      select a finding
+│   └── --jobs N                         replays to run at once
 └── diff NAME NAME                       compare configuration and outcomes
 ```
 
@@ -232,6 +236,19 @@ shell commands. Terminal output and submitted bytes are retained as evidence.
 Interactive timing is part of the new experiment. Faults branches with commands
 require the updated supervisor runtime; use `check` to provision matching assets.
 NES exposes typed controller actions and has no guest shell capability.
+
+`shrink` reduces a faults finding to the fault actions it needs. It replays the
+finding's actions up to the first observed violation, then replaces groups of
+fault actions with waits of the same length, halving the groups until no single
+fault can be replaced (delta debugging). A replacement keeps the action's
+recorded `choice`, which seeds guest randomness for that step, so the rest of
+the execution keeps its timing. A candidate counts when its replay reports one
+of the finding's violations. `--jobs N` runs N replays at once; the result is the
+same for every N because the lowest-numbered reproducing candidate of each round
+wins. Each replay starts a fresh guest, so a shrink costs about one finding
+replay per attempt. The output is a replay of the reduced actions that `show`,
+`show --timeline` and `branch` accept. `shrink.json` lists every attempt with the
+replaced steps and the violations it produced. NES findings are not supported.
 
 `search --from` starts fresh exploration from a branch endpoint. `search --resume`
 restores the existing corpus, snapshots, scheduler and evidence from the latest
