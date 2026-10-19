@@ -60,10 +60,18 @@ def check(source, rom_path, debug_path):
         r'^#define\s+(COL_SLOPE_\w+66_(?:TOP|BOT))\s+(0x[\da-fA-F]+|\d+)',
         definitions, re.M)}
     assert len(steep) == 8
+    mini45 = set()
+    if (source / "SAUCE/functions/mini_wave45.h").exists():
+        mini45 = {int(value, 0) for name, value in re.findall(
+            r'^#define\s+(COL_SLOPE_\w+45)\s+(0x[\da-fA-F]+|\d+)', definitions, re.M)}
+        assert len(mini45) == 4
     wave = int(re.search(r'^#define\s+GAMEMODE_WAVE\s+(0x[\da-fA-F]+|\d+)',
                          (source / "SAUCE/famidash.h").read_text(), re.M)[1], 0)
     table = address("_ss_wave66")
-    assert {n for n in range(32) if memory[table + n]} == steep
+    assert {n for n in range(32) if memory[table + n]} == steep | mini45
+    if mini45:
+        assert all(memory[table + n] == (1 if n in steep else 2 if n in mini45 else 0)
+                   for n in range(32))
     shapes = memory[address("_ss_shapes"):address("_ss_shapes") + 64]
     callees = {address(name) for name in ("crossPRGBankJump", "_check_spike_motion")
                if name in symbols}
@@ -89,6 +97,11 @@ def check(source, rom_path, debug_path):
                 continue
             if opcode == 0x4C:
                 pc = memory[pc] | memory[pc + 1] << 8
+                continue
+            if opcode == 0x4A:
+                carry = bool(a & 1)
+                a >>= 1
+                zero = a == 0
                 continue
             if opcode in (0xA9, 0xA2, 0xA0, 0x29, 0xC9, 0xC0):
                 value = memory[pc]
@@ -141,12 +154,15 @@ def check(source, rom_path, debug_path):
                             ("_pit_previous_y", 15)):
             memory[address(name) + player] = value
         expected = bool(shapes[old] or shapes[new] or (dx and dy) or
-                        (mode == wave and (dx or dy) and (old in steep or new in steep)))
+                        (mode == wave and (dx or dy) and
+                         (old in steep or new in steep or
+                          (mini and (old in mini45 or new in mini45)))))
         actual, steps = execute()
         assert actual == expected, (old, new, mode, dx, dy, player, mini, actual, expected)
         maximum_steps = max(maximum_steps, steps)
         cases += 1
     return {"status": "verified", "cases": cases, "maximum_instructions_to_decision": maximum_steps,
+            "mini45_classes": sorted(mini45),
             "direct_call_banks": direct_calls,
             "rom_sha256": hashlib.sha256(rom).hexdigest(),
             "debug_sha256": hashlib.sha256(debug).hexdigest(),

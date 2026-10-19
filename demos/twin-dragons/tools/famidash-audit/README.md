@@ -503,6 +503,19 @@ It also checks the shared tile helpers' selected direct-call edges against
 physical 8 KiB PRG banks. Equal CPU addresses do not establish that a banked
 callee is mapped. Separate linker segments can share a physical bank; the
 standard and HUGE layouts must both pass this check.
+When the integration contains `mini_wave45.h`, the same assembled check also
+requires the four 45° classes to dispatch only for mini-wave. Steep slopes
+continue to dispatch for both sizes. It executes the actual flag-table gate
+for all 131,072 combinations, including its accumulator shift and carry flag.
+
+`check-bank-assets.py ORIGINAL_BUILDS REPAIRED_BUILDS OUTPUT` requires sound
+effects and both PCM sample segments to preserve their bytes, CPU addresses
+and physical ROM offsets in every built layout. `--segment NAME` selects
+other explicitly reviewed assets. Equal sample bytes at a different address
+are insufficient when metadata records only a bank. Integration caught this
+failure when a new routine preceded `PCM_BANK`; placing the routine after the
+sample segment preserves the original layout. Asset checks do not replace
+mapper and playback validation.
 
 The [shared tile-read integration](findings/shared-engine/wave66-shared-tile-reads/README.md)
 uses each queried tile for both spike and steep-slope checks. It retains the
