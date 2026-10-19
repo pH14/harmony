@@ -460,3 +460,13 @@ full clearing control. It preserves the same mechanical-transition invariant
 and emits `purpose=positive-control-prefix`, with source-prefix and full-clear
 lengths recorded. A prefix is not a completion proof or a failing-witness
 conversion. Independently replay it before using it as a Dissonance root.
+
+Before a current or HUGE ROM search, run `check-target-profile.py INDEX
+RELEASE_INDEX SIDE LEVEL` against the full pinned 109-level release index.
+Geometry indices retain physical slots; a search may need explicit
+`release_target_side` and `release_target_level` aliases. Current Hell D8 maps
+to release C8. Defaulting it to D8 selects Slaughterhouse's profile and can
+truncate exploration. The check compares source names, reports matching release
+slots and binds both index hashes. It does not establish equivalent geometry
+or playability. Keep the running campaign's runner and WASM frozen; run this
+separate check before launching a new focused search.
