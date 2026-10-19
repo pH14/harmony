@@ -39,7 +39,7 @@ use crate::search::duration::{
 use crate::search::empirical_steps::{EmpiricalStepCheckpoint, EmpiricalStepParameters};
 
 pub const LONGEST_SPLICE_TAIL: usize = 128;
-use crate::search::parallel::{WorkerPoolError, with_worker_pool_observed};
+use crate::search::parallel::{WorkerPoolError, with_worker_pool_routed};
 use crate::search::rand::RomuDuoJrRand;
 use crate::search::telemetry::{
     CampaignTelemetry, CompletedBufferTelemetry, HostTimes, Moment, TargetCounters, now,
@@ -448,6 +448,15 @@ pub trait InputPolicy: CampaignTypes {
 }
 
 pub trait TargetExecution: CampaignTypes {
+    fn worker_locality(&self, _target: &Self::Target) -> crate::search::locality::WorkerLocality {
+        crate::search::locality::WorkerLocality::default()
+    }
+    fn snapshot_locality(
+        &self,
+        _snapshot: &Self::Snapshot,
+    ) -> Option<crate::search::locality::LocalityKey> {
+        None
+    }
     fn begin_job_observation(&self) {}
     fn take_job_observation(&self) -> Option<Self::JobObservation> {
         None
@@ -3476,7 +3485,7 @@ where
     let (bootstrapped, first_worker_start) = mpsc::channel::<()>();
     let first_worker_start = Mutex::new(first_worker_start);
     let mut coordinator = None;
-    let ((), worker_telemetry) = with_worker_pool_observed(
+    let ((), worker_telemetry) = with_worker_pool_routed(
         config.workers,
         |worker| {
             if worker == 0 {
@@ -3498,6 +3507,7 @@ where
             Ok((reservation, outcome))
         },
         |target| workload.telemetry(target),
+        |target| workload.worker_locality(target),
         || workload.begin_job_observation(),
         || workload.take_job_observation(),
         observer
@@ -3519,12 +3529,14 @@ where
             pool.wait_ready(config.workers)?;
             while campaign.reserve_next()? {
                 for job in campaign.plan(usize::MAX) {
-                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                    let locality = workload.snapshot_locality(&job.snapshot);
+                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
                 }
             }
             loop {
                 for job in campaign.plan(usize::MAX) {
-                    pool.dispatch((job.planned_finish, job.reservation), job)?;
+                    let locality = workload.snapshot_locality(&job.snapshot);
+                    pool.dispatch_local((job.planned_finish, job.reservation), job, locality)?;
                 }
                 if campaign.finished() {
                     break;

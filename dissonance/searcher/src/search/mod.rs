@@ -17,3 +17,4 @@ pub mod telemetry;
 mod weighted_set;
 
 pub mod job_observation;
+pub mod locality;

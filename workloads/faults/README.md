@@ -306,6 +306,14 @@ different points around response publication. These reads are not atomic or free
 Counter getters do not estimate or subtract their own cost. Host timing, gauges
 and physical request counts do not affect logical selection or certificates.
 
+Physical worker assignment uses opaque captured-history root keys. A matching
+live session advertises its retained chain endpoints, with a better rank when
+the corresponding observation decoder checkpoint has been verified. Missing,
+foreign or abandoned sessions advertise nothing. Extracting these hints does no
+session RPC, hashing, import or restore, and retains no extra snapshot lease.
+Actual restoration still validates the captured receipt, machine state and
+decoder binding. A stale hint can affect host work, never certify an endpoint.
+
 Optional job locality observations are fixed-size workload-owned values, separate
 from logical fault observations and endpoint certificates. The origin restore
 records its actual selected source: local exact/ancestor or shared import

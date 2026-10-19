@@ -724,6 +724,24 @@ impl Drop for FaultTarget {
 }
 
 impl FaultTarget {
+    pub(crate) fn worker_locality(&self) -> searcher::search::locality::WorkerLocality {
+        use searcher::search::locality::{LocalityKey, WorkerLocality};
+
+        LIVE.with(|slot| {
+            let slot = slot.borrow();
+            let Some(live) = slot.as_ref().filter(|live| {
+                live.key == self.config.key && !live.abandoned && !live.session.abandoned()
+            }) else {
+                return WorkerLocality::default();
+            };
+            WorkerLocality::new((0..live.chain.links()).filter_map(|at| {
+                let receipt = live.chain.provenance(at).ok()?;
+                let rank = u8::from(live.chain.observation_checkpoint(at).is_some());
+                Some((LocalityKey(receipt.root()), rank))
+            }))
+        })
+    }
+
     pub fn new(
         kernel: &[u8],
         initramfs: &[u8],
@@ -6271,6 +6289,50 @@ mod tests {
             assert_eq!(row.end_generation, None);
             assert!(take_job_observation().is_none());
         }
+    }
+
+    #[test]
+    fn worker_locality_uses_only_matching_live_receipts_and_verified_decoder_hints() {
+        use searcher::search::locality::{LocalityKey, WorkerLocality};
+
+        LIVE.with(|slot| *slot.borrow_mut() = None);
+        let target = unbooted_target();
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
+        LIVE.with(|slot| assert!(slot.borrow().is_none()));
+        let mut live = timed_out_live();
+        let receipt = live.chain.provenance(0).unwrap().clone();
+        let key = LocalityKey(receipt.root());
+        let checkpoint = ObservationCheckpoint::capture(&receipt, SdkDecoder::default()).unwrap();
+        live.chain
+            .set_pending_observation_checkpoint(0, checkpoint.clone())
+            .unwrap();
+        let before = live.session.telemetry_counters();
+        LIVE.with(|slot| *slot.borrow_mut() = Some(live));
+        assert_eq!(target.worker_locality(), WorkerLocality::new([(key, 0)]));
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            live.chain
+                .set_observation_checkpoint(0, checkpoint)
+                .unwrap();
+        });
+        assert_eq!(target.worker_locality(), WorkerLocality::new([(key, 1)]));
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            assert_eq!(live.session.telemetry_counters(), before);
+            live.key = [9; 32];
+        });
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
+        LIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let live = slot.as_mut().unwrap();
+            live.key = target.config.key;
+            live.abandoned = true;
+        });
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
+        LIVE.with(|slot| *slot.borrow_mut() = None);
+        assert_eq!(target.worker_locality(), WorkerLocality::default());
     }
 
     #[test]
