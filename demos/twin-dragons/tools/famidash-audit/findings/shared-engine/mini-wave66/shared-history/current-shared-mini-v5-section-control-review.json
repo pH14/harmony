@@ -1,0 +1,98 @@
+{
+  "4029": {
+    "frames": 4388,
+    "mini_wave_fill_visits": [],
+    "normal_wave_fill_visits": [],
+    "target20_visits": [],
+    "mini_wave_x_span": [
+      2692,
+      11928
+    ],
+    "source_mismatches": [],
+    "other_mode_component_counts": {
+      "101": 10,
+      "105": 3,
+      "95": 9,
+      "135": 12,
+      "106": 4,
+      "96": 4,
+      "82": 1,
+      "90": 3,
+      "102": 15,
+      "34": 7,
+      "35": 4,
+      "36": 1,
+      "77": 17,
+      "78": 17,
+      "79": 18,
+      "80": 17,
+      "81": 12,
+      "84": 18
+    },
+    "limitation": "Wave-section assessment. Other modes, coin routes and source-edge passages require review; no whole-route qualification."
+  },
+  "3001": {
+    "frames": 4390,
+    "mini_wave_fill_visits": [],
+    "normal_wave_fill_visits": [],
+    "target20_visits": [],
+    "mini_wave_x_span": [
+      2692,
+      11928
+    ],
+    "source_mismatches": [],
+    "other_mode_component_counts": {
+      "101": 10,
+      "105": 3,
+      "95": 9,
+      "135": 12,
+      "96": 4,
+      "82": 3,
+      "90": 4,
+      "99": 3,
+      "102": 13,
+      "35": 2,
+      "42": 2,
+      "77": 17,
+      "78": 17,
+      "79": 18,
+      "80": 17,
+      "81": 12,
+      "126": 6,
+      "119": 5,
+      "84": 18
+    },
+    "limitation": "Wave-section assessment. Other modes, coin routes and source-edge passages require review; no whole-route qualification."
+  },
+  "3041": {
+    "frames": 4390,
+    "mini_wave_fill_visits": [],
+    "normal_wave_fill_visits": [],
+    "target20_visits": [],
+    "mini_wave_x_span": [
+      2692,
+      11928
+    ],
+    "source_mismatches": [],
+    "other_mode_component_counts": {
+      "101": 10,
+      "105": 3,
+      "95": 9,
+      "135": 12,
+      "96": 4,
+      "82": 3,
+      "90": 4,
+      "99": 3,
+      "102": 13,
+      "35": 2,
+      "42": 2,
+      "77": 17,
+      "78": 17,
+      "79": 18,
+      "80": 17,
+      "81": 12,
+      "84": 18
+    },
+    "limitation": "Wave-section assessment. Other modes, coin routes and source-edge passages require review; no whole-route qualification."
+  }
+}

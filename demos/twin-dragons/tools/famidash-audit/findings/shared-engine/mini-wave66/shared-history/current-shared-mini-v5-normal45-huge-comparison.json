@@ -1,0 +1,29 @@
+{
+  "status": "unchanged-gameplay-approach-and-death-verified",
+  "death_frame": 798,
+  "comparison": "All observation fields except physical level identity, frames1..797",
+  "difference_frames": [
+    6
+  ],
+  "reset": {
+    "released_frames_after_death": 40,
+    "endpoint": {
+      "level": 131,
+      "state": 2,
+      "x": -238,
+      "y": 895,
+      "camera": 719,
+      "vy": 0,
+      "mode": 0,
+      "gravity": 0,
+      "mini": 0,
+      "dual": 0,
+      "dead": false,
+      "debug": 0,
+      "invincible": 8,
+      "paused": 0,
+      "wrap": 0,
+      "coins": 0
+    }
+  }
+}

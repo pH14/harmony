@@ -1,0 +1,38 @@
+{
+  "status": "integration-experiment-not-standalone-upstream-patch",
+  "base_build": "famidash-current-combined-wave-segments-v1-source",
+  "repaired_build": "famidash-current-combined-shared-mini-v5-source",
+  "changes": [
+    {
+      "path": "SAUCE/functions/collision.h",
+      "before_sha256": "a64aa9abe8ebe330e9ead4ce854de4967599a38ff1c56f221467056a64f2573d",
+      "after_sha256": "ae4c0c0c10acbe202b9d13a48886ea15360e019c44f6757b26871db777199c20"
+    },
+    {
+      "path": "SAUCE/functions/mini_wave66.h",
+      "before_sha256": "29f9b3694fb3eea95f8027e2a4c6441d3f2ec981dec459fa0750f0ab50f96076",
+      "after_sha256": "2eeb96111fde1fc1f1636647d4fccaf787e463076fa49694744eeb1882567110"
+    },
+    {
+      "path": "SAUCE/functions/pit_crossing.h",
+      "before_sha256": "5d74ff0848b1302fbabd4b326cf3809ee1804204bd51414cacbe44d84cb661f2",
+      "after_sha256": "0b81e843c75f535765c3742c0f0627e85b421a284fddefd12fe742378742b4bd"
+    },
+    {
+      "path": "SAUCE/functions/reset_level.h",
+      "before_sha256": "a14f57058999fdaf207d2ec514d9c1e1afe6d75d1101e1748f65196539ba80e3",
+      "after_sha256": "f1e5b242267b69bdbf79087d7af066feeab1e1293332aa61c6339533c1b5ba27"
+    },
+    {
+      "path": "SAUCE/functions/spike_sweep.h",
+      "before_sha256": "507038a88d85970fe7d4a8c5dd542e8622e16a54c838f96e41b3499c9dd69d0e",
+      "after_sha256": "3735525ef01eab2fa6aa2143086c3fe4e9c7b0ed389f882fab480618a6a1e341"
+    },
+    {
+      "path": "SAUCE/functions/sprite_loading.h",
+      "before_sha256": "b5addf5b0a0b3e9b6299edd4c7c859487344b1ff80f398d52531299c4e94564f",
+      "after_sha256": "e7586da28436cd269eacb8f7daea27fa260403dac222c1b0369e1839fa281ca6"
+    }
+  ],
+  "limitation": "Depends on prior experimental collision repairs; unchanged source-only mini66 upstream proposals remain in parent directory."
+}

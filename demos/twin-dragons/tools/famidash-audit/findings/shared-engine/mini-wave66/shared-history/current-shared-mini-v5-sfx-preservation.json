@@ -1,0 +1,41 @@
+{
+  "status": "verified",
+  "cases": [
+    {
+      "variant": "famidash.nes",
+      "bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1",
+      "rom_sha256": "07d3f7d792c70af3ba81941fe28a2621de98fd00dfe4381646fe2c091e60bc82"
+    },
+    {
+      "variant": "famidash-b-sides.nes",
+      "bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1",
+      "rom_sha256": "932332021fba4b5e04a0f57d19e4d8b5b38e8e9f32bc87c5b03938afed4b495d"
+    },
+    {
+      "variant": "famidash-c-sides.nes",
+      "bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1",
+      "rom_sha256": "a59064b0354890e55239b48a6419755826b17e5c295f182bba5344518330bcc6"
+    },
+    {
+      "variant": "famidash-d-sides.nes",
+      "bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1",
+      "rom_sha256": "180637e30a9e8bbb4cccef660d90f09aa842b33aa3eeed6829f19a23eb3d40c4"
+    },
+    {
+      "variant": "famidash-e-sides.nes",
+      "bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1",
+      "rom_sha256": "cf9377e1f41c367168b38eea08d00ac911b1729eebe03b44c6f9a1ab75ed8ffc"
+    },
+    {
+      "variant": "HUGE",
+      "bytes": 2305,
+      "sfx_sha256": "08a7949f4f476f03ccc480ada8f61e448e349d5334766736e6b278a0f1a2c7a1",
+      "rom_sha256": "845ed1b516e31ec8e8841f32b25b494fa8e60ce88c2e544c6f2dec0e10470de1"
+    }
+  ]
+}
