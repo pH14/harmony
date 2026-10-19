@@ -8,6 +8,7 @@ import { createEngine, GAMES, sha256Hex } from "./emulator.js";
 import { load, save, loadRom, saveRom } from "./rom-store.js";
 import { Heatmap, cellTop, routeIds } from "./heat.js";
 import { Swarm, ghosts, trailRoom, MOTION_STRIDE } from "./swarm.js";
+import { resumeFollowing, trackingGoal } from "./camera.js";
 import { snapshotHash, snapshotDigest } from "./media.js";
 import { roomPanels, panelContains, panelCenter, CAMERA_VIEWPORT, GRID_CAMERA_VIEWPORT, TALL_CAMERA_VIEWPORT } from "./view.js";
 import {
@@ -253,6 +254,7 @@ const swarm = new Swarm(
   (budget.snapshotsMiB === 32 ? 2 : 8) * 1048576,
   budget.snapshotsMiB === 32 ? 2048 : 8192,
   FINISH_HOLD,
+  true,
 );
 let visualization = "movement", liveVisualization = null, swarmRooms = new Map();
 const pointLevels = new Map();
@@ -348,7 +350,7 @@ function drawPlayers(ctx, level, screenScale, rooms = swarmRooms, panel = null, 
   ctx.imageSmoothingEnabled = false;
   for (let i = 0; i < shown.length; i += 2) {
     const p = shown[i], raw = shown[i + 1];
-    ctx.globalAlpha = raw.life === undefined ? 0.8 : Math.min(1, raw.life / 0.05 + 0.2) * (0.97 - 0.32 * raw.life);
+    ctx.globalAlpha = raw.stale ? 0.35 : raw.life === undefined ? 0.8 : Math.min(1, raw.life / 0.05 + 0.2) * (0.97 - 0.32 * raw.life);
     ctx.drawImage(sprites, (p.pose >> 1) * SPRITE.width, (p.pose & 1) * SPRITE.height, SPRITE.width, SPRITE.height,
       p.x - (SPRITE.originX + 8) * size, p.y - 8 - SPRITE.originY - 8 + SPRITE.height * (1 - size), SPRITE.width * size, SPRITE.height * size);
   }
@@ -387,7 +389,7 @@ function maxZoom(c) {
   return c?.dataset.viewport === "true" ? Math.max(6, closeUpZoom(c) * 2.5) : 6;
 }
 function frontier(level) {
-  const map = maps.get(level), raw = swarmRooms.get(level) || [];
+  const map = maps.get(level), raw = (swarmRooms.get(level) || []).filter((p) => !p.stale);
   const left = (p) => (p.samples ? p.samples.at(-MOTION_STRIDE) - p.frame : 0);
   const order = (p) => game.route(level, p.x + 8, p.y + 8);
   const finisher = raw.filter((p) => p.finish && p.samples && levelRooms(level).includes(trailRoom(p.samples))).sort((a, b) => left(a) - left(b) || (game.grid ? order(b) - order(a) : game.vertical ? a.y - b.y : b.x - a.x))[0];
@@ -572,12 +574,7 @@ function moveCameraByHand() {
   if (camera.follow) camera.manual = performance.now() + 10000;
 }
 function followSearch() {
-  camera.overview = false;
-  camera.manual = 0;
-  camera.only = null;
-  camera.targets = new Map();
-    camera.follow = true;
-  camera.focus = null;
+  resumeFollowing(camera);
 }
 function levelIndex(room) {
   return catalog.levels.findIndex((level) => level.rooms.includes(room));
@@ -619,7 +616,7 @@ function followRoom(now, immediate = false) {
     camera.busierSince = 0;
     return lead === mapLevel ? null : lead;
   }
-  const live = (id) => swarmRooms.get(id)?.length || 0;
+  const live = (id) => swarmRooms.get(id)?.filter((p) => !p.stale).length || 0;
   const busiest = levelRooms().reduce((best, id) => (live(id) > live(best) * 1.5 ? id : best), mapLevel);
   if (busiest === mapLevel || (!immediate && now - camera.roomSince < ROOM_DWELL_MS)) {
     camera.busierSince = 0;
@@ -639,7 +636,7 @@ function followStalledPath(now) {
   if (path.show) {
     const rooms = catalog.levels.find((entry) => entry.id === path.show.level)?.rooms || [];
     if (roomLevel(branchPreview?.room ?? mapLevel) !== path.show.from) path.show = null;
-    else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.length || 0), 0) >= 3) {
+    else if (rooms.reduce((n, id) => n + (swarmRooms.get(id)?.filter((p) => !p.stale).length || 0), 0) >= 3) {
       showPathLevel(path.show.level);
       path.show = null;
     }
@@ -648,7 +645,8 @@ function followStalledPath(now) {
   const counts = new Map();
   for (const [room, points] of swarmRooms) {
     const level = roomLevel(room);
-    if (points.length && level != null) counts.set(level, (counts.get(level) || 0) + points.length);
+    const live = points.filter((p) => !p.stale).length;
+    if (live && level != null) counts.set(level, (counts.get(level) || 0) + live);
   }
   const deepest = busierDeeperLevel(trailsSeen ? counts : pointLevels, path.level);
   if (deepest == null || (!path.leftRoot && now - path.since < PATH_STALL_MS)) {
@@ -666,6 +664,7 @@ function followStalledPath(now) {
   if (onPath) showPathLevel(deepest);
 }
 function beginCamera(intro = !reducedMotion.matches && !tourSeen(), only = null) {
+  resumeFollowing(camera);
   const introRoom = intro ? mapLevel : null;
   Object.assign(camera, { introStart: 0, last: 0, busierSince: 0, roomSince: 0, leader: null, jumped: 0, targets: new Map(), focus: null, follow: true, introDone: !intro, introRoom, only });
   for (const room of drivenRooms()) {
@@ -710,14 +709,8 @@ function updateCamera(now) {
   }
   for (const room of drivenRooms()) {
     const held = camera.targets.get(room);
-    let point = frontier(room);
-    if (held?.goal && (!point || cameraProgress(room, point) < cameraProgress(room, held.goal) - 32)) {
-      const goal = held.goal, ahead = cameraProgress(room, goal);
-      const near = (swarmRooms.get(room) || []).filter((p) => Math.hypot(p.x + 8 - goal.x, p.y - goal.y) < 192 || cameraProgress(room, { x: p.x + 8, y: p.y }) > ahead).length;
-      if (near >= 2) held.behind = 0;
-      else held.behind ||= now;
-      if (!point || !held.behind || now - held.behind < CAMERA_RETREAT_MS) point = goal;
-    } else if (held) held.behind = 0;
+    const point = trackingGoal(held, frontier(room), swarmRooms.get(room) || [], now,
+      (point) => cameraProgress(room, point), CAMERA_RETREAT_MS);
     if (!point) continue;
     const c = mapCanvas(room, point);
     if (!c) continue;
