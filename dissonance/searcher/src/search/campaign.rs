@@ -4026,18 +4026,12 @@ fn write_search_checkpoint<G: Workload>(
         |out| {
             core.write_checkpoint_state(&mut *out)?;
             postcard::to_io(&core.archive, &mut *out)?;
-            postcard::to_io(
-                &super::checkpoint::image::StreamedBytes(|out: &mut dyn Write| {
-                    G::write_evidence_checkpoint(&core.evidence, out)
-                }),
-                &mut *out,
-            )?;
-            postcard::to_io(
-                &super::checkpoint::image::StreamedBytes(|out: &mut dyn Write| {
-                    draw_state.write_resume(out)
-                }),
-                &mut *out,
-            )?;
+            super::checkpoint::image::write_streamed_bytes(&mut *out, |out| {
+                G::write_evidence_checkpoint(&core.evidence, out)
+            })?;
+            super::checkpoint::image::write_streamed_bytes(&mut *out, |out| {
+                draw_state.write_resume(out)
+            })?;
             duration_policies.write_checkpoint(&mut *out)?;
             postcard::to_io(rand, &mut *out)?;
             postcard::to_io(counters, &mut *out)?;
@@ -5467,6 +5461,7 @@ mod tests {
     use std::{
         collections::BTreeSet,
         error::Error,
+        fmt,
         time::{Duration, Instant},
     };
 
@@ -5596,7 +5591,56 @@ mod tests {
         static OMIT_IMPORT_CAPTURE: std::cell::Cell<Option<u8>> = const { std::cell::Cell::new(None) };
         static IMPORT_CALLS: std::cell::Cell<(u64, u64, u64)> = const { std::cell::Cell::new((0, 0, 0)) };
         static OMIT_TEST_PREFIX_CERTIFICATE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        static EVIDENCE_WRITE_FAILURE: std::cell::Cell<Option<(usize, usize)>> = const { std::cell::Cell::new(None) };
     }
+
+    struct EvidenceWriteFailureGuard(Option<(usize, usize)>);
+
+    impl EvidenceWriteFailureGuard {
+        fn new(pass: usize) -> Self {
+            Self(EVIDENCE_WRITE_FAILURE.replace(Some((pass, 0))))
+        }
+
+        fn calls(&self) -> usize {
+            EVIDENCE_WRITE_FAILURE.get().unwrap().1
+        }
+    }
+
+    impl Drop for EvidenceWriteFailureGuard {
+        fn drop(&mut self) {
+            EVIDENCE_WRITE_FAILURE.set(self.0);
+        }
+    }
+
+    #[derive(Debug)]
+    struct TestEvidenceWriteCause;
+
+    impl fmt::Display for TestEvidenceWriteCause {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("typed evidence writer cause")
+        }
+    }
+
+    impl Error for TestEvidenceWriteCause {}
+
+    #[derive(Debug)]
+    struct TestEvidenceWriteError {
+        pass: usize,
+        cause: TestEvidenceWriteCause,
+    }
+
+    impl fmt::Display for TestEvidenceWriteError {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "typed evidence writer pass {}", self.pass)
+        }
+    }
+
+    impl Error for TestEvidenceWriteError {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.cause)
+        }
+    }
+
     impl CampaignTypes for TestWorkload {
         type JobObservation = ();
         type Target = TestTarget;
@@ -5616,6 +5660,15 @@ mod tests {
             evidence: &u8,
             out: &mut dyn Write,
         ) -> Result<(), Box<dyn Error>> {
+            if let Some((pass, calls)) = EVIDENCE_WRITE_FAILURE.get() {
+                EVIDENCE_WRITE_FAILURE.set(Some((pass, calls + 1)));
+                if calls + 1 == pass {
+                    return Err(Box::new(TestEvidenceWriteError {
+                        pass,
+                        cause: TestEvidenceWriteCause,
+                    }));
+                }
+            }
             out.write_all(&[*evidence])?;
             Ok(())
         }
@@ -10541,6 +10594,78 @@ mod tests {
                 "checkpoint worker did not finish"
             );
             std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn coordinator_preserves_typed_evidence_writer_errors_in_both_streaming_passes() {
+        for max_image_bytes in [1, 64 << 20] {
+            for pass in [1, 2] {
+                let directory = std::env::temp_dir().join(format!(
+                    "coordinator-evidence-error-{}-{max_image_bytes}-{pass}",
+                    std::process::id()
+                ));
+                let _ = std::fs::remove_dir_all(&directory);
+                let mut config = three_worker_config();
+                config.window = 1;
+                config.execution_budget = 1;
+                let workload = TestWorkload {
+                    bootstrap_objective: false,
+                    targets: None,
+                };
+                let mut stream = Vec::new();
+                let mut coordinator = CampaignCoordinator::start(
+                    &workload,
+                    &config,
+                    &CampaignOrigin::Genesis,
+                    &mut stream,
+                    None,
+                    CampaignExecutionOptions {
+                        checkpoints: Some(crate::search::checkpoint::CheckpointPlan {
+                            directory: directory.clone(),
+                            every: std::num::NonZeroU64::new(1),
+                            on_marks: false,
+                            on_top_progress: false,
+                            checkpoint_owner: None,
+                            max_image_bytes,
+                            before_write: None,
+                        }),
+                        ..CampaignExecutionOptions::default()
+                    },
+                )
+                .unwrap();
+                assert!(coordinator.reserve_next().unwrap());
+                let job = coordinator.plan(1).pop().unwrap();
+                let mut target = workload.new_target().unwrap();
+                let guard = EvidenceWriteFailureGuard::new(pass);
+                let error = coordinator
+                    .admit(run_job(&workload, &config, &mut target, &job).unwrap())
+                    .unwrap_err();
+                assert!(
+                    error.is::<super::super::checkpoint::publisher::CampaignPersistenceFailure>()
+                );
+                let primary = error.source().unwrap();
+                assert_eq!(
+                    primary
+                        .downcast_ref::<TestEvidenceWriteError>()
+                        .unwrap()
+                        .pass,
+                    pass
+                );
+                assert!(primary.source().unwrap().is::<TestEvidenceWriteCause>());
+                assert_eq!(guard.calls(), pass);
+                assert!(coordinator.reserve_next().is_err());
+                assert!(coordinator.plan(usize::MAX).is_empty());
+                assert!(coordinator.finish(Vec::new()).is_err());
+                assert_eq!(guard.calls(), pass);
+                assert!(!directory.join("000000000001-interval.ckpt").exists());
+                assert!(!directory.join("000000000001-final.ckpt").exists());
+                assert!(!directory.join("checkpoints.jsonl").exists());
+                assert!(std::str::from_utf8(&stream).unwrap().lines().all(|line| {
+                    serde_json::from_str::<serde_json::Value>(line).unwrap()["event"] != "end"
+                }));
+                std::fs::remove_dir_all(directory).unwrap();
+            }
         }
     }
 
