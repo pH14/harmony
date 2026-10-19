@@ -104,6 +104,7 @@ impl Manifest {
             expected_outcome: None,
         })
     }
+    #[cfg(feature = "frontend")]
     pub fn read(path: &Path) -> Result<Self> {
         Self::from_record(crate::runs::Manifest::read(path)?)
     }
