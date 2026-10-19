@@ -432,3 +432,10 @@ cases. When the bounded signed product helper is present, it also checks all
 0..16. This verifies host arithmetic and geometry, independently of dispatch,
 NES mapping, actual pixel intent, and frame-budget effects. The source remains
 an experiment until those checks and route assessments pass.
+
+The single-level runner retains the first clearing input from every search root
+as `clearing-root-INDEX-FRAME.json`, referenced by that root's `clearing_input`.
+The primary `clearing-input.json` and checkpoint scheduling still use the first
+campaign victory. Per-root inputs allow separate route assessment after an
+initial clearing route is rejected. Export and independently replay each chosen
+input; a victory alone does not establish that its route stays inside terrain.

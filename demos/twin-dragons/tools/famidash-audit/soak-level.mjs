@@ -159,12 +159,18 @@ for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
     search.admit(worker.run(job), worker.note()); record.executions = execution;
     if (execution % 32 && execution !== root.budget) continue;
     const batch = JSON.parse(search.take_batch());
-    if (search.won() && !report.cleared) {
+    if (search.won() && !record.cleared) {
       const actions = JSON.parse(search.victory());
-      const tape = actions.flatMap(a => Array(a.frames).fill(a.buttons));
-      await writeFile(join(out, "clearing-input.json"), JSON.stringify({ engine: report.engine, setup: report.setup, actions, seed: record.seed, executions: execution, root: root.frame }));
-      report.cleared = true; record.cleared = true;
-      schedule(tape);
+      const input = { engine: report.engine, setup: report.setup, actions,
+        seed: record.seed, executions: execution, root: root.frame };
+      record.clearing_input = `clearing-root-${rootIndex}-${root.frame}.json`;
+      await writeFile(join(out, record.clearing_input), JSON.stringify(input));
+      record.cleared = true;
+      if (!report.cleared) {
+        await writeFile(join(out, "clearing-input.json"), JSON.stringify(input));
+        report.cleared = true;
+        schedule(actions.flatMap(a => Array(a.frames).fill(a.buttons)));
+      }
     }
     for (const point of batch.points) {
       if (point.retained === null || point.observation.loading) continue;
