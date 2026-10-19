@@ -85,14 +85,9 @@ const INFRASTRUCTURE: u8 = 3;
 pub trait SearchSession: std::fmt::Debug {
     fn execution_endpoint(
         &mut self,
-        _request: crate::endpoint::EndpointRequest,
-    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>> {
-        Err("execution endpoints are unavailable for this session".into())
-    }
-    fn abandon_execution_endpoint(&mut self) {
-        let _ = self.shutdown();
-    }
-
+        request: crate::endpoint::EndpointRequest,
+    ) -> Result<crate::endpoint::EndpointReply, Box<dyn Error>>;
+    fn abandon_execution_endpoint(&mut self);
     fn shutdown(&mut self) -> Result<(), Box<dyn Error>> {
         Err("owned session shutdown is unavailable".into())
     }
@@ -2373,7 +2368,7 @@ pub fn serve_inherited(
             init.config,
             init.setup_payloads,
         )?;
-        session.set_service_factory(factory);
+        session.set_service_factory(factory)?;
         Ok(Box::new(session) as Box<dyn ServedSession>)
     })
 }

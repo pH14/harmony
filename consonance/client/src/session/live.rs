@@ -575,8 +575,10 @@ impl Session {
         self.branch_input(snapshot, &InputSpec::seeded(seed))
     }
 
-    pub fn set_service_factory(&mut self, factory: ServiceFactory) {
+    pub fn set_service_factory(&mut self, factory: ServiceFactory) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.client.transport_mut().set_service_factory(factory);
+        Ok(())
     }
 
     pub fn branch_with_service(
@@ -690,8 +692,10 @@ impl Session {
         )
     }
 
-    pub fn set_max_chain_len(&mut self, max_chain_len: u32) {
+    pub fn set_max_chain_len(&mut self, max_chain_len: u32) -> Result<(), Box<dyn Error>> {
+        self.ensure_mutation_available()?;
         self.client.transport_mut().set_max_chain_len(max_chain_len);
+        Ok(())
     }
 
     pub fn snapshot_owned_pages(&self, snapshot: SnapId) -> Option<u64> {
@@ -1222,6 +1226,64 @@ mod tests {
         assert_eq!(before, session.state_hash().unwrap());
         assert_eq!(store, session.store_bytes());
         session.restore(&snapshot).unwrap();
+    }
+
+    #[test]
+    #[cfg(target_arch = "aarch64")]
+    fn owned_endpoint_refuses_direct_mutators_before_control_or_policy_changes() {
+        use crate::endpoint::*;
+        let image =
+            vmm_core::vendor::arm64::image_loader::wrap_image(&[0x1f, 0x20, 0x03, 0xd5], 0, 0xa);
+        let mut session = mock_arm_session(
+            SessionConfig::new(16 << 20, 7, 19, "console=ttyAMA0"),
+            &image,
+        );
+        let setup = session.setup;
+        let EndpointReply::Page(page) = session
+            .execution_endpoint(EndpointRequest::Execute(ExecutionRequest {
+                branch: None,
+                until: StopConditions {
+                    deadline: Some(control_proto::Moment(0)),
+                    on: StopMask::NONE,
+                },
+                resolve: None,
+                sdk_cursor: 0,
+                snapshot_on: EndpointStops::NONE,
+                proof: EndpointProofRequest::Omit,
+            }))
+            .unwrap()
+        else {
+            panic!("expected pending endpoint");
+        };
+        let before = session.client.transport().host_telemetry();
+        let handles = session.snapshot_times.clone();
+        for result in [
+            session.set_service_factory(environment::input_spec::nominal_factory()),
+            session.set_max_chain_len(2),
+            session.snapshot().map(|_| ()),
+            session.run_until(0).map(|_| ()),
+            session.replay_snapshot(setup),
+            session.drop_snapshot(setup),
+        ] {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<EndpointProtocolError>(),
+                Some(EndpointProtocolError::Pending)
+            ));
+        }
+        assert_eq!(session.client.transport().host_telemetry(), before);
+        assert_eq!(session.snapshot_times, handles);
+        assert_eq!(
+            session
+                .execution_endpoint(EndpointRequest::Abort {
+                    token: page.binding.token
+                })
+                .unwrap(),
+            EndpointReply::Aborted
+        );
+        session
+            .set_service_factory(environment::input_spec::nominal_factory())
+            .unwrap();
+        session.set_max_chain_len(2).unwrap();
     }
 
     #[test]

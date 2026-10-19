@@ -610,7 +610,7 @@ retain their existing formats and fresh integrity checks.
 Action execution uses Consonance's generic owned endpoint transaction. A retained
 validated parent decoder checkpoint supplies the exact SDK cursor, allowing one
 Execute exchange to branch, run, capture and return the first bounded suffix
-page. Missing or untrusted checkpoints keep the existing selected-parent branch
+page. The request preserves the legacy run's assertion stop mask. Missing or untrusted checkpoints keep the existing selected-parent branch
 and full-history verification before the guest runs. Every returned page retains
 its request/stop/cursor binding; the workload decodes all pages and checks SDK
 infrastructure status before Commit transfers the provisional snapshot and its
