@@ -930,6 +930,22 @@ try {
   await page.locator("#search-here").click();
   await page.waitForFunction(() => window.tdTestReady?.active === 2 && !!window.tdTestNestedBatch);
   const nested = await page.evaluate(() => ({ ready: window.tdTestReady, tape: window.tdTestFork.tape, seed: window.tdTestFork.seed, batch: window.tdTestNestedBatch }));
+  await page.waitForFunction(
+    () => window.tdTestNestedCandidates?.length > 0,
+    undefined,
+    { timeout: 60000 },
+  );
+  const nestedContext = await page.evaluateHandle(() => ({
+    worker: window.tdTestWorker, candidates: window.tdTestNestedCandidates, branch: 2,
+  }));
+  let nestedDescendant;
+  try {
+    nestedDescendant = await page.evaluate(retainedDescendant, nestedContext);
+  } finally {
+    await nestedContext.dispose();
+  }
+  assert.ok(nestedDescendant?.snapshot, "A retained nested descendant must still be in the archive");
+  assert.ok(nestedDescendant.id.startsWith("2:") && nestedDescendant.id !== "2:0");
   const nestedPrefix = prefixAt(childState.actions, nestedFrame);
   assert.deepEqual(nested.tape.actions, nestedPrefix, "A nested fork must use the selected descendant's scrubbed frame");
   assert.equal(nested.tape.branch.parent_state, childState.id);
@@ -951,22 +967,6 @@ try {
   assert.ok(nested.batch.executions >= 1, "Execution counts restart with the nested search");
   const admitted = new Set(["2:0", ...nested.batch.points.filter(p => p.retained !== null).map(p => p.retained)]);
   assert.ok(nested.batch.states >= 1 && nested.batch.states <= admitted.size, "Retained-state counts must belong to the active search");
-  await page.waitForFunction(
-    () => window.tdTestNestedCandidates?.length > 0,
-    undefined,
-    { timeout: 60000 },
-  );
-  const nestedContext = await page.evaluateHandle(() => ({
-    worker: window.tdTestWorker, candidates: window.tdTestNestedCandidates, branch: 2,
-  }));
-  let nestedDescendant;
-  try {
-    nestedDescendant = await page.evaluate(retainedDescendant, nestedContext);
-  } finally {
-    await nestedContext.dispose();
-  }
-  assert.ok(nestedDescendant?.snapshot, "A retained nested descendant must still be in the archive");
-  assert.ok(nestedDescendant.id.startsWith("2:") && nestedDescendant.id !== "2:0");
   assert.deepEqual(nestedDescendant.actions.slice(0, nestedPrefix.length), nestedPrefix);
   assert.ok(nestedDescendant.frames > nestedFrame);
   emulator.restore(emulatorRoot);
