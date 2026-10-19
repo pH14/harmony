@@ -1,0 +1,129 @@
+{
+  "schema": 1,
+  "disposition": "preserve-mini-ball-third-coin-route",
+  "source_revision": "0df680d0e02f0ccb438f1224d162a0ab073b7204",
+  "source_path": "LEVELS/LEVEL DATA/lvlset_A/electroman.tmx",
+  "source_sha256": "962f867629b4f20dd60fd3aa742fe93c2a9419e4d37389fce660e2c553754b44",
+  "component_reference": "main:12:65",
+  "bbox": [
+    796,
+    24,
+    797,
+    24
+  ],
+  "cells": [
+    [
+      796,
+      24
+    ],
+    [
+      797,
+      24
+    ]
+  ],
+  "group": {
+    "number": 65,
+    "tile": 47,
+    "names": {
+      "CHECKERBOARD_15": 2
+    },
+    "area": 2,
+    "bbox": [
+      796,
+      24,
+      797,
+      24
+    ],
+    "boundary": {
+      "COL_UP_LEFT_SPIKE": 1,
+      "COL_ALL": 2,
+      "COL_DOWN_RIGHT_SPIKE": 1,
+      "COL_UP_RIGHT_SPIKE": 1,
+      "COL_DOWN_LEFT_SPIKE": 1
+    },
+    "non_none_boundary_fraction": 1.0,
+    "open_faces": [],
+    "sprites": [],
+    "entries": [],
+    "nearby_objectives": [
+      {
+        "column": 804,
+        "row": 24,
+        "id": 27,
+        "name": "COIN3",
+        "distance_tiles": 7
+      }
+    ]
+  },
+  "actual_centre_entries": [
+    {
+      "frame": 4625,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 796,
+      "row": 24
+    },
+    {
+      "frame": 4626,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 796,
+      "row": 24
+    },
+    {
+      "frame": 4627,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 796,
+      "row": 24
+    },
+    {
+      "frame": 4628,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 796,
+      "row": 24
+    },
+    {
+      "frame": 4629,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 796,
+      "row": 24
+    },
+    {
+      "frame": 4630,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 797,
+      "row": 24
+    },
+    {
+      "frame": 4631,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 797,
+      "row": 24
+    },
+    {
+      "frame": 4632,
+      "player": 0,
+      "mode": 2,
+      "mini": 1,
+      "column": 797,
+      "row": 24
+    }
+  ],
+  "source_mismatches": [],
+  "coin3_frame": 4672,
+  "coin_bits_at_clear": 5,
+  "clearing_frames": 5037,
+  "scope": "Protect this mini-ball coin corridor. Other modes/entries and earlier sections of the complete input remain source-unqualified. A separate combined-build guard stops the input at source2853, before the corridor."
+}

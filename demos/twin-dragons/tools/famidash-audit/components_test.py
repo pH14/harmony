@@ -20,6 +20,22 @@ class SourceComponentTests(unittest.TestCase):
         self.assertEqual(groups[0]["open_faces"], [{"column": 1, "row": 0, "face": "right", "neighbor": 0}])
         self.assertEqual(groups[1]["open_faces"], [])
 
+    def test_closed_region_can_lead_to_a_coin_outside_its_membership(self):
+        metatiles = [{"name": "EMPTY", "collision": "COL_NONE"},
+                     {"name": "BLACK_NONE", "collision": "COL_NONE"},
+                     {"name": "WALL", "collision": "COL_ALL"}]
+        tiles = [2] * 36
+        tiles[13] = 1
+        tiles[20] = tiles[23] = 0
+        coin = {"column": 8, "row": 1, "id": 27, "name": "COIN3"}
+        layout = {"width": 12, "height": 3, "tiles": tiles, "sprites": [coin,
+                  {"column": 11, "row": 1, "id": 7, "name": "COIN1"},
+                  {"column": 4, "row": 1, "id": 1, "name": "SHIP_MODE"}]}
+        _, groups = components(layout, metatiles)
+        self.assertEqual(groups[0]["sprites"], [])
+        self.assertEqual(groups[0]["open_faces"], [])
+        self.assertEqual(groups[0]["nearby_objectives"], [{**coin, "distance_tiles": 7}])
+
 
 if __name__ == "__main__":
     unittest.main()

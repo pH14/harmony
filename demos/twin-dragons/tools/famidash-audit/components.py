@@ -54,6 +54,18 @@ def components(layout, metatiles):
             number = labels[y * width + x]
             if number >= 0:
                 result[number]["sprites"].append(sprite)
+    objectives = [sprite for sprite in layout.get("sprites", [])
+                  if sprite.get("id") in {7, 26, 27}
+                  or sprite.get("name") in {"COIN1", "COIN2", "COIN3", "MINICOIN", "MINI_COIN"}]
+    for group in result:
+        left, top, right, bottom = group["bbox"]
+        nearby = []
+        for sprite in objectives:
+            x, y = sprite["column"], sprite["row"]
+            distance = max(left - x, x - right, top - y, y - bottom, 0)
+            if distance <= 8:
+                nearby.append({**sprite, "distance_tiles": distance})
+        group["nearby_objectives"] = nearby
     return labels, result
 
 
@@ -65,7 +77,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     index = json.loads(args.index.read_text())
     review = json.loads(args.review.read_text())
-    output = {"schema": 3, "sprite_membership": "sprite origin tile belongs to the component; sprite extents are not tested",
+    output = {"schema": 4, "sprite_membership": "sprite origin tile belongs to the component; sprite extents are not tested",
+              "objective_proximity": "Coins within eight tiles of the component bounding box; proximity does not establish reachability or intent.",
               "index_sha256": hashlib.sha256(args.index.read_bytes()).hexdigest(),
               "review_sha256": hashlib.sha256(args.review.read_bytes()).hexdigest(),
               "components": {}, "other_entries": {}}

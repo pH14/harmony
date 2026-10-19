@@ -447,3 +447,16 @@ plus all 65,536 signed byte products. The retained
 include pristine-source patches, opposite-direction negative cases, independent
 NES replays and mode-specific clearing controls. Host arithmetic checks do not
 qualify NES timing, history invalidation or all intended routes.
+
+Source-component schema 4 lists coins within eight tiles of each bounding box
+as `nearby_objectives`. This is proximity, not a reachability or intent verdict.
+An empty `sprites` list only describes membership: a closed component can form
+part of a route to an objective outside it. Electroman's mini-ball corridor
+leads to Coin 3 seven tiles beyond its two-cell component. Preserve independently
+verified coin routes when reviewing proposed caps.
+
+For a warm search root, `retime-control.mjs` accepts `--prefix-frames N` from a
+full clearing control. It preserves the same mechanical-transition invariant
+and emits `purpose=positive-control-prefix`, with source-prefix and full-clear
+lengths recorded. A prefix is not a completion proof or a failing-witness
+conversion. Independently replay it before using it as a Dissonance root.
