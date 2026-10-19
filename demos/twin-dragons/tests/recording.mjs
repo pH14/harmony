@@ -90,6 +90,10 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, "Recording controls fit on mobile");
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.screenshot({ path: `${output}/famidash-recording.png`, fullPage: true });
+  await page.evaluate(() => { dispatchEvent(new Event("pagehide")); });
+  assert.equal(await page.locator("#download-recording").isVisible(), false, "Returning from page lifecycle cannot expose a revoked download");
+  await page.evaluate(() => { MediaRecorder.isTypeSupported = () => false; dispatchEvent(new Event("pagehide")); });
+  assert.equal(await page.locator("#record-view").isEnabled(), false, "Cleanup keeps unsupported capture disabled");
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ artifact, composition, playback, before }));
   await page.close();

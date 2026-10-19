@@ -83,7 +83,7 @@ let recordingURL = null, lastRecorded = -Infinity;
 const recording = new ViewRecording({
   onChange(state) {
     $("record-view").textContent = state === "recording" ? "Stop recording" : state === "stopping" ? "Saving video…" : "Record view";
-    $("record-view").disabled = state === "stopping";
+    $("record-view").disabled = state === "stopping" || !recording.supported(recordingCanvas);
     $("record-view").setAttribute("aria-pressed", state === "recording");
   },
   onComplete(blob, reason) {
@@ -123,7 +123,13 @@ window.addEventListener("beforeunload", (event) => {
 });
 window.addEventListener("pagehide", () => {
   recording.cleanup();
-  if (recordingURL) URL.revokeObjectURL(recordingURL);
+  if (recordingURL) {
+    URL.revokeObjectURL(recordingURL);
+    recordingURL = null;
+    $("download-recording").hidden = true;
+    $("download-recording").removeAttribute("href");
+    $("recording-status").textContent = "Video cleared when leaving this page. Start a new recording to capture more.";
+  }
 });
 let heat = new Heatmap(),
   worker,
