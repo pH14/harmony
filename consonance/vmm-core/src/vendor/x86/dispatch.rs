@@ -278,14 +278,14 @@ impl<B: Backend<A = X86>> Vmm<B> {
         if Uart8250::owns(port)
             && let Some(byte) = self.devices.uart.read_in(port)
         {
-            self.backend.complete_read(u64::from(byte))?;
+            self.complete_guest_read(u64::from(byte))?;
             return Ok(Step::Continued);
         }
         if let Some(legacy) = self.devices.legacy.as_ref()
             && LegacyPlatform::owns(port)
         {
             let value = legacy.read(port, size);
-            self.backend.complete_read(value)?;
+            self.complete_guest_read(value)?;
             return Ok(Step::Continued);
         }
         Err(VmmError::ContractViolation(format!(
@@ -333,7 +333,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 let value = lapic.mmio_read(offset, now_vns).map_err(|e| {
                     VmmError::ContractViolation(format!("xAPIC read {offset:#x}: {e}"))
                 })?;
-                self.backend.complete_read(u64::from(value))?;
+                self.complete_guest_read(u64::from(value))?;
                 Ok(Step::Continued)
             }
             Some(v) => {
@@ -439,11 +439,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
         );
         match disp {
             MsrDisposition::AllowFixed(v) => {
-                self.backend.complete_read(v)?;
+                self.complete_guest_read(v)?;
                 Ok(Step::Continued)
             }
             MsrDisposition::DenyGp => {
-                self.backend.complete_fault()?;
+                self.complete_guest_fault()?;
                 Ok(Step::Continued)
             }
             MsrDisposition::EmulateVtime => self.rdmsr_vtime(index),
@@ -472,7 +472,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 Ok(Step::Continued)
             }
             MsrDisposition::DenyGp | MsrDisposition::AllowFixed(_) => {
-                self.backend.complete_fault()?;
+                self.complete_guest_fault()?;
                 Ok(Step::Continued)
             }
             MsrDisposition::EmulateVtime => self.wrmsr_vtime(index, value),
@@ -500,6 +500,11 @@ impl<B: Backend<A = X86>> Vmm<B> {
             ecx: resolved.ecx,
             edx: resolved.edx,
         })?;
+        let mut result = vec![2];
+        for value in [resolved.eax, resolved.ebx, resolved.ecx, resolved.edx] {
+            result.extend_from_slice(&value.to_le_bytes());
+        }
+        self.record_guest_completion(&result)?;
         Ok(Step::Continued)
     }
 
@@ -522,7 +527,7 @@ impl<B: Backend<A = X86>> Vmm<B> {
                 }
             }
         };
-        self.backend.complete_read(value)?;
+        self.complete_guest_read(value)?;
         Ok(Step::Continued)
     }
 

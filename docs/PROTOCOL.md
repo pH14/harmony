@@ -115,7 +115,7 @@ including final terminal and zero-action job results; UML remains unavailable.
 ## Intervention plane
 
 `Perturb` stages a bounded mechanical effect at a `Moment`: memory write or memory
-XOR. Protocol version 14 and input format version 8 bind
+XOR. Protocol version 15 and input format version 8 bind
 this vocabulary to the negotiated contract. Workload fault tooling translates
 its fault definitions into these operations. `Exec` injects an interactive
 serial command and runs to a completion marker or deadline. Each operation has

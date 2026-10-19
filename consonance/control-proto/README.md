@@ -39,7 +39,7 @@ allocating an unbounded buffer or panicking.
 The framing version (`PROTO_VERSION`), application vocabulary version
 (`APP_PROTOCOL_VERSION`), and environment blob version are independent. The
 codec validates only framing; application and blob versions are checked by the
-negotiation and backend layers. Application version 14 reports a v2 `EventHistory` commitment and record count
+negotiation and backend layers. Application version 15 reports a v3 `EventHistory` commitment and record count
 separately from logical whole-state hashes. The count includes normalized
 transport events and completed semantic service exchanges; it is not the
 number of guest exits or entries in the diagnostic normalized-event log. Earlier peers are rejected at negotiation.

@@ -658,7 +658,7 @@ canonicalization does not grant captured execution authority. Branch roots use
 Old history, snapshot, stream, cache and root formats are refused. Missing,
 malformed, or conflicting certificates stop the campaign.
 
-The v2 replay certificate binds the v1 ordered-history format independently of
+The replay certificate binds the v3 ordered-history format independently of
 logical endpoint state. An intermediate event change alters the certificate even
 when endpoint, observations, event count and final virtual time agree. Fresh setup
 preserves the boot event prefix. Replay, branch, portable import and cache import
@@ -854,3 +854,10 @@ number of distinct named rows in the thread report. The 32-row witness cap
 applies per producer table; the accumulated thread report can retain keys from
 multiple sessions and has no global 32-row bound. Neither this field nor the
 shape rows report current residency or enter archive memory policy.
+Fault endpoint certificates bind the ordinary, unqualified execution-assurance
+identity as well as state, event history and observations. History receipts keep
+and validate that identity. A KVM whole-state certificate is evidence for the
+observed replay, and cannot be promoted into CPU portability qualification;
+`HistoryReceipt::require_qualified` refuses unsupported finite compositions.
+UML keeps `UmlWholeStateUnavailable` and has no whole-state certificate. See the
+[execution assurance contract](../../consonance/execution-contract/README.md).

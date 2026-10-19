@@ -73,7 +73,7 @@ PR_EXTENDED_CHECK_BUDGETS = {
 }
 PR_TIMEOUT_EXPRESSIONS = {
     (f"{WORKFLOW_DIR}/consonance-analysis.yml", "Miri — <Crate>"):
-        "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store') && 30 || 15 }}",
+        "${{ (matrix.name == 'vmm-backend' || matrix.name == 'snapshot-store' || matrix.name == 'consonance-client') && 30 || 15 }}",
 }
 
 
@@ -320,7 +320,7 @@ OCI_PLATFORM_TESTS = ("oci-support::platform *", "oci-support::process_platform 
 
 def _consonance_crates() -> tuple[str, ...]:
     return (
-        "consonance-client", "control-proto", "environment", "execution-proto",
+        "consonance-client", "control-proto", "environment", "execution-contract", "execution-proto",
         "gicv3", "guest-image", "host-code-identity", "hypercall-doorbell", "hypercall-proto",
         "lapic", "nested-driver", "oci-support", "process-proto", "snapshot-store", "telemetry",
         "uml", "unison", "vm-state", "vmm-backend", "vmm-core", "vtime",
@@ -402,7 +402,7 @@ CONSONANCE_CHECKS = Workflow(
             select="rust_checks"),
         Job("Execution Protocol", "pr", 15,
             crates=("consonance-client", "control-proto", "environment",
-                    "execution-proto", "hypercall-doorbell", "hypercall-proto",
+                    "execution-contract", "execution-proto", "hypercall-doorbell", "hypercall-proto",
                     "process-proto"),
             test_targets=("vmm-core:protocol",),
             select="rust_checks"),
@@ -420,7 +420,8 @@ CONSONANCE_ANALYSIS = Workflow(
         Job("Miri — <Crate>", "pr", 30, select="miri_matrix",
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),
             exception="The backend's interpreted snapshot/register inventory and "
-                      "the Store's full resident-verification suite exceed 15 minutes; "
+                      "the Store's full resident-verification suite and the client's "
+                      "interpreted cache tests exceed 15 minutes; "
                       "other targets retain 15 minutes."),
         Job("Miri — <Crate> (Whole Crate)", "full", 320,
             ignored_tests=("consonance-client cache::segments::tests::backing_length_borrows_the_descriptor_without_closing_it",),

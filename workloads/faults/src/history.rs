@@ -20,7 +20,8 @@ pub fn replay_certificate(
     failed: bool,
 ) -> Result<[u8; 32], String> {
     postcard::to_allocvec(&(
-        "fault-replay-endpoint-v3",
+        "fault-replay-endpoint-v4",
+        execution_contract::Assurance::ordinary().identity(),
         control_proto::EventHistory::VERSION,
         hash,
         history,
@@ -56,6 +57,7 @@ pub fn endpoint_certificate(
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct HistoryReceipt {
+    assurance_identity: [u8; 32],
     domain: [u8; 32],
     depth: usize,
     parent: Option<[u8; 32]>,
@@ -79,6 +81,7 @@ impl HistoryReceipt {
         observation: &FaultObservations,
     ) -> Result<Self, String> {
         let mut out = Self {
+            assurance_identity: execution_contract::Assurance::ordinary().identity(),
             domain,
             depth: 0,
             parent: None,
@@ -109,6 +112,7 @@ impl HistoryReceipt {
             return Err("fault history backend changed".to_owned());
         }
         let mut out = Self {
+            assurance_identity: self.assurance_identity,
             domain: self.domain,
             depth: self
                 .depth
@@ -143,6 +147,7 @@ impl HistoryReceipt {
         digest(
             "fault-history-node-v1",
             &(
+                self.assurance_identity,
                 self.domain,
                 self.depth,
                 self.parent,
@@ -157,9 +162,24 @@ impl HistoryReceipt {
         )
     }
 
+    pub fn assurance_identity(&self) -> [u8; 32] {
+        self.assurance_identity
+    }
+
+    pub fn require_qualified(
+        &self,
+        composition: execution_contract::Composition,
+    ) -> Result<execution_contract::Qualified, String> {
+        self.validate()?;
+        execution_contract::Assurance::ordinary()
+            .require_qualified(composition)
+            .map_err(|error| error.to_string())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         let genesis = self.depth == 0;
-        if genesis != self.parent.is_none()
+        if self.assurance_identity != execution_contract::Assurance::ordinary().identity()
+            || genesis != self.parent.is_none()
             || genesis != self.parent_path.is_none()
             || genesis != self.action.is_none()
             || self.previous_moment > self.moment
@@ -600,6 +620,75 @@ impl FaultHistory {
 mod tests {
     use super::*;
     use crate::target::FaultOperation;
+    #[test]
+    fn endpoint_certificates_bind_unqualified_assurance_and_cannot_claim_portability() {
+        for endpoint in [
+            FaultEndpointCertificate::KvmWholeState([17; 32]),
+            FaultEndpointCertificate::UmlWholeStateUnavailable,
+        ] {
+            let observation = FaultObservations::default();
+            let mut receipt = HistoryReceipt::genesis(
+                [3; 32],
+                endpoint,
+                fixture_event_history(endpoint),
+                &observation,
+            )
+            .unwrap();
+            assert_eq!(
+                receipt.assurance_identity(),
+                execution_contract::Assurance::ordinary().identity()
+            );
+            assert_eq!(
+                receipt.certificate().is_some(),
+                matches!(endpoint, FaultEndpointCertificate::KvmWholeState(_))
+            );
+            for composition in [
+                execution_contract::Composition::RetainedLinuxContinuation9673,
+                execution_contract::Composition::UmlWholeState,
+            ] {
+                assert!(
+                    receipt
+                        .require_qualified(composition)
+                        .unwrap_err()
+                        .contains("qualification refused")
+                );
+            }
+            receipt.assurance_identity = [31; 32];
+            receipt.root = receipt.root_digest().unwrap();
+            assert!(receipt.validate().is_err());
+        }
+        let observation = FaultObservations::default();
+        let hash = [17; 32];
+        let history = (0, [0; 32]);
+        let expected = postcard::to_allocvec(&(
+            "fault-replay-endpoint-v4",
+            execution_contract::Assurance::ordinary().identity(),
+            control_proto::EventHistory::VERSION,
+            hash,
+            history,
+            &observation,
+            false,
+        ))
+        .unwrap();
+        assert_eq!(
+            replay_certificate(hash, history, &observation, false).unwrap(),
+            <[u8; 32]>::from(Sha256::digest(expected))
+        );
+        let previous = postcard::to_allocvec(&(
+            "fault-replay-endpoint-v3",
+            control_proto::EventHistory::VERSION,
+            hash,
+            history,
+            &observation,
+            false,
+        ))
+        .unwrap();
+        assert_ne!(
+            replay_certificate(hash, history, &observation, false).unwrap(),
+            <[u8; 32]>::from(Sha256::digest(previous))
+        );
+    }
+
     #[test]
     fn borrowed_suffix_traversal_preserves_actions_receipts_and_wire_encoding() {
         let endpoint = FaultEndpointCertificate::KvmWholeState([17; 32]);

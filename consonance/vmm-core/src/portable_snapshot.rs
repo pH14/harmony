@@ -14,7 +14,7 @@ use crate::vmm::{SdkSnapshot, SdkStop};
 use snapshot_store::PAGE_SIZE;
 
 const MAGIC: [u8; 8] = *b"HMSNAP01";
-const VERSION: u16 = 10;
+const VERSION: u16 = 11;
 const FLAG_SDK: u16 = 1;
 const FLAG_TAINTED: u16 = 1 << 1;
 const KNOWN_FLAGS: u16 = FLAG_SDK | FLAG_TAINTED;
@@ -28,7 +28,7 @@ const MAX_CONTROL_LEN: usize = MAX_SDK_LEN;
 #[cfg(test)]
 const MAX_POLICY_LEN: usize = 1024 * 1024;
 const SPARSE_MAGIC: [u8; 8] = *b"HMSSNAP1";
-const SPARSE_VERSION: u16 = 12;
+const SPARSE_VERSION: u16 = 13;
 const SPARSE_FLAG_SDK: u16 = 1;
 const SPARSE_FLAG_TAINTED: u16 = 1 << 1;
 const SPARSE_FLAG_TARGET_PAGES: u16 = 1 << 2;
@@ -1460,14 +1460,14 @@ mod tests {
     #[test]
     fn wire_constants_are_exact_contract_values() {
         assert_eq!(MAGIC, *b"HMSNAP01");
-        assert_eq!(VERSION, 10);
+        assert_eq!(VERSION, 11);
         assert_eq!((FLAG_SDK, FLAG_TAINTED, KNOWN_FLAGS), (1, 2, 3));
         assert_eq!(MAX_VM_STATE_LEN, 16 * 1024 * 1024);
         assert_eq!(MAX_SDK_LEN, 64 * 1024 * 1024);
         assert_eq!(MAX_CONTROL_LEN, MAX_SDK_LEN);
         assert_eq!(MAX_POLICY_LEN, 1024 * 1024);
         assert_eq!(SPARSE_MAGIC, *b"HMSSNAP1");
-        assert_eq!(SPARSE_VERSION, 12);
+        assert_eq!(SPARSE_VERSION, 13);
         assert_eq!(
             (
                 SPARSE_FLAG_SDK,

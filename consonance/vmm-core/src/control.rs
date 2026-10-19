@@ -5759,7 +5759,7 @@ mod tests {
         let caps = server_caps();
         assert_eq!(caps.protocol_version, control_proto::APP_PROTOCOL_VERSION);
         assert_eq!(
-            caps.protocol_version, 14,
+            caps.protocol_version, 15,
             "protocol version numbers remain monotonic after retired tags"
         );
         assert_eq!(caps.env_version_min, EnvSpec::BLOB_VERSION);

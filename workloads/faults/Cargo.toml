@@ -16,6 +16,7 @@ consonance = [
 ]
 
 [dependencies]
+execution-contract = { path = "../../consonance/execution-contract", version = "=0.1.0" }
 consonance-client = { path = "../../consonance/client", version = "=0.1.0", optional = true }
 control-proto = { path = "../../consonance/control-proto", version = "=0.1.0" }
 environment = { path = "../../consonance/environment", version = "=0.1.0", optional = true }
