@@ -1138,6 +1138,7 @@ pub(crate) mod tests {
         }
     }
 
+    #[cfg(all(target_os = "linux", feature = "uml"))]
     pub(crate) fn pending_state() -> (EndpointState, EndpointToken) {
         let mut fixture = Fixture::default();
         let mut request = request();
